@@ -91,8 +91,8 @@ struct ScaffoldReport {
     /// True when this run installed or updated the SessionStart hook in
     /// `.claude/settings.json` (false when the hook was already present unchanged).
     wrote_hook: bool,
-    /// `.gitignore` patterns this run newly appended (empty when every machine-local
-    /// pattern was already ignored or tracked).
+    /// `.gitignore` patterns this run newly appended, in [`RUNTIME_IGNORES`] order (empty when
+    /// every one was already a line in `.gitignore` or a tracked path).
     gitignore_added: Vec<String>,
     /// The durable project id this run newly MINTED into `.rigger/project.id` (spec 09),
     /// or `None` when the file already existed and was left untouched.
@@ -228,35 +228,11 @@ fn scaffold_project(
         }
     }
 
-    // 4. Write .gitignore entries for machine-local installs, the always-on dash's runtime
-    // breadcrumbs, and the per-machine store-connection secret file, when they are not already
-    // ignored or tracked. `.claude/` is the machine-local install;
-    // `.rigger/dash.url` and `.rigger/dash.marker` are the dash's discoverability breadcrumbs
-    // (spec 39), which `rigger status` and `rigger watch` read - left untracked-and-not-ignored
-    // they get swept into a unit worktree's commit by `git add` and then collide with the live
-    // dash's rewrites when the conductor merges the unit ("untracked working tree files would be
-    // overwritten"). `.rigger/dash.attempt` (spec 69, round-8 fix) is a THIRD runtime breadcrumb of
-    // the identical shape - `start_run_dashboard` rewrites it on every dash start exactly as it
-    // rewrites `dash.url` - so it collides the same way if left untracked-and-not-ignored, and is
-    // ignored here for the same reason. `.rigger/store.conn` is the store resolver's per-machine
-    // secret file (spec 48 rung 3): it carries the connection string's credentials, so it is
-    // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
-    // `.rigger/store` holds the code store's snapshots, a per-machine projection of the tree
-    // that every graph read rewrites, and its facts memo, so left untracked they would read as a
-    // dirty tree. `.rigger/driver.out` is the output of the driver a check last relaunched, which
-    // each relaunch rewrites, ignored for the same reason.
-    // Record WHICH patterns were appended so the summary reports the real gitignore change and
-    // nothing it did not do.
+    // 4. Write each `RUNTIME_IGNORES` line to `.gitignore` when it is not already a line there
+    // or a tracked path. Record WHICH patterns were appended so the summary reports the real
+    // gitignore change and nothing it did not do.
     let mut gitignore_added = Vec::new();
-    for pattern in [
-        ".claude/",
-        ".rigger/dash.url",
-        ".rigger/dash.marker",
-        ".rigger/dash.attempt",
-        ".rigger/driver.out",
-        ".rigger/store.conn",
-        ".rigger/store",
-    ] {
+    for pattern in RUNTIME_IGNORES {
         if write_gitignore_entries(root, pattern)? {
             gitignore_added.push(pattern.to_string());
         }
@@ -372,6 +348,47 @@ fn print_orientation() {
         dash::DEFAULT_PORT
     );
 }
+
+/// The `.gitignore` lines [`scaffold_project`] writes, each through [`write_gitignore_entries`]
+/// (a trailing `/` trimmed), each naming a class of file rigger writes on one machine at run
+/// time. Left untracked and not ignored, such a file reads as a dirty tree, and `git add` sweeps
+/// it into a unit's commit, whose merge then collides with the live file ("untracked working
+/// tree files would be overwritten"). A class covers a database, lock or scratch file rigger adds
+/// later with no edit here. `.rigger/workflow.yml`, `agents/`, `gates/`, `instructions/`,
+/// `project.id` and `docs-overlay.yml` match no line and stay tracked.
+///
+/// - `.claude/`: the machine-local Claude Code install.
+/// - `.rigger/*.db`, `.rigger/*.db-wal`, `.rigger/*.db-shm`: a store (the event log, the graph,
+///   the progress store) and its write-ahead log and shared memory.
+/// - `.rigger/*.lock`: a lock file a process holds (a run's step lock, the graph's rebuild lock).
+/// - `.rigger/dash.url`, `.rigger/dash.marker`, `.rigger/dash.attempt`: the dash's breadcrumbs,
+///   which `rigger status` and `rigger watch` read and each dash start rewrites.
+/// - `.rigger/driver.out`: the output of the driver a check last relaunched, which each relaunch
+///   rewrites.
+/// - `.rigger/store.conn`: the store resolver's secret file, which carries the connection
+///   string's credentials, so they never ride a commit.
+/// - `.rigger/store`: the code store's snapshots and facts memo, a projection of the tree each
+///   graph read rewrites.
+/// - `.rigger/*.bak-*`: a store file's backup, named `<store file>.bak-<suffix>`.
+/// - `.rigger/tmp/`: the run's scratch root, its unit and review worktrees and their builds.
+/// - `.rigger/playbooks/`: the playbook pool, a projection of the log
+///   `rigger playbooks --rebuild` remakes.
+const RUNTIME_IGNORES: [&str; 14] = [
+    ".claude/",
+    ".rigger/*.db",
+    ".rigger/*.db-wal",
+    ".rigger/*.db-shm",
+    ".rigger/*.lock",
+    ".rigger/dash.url",
+    ".rigger/dash.marker",
+    ".rigger/dash.attempt",
+    ".rigger/driver.out",
+    ".rigger/store.conn",
+    ".rigger/store",
+    ".rigger/*.bak-*",
+    ".rigger/tmp/",
+    ".rigger/playbooks/",
+];
 
 /// Write a .gitignore entry for the given pattern if it is not already an explicit line
 /// or a tracked path, returning whether it APPENDED an entry (`true`) or left `.gitignore`
@@ -548,7 +565,8 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
     }
     if !report.gitignore_added.is_empty() {
         lines.push(format!(
-            "added .gitignore entries so machine-local installs stay untracked: {}",
+            "added .gitignore entries so machine-local installs and rigger's runtime files stay \
+             untracked: {}",
             report.gitignore_added.join(", ")
         ));
     }
