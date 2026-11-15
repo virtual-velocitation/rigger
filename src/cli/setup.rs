@@ -2409,9 +2409,9 @@ mod tests {
     use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
-        ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, BOUNDED_AUDIT, CRITIQUE_METHOD,
-        DOC_ONLY_ROUND_RULE, FAN_OUT_HEADING, GROUNDING_METHOD, HAND_OVER_HEADING, LOOKUP_METHOD,
-        ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+        sdet_author_seed, ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, BOUNDED_AUDIT,
+        CRITIQUE_METHOD, DOC_ONLY_ROUND_RULE, FAN_OUT_HEADING, GROUNDING_METHOD, HAND_OVER_HEADING,
+        LOOKUP_METHOD, ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
 
@@ -4758,15 +4758,7 @@ mod tests {
                                 unit's periphery tests after its own tests pass.\n  test_author: \
                                 sdet-author\n";
         const OWN: &str = "---\nid: sdet-author\n---\nMine.\n";
-        let seed = format!(
-            "---\nid: sdet-author\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
-             Agent]\nisolation: worktree\nrecurse: true\n---\nYou author the periphery tests of \
-             ONE unit inside its worktree, after the implementer's\ntests pass and before the \
-             gates run: contract, API and integration tests that drive the\nunit from outside. \
-             You never author or change a unit test. Find the unit's boundary\nsurface from its \
-             diff, write one test per behaviour at that surface.\n\n## A documentation-only \
-             round\n\n{DOC_ONLY_ROUND_RULE}\n"
-        );
+        let seed = sdet_author_seed();
         let seeded = (
             "opus",
             vec!["Read", "Edit", "Write", "Grep", "Glob", "Bash", "Agent"],

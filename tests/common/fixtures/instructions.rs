@@ -8,7 +8,7 @@
 //! critique method the adversary and adjudicator personas
 //! hold under their `## When you critique a spec or a plan` section and each persona's share of
 //! it; the unit size cap's scope sentence the planner and both critiquing personas state; the rule the sdet-author persona states for a documentation-only round and the fact its
-//! prompt states instead; the
+//! prompt states instead; the sdet-author persona `rigger init` seeds, which states that rule; the
 //! headings a composed system prompt carries, the handbook chapter that lists the built-in entries
 //! and their checked-in sources, each entry's body by name, a near name that shadows no
 //! built-in, the non-empty bodies that still switch a built-in off, two operator files that shadow
@@ -211,6 +211,21 @@ pub fn critique_method_by_persona(
 /// only, and no sdet-author prompt carries: the prompt states only the round's fact.
 pub const DOC_ONLY_ROUND_RULE: &str = "Extend the existing owner test's needle for the changed \
      sentence, or add no pin; never a new test.";
+
+/// The `sdet-author` persona `rigger init` seeds as `.rigger/agents/sdet-author.md` when the
+/// workflow declares it the test author, byte for byte: its frontmatter, its body, and its
+/// `## A documentation-only round` section stating [`DOC_ONLY_ROUND_RULE`] on one line.
+pub fn sdet_author_seed() -> String {
+    format!(
+        "---\nid: sdet-author\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
+         Agent]\nisolation: worktree\nrecurse: true\n---\nYou author the periphery tests of \
+         ONE unit inside its worktree, after the implementer's\ntests pass and before the \
+         gates run: contract, API and integration tests that drive the\nunit from outside. \
+         You never author or change a unit test. Find the unit's boundary\nsurface from its \
+         diff, write one test per behaviour at that surface.\n\n## A documentation-only \
+         round\n\n{DOC_ONLY_ROUND_RULE}\n"
+    )
+}
 
 /// The fact the sdet-author's prompt, and a resumed sdet-author session's task, state on a round
 /// that changed documentation only.
