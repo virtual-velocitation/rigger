@@ -2261,7 +2261,7 @@ mod tests {
     fn setup_indexes_an_older_log_s_record_ids_unless_the_run_is_live() {
         // (case, whether the log holds the index, the probe's refusal, whether it holds the index
         // after, the probes asked, the line said)
-        let rows: [(&str, bool, Option<&str>, bool, usize, Option<&str>); 3] = [
+        let rows = [
             ("indexed", true, None, true, 0, None),
             (
                 "an older log, no live run",
