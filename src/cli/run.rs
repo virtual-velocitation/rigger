@@ -143,7 +143,7 @@ fn register_run_instance(
 /// run records the supersession and continues with a notice; a drifted run WITHOUT the flag
 /// returns a loud error, so `rigger run` HALTS naming the drift instead of driving a
 /// campaign whose replay semantics silently changed. The conductor's own (unpinned)
-/// `ensure_started` then simply ADOPTS the run this ensured.
+/// `ensure_started` then simply ADOPTS the run this ensured, whose id this returns.
 ///
 /// `base` is the resolved run-branch base to persist on a freshly-minted RunStarted (spec 38,
 /// criterion 3), so `rigger status`/`rigger dash` later read the run's actual base from the
@@ -166,11 +166,11 @@ fn enforce_definition_pin(
     base: &str,
     base_tip: &str,
     spec_path: &str,
-) -> Res {
+) -> Result<String, Box<dyn std::error::Error>> {
     match runscope_store::ensure_started_pinned(
         store, criteria, definition, rebase, base, base_tip, spec_path,
     )? {
-        runscope::RunStart::Ready(_) => Ok(()),
+        runscope::RunStart::Ready(run) => Ok(run),
         runscope::RunStart::Rebased {
             run,
             pinned,
@@ -180,7 +180,7 @@ fn enforce_definition_pin(
                 "rigger: --rebase-definition: recorded the definition supersession \
                  ({pinned} -> {current}) on run {run}; continuing on the new definition."
             ));
-            Ok(())
+            Ok(run)
         }
         runscope::RunStart::Drifted {
             run,
@@ -739,7 +739,7 @@ impl SleepHold for RecordingSleepHold {
 }
 
 /// Append `line` and a newline to the file at `path` in one write, creating the file when absent.
-fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+pub(crate) fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -862,7 +862,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // this run returns, before any store is opened, any launch closed or any run branch anchored,
     // so a second `rigger run` beside this one refuses with the busy refusal
     // first, and a run that hangs keeps it, which keeps `rigger watch`'s dead-driver alert silent.
-    let _step_lock = acquire_step_lock(&loc.dir)?;
+    // The lock keeps this driver's record ([`KeptRecord`]), emptied however the driver ends
+    // short of a death, so an invocation that finds a record nobody holds relaunches the run.
+    let step_record = KeptRecord::hold(acquire_step_lock(&loc.dir)?);
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
     // before opening the run backend (spec 09). Local-sqlite only - the migration renames
     // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
@@ -944,7 +946,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
     // unchanged spec.
-    fresh_run_if_requested(
+    let run = fresh_run_if_requested(
         parsed,
         &folding,
         &criteria,
@@ -960,6 +962,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             text: &text,
         },
     )?;
+    step_record.keep(parsed, &cwd, &loc.dir, &run);
     // The orphan sweep runs behind `--fresh`'s mint, so a superseded run's scratch reads as dead.
     if let Some(root) = sweep_root {
         reclaim_orphans_at_start(&repo, root, &cfg.workflow, &store);
@@ -1192,6 +1195,10 @@ fn reclaim_orphans_at_start(
 ///
 /// `helpers` are the fan-out helpers the caller's spawn host resolved, so the definition the run
 /// pins folds the same helper copies its spawns carry ([`definition_hash`]).
+///
+/// `--adopt <run>` is checked first of all: a start that would not adopt that run, because
+/// another is latest or a new one would be minted, refuses naming both before anything is read or
+/// appended. It returns the id of the run it began or adopted.
 fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
@@ -1199,7 +1206,16 @@ fn fresh_run_if_requested(
     base_tip: &str,
     helpers: &[conductor::HelperCopy],
     critique: &RunStartCritique,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
+    if let Some(wanted) = &parsed.adopt {
+        refuse_unless_adopting(
+            store,
+            criteria,
+            parsed.spec.is_some(),
+            wanted,
+            critique.command,
+        )?;
+    }
     // A HELD RUN IS NAMED FIRST: a plain run reads its hold ahead of the critique refusal, so a
     // held run names its hold before anything refuses it and a hold it cannot read fails the run
     // before any refusal. `--fresh` decides its refusal first, since its mint ends the hold.
@@ -1243,8 +1259,35 @@ fn fresh_run_if_requested(
         &base,
         base_tip,
         parsed.spec.as_deref().unwrap_or(""),
+    )
+}
+
+/// Refuse a `command` start with `--adopt <wanted>` unless the mint decision
+/// ([`runscope::adopted_run`] over the run stream's [`runscope::MINT_DECISION_TYPES`] events, as
+/// the store's own adopt-or-mint asks it for `criteria`, `by_spec` naming whether the start names
+/// a spec) adopts that very run. It writes nothing.
+fn refuse_unless_adopting(
+    store: &dyn EventStore,
+    criteria: &[String],
+    by_spec: bool,
+    wanted: &str,
+    command: &str,
+) -> Res {
+    let started = store.read_stream_typed(
+        conductor::STREAM,
+        0,
+        TypeSelection::Only(&runscope::MINT_DECISION_TYPES),
     )?;
-    Ok(())
+    let would = match runscope::adopted_run(&started, criteria, false, by_spec) {
+        Some(run) if run.run == wanted => return Ok(()),
+        Some(run) => format!("adopt run {}", run.run),
+        None => "begin a new run".to_string(),
+    };
+    Err(format!(
+        "{command}: --adopt {wanted}: this start would {would}, not adopt run {wanted}, so it \
+         refuses and nothing was recorded"
+    )
+    .into())
 }
 
 /// What the spec-critique refusal ([`RunStartCritique::refuse_unless_clean`]) reads beside the

@@ -56,6 +56,7 @@ mod hold;
 mod hygiene;
 mod observe;
 mod prime;
+mod relaunch;
 mod run;
 mod setup;
 mod validate;
@@ -69,6 +70,8 @@ pub(crate) use hold::*;
 pub(crate) use hygiene::*;
 pub(crate) use observe::*;
 pub(crate) use prime::*;
+use relaunch::KeptRecord;
+pub(crate) use relaunch::{checks_after, relaunch_a_dead_driver};
 pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
@@ -222,6 +225,10 @@ struct RunArgs {
     /// the `RIGGER_BASE` env override or the load-bearing [`DEFAULT_BASE_REF`] (`origin/main`)
     /// - the default stays unchanged.
     base: Option<String>,
+    /// `--adopt <run>`: the run this start must adopt, and no other. The background relaunch of a
+    /// run whose driver died ([`relaunch`]) passes it, so a relaunch whose run is gone, or would be
+    /// minted anew, refuses before it appends anything instead of driving another run.
+    adopt: Option<String>,
 }
 
 /// The backend an `--eventstore` flag's `value` names, for `verb`'s flag parser: `rigger run`'s
@@ -266,8 +273,8 @@ fn spec_positional(
 
 /// Parse `rigger run`'s flags: `--fresh`, `--rebase-definition`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
-/// criterion 6), and a single positional spec path. Unknown flags and a second positional
-/// are rejected (§10).
+/// criterion 6), `--adopt <run>`, and a single positional spec path. Unknown flags, a second
+/// positional, and `--adopt` beside `--fresh`, which mints rather than adopts, are rejected (§10).
 fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>> {
     let mut store = None;
     let mut conn = None;
@@ -275,10 +282,18 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
     let mut fresh = false;
     let mut rebase_definition = false;
     let mut base = None;
+    let mut adopt = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--fresh" => fresh = true,
+            "--adopt" => {
+                i += 1;
+                adopt = match args.get(i) {
+                    Some(run) => Some(run.clone()),
+                    None => return Err("run: --adopt expects a run id".into()),
+                };
+            }
             "--rebase-definition" => rebase_definition = true,
             "--base" => {
                 i += 1;
@@ -299,6 +314,11 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         }
         i += 1;
     }
+    if fresh && adopt.is_some() {
+        return Err(
+            "run: --adopt names the run to adopt, --fresh begins a new one; pass one".into(),
+        );
+    }
     Ok(RunArgs {
         store,
         conn,
@@ -306,6 +326,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         fresh,
         rebase_definition,
         base,
+        adopt,
     })
 }
 
@@ -1326,6 +1347,10 @@ fn worktree_prefix(start: &Path) -> Result<PathBuf, String> {
 /// repository lies once per open. Discovery is deferred to the first rule that needs it, so a
 /// command that resolves no repository (a courier under the gate store fence) never walks above
 /// its directory.
+/// The discovery the invocation's relaunch check made at the cwd, lent to the verb's sites.
+static LENT_DISCOVERY: std::sync::OnceLock<(PathBuf, Result<Option<Repository>, String>)> =
+    std::sync::OnceLock::new();
+
 pub(crate) struct Site {
     dir: PathBuf,
     /// Why the cwd could not be read, for a site at an unreadable cwd, whose `dir` is then `.`.
@@ -1351,9 +1376,26 @@ impl Site {
         }
     }
 
-    /// The site at the cwd.
+    /// The site at the cwd, starting from the discovery the invocation's relaunch check lent
+    /// ([`Site::lend_discovery`]) when it stood at the same directory, so the check costs a verb
+    /// no second ask of where the repository lies.
     pub(crate) fn here() -> Self {
-        Self::of(Path::new(""))
+        let site = Self::of(Path::new(""));
+        if let Some((dir, found)) = LENT_DISCOVERY.get() {
+            if *dir == site.dir && site.unread.is_none() {
+                let _ = site.repository.set(found.clone());
+            }
+        }
+        site
+    }
+
+    /// Lend this site's discovery, once it has made one, to every later site at its directory
+    /// in this process ([`Site::here`]). Only the relaunch check lends, before the verb runs, so a
+    /// verb starts from the discovery it would have made itself at the same moment.
+    pub(crate) fn lend_discovery(&self) {
+        if let Some(found) = self.repository.get() {
+            let _ = LENT_DISCOVERY.set((self.dir.clone(), found.clone()));
+        }
     }
 
     /// A site at the same directory that has not yet asked where its repository lies.
@@ -9318,8 +9360,25 @@ mod tests {
                 &["--eventstore", "bogus"],
                 &["--nope"],
                 &["a", "b"],
+                &["--adopt"],
+                &["--fresh", "--adopt", "r-1"],
             ],
         );
+    }
+
+    /// `rigger run --adopt <run>` names the run the start must adopt, beside a spec in either
+    /// order; with no flag it names none.
+    #[test]
+    fn parse_run_args_reads_the_run_to_adopt() {
+        let r = |a: &[&str]| parse_run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(r(&[]).unwrap().adopt, None);
+        for args in [["--adopt", "r-1", "spec.md"], ["spec.md", "--adopt", "r-1"]] {
+            let a = r(&args).unwrap();
+            assert_eq!(
+                (a.adopt.as_deref(), a.spec.as_deref()),
+                (Some("r-1"), Some("spec.md"))
+            );
+        }
     }
 
     /// `rigger run` accepts `--base <ref>` (spec 18, criterion 6): it is no

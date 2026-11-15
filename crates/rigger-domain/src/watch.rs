@@ -202,7 +202,10 @@ impl Signal {
             Signal::DeadDriver => "rigger-resume-a-run",
             Signal::DashNotServing => "rigger-restore-the-dash",
             Signal::RejectRecurrence => "rigger-diagnose-churn",
-            Signal::FrontierStall => "stop the driver and diagnose before another round spends",
+            Signal::FrontierStall => {
+                "hold the run with rigger hold --reason <text>, then stop the driver and diagnose \
+                 before another round spends"
+            }
             Signal::StoreIntegrity => ORDER_SIGNATURE_REPAIR_DOC_REF,
             Signal::CiRed => {
                 "read the failed logs with gh run view --log-failed and fix at root before the \

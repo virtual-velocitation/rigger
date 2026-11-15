@@ -15380,17 +15380,27 @@ fn every_invocation_relaunches_a_run_whose_driver_died() {
             "rigger {args:?} relaunches nothing with no dead driver; stderr: {}",
             quiet.err
         );
+        // `validate`'s footprint lines measure the store, which each invocation's own reads grow.
+        let answer = |out: &str| {
+            out.lines()
+                .filter(|line| !line.starts_with("footprint: "))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
         assert_eq!(
-            (&died.out, died.ok),
-            (&quiet.out, quiet.ok),
+            (answer(&died.out), died.ok),
+            (answer(&quiet.out), quiet.ok),
             "rigger {args:?} answers as it does with no dead driver"
         );
     }
 
     std::fs::write(common::cli::rigger_file(root, "step.lock"), &record).unwrap();
     let _ = std::fs::remove_file(common::relaunch_record());
+    // The record path is this thread's ([`common::relaunch_record`]), named to both.
+    let knob = format!("record:{}", common::relaunch_record().display());
+    let envs = [(common::RELAUNCH_ENV, knob.as_str())];
     std::thread::scope(|both| {
-        let status = || both.spawn(|| run_rigger_envs(root, &["status"], &[]));
+        let status = || both.spawn(|| run_rigger_envs(root, &["status"], &envs));
         let (one, two) = (status(), status());
         one.join().unwrap();
         two.join().unwrap();
@@ -15413,6 +15423,18 @@ enum Left {
     Stamped,
 }
 
+/// One row of [`an_invocation_relaunches_only_a_dead_driver_it_has_not_just_relaunched`]: its
+/// name, the record in the step lock, the invocation's environment, whether it relaunches, what
+/// it leaves in the lock, and what its stderr says.
+type RelaunchRow<'a> = (
+    &'a str,
+    String,
+    &'a [(&'a str, &'a str)],
+    bool,
+    Left,
+    Option<&'a str>,
+);
+
 /// A RUN SURVIVES ITS DRIVER, the cases that relaunch nothing: an invocation a run spawned or a
 /// gate fenced, a driver still alive, a relaunch still starting, one that never started, a
 /// relaunched driver that died again at once, a record of another project, one that does not
@@ -15433,7 +15455,7 @@ fn an_invocation_relaunches_only_a_dead_driver_it_has_not_just_relaunched() {
     let fence = tempfile::tempdir().unwrap();
     let fence = fence.path().to_str().unwrap();
     let hour_ago = serde_json::json!(now - 3600);
-    let rows: [(&str, String, &[(&str, &str)], bool, Left, Option<&str>); 11] = [
+    let rows: [RelaunchRow; 11] = [
         (
             "a run's own spawn",
             record.clone(),

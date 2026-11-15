@@ -316,7 +316,10 @@ fn discipline_body(ctx: &DocsContext) -> String {
          refuses, recording nothing, when no run is live: none has started, or the current run \
          is done. `rigger release` ends the current run's hold, whichever \
          writer declared it, an outage hold included, so the next launch goes at once instead of \
-         after the next probe. With no hold open it records nothing and says so.\n"
+         after the next probe. With no hold open it records nothing and says so. A hold \
+         outlives its driver: a driver that died is relaunched by the next `rigger` invocation \
+         in the project and waits in the hold, so a hold is how to keep a run from spending \
+         whatever ends its driver.\n"
     );
 
     let _ = writeln!(s, "## Auto-integration on approve\n");
@@ -1005,7 +1008,16 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              Under an open hold the heartbeat age stops at the hold's start, so a driver that \
              dies inside a hold never reads stale there: `rigger watch` reads the heartbeat on \
              wall clock and names it.\n",
-            "Relaunch the same driver on the same spec WITHOUT `--fresh` - `rigger run <spec> \
+            "A `rigger run` driver that died needs no hand relaunch: the next `rigger` \
+             invocation in the project, that diagnosing `rigger status` and the session-start \
+             hook `rigger prime` among them, relaunches it by adoption in the background and \
+             says so in one line on stderr, naming its pid. A driver stopped on purpose (it \
+             returned, for any reason, or was interrupted with Ctrl-C) is never relaunched. A \
+             driver that dies again within ten minutes of its relaunch, or a relaunch that never \
+             started, is left stopped, and the line names the command that relaunches it by \
+             hand.\n",
+            "When that line says the run was left stopped, or a driver was stopped on purpose, \
+             relaunch the same driver on the same spec WITHOUT `--fresh` - `rigger run <spec> \
              --base <ref>`, in the background as before. Because the run lives in the \
              event log, not in the dead process, the conductor's own run-starting step adopts \
              the existing run instead of minting a new one: it replays the log, rebuilds its \
@@ -1025,7 +1037,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              runs none. `rigger release` ends any hold at once. No probe ends \
              one you declared with `rigger hold --reason <text>`: `rigger release` does, as do \
              the start of a new run and a `rigger run` run reaching done. A release with no hold \
-             open records nothing and says so.\n",
+             open records nothing and says so. A hold outlives its driver: a relaunched driver \
+             waits in it, so hold a run before stopping its driver any way but Ctrl-C.\n",
         ],
         "Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \

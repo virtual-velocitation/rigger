@@ -249,7 +249,7 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
 
 /// The variable that selects how a rigger invocation relaunches a run whose driver died: its
 /// `record:<path>` value appends a `relaunch <argv>` line to `<path>` in place of starting one.
-pub const RELAUNCH_ENV: &str = "RIGGER_RELAUNCH";
+pub use rigger::detached::RELAUNCH_ENV;
 
 /// The file the relaunches of this test's rigger invocations are recorded in ([`unfenced`]), so
 /// no rigger a test runs starts a detached driver unasked.

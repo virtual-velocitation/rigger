@@ -289,6 +289,7 @@ const ALLOW_LIST: &[Allowed] = &[
         &[
             "{verb}: --eventstore expects sqlite|kurrentdb, got {other:?}",
             "{verb}: unexpected second positional argument {arg:?}",
+            "run: --adopt names the run to adopt, --fresh begins a new on",
             "note: {} - until then the context graph answers as it stands",
             "note: graph.db passed over {} event(s) {by_cause}; {PASSED_O",
             "a rebuild under a later fold rule retries them",

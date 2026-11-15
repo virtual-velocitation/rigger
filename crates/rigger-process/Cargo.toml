@@ -3,7 +3,7 @@ name = "rigger-process"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's process adapters: the one process-spawn port, the directory-rooted reaper, the machine-wide build-slot budget, the ordered parallel map and the keep-awake adapter."
+description = "Rigger's process adapters: the one process-spawn port, the directory-rooted reaper, the machine-wide build-slot budget, the ordered parallel map, the keep-awake adapter, the detached start and the interrupt trigger."
 
 [lib]
 name = "rigger_process"
@@ -40,15 +40,19 @@ tokio = { version = "1", features = ["rt", "time"] }
 
 # The Windows keep-awake adapter's power request (spec 105), at the 0.61 line the lock already
 # resolves for rustix, tempfile and zbus: `PowerCreateRequest` takes its `REASON_CONTEXT` from
-# Threading and its context version from SystemServices. The macOS adapter declares no crate: it
+# Threading and its context version from SystemServices. The detached start's creation flags come
+# from Threading too, and the interrupt trigger's console control handler from Console. The macOS adapter declares no crate: it
 # reaches IOKit and CoreFoundation through `extern` declarations.
 # The gate socket's path rule (Unix domain sockets, so Unix alone): the SHA-256 of the canonical
 # repo root names the socket, from the `ring` the lock already resolves for the conductor.
 [target.'cfg(unix)'.dependencies]
 ring = "0.17"
+# The unix interrupt trigger's `SIGINT` handler: `signal`, and the async-signal-safe `ftruncate`
+# and `_exit` it calls, from the libc the lock already resolves for rustix's dependents.
+libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Console"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -46,7 +46,7 @@ If a unit will not pass, the fix belongs in the loop - the spec, the gate, the a
 
 ## Holding a run
 
-`rigger hold --reason <text>` holds the current run for you, the text recorded as the hold's reason: a run driven by `rigger run` launches no agent while a hold stands, a session already running finishes, and no probe ends your hold. It refuses, recording nothing, when no run is live: none has started, or the current run is done. `rigger release` ends the current run's hold, whichever writer declared it, an outage hold included, so the next launch goes at once instead of after the next probe. With no hold open it records nothing and says so.
+`rigger hold --reason <text>` holds the current run for you, the text recorded as the hold's reason: a run driven by `rigger run` launches no agent while a hold stands, a session already running finishes, and no probe ends your hold. It refuses, recording nothing, when no run is live: none has started, or the current run is done. `rigger release` ends the current run's hold, whichever writer declared it, an outage hold included, so the next launch goes at once instead of after the next probe. With no hold open it records nothing and says so. A hold outlives its driver: a driver that died is relaunched by the next `rigger` invocation in the project and waits in the hold, so a hold is how to keep a run from spending whatever ends its driver.
 
 ## Auto-integration on approve
 
