@@ -389,6 +389,11 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     if let Some(line) = dash_status_line(&dash_status) {
         println!("{line}");
     }
+    if let Some(line) =
+        relaunch::stopped_relaunch_line(&loc.dir, ledger::project(run_events)?.done())
+    {
+        println!("{line}");
+    }
 
     // The run-id header (spec 82, criterion 1's truncation authority): printed only when a
     // `RunStarted` is on the stream, so a legacy or run-less read stays exactly as bare as the

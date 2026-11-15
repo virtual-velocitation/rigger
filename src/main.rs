@@ -128,13 +128,13 @@ fn main() {
         usage();
         std::process::exit(2);
     }
-    // A RUN SURVIVES ITS DRIVER: every invocation but `run` relaunches the project's run whose
-    // driver died, before the verb, since a verb may end the process itself, or after the few
-    // verbs whose effect the relaunch must see.
+    // A RUN SURVIVES ITS DRIVER: the few checking verbs relaunch the project's run whose driver
+    // died, before the verb, since a verb may end the process itself, or after the verbs whose
+    // effect the relaunch must see; every other verb checks nothing.
     let verb = args[1].as_str();
-    let check_after = checks_after(verb);
-    if !check_after {
-        relaunch_a_dead_driver(&Site::here(), verb);
+    let check = check_point(&args[1..]);
+    if check == CheckPoint::Before {
+        relaunch_a_dead_driver(&Site::here(), false);
     }
     if let Some(code) = answer_help(&args[1], &args[2..]) {
         std::process::exit(code);
@@ -190,8 +190,8 @@ fn main() {
             1
         }
     };
-    if check_after {
-        relaunch_a_dead_driver(&Site::here(), verb);
+    if check == CheckPoint::After {
+        relaunch_a_dead_driver(&Site::here(), verb == "release");
     }
 
     std::process::exit(code);

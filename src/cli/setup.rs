@@ -225,7 +225,8 @@ fn init_project(
     // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
     // `.rigger/store` holds the code store's snapshots, a per-machine projection of the tree
     // that every graph read rewrites, and its facts memo, so left untracked they would read as a
-    // dirty tree.
+    // dirty tree. `.rigger/driver.out` is the output of the driver a check last relaunched, which
+    // each relaunch rewrites, ignored for the same reason.
     // Record WHICH patterns were appended so the summary reports the real gitignore change and
     // nothing it did not do.
     let mut gitignore_added = Vec::new();
@@ -234,6 +235,7 @@ fn init_project(
         ".rigger/dash.url",
         ".rigger/dash.marker",
         ".rigger/dash.attempt",
+        ".rigger/driver.out",
         ".rigger/store.conn",
         ".rigger/store",
     ] {

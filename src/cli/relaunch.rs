@@ -1,8 +1,13 @@
 //! A RUN SURVIVES ITS DRIVER: a live run's driver keeps a record of itself in the step lock it
-//! holds (`.rigger/step.lock`), and every other rigger invocation in the project, the session-start
-//! hook `rigger prime` among them, checks it. A record whose lock no driver holds is a driver that
-//! died, by a crash, a forced end, a hangup or a reboot, and the check relaunches it by adoption, in
-//! the background, as a hand `rigger run <spec> --base <ref>` would.
+//! holds (`.rigger/step.lock`), the binary it runs as among it, and four verbs invoked from the
+//! project's main checkout check it: the session-start hook `rigger prime`, `rigger status` read by
+//! a person (neither `--line` nor `--json`), `rigger release` and `rigger resume-unit`
+//! ([`check_point`]). No other verb checks, so none pays for it. A record whose lock no driver
+//! holds is a driver that died, by a crash, a forced end, a hangup or a reboot, and the check
+//! relaunches it by adoption, in the background, through the binary it recorded, as a hand
+//! `rigger run <spec> --base <ref>` would. The relaunched driver's stdout and stderr go to one
+//! file under the store (`.rigger/driver.out`, [`DRIVER_OUTPUT_FILE`]), what it would have said on
+//! the operator's terminal; each relaunch overwrites it and `rigger reset --runs` removes it.
 //!
 //! STOPPED ON PURPOSE is every end the driver itself sees: any return of `rigger run` after it
 //! took the step lock (done, escalated with nothing left, a halt, a refusal, an error), a panic
@@ -23,6 +28,9 @@ use super::*;
 use rigger::interrupt::{empty_on_interrupt, InterruptTrigger};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// The file under [`RIGGER_DIR`] a relaunched driver's stdout and stderr go to.
+pub(crate) const DRIVER_OUTPUT_FILE: &str = "driver.out";
+
 /// How long a relaunch is given to take the step lock before a check reads it as never started.
 const GRACE: Duration = Duration::from_secs(30);
 /// How long a relaunched driver must live for its death to be relaunched again: a driver that
@@ -40,6 +48,10 @@ struct DriverRecord {
     cwd: PathBuf,
     /// The arguments that relaunch the driver, `run` first, ending `--adopt <run>`.
     args: Vec<String>,
+    /// The path of the binary the driver runs as, the one a relaunch starts. A record an older
+    /// driver wrote names none, and is relaunched through the binary that checks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bin: Option<PathBuf>,
     /// The run the driver drives.
     run: String,
     /// When a check started a relaunch of this record, in seconds since the Unix epoch.
@@ -128,6 +140,7 @@ impl KeptRecord {
             dir: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
             cwd: cwd.to_path_buf(),
             args: relaunch_args(parsed, run),
+            bin: Some(PathBuf::from(running_executable())),
             run: run.to_string(),
             relaunched_at: None,
             revived_at,
@@ -180,26 +193,48 @@ fn relaunch_args(parsed: &RunArgs, run: &str) -> Vec<String> {
 /// How a check starts a relaunched driver: an interface, so a test records the relaunch it
 /// would start.
 trait Launcher {
-    /// Start `rigger <args>` in `cwd`, in the background: the started driver's pid.
-    fn launch(&self, args: &[String], cwd: &Path) -> std::io::Result<u32>;
+    /// Start the binary `bin` with `args` in `cwd`, in the background, its stdout and stderr in
+    /// the file at `output`: the started driver's pid.
+    fn launch(
+        &self,
+        bin: &Path,
+        args: &[String],
+        cwd: &Path,
+        output: &Path,
+    ) -> std::io::Result<u32>;
 }
 
-/// The host's launcher: the running binary, started detached ([`rigger::detached::start`]).
+/// The host's launcher: the binary, started detached ([`rigger::detached::start`]).
 struct DetachedLauncher;
 
 impl Launcher for DetachedLauncher {
-    fn launch(&self, args: &[String], cwd: &Path) -> std::io::Result<u32> {
-        rigger::detached::start(Path::new(&running_executable()), args, cwd)
+    fn launch(
+        &self,
+        bin: &Path,
+        args: &[String],
+        cwd: &Path,
+        output: &Path,
+    ) -> std::io::Result<u32> {
+        rigger::detached::start(bin, args, cwd, output)
     }
 }
 
 /// The recording launcher [`rigger::detached::RELAUNCH_ENV`]'s `record:<path>` selects: a launch
-/// appends `relaunch <args>` to `<path>` and starts nothing, its pid `0`.
+/// appends `relaunch <bin> <args>` to `<path>` and starts nothing, its pid `0`.
 struct RecordingLauncher(PathBuf);
 
 impl Launcher for RecordingLauncher {
-    fn launch(&self, args: &[String], _cwd: &Path) -> std::io::Result<u32> {
-        append_line(&self.0, &format!("relaunch {}", args.join(" ")))?;
+    fn launch(
+        &self,
+        bin: &Path,
+        args: &[String],
+        _cwd: &Path,
+        _output: &Path,
+    ) -> std::io::Result<u32> {
+        append_line(
+            &self.0,
+            &format!("relaunch {} {}", bin.display(), args.join(" ")),
+        )?;
         Ok(0)
     }
 }
@@ -220,21 +255,39 @@ fn launcher() -> Result<Box<dyn Launcher>, String> {
     }
 }
 
-/// Whether `verb`'s check runs after the verb rather than before it: the verbs that change what a
-/// relaunch would do (`hold`, `release`, `resume-unit`) or need the step lock a relaunched driver
-/// would take (`reset`, `setup`, `init`). `run` takes no check: it is the driver itself.
-pub(crate) fn checks_after(verb: &str) -> bool {
-    matches!(
-        verb,
-        "hold" | "release" | "resume-unit" | "reset" | "setup" | "init"
-    )
+/// When an invocation checks for a dead driver ([`check_point`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CheckPoint {
+    /// Not at all.
+    Never,
+    /// Before its verb, since the verb may end the process itself.
+    Before,
+    /// After its verb, whose effect the relaunch must see.
+    After,
 }
 
-/// THE RELAUNCH ENTRY: relaunch the run whose driver died in the project at `site`, the one
-/// call every invocation and a login start make. Silent unless it relaunched a driver or left a
-/// run stopped, which it says on stderr in one line. An invocation inside a run (a spawn, a
-/// gate), and `rigger run` itself (`verb`), check nothing.
-pub(crate) fn relaunch_a_dead_driver(site: &Site, verb: &str) {
+/// When the invocation `args` (the verb first) checks for a dead driver: the session start
+/// (`prime`) and `status` read by a person, neither `--line` nor `--json`, before their verb;
+/// `release` and `resume-unit`, which change what a relaunch does, after it; every other verb,
+/// never, so it pays nothing for the check.
+pub(crate) fn check_point(args: &[String]) -> CheckPoint {
+    let rest = args.get(1..).unwrap_or_default();
+    match args.first().map(String::as_str) {
+        Some("prime") => CheckPoint::Before,
+        Some("status") if !rest.iter().any(|a| a == "--line" || a == "--json") => {
+            CheckPoint::Before
+        }
+        Some("release" | "resume-unit") => CheckPoint::After,
+        _ => CheckPoint::Never,
+    }
+}
+
+/// THE RELAUNCH ENTRY: relaunch the run whose driver died in the project at `site`, the one call
+/// the checking verbs make ([`check_point`]); `released` is whether it follows the operator's
+/// `rigger release`. Silent unless it relaunched a driver or left a run stopped, which it says on
+/// stderr in one line. An invocation inside a run (a spawn, a gate) or from a linked worktree
+/// checks nothing.
+pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
     let inside_a_run = [
         rigger::driver::SPAWN_ENV,
         rigger::gate::STORE_FENCE_ENV,
@@ -242,7 +295,7 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, verb: &str) {
     ]
     .iter()
     .any(|var| std::env::var_os(var).is_some());
-    if verb == "run" || inside_a_run {
+    if inside_a_run {
         return;
     }
     let root = site.project_root();
@@ -253,7 +306,8 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, verb: &str) {
     let dir = root.join(RIGGER_DIR);
     let check = Check {
         now: now_secs(),
-        released: verb == "release",
+        released,
+        in_main_checkout: &|| main_worktree_or_refuse(site, "").is_ok(),
         operator_holds: &|run| operator_holds(site, run),
     };
     let said = launcher().map_or_else(Some, |launcher| revive(&dir, &check, launcher.as_ref()));
@@ -278,24 +332,30 @@ fn operator_holds(site: &Site, run: &str) -> bool {
 }
 
 /// What one check reads beside the step lock: the time it runs at, whether it follows the
-/// operator's `rigger release`, and whether an operator hold stands on a run.
+/// operator's `rigger release`, whether it was invoked from the project's main checkout, and
+/// whether an operator hold stands on a run.
 struct Check<'a> {
     now: u64,
     released: bool,
+    in_main_checkout: &'a dyn Fn() -> bool,
     operator_holds: &'a dyn Fn(&str) -> bool,
 }
 
 /// Relaunch the driver whose record the step lock under `dir` holds when no driver holds that
 /// lock, as `check` reads it, through `launcher`: the line to say, `None` when there is nothing to
-/// say. Every failure to read the lock is read as nothing to do. A run an operator hold stands on
-/// is left as it is, its record untouched, since the hold is its stop. A check that follows the
-/// operator's release relaunches a driver that died soon after its own relaunch too, since the
-/// operator asked for it.
+/// say. Every failure to read the lock is read as nothing to do. A check invoked from a linked
+/// worktree, and a run an operator hold stands on, leave the record as it is: the hold is the
+/// run's stop. A check that follows the operator's release relaunches a driver that died soon
+/// after its own relaunch too, since the operator asked for it. A record whose binary is gone is
+/// cleared, naming the command that relaunches it by hand.
 fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> {
     let now = check.now;
     let path = dir.join("step.lock");
     // An absent or empty record is the common case, answered with no lock taken and no file made.
     if std::fs::metadata(&path).map_or(true, |m| m.len() == 0) {
+        return None;
+    }
+    if !(check.in_main_checkout)() {
         return None;
     }
     let lock = HeldLock::try_take(&path).ok()??;
@@ -345,6 +405,21 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             record.by_hand()
         ));
     }
+    let bin = record
+        .bin
+        .clone()
+        .unwrap_or_else(|| PathBuf::from(running_executable()));
+    if !bin.is_file() {
+        let _ = lock.replace("");
+        return Some(format!(
+            "rigger: the binary {} that drove run {} no longer exists, so rigger left the run \
+             stopped; relaunch it by hand: {}",
+            bin.display(),
+            record.run,
+            record.by_hand()
+        ));
+    }
+    let output = dir.join(DRIVER_OUTPUT_FILE);
     let stamped = DriverRecord {
         relaunched_at: Some(now),
         ..record.clone()
@@ -353,23 +428,51 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
     lock.replace(&stamp).ok()?;
     // The lock is released before the launch, so the relaunched driver can take it.
     drop(lock);
-    Some(match launcher.launch(&record.args, &record.cwd) {
-        Ok(pid) => format!(
+    Some(
+        match launcher.launch(&bin, &record.args, &record.cwd, &output) {
+            Ok(pid) => format!(
             "rigger: no driver was alive for this project's run {}, so rigger relaunched it in \
-             the background (pid {pid}): {}. Follow it with `rigger status`.",
+             the background (pid {pid}), its output in {}: {}. Follow it with `rigger status`.",
             record.run,
+            output.display(),
             record.by_hand()
         ),
-        Err(e) => {
-            if let Ok(Some(lock)) = HeldLock::try_take(&path) {
-                let _ = lock.replace("");
-            }
-            format!(
+            Err(e) => {
+                if let Ok(Some(lock)) = HeldLock::try_take(&path) {
+                    let _ = lock.replace("");
+                }
+                format!(
                 "rigger: no driver was alive for this project's run {}, and its relaunch failed \
                  ({e}); relaunch it by hand: {}",
                 record.run,
                 record.by_hand()
             )
-        }
-    })
+            }
+        },
+    )
+}
+
+/// What `rigger status` says of a relaunched driver that ended before its run did: the file its
+/// output went to, while that file holds something, no driver holds the step lock under
+/// `rigger_dir` and the run is not `done`; `None` otherwise.
+pub(crate) fn stopped_relaunch_line(rigger_dir: &Path, done: bool) -> Option<String> {
+    let output = rigger_dir.join(DRIVER_OUTPUT_FILE);
+    if done || std::fs::metadata(&output).map_or(true, |m| m.len() == 0) {
+        return None;
+    }
+    HeldLock::try_take(&rigger_dir.join("step.lock")).ok()??;
+    Some(format!(
+        "relaunched driver: ended before its run did; what it said is in {}",
+        output.display()
+    ))
+}
+
+/// Remove the relaunched driver's output under `rigger_dir`, `rigger reset --runs`'s reap of
+/// it: whether there was one.
+pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
+    match std::fs::remove_file(rigger_dir.join(DRIVER_OUTPUT_FILE)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
 }

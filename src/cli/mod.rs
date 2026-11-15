@@ -71,7 +71,7 @@ pub(crate) use hygiene::*;
 pub(crate) use observe::*;
 pub(crate) use prime::*;
 use relaunch::KeptRecord;
-pub(crate) use relaunch::{checks_after, relaunch_a_dead_driver};
+pub(crate) use relaunch::{check_point, relaunch_a_dead_driver, CheckPoint};
 pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
@@ -3557,7 +3557,12 @@ fn watch_poll_over(
 
     // No `rigger run` holds the step lock right now: a non-blocking try-lock that succeeds
     // means free. Dropped immediately either way, so this probe never holds the lock.
-    let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
+    // A driver's record left in the free lock is read through the held probe.
+    let step_lock = acquire_step_lock(&loc.dir).ok();
+    let step_lock_free = step_lock.is_some();
+    let driver_record_left = step_lock
+        .and_then(|lock| lock.contents().ok())
+        .is_some_and(|record| !record.is_empty());
 
     // Each currently-parked spawn's heartbeat-marker age (spec 19a), through the builder
     // `cmd_status` calls but on wall clock, with no hold subtracted: `DeadDriver` needs every
@@ -3725,6 +3730,7 @@ fn watch_poll_over(
         now,
         last_event_at,
         step_lock_free,
+        driver_record_left,
         wave_liveness_ages: &wave_liveness_ages,
         dash,
         run_started_at,
@@ -4543,7 +4549,9 @@ fn scratch_footprint(
 /// (spec 77 Design, "the store and its backups"; every backup this codebase creates names
 /// itself `<store-file>.bak-<suffix>`), and every other file whose name starts with
 /// `events.db`, `graph.db`, or `progress.db` (covering each store file's own `-shm`/`-wal`
-/// sidecars) is the live STORE. Neither category has a `dead_bytes` split or a reclaim
+/// sidecars) is the live STORE, as is the relaunched driver's output
+/// ([`relaunch::DRIVER_OUTPUT_FILE`], which each relaunch overwrites and `rigger reset --runs`
+/// removes). Neither category has a `dead_bytes` split or a reclaim
 /// command - spec 77 Global Constraint 4 forbids rigger from ever auto-deleting either, so
 /// accounting only reports their size.
 fn store_and_backup_bytes(rigger_dir: &Path) -> (u64, u64) {
@@ -4564,6 +4572,7 @@ fn store_and_backup_bytes(rigger_dir: &Path) -> (u64, u64) {
         } else if name.starts_with("events.db")
             || name.starts_with("graph.db")
             || name.starts_with("progress.db")
+            || name == relaunch::DRIVER_OUTPUT_FILE
         {
             store += size;
         }
@@ -7944,6 +7953,7 @@ mod tests {
         write_file(&rigger_dir.join("events.db-wal"), &[0u8; 10]);
         write_file(&rigger_dir.join("graph.db"), &[0u8; 50]);
         write_file(&rigger_dir.join("progress.db"), &[0u8; 5]);
+        write_file(&rigger_dir.join(relaunch::DRIVER_OUTPUT_FILE), &[0u8; 3]);
         write_file(&rigger_dir.join("events.db.bak-20260810"), &[0u8; 200]);
         write_file(&rigger_dir.join("events.db.bak-20260810-wal"), &[0u8; 20]);
         write_file(&rigger_dir.join("workflow.yml"), &[0u8; 7]); // neither category
@@ -7952,8 +7962,8 @@ mod tests {
 
         assert_eq!(
             store,
-            100 + 10 + 50 + 5,
-            "every store file + sidecar, no backups"
+            100 + 10 + 50 + 5 + 3,
+            "every store file + sidecar and the relaunched driver's output, no backups"
         );
         assert_eq!(backups, 200 + 20, "every .bak- file, no live store files");
     }
