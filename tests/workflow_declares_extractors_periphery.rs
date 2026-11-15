@@ -3,7 +3,8 @@
 //! each malformed one, naming `extractors.<name>`; `rigger graph build` builds the code store
 //! under the fingerprint of the declaration in force - the bundled grammars' with none or with one
 //! that fails the check, said on stderr, and one of its own for each declaration - so a store
-//! built under one declaration is not in force under another.
+//! built under one declaration is not in force under another; and a graph read builds the store it
+//! answers from under the same fingerprint.
 
 use crate::common;
 use common::cli::{run_rigger, temp_project, write_scaffold};
@@ -51,7 +52,9 @@ fn rigger_validate_accepts_each_well_formed_extractors_declaration_and_refuses_e
 }
 
 #[cfg(feature = "symbols")]
-use common::cli::{head_of, repository_code_store, run_rigger_ok, source_repository};
+use common::cli::{
+    head_of, repository_code_store, run_rigger_ok, show_lines, source_repository, SOURCE,
+};
 #[cfg(feature = "symbols")]
 use common::fixtures::git_ok;
 #[cfg(feature = "symbols")]
@@ -198,4 +201,48 @@ fn a_store_built_under_one_declaration_is_not_in_force_under_another() {
         "{}: read again, the declaration finds its own store in force",
         DECLARATIONS[0]
     );
+}
+
+/// Given a committed repository no graph build has stored, when the operator writes a workflow
+/// declaring no extractor, or one declaring some, and reads the graph, the read builds the store it
+/// answers from under the fingerprint of the declaration in force - with a declaration, its own
+/// and never the bundled grammars'.
+#[cfg(feature = "symbols")]
+#[test]
+fn a_graph_read_builds_its_store_under_the_declaration_in_force() {
+    let bundled = fingerprint(&FactsExtractor, &ProductionGroupings);
+    let query = format!("{}::product", SOURCE.0);
+    let rows = [
+        (NO_EXTRACTORS_KEY.to_string(), true),
+        (workflow_declaring_extractors(DECLARATIONS[0]), false),
+    ];
+    for (workflow, bundled_stored) in rows {
+        let (_dir, root) = source_repository();
+        write_scaffold(&root, &[], &workflow);
+        assert_eq!(
+            show_lines(&root, &query).first(),
+            Some(&format!("show {query}")),
+            "{workflow:?}: the read answers the definition"
+        );
+        let read = repository_code_store(&root)
+            .in_force()
+            .expect("the store reads")
+            .map(|stamp| (stamp.fingerprint, stamp.tip.commit));
+        assert_eq!(
+            read,
+            Some((
+                fingerprint(&ProjectExtractor::of(&root), &ProductionGroupings),
+                Some(head_of(&root))
+            )),
+            "{workflow:?}: the store the read built is in force and describes the head"
+        );
+        assert_eq!(
+            Store::new(&root)
+                .current(bundled)
+                .expect("the store reads")
+                .is_some(),
+            bundled_stored,
+            "{workflow:?}: the read stored the bundled grammars' store only with no declaration"
+        );
+    }
 }
