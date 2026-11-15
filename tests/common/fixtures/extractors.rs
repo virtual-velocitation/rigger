@@ -3,24 +3,50 @@
 //! malformed one with its exact refusal. One table, read by the domain check's test, by
 //! `Config::validate`'s and by the code store's read of the declared map.
 
-/// The `extractors:` mappings the check accepts: none, one, a name of each character class, a
-/// name mixing them with two extensions and a run holding a space, and one extractor listing its
-/// extension twice.
-pub const ACCEPTED_EXTRACTORS: [&str; 5] = [
+/// The `extractors:` mappings the check accepts: none, one, a name of each character class at
+/// each end of its range, a name mixing them with two extensions and a run holding a space, and
+/// one extractor listing its extension twice.
+pub const ACCEPTED_EXTRACTORS: [&str; 6] = [
     "{}",
     "{ zig: { extensions: [zig], run: zig-tags } }",
     "{ a: { extensions: [a], run: x }, '0': { extensions: [b], run: x }, \
      _: { extensions: [c], run: x }, '-': { extensions: [d], run: x } }",
+    "{ z: { extensions: [z], run: x }, '9': { extensions: [n], run: x } }",
     "{ lua_5-4: { extensions: [lua, luau], run: lua facts.lua } }",
     "{ zig: { extensions: [zig, zig], run: zig-tags } }",
 ];
 
 /// Each malformed `extractors:` mapping, one defect a row, with the exact refusal naming the
-/// extractor it lies in.
-pub const EXTRACTOR_REFUSALS: [(&str, &str); 16] = [
+/// extractor it lies in; the names one byte outside each end of the name's character ranges
+/// included.
+pub const EXTRACTOR_REFUSALS: [(&str, &str); 22] = [
     (
         "{ '': { extensions: [zig], run: zig-tags } }",
         "extractors.: a name is one or more of a-z, 0-9, '_' and '-'",
+    ),
+    (
+        "{ '`': { extensions: [zig], run: zig-tags } }",
+        "extractors.`: a name is one or more of a-z, 0-9, '_' and '-'",
+    ),
+    (
+        "{ '{': { extensions: [zig], run: zig-tags } }",
+        "extractors.{: a name is one or more of a-z, 0-9, '_' and '-'",
+    ),
+    (
+        "{ '/': { extensions: [zig], run: zig-tags } }",
+        "extractors./: a name is one or more of a-z, 0-9, '_' and '-'",
+    ),
+    (
+        "{ ':': { extensions: [zig], run: zig-tags } }",
+        "extractors.:: a name is one or more of a-z, 0-9, '_' and '-'",
+    ),
+    (
+        "{ '^': { extensions: [zig], run: zig-tags } }",
+        "extractors.^: a name is one or more of a-z, 0-9, '_' and '-'",
+    ),
+    (
+        "{ ',': { extensions: [zig], run: zig-tags } }",
+        "extractors.,: a name is one or more of a-z, 0-9, '_' and '-'",
     ),
     (
         "{ Zig: { extensions: [zig], run: zig-tags } }",
