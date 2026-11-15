@@ -49,11 +49,22 @@ extern crate self as rigger;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/host.rs"]
 mod host_fixtures;
+/// The fake buses the Linux keep-awake adapter's tests share with this crate's graphical-session
+/// suite, compiled where that adapter is.
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/keep_awake.rs"]
+mod keep_awake_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[path = "../../../tests/common/fixtures/manifest.rs"]
 mod manifest_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::host_fixtures::*;
+    #[cfg(target_os = "linux")]
+    pub use crate::keep_awake_fixtures::*;
     pub use crate::manifest_fixtures::*;
 }

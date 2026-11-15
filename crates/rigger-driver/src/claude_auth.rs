@@ -13,12 +13,8 @@ use serde::Deserialize;
 
 use crate::reaped_child::ReapedChild;
 
-/// The long-lived agent token's variable, the one the agent CLI reads.
-const AGENT_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
-
-/// The variable an operator sets in rigger's environment to give the long-lived token to spawned
-/// agents only: the agent CLI ignores it, so the operator's own sessions keep their login.
-pub const RIGGER_AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
+use rigger_domain::spawn::AGENT_TOKEN_VAR;
+pub use rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR;
 
 /// The ONE credential rule every launch of the agent binary applies (unit spawns of both hosts,
 /// the hold probe's canary and the login reads `claude auth status` that the probe and `rigger

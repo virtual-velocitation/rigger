@@ -94,6 +94,10 @@ mod spawn {
 extern crate self as rigger;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/build_env.rs"]
+mod build_env_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/canary.rs"]
 mod canary_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
@@ -167,6 +171,7 @@ use {
 use fold_fixtures::{decision_json, event_of, folds, placed_at};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
+    pub use crate::build_env_fixtures::*;
     pub use crate::canary_fixtures::*;
     pub use crate::conductor_fixtures::*;
     pub use crate::config_fixtures::*;

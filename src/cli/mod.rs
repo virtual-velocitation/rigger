@@ -25,8 +25,7 @@ use rigger::eventstore::{
     sqlite::Store, Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
-    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateRequirements,
-    GateResult, ProbeFault, Runner, STORE_FENCE_ENV,
+    BuildEnv, ExecRunner, Gate, GateRequirements, GateResult, ProbeFault, Runner, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::instructions;
@@ -38,7 +37,7 @@ use rigger::reap::reap_then_remove_dir;
 use rigger::run as runscope;
 use rigger::run_store as runscope_store;
 use rigger::sidecar::{PeerDecision, Sidecar};
-use rigger::spawn::SpawnEvent;
+use rigger::spawn::{SpawnEvent, CONN_ENV};
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, subprocess, watch};
 use rigger_worktree_git::discover::{discover, rev_parse, Location, Repository};
@@ -547,9 +546,6 @@ fn graph_to_read<E>(
     let note = existed.then(|| rebuild_owed_note_of(&graph)).flatten();
     Ok((graph, note))
 }
-
-/// The environment variable carrying the server's full connection string (§48 rung 2).
-const CONN_ENV: &str = "KURRENTDB_CONN";
 
 /// The [`CONN_ENV`] connection string from the environment, treating an empty value as unset so
 /// a stray `KURRENTDB_CONN=` never selects the server with no address.
@@ -4467,7 +4463,7 @@ const FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED: &str =
 /// the operator verb that does.
 const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
     "no run or spawn owns this, so nothing reclaims it automatically - `rigger reset \
-     --build-cache` reclaims it now; point future manual scratch/CARGO_TARGET_DIR at the \
+     --build-cache` reclaims it now; point future manual scratch/your build cache variable at the \
      `rigger_scratch` tool's own container instead of a hardcoded agent-scratch/<name> literal";
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix
@@ -5299,8 +5295,8 @@ const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 /// must abort the whole hook (including anything chained after it), because a commit that is
 /// about to be refused should not go on to run further gates.
 fn precommit_block() -> String {
-    // A raw-string template so the shell indentation is exact and readable; the sentinels and
-    // the build cache variable are injected from their single-source consts.
+    // A raw-string template so the shell indentation is exact and readable; the sentinels are
+    // injected from their single-source consts.
     const TEMPLATE: &str = r#"__BEGIN__
 # Check rigger's code-derived docs before THIS commit lands: run `rigger docs --check`, which
 # renders every docs output in memory, writes nothing, and prints `fresh <path>` or
@@ -5396,7 +5392,7 @@ newest_of_tier() {
         fi
     done
 }
-newest_of_tier "${__BUILD_CACHE_ENV__:+$__BUILD_CACHE_ENV__/release/rigger}" "${__BUILD_CACHE_ENV__:+$__BUILD_CACHE_ENV__/debug/rigger}"
+newest_of_tier "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/release/rigger}" "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}"
 [ -n "$rigger_bin" ] || newest_of_tier "./target/release/rigger" "./target/debug/rigger"
 [ -n "$rigger_bin" ] || newest_of_tier "$relocated_release" "$relocated_debug"
 [ -n "$rigger_bin" ] || newest_of_tier "$unit_release" "$unit_debug"
@@ -5477,7 +5473,6 @@ __END__
     TEMPLATE
         .replace("__BEGIN__", PRECOMMIT_BEGIN)
         .replace("__END__", PRECOMMIT_END)
-        .replace("__BUILD_CACHE_ENV__", rigger_domain::spawn::BUILD_CACHE_ENV)
 }
 
 /// Find the byte offset of the first occurrence of `needle` in `haystack`, or `None`. Lets the

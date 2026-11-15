@@ -4,14 +4,16 @@
 //! root or a template root the operator owns - named by an absolute path or a relative one - as
 //! the template root, in a project matching a set, a project matching none, a project that already
 //! has a workflow, and on a rerun - the gates and the implementer persona the implement and
-//! checkin stages run among it - that `rigger validate` accepts both fresh scaffolds, that a
-//! command naming no template root scaffolds no gate and keeps what an earlier root scaffolded,
-//! and that every argument and template root a command refuses is refused before any write.
+//! checkin stages run among it - that `rigger validate` accepts both fresh scaffolds, that a fresh
+//! scaffold bounds every spawn's wall clock so `rigger validate` prints no wall-clock warning over
+//! it, that a command naming no template root scaffolds no gate and keeps what an earlier root
+//! scaffolded, and that every argument and template root a command refuses is refused before any
+//! write.
 
 use crate::common;
 use common::cli::{
     cargo_project, failure_line, loaded_config, refusal_line, run_rigger, run_rigger_ok,
-    temp_project,
+    temp_project, wall_clock_advisory_lines,
 };
 use common::fixtures::{
     agents_beside, dir_snapshot, sorted_dir_names, stage_agents, write_files,
@@ -312,6 +314,51 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
                 unintended"),
         "stderr:\n{warned}"
     );
+}
+
+/// Given a fresh project, when the operator runs `rigger setup` naming no template root, `rigger
+/// init` naming this repository's root - matching no set, or the Rust set beside a root
+/// `Cargo.toml` - or `rigger setup` naming that root beside a root `Cargo.toml`, then the written
+/// workflow loads with `defaults.max_wall_clock` 3600 and `rigger validate` accepts it printing no
+/// wall-clock warning: a new scaffold bounds every spawn, whatever its template root. `rigger init`
+/// naming no template root is driven through `rigger validate` by `tests/cli.rs`'
+/// `validate_warns_when_an_unbounded_default_leaves_a_gating_role_unswept`.
+#[test]
+fn a_fresh_scaffold_bounds_every_spawn_so_validate_prints_no_wall_clock_warning() {
+    type Row = (&'static str, fn() -> tempfile::TempDir, Command);
+    let rows: [Row; 4] = [
+        ("setup, no template root", temp_project, setup_with_no_root),
+        (
+            "init, this repository's root, matching no set",
+            temp_project,
+            init,
+        ),
+        (
+            "init, this repository's root, matching the Rust set",
+            cargo_project,
+            init,
+        ),
+        (
+            "setup, this repository's root, matching the Rust set",
+            cargo_project,
+            setup,
+        ),
+    ];
+    for (label, project, verb) in rows {
+        let dir = project();
+        verb(dir.path());
+        let (_out, err, ok) = run_rigger(dir.path(), &["validate"]);
+        assert_eq!(
+            (
+                ok,
+                wall_clock_advisory_lines(&err),
+                loaded_config(dir.path()).workflow.defaults.max_wall_clock,
+            ),
+            (true, vec![], 3600),
+            "{label}: validate accepts the scaffold, warns of no unbounded wall clock, and the \
+             workflow bounds every spawn; stderr:\n{err}"
+        );
+    }
 }
 
 /// Given a project holding `Cargo.toml`, when the operator runs `rigger init` or `rigger setup`

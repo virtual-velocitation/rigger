@@ -103,11 +103,6 @@ jobs:
             ${{ github.workspace }}/.fastembed_cache
       - name: install OpenBLAS (turbovec is in the default build)
         run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      # The build-environment-authority test asserts against the REAL PATH: it requires the
-      # `sccache` wrapper it configures to exist. Install it as a prebuilt binary.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: sccache
       - name: fmt
         run: cargo fmt --all --check
       - name: clippy (turbovec, default features)

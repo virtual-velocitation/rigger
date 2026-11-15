@@ -12,12 +12,14 @@
 
 #![allow(dead_code, unused_imports)]
 
+mod build_env;
 mod caller_sources;
 mod config;
 mod csharp_definition_sources;
 mod docs_overlay;
 mod events;
 mod extraction_tree;
+mod extractors;
 mod git;
 mod go_definition_sources;
 mod graph;
@@ -40,12 +42,14 @@ mod scratch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod shown;
 mod spawn;
+pub use build_env::*;
 pub use caller_sources::*;
 pub use config::*;
 pub use csharp_definition_sources::*;
 pub use docs_overlay::*;
 pub use events::*;
 pub use extraction_tree::*;
+pub use extractors::*;
 pub use git::*;
 pub use go_definition_sources::*;
 pub use graph::*;

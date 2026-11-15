@@ -30,10 +30,12 @@ rustix = { version = "1.1", default-features = false, features = ["std", "proces
 # The build budget's cross-process advisory slot lock (`flock` under the hood).
 fs2 = "0.4"
 
-# The Linux keep-awake adapter's logind client (spec 105): zbus's async API on its tokio
-# integration, driven by a current-thread tokio runtime each acquire builds and shuts down before
-# it returns, so the adapter adds no executor sized by core count. `tokio` is a direct edge to the
-# tokio the store already links.
+# The Linux keep-awake adapter's bus clients (specs 105 and 125): logind's on the system bus and,
+# in a graphical session, the desktop portal's on the session bus, both zbus's async API on its
+# tokio integration. Each runs on a current-thread tokio runtime of its own: logind's is built and
+# shut down within the acquire, and the portal's lives on the one thread the guard holds, so the
+# adapter adds no executor sized by core count. `tokio` is a direct edge to the tokio the store
+# already links.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.15", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "time"] }
@@ -58,7 +60,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 tempfile = "3"
 
 # The Linux keep-awake adapter's tests: the live test's own calls to logind, over zbus's blocking
-# API, and the fake logind a private bus serves, built as a bus implementation.
+# API, and the fake logind and fake portal private buses serve, built as a bus implementation.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 zbus = { version = "5.15", default-features = false, features = ["blocking-api", "bus-impl", "tokio"] }
 

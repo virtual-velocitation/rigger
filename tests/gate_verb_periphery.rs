@@ -16,11 +16,7 @@ use crate::common;
 
 use std::path::Path;
 
-use common::cli::{
-    emit_refused, identified_git_project, run_rigger_envs, seed_store, with_run_store,
-    write_workflow,
-};
-use common::fixtures::git_ok;
+use common::cli::{committed_project, emit_refused, run_rigger_envs, with_run_store};
 use rigger::eventstore::{Direction, Event};
 use rigger::run::STREAM;
 
@@ -28,33 +24,6 @@ use rigger::run::STREAM;
 /// no slot from a machine-wide pool.
 const GATE_G: &str =
     "build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"true\"\n    kind: core\n";
-
-/// A committed project declaring gate `g`, its store seeded and its rigger state ignored, and the
-/// scratch directory its gate runs under.
-fn committed_project() -> (tempfile::TempDir, tempfile::TempDir) {
-    let root = identified_git_project();
-    seed_store(root.path());
-    write_workflow(root.path(), GATE_G);
-    std::fs::write(root.path().join(".gitignore"), ".rigger/\n").unwrap();
-    std::fs::write(root.path().join("README"), "fixture\n").unwrap();
-    git_ok(root.path(), &["add", "-A"]);
-    git_ok(root.path(), &["commit", "-q", "-m", "fixture"]);
-    (root, short_scratch())
-}
-
-/// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
-/// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
-/// only about a hundred bytes, which a long `TMPDIR` would exceed.
-fn short_scratch() -> tempfile::TempDir {
-    #[cfg(unix)]
-    let base = Path::new("/tmp");
-    #[cfg(not(unix))]
-    let base = std::env::temp_dir();
-    tempfile::Builder::new()
-        .prefix("rg")
-        .tempdir_in(base)
-        .expect("a scratch dir")
-}
 
 /// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
 /// (stdout, stderr, success).
@@ -85,7 +54,7 @@ fn gate_verdicts(root: &Path) -> Vec<Event> {
 #[test]
 fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_nothing() {
     for stale in [false, true] {
-        let (root, scratch) = committed_project();
+        let (root, scratch) = committed_project(GATE_G);
         #[cfg(unix)]
         if stale {
             // A listener dropped without unlinking leaves a socket file nothing answers, at the
@@ -126,7 +95,7 @@ fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_n
 #[test]
 fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
     use rigger::gate_channel::{GateChannel, GateReply, GateRequest};
-    let (root, scratch) = committed_project();
+    let (root, scratch) = committed_project(GATE_G);
     let path = rigger::gate_socket::socket_path_under(scratch.path(), root.path()).unwrap();
     let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
     let answer = |request: GateRequest| GateReply::Refused {
@@ -154,7 +123,7 @@ fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
 #[test]
 fn the_gate_verb_asks_the_socket_its_driver_addresses_and_refuses_a_relative_address() {
     use rigger::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
-    let (root, scratch) = committed_project();
+    let (root, scratch) = committed_project(GATE_G);
     let path = scratch.path().join("addressed").join("gate.sock");
     let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
     let answer = |request: GateRequest| GateReply::Refused {
@@ -200,7 +169,7 @@ fn the_gate_verb_asks_the_socket_its_driver_addresses_and_refuses_a_relative_add
 #[cfg(unix)]
 #[test]
 fn a_runtime_directory_too_long_for_a_socket_is_named_and_the_verb_runs_for_information_only() {
-    let (root, scratch) = committed_project();
+    let (root, scratch) = committed_project(GATE_G);
     let long = scratch.path().join("r".repeat(120));
     std::fs::create_dir_all(&long).unwrap();
     let (out, err, ok) = run_rigger_envs(
@@ -250,7 +219,7 @@ fn the_gate_verb_refuses_an_uncommitted_tree_and_an_undeclared_gate_recording_no
     ];
     for case in cases {
         let why = case.why;
-        let (root, scratch) = committed_project();
+        let (root, scratch) = committed_project(GATE_G);
         if case.dirty {
             std::fs::write(root.path().join("loose.rs"), "loose\n").unwrap();
         }
@@ -270,7 +239,7 @@ fn the_gate_verb_refuses_an_uncommitted_tree_and_an_undeclared_gate_recording_no
 
 #[test]
 fn rigger_emit_refuses_a_gate_verdict_so_no_worker_can_forge_one() {
-    let (root, scratch) = committed_project();
+    let (root, scratch) = committed_project(GATE_G);
     let body = r#"{"gate":"g","pass":true,"flaky":false,"evidence":"PASS"}"#;
     let (_out, err, ok) = rigger_in(root.path(), scratch.path(), &["emit", "GateVerdict", body]);
     assert!(!ok, "rigger emit GateVerdict exits non-zero");

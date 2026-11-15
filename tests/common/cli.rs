@@ -84,6 +84,34 @@ pub fn identified_git_project() -> tempfile::TempDir {
     dir
 }
 
+/// An [`identified_git_project`] whose workflow file is `workflow`, its store seeded and its
+/// rigger state ignored, committed clean (a gate refuses an uncommitted tree), and the
+/// [`short_scratch`] directory its gate runs under.
+pub fn committed_project(workflow: &str) -> (tempfile::TempDir, tempfile::TempDir) {
+    let root = identified_git_project();
+    seed_store(root.path());
+    write_workflow(root.path(), workflow);
+    std::fs::write(root.path().join(".gitignore"), ".rigger/\n").unwrap();
+    std::fs::write(root.path().join("README"), "fixture\n").unwrap();
+    super::fixtures::git_ok(root.path(), &["add", "-A"]);
+    super::fixtures::git_ok(root.path(), &["commit", "-q", "-m", "fixture"]);
+    (root, short_scratch())
+}
+
+/// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
+/// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
+/// only about a hundred bytes, which a long `TMPDIR` would exceed.
+pub fn short_scratch() -> tempfile::TempDir {
+    #[cfg(unix)]
+    let base = Path::new("/tmp");
+    #[cfg(not(unix))]
+    let base = std::env::temp_dir();
+    tempfile::Builder::new()
+        .prefix("rg")
+        .tempdir_in(base)
+        .expect("a scratch dir")
+}
+
 /// A throwaway project directory that is deliberately NOT a git repo, so the conductor drives
 /// a repo-less run (no worktrees, no run branch).
 pub fn temp_repoless_project() -> tempfile::TempDir {
@@ -1724,6 +1752,25 @@ pub fn open_graph_with_its_log(root: &Path) -> Projector {
     })
 }
 
+/// The source file every [`source_repository`] starts with.
+pub const SOURCE: (&str, &str) = ("src/lib.rs", "pub fn product() {}\n");
+
+/// A repository holding [`SOURCE`] in a commit, its root canonical.
+pub fn source_repository() -> (tempfile::TempDir, PathBuf) {
+    use super::fixtures::{git_commit_all, init_repo, write_files};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    init_repo(&root);
+    write_files(&root, &[(SOURCE.0, SOURCE.1)]);
+    git_commit_all(&root, "source");
+    (dir, root)
+}
+
+/// The commit the checkout at `root` has checked out.
+pub fn head_of(root: &Path) -> String {
+    super::fixtures::git_out(root, &["rev-parse", "HEAD"])
+}
+
 /// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
 /// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
 /// code store to.
@@ -2563,6 +2610,22 @@ pub fn bloat_advisory_naming(events: usize) -> String {
 /// in order: the log-bloat advisory, and nothing else of validate's.
 pub fn bloat_lines(stderr: &str) -> Vec<&str> {
     lines_where(stderr, |line| line.contains("rigger reset --derived"))
+}
+
+/// The line `rigger validate` warns on when `defaults.max_wall_clock` is unbounded (`0`) and the
+/// gating roles `roles` (each quoted, joined by `, `) carry no per-agent bound.
+pub fn wall_clock_advisory_naming(roles: &str) -> String {
+    format!(
+        "warning: defaults.max_wall_clock is unbounded (0) and gating role(s) {roles} carry no \
+         per-agent bound, so a hung gating agent is never swept and the run stalls silently. Set \
+         defaults.max_wall_clock (seconds), or a per-agent max_wall_clock on those roles."
+    )
+}
+
+/// Every line naming gating roles among `stderr`, what `rigger validate` wrote there, in order:
+/// the unbounded wall-clock advisory, and nothing else of validate's.
+pub fn wall_clock_advisory_lines(stderr: &str) -> Vec<&str> {
+    lines_where(stderr, |line| line.contains("gating role(s)"))
 }
 
 /// The lines of `text` that `keep` admits, in order: the one picker of the lines a command
