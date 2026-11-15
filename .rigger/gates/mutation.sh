@@ -104,9 +104,10 @@
 # testcontainers at the operator's rootless podman when no DOCKER_HOST is set. A project
 # without that file sweeps exactly as before.
 #
-# THE BASELINE STAYS ON. A checkin stage that lists `test` before `mutation` (as the Rust gate
-# template set's comment shows it wired) proves nothing to this gate: the conductor runs every listed gate whatever the earlier
-# ones returned and exports no record of their verdicts to a gate command - so nothing here can
+# THE BASELINE STAYS ON. A checkin stage that lists `test` before `mutation` (as
+# docs/handbook/authoring-loops.md shows it wired) proves nothing to this gate: the conductor
+# runs every listed gate whatever the earlier ones returned and exports no record of their
+# verdicts to a gate command - so nothing here can
 # confirm the mutated packages are green on this tree. The baseline (cargo-mutants runs it over
 # the mutated packages only: seconds, not minutes) is that confirmation; only the by-name
 # rerun, which follows it on the same tree, skips its own.

@@ -1,4 +1,5 @@
-# The Rust gate template set: rigger init applies it when Cargo.toml is at the project root.
+# The Rust gate template set: rigger init --template <dir> applies it, from
+# <dir>/scaffold/rust/, when Cargo.toml is at the project root.
 detect: [Cargo.toml]
 gates: |
   fmt: { run: "cargo fmt --all --check", kind: core }
