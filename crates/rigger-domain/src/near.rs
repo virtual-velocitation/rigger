@@ -342,6 +342,9 @@ struct State<'v> {
     /// Each (place, id) whose code assertions were read, in the order read.
     #[cfg(test)]
     read_code: Vec<(u32, String)>,
+    /// Each place whose proof calls a test's attachment passed over, in the order passed.
+    #[cfg(test)]
+    proof_passes: Vec<u32>,
 }
 
 /// The code half of a view under one filter, resolved only near the ids it is asked about. Its
@@ -376,6 +379,8 @@ impl<'v> Near<'v> {
                 provers: FxHashMap::default(),
                 #[cfg(test)]
                 read_code: Vec::new(),
+                #[cfg(test)]
+                proof_passes: Vec::new(),
                 attached: FxHashMap::default(),
             }),
             whole: OnceLock::new(),
@@ -741,6 +746,8 @@ impl<'v> State<'v> {
         let won = match self.code_place(file) {
             Some(place) => {
                 let calls = self.proofs_in(place);
+                #[cfg(test)]
+                self.proof_passes.push(place);
                 let targets: BTreeSet<&str> = (calls.iter())
                     .filter(|c| c.caller.as_deref() == Some(test))
                     .map(|c| c.target.as_str())
@@ -1840,5 +1847,46 @@ mod tests {
             assert_eq!(files, Vec::<String>::new(), "{}", cluster.id);
         }
         assert!(counted > 0, "the fixture attaches tests to a cluster");
+    }
+
+    /// A cluster's node attaches each test from one pass over its file's proof calls, however
+    /// many of that file's tests prove a member: two tests of `tests/it.rs` call `run`, which
+    /// two communities hold, and each place's calls are passed over once, settled or not.
+    #[test]
+    fn a_cluster_s_tests_are_attached_from_one_pass_over_each_file_s_proofs() {
+        let base = view();
+        let mut files: Vec<FileFacts> = (base.files())
+            .map(|f| base.file(f.path).expect("listed").into_owned())
+            .collect();
+        let it = files.iter_mut().find(|f| f.path == "tests/it.rs").unwrap();
+        let second = it.defs.len() as u32;
+        let mut draws = it.defs[0].clone();
+        (draws.local, draws.leaf, draws.line, draws.end_line) =
+            ("it_draws".into(), "it_draws".into(), 10, 10);
+        it.defs.push(draws);
+        let mut calls_run = it.mentions[0].clone();
+        (calls_run.enclosing, calls_run.line) = (Some(second), 11);
+        it.mentions.push(calls_run);
+        let two_tests =
+            || FactsView::new(stamp(), files.clone()).with_groupings(base.groupings().clone());
+        for settled in [false, true] {
+            let view = Counting {
+                view: two_tests(),
+                reads: Mutex::new(Vec::new()),
+                settles: settled.then(|| Settles::of(two_tests())),
+            };
+            let near = Near::new(&view, ViewFilter::default());
+            let place = near.state().places["tests/it.rs"];
+            let groupings = view.groupings();
+            for cluster in groupings.communities.iter().chain(&groupings.concepts) {
+                near.node(&cluster.id).unwrap();
+            }
+            let passes = std::mem::take(&mut near.state().proof_passes);
+            let mut once = passes.clone();
+            once.sort_unstable();
+            once.dedup();
+            assert_eq!(passes.len(), once.len(), "settled {settled}: {passes:?}");
+            assert!(passes.contains(&place), "settled {settled}: {passes:?}");
+        }
     }
 }
