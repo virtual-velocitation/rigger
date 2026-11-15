@@ -459,27 +459,44 @@ fn a_fresh_scaffold_seeds_the_test_author_it_declares_and_keeps_a_projects_own()
 }
 
 /// Given a project `rigger init` scaffolded with no template root, which since holds a persona of
-/// its own, `my-author`, and no longer holds `sdet-author.md`, when the operator reruns `rigger
-/// init`, then the seed is written back only for the test author the workflow declares: still
-/// declaring `sdet-author`, the rerun writes the seed byte for byte and reports it, and `rigger
-/// validate` accepts eight agents; declaring `my-author`, it writes nothing, prints only the
-/// already-initialized line, and `rigger validate` accepts seven. `my-author.md` is kept either
+/// its own in `my-author.md` and no longer holds `sdet-author.md`, when the operator reruns
+/// `rigger init`, then the seed is written back only for the test author the workflow declares
+/// and no agent already defines: still declaring `sdet-author` beside a persona whose id is
+/// `my-author`, the rerun writes the seed byte for byte and reports it, and `rigger validate`
+/// accepts eight agents; declaring `my-author`, or declaring `sdet-author` beside a persona whose
+/// id is `sdet-author` under its other file name, it writes nothing, prints only the
+/// already-initialized line, and `rigger validate` accepts seven. `my-author.md` is kept every
 /// way.
 #[test]
 fn a_rerun_writes_back_the_seed_only_for_the_test_author_the_workflow_declares() {
-    const MINE: &str = "---\nid: my-author\n---\nThe project's own test author.\n";
-    // (the test author the workflow declares, the rerun's stdout but its starter-fleet pointer,
-    // the sdet-author.md the project holds after it, the agents `rigger validate` counts).
+    // (the test author the workflow declares, the id my-author.md defines, the rerun's stdout but
+    // its starter-fleet pointer, the sdet-author.md the project holds after it, the agents `rigger
+    // validate` counts).
     let rows = [
         (
             "sdet-author",
+            "my-author",
             vec!["scaffolded .rigger/agents/{sdet-author.md}"],
             Some(sdet_author_seed()),
             8,
         ),
-        ("my-author", vec![ALREADY_INITIALIZED.trim_end()], None, 7),
+        (
+            "my-author",
+            "my-author",
+            vec![ALREADY_INITIALIZED.trim_end()],
+            None,
+            7,
+        ),
+        (
+            "sdet-author",
+            "sdet-author",
+            vec![ALREADY_INITIALIZED.trim_end()],
+            None,
+            7,
+        ),
     ];
-    for (declared, printed, persona, agents) in rows {
+    for (declared, id, printed, persona, agents) in rows {
+        let mine = format!("---\nid: {id}\n---\nThe project's own test author.\n");
         let dir = temp_project();
         let root = dir.path();
         init_with_no_root(root);
@@ -491,7 +508,7 @@ fn a_rerun_writes_back_the_seed_only_for_the_test_author_the_workflow_declares()
         std::fs::write(&workflow, declaring).unwrap();
         let agents_dir = root.join(".rigger/agents");
         std::fs::remove_file(agents_dir.join("sdet-author.md")).unwrap();
-        write_files(&agents_dir, &[("my-author.md", MINE)]);
+        write_files(&agents_dir, &[("my-author.md", mine.as_str())]);
 
         let out = init_with_no_root(root);
         let (validated, err, ok) = run_rigger(root, &["validate"]);
@@ -508,11 +525,12 @@ fn a_rerun_writes_back_the_seed_only_for_the_test_author_the_workflow_declares()
             (
                 printed,
                 persona,
-                MINE.to_string(),
+                mine,
                 true,
                 vec![format!("config valid: {agents} agents, 4 stages, 0 gates").as_str()],
             ),
-            "the workflow declaring {declared}: stdout:\n{out}\nstderr:\n{err}"
+            "the workflow declaring {declared}, my-author.md defining {id}: stdout:\n{out}\n\
+             stderr:\n{err}"
         );
     }
 }
