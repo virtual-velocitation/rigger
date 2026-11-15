@@ -565,27 +565,24 @@ fn dash_read<T>(
     tests: Tests,
     read: impl FnOnce(&dyn ContextGraph) -> Result<T, contextgraph::Error>,
 ) -> Result<(T, Label), String> {
-    dash_open(
-        graph_db,
-        identity,
-        tests,
-        community::DEFAULT_RESOLUTION,
-        |graph| {
-            let answer = read(graph.as_ref())?;
-            Ok((answer, graph.stamp_label()))
-        },
-    )
+    dash_open(graph_db, identity, |reader| {
+        let graph = reader
+            .open_at(ViewFilter { tests }, community::DEFAULT_RESOLUTION)
+            .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
+        let answer =
+            read(graph.as_ref()).map_err(|e| format!("the graph cannot be read: {}", e.0))?;
+        Ok((answer, graph.stamp_label()))
+    })
 }
 
-/// [`dash_read`] with `read` given the open graph itself, to answer and label as it consumes it,
-/// the groupings at `resolution` read beside the stored ones ([`ReadGraph::open_at`]).
+/// What `read` answers of the reader of the record graph at `graph_db`, compared with the
+/// worktree of the checkout whose `.rigger/` holds it ([`ReadGraph`]); the reason, when no graph
+/// was built there or it cannot be opened or read, so the dash states it in place of a graph.
 fn dash_open<T>(
     graph_db: &str,
     identity: &str,
-    tests: Tests,
-    resolution: f64,
-    read: impl FnOnce(Box<dyn ContextGraph + '_>) -> Result<(T, Label), contextgraph::Error>,
-) -> Result<(T, Label), String> {
+    read: impl FnOnce(&ReadGraph) -> Result<T, String>,
+) -> Result<T, String> {
     let path = Path::new(graph_db);
     if !path.exists() {
         return Err(format!("no graph has been built at {graph_db}"));
@@ -599,10 +596,7 @@ fn dash_open<T>(
     let site = Site::of(checkout);
     let read_graph = ReadGraph::new(&records, &site)
         .map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
-    let graph = read_graph
-        .open_at(ViewFilter { tests }, resolution)
-        .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
-    read(graph).map_err(|e| format!("the graph cannot be read: {}", e.0))
+    read(&read_graph)
 }
 
 /// What a dash graph read describes: the label of its open, or why it read no graph.
@@ -635,10 +629,14 @@ fn dash_read_whole_graph(
     resolution: f64,
 ) -> dash::GraphRead {
     let ((graph, withheld, tests_hidden), label) =
-        described(dash_open(graph_db, identity, tests, resolution, |g| {
-            let tests_hidden = g.hidden_tests()?.len();
-            let read = g.into_whole()?;
-            Ok(((read.graph, read.withheld, tests_hidden), read.label))
+        described(dash_open(graph_db, identity, |reader| {
+            let open = reader
+                .open_whole_at(ViewFilter { tests }, resolution)
+                .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
+            let read = open
+                .into_whole()
+                .map_err(|e| format!("the graph cannot be read: {}", e.0))?;
+            Ok(((read.graph, read.withheld, read.tests_hidden), read.label))
         }));
     dash::GraphRead {
         graph,

@@ -57,6 +57,9 @@ pub struct WholeRead {
     /// The nodes the read withheld and the edges it dropped for an end it withheld: empty when
     /// nothing is withheld, so a view of the answer can count the withheld hits it would have held.
     pub withheld: Graph,
+    /// The test code entities the filter hides, less any withheld: what a reader counts as test
+    /// hits it does not show ([`ContextGraph::hidden_tests`]).
+    pub tests_hidden: usize,
     /// What the read describes.
     pub label: Label,
 }
@@ -397,6 +400,10 @@ pub trait CodeHalf: Neighbors {
     fn concept_members(&self, concept: &str) -> Vec<String>;
     /// The test entities the filter hides, in id order.
     fn hidden_tests(&self) -> Vec<Node>;
+    /// How many of [`Self::hidden_tests`] `keep` keeps, counted without copying them.
+    fn hidden_test_count(&self, keep: &dyn Fn(&Node) -> bool) -> usize {
+        self.hidden_tests().iter().filter(|n| keep(n)).count()
+    }
     /// Every distinct name a code entity of the half may carry, in order, perhaps with names
     /// none carries ([`ContextGraph::entity_names`]).
     fn entity_names(&self) -> Vec<String>;
@@ -494,6 +501,13 @@ impl Whole {
     /// groupings at `resolution` when that is not the stored grain: computed from this view as
     /// the grouping reports compute them ([`computed_at`]), and never stored.
     pub(crate) fn at(view: &dyn CodeView, filter: ViewFilter, resolution: f64) -> Self {
+        Self::read(view, filter, resolution, true)
+    }
+
+    /// [`Self::at`], reading the test calls landing on a placeholder that a callers walk reaches
+    /// ([`CodeGraph::placeholder_calls`]) only when `walked`: a read that is never walked leaves
+    /// them unresolved.
+    fn read(view: &dyn CodeView, filter: ViewFilter, resolution: f64, walked: bool) -> Self {
         let computed = computed_at(view, resolution);
         let grains: Vec<&Groupings> = std::iter::once(view.groupings())
             .chain(computed.as_ref())
@@ -509,7 +523,12 @@ impl Whole {
         }
         let code = Indexed::new(graph, Vec::new());
         let mut placeholder_callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (leaf, caller) in resolved.placeholder_calls {
+        let placeholder_calls = if walked {
+            code_graph.placeholder_calls()
+        } else {
+            Vec::new()
+        };
+        for (leaf, caller) in placeholder_calls {
             placeholder_callers.entry(leaf).or_default().push(caller);
         }
         for callers in placeholder_callers.values_mut() {
@@ -596,6 +615,9 @@ impl CodeHalf for Whole {
     }
     fn hidden_tests(&self) -> Vec<Node> {
         self.hidden_tests.clone()
+    }
+    fn hidden_test_count(&self, keep: &dyn Fn(&Node) -> bool) -> usize {
+        self.hidden_tests.iter().filter(|n| keep(n)).count()
     }
     fn entity_names(&self) -> Vec<String> {
         let shown = (self.code).held(
@@ -768,7 +790,8 @@ impl<'r> Composed<'r> {
         honesty: Honesty,
         resolution: f64,
     ) -> Result<WholeOpen<'r>, Error> {
-        Self::at(records, view, filter, honesty, resolution).map(WholeOpen)
+        let code = Whole::read(view, filter, resolution, false);
+        Self::over(records, code, &view.stamp().tip, honesty).map(WholeOpen)
     }
 }
 
@@ -849,6 +872,15 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
     /// grouping's are the files it summarises).
     fn withholds(&self, node: &Node) -> bool {
         self.stale && self.code.holds(&node.id) && self.withholds_code(node)
+    }
+
+    /// How many test entities [`ContextGraph::hidden_tests`] answers, counted without copying
+    /// them.
+    fn hidden_test_count(&self) -> usize {
+        if self.label.compared == Compared::Uncomparable {
+            return 0;
+        }
+        self.code.hidden_test_count(&|n| !self.withholds_code(n))
     }
 
     /// Whether `node`, a node of the code half shown or hidden, is withheld because the worktree
@@ -1254,12 +1286,14 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
     /// The whole read in two phases: what withholding reads of the code half beside its graph
     /// first, then the graph moved out of the half and merged with the record half's.
     fn into_whole(mut self: Box<Self>) -> Result<WholeRead, Error> {
+        let tests_hidden = self.hidden_test_count();
         let withheld = self.withheld_groupings();
         let code = self.code.take_whole()?;
         let (graph, withheld) = self.whole_over(code, &withheld)?;
         Ok(WholeRead {
             graph,
             withheld,
+            tests_hidden,
             label: self.stamp_label(),
         })
     }
@@ -1829,7 +1863,8 @@ mod tests {
     /// opened for walks and for its whole graph alone under each filter, THEN only the open for
     /// walks hiding tests reads `helper`'s definitions (the callers a walk reaches through its
     /// placeholder), the open showing tests reads them once for the call's edge, and both opens
-    /// answer the same whole graph.
+    /// answer the same whole graph and count the hidden tests [`ContextGraph::hidden_tests`]
+    /// lists.
     #[test]
     fn a_whole_read_resolves_no_leaf_only_a_walk_reads() {
         let mut grouped = view(Some("c1"));
@@ -1879,6 +1914,15 @@ mod tests {
             let asked = counted.asked.lock().unwrap();
             let helper = asked.iter().filter(|leaf| *leaf == "helper").count();
             assert_eq!(helper, want, "{open} under {tests:?}: reads of helper");
+            let hidden = Composed::at(&records, &grouped, filter, exact(), DEFAULT_RESOLUTION)
+                .unwrap()
+                .hidden_tests()
+                .unwrap()
+                .len();
+            assert_eq!(
+                read.tests_hidden, hidden,
+                "{open} under {tests:?}: the hidden tests counted"
+            );
             let graph = format!("{:?}", read.graph);
             let first = wholes
                 .entry(format!("{tests:?}"))

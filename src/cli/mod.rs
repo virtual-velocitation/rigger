@@ -2081,6 +2081,23 @@ impl ReadGraph<'_> {
         Ok(Box::new(self.composed_at(&head, filter, resolution)?))
     }
 
+    /// [`Self::open_at`] opened for its whole graph alone
+    /// ([`rigger_domain::composed::Composed::whole_at`]): the read of the dash's graph view.
+    pub(crate) fn open_whole_at(
+        &self,
+        filter: rigger_domain::code_view::ViewFilter,
+        resolution: f64,
+    ) -> Result<rigger_domain::composed::WholeOpen<'_>, contextgraph::Error> {
+        let head = self.head().map_err(contextgraph::Error)?;
+        rigger_domain::composed::Composed::whole_at(
+            self.records,
+            &*head.view,
+            filter,
+            Self::honesty(&head),
+            resolution,
+        )
+    }
+
     /// The graph composed over `head` under `filter`, the groupings at `resolution` beside the
     /// stored ones.
     fn composed_at(
