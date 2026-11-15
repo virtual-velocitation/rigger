@@ -2374,6 +2374,8 @@ mod tests {
     use crate::test_support::run_git;
     use crate::test_support::sorted_dir_names;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
+    use crate::test_support::MAX_PARALLEL_UNITS_DECLARED;
+    use crate::test_support::REFUSED_DECLARATIONS;
     use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
@@ -3126,11 +3128,12 @@ mod tests {
 
     /// `parse_template_set` refuses, naming the set key, a `set.yml` that fails to parse or
     /// lacks its `implementer`, a `gates` text that fails to parse, a stage list naming a gate
-    /// the `gates` text does not declare, an implementer persona that fails to parse and one
-    /// whose `id` is a scaffold seed's.
+    /// the `gates` text does not declare, an implementer persona that fails to parse, one
+    /// whose `id` is a scaffold seed's, and an `env` declaring each entry the build environment's
+    /// one check refuses, with that check's refusal.
     #[test]
     fn parse_template_set_refuses_naming_the_set_key() {
-        let refusal = |set| parse_template_set(&synthetic(set)).map(|_| ()).unwrap_err();
+        let refusal = |set: &str| parse_template_set(&synthetic(set)).map(|_| ()).unwrap_err();
         let bad_set_yml = refusal("detect: [a]\nimplement: []\nchecking: []\ngates: \"\"\n");
         assert!(
             bad_set_yml.starts_with("gate template set synthetic: ")
@@ -3177,8 +3180,21 @@ mod tests {
                  implementer: \"---\\nid: implementer\\n---\\nBuild.\\n\"\n",
                 "gate template set synthetic: implementer id implementer is a scaffold seed's id",
             ),
-        ] {
-            assert_eq!(refusal(set), want, "{set}");
+        ]
+        .map(|(set, want)| (set.to_string(), want.to_string()))
+        .into_iter()
+        .chain(REFUSED_DECLARATIONS.iter().map(|refused| {
+            (
+                format!(
+                    "{}env: {{{:?}: {:?}}}\n",
+                    with_implementer!("detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n"),
+                    refused.name,
+                    refused.value
+                ),
+                format!("gate template set synthetic: env: {}", refused.message),
+            )
+        })) {
+            assert_eq!(refusal(set.as_str()), want, "{set}");
         }
     }
 
@@ -4617,10 +4633,14 @@ mod tests {
                 2,
                 "{label}: a freshly scaffolded workflow.yml must default max_parallel_units to 2"
             );
-            assert!(
-                workflow.contains("build cache") && workflow.contains("max_parallel_units: 2"),
+            assert_eq!(
+                (
+                    workflow.matches(MAX_PARALLEL_UNITS_DECLARED).count(),
+                    workflow.matches("max_parallel_units").count()
+                ),
+                (1, 1),
                 "{label}: the scaffold must carry a sizing comment (explaining the per-unit \
-                 build-cache cost) next to max_parallel_units, not a bare number"
+                 build-cache cost) right above max_parallel_units, not a bare number:\n{workflow}"
             );
         }
     }
@@ -4648,6 +4668,40 @@ mod tests {
         }
     }
 
+    /// The fresh projects a new scaffold is proven over, none initialized yet: with no template
+    /// root, and with this repository's root both matching no set and, beside a root
+    /// `Cargo.toml`, matching the Rust one. Each row is its label, the sets `init_project` is
+    /// handed, the project and the gate template set its scaffold names.
+    fn fresh_scaffold_projects() -> [(
+        &'static str,
+        Vec<TemplateSet>,
+        tempfile::TempDir,
+        Option<&'static str>,
+    ); 3] {
+        let rust_project = tempfile::tempdir().unwrap();
+        std::fs::write(rust_project.path().join("Cargo.toml"), "").unwrap();
+        [
+            (
+                "no template root",
+                Vec::new(),
+                tempfile::tempdir().unwrap(),
+                None,
+            ),
+            (
+                "this repository's root, matching no set",
+                repo_sets(),
+                tempfile::tempdir().unwrap(),
+                None,
+            ),
+            (
+                "this repository's root, matching the rust set",
+                repo_sets(),
+                rust_project,
+                Some("rust"),
+            ),
+        ]
+    }
+
     /// Spec 125's A NEW SCAFFOLD BOUNDS ITS SPAWNS: the workflow `init_project` writes into a fresh
     /// project - with no template root, and with this repository's root both matching no set and
     /// matching the Rust one - declares `defaults.max_wall_clock: 3600` once, right after
@@ -4660,26 +4714,7 @@ mod tests {
                                 spawn silent past it with no result is stopped and\n  # recorded \
                                 as an infrastructure fault, charging no attempt. 0 = unbounded.\n  \
                                 max_wall_clock: 3600\n";
-        let rows = [
-            ("no template root", Vec::new(), None, None),
-            (
-                "this repository's root, matching no set",
-                repo_sets(),
-                None,
-                None,
-            ),
-            (
-                "this repository's root, matching the rust set",
-                repo_sets(),
-                Some("Cargo.toml"),
-                Some("rust"),
-            ),
-        ];
-        for (label, sets, marker, gate_set) in rows {
-            let dir = tempfile::tempdir().unwrap();
-            if let Some(marker) = marker {
-                std::fs::write(dir.path().join(marker), "").unwrap();
-            }
+        for (label, sets, dir, gate_set) in fresh_scaffold_projects() {
             let report = init_project(dir.path(), &sets).expect("init must scaffold");
             let written =
                 std::fs::read_to_string(dir.path().join(RIGGER_DIR).join("workflow.yml")).unwrap();
@@ -4708,14 +4743,206 @@ mod tests {
         init_project(dir.path(), &repo_sets()).expect("a fresh project must scaffold cleanly");
         let workflow_path = dir.path().join(RIGGER_DIR).join("workflow.yml");
         let written = std::fs::read_to_string(&workflow_path).unwrap();
-        assert!(
-            written.contains("max_parallel_units: 2"),
-            "rigger init must write defaults.max_parallel_units: 2; got:\n{written}"
+        assert_eq!(
+            (
+                written.matches(MAX_PARALLEL_UNITS_DECLARED).count(),
+                written.matches("max_parallel_units").count()
+            ),
+            (1, 1),
+            "rigger init must write defaults.max_parallel_units: 2 right under its sizing \
+             comment; got:\n{written}"
         );
-        assert!(
-            written.contains("build cache"),
-            "rigger init must write the sizing comment alongside max_parallel_units; got:\n{written}"
-        );
+    }
+
+    /// Spec 125's THE SCAFFOLD DECLARES THE SET'S ENVIRONMENT: the workflow `init_project` writes
+    /// into a fresh project holds one `build:` block, under its comment, between the `defaults:`
+    /// block and the gate library's comment, its `env` the matched set's: with this repository's
+    /// root beside a root `Cargo.toml`, the Rust set's `CARGO_BUILD_JOBS` over `{jobs}` and
+    /// `CARGO_TARGET_DIR` over `{build_cache}`; with no template root or no set matching, `{}`.
+    /// The written tree loads declaring exactly those variables.
+    #[test]
+    fn init_project_writes_the_matched_sets_build_env() {
+        let rust_env = [
+            ("CARGO_BUILD_JOBS", "{jobs}"),
+            ("CARGO_TARGET_DIR", "{build_cache}"),
+        ];
+        for (label, sets, dir, gate_set) in fresh_scaffold_projects() {
+            let (env, declared): (&str, &[(&str, &str)]) = match gate_set {
+                Some("rust") => (
+                    "{CARGO_BUILD_JOBS: \"{jobs}\", CARGO_TARGET_DIR: \"{build_cache}\"}",
+                    &rust_env,
+                ),
+                None => ("{}", &[]),
+                Some(other) => panic!("{label}: no expected env for the set {other}"),
+            };
+            let block = format!(
+                "    adjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the \
+                 unit\n\n# The variables rigger exports to every gate and spawn, each a template \
+                 over\n# {{build_cache}} (the site's build cache) and {{jobs}} (build.jobs); none \
+                 by default.\nbuild:\n  env: {env}\n\n# A reusable library of gate commands, \
+                 referenced by name from the stages below.\n"
+            );
+            let report = init_project(dir.path(), &sets).expect("init must scaffold");
+            let written =
+                std::fs::read_to_string(dir.path().join(RIGGER_DIR).join("workflow.yml")).unwrap();
+            let cfg = config_store::load(dir.path().to_str().unwrap())
+                .unwrap_or_else(|e| panic!("{label}: the written tree must load: {e}"));
+            assert_eq!(
+                (
+                    report.gate_set.as_deref(),
+                    written.matches(&block).count(),
+                    written.matches("\nbuild:").count(),
+                    cfg.workflow.build.env,
+                ),
+                (
+                    gate_set,
+                    1,
+                    1,
+                    declared
+                        .iter()
+                        .map(|(name, value)| (name.to_string(), value.to_string()))
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                ),
+                "{label}: the written workflow declares the set's environment once, under its \
+                 comment:\n{written}"
+            );
+        }
+    }
+
+    /// Spec 125's THE SET'S ENVIRONMENT: `scaffold_workflow` writes a set's `env` under `build:`
+    /// as a YAML flow map in name order, `{}` for a set with no `env` or an empty one. Each name
+    /// is a plain scalar but for the nine spellings YAML reads as null or a boolean, which are
+    /// double-quoted. Each value is double-quoted, with `"`, `\`, each character below U+0020 or
+    /// in U+007F-U+009F, and U+2028, U+2029, U+FFFE and U+FFFF written `\uXXXX`. The rendering
+    /// loads back as exactly the set's variables.
+    #[test]
+    fn scaffold_workflow_renders_a_sets_env_as_a_flow_map_that_loads_back_as_written() {
+        // (why, the set.yml `env` value or none, the rendered `env` value, the loaded variables)
+        type Row = (String, Option<String>, String, Vec<(String, String)>);
+        let var = |name: &str, value: &str| vec![(name.to_string(), value.to_string())];
+        let mut rows: Vec<Row> = vec![
+            ("a set with no env".into(), None, "{}".into(), Vec::new()),
+            (
+                "an empty env".into(),
+                Some("{}".into()),
+                "{}".into(),
+                Vec::new(),
+            ),
+            (
+                "two variables declared out of name order".into(),
+                Some("{Z: z, A: a}".into()),
+                "{A: \"a\", Z: \"z\"}".into(),
+                vec![("A".into(), "a".into()), ("Z".into(), "z".into())],
+            ),
+            (
+                "an empty value".into(),
+                Some("{E: \"\"}".into()),
+                "{E: \"\"}".into(),
+                var("E", ""),
+            ),
+            (
+                "a value holding YAML's separators, a comment mark and literal braces".into(),
+                Some("{V: \"x, y: z # {{w}}\"}".into()),
+                "{V: \"x, y: z # {{w}}\"}".into(),
+                var("V", "x, y: z # {{w}}"),
+            ),
+        ];
+        for (name, quoted) in [
+            ("null", true),
+            ("Null", true),
+            ("NULL", true),
+            ("true", true),
+            ("True", true),
+            ("TRUE", true),
+            ("false", true),
+            ("False", true),
+            ("FALSE", true),
+            ("nUll", false),
+            ("tRUE", false),
+            ("nullable", false),
+            ("yes", false),
+            ("off", false),
+        ] {
+            let written = if quoted {
+                format!("{name:?}")
+            } else {
+                name.to_string()
+            };
+            rows.push((
+                format!("the name {name}"),
+                Some(format!("{{{name:?}: x}}")),
+                format!("{{{written}: \"x\"}}"),
+                var(name, "x"),
+            ));
+        }
+        for (c, escaped) in [
+            ('\u{0}', true),
+            ('\u{9}', true),
+            ('\u{a}', true),
+            ('\u{1f}', true),
+            (' ', false),
+            ('!', false),
+            ('"', true),
+            ('#', false),
+            ('[', false),
+            ('\\', true),
+            (']', false),
+            ('~', false),
+            ('\u{7f}', true),
+            ('\u{9f}', true),
+            ('\u{a0}', false),
+            ('\u{2027}', false),
+            ('\u{2028}', true),
+            ('\u{2029}', true),
+            ('\u{202a}', false),
+            ('\u{fffd}', false),
+            ('\u{fffe}', true),
+            ('\u{ffff}', true),
+            ('\u{10000}', false),
+        ] {
+            let code = c as u32;
+            let in_set = if code > 0xffff {
+                format!("\\U{code:08X}")
+            } else {
+                format!("\\u{code:04X}")
+            };
+            let rendered = if escaped {
+                format!("\\u{code:04X}")
+            } else {
+                c.to_string()
+            };
+            rows.push((
+                format!("U+{code:04X} between two spaces"),
+                Some(format!("{{V: \" {in_set} \"}}")),
+                format!("{{V: \" {rendered} \"}}"),
+                var("V", &format!(" {c} ")),
+            ));
+        }
+        for (why, env, rendered, loaded) in rows {
+            let set = format!(
+                "{}{}",
+                with_implementer!("detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n"),
+                env.map(|env| format!("env: {env}\n")).unwrap_or_default()
+            );
+            let spec =
+                parse_template_set(&synthetic(&set)).unwrap_or_else(|e| panic!("{why}: {e}"));
+            let workflow = scaffold_workflow(Some(&spec));
+            assert_eq!(
+                (
+                    workflow
+                        .matches(&format!("\nbuild:\n  env: {rendered}\n"))
+                        .count(),
+                    load_scaffold(Some(&spec), &workflow).workflow.build.env,
+                ),
+                (
+                    1,
+                    loaded
+                        .into_iter()
+                        .collect::<std::collections::BTreeMap<_, _>>()
+                ),
+                "{why}:\n{workflow}"
+            );
+        }
     }
 
     /// `rigger setup`/`init` NEVER clobbers an existing `workflow.yml` (spec 65 Design:

@@ -49,6 +49,7 @@ use common::cli::{
     run_on_arms_beside_with, run_recording, POLLS_BESIDE_A_RUN, RECORDING_WORKER_ARM,
 };
 use common::fixtures::file_len;
+use common::fixtures::MAX_PARALLEL_UNITS_DECLARED;
 use common::fixtures::{
     api_retry_lines, headless_progress_frame, recorded_argv, recorded_task, stand_in_launches,
     ERROR_RESULT, GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
@@ -13042,15 +13043,14 @@ fn a_fresh_scaffolded_init_writes_max_parallel_units_and_validates_through_the_b
 
     let workflow_path = root.join(".rigger").join("workflow.yml");
     let workflow = std::fs::read_to_string(&workflow_path).unwrap();
-    assert!(
-        workflow.contains("max_parallel_units: 2\n"),
-        "a fresh scaffold must declare max_parallel_units: 2 verbatim on disk; \
-         workflow.yml:\n{workflow}"
-    );
-    assert!(
-        workflow.contains("build cache"),
-        "the scaffold must carry the sizing comment next to max_parallel_units, not a \
-         bare unexplained number; workflow.yml:\n{workflow}"
+    assert_eq!(
+        (
+            workflow.matches(MAX_PARALLEL_UNITS_DECLARED).count(),
+            workflow.matches("max_parallel_units").count()
+        ),
+        (1, 1),
+        "a fresh scaffold must declare max_parallel_units: 2 verbatim on disk, right under the \
+         sizing comment, not a bare unexplained number; workflow.yml:\n{workflow}"
     );
 
     let path = real_path_dir_of("git");
