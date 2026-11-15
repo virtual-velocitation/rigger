@@ -49013,6 +49013,77 @@ mod tests {
         );
     }
 
+    /// Spec 126 (D01 through D02): over a whole run through the real conductor - a clean
+    /// approve, a reject that feeds a re-plan, and a planner unit superseding a baseline - the
+    /// log the run writes reads not done after every landing but the last and done after the
+    /// last, so no reader of the log claims done between one unit's landing and the next
+    /// unit's start.
+    #[test]
+    fn a_whole_run_reads_done_only_once_its_last_unit_lands() {
+        let crit_a = "the alpha module is implemented";
+        let crit_b = "the beta module is implemented";
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit_a}\n")).unwrap();
+        std::fs::write(dir.path().join("beta.rs"), format!("// {crit_b}\n")).unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let approving = CritiqueDriver::new(Vec::new());
+        let rejecting_once = CritiqueDriver::rejecting(Vec::new(), false);
+        let superseding = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id": "planner-unit-a", "agent": "worker", "criterion": crit_a,
+                       "gates": ["ok"]}),
+            )],
+            ..Stub::new()
+        };
+        // (case, the workflow, the driver)
+        let rows: [(&str, Config, &dyn AgentDriver); 3] = [
+            ("a clean decomposition approves", critique_cfg(), &approving),
+            (
+                "a reject feeds a re-plan that approves",
+                critique_cfg(),
+                &rejecting_once,
+            ),
+            (
+                "a planner unit supersedes a baseline",
+                supersede_cfg(),
+                &superseding,
+            ),
+        ];
+        for (case, cfg, driver) in rows {
+            let st = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                grounder: Some(&grep),
+                ..stub_deps(&st, driver, vec![crit_a.to_string(), crit_b.to_string()])
+            };
+            run_isolated(&cfg, &deps).unwrap();
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let landings: Vec<usize> = events
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+                .map(|(i, _)| i)
+                .collect();
+            assert!(
+                landings.len() >= 3,
+                "{case}: the run lands the planner and both criteria's units: {landings:?}"
+            );
+            let read: Vec<bool> = landings
+                .iter()
+                .map(|&i| ledger::project(&events[..=i]).unwrap().done())
+                .collect();
+            let mut expected = vec![false; landings.len() - 1];
+            expected.push(true);
+            assert_eq!(read, expected, "{case}: done after each landing, in order");
+            assert!(
+                ledger::project(&events).unwrap().done(),
+                "{case}: the finished run reads done"
+            );
+        }
+    }
+
     #[test]
     fn a_rule_7_or_8_defect_rejects_then_releases_on_the_revision() {
         // The gate's REAL value: a cross-unit ownership (rule 7) or open-disposition (rule
