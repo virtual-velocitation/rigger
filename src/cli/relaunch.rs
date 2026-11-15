@@ -476,3 +476,40 @@ pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
         Err(e) => Err(e),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A panic that unwinds the driver is a stop on purpose: the keeper's drop empties the record
+    /// as the unwind passes it, so no check relaunches the run.
+    #[test]
+    fn a_panic_that_unwinds_the_driver_empties_its_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let parsed = RunArgs {
+            store: None,
+            conn: None,
+            spec: Some("specs/a.md".into()),
+            fresh: false,
+            rebase_definition: false,
+            base: Some("main".into()),
+            adopt: None,
+        };
+        let unwound = std::panic::catch_unwind(|| {
+            let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
+            kept.keep(&parsed, dir.path(), dir.path(), "a-run");
+            let kept_record = kept.lock.contents().unwrap();
+            assert!(
+                kept_record.contains("a-run"),
+                "a live driver keeps its record: {kept_record:?}"
+            );
+            panic!("the driver panicked mid-run");
+        });
+        assert!(unwound.is_err(), "the driver's panic unwound it");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("step.lock")).unwrap(),
+            "",
+            "a panic that unwinds the driver leaves no record to relaunch"
+        );
+    }
+}
