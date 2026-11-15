@@ -58,33 +58,46 @@ const ROOTS_ENV: [&str; 6] = [
     rigger_worktree_git::discover::ACROSS_DEVICES,
 ];
 
-/// A credential's variable, and the reader that tells whether this process's environment sets it.
-type Credential = (&'static str, fn() -> bool);
-
-/// The credentials a driver can run on, each by the variable it is read from and the reader that
-/// tells it set: the login token its agents get, and the server event store's connection string.
-/// A driver records which it had set, never a value, and only a check whose environment sets each
-/// of them relaunches it, since a relaunch without one runs its agents on another login or drives
-/// another store.
-const CREDENTIALS_ENV: [Credential; 2] = [
-    (
-        rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
-        rigger::claude_auth::agent_token_set,
-    ),
-    (CONN_ENV, conn_set),
-];
-
-/// Whether this process's environment sets the store connection string ([`env_conn`]).
-fn conn_set() -> bool {
-    env_conn().is_some()
+/// A credential a driver can run on, by the variable it is named by.
+struct Credential {
+    /// The variable it is read from.
+    var: &'static str,
+    /// Whether this process's environment sets it.
+    set: fn() -> bool,
+    /// Whether a driver's own arguments give it, beside its environment.
+    given: fn(&RunArgs) -> bool,
+    /// How else than by its variable an operator passes it to a relaunch by hand, said after it.
+    or_else: &'static str,
 }
 
-/// The variables of [`CREDENTIALS_ENV`] this process's environment sets.
-fn credentials_set() -> BTreeSet<String> {
+/// The credentials a driver can run on: the login token its agents get, and the server event
+/// store's connection string, which `--conn` gives too. A driver records which it had, never a
+/// value, and only a check whose environment sets each of them relaunches it, since a relaunch
+/// without one runs its agents on another login or drives another store.
+const CREDENTIALS_ENV: [Credential; 2] = [
+    Credential {
+        var: rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
+        set: rigger::claude_auth::agent_token_set,
+        given: |_| false,
+        or_else: "",
+    },
+    Credential {
+        var: CONN_ENV,
+        set: || env_conn().is_some(),
+        given: |parsed| parsed.conn.as_deref().is_some_and(|conn| !conn.is_empty()),
+        or_else: ", or with `--conn` and the connection string added",
+    },
+];
+
+/// The variables of the [`CREDENTIALS_ENV`] this process has: those its environment sets, and,
+/// for a driver started with `parsed`, those its arguments give.
+fn credentials_had(parsed: Option<&RunArgs>) -> BTreeSet<String> {
     CREDENTIALS_ENV
         .iter()
-        .filter(|(_, set)| set())
-        .map(|(var, _)| (*var).to_string())
+        .filter(|credential| {
+            (credential.set)() || parsed.is_some_and(|parsed| (credential.given)(parsed))
+        })
+        .map(|credential| credential.var.to_string())
         .collect()
 }
 
@@ -232,7 +245,7 @@ impl KeptRecord {
             bin: Some(standing_executable()),
             run: run.to_string(),
             env: roots_env(),
-            credentials: credentials_set(),
+            credentials: credentials_had(Some(parsed)),
             relaunched_at: None,
             revived_at,
         };
@@ -416,7 +429,7 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
         released,
         in_main_checkout: &|| main_worktree_or_refuse(site, "").is_ok(),
         operator_holds: &|run| operator_holds(site, run),
-        credentials: credentials_set(),
+        credentials: credentials_had(None),
     };
     let said = launcher().map_or_else(Some, |launcher| revive(&dir, &check, launcher.as_ref()));
     if let Some(line) = said {
@@ -520,10 +533,14 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
         ));
     }
     if let Some(var) = record.credentials.difference(&check.credentials).next() {
+        let or_else = CREDENTIALS_ENV
+            .iter()
+            .find(|credential| credential.var == var)
+            .map_or("", |credential| credential.or_else);
         return Some(format!(
-            "rigger: the driver of run {} ran with {var} set, which this invocation's environment \
-             does not set, so rigger relaunched nothing; relaunch it by hand from an environment \
-             that sets it: {}",
+            "rigger: the driver of run {} ran on a credential this invocation's environment does \
+             not have ({var} unset), so rigger relaunched nothing; relaunch it by hand from an \
+             environment that sets {var}{or_else}: {}",
             record.run,
             record.by_hand()
         ));
@@ -718,6 +735,59 @@ mod tests {
             .map(|var| ((*var).to_string(), std::env::var_os(var)))
             .collect();
         assert_eq!(record.env, expected);
+    }
+
+    /// A driver given the store connection by `--conn` has had the store connection as surely as
+    /// one given it by its variable: its record names the variable, never the value, and a check
+    /// whose environment does not set the variable relaunches nothing, saying how the operator
+    /// passes the connection to a relaunch by hand. A flag left empty gives no connection.
+    #[test]
+    fn a_driver_given_the_connection_by_its_flag_is_relaunched_only_where_the_connection_is_set() {
+        let url = "kurrentdb://127.0.0.1:2113?tls=false";
+        let rows = [
+            ("a driver given no connection flag", None, false),
+            ("a driver given the connection by its flag", Some(url), true),
+            ("a driver given an empty connection flag", Some(""), false),
+        ];
+        for (name, conn, flagged) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let parsed = RunArgs {
+                store: None,
+                conn: conn.map(str::to_string),
+                spec: None,
+                fresh: false,
+                rebase_definition: false,
+                base: None,
+                adopt: Some("a-run".into()),
+            };
+            let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
+            kept.keep(&parsed, dir.path(), dir.path(), "a-run");
+            let text = kept.lock.contents().unwrap();
+            drop(kept);
+            std::fs::write(dir.path().join("step.lock"), &text).unwrap();
+            let record: DriverRecord = serde_json::from_str(&text).unwrap();
+            let mut expected = credentials_had(None);
+            if flagged {
+                expected.insert(CONN_ENV.to_string());
+            }
+            let check = Check {
+                now: now_secs(),
+                released: false,
+                in_main_checkout: &|| true,
+                operator_holds: &|_| false,
+                credentials: BTreeSet::new(),
+            };
+            let said = revive(dir.path(), &check, &EnvKeeper::default()).unwrap_or_default();
+            assert_eq!(
+                (
+                    record.credentials,
+                    said.contains(&format!("({CONN_ENV} unset)")) && said.contains("`--conn`"),
+                    text.contains(url) || said.contains(url),
+                ),
+                (expected, flagged, false),
+                "{name}; record: {text}; said: {said}"
+            );
+        }
     }
 
     /// A panic that unwinds the driver is a stop on purpose: the keeper's drop empties the record
