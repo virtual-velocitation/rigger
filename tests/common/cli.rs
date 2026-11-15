@@ -2718,16 +2718,33 @@ pub fn a_run_ended_mid_unit(
     envs: &[(&str, &str)],
     end: impl FnOnce(&mut Child),
 ) -> EndedRun {
-    let (fakebin, path_env) = install_fake_claude(HOLDING_WORKER_ARM);
+    a_run_ended_mid_units(cwd, scratch, envs, HOLDING_WORKER_ARM, &["started"], end)
+}
+
+/// [`a_run_ended_mid_unit`] over the fake host answering from `arms`, driven until each of
+/// `started`, a file its arms mark beside the fake, exists.
+pub fn a_run_ended_mid_units(
+    cwd: &Path,
+    scratch: &Path,
+    envs: &[(&str, &str)],
+    arms: &str,
+    started: &[&str],
+    end: impl FnOnce(&mut Child),
+) -> EndedRun {
+    let (fakebin, path_env) = install_fake_claude(arms);
     let mut all = fake_claude_env(&path_env, scratch).to_vec();
     all.extend_from_slice(envs);
     let (_state, child) = spawn_rigger(cwd, &["run"], &all);
     let mut owned = OwnedChild::new(child);
-    let started = unit_started(fakebin.path());
+    let marks: Vec<PathBuf> = started
+        .iter()
+        .map(|name| fakebin.path().join("bin").join(name))
+        .collect();
+    let all_started = || marks.iter().all(|mark| mark.exists());
     let ended = super::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
-        started.exists() || !matches!(owned.child().try_wait(), Ok(None))
+        all_started() || !matches!(owned.child().try_wait(), Ok(None))
     });
-    if !started.exists() {
+    if !all_started() {
         let outcome = ended.then(|| rigger_outcome(owned.into_child()));
         panic!("the run must reach its implementer; it ended with {outcome:?}");
     }

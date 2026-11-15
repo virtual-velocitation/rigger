@@ -1053,7 +1053,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // `rigger gate <id>` to it for as long as the run drives; every spawn is handed its path as
     // `RIGGER_GATE_SOCKET`. A socket that cannot be bound leaves the verb information-only. A
     // project with no repository has no unit worktree a request could come from, so it binds none.
-    let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
     let socket = (!root.is_empty())
         .then(|| {
             rigger::gate_socket::socket_path(Path::new(&root))
@@ -1070,23 +1069,34 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let channel = socket
         .as_ref()
         .map(|s| s as &dyn rigger::gate_channel::GateChannel);
-    let rs = beating(
-        &store,
-        &progress,
-        rigger::progress::SUPERVISOR_BEAT_INTERVAL,
-        || {
-            ticking(HOLD_POLL_INTERVAL, control_holds, || {
-                conductor::run_serving(&cfg, &deps, verdict_key, channel)
-            })
-        },
-    )?;
-    if held.parked_on_an_operator_hold() {
+    // A driver that parked a launch on an operator hold drives again once the hold is gone, since
+    // a release while it still runs relaunches nothing; it ends only while the hold stands. Each
+    // drive holds a verdict key of its own, as a relaunched driver would.
+    let rs = loop {
+        let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
+        let rs = beating(
+            &store,
+            &progress,
+            rigger::progress::SUPERVISOR_BEAT_INTERVAL,
+            || {
+                ticking(HOLD_POLL_INTERVAL, control_holds, || {
+                    conductor::run_serving(&cfg, &deps, verdict_key, channel)
+                })
+            },
+        )?;
+        if !held.take_parked_on_an_operator_hold() {
+            break rs;
+        }
+        if !an_operator_hold_stands(&folding) {
+            continue;
+        }
         step_record.leave_for_release();
         stderr_line(&format!(
             "{command}: run {run} is held by the operator, so this driver parked its next launch \
              and ended; `rigger release` relaunches it"
         ));
-    }
+        break rs;
+    };
     // A done run releases its open hold, an operator hold included (spec 105); any other exit
     // leaves it to the next supervisor's probes. A failed release never fails a run that already
     // succeeded: the hold stays open for `rigger release` or the next mint.
@@ -1207,6 +1217,13 @@ fn reclaim_orphans_at_start(
         }
         Err(e) => stderr_line(&format!("rigger run: orphan sweep skipped: {e}")),
     }
+}
+
+/// Whether an operator hold stands on the current run in `store`: true when the read fails, since
+/// a run not proved free of one launches nothing.
+fn an_operator_hold_stands(store: &dyn EventStore) -> bool {
+    runscope::read::read_current_hold(store, conductor::STREAM)
+        .map_or(true, |hold| hold.is_some_and(|hold| hold.operator))
 }
 
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).

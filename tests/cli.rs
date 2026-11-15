@@ -16034,6 +16034,138 @@ fn an_adopting_driver_under_an_operator_hold_ends_and_leaves_its_record_for_rele
     );
 }
 
+/// The units of [`CHAINED_UNIT_WORKFLOW`]: `alpha` and `bravo` stand alone and `charlie` needs
+/// `alpha`, so `charlie` launches while `bravo` may still be in flight.
+const CHAINED_UNITS: [&str; 3] = ["alpha", "bravo", "charlie"];
+
+/// A reviewless workflow of [`CHAINED_UNITS`], each its own stage and agent (`Do unit <name>.`),
+/// gated by an always-passing core gate and merged on a pass.
+const CHAINED_UNIT_WORKFLOW: &str = r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  alpha:
+    agent: worker-alpha
+    gates: [ok]
+    on_pass: merge
+  bravo:
+    agent: worker-bravo
+    gates: [ok]
+    on_pass: merge
+  charlie:
+    agent: worker-charlie
+    needs: [alpha]
+    gates: [ok]
+    on_pass: merge
+"#;
+
+/// Scaffold [`CHAINED_UNIT_WORKFLOW`] under `root`, with one agent per unit.
+fn write_chained_unit_workflow(root: &Path) {
+    let agents: Vec<(String, String)> = CHAINED_UNITS
+        .iter()
+        .map(|unit| {
+            (
+                format!("worker-{unit}"),
+                format!(
+                    "---\nid: worker-{unit}\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo unit \
+                     {unit}.\n"
+                ),
+            )
+        })
+        .collect();
+    let agents: Vec<(&str, &str)> = agents
+        .iter()
+        .map(|(id, body)| (id.as_str(), body.as_str()))
+        .collect();
+    common::cli::write_scaffold(root, &agents, CHAINED_UNIT_WORKFLOW);
+}
+
+/// The arms of [`CHAINED_UNITS`]' implementers: each marks `started-<unit>` beside the fake, waits
+/// for `release-<unit>` or `release` there, then writes a file of its own for its merge to land.
+fn chained_unit_arms() -> String {
+    CHAINED_UNITS
+        .iter()
+        .map(|unit| {
+            format!(
+                "  *\"Do unit {unit}.\"*)\n    : > \"$here/started-{unit}\"\n    while [ ! -e \
+                 \"$here/release-{unit}\" ] && [ ! -e \"$here/release\" ]; do sleep 0.05; done\n    \
+                 echo \"pub fn {unit}() {{}}\" > {unit}.rs\n    ;;\n"
+            )
+        })
+        .collect()
+}
+
+/// A HOLD RELEASED UNDER A LIVE PARKED DRIVER CONTINUES THE RUN: an adopting driver with two units
+/// in flight whose third unit parks on an operator hold, the hold released before the second unit
+/// finishes, drives the run to its end in the same process and clears its record.
+#[test]
+fn a_hold_released_while_a_parked_adopting_driver_runs_drives_the_run_to_its_end() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_chained_unit_workflow(root);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_units(
+        root,
+        &scratch,
+        &[],
+        &chained_unit_arms(),
+        &["started-alpha", "started-bravo"],
+        common::fixtures::cleanup,
+    );
+    let here = ended.fake.path().join("bin");
+    // The dead driver's implementers go on and end before the adopting driver launches its own.
+    std::fs::write(here.join("release"), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for mark in ["release", "started-alpha", "started-bravo"] {
+        std::fs::remove_file(here.join(mark)).unwrap();
+    }
+    let run = common::cli::current_run_id_of(root).expect("the run started");
+    let unit_started = |unit: &str| {
+        common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_STARTED)
+            .iter()
+            .any(|unit_started| unit_started.to_string().contains(unit))
+    };
+    let envs = common::cli::fake_claude_env(&ended.path_env, &scratch);
+    // 0: both units in flight, so hold and let alpha end; 1: charlie started, so give its
+    // launch time to park; 2: release the hold, then let bravo and charlie end.
+    let mut step = 0;
+    let mut settle = 0;
+    let outcome = common::cli::run_rigger_within(
+        root,
+        &["run", "--adopt", &run],
+        &envs,
+        POLLS_BESIDE_A_RUN,
+        |_| match step {
+            0 if here.join("started-alpha").exists() && here.join("started-bravo").exists() => {
+                hold_the_run(root);
+                std::fs::write(here.join("release-alpha"), "").unwrap();
+                step = 1;
+            }
+            1 if unit_started("charlie") => {
+                settle += 1;
+                if settle == 80 {
+                    let (out, err, ok) = run_rigger(root, &["release"]);
+                    assert!(ok, "the hold is released; stdout: {out}\nstderr: {err}");
+                    std::fs::write(here.join("release"), "").unwrap();
+                    step = 2;
+                }
+            }
+            _ => {}
+        },
+    );
+    std::fs::write(here.join("release"), "").unwrap();
+    let (out, err, ok) = outcome.expect("the adopting driver ends");
+    let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED).len();
+    assert_eq!(
+        (step, ok, integrated, common::cli::driver_record(root)),
+        (2, true, CHAINED_UNITS.len(), String::new()),
+        "the released run is driven to its end by the driver that parked, which clears its \
+         record; stdout: {out}\nstderr: {err}"
+    );
+}
+
 /// STOPPED ON PURPOSE: a driver the operator interrupts (Ctrl-C) clears its record as it ends, so
 /// the next invocation relaunches nothing.
 #[cfg(unix)]
