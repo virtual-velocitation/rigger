@@ -1679,15 +1679,63 @@ struct Compensation {
 }
 
 /// One parked-and-recorded first-green-wins speculation candidate (spec 13, unit 3) awaiting
-/// evaluation: its `lane` (which is also the attempt its gates/statuses/review key under), the
-/// isolated `wt` it committed into, that worktree's `dir`, and the `resolved_model` the worker
-/// reported (empty on a live driver that does not learn it). Held only inside
-/// [`RunCtx::run_speculation`] between the parallel-spawn phase and the winner-selection phase.
+/// evaluation: its `attempt` (the group's [`speculation_lane_base`] plus its lane, which its
+/// spawns, gates, statuses and review key under, while its worktree and branch stay keyed by
+/// the lane), the isolated `wt` it committed into, that worktree's `dir`, and the
+/// `resolved_model` the worker reported (empty on a live driver that does not learn it). Held
+/// only inside [`RunCtx::run_speculation`] between the parallel-spawn phase and the
+/// winner-selection phase.
 struct SpecCandidate {
-    lane: u32,
+    attempt: u32,
     wt: Worktree,
     dir: String,
     resolved_model: String,
+}
+
+/// The attempt a speculation group of `unit` numbers its lane 0 at, read from the run slice
+/// `events` at the group's start (spec 126, criterion 14). The group's RE-ENTRY BOUNDARY is the
+/// later in log order of the unit's latest `UnitResumed` (an operator's grant after its
+/// escalation) and its latest compensating `UnitFailed` ([`META_COMPENSATED`]). With no boundary
+/// the base is 0; past one it is one past the highest attempt over the spawn ids of the unit the
+/// run requested before it, so a re-entered lane never asks for an id a host would answer from
+/// the log, and a crash-resume of a parked group, which adds no boundary, keeps its ids. A
+/// crashed lane's request counts.
+fn speculation_lane_base(events: &[Event], unit: &str) -> u32 {
+    let names = |e: &Event, field: &str| {
+        serde_json::from_slice::<Value>(&e.data)
+            .is_ok_and(|v| v.get(field).and_then(Value::as_str) == Some(unit))
+    };
+    let boundary = events.iter().rposition(|e| {
+        (e.type_ == ledger::TYPE_UNIT_RESUMED && names(e, "unit"))
+            || (e.type_ == ledger::TYPE_UNIT_FAILED
+                && e.meta.contains_key(META_COMPENSATED)
+                && names(e, "id"))
+    });
+    let Some(boundary) = boundary else {
+        return 0;
+    };
+    spawn::recorded_lenient(&events[..boundary])
+        .keys()
+        .filter(|id| spawn::unit_of(id) == Some(unit))
+        .map(|id| spawn::attempt_of(id) + 1)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether `unit`'s latest `UnitEscalated` in the run slice `events` escalated a speculation
+/// group ([`META_SPEC_GROUP`]): a group with no winner deletes every lane branch, the canonical
+/// unit branch among them, and re-enters on fresh lane worktrees, so a resume of it needs no
+/// branch to re-park on (spec 126, criterion 14).
+pub fn escalated_as_speculation_group(events: &[Event], unit: &str) -> bool {
+    events
+        .iter()
+        .rev()
+        .find(|e| {
+            e.type_ == ledger::TYPE_UNIT_ESCALATED
+                && serde_json::from_slice::<Value>(&e.data)
+                    .is_ok_and(|v| v.get("id").and_then(Value::as_str) == Some(unit))
+        })
+        .is_some_and(|e| e.meta.contains_key(META_SPEC_GROUP))
 }
 
 /// The compensations STILL PENDING at run start (spec 12, unit 4): a durable
@@ -4241,6 +4289,27 @@ impl RunCtx<'_> {
         }
     }
 
+    /// What `unit` is told on entering its lifecycle at attempt `attempts`, the one reader the
+    /// single-lane path and every speculation lane share: the
+    /// [`logged_prior_failure`](RunCtx::logged_prior_failure), then, on a compensation re-entry
+    /// (spec 12, unit 4), the recorded contradiction, so a unit a later unit's review proved
+    /// wrong, reverted and re-entered fixes that specific defect rather than blindly
+    /// restarting. The contradiction is read once at the unit's entry; a later re-review reject
+    /// carries its own reason instead.
+    fn re_entry_failure(&self, unit: &str, attempts: u32) -> PriorFailure {
+        let mut prior = self.logged_prior_failure(unit, attempts);
+        if let Some(reason) = self
+            .compensation_feedback
+            .lock()
+            .unwrap()
+            .get(unit)
+            .cloned()
+        {
+            prior.contradiction = reason;
+        }
+        prior
+    }
+
     /// The highest attempt at which `unit` has a recorded gate verdict in the LIVE
     /// [`gate_verdicts`](RunCtx::gate_verdicts) cache (spec 12, unit 4). The cache is keyed by
     /// [`gate_key`] (`{unit}/gate:{gate}#{attempt}`), seeded once at run start from the
@@ -6768,22 +6837,9 @@ impl RunCtx<'_> {
         // at (gap 61: a `rigger resume-unit` grant, or a step picking up a
         // mid-remediation unit) starts from that failure, read back from the log, so
         // its prompt carries the block an in-process retry would.
-        let mut prior = self.logged_prior_failure(&st.name, attempts);
+        let mut prior = self.re_entry_failure(&st.name, attempts);
         if !halted_commit.is_empty() {
             prior.halted_commit = halted_commit;
-        }
-        // Compensation re-entry (spec 12, unit 4): a unit that a later unit's review proved
-        // wrong was reverted and re-entered here; its FIRST re-attempt is prompted with the
-        // recorded contradiction so it fixes the specific defect, not blindly restart. Read
-        // once at the top; a subsequent re-review reject then carries its own reason instead.
-        if let Some(reason) = self
-            .compensation_feedback
-            .lock()
-            .unwrap()
-            .get(&st.name)
-            .cloned()
-        {
-            prior.contradiction = reason;
         }
         // Resume-continuity, Implemented phase: the unit was implemented in a prior
         // window and its branch carries the committed code, but it was not yet
@@ -7613,8 +7669,10 @@ impl RunCtx<'_> {
     /// speculation group) in isolated worktrees; the FIRST candidate to pass its gates AND the
     /// adjudicator wins and integrates, and every other candidate is CANCELLED - the group,
     /// winner, and losers recorded as metadata on the existing event vocabulary (no new event
-    /// type). Candidate `lane` runs at attempt `lane`, so each candidate's gates, statuses, and
-    /// review tiers key apart while staying a PURE function of the run structure (replay-safe).
+    /// type). Candidate `lane` runs at attempt `base + lane` ([`speculation_lane_base`]: 0 on a
+    /// first entry, past every recorded attempt on a re-entry), so each candidate's gates,
+    /// statuses, and review tiers key apart while staying a PURE function of the run structure
+    /// (replay-safe).
     ///
     /// This REUSES the single mutation authorities - [`Self::run_gates`], [`Self::review_unit`],
     /// [`Self::integrate_and_emit`] - and adds only the K-lane fan-out and winner selection;
@@ -7662,11 +7720,17 @@ impl RunCtx<'_> {
         // Gap 61: a group re-entered in a LATER process than the one that saw its failure (an
         // operator's `rigger resume-unit` grant re-enters every lane) starts from the failure
         // the log recorded - a lane's post-merge block - so every lane's prompt carries the
-        // block a single-lane retry would. All K lanes are spawned before any is judged, so a
-        // group has no in-process retry to thread a failure into; the log is its only source.
-        // Read at the group's counted attempts, so a compensation re-entry, which advanced past
-        // that failure, is never handed it.
-        let logged = self.logged_prior_failure(&st.name, self.counted_attempts(&st.name));
+        // block a single-lane retry would, and a compensation re-entry carries its
+        // contradiction. All K lanes are spawned before any is judged, so a group has no
+        // in-process retry to thread a failure into; the log is its only source. Read at the
+        // group's counted attempts, so a compensation re-entry, which advanced past that
+        // failure, is never handed it.
+        let logged = self.re_entry_failure(&st.name, self.counted_attempts(&st.name));
+        // Spec 126 criterion 14: a re-entered group numbers its lanes past every attempt its
+        // run recorded before the re-entry, so a grant or a compensation re-drives the lanes
+        // instead of answering the first entry's ids from the log. Lane `n` runs at attempt
+        // `base + n`; its worktree and branch stay keyed by `n`.
+        let base = speculation_lane_base(&self.read_current_run()?, &st.name);
 
         // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
         // park (removed only at a terminal outcome below), so the out-of-process worker
@@ -7680,7 +7744,8 @@ impl RunCtx<'_> {
             // spawn. A refusal (the budget is spent) sets `budget_broke` and unwinds the unit
             // cleanly - the run loop trips the ONE breaker path - exactly like the single-lane
             // implementer's `Ok(false)` refusal.
-            let impl_id = spawn_id(&st.name, ROLE_IMPLEMENTER, lane);
+            let attempt = base + lane;
+            let impl_id = spawn_id(&st.name, ROLE_IMPLEMENTER, attempt);
             if !self.reserve_spawn(&impl_id) {
                 return Ok(false);
             }
@@ -7693,7 +7758,7 @@ impl RunCtx<'_> {
             // producers), so each candidate gets the trimmed implement slice - byte-identical to the
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
             let mut prompt =
-                self.build_prompt_with_failure(st, &logged, lane, GroundingSlice::Implement)?;
+                self.build_prompt_with_failure(st, &logged, attempt, GroundingSlice::Implement)?;
             // A lane's implementer is an author: its prompt ends with the handover contract,
             // and a session that ended without the line loses the lane as a crash does.
             prompt.push_str(&author_handover());
@@ -7718,7 +7783,7 @@ impl RunCtx<'_> {
                             // The live work-line: the unit's criterion, so each speculation
                             // candidate narrates the WORK, not just `{unit}:{stage}` (spec 19a, c4).
                             title: st.coverage.trim().to_string(),
-                            attempt: lane,
+                            attempt,
                             run_id: self.run_id.clone(),
                             // The ONE build-environment authority (spec 65) PLUS this lane's
                             // own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION):
@@ -7749,7 +7814,7 @@ impl RunCtx<'_> {
                 // seam authority. So the committed tree PHASE B's gates judge (and the winner
                 // integrates) carries the periphery tests for WHICHEVER candidate wins - a
                 // speculation-built unit is not a silent hole in the "no boundary surface lands
-                // untested" guarantee. Each lane reserves its OWN sdet id (keyed on the `lane`
+                // untested" guarantee. Each lane reserves its OWN sdet id (keyed on the lane's
                 // attempt), so the budget breaker counts every candidate's sdet exactly as it counts
                 // every candidate's implementer.
                 //
@@ -7772,7 +7837,7 @@ impl RunCtx<'_> {
                     }
                 })
                 .and_then(|result| {
-                    match self.spawn_sdet_author(st, Some(&wt), &dir, lane, 0, &[])? {
+                    match self.spawn_sdet_author(st, Some(&wt), &dir, attempt, 0, &[])? {
                         None => Ok(result),
                         Some(miss) => Err(Error(miss.evidence())),
                     }
@@ -7791,7 +7856,7 @@ impl RunCtx<'_> {
                         st.name
                     ))?;
                     candidates.push(SpecCandidate {
-                        lane,
+                        attempt,
                         wt,
                         dir,
                         resolved_model: result.resolved_model,
@@ -7825,12 +7890,12 @@ impl RunCtx<'_> {
         // PHASE B: evaluate candidates in deterministic lane order; the FIRST gate-green
         // adjudicator-approved candidate WINS and integrates, and every other candidate is
         // cancelled. A candidate's review tiers park across steps exactly like the single-lane
-        // path (their spawns are keyed by the candidate's `lane` attempt).
+        // path (their spawns are keyed by the candidate's attempt).
         for i in 0..candidates.len() {
-            let lane = candidates[i].lane;
+            let attempt = candidates[i].attempt;
             let dir = candidates[i].dir.clone();
             let gate_outcome =
-                self.run_gates(st, &dir, lane, GateSelection::Narrowed(&blast_radius))?;
+                self.run_gates(st, &dir, attempt, GateSelection::Narrowed(&blast_radius))?;
             if !gate_outcome.pass {
                 continue; // gate-red candidate loses; a later candidate may still win.
             }
@@ -7855,7 +7920,7 @@ impl RunCtx<'_> {
             let review = self.review_unit(
                 st,
                 &dir,
-                lane,
+                attempt,
                 0,
                 false,
                 true,
@@ -7871,7 +7936,7 @@ impl RunCtx<'_> {
             if let Some(target) = &review.compensate {
                 if target != &st.name {
                     self.emit_keyed_meta(
-                        &compensation_queued_key(&st.name, target, lane),
+                        &compensation_queued_key(&st.name, target, attempt),
                         ledger::TYPE_UNIT_STATUS,
                         json!({
                             "id": target,
@@ -7895,19 +7960,19 @@ impl RunCtx<'_> {
                 // winner), so a speculating unit would report inflated review quality to the
                 // spec-13 self-improvement loop. A fold-neutral marker keeps the shared unit
                 // `Fresh` for resume while the metrics fold counts the reject.
-                self.record_speculation_reject(st, lane, &dir, &group, &candidates[i].wt)?;
+                self.record_speculation_reject(st, attempt, &dir, &group, &candidates[i].wt)?;
                 continue; // rejected candidate loses; try the next candidate.
             }
             // A candidate that passed its narrowed gates AND the adjudicator. Assert the
             // exhaustive suite (the integrate door, spec 12 unit 3) before merging.
-            let full = self.run_gates(st, &dir, lane, GateSelection::Exhaustive)?;
+            let full = self.run_gates(st, &dir, attempt, GateSelection::Exhaustive)?;
             if !full.pass {
                 continue; // even a full-suite-red candidate cannot land - try the next.
             }
             let losers: Vec<String> = candidates
                 .iter()
-                .filter(|c| c.lane != lane)
-                .map(|c| spawn_id(&st.name, ROLE_IMPLEMENTER, c.lane))
+                .filter(|c| c.attempt != attempt)
+                .map(|c| spawn_id(&st.name, ROLE_IMPLEMENTER, c.attempt))
                 .collect();
             if !integrates(st) {
                 // Verified + approved but never merges (`on_pass: none`): the group settled on a
@@ -7916,19 +7981,19 @@ impl RunCtx<'_> {
                 // lane is in flight), cancel the other candidates, and stop.
                 self.emit_speculation_winner_status(
                     st,
-                    lane,
+                    attempt,
                     &group,
                     &dir,
                     &candidates[i],
                     &review,
                 )?;
-                self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+                self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
                 return Ok(false);
             }
             let integration = self.integrate_and_emit(
                 Some(&candidates[i].wt),
                 st,
-                lane,
+                attempt,
                 IntegrationApproval::approved(),
             )?;
             if let Some(evidence) = integration.blocked {
@@ -7962,7 +8027,7 @@ impl RunCtx<'_> {
                     // (a pre-merge gate/review loss is a silent `continue` two lines
                     // above, never a UnitFailed) - always a merge conflict. The
                     // merge-break evidence rides along (gap 61).
-                    failure.failed_body(&st.name, lane + 1, CAUSE_INTEGRATE_CONFLICT),
+                    failure.failed_body(&st.name, attempt + 1, CAUSE_INTEGRATE_CONFLICT),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 continue;
@@ -7970,7 +8035,14 @@ impl RunCtx<'_> {
             // The winner integrated (integration.blocked is None): NOW record its DEFERRED
             // green/verified/reviewed lifecycle, then the group / winner / losers on the existing
             // UnitIntegrated (no new event type), then cancel every displaced candidate.
-            self.emit_speculation_winner_status(st, lane, &group, &dir, &candidates[i], &review)?;
+            self.emit_speculation_winner_status(
+                st,
+                attempt,
+                &group,
+                &dir,
+                &candidates[i],
+                &review,
+            )?;
             self.emit_meta(
                 ledger::TYPE_UNIT_INTEGRATED,
                 json!({"id": st.name, "commit": integration.commit}),
@@ -7978,12 +8050,12 @@ impl RunCtx<'_> {
                     (META_SPEC_GROUP, &group),
                     (
                         META_SPEC_WINNER,
-                        &spawn_id(&st.name, ROLE_IMPLEMENTER, lane),
+                        &spawn_id(&st.name, ROLE_IMPLEMENTER, attempt),
                     ),
                     (META_SPEC_LOSERS, &losers.join(",")),
                 ],
             )?;
-            self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+            self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
             // The winner's work merged into the base: tear down its worktree and branch too,
             // exactly as the single-lane path deletes an integrated unit's branch.
             let _ = candidates[i].wt.remove();
@@ -8019,7 +8091,7 @@ impl RunCtx<'_> {
 
     /// Record a confirmed speculation WINNER's DEFERRED lifecycle statuses (spec 13, unit 3):
     /// `green` + `verified` + (when an adjudicator actually rendered the verdict) `reviewed`,
-    /// each keyed by the winning `lane` and tagged with the speculation `group`. These are
+    /// each keyed by the winning candidate's `attempt` and tagged with the speculation `group`. These are
     /// DEFERRED from phase A/B - a candidate that never wins emits NONE of them - so a speculating
     /// unit stays folded out of `green`/`verified`/`reviewed` (`resume_phase` == `Fresh`) across
     /// every phase-B parking step until a winner is confirmed. For an integrating unit this is
@@ -8031,21 +8103,21 @@ impl RunCtx<'_> {
     fn emit_speculation_winner_status(
         &self,
         st: &Stage,
-        lane: u32,
+        attempt: u32,
         group: &str,
         dir: &str,
         candidate: &SpecCandidate,
         review: &ReviewOutcome,
     ) -> Result<(), Error> {
-        let winner_alias = self.agent_model(&st.agent, lane);
+        let winner_alias = self.agent_model(&st.agent, attempt);
         let winner_resolved = candidate.resolved_model.clone();
         let mut green = BTreeMap::new();
         green.insert(
             "green".to_string(),
-            format!("speculation winner {lane} implemented by {}", st.agent),
+            format!("speculation winner {attempt} implemented by {}", st.agent),
         );
         self.emit_keyed_meta(
-            &format!("{}/green#{lane}", st.name),
+            &format!("{}/green#{attempt}", st.name),
             ledger::TYPE_UNIT_STATUS,
             json!({"id": st.name, "status": "green", "evidence": green}),
             &[
@@ -8065,7 +8137,7 @@ impl RunCtx<'_> {
         candidate.wt.ensure_present()?;
         let winner_sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
-            &verified_key(&st.name, lane),
+            &verified_key(&st.name, attempt),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
@@ -8081,7 +8153,7 @@ impl RunCtx<'_> {
         )?;
         // The winner's `reviewed` status was DEFERRED out of `review_unit` (so a non-winning
         // approved candidate never folds the shared unit to `Reviewed`). Re-emit it here keyed
-        // by the winning lane, but ONLY when an adjudicator actually rendered the verdict: an
+        // by the winning attempt, but ONLY when an adjudicator actually rendered the verdict: an
         // empty / adjudicator-less panel approves trivially and emits no `reviewed`, exactly as
         // the single-lane path does. It carries the adjudicator's requested alias + the resolved
         // id `review_unit` stashed, and the winner's reviewed-tree sha (spec 11, unit 1).
@@ -8094,13 +8166,13 @@ impl RunCtx<'_> {
         // `review_unit` actually reviewed. `review.round_start_sha` is `review_unit`'s own
         // log-derived round-start sha (`review_round_start_sha`), carried on the outcome
         // for exactly this deferred re-emission - the same ground truth the single-lane
-        // `reviewed` stamp uses inline, never a fresh live read here. `verified#{lane}`
+        // `reviewed` stamp uses inline, never a fresh live read here. `verified#{attempt}`
         // above legitimately keeps `winner_sha`: it records what the gates verified, not
         // what the review judged.
         let steps = self.cfg.workflow.effective_review_panel(st).steps();
         if let Some(adjudicator) = step_adjudicator(&steps) {
             self.emit_keyed_meta(
-                &format!("{}/reviewed#{lane}", st.name),
+                &format!("{}/reviewed#{attempt}", st.name),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -8108,7 +8180,7 @@ impl RunCtx<'_> {
                     "evidence": review_evidence(&review.reason),
                 }),
                 &[
-                    (META_MODEL_ALIAS, &self.agent_model(adjudicator, lane)),
+                    (META_MODEL_ALIAS, &self.agent_model(adjudicator, attempt)),
                     (META_MODEL_RESOLVED, &review.adj_resolved),
                     (META_WORKTREE_SHA, &review.round_start_sha),
                     (META_SPEC_GROUP, group),
@@ -8132,13 +8204,13 @@ impl RunCtx<'_> {
     /// `UnitStatus` marker - like [`STATUS_SPECULATION_CANCELLED`], its status is not a
     /// [`ledger::Status`] variant, so the ledger fold leaves the unit's real status untouched -
     /// that the METRICS fold counts directly as a review reject. The fold stays the single
-    /// counting authority; the producer only records the fact. Keyed by lane so a resume
+    /// counting authority; the producer only records the fact. Keyed by the candidate's attempt so a resume
     /// RE-EVALUATING the recorded candidate dedups it, tagged with the `group`, and stamped with
     /// the reviewed sha so a later approve on the SAME sha reads as a flip-flop (spec 11).
     fn record_speculation_reject(
         &self,
         st: &Stage,
-        lane: u32,
+        attempt: u32,
         dir: &str,
         group: &str,
         // Ensure-on-park, defense in depth (spec 64 criterion 3, round 5): the candidate's
@@ -8155,14 +8227,14 @@ impl RunCtx<'_> {
         // candidate's reject sibling.
         wt.ensure_present()?;
         self.emit_keyed_meta(
-            &format!("{}/spec-rejected#{lane}", st.name),
+            &format!("{}/spec-rejected#{attempt}", st.name),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
                 "status": STATUS_SPECULATION_REJECTED,
                 "evidence": {
                     "speculation-rejected": format!(
-                        "candidate {lane} rejected by the adjudicator"
+                        "candidate {attempt} rejected by the adjudicator"
                     ),
                 },
             }),
@@ -8175,10 +8247,10 @@ impl RunCtx<'_> {
     }
 
     /// Cancel every non-winning speculation candidate (spec 13, unit 3): record each loser's
-    /// `speculation-cancelled` status (keyed per lane, tagged with the group so the log ties it
-    /// back to the winner) and tear down its worktree + branch - the winner's code already
-    /// landed, so the displaced candidates' isolated work is discarded. The `winner` lane is
-    /// SKIPPED here (its worktree/branch is the caller's to clean up: removed once it merged, or
+    /// `speculation-cancelled` status (keyed by its attempt, tagged with the group so the log
+    /// ties it back to the winner) and tear down its worktree + branch - the winner's code
+    /// already landed, so the displaced candidates' isolated work is discarded. The candidate
+    /// at the `winner` attempt is SKIPPED here (its worktree/branch is the caller's to clean up: removed once it merged, or
     /// kept as the verified-but-unmerged checkpoint on an `on_pass: none` unit).
     /// `STATUS_SPECULATION_CANCELLED` is not a real lifecycle status, so folding it leaves the
     /// unit's terminal state as the winner's `Integrated`.
@@ -8193,11 +8265,11 @@ impl RunCtx<'_> {
             // The winner is NOT cancelled and its worktree/branch is the caller's to clean up
             // (deleted once it MERGED, or kept as the verified-but-unmerged checkpoint on an
             // `on_pass: none` unit), so skip it entirely here.
-            if c.lane == winner {
+            if c.attempt == winner {
                 continue;
             }
             self.emit_keyed_meta(
-                &format!("{}/speculation-cancelled#{}", st.name, c.lane),
+                &format!("{}/speculation-cancelled#{}", st.name, c.attempt),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -8205,7 +8277,7 @@ impl RunCtx<'_> {
                     "evidence": {
                         "speculation-cancelled": format!(
                             "candidate {} displaced by winner {}",
-                            c.lane, winner
+                            c.attempt, winner
                         ),
                     },
                 }),
