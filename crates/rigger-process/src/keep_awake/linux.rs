@@ -6,11 +6,14 @@ use rigger_domain::sleep_hold::{SleepGuard, Unavailable};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::os::fd::OwnedFd;
+use std::pin::Pin;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use zbus::connection::Builder;
-use zbus::Connection;
+use zbus::export::futures_core::Stream;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::{Connection, MatchRule, MessageStream};
 
 /// The bus name logind owns on the system bus.
 const LOGIND: &str = "org.freedesktop.login1";
@@ -40,16 +43,26 @@ const SUSPEND: u32 = 4;
 /// The portal's `Inhibit` flag that inhibits the session going idle.
 const IDLE: u32 = 8;
 
+/// The interface of the portal's request objects, whose `Response` signal says how the request a
+/// call made ended.
+const PORTAL_REQUEST: &str = "org.freedesktop.portal.Request";
+
+/// The `Response` code of a request the portal carried out: for `Inhibit`, its inhibitor stands.
+const RESPONSE_SUCCESS: u32 = 0;
+
 /// The one bound on an acquire, over connecting to the system bus, its authentication handshake
 /// and logind's answer to `Inhibit` together, and, in a graphical session, connecting to the
-/// session bus and the portal's answer after them: the D-Bus default method-call timeout.
+/// session bus, the portal's answer and its request's `Response` after them: the D-Bus default
+/// method-call timeout.
 const DEADLINE: Duration = Duration::from_secs(25);
 
 /// Take a logind `block` inhibitor of sleep and idle by `rigger` for `reason`, over a system-bus
 /// connection of its own, and in a graphical session the desktop portal's inhibitor besides, over
 /// a session-bus connection of its own, within [`DEADLINE`]. The guard holds the descriptor
-/// logind answers with, and logind ends the inhibitor when the guard drops it; the guard closes
-/// the portal's connection as it drops, and the portal ends its inhibitor with that connection.
+/// logind answers with, and logind ends the inhibitor when the guard drops it. The portal's
+/// inhibitor is held only once the request its `Inhibit` makes responds that the inhibitor
+/// stands, so the portal has it to end: the guard closes the portal's connection as it drops,
+/// and the portal ends its inhibitor with that connection.
 pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
     let bus = Builder::system().map_err(no_system_bus)?;
     let graphical = graphical_session(
@@ -81,8 +94,9 @@ fn graphical_session(wayland_display: Option<&OsStr>, display: Option<&OsStr>) -
 /// inhibitor over the session-bus connection `session` builds, within what remains of `deadline`
 /// (see [`PortalInhibitor::take`]). The portal thread is the one thread a granted acquire leaves
 /// standing while its guard lives: dropping the guard closes the session-bus connection and joins
-/// that thread before logind's descriptor drops. A portal that is absent, refuses or does not
-/// answer in time leaves logind's inhibitor alone in force, and nothing is printed.
+/// that thread before logind's descriptor drops. A portal that is absent, refuses (an error
+/// reply, or a request that responds other than [`RESPONSE_SUCCESS`]) or does not answer in time
+/// leaves logind's inhibitor alone in force, and nothing is printed.
 fn acquire_on(
     bus: Builder<'_>,
     graphical: bool,
@@ -133,12 +147,13 @@ struct PortalInhibitor {
 
 impl PortalInhibitor {
     /// Ask the portal for its inhibitor over the connection `session` builds, on a thread of its
-    /// own, answering within `within`: the inhibitor when the portal grants it, none when no thread
-    /// starts, no connection opens, or the portal refuses or does not answer in time. The thread
-    /// drives that connection on a current-thread runtime of its own that keeps no idle thread, so
-    /// the blocking thread connecting runs on ends with its connect. When the portal grants, the
-    /// thread keeps the connection, and the runtime with it, until [`PortalInhibitor::release`];
-    /// otherwise it drops both before this returns, so a refusal leaves no connection standing.
+    /// own, answering within `within`: the inhibitor when the portal grants it (see
+    /// [`portal_inhibit`]), none when no thread starts, no connection opens, or the portal refuses
+    /// or does not answer in time. The thread drives that connection on a current-thread runtime
+    /// of its own that keeps no idle thread, so the blocking thread connecting runs on ends with
+    /// its connect. When the portal grants, the thread keeps the connection, and the runtime with
+    /// it, until [`PortalInhibitor::release`]; otherwise it drops both before this returns, so a
+    /// refusal, a request that responds no grant or none in time leaves no connection standing.
     fn take(session: Builder<'static>, reason: &str, within: Duration) -> Option<Self> {
         let (granted, answer) = mpsc::channel();
         let (release, released) = mpsc::channel();
@@ -184,10 +199,14 @@ fn hold_portal_inhibitor(
     let held = runtime.block_on(async {
         let inhibitor = async {
             let bus = session.build().await?;
-            portal_inhibit(&bus, reason).await?;
-            Ok::<_, zbus::Error>(bus)
+            let granted = portal_inhibit(&bus, reason).await?;
+            Ok::<_, zbus::Error>(granted.then_some(bus))
         };
-        tokio::time::timeout(within, inhibitor).await.ok()?.ok()
+        tokio::time::timeout(within, inhibitor)
+            .await
+            .ok()?
+            .ok()
+            .flatten()
     });
     let _ = granted.send(held.is_some());
     let bound = match held {
@@ -202,19 +221,44 @@ fn hold_portal_inhibitor(
 }
 
 /// Ask the desktop portal to inhibit suspending the session and its going idle, for `reason`,
-/// with no parent window. The portal's method return grants the inhibitor, which then stands until
-/// this connection closes; an error reply refuses it.
-async fn portal_inhibit(bus: &Connection, reason: &str) -> zbus::Result<()> {
+/// with no parent window, answering whether it granted the inhibitor. The portal's method return
+/// carries only the handle of the request it makes of the call: its backend takes the inhibitor
+/// after that, and the request's `Response` signal says how the request ended, the inhibitor
+/// standing, until this connection closes, only when it responds [`RESPONSE_SUCCESS`]. The
+/// subscription to the portal's responses is made before the call, so a response sent before
+/// the handle is read is not missed. An error reply refuses the inhibitor, as does any other
+/// response; a connection that closes before the response is no grant either.
+async fn portal_inhibit(bus: &Connection, reason: &str) -> zbus::Result<bool> {
+    let rule = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(PORTAL)?
+        .interface(PORTAL_REQUEST)?
+        .member("Response")?
+        .build();
+    let mut responses = MessageStream::for_match_rule(rule, bus, None).await?;
     let options = HashMap::from([("reason", zbus::zvariant::Value::from(reason))]);
-    bus.call_method(
-        Some(PORTAL),
-        PORTAL_PATH,
-        Some(PORTAL_INHIBIT),
-        "Inhibit",
-        &("", SUSPEND | IDLE, options),
-    )
-    .await?;
-    Ok(())
+    let handle: OwnedObjectPath = bus
+        .call_method(
+            Some(PORTAL),
+            PORTAL_PATH,
+            Some(PORTAL_INHIBIT),
+            "Inhibit",
+            &("", SUSPEND | IDLE, options),
+        )
+        .await?
+        .body()
+        .deserialize()?;
+    while let Some(response) =
+        std::future::poll_fn(|cx| Pin::new(&mut responses).poll_next(cx)).await
+    {
+        let response = response?;
+        if response.header().path().is_some_and(|path| *path == *handle) {
+            let (code, _results): (u32, HashMap<String, OwnedValue>) =
+                response.body().deserialize()?;
+            return Ok(code == RESPONSE_SUCCESS);
+        }
+    }
+    Ok(false)
 }
 
 /// Ask logind for the inhibitor, without the interactive-authorization flag, so no
