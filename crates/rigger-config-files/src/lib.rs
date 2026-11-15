@@ -39,6 +39,10 @@ mod config_fixtures;
 #[path = "../../../tests/common/fixtures/extraction_tree.rs"]
 mod extraction_tree;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[path = "../../../tests/common/fixtures/extractors.rs"]
+mod extractors_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::config_fixtures::*;
+    pub use crate::extractors_fixtures::*;
 }

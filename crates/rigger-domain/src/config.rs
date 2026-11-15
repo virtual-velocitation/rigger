@@ -1869,6 +1869,52 @@ mod tests {
         }
     }
 
+    /// THE EXTRACTORS KEY parses into the workflow's declared map: absent is the empty map, a
+    /// declaration is its name, extensions and run as written, and a field an extractor does not
+    /// take is refused at its dotted path.
+    #[test]
+    fn the_extractors_key_parses_into_the_declared_map_refusing_an_unknown_field() {
+        let lua = ExtractorDecl {
+            extensions: vec!["lua".to_string(), "luau".to_string()],
+            run: "lua facts.lua".to_string(),
+        };
+        for (workflow, declared) in [
+            ("{}", Ok(BTreeMap::new())),
+            (
+                "extractors: { lua_5-4: { extensions: [lua, luau], run: lua facts.lua } }",
+                Ok(BTreeMap::from([("lua_5-4".to_string(), lua)])),
+            ),
+            (
+                "extractors: { zig: { extensions: [zig], run: zig-tags, args: [] } }",
+                Err("extractors.zig.args: unknown key".to_string()),
+            ),
+        ] {
+            let parsed = parse_yaml_naming_unknown_keys::<Workflow>(workflow);
+            assert_eq!(parsed.map(|wf| wf.extractors), declared, "{workflow}");
+        }
+    }
+
+    /// `check_extractors` accepts each well-formed `extractors:` declaration and refuses each
+    /// malformed one THE EXTRACTORS KEY lists with its exact message, naming `extractors.<name>`.
+    #[test]
+    fn check_extractors_accepts_each_well_formed_declaration_and_refuses_each_malformed_one() {
+        use crate::test_support::{
+            workflow_declaring_extractors, ACCEPTED_EXTRACTORS, EXTRACTOR_REFUSALS,
+        };
+        let checked = |mapping: &str| {
+            let workflow = workflow_declaring_extractors(mapping);
+            let wf: Workflow = parse_yaml_naming_unknown_keys(&workflow)
+                .unwrap_or_else(|e| panic!("parse {workflow}: {e}"));
+            check_extractors(&wf.extractors)
+        };
+        for mapping in ACCEPTED_EXTRACTORS {
+            assert_eq!(checked(mapping), Ok(()), "{mapping}");
+        }
+        for (mapping, refusal) in EXTRACTOR_REFUSALS {
+            assert_eq!(checked(mapping), Err(refusal.to_string()), "{mapping}");
+        }
+    }
+
     #[test]
     fn a_map_form_panel_steps_through_its_set_lenses_adversary_and_adjudicator_in_that_order() {
         let ab = || ReviewStep::Lenses(vec!["a".into(), "b".into()]);

@@ -2207,6 +2207,25 @@ agent: worker\n";
         );
     }
 
+    /// `Config::validate` runs THE EXTRACTORS KEY's check: it accepts each well-formed
+    /// `extractors:` declaration and refuses each malformed one with its exact message, naming
+    /// `extractors.<name>`.
+    #[test]
+    fn validate_accepts_each_well_formed_extractors_declaration_and_refuses_each_malformed_one() {
+        use crate::test_support::{
+            workflow_declaring_extractors, ACCEPTED_EXTRACTORS, EXTRACTOR_REFUSALS,
+        };
+        for mapping in ACCEPTED_EXTRACTORS {
+            if let Err(e) = config_of(&workflow_declaring_extractors(mapping)).validate() {
+                panic!("validate must accept {mapping}: {e}");
+            }
+        }
+        for (mapping, refusal) in EXTRACTOR_REFUSALS {
+            let validated = config_of(&workflow_declaring_extractors(mapping)).validate();
+            assert_eq!(validated.expect_err(refusal).0, refusal, "{mapping}");
+        }
+    }
+
     /// `tiers.light` takes either form under a full panel of either form.
     #[test]
     fn a_light_panel_takes_either_form_under_a_full_panel_of_either_form() {

@@ -66,6 +66,18 @@ mod graph_fixtures;
 #[path = "../../../tests/common/fixtures/caller_sources.rs"]
 mod caller_sources;
 
+/// THE EXTRACTORS KEY's declarations the code store's read of the declared map is tested over,
+/// compiled here from the same file as the domain's and the config files' tests. It names no
+/// crate; only the lanes holding the code store read it, and they read its refusals alone.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/extractors.rs"]
+mod extractors_fixtures;
+
 /// THE NAME FILTER SOURCES the name-filter tests extract, compiled here from the same file as the
 /// root crate's tests. It names no crate; only the default lane's tests extract them.
 #[cfg(all(
