@@ -2090,7 +2090,7 @@ fn spawn_result_from(v: &Value, opts: &SpawnOpts, resolved_model: &str) -> Spawn
         },
         "turns": v.get("num_turns").and_then(Value::as_u64).unwrap_or(0),
         "cost_usd": v.get("total_cost_usd").and_then(Value::as_f64).unwrap_or(0.0),
-        "permission_denials": v
+        crate::spawn::META_PERMISSION_DENIALS: v
             .get("permission_denials")
             .and_then(Value::as_array)
             .map_or(0, Vec::len),

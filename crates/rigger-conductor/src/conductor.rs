@@ -2725,6 +2725,24 @@ fn infra_halt(unit: &str, attempt: u32, cause: &str, evidence: &str) -> Error {
     ))
 }
 
+/// The halt error a unit's stage returns once its infra reruns reach the taxonomy's infra limit
+/// on an author's missed handover ([`CAUSE_INFRA_HANDOVER`]): [`infra_halt`]'s shape, naming the
+/// handover, how many `misses` the bound counted, and what the infra-retry marks hold to tell a
+/// refused tool call from a session that stopped or printed a last line of its own.
+fn handover_halt(unit: &str, attempt: u32, misses: u32, evidence: &str) -> Error {
+    let times = if misses == 1 { "time" } else { "times" };
+    Error(format!(
+        "{INFRA_MARKER}infra: {evidence}\n(unit {unit:?}'s author session ended without its \
+         hand-over line ({AUTHOR_HANDOVER_LINE}) {misses} {times} at attempt {attempt}, past the \
+         failure taxonomy's infra limit, so the step halts and the unit is charged no attempt. \
+         Each infra-retry mark records the session's last line and its permission denials: \
+         denials mean a tool call the session needed was refused, so grant it; none mean the \
+         session stopped early or printed a last line of its own, so check the author persona \
+         asks for no final line. Then re-run: the unit resumes at the same attempt with a fresh \
+         bound)"
+    ))
+}
+
 /// A unit's infra reruns at one attempt (F3), folded from its [`STATUS_INFRA_RETRY`] and
 /// [`STATUS_INFRA_HALT`] marks so a later conductor process over the run resumes the same counts -
 /// log-carried, never process state.
@@ -2739,6 +2757,10 @@ struct InfraRetries {
     /// taxonomy's infra limit bounds. A halt resets it, so a relaunch after the outage gets a
     /// fresh bound while the ordinal keeps counting past every spoiled run.
     since_halt: u32,
+    /// The reruns since this attempt's latest infra halt that an author's missed handover
+    /// caused (marks naming the missed spawn, [`META_SPAWN`]): the count a handover halt
+    /// ([`handover_halt`]) names.
+    misses: u32,
 }
 
 impl InfraRetries {
@@ -2747,22 +2769,27 @@ impl InfraRetries {
     fn recorded(events: &[Event], unit: &str, attempt: u32) -> Self {
         unit_status_marks(events, unit, &[STATUS_INFRA_RETRY, STATUS_INFRA_HALT])
             .filter(|(_, at, _)| *at == u64::from(attempt))
-            .fold(Self::default(), |infra, (status, _, _)| infra.after(status))
+            .fold(Self::default(), |infra, (status, _, e)| {
+                infra.after(status, e.meta.contains_key(META_SPAWN))
+            })
     }
 
-    /// The state after one more infra mark of `status`: a rerun ([`STATUS_INFRA_RETRY`])
-    /// advances both counts, a halt ([`STATUS_INFRA_HALT`]) restarts the bound and keeps the
-    /// ordinal. The one transition the log fold and the live rerun both apply, so the two can
-    /// never disagree on the next ordinal.
-    fn after(self, status: &str) -> Self {
+    /// The state after one more infra mark of `status`, `missed` when it records an author's
+    /// missed handover: a rerun ([`STATUS_INFRA_RETRY`]) advances both counts and, when
+    /// `missed`, the misses; a halt ([`STATUS_INFRA_HALT`]) restarts the bound and the misses
+    /// and keeps the ordinal. The one transition the log fold and the live rerun both apply, so
+    /// the two can never disagree on the next ordinal.
+    fn after(self, status: &str, missed: bool) -> Self {
         if status == STATUS_INFRA_RETRY {
             InfraRetries {
                 ordinal: self.ordinal + 1,
                 since_halt: self.since_halt + 1,
+                misses: self.misses + u32::from(missed),
             }
         } else {
             InfraRetries {
                 since_halt: 0,
+                misses: 0,
                 ..self
             }
         }
@@ -4350,19 +4377,42 @@ impl RunCtx<'_> {
         Ok(crate::run::read::read_current_run(self.deps.store, STREAM)?.0)
     }
 
-    /// Whether author spawn `id`'s `result` handed its work over ([`author_handed_over`]), read
-    /// against the request the current run recorded for `id`, if any: the ONE handover check
-    /// the implementer, the test author and each speculation lane take. A result with no session
-    /// reads no log.
-    fn handed_over(&self, id: &str, result: &AgentResult) -> Result<bool, Error> {
+    /// The missed handover of author spawn `id`'s `result`, naming the author `who`, when it did
+    /// not hand its work over ([`author_handed_over`]), read against the request the current
+    /// run recorded for `id`, if any: the ONE handover check the implementer, the test author
+    /// and each speculation lane take. The miss carries the result's last line and the
+    /// permission denials the run's recorded result for `id` counts, when one was recorded. A
+    /// result with no session reads no log.
+    fn handover_miss(
+        &self,
+        who: &str,
+        id: &str,
+        result: &AgentResult,
+    ) -> Result<Option<HandoverMiss>, Error> {
         if result.session_id.is_empty() {
-            return Ok(true);
+            return Ok(None);
         }
-        let recorded = spawn::recorded_lenient(&self.read_current_run()?).remove(id);
-        Ok(author_handed_over(
-            result,
-            recorded.as_ref().map(|req| req.prompt.as_str()),
-        ))
+        let events = self.read_current_run()?;
+        let recorded = spawn::recorded_lenient(&events).remove(id);
+        if author_handed_over(result, recorded.as_ref().map(|req| req.prompt.as_str())) {
+            return Ok(None);
+        }
+        // A result body that cannot be read leaves the count unknown: the miss is the finding,
+        // the count only its context.
+        let denials = spawn::result_of(&events, id)
+            .ok()
+            .flatten()
+            .and_then(|res| {
+                res.meta
+                    .get(spawn::META_PERMISSION_DENIALS)
+                    .and_then(Value::as_u64)
+            });
+        Ok(Some(HandoverMiss {
+            who: who.to_string(),
+            id: id.to_string(),
+            last_line: bounded_last_line(&result.output),
+            denials,
+        }))
     }
 
     /// The integrating commit(s) of `unit` to REVERT for a compensation (spec 12, unit 4):
@@ -6195,18 +6245,18 @@ impl RunCtx<'_> {
         // implementer is handed): what a later attempt's resumed session is told changed when
         // no review round sent the unit back. Empty on a first attempt.
         gate_evidence: &[String],
-    ) -> Result<(), Error> {
+    ) -> Result<Option<HandoverMiss>, Error> {
         // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
         // committed tree for periphery tests to land in, and a write-capable agent must never
         // run in the live main checkout. Skip BEFORE reserving so no budget slot is spent on a
         // spawn that cannot happen.
         if dir.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         // No declared test author is a clean no-op (the build proceeds without the seam),
         // whatever agents the project defines: the seam spawns only the agent the workflow names.
         let Some(author) = self.cfg.workflow.defaults.declared_test_author() else {
-            return Ok(());
+            return Ok(None);
         };
         // A load refuses a declared id no agent defines (`Config::validate`); a config that never
         // went through one fails here, before any budget slot, as an unknown review agent does.
@@ -6237,6 +6287,21 @@ impl RunCtx<'_> {
         // over whichever it read. An empty resume task stays empty: there is nothing to send, so
         // the spawn starts fresh on its full prompt.
         let handover = author_handover();
+        // A rerun after this attempt's sdet-author missed its handover continues the session
+        // that missed; its fresh prompt, read when that session cannot be continued, says the
+        // tree holds that session's partial work. A speculation candidate (ordinal 0) never
+        // reruns.
+        let missed_session = if ordinal > 0 {
+            missed_handover(
+                &self.read_current_run()?,
+                &st.name,
+                ROLE_SDET_AUTHOR,
+                attempt,
+            )
+        } else {
+            None
+        };
+        sdet_prompt.push_str(missed_handover_note(missed_session.as_deref()));
         sdet_prompt.push_str(&handover);
         if !resume_task.is_empty() {
             resume_task.push_str(&handover);
@@ -6267,7 +6332,7 @@ impl RunCtx<'_> {
             // (spawn_is_recorded). Refused at a spent budget => do not spawn (proceed
             // author-less).
             if !self.reserve_spawn(&sdet_id) {
-                return Ok(());
+                return Ok(None);
             }
             let opts = match self.reviewer_spawn_opts(
                 &sdet_id,
@@ -6285,7 +6350,14 @@ impl RunCtx<'_> {
                 // re-run after a refusal starts fresh rather than continuing the session that
                 // printed the refused record.
                 Ok(opts) if retry == first_retry => {
-                    self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task.clone())?
+                    match missed_session.as_deref().filter(|s| !s.is_empty()) {
+                        Some(session) => resume_missed(opts, session, &handover),
+                        None => self.continue_prior_session(
+                            opts,
+                            ROLE_SDET_AUTHOR,
+                            resume_task.clone(),
+                        )?,
+                    }
                 }
                 Ok(opts) => opts,
                 // An opts-guard error is a crash of the seam: the spawn cannot run.
@@ -6299,15 +6371,15 @@ impl RunCtx<'_> {
                 // A handed-over result: its authored files are already in the worktree, so the
                 // caller falls through to the commit that sweeps them in. The session it ran as
                 // is recorded for its next attempt to continue. A session that ended without
-                // handing over stopped mid-work: it takes the crash disposition, so no checkpoint
-                // and no gate follow until the seam reruns.
+                // handing over stopped mid-work: the miss returns, so no checkpoint and no gate
+                // follow until the seam reruns continuing that session.
                 Ok(result) => {
                     self.record_session(&opts, &result)?;
-                    if self.handed_over(&opts.id, &result)? {
-                        Ok(())
-                    } else {
-                        Err(crashed(&Error(not_handed_over("the sdet author"))))
-                    }
+                    self.handover_miss(
+                        &format!("stage {:?} sdet author: the sdet author", st.name),
+                        &opts.id,
+                        &result,
+                    )
                 }
                 // A PARKED spawn (its driver reached an unrecorded frontier, [`is_parked`]):
                 // surface the park so the caller unwinds cleanly - no UnitFailed, no
@@ -6368,10 +6440,12 @@ impl RunCtx<'_> {
 
     /// Record an infrastructure failure of `unit`'s stage run at `attempt` under `infra`'s
     /// ordinal (F3): never charged - no `remediate`, no `UnitFailed` - but marked
-    /// [`STATUS_INFRA_RETRY`] with its `cause` and `evidence`. Returns the state the stage
-    /// reruns under (the next retry ordinal) while the taxonomy's infra limit allows another
-    /// run; past it, marks [`STATUS_INFRA_HALT`] and returns the [`infra_halt`] error that
-    /// halts the step.
+    /// [`STATUS_INFRA_RETRY`] with its `cause` and `evidence`, and the `missed` spawn when an
+    /// author's missed handover caused it ([`META_SPAWN`], which the rerun reads back to continue
+    /// that session, [`missed_handover`]). Returns the state the stage reruns under (the next
+    /// retry ordinal) while the taxonomy's infra limit allows another run; past it, marks
+    /// [`STATUS_INFRA_HALT`] and returns the error that halts the step: [`handover_halt`] after
+    /// a missed handover, [`infra_halt`] after any other outage.
     fn retry_infra_failure(
         &self,
         unit: &str,
@@ -6379,14 +6453,34 @@ impl RunCtx<'_> {
         infra: InfraRetries,
         cause: &str,
         evidence: &str,
+        missed: Option<&str>,
     ) -> Result<InfraRetries, Error> {
         let detail = format!("{cause}: {evidence}");
-        self.emit_infra_mark(unit, STATUS_INFRA_RETRY, attempt, infra.ordinal, &detail)?;
+        let spawn = missed.unwrap_or_default();
+        self.emit_infra_mark(
+            unit,
+            STATUS_INFRA_RETRY,
+            attempt,
+            infra.ordinal,
+            &detail,
+            spawn,
+        )?;
         if !infra.exhausted(self.taxonomy.infra_limit()) {
-            return Ok(infra.after(STATUS_INFRA_RETRY));
+            return Ok(infra.after(STATUS_INFRA_RETRY, missed.is_some()));
         }
-        self.emit_infra_mark(unit, STATUS_INFRA_HALT, attempt, infra.ordinal, &detail)?;
-        Err(infra_halt(unit, attempt, cause, evidence))
+        self.emit_infra_mark(
+            unit,
+            STATUS_INFRA_HALT,
+            attempt,
+            infra.ordinal,
+            &detail,
+            spawn,
+        )?;
+        Err(if missed.is_some() {
+            handover_halt(unit, attempt, infra.misses + 1, evidence)
+        } else {
+            infra_halt(unit, attempt, cause, evidence)
+        })
     }
 
     /// Integrate `st` at `attempts` under `approval`, rerunning the merge uncharged on a
@@ -6412,6 +6506,7 @@ impl RunCtx<'_> {
                         *infra,
                         CAUSE_INFRA_SPAWN,
                         &crash,
+                        None,
                     )?
                 }
             }
@@ -6419,7 +6514,8 @@ impl RunCtx<'_> {
     }
 
     /// Append one infra mark ([`STATUS_INFRA_RETRY`] / [`STATUS_INFRA_HALT`]) for `unit`'s run
-    /// at `(attempt, ordinal)`, its `detail` riding as the unit's evidence under the status.
+    /// at `(attempt, ordinal)`, its `detail` riding as the unit's evidence under the status and
+    /// the author `spawn` whose missed handover caused it, when not empty, as its [`META_SPAWN`].
     fn emit_infra_mark(
         &self,
         unit: &str,
@@ -6427,8 +6523,9 @@ impl RunCtx<'_> {
         attempt: u32,
         ordinal: u32,
         detail: &str,
+        spawn: &str,
     ) -> Result<(), Error> {
-        self.emit_keyed(
+        self.emit_keyed_meta(
             &infra_mark_key(unit, status, attempt, ordinal),
             ledger::TYPE_UNIT_STATUS,
             json!({
@@ -6437,6 +6534,7 @@ impl RunCtx<'_> {
                 "attempt": attempt,
                 "evidence": { status: detail },
             }),
+            &[(META_SPAWN, spawn)],
         )
     }
 
@@ -6577,6 +6675,7 @@ impl RunCtx<'_> {
                     infra,
                     &full.cause(),
                     &full.evidence.join(" | "),
+                    None,
                 )?;
             };
             if !full.pass {
@@ -6723,6 +6822,10 @@ impl RunCtx<'_> {
             // [`SPAWN_CRASH_MARKER`]) that failed this attempt as an outage: the F3 evidence
             // names it, and the rerun keeps the committed implementation.
             let mut tier_crash: Option<String> = None;
+            // The author spawn whose missed handover failed this attempt as an outage
+            // ([`CAUSE_INFRA_HANDOVER`]): its infra-retry mark names it, so the rerun continues
+            // that session.
+            let mut missed: Option<String> = None;
             // The cause wire (spec 69, criterion 3): set at whichever branch below
             // actually fails this attempt, so the single convergent `UnitFailed` emit
             // near the bottom of this loop stamps the REAL cause rather than inferring
@@ -6809,6 +6912,20 @@ impl RunCtx<'_> {
                 } else {
                     author_handover()
                 };
+                // A rerun after this attempt's implementer missed its handover continues the
+                // session that missed; its fresh prompt, read when that session cannot be
+                // continued, says the tree holds that session's partial work.
+                let missed_session = if infra.ordinal > 0 {
+                    missed_handover(
+                        &self.read_current_run()?,
+                        &st.name,
+                        ROLE_IMPLEMENTER,
+                        attempts,
+                    )
+                } else {
+                    None
+                };
+                prompt.push_str(missed_handover_note(missed_session.as_deref()));
                 prompt.push_str(&handover);
                 // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
@@ -6850,68 +6967,76 @@ impl RunCtx<'_> {
                 };
                 // A RE-ATTEMPT CONTINUES THE IMPLEMENTER'S SESSION: a later attempt resumes the
                 // session its earlier attempt ran as, sent the prior-failure block alone - the
-                // session already holds the criterion and the slice.
-                let opts = self.continue_prior_session(
-                    SpawnOpts {
-                        system_prompt: self.build_system_prompt(agent_def),
-                        dir: dir.to_string(),
-                        isolation: wt.is_some(),
-                        parallel: false,
-                        blast_radius: blast_radius.clone(),
-                        id: implementer_id.clone(),
-                        unit: st.name.clone(),
-                        stage: st.name.clone(),
-                        // The live work-line: the unit's criterion, so the run's live views
-                        // narrate the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
-                        title: st.coverage.trim().to_string(),
-                        // The cascade rung the driver resolves for this attempt (spec 10
-                        // unit 4) - the same `attempts` the alias stamp above uses.
-                        attempt: attempts,
-                        run_id: self.run_id.clone(),
-                        // The ONE build-environment authority (spec 65) PLUS this
-                        // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
-                        // BUILD LOCATION): the implementer's own `cargo build`/`cargo
-                        // test` invocations get the same wrapper/cache/incremental
-                        // vars a gate build gets, AND land in the same per-unit
-                        // cache a gate build for this `dir` gets, instead of
-                        // embedding a `target/` dir inside the worktree itself.
-                        env: self.spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
-                        // An implementer is never a review tier: no roster to render
-                        // (spec 67, criterion 4).
-                        reviews: Vec::new(),
-                        // The headless host and the cli driver read `settings_json`; the
-                        // other drivers ignore it.
-                        settings_json: String::new(),
-                        // Set by `continue_prior_session` below when there is a session
-                        // to continue.
-                        resumed_from: String::new(),
-                        resume_task: String::new(),
-                        ..SpawnOpts::new(self.spawn_host())
-                    },
-                    ROLE_IMPLEMENTER,
-                    Some(prior.block(&st.name, attempts))
-                        .filter(|block| !block.trim().is_empty())
-                        .map(|block| block + &handover),
-                )?;
+                // session already holds the criterion and the slice. A rerun after a missed
+                // handover resumes the session that missed instead.
+                let fresh = SpawnOpts {
+                    system_prompt: self.build_system_prompt(agent_def),
+                    dir: dir.to_string(),
+                    isolation: wt.is_some(),
+                    parallel: false,
+                    blast_radius: blast_radius.clone(),
+                    id: implementer_id.clone(),
+                    unit: st.name.clone(),
+                    stage: st.name.clone(),
+                    // The live work-line: the unit's criterion, so the run's live views
+                    // narrate the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
+                    title: st.coverage.trim().to_string(),
+                    // The cascade rung the driver resolves for this attempt (spec 10
+                    // unit 4) - the same `attempts` the alias stamp above uses.
+                    attempt: attempts,
+                    run_id: self.run_id.clone(),
+                    // The ONE build-environment authority (spec 65) PLUS this
+                    // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
+                    // BUILD LOCATION): the implementer's own `cargo build`/`cargo
+                    // test` invocations get the same wrapper/cache/incremental
+                    // vars a gate build gets, AND land in the same per-unit
+                    // cache a gate build for this `dir` gets, instead of
+                    // embedding a `target/` dir inside the worktree itself.
+                    env: self.spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
+                    // An implementer is never a review tier: no roster to render
+                    // (spec 67, criterion 4).
+                    reviews: Vec::new(),
+                    // The headless host and the cli driver read `settings_json`; the
+                    // other drivers ignore it.
+                    settings_json: String::new(),
+                    // Set below when there is a session to continue.
+                    resumed_from: String::new(),
+                    resume_task: String::new(),
+                    ..SpawnOpts::new(self.spawn_host())
+                };
+                let opts = match missed_session.as_deref().filter(|s| !s.is_empty()) {
+                    Some(session) => resume_missed(fresh, session, &handover),
+                    None => self.continue_prior_session(
+                        fresh,
+                        ROLE_IMPLEMENTER,
+                        Some(prior.block(&st.name, attempts))
+                            .filter(|block| !block.trim().is_empty())
+                            .map(|block| block + &handover),
+                    )?,
+                };
                 let spawned = isolation_check
                     .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit));
-                let handed_over = match &spawned {
-                    Ok(result) if !is_producer(st) => self.handed_over(&opts.id, result)?,
-                    _ => true,
+                let miss = match &spawned {
+                    Ok(result) if !is_producer(st) => self.handover_miss(
+                        &format!("agent {:?}: the implementer", st.agent),
+                        &opts.id,
+                        result,
+                    )?,
+                    _ => None,
                 };
                 match spawned {
                     // An implementer session that ended without handing over (a denied
                     // command, a turn that ended mid-work) stopped before its work was done: it
                     // takes the crash arm's disposition below, before any `green` stamp or
-                    // checkpoint, and reruns uncharged over the tree it left.
-                    Ok(result) if !handed_over => {
+                    // checkpoint, and reruns uncharged over the tree it left, continuing the
+                    // session that missed.
+                    Ok(result) if miss.is_some() => {
                         self.record_session(&opts, &result)?;
-                        spawn_err = Some(format!(
-                            "agent {:?}: {}",
-                            st.agent,
-                            not_handed_over("the implementer")
-                        ));
-                        cause = CAUSE_INFRA_SPAWN.to_string();
+                        if let Some(miss) = miss {
+                            spawn_err = Some(miss.evidence());
+                            missed = Some(miss.id);
+                        }
+                        cause = CAUSE_INFRA_HANDOVER.to_string();
                     }
                     Ok(result) => {
                         self.record_session(&opts, &result)?;
@@ -7003,9 +7128,17 @@ impl RunCtx<'_> {
                     infra.ordinal,
                     &prior.gate_evidence,
                 );
-                if let Err(crash) = infra_crash(seam)? {
-                    tier_crash = Some(crash);
-                    cause = CAUSE_INFRA_SPAWN.to_string();
+                match infra_crash(seam)? {
+                    Err(crash) => {
+                        tier_crash = Some(crash);
+                        cause = CAUSE_INFRA_SPAWN.to_string();
+                    }
+                    Ok(Some(miss)) => {
+                        tier_crash = Some(miss.evidence());
+                        missed = Some(miss.id);
+                        cause = CAUSE_INFRA_HANDOVER.to_string();
+                    }
+                    Ok(None) => {}
                 }
             }
 
@@ -7347,7 +7480,14 @@ impl RunCtx<'_> {
                     .clone()
                     .or_else(|| tier_crash.clone())
                     .unwrap_or_else(|| next.summary());
-                infra = self.retry_infra_failure(&st.name, attempts, infra, &cause, &evidence)?;
+                infra = self.retry_infra_failure(
+                    &st.name,
+                    attempts,
+                    infra,
+                    &cause,
+                    &evidence,
+                    missed.as_deref(),
+                )?;
                 skip_implement = spawn_err.is_none();
                 // The rerun spawns every review tier afresh under its own window, so a park of
                 // the round the outage spoiled no longer holds this unit's worktree; a park of
@@ -7622,15 +7762,20 @@ impl RunCtx<'_> {
                 // takes the crash arm: the candidate loses, as a losing candidate has no later
                 // attempt or infra rerun to carry the crash or the refusal into (infra ordinal 0).
                 .and_then(|result| {
-                    if self.handed_over(&impl_id, &result)? {
-                        Ok(result)
-                    } else {
-                        Err(Error(not_handed_over("the speculation lane's implementer")))
+                    match self.handover_miss(
+                        "the speculation lane's implementer",
+                        &impl_id,
+                        &result,
+                    )? {
+                        None => Ok(result),
+                        Some(miss) => Err(Error(miss.evidence())),
                     }
                 })
                 .and_then(|result| {
-                    self.spawn_sdet_author(st, Some(&wt), &dir, lane, 0, &[])
-                        .map(|()| result)
+                    match self.spawn_sdet_author(st, Some(&wt), &dir, lane, 0, &[])? {
+                        None => Ok(result),
+                        Some(miss) => Err(Error(miss.evidence())),
+                    }
                 }) {
                 Ok(result) => {
                     // The candidate produced a diff: commit its worktree so the gates measure
@@ -13581,7 +13726,9 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   (spec 06 unit 6: wait-until-reset + re-spawn); [`CAUSE_INFRA_GATE`] a gate red whose
 ///   every failing gate is of the taxonomy's `infra` class ([`GateOutcome::infra`]);
 ///   [`CAUSE_INFRA_REVIEW`] an adjudicator reject blaming infrastructure
-///   ([`spawn::Adjudication::is_infra_fault`]).
+///   ([`spawn::Adjudication::is_infra_fault`]); [`CAUSE_INFRA_HANDOVER`] an author session (the
+///   implementer or the sdet-author) that ended without its handover line
+///   ([`RunCtx::handover_miss`]), whose rerun continues that session.
 const CAUSE_REJECT: &str = "reject";
 const CAUSE_INTEGRATE_CONFLICT: &str = "integrate-conflict";
 const CAUSE_INFRA_SPAWN: &str = "infra:spawn";
@@ -13596,7 +13743,13 @@ const HANDOVER_LAST_LINE_CHARS: usize = 200;
 /// unit's stage asks before it charges a remediation attempt, over every infra source the
 /// cause wire names.
 fn is_infra_cause(cause: &str) -> bool {
-    [CAUSE_INFRA_SPAWN, CAUSE_INFRA_GATE, CAUSE_INFRA_REVIEW].contains(&cause)
+    [
+        CAUSE_INFRA_SPAWN,
+        CAUSE_INFRA_GATE,
+        CAUSE_INFRA_REVIEW,
+        CAUSE_INFRA_HANDOVER,
+    ]
+    .contains(&cause)
 }
 
 /// The cause a review reject stamps: [`CAUSE_INFRA_REVIEW`] when the adjudicator's verdict
@@ -15324,10 +15477,93 @@ fn author_handed_over(result: &AgentResult, recorded: Option<&str>) -> bool {
             == Some(AUTHOR_HANDOVER_LINE)
 }
 
-/// What an author session that ended without handing over its work failed with, naming `who`:
-/// its arm's crash disposition reads it as any other crash's message.
-fn not_handed_over(who: &str) -> String {
-    format!("{who}: the session ended without handing over (no {AUTHOR_HANDOVER_LINE} line)")
+/// An author session that ended without handing over its work ([`RunCtx::handover_miss`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HandoverMiss {
+    /// The author, as its arm names it.
+    who: String,
+    /// The spawn that missed: the id its infra-retry mark names ([`META_SPAWN`]).
+    id: String,
+    /// The result's last non-blank line, bounded ([`bounded_last_line`]).
+    last_line: String,
+    /// The tool calls the session was denied, from the run's recorded result for the spawn
+    /// ([`spawn::META_PERMISSION_DENIALS`]); `None` when none was recorded.
+    denials: Option<u64>,
+}
+
+impl HandoverMiss {
+    /// What the miss failed with: the author, the missing line, the session's last line and its
+    /// denial count, so an operator tells a refused tool call from a forgotten line.
+    fn evidence(&self) -> String {
+        let denials = self
+            .denials
+            .map_or_else(|| "unknown".to_string(), |n| n.to_string());
+        format!(
+            "{}: the session ended without handing over (no {AUTHOR_HANDOVER_LINE} line); its \
+             last line {:?}; permission denials: {denials}",
+            self.who, self.last_line
+        )
+    }
+}
+
+/// The last non-blank line of an author's `output`, trimmed, cut to [`HANDOVER_LAST_LINE_CHARS`]
+/// characters with `...` when longer: model output the log records, so its length is bounded.
+fn bounded_last_line(output: &str) -> String {
+    let line = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    if line.chars().count() <= HANDOVER_LAST_LINE_CHARS {
+        return line.to_string();
+    }
+    let mut cut: String = line.chars().take(HANDOVER_LAST_LINE_CHARS).collect();
+    cut.push_str("...");
+    cut
+}
+
+/// The session to continue `role`'s rerun at `attempt` of `unit` with after a missed handover:
+/// `Some` when `unit`'s latest infra-retry mark at `attempt` records a miss of a `role` spawn
+/// ([`META_SPAWN`]), holding the session that spawn ran as, or empty when it recorded none (a
+/// rerun that cannot be continued, whose fresh prompt then says the tree holds that session's
+/// partial work); `None` when the latest rerun at `attempt` was no miss of `role`'s.
+fn missed_handover(events: &[Event], unit: &str, role: &str, attempt: u32) -> Option<String> {
+    let missed = unit_status_marks(events, unit, &[STATUS_INFRA_RETRY])
+        .filter(|(_, at, _)| *at == u64::from(attempt))
+        .last()?
+        .2
+        .meta
+        .get(META_SPAWN)
+        .filter(|id| crate::spawn::spawn_role(id) == role)?
+        .clone();
+    Some(
+        unit_status_marks(events, unit, &[STATUS_SPAWN_SESSION])
+            .filter(|(_, _, e)| e.meta.get(META_SPAWN) == Some(&missed))
+            .last()
+            .and_then(|(_, _, e)| e.meta.get(META_SESSION_ID).cloned())
+            .unwrap_or_default(),
+    )
+}
+
+/// What an author rerun's fresh prompt says after a `missed` handover ([`missed_handover`]):
+/// [`PRIOR_PARTIAL_WORK`], read when the session that missed cannot be continued, else nothing.
+fn missed_handover_note(missed: Option<&str>) -> &'static str {
+    if missed.is_some() {
+        PRIOR_PARTIAL_WORK
+    } else {
+        ""
+    }
+}
+
+/// `opts` continuing `session`, the author session that missed its handover, sent
+/// [`MISSED_HANDOVER`] and the `handover` contract: the rerun finishes that session's work.
+fn resume_missed(opts: SpawnOpts, session: &str, handover: &str) -> SpawnOpts {
+    SpawnOpts {
+        resumed_from: session.to_string(),
+        resume_task: format!("{MISSED_HANDOVER}{handover}"),
+        ..opts
+    }
 }
 
 /// The fact the sdet-author's fresh prompt and a resumed session's task state on a round
