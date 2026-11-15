@@ -271,6 +271,9 @@ mod tests {
     #[test]
     fn a_processes_command_is_its_arguments_joined_by_spaces() {
         let mut child = sleeper_in(Path::new("/"));
+        // `spawn` returns while the child's exec may still be laying out its arguments, when the
+        // OS reports none yet, so the child's command is read once its exec has finished.
+        wait_until(|| command(child.id()) == "sleep 300");
         let child_command = command(child.id());
         cleanup(&mut child);
         assert_eq!(
