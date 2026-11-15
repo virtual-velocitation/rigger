@@ -104,9 +104,9 @@ struct Fields {
     place: Field,
     title: Field,
     body: Field,
-    /// The order the section was read in, across every refresh: what ranks sections that score
-    /// alike, whatever segment holds each.
-    read: Field,
+    /// The section's place within its source: with the source's place in the latest refresh's
+    /// sources, what ranks sections that score alike, whatever segment holds each.
+    ordinal: Field,
 }
 
 /// The open in-memory index.
@@ -117,13 +117,19 @@ struct Open {
     reader: IndexReader,
 }
 
-/// The in-memory prose index, the content hash of every source it holds and the order the next
-/// section is read in.
+/// The in-memory prose index, and the content hash of every source it holds with that source's
+/// place in the sources the latest refresh was given.
 #[derive(Default)]
 pub(crate) struct ProseIndex {
     open: Option<Open>,
-    held: BTreeMap<String, u64>,
-    read: u64,
+    held: BTreeMap<String, Held>,
+}
+
+/// A source the index holds: its content hash, and its place in the sources the latest refresh
+/// was given.
+struct Held {
+    hash: u64,
+    place: usize,
 }
 
 impl ProseIndex {
@@ -161,26 +167,28 @@ impl ProseIndex {
         };
         let mut seen = BTreeSet::new();
         let mut dirty = false;
-        for source in sources {
+        for (place, source) in sources.into_iter().enumerate() {
             let hash = content_hash(&source.text);
             seen.insert(source.key.clone());
-            if self.held.get(&source.key) == Some(&hash) {
-                continue;
+            if let Some(held) = self.held.get_mut(&source.key) {
+                if held.hash == hash {
+                    held.place = place;
+                    continue;
+                }
             }
             open.writer
                 .delete_term(Term::from_field_text(open.fields.key, &source.key));
-            for section in sections(&source) {
+            for (ordinal, section) in (0u64..).zip(sections(&source)) {
                 open.writer.add_document(doc!(
                     open.fields.key => source.key.as_str(),
                     open.fields.kind => section.kind,
                     open.fields.place => section.place,
                     open.fields.title => section.title,
                     open.fields.body => section.body,
-                    open.fields.read => self.read,
+                    open.fields.ordinal => ordinal,
                 ))?;
-                self.read += 1;
             }
-            self.held.insert(source.key, hash);
+            self.held.insert(source.key, Held { hash, place });
             dirty = true;
         }
         let gone: Vec<String> = self
@@ -203,8 +211,10 @@ impl ProseIndex {
     }
 
     /// The top [`PROSE_TOP`] sections for `terms`' words, any of them, a heading match weighing
-    /// double: by score, then in the order read, so the ranking does not hang on which segment
-    /// the writer's threads put a section in.
+    /// double: by score, then by the source's place in the sources the latest refresh was given
+    /// and the section's place within it, the order a fresh index reads them in, so the ranking
+    /// hangs neither on which segment the writer's threads put a section in nor on what the
+    /// index held before.
     fn search(&self, terms: &[&str]) -> tantivy::Result<Ranked> {
         let Some(open) = &self.open else {
             return Ok(Ranked::default());
@@ -221,7 +231,8 @@ impl ProseIndex {
             .map_err(|e| tantivy::TantivyError::InvalidArgument(e.to_string()))?;
         let searcher = open.reader.searcher();
         // Every match by score, then those scoring at least the last kept one read and put in
-        // the order read, so a tie across the cut keeps the sections read first.
+        // their sources' order, so a tie across the cut keeps the sections a fresh read reads
+        // first.
         let every = usize::try_from(searcher.num_docs())
             .unwrap_or(usize::MAX)
             .max(1);
@@ -234,10 +245,14 @@ impl ProseIndex {
                 break;
             }
             let found: TantivyDocument = searcher.doc(address)?;
-            let read = found.get_first(open.fields.read).and_then(|v| v.as_u64());
-            top.push((score, read, found));
+            let key = found.get_first(open.fields.key).and_then(|v| v.as_str());
+            let place = key.and_then(|key| self.held.get(key)).map(|h| h.place);
+            let ordinal = found
+                .get_first(open.fields.ordinal)
+                .and_then(|v| v.as_u64());
+            top.push((score, (place, ordinal), found));
         }
-        top.sort_by(|(a, a_read, _), (b, b_read, _)| b.total_cmp(a).then(a_read.cmp(b_read)));
+        top.sort_by(|(a, a_at, _), (b, b_at, _)| b.total_cmp(a).then(a_at.cmp(b_at)));
         top.truncate(PROSE_TOP);
         let mut snippets = SnippetGenerator::create(&searcher, &*query, open.fields.body)?;
         snippets.set_max_num_chars(SNIPPET_CHARS);
@@ -275,12 +290,12 @@ impl ProseIndex {
 fn open_index() -> tantivy::Result<Open> {
     let mut schema = Schema::builder();
     let fields = Fields {
-        key: schema.add_text_field("key", STRING),
+        key: schema.add_text_field("key", STRING | STORED),
         kind: schema.add_text_field("kind", STRING | STORED),
         place: schema.add_text_field("place", STORED),
         title: schema.add_text_field("title", TEXT | STORED),
         body: schema.add_text_field("body", TEXT | STORED),
-        read: schema.add_u64_field("read", STORED),
+        ordinal: schema.add_u64_field("ordinal", STORED),
     };
     let index = Index::create_in_ram(schema.build());
     let writer = index.writer_with_num_threads(WRITER_THREADS, WRITER_MEMORY)?;
