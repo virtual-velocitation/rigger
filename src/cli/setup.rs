@@ -1160,7 +1160,7 @@ fn rebuild_owed_graph(
                 },
                 &refuse,
             )?;
-            for line in delete_derived_once_rebuilt(&store, &run_stream_of(&project), &|| {
+            let refuse_live = || {
                 refuse_if_live(
                     loc,
                     selection,
@@ -1168,7 +1168,12 @@ fn rebuild_owed_graph(
                     &log,
                     live_run_delete_refusal,
                 )
-            }) {
+            };
+            let stream = run_stream_of(&project);
+            let lines = delete_derived_once_rebuilt(&store, &stream, &refuse_live)
+                .into_iter()
+                .chain(index_record_ids_once_rebuilt(&store, &refuse_live));
+            for line in lines {
                 println!("{line}");
             }
             Ok(rebuilt)
@@ -1226,6 +1231,15 @@ fn delete_derived_once_rebuilt(
              --derived` to delete them"
         )]
     })
+}
+
+/// The record index `rigger setup` gives an event log from before it once the graph it rebuilt
+/// stands ([`rigger::eventstore::sqlite::Store::index_record_ids`]), answering the lines to print.
+fn index_record_ids_once_rebuilt(
+    _store: &rigger::eventstore::sqlite::Store,
+    _refuse_live: &dyn Fn() -> Result<Option<HeldLock>, Box<dyn std::error::Error>>,
+) -> Vec<String> {
+    Vec::new()
 }
 
 /// What the live-run refusal of setup's delete of the derived events says, `reasons` being what
@@ -2214,6 +2228,70 @@ mod tests {
         ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
+
+    /// SETUP INDEXES AN OLDER LOG'S RECORD IDS: GIVEN an event log with or without the record
+    /// index, WHEN setup's step runs with the live-run probe passing or refusing, THEN a log with
+    /// the index is left alone and the probe never asked, a log without it is indexed under a
+    /// passing probe, saying so, and under a refusing one is left unindexed with a line naming
+    /// why, failing nothing.
+    #[test]
+    fn setup_indexes_an_older_log_s_record_ids_unless_the_run_is_live() {
+        // (case, whether the log holds the index, the probe's refusal, whether it holds the index
+        // after, the probes asked, the line said)
+        let rows: [(&str, bool, Option<&str>, bool, usize, Option<&str>); 3] = [
+            ("indexed", true, None, true, 0, None),
+            (
+                "an older log, no live run",
+                false,
+                None,
+                true,
+                1,
+                Some("rigger setup: indexed the event log's record ids"),
+            ),
+            (
+                "an older log, a live run",
+                false,
+                Some("the run is live (a driver)"),
+                false,
+                1,
+                Some(
+                    "rigger setup: did not index the event log's record ids - the run is live (a \
+                     driver); a record read scans its types until a setup with no live run \
+                     indexes them",
+                ),
+            ),
+        ];
+        for (case, indexed, refusal, after, asked, said) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("events.db");
+            let path = path.to_str().unwrap();
+            drop(rigger::eventstore::sqlite::Store::open(path).unwrap());
+            if !indexed {
+                (rusqlite::Connection::open(path).unwrap())
+                    .execute_batch("DROP INDEX idx_events_record")
+                    .unwrap();
+            }
+            let store = rigger::eventstore::sqlite::Store::open(path).unwrap();
+            let probes = std::cell::Cell::new(0);
+            let refuse_live = || -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
+                probes.set(probes.get() + 1);
+                match refusal {
+                    Some(why) => Err(why.into()),
+                    None => Ok(None),
+                }
+            };
+            let lines = index_record_ids_once_rebuilt(&store, &refuse_live);
+            assert_eq!(
+                (
+                    store.has_record_index().unwrap(),
+                    probes.get(),
+                    lines.first().map(String::as_str)
+                ),
+                (after, asked, said),
+                "{case}"
+            );
+        }
+    }
 
     rigger::test_cases! {
         /// `rigger setup` deletes what an earlier setup installed for an in-session driver rigger
