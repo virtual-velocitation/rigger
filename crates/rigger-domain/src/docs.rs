@@ -886,7 +886,8 @@ pub const DRIVER_STOP_RULE: &str = "A hold (`rigger hold --reason <text>`) stops
      relaunched by `rigger release` alone, and an interrupted driver is never relaunched. Ending a \
      driver's process any other way is a death, and the next `rigger status` (not `--line` or \
      `--json`) or session start (`rigger prime`) brings it back by adoption, as `rigger release` \
-     and `rigger resume-unit` do, each run in the main checkout; no other command relaunches it.";
+     and `rigger resume-unit` do, each invoked from the main checkout; no other command relaunches \
+     it.";
 
 /// Render the `rigger-reset-store` skill (spec 68, criterion 2): store hygiene for the
 /// three files under `.rigger/`. `ctx` is accepted only to match the registry's uniform
@@ -986,9 +987,13 @@ fn render_build_graph_skill(_ctx: &DocsContext) -> String {
              store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n",
-            "Rerun it any time it is convenient - on a schedule, after pulling a large set of \
+            &format!(
+                "Rerun it any time it is convenient - on a schedule, after pulling a large set of \
              changes, or simply because a lookup came back empty and you want to check. It is \
-             always safe: nothing is deleted, only appended and incrementally refreshed.\n",
+             always safe: nothing is deleted, only appended and incrementally refreshed, so it \
+             never asks for a driver to be stopped. When something else does: {stop}\n",
+                stop = DRIVER_STOP_RULE
+            ),
         ],
         "Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
@@ -1026,7 +1031,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  pid and the file its output goes to (`.rigger/driver.out`, which `rigger status` \
                  names while it holds what a relaunched driver said before it ended). `rigger \
                  watch` relaunches nothing: it names the dead driver and `rigger status` as what \
-                 brings it back. A driver that returned, for any reason, is never relaunched. A \
+                 brings it back. A driver that returned is never relaunched, save one that parked on an \
+                 operator hold, which `rigger release` relaunches. A \
                  driver that dies again within ten minutes of its relaunch, a relaunch that never \
                  started, or one whose recorded binary no longer exists is left stopped, and the \
                  line names the command that relaunches it by hand.\n",
