@@ -17384,6 +17384,9 @@ mod tests {
         /// reaches the sdet seam) and PARK only the sdet-author spawn, exercising the parked
         /// arm at the sdet seam that `fail_spawn_ids` (a non-parked crash) cannot.
         park_spawn_ids: std::collections::HashSet<String>,
+        /// Per-SPAWN-ID PARK after the spawn's emits: the spawn records what it emits, then
+        /// parks unanswered - a reviewer that recorded its findings before its driver died.
+        park_after_emits_ids: std::collections::HashSet<String>,
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
@@ -17499,6 +17502,7 @@ mod tests {
                 output_by_spawn_id: HashMap::new(),
                 fail_spawn_ids: std::collections::HashSet::new(),
                 park_spawn_ids: std::collections::HashSet::new(),
+                park_after_emits_ids: std::collections::HashSet::new(),
                 spawn_ids: Mutex::new(Vec::new()),
                 resolved_model_by_agent: HashMap::new(),
                 fail_spawn: false,
@@ -17755,6 +17759,9 @@ mod tests {
                 for (t, v) in per {
                     emit(t, v.clone())?;
                 }
+            }
+            if self.park_after_emits_ids.contains(&opts.id) {
+                return Err(parked_spawn(&opts.id));
             }
             // A REVIEWER's own side effect destroying the worktree mid-review (spec 64
             // criterion 3, round 4), mirroring `GateSideEffect::DeleteWorktree`'s
@@ -30140,6 +30147,153 @@ mod tests {
             )),
             "the relaunched driver continues the session the log recorded"
         );
+    }
+
+    /// A [`ReviewFinding`](contextgraph::TYPE_REVIEW_FINDING) a test reviewer records: `id`
+    /// with `summary`, about `about`.
+    fn finding(id: &str, summary: &str, about: &str) -> (String, Value) {
+        (
+            contextgraph::TYPE_REVIEW_FINDING.to_string(),
+            json!({"id": id, "summary": summary, "about": [about]}),
+        )
+    }
+
+    /// The [`session_cfg`] unit run in two processes over one store and repository, its round-0
+    /// adjudicator rejecting and its round-1 one approving: in the first, the lens spawn of
+    /// round `attempt` records `findings` and then parks (its driver died after it recorded
+    /// them); the second, a relaunch by adoption under `relaunched`, re-drives that spawn.
+    /// Returns the second process's run state.
+    fn relaunch_after_recording(
+        attempt: u32,
+        findings: Vec<(String, Value)>,
+        relaunched: &Stub,
+    ) -> RunState {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let lens = spawn_id("implement", &lens_role("lens"), attempt);
+        let st = Store::open(":memory:").unwrap();
+        let first = Stub {
+            emits_by_spawn_id: HashMap::from([(lens.clone(), findings)]),
+            park_after_emits_ids: [lens].into_iter().collect(),
+            ..session_stub(&relaunch_verdicts())
+        };
+        run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &first, Vec::new())
+            },
+        )
+        .unwrap();
+        run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path,
+                ..stub_deps(&st, relaunched, Vec::new())
+            },
+        )
+        .unwrap()
+    }
+
+    /// The verdicts of a [`relaunch_after_recording`] unit: round 0 rejects, round 1 approves.
+    fn relaunch_verdicts() -> [(String, &'static str); 2] {
+        [
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]
+    }
+
+    /// A reviewer re-driven within its round after its driver died is told the findings it
+    /// already recorded that round, each still in the log: a first round's re-driven lens reads
+    /// them after its prompt, a later round's in the task its resumed session is sent, and a
+    /// lens that recorded none is told nothing. A re-driven lens that already holds findings
+    /// did its work, so an empty result from it is no degenerate one to respawn.
+    #[test]
+    fn a_reviewer_re_driven_within_its_round_is_told_the_findings_it_already_recorded() {
+        const YOURS: &str =
+            "You already recorded these findings this round; each stays in the log:";
+        let two = || {
+            vec![
+                finding("f-1", "the read is unscoped", "feature.rs"),
+                finding("f-2", "the guard is skipped", "feature.rs"),
+            ]
+        };
+        let lines = [
+            "- lens:lens (f-1): the read is unscoped\n",
+            "- lens:lens (f-2): the guard is skipped\n",
+        ];
+        let silent_lens = || {
+            let mut driver = session_stub(&relaunch_verdicts());
+            driver
+                .output_by_spawn_id
+                .insert(spawn_id("implement", &lens_role("lens"), 0), String::new());
+            driver
+        };
+        let rows: [(&str, u32, Vec<(String, Value)>, Stub, &[&str]); 4] = [
+            (
+                "a first round's re-driven lens",
+                0,
+                two(),
+                session_stub(&relaunch_verdicts()),
+                &lines,
+            ),
+            (
+                "a later round's resumed lens",
+                1,
+                two(),
+                session_stub(&relaunch_verdicts()),
+                &lines,
+            ),
+            (
+                "a re-driven lens that recorded nothing",
+                0,
+                Vec::new(),
+                session_stub(&relaunch_verdicts()),
+                &[],
+            ),
+            (
+                "a re-driven lens holding findings that returns empty",
+                0,
+                two(),
+                silent_lens(),
+                &lines,
+            ),
+        ];
+        for (case, attempt, findings, relaunched, expected) in rows {
+            let rs = relaunch_after_recording(attempt, findings, &relaunched);
+            assert_eq!(
+                rs.units["implement"].status,
+                ledger::Status::Integrated,
+                "{case}: premise: the relaunch finishes the unit"
+            );
+            let lens = spawn_id("implement", &lens_role("lens"), attempt);
+            let told = if attempt == 0 {
+                relaunched.prompts_for("lens").first().cloned()
+            } else {
+                relaunched.resume_of(&lens).map(|(_, task)| task)
+            }
+            .unwrap_or_default();
+            let block = if expected.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n{YOURS}\n{}", expected.concat())
+            };
+            assert!(
+                block.is_empty() && !told.contains(YOURS) || told.ends_with(&block),
+                "{case}: the re-driven lens must close on the findings it recorded, \
+                 {block:?}; got:\n{told}"
+            );
+            assert!(
+                !relaunched.spawn_ids().contains(&spawn_retry_id(
+                    "implement",
+                    &lens_role("lens"),
+                    attempt,
+                    1
+                )),
+                "{case}: the re-driven lens is never respawned within the round; spawns: {:?}",
+                relaunched.spawn_ids()
+            );
+        }
     }
 
     /// How a [`assert_a_gated_attempt_never_re_runs_the_sdet_seam`] row re-enters attempt 0
