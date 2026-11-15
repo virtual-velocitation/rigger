@@ -1,9 +1,8 @@
 #!/bin/sh
 # The check-in mutation gate (spec 91): the diff-scoped `cargo mutants` sweep, run ONCE by a
 # `checkin` stage that lists it - after every implement unit has integrated - never per
-# implementer round. The Rust gate template set ships this script unwired: `rigger init` writes
-# it beside a root Cargo.toml, and the workflow it writes neither declares nor lists the gate.
-# To run it, declare it as that set's comment shows, its `requires` kept -
+# implementer round. No gate template set ships it. To run it in a project, copy it, declare
+# it with its `requires` -
 # `mutation: { run: "sh .rigger/gates/mutation.sh", kind: core, requires: [cargo-mutants, cargo-nextest] }`
 # - and list it after `test` in the `checkin` stage's gates.
 #

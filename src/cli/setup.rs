@@ -103,7 +103,9 @@ struct ScaffoldReport {
     /// `detect` marker is a file at the project root.
     gate_set: Option<String>,
     /// Every gate template set this run was handed, in catalogue order: its key and its
-    /// `detect` markers - the parenthetical of the no-set line.
+    /// `detect` markers - the parenthetical of the no-set line. Empty exactly when no template
+    /// root was given, since a root holding no set is refused: the summary then prints the
+    /// no-root line in place of the no-set line.
     set_catalogue: Vec<(String, Vec<String>)>,
     /// The matched set's listed paths this run newly wrote (empty when each already existed).
     new_set_files: Vec<String>,
@@ -129,11 +131,12 @@ impl ScaffoldReport {
 /// rerun on an initialized project changes nothing and reports `changed: false`.
 ///
 /// The workflow's gates and its implementer come from the first of `sets` (handed in key order:
-/// the embedded [`TEMPLATE_SETS`] in production) any of whose `detect` markers is a file at
-/// `root`, whose `implementer` persona is seeded beside the role seeds; with none, the workflow
-/// declares no gates and names the language-neutral `implementer` seed. An existing workflow or
-/// agent file is kept. Every set is parsed before the first write, so a
-/// set that fails [`parse_template_set`] refuses naming its key and writes nothing.
+/// in production, what [`load_template_sets`] read from the template root `--template <dir>`
+/// names, and none when no root was given) any of whose `detect` markers is a file at `root`,
+/// whose `implementer` persona is seeded beside the role seeds; with none, the workflow declares
+/// no gates and names the language-neutral `implementer` seed. An existing workflow or agent file
+/// is kept. Every set is parsed before the first write, so a set that fails
+/// [`parse_template_set`] refuses naming its key and writes nothing.
 fn init_project(
     root: &Path,
     sets: &[TemplateSet],
@@ -144,7 +147,7 @@ fn init_project(
         .collect::<Result<Vec<_>, String>>()?;
     let set_catalogue = parsed
         .iter()
-        .map(|(set, spec)| (set.key.to_string(), spec.detect.clone()))
+        .map(|(set, spec)| (set.key.clone(), spec.detect.clone()))
         .collect();
     let matched = parsed
         .iter()
@@ -247,13 +250,13 @@ fn init_project(
     // 5. Write the matched set's files when absent, LAST: after every file this function
     // writes or merges itself, so its own write wins at a path a set also lists.
     let mut new_set_files = Vec::new();
-    for (path, content) in matched.map_or(&[][..], |(set, _)| set.files) {
+    for (path, content) in matched.map_or(&[][..], |(set, _)| &set.files[..]) {
         let target = root.join(path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
         if write_if_absent(&target, content)? {
-            new_set_files.push(path.to_string());
+            new_set_files.push(path.clone());
         }
     }
 
@@ -265,7 +268,7 @@ fn init_project(
         gitignore_added,
         minted_id,
         wrote_instructions_readme,
-        gate_set: matched.map(|(set, _)| set.key.to_string()),
+        gate_set: matched.map(|(set, _)| set.key.clone()),
         set_catalogue,
         new_set_files,
     })
@@ -482,15 +485,22 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
             )),
             None => {
                 lines.push("scaffolded .rigger/workflow.yml".to_string());
-                let catalogue = report
-                    .set_catalogue
-                    .iter()
-                    .map(|(key, detect)| format!("{key}: {}", detect.join(" or ")))
-                    .collect::<Vec<_>>()
-                    .join("; ");
+                let why = if report.set_catalogue.is_empty() {
+                    "no template root was given (--template <dir>)".to_string()
+                } else {
+                    let catalogue = report
+                        .set_catalogue
+                        .iter()
+                        .map(|(key, detect)| format!("{key}: {}", detect.join(" or ")))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    format!(
+                        "no gate template set matches this project ({catalogue} at the project \
+                         root)"
+                    )
+                };
                 lines.push(format!(
-                    "no gate template set matches this project ({catalogue} at the project \
-                     root), so .rigger/workflow.yml declares no gates - declare your own under \
+                    "{why}, so .rigger/workflow.yml declares no gates - declare your own under \
                      gates:"
                 ));
             }
@@ -530,9 +540,14 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
     lines
 }
 
-pub(crate) fn cmd_init() -> Res {
+/// `rigger init [--template <dir>]`: scaffold the project at the working directory from the gate
+/// template sets the template root `<dir>` holds - with no root, a workflow declaring no gates -
+/// and print what it wrote. The sets are loaded before anything is written, so a root
+/// [`load_template_sets`] refuses leaves the project untouched.
+pub(crate) fn cmd_init(args: &[String]) -> Res {
+    let sets = parse_setup_args("init", args)?.template_sets()?;
     let site = Site::here();
-    let report = init_project(site.located()?, TEMPLATE_SETS)?;
+    let report = init_project(site.located()?, &sets)?;
     let lines = scaffold_summary_lines(&report);
     if lines.is_empty() {
         // Re-runnable: an already-initialized project is a silent no-op with a plain
@@ -812,9 +827,12 @@ pub(crate) fn open_project_code_store(
 /// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
 /// pre-commit hook, the operator MCP entry and the session settings, and deletes what an
 /// earlier setup installed for an in-session workflow driver rigger does not ship. After it runs
-/// the user drives the loop with `rigger run <spec> --base <ref>` with zero manual setup.
+/// the user drives the loop with `rigger run <spec> --base <ref>` with zero manual setup. Like
+/// `rigger init`, it scaffolds from the gate template sets of the root `--template <dir>` names,
+/// loaded before anything is written.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
-    let opts = parse_setup_args(args)?;
+    let opts = parse_setup_args("setup", args)?;
+    let sets = opts.template_sets()?;
     let site = Site::here();
     // The directory setup scaffolds: the one it runs in, as the resolver read it.
     let root = site.located()?;
@@ -827,7 +845,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // safely re-runnable: it refreshes a drifted install and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
-    let scaffold = init_project(root, TEMPLATE_SETS)?;
+    let scaffold = init_project(root, &sets)?;
     // The workflow `init_project` left in place declares whether the lookup hook is installed
     // or removed below; a workflow that does not parse fails setup here, loudly.
     let grep_guard = config_store::load_workflow(&root.join(RIGGER_DIR).join(WORKFLOW_FILE))?
@@ -1531,29 +1549,49 @@ fn install_operator_mcp(root: &Path) -> Result<InstallOutcome, Box<dyn std::erro
     })
 }
 
-/// Parsed `rigger setup` options. Setup takes no positional arguments; the only
-/// flag is `--agents <dir>`, the local directory a starting agent fleet is imported
-/// from (spec 05).
+/// Parsed `rigger init` and `rigger setup` options. Neither takes a positional argument:
+/// `--template <dir>` names the template root whose `scaffold/` holds the gate template sets
+/// (spec 125), and `--agents <dir>`, setup's alone, the local directory a starting agent fleet is
+/// imported from (spec 05).
 #[derive(Debug, Default)]
 struct SetupOpts {
-    agents_dir: Option<std::path::PathBuf>,
+    template: Option<PathBuf>,
+    agents_dir: Option<PathBuf>,
 }
 
-/// Parse `rigger setup`'s arguments: only `--agents <dir>` is recognized. An unknown
-/// flag or a missing `--agents` value is a clear error rather than a silent skip.
-fn parse_setup_args(args: &[String]) -> Result<SetupOpts, Box<dyn std::error::Error>> {
+impl SetupOpts {
+    /// The gate template sets the `--template` root holds, read by [`load_template_sets`]; none
+    /// when no root was given.
+    fn template_sets(&self) -> Result<Vec<TemplateSet>, String> {
+        self.template
+            .as_deref()
+            .map_or(Ok(Vec::new()), load_template_sets)
+    }
+}
+
+/// Parse the arguments of `rigger <command>`, `command` being `init` or `setup`: `--template
+/// <dir>` for both and `--agents <dir>` for setup alone, each directory kept as typed and a
+/// repeated flag's last value winning. An unknown argument or a flag with no value is refused
+/// naming `command`, never skipped.
+fn parse_setup_args(command: &str, args: &[String]) -> Result<SetupOpts, String> {
     let mut opts = SetupOpts::default();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--agents" => {
-                let dir = it.next().ok_or(
-                    "setup: --agents needs a directory argument (a local checkout of an \
-                     agent collection)",
-                )?;
-                opts.agents_dir = Some(std::path::PathBuf::from(dir));
+            "--template" => {
+                let dir = it
+                    .next()
+                    .ok_or(format!("{command}: --template needs a directory argument"))?;
+                opts.template = Some(PathBuf::from(dir));
             }
-            other => return Err(format!("setup: unknown argument {other:?}").into()),
+            "--agents" if command == "setup" => {
+                let dir = it.next().ok_or(format!(
+                    "{command}: --agents needs a directory argument (a local checkout of an \
+                     agent collection)"
+                ))?;
+                opts.agents_dir = Some(PathBuf::from(dir));
+            }
+            other => return Err(format!("{command}: unknown argument {other:?}")),
         }
     }
     Ok(opts)
@@ -1781,8 +1819,9 @@ const SCAFFOLD_WORKFLOW: &str =
     "# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
 # adversary -> adjudicator via defaults.review), and integrates in one lifecycle.\n\
-# Its gates come from the gate template set matching this project's language; with\n\
-# none, it declares no gates.\n\
+# Its gates come from the gate template set matching this project's language, in\n\
+# the template root `rigger init --template <dir>` names; with none, it declares\n\
+# no gates.\n\
 \n\
 defaults:\n  \
 autonomy: auto_notify   # manual | auto_notify | silent\n  \
@@ -1872,18 +1911,111 @@ gates: @CHECKIN_GATES@\n    \
 on_pass: merge\n    \
 coverage: \"the whole spec diff passes every gate on the merged tree\"\n";
 
-/// One gate template set as the build script embeds it (`build/template_sets.rs`): its key
-/// (the `scaffold/<key>/` directory name), its `set.yml` text, and each listed file as
-/// `(repository-relative path, bytes)`. The bytes are data `rigger init` copies; nothing here
-/// names a gate.
+/// One gate template set as [`load_template_sets`] reads it from a template root: its key (the
+/// `scaffold/<key>/` directory name), its `set.yml` text, and each listed file as
+/// `(root-relative path, text)`. The texts are data `rigger init` copies; nothing here names a
+/// gate.
+#[derive(Debug, PartialEq)]
 struct TemplateSet {
-    key: &'static str,
-    set: &'static str,
-    files: &'static [(&'static str, &'static str)],
+    key: String,
+    set: String,
+    files: Vec<(String, String)>,
 }
 
-// The embedded `TEMPLATE_SETS`, one per `scaffold/<key>/` in key order, generated by build.rs.
-include!(concat!(env!("OUT_DIR"), "/template_sets.rs"));
+/// Read the gate template sets the template root `root` holds (the directory `--template <dir>`
+/// names): each directory `<root>/scaffold/<key>/`, in name order, holding a `set.yml` and a
+/// `files` list of root-relative paths, one per line (blank lines skipped), whose texts `rigger
+/// init` copies into a project matching the set; any other entry of `scaffold/` is skipped. Every
+/// text is read here, so a caller that loads before its first write refuses before any write.
+/// Refuses - naming `<root>/scaffold/` - a root whose `scaffold/` cannot be read or holds no set
+/// directory, and a set directory whose name is not UTF-8; naming the set, a set directory missing
+/// `set.yml` or `files`; and naming the set and the path, a listed path that is absolute, holds a
+/// `.` or `..` segment, names no file under `root` or names the same components as an earlier
+/// listed path, and a file that is unreadable or not UTF-8 text.
+fn load_template_sets(root: &Path) -> Result<Vec<TemplateSet>, String> {
+    let shown = root.display();
+    let entries = std::fs::read_dir(root.join("scaffold")).map_err(|e| {
+        format!("{shown}/scaffold/: the gate template sets directory is unreadable: {e}")
+    })?;
+    let mut set_dirs = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|e| format!("{shown}/scaffold/: an entry is unreadable: {e}"))?
+            .path();
+        if path.is_dir() {
+            set_dirs.push(path);
+        }
+    }
+    set_dirs.sort();
+    if set_dirs.is_empty() {
+        return Err(format!(
+            "{shown}/scaffold/ holds no gate template set directory"
+        ));
+    }
+    set_dirs
+        .iter()
+        .map(|dir| load_template_set(root, dir))
+        .collect()
+}
+
+/// Read the one gate template set in `dir`, a directory of `root`'s `scaffold/`, refusing as
+/// [`load_template_sets`] says.
+fn load_template_set(root: &Path, dir: &Path) -> Result<TemplateSet, String> {
+    let shown = root.display();
+    let key = dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "{shown}/scaffold/: {} is not a UTF-8 set name",
+                dir.display()
+            )
+        })?
+        .to_string();
+    let refuse = |why: String| format!("gate template set {key}: {why}");
+    for required in ["set.yml", "files"] {
+        if !dir.join(required).is_file() {
+            return Err(refuse(format!("missing {shown}/scaffold/{key}/{required}")));
+        }
+    }
+    let text = |path: &Path, rel: &str| {
+        let bytes = std::fs::read(path).map_err(|e| refuse(format!("{rel} is unreadable: {e}")))?;
+        String::from_utf8(bytes).map_err(|_| refuse(format!("{rel} is not UTF-8 text")))
+    };
+    let set = text(&dir.join("set.yml"), &format!("scaffold/{key}/set.yml"))?;
+    let listed = text(&dir.join("files"), &format!("scaffold/{key}/files"))?;
+    let mut files: Vec<(String, String)> = Vec::new();
+    for rel in listed.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let path = Path::new(rel);
+        if let Some(why) = path.components().find_map(not_a_name) {
+            return Err(refuse(format!("{rel} {why}")));
+        }
+        if !root.join(path).is_file() {
+            return Err(refuse(format!("{rel} names no file under {shown}")));
+        }
+        // By components, not text: `a//b` and `a/b` name one file.
+        if files
+            .iter()
+            .any(|(prior, _)| Path::new(prior).components().eq(path.components()))
+        {
+            return Err(refuse(format!("{rel} is listed twice")));
+        }
+        files.push((rel.to_string(), text(&root.join(path), rel)?));
+    }
+    Ok(TemplateSet { key, set, files })
+}
+
+/// Why a listed path's `component` is refused, or `None` for a plain name: a listed path is
+/// copied to the same relative path in the scaffolded project, so every component must be a name.
+fn not_a_name(component: std::path::Component) -> Option<&'static str> {
+    use std::path::Component;
+    match component {
+        Component::Normal(_) => None,
+        Component::RootDir | Component::Prefix(_) => Some("is an absolute path"),
+        Component::CurDir => Some("holds a . segment"),
+        Component::ParentDir => Some("holds a .. segment"),
+    }
+}
 
 /// A gate template set's `set.yml`: the marker file names whose presence at the project root
 /// selects it, the text of its `gates:` block (comments kept), the two stages' gate lists, and
@@ -1910,7 +2042,7 @@ struct SetSpec {
 /// to parse and one whose `id` is a [`SCAFFOLD_AGENTS`] seed's.
 fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
     let refuse = |why: String| format!("gate template set {}: {why}", set.key);
-    let mut spec: SetSpec = serde_yaml::from_str(set.set).map_err(|e| refuse(e.to_string()))?;
+    let mut spec: SetSpec = serde_yaml::from_str(&set.set).map_err(|e| refuse(e.to_string()))?;
     let declared: Option<std::collections::BTreeMap<String, config::Gate>> =
         serde_yaml::from_str(&spec.gates).map_err(|e| refuse(format!("gates: {e}")))?;
     let declared = declared.unwrap_or_default();
