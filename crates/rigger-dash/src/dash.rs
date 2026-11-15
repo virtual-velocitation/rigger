@@ -11240,6 +11240,89 @@ mod tests {
         );
     }
 
+    /// A graph request reads the polled run inputs (the run's events, its run-seeded graph,
+    /// progress and liveness) only when its answer needs the run's events: a seed that is no
+    /// node of the graph, re-pointed onto a unit's content. Every other graph view answers from
+    /// the graph provider alone, while the state poll still reads the polled inputs once.
+    #[test]
+    fn a_graph_request_reads_the_polled_run_inputs_only_to_re_point_a_unit_seed() {
+        use std::io::{Read, Write};
+        use std::net::{TcpListener, TcpStream};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let cases: [(&str, usize); 6] = [
+            ("/api/graph", 0),
+            ("/api/graph?tests=include", 0),
+            ("/api/graph?tests=only", 0),
+            ("/api/graph?seed=seed-node&depth=1", 0),
+            ("/api/graph?seed=u-unit&depth=1", 1),
+            ("/api/state", 1),
+        ];
+        for (target, expected) in cases {
+            let polled = Arc::new(AtomicUsize::new(0));
+            let polled_by_provider = Arc::clone(&polled);
+            let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
+                polled_by_provider.fetch_add(1, Ordering::SeqCst);
+                Ok((
+                    Vec::new(),
+                    Graph::default().into(),
+                    Vec::new(),
+                    HashMap::new(),
+                ))
+            });
+            let graph_provider = |_: Option<&str>, _: Tests, _: f64| -> Graph {
+                Graph {
+                    nodes: vec![Node {
+                        id: "seed-node".to_string(),
+                        kind: KIND_UNIT.to_string(),
+                        attrs: BTreeMap::new(),
+                    }],
+                    edges: Vec::new(),
+                }
+            };
+            let calls_provider =
+                |_: Option<&str>,
+                 _: &[String],
+                 _: crate::contextgraph::Direction,
+                 _: i64,
+                 _: &str,
+                 _: Tests| { crate::contextgraph::CallGraph::default() };
+            let instances_provider = Vec::new;
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &instances_provider,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+                .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            assert!(
+                resp.starts_with("HTTP/1.1 200 OK"),
+                "{target} is served: {resp}"
+            );
+            assert_eq!(
+                polled.load(Ordering::SeqCst),
+                expected,
+                "{target} reads the polled run inputs {expected} time(s)"
+            );
+        }
+    }
+
     // --- Spec 39, criterion 1: the per-project dash marker + idempotency decision ---
 
     #[test]
