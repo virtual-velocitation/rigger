@@ -10,7 +10,7 @@ use rigger::canary_store;
 use rigger::community;
 use rigger::conductor::{self, Deps};
 use rigger::config;
-use rigger::config_store;
+use rigger::config_store::{self, definition_hash};
 use rigger::console;
 use rigger::contextgraph::{
     self, fold_clause, fold_loss_clause, not_folded,
@@ -985,88 +985,6 @@ fn read_project_id(base: &Path) -> Option<String> {
     } else {
         Some(id.to_string())
     }
-}
-
-/// Canonicalize definition text for hashing (spec 13, unit 1): normalize CRLF -> LF and
-/// strip trailing whitespace from each line, so a checkout's line-ending or trailing-space
-/// noise never reads as a definition change while any real edit does.
-fn canonical_definition_text(s: &str) -> String {
-    s.replace("\r\n", "\n")
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The definition hash a run PINS (spec 13, unit 1): a stable FNV-1a digest over the on-disk
-/// definition - the `.rigger/workflow.yml`, the FULL agent-prompt set (every
-/// `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter), the operator's
-/// copy of each fan-out helper among `helpers` (the ones [`hooks::resolved_helpers`] found
-/// present, tagged by file name in helper order; an absent helper folds nothing) and the operator
-/// instruction layer (every `.rigger/instructions/*.md`, absent means empty) - canonicalized
-/// ([`canonical_definition_text`]) and folded in sorted-filename order. So the same definition
-/// hashes identically across machines and checkouts (the [`fnv1a_64`] idiom is fixed-seed and
-/// build-stable), while ANY content change - a mid-campaign prompt edit above all - changes it.
-///
-/// This is the hash a run pins at start and every relaunch of a live run re-checks; a mismatch on a
-/// live run HALTS loudly (see [`enforce_definition_pin`]). Hashing the on-disk files directly (not
-/// the parsed `Config`) is faithful to the design's "workflow.yml + the full agent-prompt set" and
-/// conservative: it needs no serialization of the config and errs toward halting, and the
-/// `--rebase-definition` escape makes an intended edit a one-flag continue.
-fn definition_hash(
-    dir: &str,
-    helpers: &[conductor::HelperCopy],
-) -> Result<String, Box<dyn std::error::Error>> {
-    let base = Path::new(dir).join(RIGGER_DIR);
-    let mut buf = String::new();
-    // workflow.yml first, tagged so an (impossible-here) empty agents set is still distinct
-    // from an empty workflow.
-    let workflow = std::fs::read_to_string(base.join(WORKFLOW_FILE))
-        .map_err(|e| format!("definition hash: read {RIGGER_DIR}/{WORKFLOW_FILE}: {e}"))?;
-    push_definition_section(&mut buf, WORKFLOW_FILE, &workflow);
-    // Every agent definition, folded in sorted-filename order so the hash is independent of
-    // directory iteration order.
-    let agents_dir = project_agents_dir(Path::new(dir));
-    let mut agents: Vec<(String, String)> = Vec::new();
-    for entry in std::fs::read_dir(&agents_dir)
-        .map_err(|e| format!("definition hash: read {}: {e}", agents_dir.display()))?
-    {
-        let path = entry?.path();
-        if path.extension().and_then(|x| x.to_str()) != Some("md") {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .and_then(|x| x.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("definition hash: read {}: {e}", path.display()))?;
-        agents.push((name, content));
-    }
-    agents.sort();
-    for (name, content) in agents {
-        push_definition_section(&mut buf, &format!("agent:{name}"), &content);
-    }
-    for helper in helpers.iter().filter(|h| h.present) {
-        push_definition_section(&mut buf, &format!("helper:{}", helper.name), &helper.text);
-    }
-    // The operator instruction layer, through the ONE loader that decides which files are
-    // instructions (filename order); an absent directory contributes nothing.
-    for ins in config_store::load_instructions(Path::new(dir))
-        .map_err(|e| format!("definition hash: {e}"))?
-    {
-        push_definition_section(&mut buf, &format!("instruction:{}.md", ins.name), &ins.body);
-    }
-    Ok(format!("{:016x}", fnv1a_64(buf.as_bytes())))
-}
-
-/// Fold one tagged, canonicalized definition file into the [`definition_hash`] buffer.
-fn push_definition_section(buf: &mut String, tag: &str, content: &str) {
-    buf.push_str(tag);
-    buf.push('\n');
-    buf.push_str(&canonical_definition_text(content));
-    buf.push('\n');
 }
 
 /// What the spec-09 open-time identity migration should do, given whether each namespace
@@ -9603,12 +9521,12 @@ mod tests {
         ];
         for (name, helpers, folded) in rows {
             let mut buf = String::new();
-            push_definition_section(&mut buf, WORKFLOW_FILE, WORKFLOW);
-            push_definition_section(&mut buf, "agent:worker.md", WORKER);
+            config_store::push_definition_section(&mut buf, WORKFLOW_FILE, WORKFLOW);
+            config_store::push_definition_section(&mut buf, "agent:worker.md", WORKER);
             for (tag, content) in folded {
-                push_definition_section(&mut buf, tag, content);
+                config_store::push_definition_section(&mut buf, tag, content);
             }
-            push_definition_section(&mut buf, "instruction:10-house.md", HOUSE);
+            config_store::push_definition_section(&mut buf, "instruction:10-house.md", HOUSE);
             assert_eq!(
                 definition_hash(dir, &helpers).map_err(|e| e.to_string()),
                 Ok(format!("{:016x}", fnv1a_64(buf.as_bytes()))),

@@ -34,7 +34,7 @@ pub mod verdict_mac;
 // The modules the moved code names by their historical `crate::` paths.
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_config_files::config;
-#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_config_files::config_store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::{
@@ -44,6 +44,8 @@ use rigger_domain::{
 use rigger_domain::{spec, test_cases};
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 use rigger_driver::driver;
+#[cfg(any(feature = "store", not(feature = "core")))]
+use rigger_driver::hooks;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_driver::liveness;
 #[cfg(any(feature = "store", not(feature = "core")))]
