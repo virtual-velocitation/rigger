@@ -6,16 +6,19 @@
 //! declaration named `rust` over `rs` in place of the Rust grammar's; a failed answer is said on
 //! stderr as `rigger: extractor <name>: <path>: <why>`, leaves the file its identity facts and
 //! closes the session, the next file starting a new one, and the file is asked again only when its
-//! content or the declaration changes; and a graph read in a linked worktree asks the root's
-//! extractor for the worktree's text of a declared file it changed.
+//! content or the declaration changes; a graph read in a linked worktree asks the root's
+//! extractor for the worktree's text of a declared file it changed; and `rigger graph --show`
+//! bounds a declared definition's body by the `end_line` the root's extractor answers for the
+//! shown tree's text, in a session of its own, a failed answer leaving a note and never the
+//! bundled grammar's bound.
 
 use std::path::Path;
 
 use crate::common;
-use common::cli::{run_rigger, source_repository, write_scaffold, BuiltGraph, SOURCE};
+use common::cli::{past_label, run_rigger, source_repository, write_scaffold, BuiltGraph, SOURCE};
 use common::fixtures::{
-    answer_defining, declared_identity, git_ok, git_out, request_for,
-    workflow_declaring_extractors, write_files, StubExtractor,
+    answer_defining, answer_defining_at, declared_identity, git_ok, git_out, request_for,
+    root_dir_of, workflow_declaring_extractors, write_files, StubExtractor,
 };
 use common::git::linked_worktree;
 use rigger_domain::code_facts::{Def, FileFacts};
@@ -433,4 +436,221 @@ fn a_read_in_a_linked_worktree_asks_the_roots_extractor_for_the_text_it_changed(
         &[declared_facts(&root, "src/a.zig", "zig", &["kept"])],
         "the root's store after the read",
     );
+}
+
+/// A Zig file holding `main` over its lines 2 to 4, between two other lines.
+const MAIN_ZIG: &str = "const a = 1;\npub fn main() void {\n    a;\n}\nconst b = 2;\n";
+
+/// A Rust file holding `two`, whose function item the Rust grammar ends on line 3, then a comment.
+const TWO_RS: &str = "pub fn two() {\n    1;\n}\n// after two\n";
+
+/// A Rust file holding `three`, whose function item the Rust grammar ends on line 2, then a
+/// comment.
+const THREE_RS: &str = "pub fn three() {\n}\n// after three\n";
+
+/// The text a linked worktree gives `src/a.zig`: `fresh` over its lines 3 to 5, between other
+/// lines.
+const FRESH_ZIG: &str = "const a = 1;\n\npub fn fresh() void {\n    a;\n}\nconst b = 2;\n";
+
+/// One `rigger graph --show` case over a repository whose workflow declares the stub.
+struct ShowCase<'a> {
+    /// The declared extractor's name and its extensions' flow sequence.
+    declared: (&'a str, &'a str),
+    /// The files committed beside [`SOURCE`].
+    committed: &'a [(&'a str, &'a str)],
+    /// The answers the stub gives while `graph build` runs, by path.
+    built: Vec<(&'a str, String)>,
+    /// The file a linked worktree changes, with its text there, the show then run in that
+    /// worktree; `None` runs it in the root.
+    worktree: Option<(&'a str, &'a str)>,
+    /// The answers the stub gives while the show runs, by path.
+    shown: Vec<(&'a str, String)>,
+    /// The id shown.
+    query: &'a str,
+    /// Every line the show prints past its honesty label.
+    out: &'a [&'a str],
+    /// What the show says on stderr.
+    err: &'a str,
+    /// The request each session the show starts reads, one per session.
+    asked: Vec<String>,
+}
+
+/// Given a committed repository whose workflow declares the stub and a graph built under it, when
+/// the operator shows a definition, a file of a declared extension prints the lines from the
+/// definition's line through the `end_line` the stub answers for the shown tree's text - for an
+/// extension no grammar covers, and for `rs` under a declaration named `rust`, which replaces the
+/// bundled grammar's bound - the show starting the stub in the root, asking it that text and
+/// closing it; a file no declaration lists is bounded by its bundled grammar, the stub never
+/// started though it holds a wider answer for it; an answer that fails prints the
+/// missing-definition note in place of the body, never the grammar's, and says why on stderr; and
+/// in a linked worktree, which holds no declaration of its own, the body is the worktree's text,
+/// the read and the show each asking the root's extractor in the root.
+#[test]
+fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
+    let two_answer = answer_defining_at("src/two.rs", "two", 1, 4);
+    let cases = [
+        ShowCase {
+            declared: ("zig", "[zig]"),
+            committed: &[("src/a.zig", MAIN_ZIG)],
+            built: vec![("src/a.zig", answer_defining_at("src/a.zig", "main", 2, 4))],
+            worktree: None,
+            shown: vec![],
+            query: "src/a.zig::main",
+            out: &[
+                "show src/a.zig::main",
+                "  site: src/a.zig:2   kind function   degree 2",
+                "  name main",
+                "  lang zig",
+                "       2 | pub fn main() void {",
+                "       3 |     a;",
+                "       4 | }",
+            ],
+            err: "",
+            asked: vec![request_for("src/a.zig", MAIN_ZIG)],
+        },
+        ShowCase {
+            declared: ("rust", "[rs]"),
+            committed: &[("src/two.rs", TWO_RS)],
+            built: vec![
+                (SOURCE.0, answer_defining(SOURCE.0, "product")),
+                ("src/two.rs", two_answer.clone()),
+            ],
+            worktree: None,
+            shown: vec![],
+            query: "src/two.rs::two",
+            out: &[
+                "show src/two.rs::two",
+                "  site: src/two.rs:1   kind function   degree 2",
+                "  name two",
+                "  lang rust",
+                "       1 | pub fn two() {",
+                "       2 |     1;",
+                "       3 | }",
+                "       4 | // after two",
+            ],
+            err: "",
+            asked: vec![request_for("src/two.rs", TWO_RS)],
+        },
+        ShowCase {
+            declared: ("zig", "[zig]"),
+            committed: &[("src/three.rs", THREE_RS)],
+            built: vec![(
+                "src/three.rs",
+                answer_defining_at("src/three.rs", "three", 1, 3),
+            )],
+            worktree: None,
+            shown: vec![],
+            query: "src/three.rs::three",
+            out: &[
+                "show src/three.rs::three",
+                "  site: src/three.rs:1   kind function   degree 2",
+                "  name three",
+                "  lang rust",
+                "       1 | pub fn three() {",
+                "       2 | }",
+            ],
+            err: "",
+            asked: vec![],
+        },
+        ShowCase {
+            declared: ("rust", "[rs]"),
+            committed: &[("src/two.rs", TWO_RS)],
+            built: vec![
+                (SOURCE.0, answer_defining(SOURCE.0, "product")),
+                ("src/two.rs", two_answer),
+            ],
+            worktree: None,
+            shown: vec![(
+                "src/two.rs",
+                r#"{"path":"src/two.rs","error":"no parser"}"#.to_string(),
+            )],
+            query: "src/two.rs::two",
+            out: &[
+                "show src/two.rs::two",
+                "  site: src/two.rs:1   kind function   degree 2",
+                "  name two",
+                "  lang rust",
+                r#"  (no production definition named "two" at path "two" of kind function at line 1 of src/two.rs)"#,
+            ],
+            err: "rigger: extractor rust: src/two.rs: the answer is an error: no parser\n",
+            asked: vec![request_for("src/two.rs", TWO_RS)],
+        },
+        ShowCase {
+            declared: ("zig", "[zig]"),
+            committed: &[("src/a.zig", "fn kept\n")],
+            built: vec![("src/a.zig", answer_defining("src/a.zig", "kept"))],
+            worktree: Some(("src/a.zig", FRESH_ZIG)),
+            shown: vec![("src/a.zig", answer_defining_at("src/a.zig", "fresh", 3, 5))],
+            query: "src/a.zig::fresh",
+            // The groupings describe the commit, which holds no `fresh`, so its one edge is its
+            // file's.
+            out: &[
+                "show src/a.zig::fresh",
+                "  site: src/a.zig:3   kind function   degree 1",
+                "  name fresh",
+                "  lang zig",
+                "       3 | pub fn fresh() void {",
+                "       4 |     a;",
+                "       5 | }",
+            ],
+            err: "",
+            asked: vec![request_for("src/a.zig", FRESH_ZIG); 2],
+        },
+    ];
+    for case in cases {
+        let (_dir, root) = source_repository();
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let (name, extensions) = case.declared;
+        declare(&root, &stub, name, extensions);
+        commit(&root, case.committed);
+        for (path, answer) in &case.built {
+            stub.answers(path, answer);
+        }
+        let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+        assert_eq!(
+            (ok, err.as_str()),
+            (true, ""),
+            "{}: graph build succeeds saying nothing on stderr; stdout: {out}",
+            case.query
+        );
+        let trees = tempfile::tempdir().expect("tempdir");
+        let shown_in = match case.worktree {
+            Some((path, text)) => {
+                let worktree = linked_worktree(
+                    &root,
+                    trees.path().canonicalize().expect("canonical").join("wt"),
+                );
+                std::fs::write(worktree.join(path), text).expect("change a declared file");
+                worktree
+            }
+            None => root.clone(),
+        };
+        for (path, answer) in &case.shown {
+            stub.answers(path, answer);
+        }
+        let (starts, requests, ends) = (stub.starts(), stub.requests(), stub.ends());
+        let (out, err, ok) = run_rigger(&shown_in, &["graph", "--show", case.query]);
+        assert_eq!(
+            (ok, past_label(&out), err.as_str()),
+            (true, format!("{}\n", case.out.join("\n")), case.err),
+            "{}: the show's stdout past its label and its stderr",
+            case.query
+        );
+        let sessions = case.asked.len();
+        assert_eq!(
+            (
+                stub.starts()[starts.len()..].to_vec(),
+                stub.requests()[requests.len()..].to_vec(),
+                stub.ends()[ends.len()..].to_vec()
+            ),
+            (
+                vec![root_dir_of(&root); sessions],
+                case.asked,
+                ended(sessions)
+            ),
+            "{}: each session the show starts begins in the root, is asked once and is closed",
+            case.query
+        );
+    }
 }
