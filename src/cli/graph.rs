@@ -593,7 +593,8 @@ fn locate_definition_extent(
     id_path: Option<&str>,
     kind: &str,
 ) -> Result<u32, Unbounded> {
-    use rigger::grounder::symbols::extract::{self, Recorded};
+    use rigger::code_facts::Recorded;
+    use rigger::grounder::symbols::extract;
     use rigger::grounder::symbols::registry;
     let entry = registry::for_path(file, None).ok_or(Unbounded::Missing)?;
     extract::locate_extent(
