@@ -825,6 +825,30 @@ pub trait EventStore: Send + Sync {
     /// (spec 101). A backend answers from its own group index or group stream, never by reading
     /// the stream and never by materializing it.
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error>;
+
+    /// The events on `stream` of one of `types` whose data holds the record id `id`
+    /// ([`record_id_of`]), in log (position) order: what a show surface reads a decision, lesson
+    /// or finding the graph no longer holds by. A backend answers from its own index of the
+    /// record id where it keeps one, so the read costs the events holding the id and never the
+    /// stream; one that keeps none reads `types` from its type index and hands back only the
+    /// events holding the id.
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error>;
+}
+
+/// The RECORD ID an event's data holds: the string under the top-level `"id"` key of a data that
+/// is a JSON object, the id a decision, lesson or finding is shown by; `None` for a data that is
+/// not such an object or whose `"id"` is not a string.
+pub fn record_id_of(data: &[u8]) -> Option<String> {
+    #[derive(serde::Deserialize)]
+    struct Record {
+        id: String,
+    }
+    serde_json::from_slice::<Record>(data).ok().map(|r| r.id)
 }
 
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.

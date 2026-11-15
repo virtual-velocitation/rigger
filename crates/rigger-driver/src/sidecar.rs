@@ -295,16 +295,19 @@ impl Sidecar {
             .or_else(|| self.site_of_kind::<PeerFinding>(id))
     }
 
-    /// [`Self::site_of`] of `id` over `stream`'s log, read for that id alone: the decisions,
-    /// lessons and findings whose id is `id`, the records [`Self::site_of`] chooses among, so a
-    /// show surface's read of a record the graph no longer holds, or of an id no record holds,
-    /// costs those records and never the run or its carry-over.
+    /// [`Self::site_of`] of `id` over `stream`'s log, read for that id alone
+    /// ([`EventStore::read_by_record_id`]): the decisions, lessons and findings whose id is `id`.
+    /// A run read holds every one of them, as it reads the carry-over types over the whole
+    /// stream, so these are exactly the records [`Self::site_of`] chooses among, and a show
+    /// surface's read of a record the graph no longer holds, or of an id no record holds, costs
+    /// those records and never the run or its carry-over.
     pub fn logged_site(
         store: &dyn EventStore,
         stream: &str,
         id: &str,
     ) -> Result<Option<contextgraph::EntitySite>, eventstore::Error> {
-        Ok(Sidecar::read(store, stream)?.site_of(id))
+        let seen = store.read_by_record_id(stream, &run::read::CARRY_OVER_TYPES, id)?;
+        Ok(Sidecar { seen }.site_of(id))
     }
 
     /// [`Self::site_of`] over the records of kind `T`.

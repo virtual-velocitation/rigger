@@ -631,7 +631,8 @@ impl<'a> Server<'a> {
             let label = graph.stamp_label().to_string();
             return Ok(match located {
                 // A record the graph no longer holds (pruned by `rigger reset --runs`, which
-                // deletes no event) is read from the run store's log, as `rigger peers` reads it.
+                // deletes no event) is read from the run store's log by its id alone, the site
+                // `rigger peers` reads.
                 Located::None => match Sidecar::logged_site(self.store, &self.stream, show)
                     .map_err(|e| e.to_string())?
                 {

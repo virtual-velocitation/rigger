@@ -38522,6 +38522,14 @@ mod tests {
             {
                 self.inner.latest_in_group(stream, group)
             }
+            fn read_by_record_id(
+                &self,
+                stream: &str,
+                types: &[&str],
+                id: &str,
+            ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
+                self.inner.read_by_record_id(stream, types, id)
+            }
         }
         const READ_CAP: u32 = 200;
 

@@ -300,6 +300,14 @@ impl EventStore for PortDouble {
         }
         Err(unreadable())
     }
+    fn read_by_record_id(
+        &self,
+        _stream: &str,
+        _types: &[&str],
+        _id: &str,
+    ) -> Result<Vec<Event>, StoreError> {
+        Err(unreadable())
+    }
 }
 
 // ---------------------------------------------------------------------------

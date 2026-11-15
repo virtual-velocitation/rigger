@@ -260,8 +260,8 @@ const SHOW_MAX_BODY_LINES: u32 = 60;
 /// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
 ///
 /// Read-only over the projection and the working tree; deterministic for a given tree and graph.
-/// The decision, lesson or finding `id` names, read from the run store's log the way `rigger
-/// peers` reads it ([`Sidecar::site_of`]), for an id the graph no longer holds: a `rigger reset
+/// The decision, lesson or finding `id` names, read from the run store's log by its id alone
+/// ([`Sidecar::logged_site`], the site `rigger peers` reads), for an id the graph no longer holds: a `rigger reset
 /// --runs` prune drops a superseded run's records from the graph and deletes no event. A project
 /// with no store yet holds no such record. The store is the one `site` resolves.
 fn logged_site(

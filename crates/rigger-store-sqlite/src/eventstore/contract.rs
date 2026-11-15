@@ -36,6 +36,7 @@ pub fn assert_contract(store: &dyn EventStore) {
     positions_read_hands_every_position_of_the_stream_in_order_in_batches(store);
     batched_read_hands_the_stream_from_a_revision_in_bounded_batches_with_its_head(store);
     latest_in_group_answers_the_newest_member_without_reading_the_stream(store);
+    a_record_read_hands_back_the_events_of_its_types_holding_the_id(store);
     a_grouped_append_under_an_unmet_expectation_records_nothing(store);
     an_append_holding_a_derived_event_is_refused_naming_its_type_and_writes_nothing(store);
 }
@@ -59,6 +60,69 @@ fn group_head(position: u64, t: &str, group: &str, name: &str, value: &str) -> G
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect(),
+    }
+}
+
+/// THE RECORD READ: `read_by_record_id` hands back, in log order, the events of THAT stream of the
+/// named types whose data holds the record id as its top-level `"id"` string - every restatement,
+/// never an event of another type or stream carrying the id, never an event whose `"id"` is not a
+/// string or whose data is not a JSON object, and nothing for an id no event holds or for no
+/// type named.
+fn a_record_read_hands_back_the_events_of_its_types_holding_the_id(store: &dyn EventStore) {
+    let at = |t: &str, data: &str| Event::new(t, data.as_bytes().to_vec());
+    store
+        .append(
+            "c-record",
+            ExpectedRevision::NoStream,
+            &[
+                at("Decision", r#"{"id":"r-1","n":0}"#),
+                at("Finding", r#"{"id":"r-2","n":1}"#),
+                at("Other", r#"{"id":"r-1","n":2}"#),
+                at("Decision", r#"{"id":1,"n":3}"#),
+                at("Decision", "not json"),
+                at("Decision", r#"["r-1"]"#),
+                at("Finding", r#"{"n":6,"id":"r-1"}"#),
+                at("Decision", r#"{"id":"r-1","n":7}"#),
+            ],
+        )
+        .expect("the fixture stream appends");
+    store
+        .append(
+            "c-record-sibling",
+            ExpectedRevision::NoStream,
+            &[at("Decision", r#"{"id":"r-1","n":8}"#)],
+        )
+        .expect("the sibling stream appends");
+    let read = |types: &[&str], id: &str| -> Vec<i64> {
+        store
+            .read_by_record_id("c-record", types, id)
+            .unwrap_or_else(|e| panic!("the record read must succeed: {e}"))
+            .into_iter()
+            .map(|e| {
+                assert_eq!(e.stream, "c-record", "only the named stream is read");
+                e.revision
+            })
+            .collect()
+    };
+    let rows: [(&[&str], &str, &[i64], &str); 5] = [
+        (
+            &["Decision", "Finding"],
+            "r-1",
+            &[0, 6, 7],
+            "every restatement of the named types, in log order",
+        ),
+        (&["Decision"], "r-1", &[0, 7], "only the named types"),
+        (&["Finding"], "r-2", &[1], "each id its own records"),
+        (
+            &["Decision", "Finding"],
+            "r-9",
+            &[],
+            "an id no event holds reads nothing",
+        ),
+        (&[], "r-1", &[], "no type named reads nothing"),
+    ];
+    for (types, id, revisions, why) in rows {
+        assert_eq!(read(types, id), revisions, "{why}");
     }
 }
 

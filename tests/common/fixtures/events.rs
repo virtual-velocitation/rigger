@@ -136,7 +136,8 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 /// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
 /// for a decorator that also intercepts `latest_in_group`; `(append)` expands the append alone,
 /// forwarded the same way, for a decorator that intercepts reads instead; `(typed)` expands the
-/// typed stream read alone, for a decorator that intercepts the boundary lookup ahead of it.
+/// typed stream read alone, for a decorator that intercepts the boundary lookup ahead of it; and
+/// `(record)` expands the record-id read alone.
 #[macro_export]
 macro_rules! delegate_event_store_reads {
     (append) => {
@@ -157,6 +158,16 @@ macro_rules! delegate_event_store_reads {
             group: &str,
         ) -> Result<Option<rigger::eventstore::GroupHead>, rigger::eventstore::Error> {
             self.inner.latest_in_group(stream, group)
+        }
+    };
+    (record) => {
+        fn read_by_record_id(
+            &self,
+            stream: &str,
+            types: &[&str],
+            id: &str,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_by_record_id(stream, types, id)
         }
     };
     (typed) => {
@@ -221,6 +232,7 @@ macro_rules! delegate_event_store_reads {
             self.inner.last_position(stream, event_type)
         }
         $crate::delegate_event_store_reads!(typed);
+        $crate::delegate_event_store_reads!(record);
         fn read_stream_positions(
             &self,
             stream: &str,
@@ -334,6 +346,14 @@ impl EventStore for SilentStore {
     fn latest_in_group(&self, _stream: &str, _group: &str) -> Result<Option<GroupHead>, Error> {
         Ok(None)
     }
+    fn read_by_record_id(
+        &self,
+        _stream: &str,
+        _types: &[&str],
+        _id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
 }
 
 /// The port methods a double REFUSES, each panicking with `$why` and what the caller tried -
@@ -418,6 +438,11 @@ macro_rules! refuse_event_store_calls {
             panic!(concat!($why, ": nothing looks up a group"))
         }
     };
+    (@ $why:literal read_by_record_id) => {
+        fn read_by_record_id(&self, _: &str, _: &[&str], _: &str) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads a record by id"))
+        }
+    };
 }
 
 /// A store whose ONLY reachable port method is the group lookup (spec 101): it answers every group
@@ -459,6 +484,7 @@ impl EventStore for GroupLookupOnly {
         read_stream_typed,
         read_stream_positions,
         read_stream_batched,
+        read_by_record_id,
     );
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.asked
@@ -499,6 +525,7 @@ impl EventStore for ReadsFailWhenArmed<'_> {
         read_stream_positions,
         read_stream_batched,
         latest_in_group,
+        read_by_record_id,
     );
     crate::delegate_event_store_reads!(append);
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
@@ -563,6 +590,7 @@ impl EventStore for HandBuiltLog {
         read_stream_positions,
         read_stream_batched,
         latest_in_group,
+        read_by_record_id,
     );
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
         Ok(self
@@ -766,6 +794,14 @@ pub enum CountedRead {
         types: Vec<String>,
         materialized: usize,
     },
+    /// A record-id read: the `types` it named, the `id` it asked, and how many events it handed
+    /// back.
+    Record {
+        stream: String,
+        types: Vec<String>,
+        id: String,
+        materialized: usize,
+    },
 }
 
 /// One group lookup of each of `identities` on `stream`, in order: what a counting store saw of
@@ -787,7 +823,8 @@ impl CountedRead {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
             | CountedRead::AllPage { materialized, .. }
-            | CountedRead::Typed { materialized, .. } => *materialized,
+            | CountedRead::Typed { materialized, .. }
+            | CountedRead::Record { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
             CountedRead::StreamBatched { batches, .. } => batches.iter().sum(),
@@ -805,7 +842,8 @@ impl CountedRead {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
             | CountedRead::AllPage { materialized, .. }
-            | CountedRead::Typed { materialized, .. } => *materialized = 0,
+            | CountedRead::Typed { materialized, .. }
+            | CountedRead::Record { materialized, .. } => *materialized = 0,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
             CountedRead::LastPosition { .. }
@@ -824,7 +862,8 @@ impl CountedRead {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
             | CountedRead::AllPage { materialized, .. }
-            | CountedRead::Typed { materialized, .. } => *materialized += n,
+            | CountedRead::Typed { materialized, .. }
+            | CountedRead::Record { materialized, .. } => *materialized += n,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
             CountedRead::StreamPositions { handed, .. } => *handed += n,
@@ -1104,6 +1143,21 @@ impl EventStore for ReadCountingStore<'_> {
         let head = self.inner.latest_in_group(stream, group);
         self.returned(at);
         head
+    }
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        let at = self.record(CountedRead::Record {
+            stream: stream.to_string(),
+            types: types.iter().map(|t| t.to_string()).collect(),
+            id: id.to_string(),
+            materialized: 0,
+        });
+        let events = self.inner.read_by_record_id(stream, types, id)?;
+        Ok(self.handed_back(at, events))
     }
 }
 

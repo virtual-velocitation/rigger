@@ -2425,6 +2425,14 @@ mod tests {
         ) -> Result<Option<crate::eventstore::GroupHead>, crate::eventstore::Error> {
             Err(FailingReadStore::read_failure())
         }
+        fn read_by_record_id(
+            &self,
+            _stream: &str,
+            _types: &[&str],
+            _id: &str,
+        ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
+            Err(FailingReadStore::read_failure())
+        }
     }
 
     #[test]

@@ -1061,6 +1061,22 @@ impl EventStore for Store {
             sink(events, head as Position)
         })
     }
+    /// The server indexes no event's data, so the stream's `types` are read by type
+    /// ([`Self::read_stream_typed`]) and only the events holding the record id are handed back.
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        if types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut events = self.read_stream_typed(stream, 0, TypeSelection::Only(types))?;
+        events.retain(|e| super::record_id_of(&e.data).as_deref() == Some(id));
+        Ok(events)
+    }
+
     /// The newest-first read ([`Store::newest_first`]) of the identity's group stream, each link
     /// paired with the event its revision holds, ending at the newest link that holds the event
     /// it reserved ([`newest_in_group`]); the project stream itself is never read.
