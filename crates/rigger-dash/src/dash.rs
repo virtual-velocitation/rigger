@@ -3775,7 +3775,8 @@ where
 
 /// Read one request, route it, and write the response. Splits the store read from the
 /// pure [`route`] so a `provider` failure degrades only the `/api/*` paths (to `500`),
-/// never the static page.
+/// never the static page - and of `/api/graph` only a unit seed, the one graph view that
+/// reads the run; every other graph view answers from the graph alone.
 ///
 /// The graph is sourced by cadence (spec 45, criterion 1): every other `/api/*` path reads the
 /// run-scoped inputs from `provider`, but a `/api/graph` request opens the whole-graph
@@ -10736,6 +10737,73 @@ mod tests {
         assert_eq!(v["run"]["units"][0]["id"], "u1");
         assert_eq!(v["run"]["units"][0]["status"], "integrated");
         assert_eq!(v["metrics"]["review_approve"], 1);
+    }
+
+    /// GIVEN a dash whose read of the run fails, WHEN `/api/graph` is asked for the overview, a
+    /// seed that is a graph node, and a seed that is a unit, THEN the overview and the node answer
+    /// 200 from the graph alone, and only the unit, which reads the run to be re-pointed onto its
+    /// content, answers the store failure's 500.
+    #[test]
+    fn a_failed_run_read_fails_only_the_graph_views_that_read_the_run() {
+        use std::io::{Read, Write};
+        // (request target, status, what the body holds)
+        let rows = [
+            ("/api/graph", 200, "\"clusters\""),
+            ("/api/graph?seed=a&depth=1", 200, "\"id\":\"a\""),
+            (
+                "/api/graph?seed=u1",
+                500,
+                "dash: reading the store failed: the run read failed",
+            ),
+        ];
+        for (target, status, holds) in rows {
+            let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
+                Err("the run read failed".into())
+            });
+            let graph_provider =
+                |_: Option<&str>, _: Tests, _: f64| -> Graph { tiered_chain_graph() };
+            let calls_provider =
+                |_: Option<&str>,
+                 _: &[String],
+                 _: crate::contextgraph::Direction,
+                 _: i64,
+                 _: &str,
+                 _: Tests| { crate::contextgraph::CallGraph::default() };
+            let instances_provider = Vec::new;
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = std::thread::spawn(move || {
+                let (conn, _) = listener.accept().unwrap();
+                handle_conn(
+                    conn,
+                    &provider,
+                    &graph_provider,
+                    &calls_provider,
+                    &instances_provider,
+                    3,
+                    "rigger-run",
+                    "origin/main",
+                )
+                .unwrap();
+            });
+            let mut client = TcpStream::connect(addr).unwrap();
+            (client
+                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes()))
+            .unwrap();
+            let mut resp = String::new();
+            client.read_to_string(&mut resp).unwrap();
+            server.join().unwrap();
+            let answered = resp
+                .strip_prefix("HTTP/1.1 ")
+                .and_then(|r| r.get(..3))
+                .and_then(|code| code.parse::<u16>().ok());
+            let body = resp.split("\r\n\r\n").nth(1).unwrap_or_default();
+            assert_eq!(
+                (answered, body.contains(holds)),
+                (Some(status), true),
+                "{target}: {resp}"
+            );
+        }
     }
 
     /// The explorer offers a "Show tests" toggle in its static header, cycling the filter
