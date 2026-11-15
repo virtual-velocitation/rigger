@@ -17,6 +17,7 @@ use rigger_domain::code_view::{Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
+use rigger_process::whole_line;
 use rigger_store::code::{fingerprint, open_current, open_head, DirTreeSource, Memo, Mode, Opened};
 
 use crate::config::{check_extractors, ExtractorDecl, RIGGER_DIR, WORKFLOW_FILE};
@@ -85,11 +86,11 @@ pub fn read_head(
 
 /// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
 /// the code store's one read of the map. A workflow that cannot be read or fails its check
-/// declares none, said on stderr as `rigger: extractors: {error}`, so the bundled grammars
-/// proceed alone.
+/// declares none, said on stderr as `rigger: extractors: {error}` in one write ([`whole_line`]),
+/// so the bundled grammars proceed alone.
 pub fn declared_extractors(root: &Path) -> BTreeMap<String, ExtractorDecl> {
     read_declared_extractors(root).unwrap_or_else(|error| {
-        eprintln!("rigger: extractors: {error}");
+        whole_line::say(format_args!("rigger: extractors: {error}"));
         BTreeMap::new()
     })
 }
