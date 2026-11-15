@@ -91,4 +91,67 @@ mod tests {
         removed.sort();
         assert_eq!(envs, removed);
     }
+
+    /// `cmd_argument` is cmd's switches - no AutoRun, the outer quotes stripped, run then end -
+    /// and the run in one pair of quotes, kept as written whatever it holds, on every host.
+    #[test]
+    fn cmd_argument_quotes_the_run_after_cmds_switches() {
+        let rows = [
+            ("cargo test", r#"/D /S /C "cargo test""#),
+            (r#"echo "a b" > out"#, r#"/D /S /C "echo "a b" > out""#),
+            ("", r#"/D /S /C """#),
+        ];
+        for (run, argument) in rows {
+            assert_eq!(cmd_argument(run), argument, "{run:?}");
+        }
+    }
+
+    /// `shell_command` is the host's shell given the run whole - `cmd` and its one raw argument
+    /// on Windows, `sh -c <run>` elsewhere - in the directory, and nothing else.
+    #[test]
+    fn shell_command_is_the_hosts_shell_given_the_run_in_the_directory() {
+        let run = r#"cargo test "a b""#;
+        let dir = std::path::Path::new("/project");
+        let cmd = shell_command(run, dir);
+        let (program, args) = if cfg!(windows) {
+            ("cmd", vec![cmd_argument(run)])
+        } else {
+            ("sh", vec!["-c".to_string(), run.to_string()])
+        };
+        assert_eq!(
+            (
+                cmd.get_program(),
+                cmd.get_args().collect::<Vec<_>>(),
+                cwd_of(&cmd),
+                cmd.get_envs().count()
+            ),
+            (
+                OsStr::new(program),
+                args.iter().map(OsStr::new).collect::<Vec<_>>(),
+                Some(dir),
+                0
+            )
+        );
+    }
+
+    /// On unix, the shell reads the run as a script, so a compound run's every command runs, and
+    /// it starts in the directory given.
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_command_runs_its_whole_run_in_its_directory() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let rows = [
+            ("pwd -P", dir.to_path_buf()),
+            ("cd src && pwd -P", dir.join("src")),
+        ];
+        for (run, ran_in) in rows {
+            let out = shell_command(run, dir).output().expect("run the shell");
+            let expected = ran_in.canonicalize().expect("the directory exists");
+            assert_eq!(
+                (out.status.success(), String::from_utf8_lossy(&out.stdout)),
+                (true, format!("{}\n", expected.display()).into()),
+                "{run}"
+            );
+        }
+    }
 }
