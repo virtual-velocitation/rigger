@@ -200,7 +200,7 @@ impl KeptRecord {
             dir: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()),
             cwd: cwd.to_path_buf(),
             args: relaunch_args(parsed, run),
-            bin: Some(PathBuf::from(running_executable())),
+            bin: Some(standing_executable()),
             run: run.to_string(),
             env: roots_env(),
             agent_token: rigger::claude_auth::agent_token_set(),
@@ -501,10 +501,7 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             record.by_hand()
         ));
     }
-    let bin = record
-        .bin
-        .clone()
-        .unwrap_or_else(|| PathBuf::from(running_executable()));
+    let bin = record.bin.clone().unwrap_or_else(|| standing_executable());
     if !bin.is_file() {
         let _ = lock.replace("");
         return Some(format!(
@@ -595,6 +592,12 @@ pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// This binary's path as it stands, the path a relaunch of it runs: an upgrade that replaced it
+/// while it runs leaves the new build there ([`rigger::detached::standing_path`]).
+fn standing_executable() -> PathBuf {
+    rigger::detached::standing_path(Path::new(&running_executable()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,7 +645,7 @@ mod tests {
                 dir: dir.path().canonicalize().unwrap(),
                 cwd: dir.path().to_path_buf(),
                 args: vec!["run".into(), "--adopt".into(), "a-run".into()],
-                bin: Some(PathBuf::from(running_executable())),
+                bin: Some(standing_executable()),
                 run: "a-run".into(),
                 env: env.clone(),
                 agent_token: false,

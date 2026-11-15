@@ -13,7 +13,7 @@
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// The environment knob that selects how a rigger invocation relaunches a run whose driver died:
@@ -71,6 +71,30 @@ std::cfg_select! {
     }
 }
 
+// The one spelling of how an OS names a running binary that was replaced: linux and android name
+// it by its old path with the kernel's `" (deleted)"` marker added, which is how an upgrade by
+// rename leaves a running one named, and every other OS names it by its path as it stands.
+std::cfg_select! {
+    any(target_os = "linux", target_os = "android") => {
+        /// The path a running binary named as `exe` stands at, the path a later start of it
+        /// runs: `exe` itself when it is a file, else `exe` without the kernel's marker.
+        pub fn standing_path(exe: &Path) -> PathBuf {
+            if exe.is_file() {
+                exe.to_path_buf()
+            } else {
+                crate::reap::strip_deleted_suffix(exe)
+            }
+        }
+    }
+    _ => {
+        /// The path a running binary named as `exe` stands at, the path a later start of it
+        /// runs: `exe` itself.
+        pub fn standing_path(exe: &Path) -> PathBuf {
+            exe.to_path_buf()
+        }
+    }
+}
+
 /// The output file at `path`, made or emptied, readable by its owner alone where the OS says so
 /// ([`owner_only`]).
 fn output_file(path: &Path) -> io::Result<File> {
@@ -116,6 +140,44 @@ where
     let pid = child.id();
     std::thread::spawn(move || child.wait());
     Ok(pid)
+}
+
+#[cfg(test)]
+mod standing_path_tests {
+    use super::*;
+
+    /// A binary replaced by rename while it runs stands at its path without the OS's marker;
+    /// any other path, one that is a file under the marker's spelling among them, stands as it is.
+    #[test]
+    fn a_binary_replaced_while_it_runs_stands_at_its_path_without_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("rigger");
+        std::fs::write(&installed, "the new build").unwrap();
+        let named_so = dir.path().join("tool (deleted)");
+        std::fs::write(&named_so, "a binary with that name").unwrap();
+        let marked = PathBuf::from(format!("{} (deleted)", installed.display()));
+        let marks_a_replaced_binary = cfg!(any(target_os = "linux", target_os = "android"));
+        let cases = [
+            (
+                "a replaced binary",
+                marked.clone(),
+                if marks_a_replaced_binary {
+                    installed.clone()
+                } else {
+                    marked.clone()
+                },
+            ),
+            ("a running binary", installed.clone(), installed.clone()),
+            (
+                "a file under the marker's spelling",
+                named_so.clone(),
+                named_so.clone(),
+            ),
+        ];
+        for (case, exe, stands) in cases {
+            assert_eq!(standing_path(&exe), stands, "{case}");
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
