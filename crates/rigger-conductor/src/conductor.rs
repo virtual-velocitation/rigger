@@ -1694,7 +1694,8 @@ struct SpecCandidate {
 
 /// What a speculation group's losing lanes failed with, gathered in lane order: each red gate's
 /// evidence and each review's rejection, with the first loss's cause. A group with no winner
-/// records it as the unit's failure (spec 126, criterion 14).
+/// records it as the unit's failure (spec 126, criterion 14). A loss to infrastructure
+/// ([`is_infra_cause`]) is left out, as the single lane charges an outage no `UnitFailed`.
 #[derive(Default)]
 struct LostLanes {
     cause: Option<String>,
@@ -1704,12 +1705,18 @@ struct LostLanes {
 impl LostLanes {
     /// A lane lost on red gates (narrowed, exhaustive or post-merge) with `evidence`.
     fn gates(&mut self, cause: String, evidence: Vec<String>) {
+        if is_infra_cause(&cause) {
+            return;
+        }
         self.cause.get_or_insert(cause);
         self.failure.gate_evidence.extend(evidence);
     }
 
     /// A lane lost on its review's rejection `reason`.
     fn review(&mut self, cause: String, reason: &str) {
+        if is_infra_cause(&cause) {
+            return;
+        }
         self.cause.get_or_insert(cause);
         let reasons = &mut self.failure.review_reason;
         if !reasons.is_empty() {
@@ -1719,7 +1726,7 @@ impl LostLanes {
     }
 
     /// The first loss's cause and the gathered failure, or none when no lane lost on its gates
-    /// or review.
+    /// or review other than to infrastructure.
     fn failure(self) -> Option<(String, PriorFailure)> {
         self.cause.map(|cause| (cause, self.failure))
     }
@@ -29602,6 +29609,44 @@ mod tests {
                 every_lane_gate_red,
                 "every lane gate-red",
             );
+    }
+
+    /// A group's lanes lost in different ways are all told: the gathered failure keeps every
+    /// genuine lane's red gate and rejection in lane order under the first loss's cause, and
+    /// leaves out a lane lost to an outage.
+    #[test]
+    fn a_group_loss_keeps_every_genuine_lanes_failure_and_drops_an_outage() {
+        let mut lost = LostLanes::default();
+        lost.gates(
+            CAUSE_INFRA_GATE.to_string(),
+            vec!["ok: the runner died".into()],
+        );
+        lost.review(
+            CAUSE_REJECT.to_string(),
+            r#"{"verdict":"reject","issues":["lane one misses the edge case"]}"#,
+        );
+        lost.gates(
+            "gate:ok".to_string(),
+            vec!["ok: lane two's test is red".into()],
+        );
+        lost.review(
+            CAUSE_REJECT.to_string(),
+            r#"{"verdict":"reject","issues":["lane three drops the error"]}"#,
+        );
+        let (cause, failure) = lost.failure().expect("genuine lanes lost");
+        assert_eq!(cause, CAUSE_REJECT, "the first genuine loss's cause");
+        let block = failure.block("s", 4);
+        for told in [
+            "lane one misses the edge case",
+            "lane two's test is red",
+            "lane three drops the error",
+        ] {
+            assert!(block.contains(told), "the block tells {told:?}: {block}");
+        }
+        assert!(
+            !block.contains("the runner died"),
+            "an outage is no feedback: {block}"
+        );
     }
 
     /// A lane lost to an outage is no feedback for the author, exactly as the single lane
