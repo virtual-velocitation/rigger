@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use crate::code_facts::{FileFacts, Half, MentionKind};
+use crate::code_facts::{Bound, FileFacts, Half, MentionKind, Recorded};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
 use crate::code_view::{Cluster, CodeView, FileRef, Groupings, Tests, ViewFilter};
 use crate::composed::{
@@ -1109,6 +1109,13 @@ impl CodeHalf for Near<'_> {
     }
     fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
         self.state().graph.hidden_tests_named(name)
+    }
+    /// Read from the file's facts, the ones its nodes are resolved from.
+    fn definition_end(&self, file: &str, recorded: Recorded) -> Option<u32> {
+        let mut state = self.state();
+        let place = state.code_place(file)?;
+        let facts = state.facts(place)?;
+        recorded.widest_end(facts.defs.iter().map(Bound::from))
     }
     /// Read from the proofs read resolving `ids`, or, once the view is resolved whole, from the
     /// proof calls that read.

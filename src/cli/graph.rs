@@ -369,7 +369,8 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
 /// none, bounded by name, kind and line alone. A node with no `name` at a non-zero line gets the
 /// "no production definition named" note with its id in place of the name, here, ahead of the
 /// feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line 0
-/// keeps [`definition_body`]'s `source unavailable`.
+/// keeps [`definition_body`]'s `source unavailable`. `stored_end` is the end the graph's facts
+/// bound the definition to, when they hold one ([`ContextGraph::definition_end`]).
 fn print_entity_site(
     tree: &Result<PathBuf, String>,
     site: &contextgraph::EntitySite,
@@ -521,7 +522,9 @@ enum ShowBody {
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
 /// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
-/// omitted-line count so a bounded body is never read as whole.
+/// omitted-line count so a bounded body is never read as whole. A `stored_end`, the extent the
+/// graph's facts hold for the definition ([`ContextGraph::definition_end`], the same grammar's
+/// bound read when the file was extracted), bounds the body without parsing the file again.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
 /// body cannot be shown honestly: the `start` line is `0` or past end-of-file, the file cannot be
@@ -536,7 +539,7 @@ fn definition_body(
     name: &str,
     id_path: Option<&str>,
     kind: &str,
-    _stored_end: Option<u32>,
+    stored_end: Option<u32>,
 ) -> ShowBody {
     // A line of 0 never named a real source line: degrade before any read. (Also covers a
     // reference-only graph entity with no definition site of its own.)
@@ -562,11 +565,19 @@ fn definition_body(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    // The extent's end through the ONE multi-grammar authority. A miss (no such definition at
-    // the line, or a light-lane build with no grammar) is an explicit note, never a guessed body.
-    #[cfg(test)]
-    tests::EXTENT_LOCATES.with(|n| n.set(n.get() + 1));
-    let extent_end = match locate_definition_extent(file, &text, start, name, id_path, kind) {
+    // The extent's end: the one the graph's facts stored, the grammar's own bound read when the
+    // file was extracted, else through the ONE multi-grammar authority. A miss (no such
+    // definition at the line, or a light-lane build with no grammar) is an explicit note, never a
+    // guessed body.
+    let located = match stored_end {
+        Some(end) => Ok(end),
+        None => {
+            #[cfg(test)]
+            tests::EXTENT_LOCATES.with(|n| n.set(n.get() + 1));
+            locate_definition_extent(file, &text, start, name, id_path, kind)
+        }
+    };
+    let extent_end = match located {
         Ok(end) => end.min(total),
         Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
     };
