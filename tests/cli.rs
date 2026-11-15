@@ -15314,6 +15314,43 @@ fn a_run_that_lands_its_own_definition_edit_relaunches_without_drift() {
     );
 }
 
+/// What `rigger status` says of a relaunched driver that ended before its run did.
+const STOPPED_RELAUNCH: &str = "ended before its run did";
+
+/// A RELAUNCH STILL STARTING IS A LIVE DRIVER: while a relaunch's record is inside the grace it
+/// is given to take the step lock, `rigger status` never says its driver ended before its run did
+/// and `rigger reset --runs` leaves the output it is writing; past that grace, the relaunch never
+/// started, and both say and reap as of a stopped driver.
+#[test]
+fn a_relaunch_inside_its_grace_reads_as_a_live_driver() {
+    let (dir, record, _run) = a_project_whose_driver_died();
+    let root = dir.path();
+    let now = SystemTimeUnix::now();
+    let stamped = |at: u64| {
+        let mut record: serde_json::Value = serde_json::from_str(&record).unwrap();
+        record["relaunched_at"] = serde_json::json!(at);
+        record.to_string()
+    };
+    let output = common::cli::rigger_file(root, "driver.out");
+    for (case, given, stopped) in [
+        ("a relaunch made a moment ago", stamped(now), false),
+        ("a relaunch made an hour ago", stamped(now - 3600), true),
+    ] {
+        std::fs::write(&output, "a relaunched driver's first line\n").unwrap();
+        let status = invoke_over_record(root, &given, &["status"], &[]);
+        std::fs::write(common::cli::rigger_file(root, "step.lock"), &given).unwrap();
+        let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+        assert!(ok, "{case}: reset --runs succeeds; stderr: {err}");
+        assert_eq!(
+            (status.out.contains(STOPPED_RELAUNCH), output.exists()),
+            (stopped, !stopped),
+            "{case}: status says the relaunched driver ended, and reset --runs removes its \
+             output, only once the relaunch is past its grace; status: {}\nreset: {out}",
+            status.out
+        );
+    }
+}
+
 /// What the stderr line of an invocation that relaunched a dead driver says.
 const RELAUNCHED: &str = "relaunched it in the background";
 /// The variable an operator gives spawned agents their login token in.

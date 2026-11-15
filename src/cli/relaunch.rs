@@ -104,6 +104,22 @@ impl DriverRecord {
     fn by_hand(&self) -> String {
         format!("rigger {}", self.args.join(" "))
     }
+
+    /// Whether a relaunch of this record, made inside the [`GRACE`] it is given to take the step
+    /// lock, is still starting at `now`: its driver is live, though it holds no lock yet.
+    fn starting(&self, now: u64) -> bool {
+        self.relaunched_at
+            .is_some_and(|at| Duration::from_secs(now.saturating_sub(at)) < GRACE)
+    }
+}
+
+/// Whether the step lock under `rigger_dir` holds a record whose relaunch is still starting
+/// ([`DriverRecord::starting`]), read without the lock, which its caller holds or found free.
+fn a_relaunch_is_starting(rigger_dir: &Path) -> bool {
+    std::fs::read_to_string(rigger_dir.join("step.lock"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<DriverRecord>(&text).ok())
+        .is_some_and(|record| record.starting(now_secs()))
 }
 
 /// Seconds since the Unix epoch, now.
@@ -432,7 +448,7 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
     }
     let since = |at: u64| Duration::from_secs(now.saturating_sub(at));
     if let Some(at) = record.relaunched_at {
-        if since(at) < GRACE {
+        if record.starting(now) {
             return None;
         }
         let _ = lock.replace("");
@@ -516,13 +532,18 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
 
 /// What `rigger status` says of a relaunched driver that ended before its run did: the file its
 /// output went to, while that file holds something, no driver holds the step lock under
-/// `rigger_dir` and the run is not `done`; `None` otherwise.
+/// `rigger_dir`, no relaunch is still starting ([`a_relaunch_is_starting`]) and the run is not
+/// `done`; `None` otherwise.
 pub(crate) fn stopped_relaunch_line(rigger_dir: &Path, done: bool) -> Option<String> {
     let output = rigger_dir.join(DRIVER_OUTPUT_FILE);
     if done || std::fs::metadata(&output).map_or(true, |m| m.len() == 0) {
         return None;
     }
-    HeldLock::try_take(&rigger_dir.join("step.lock")).ok()??;
+    let lock = HeldLock::try_take(&rigger_dir.join("step.lock")).ok()??;
+    if a_relaunch_is_starting(rigger_dir) {
+        return None;
+    }
+    drop(lock);
     Some(format!(
         "relaunched driver: ended before its run did; what it said is in {}",
         output.display()
@@ -530,8 +551,12 @@ pub(crate) fn stopped_relaunch_line(rigger_dir: &Path, done: bool) -> Option<Str
 }
 
 /// Remove the relaunched driver's output under `rigger_dir`, `rigger reset --runs`'s reap of
-/// it once no driver holds the step lock: whether there was one.
+/// it once no driver holds the step lock and no relaunch is still starting
+/// ([`a_relaunch_is_starting`]), whose driver is about to write it: whether one was removed.
 pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
+    if a_relaunch_is_starting(rigger_dir) {
+        return Ok(false);
+    }
     match std::fs::remove_file(rigger_dir.join(DRIVER_OUTPUT_FILE)) {
         Ok(()) => Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
