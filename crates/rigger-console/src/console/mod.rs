@@ -154,16 +154,16 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
 /// - `"held"` - no such entry, and the run is held (spec 105), whether or not
 ///   its hold's own `held` entry stands on the dock.
 /// - `"working"` - clean of needs-you and unheld, but a unit is still mid-flight
-///   (a current-blocker line exists).
-/// - `"done"` - every unit integrated (a non-empty run with no blockers left).
+///   (a current-blocker line exists) or, while no spec defect stopped the run, a unit
+///   its recorded DAG owes has not started yet.
+/// - `"done"` - [`RunState::done`]: every unit it owes and started integrated, and
+///   no deferred gate failed.
 /// - `"healthy"` - no units yet, or nothing to report either way.
+///
+/// The counts are [`RunState::unit_tally`]: landed of every unit the run owes or
+/// started.
 pub fn statusline(run: &RunState, blockers: &[Blocker], dock: &Dock) -> String {
-    let total = run.units.len();
-    let landed = run
-        .units
-        .values()
-        .filter(|u| u.status == Status::Integrated)
-        .count();
+    let (landed, total) = run.unit_tally();
     let focus = run
         .units
         .values()
@@ -178,9 +178,9 @@ pub fn statusline(run: &RunState, blockers: &[Blocker], dock: &Dock) -> String {
         "needs-you"
     } else if run.hold.is_some() {
         "held"
-    } else if !blockers.is_empty() {
+    } else if !blockers.is_empty() || (!run.spec_defect && run.owes_an_unstarted_unit()) {
         "working"
-    } else if total > 0 && landed == total {
+    } else if run.done() {
         "done"
     } else {
         "healthy"
@@ -924,7 +924,12 @@ mod tests {
     /// a later record replaces the owed set; a slice with no record reads as it always has.
     #[test]
     fn done_and_the_statusline_count_what_the_run_owes() {
-        let dag = |units: &str| ev("DagRecorded", &format!(r#"{{"units":{units}}}"#));
+        let dag = |units: &str| {
+            ev(
+                ledger::TYPE_DAG_RECORDED,
+                &format!(r#"{{"units":{units}}}"#),
+            )
+        };
         let started = |id: &str| ev(ledger::TYPE_UNIT_STARTED, &format!(r#"{{"id":"{id}"}}"#));
         let landed = |id: &str| {
             ev(

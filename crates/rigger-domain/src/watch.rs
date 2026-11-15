@@ -1040,7 +1040,7 @@ mod tests {
     #[test]
     fn a_dead_driver_is_reported_while_the_recorded_dag_owes_an_unstarted_unit() {
         let landed_a = [
-            ev("DagRecorded", r#"{"units":["a","b"]}"#),
+            ev(ledger::TYPE_DAG_RECORDED, r#"{"units":["a","b"]}"#),
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"a"}"#),
             ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"a","commit":"c"}"#),
         ];

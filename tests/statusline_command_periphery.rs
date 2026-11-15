@@ -339,7 +339,7 @@ fn status_counts_landed_of_owed_and_says_done_only_when_every_owed_unit_landed()
         ("UnitIntegrated", r#"{"id":"u-b","commit":"c2"}"#),
     ];
     // (case, the events, the statusline, whether `rigger status` prints the release commands)
-    let rows: [(&str, Vec<(&str, &str)>, &str, bool); 2] = [
+    let rows = [
         (
             "one owed unit landed, the other not started",
             half.to_vec(),

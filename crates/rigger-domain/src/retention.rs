@@ -102,7 +102,7 @@ pub const DERIVED_TYPES: [&str; 8] = [
 
 /// EPISODIC: a run's mechanics. No cross-run fold reads these types, and folding one changes
 /// neither the live projection nor the fold state: it writes only its `applied` row.
-pub const EPISODIC_TYPES: [&str; 20] = [
+pub const EPISODIC_TYPES: [&str; 21] = [
     crate::spawn::TYPE_SPAWN_REQUESTED,
     crate::contextgraph::TYPE_GATE_VERDICT,
     crate::ledger::TYPE_GATE_PROMOTED,
@@ -123,6 +123,7 @@ pub const EPISODIC_TYPES: [&str; 20] = [
     crate::run::TYPE_RUN_RELEASED,
     crate::progress::TYPE_API_RETRY,
     crate::progress::TYPE_SUPERVISOR_BEAT,
+    crate::ledger::TYPE_DAG_RECORDED,
 ];
 
 /// What the log does with an event of a type, as far as any caller branches on it.

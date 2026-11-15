@@ -199,7 +199,7 @@ fn release_ready_waits_for_every_unit_the_recorded_dag_owes() {
         ("UnitIntegrated", r#"{"id":"u2","commit":"def"}"#),
     ];
     // (case, the events, the integrated count the wire carries, None when it carries none)
-    let rows: [(&str, Vec<(&str, &str)>, Option<u64>); 2] = [
+    let rows = [
         ("an owed unit not yet started", half.to_vec(), None),
         ("every owed unit landed", [half, rest].concat(), Some(2)),
     ];
