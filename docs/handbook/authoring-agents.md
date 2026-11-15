@@ -14,7 +14,7 @@ recurse: true
 ---
 You implement ONE fully-specified unit inside your worktree. Write the failing
 test first, confirm RED, implement minimally, confirm GREEN, run the named gates,
-commit. Report the final line as JSON: {"id","pass","evidence"}.
+commit.
 ```
 
 ### Frontmatter fields
@@ -65,7 +65,7 @@ The prompts that work share a shape. Study `.rigger/agents/adversary.md` for the
 
 **Wire the memory verbs in.** Any agent that decides something must be told to record it: "Record each planning decision with the rigger_emit tool (type DecisionMade) so the implementers inherit your reasoning." An unrecorded decision does not exist to the rest of the fleet.
 
-**Fix the output contract.** Workers report machine-parseable results: `Report the final line as JSON: {"id","pass","evidence"}`. The conductor parses that line; prose around it is tolerated, absence of it is a failure.
+**Leave an author's last line to rigger.** Every task rigger gives an author (the implementer, a speculation lane, the test author) ends with the hand-over contract: once its work is done, the session prints `RIGGER-HANDOVER` alone on its last line, after anything else it prints. A session that ends without that line is treated as stopped mid-work and is run again, so an author persona asks for no final line of its own.
 
 **Forbid the known cheats by name.** Prompts should expressly forbid: deferring scope ("follow-up", TODO comments), weakening or skipping a test to go green, suppressing warnings instead of fixing them, and any masking of a quality problem so a reviewer cannot find it. An agent that cannot finish must surface the hole, never hide it. If the work moves files, require the agent to confirm the deletion is actually in the commit (`git show --stat HEAD`) - orphaned sources pass every compile gate while failing every file-scanning one.
 

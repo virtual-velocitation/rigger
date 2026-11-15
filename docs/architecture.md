@@ -209,7 +209,7 @@ recurse: false               # no Agent tool => cannot fan out (runaway-proof)
 ---
 You implement ONE fully-specified finding inside your worktree. Write the failing
 test first, confirm RED, implement minimally, confirm GREEN, run the named gates,
-commit, push. Report the final line as JSON: {"id","pass","evidence"}.
+commit, push.
 ```
 
 The agent file is a **pure capability + persona declaration**, with no flow logic. The flow
