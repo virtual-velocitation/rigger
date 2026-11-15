@@ -2125,6 +2125,55 @@ fn a_request_made_unreadable_during_an_exhausting_pass_fails_the_call() {
     assert_eq!(out, "", "no answer is printed");
 }
 
+/// Given a critic launched and held before its session prints its first line, when `rigger reset
+/// --build-cache` runs during that silence, then the critic's liveness marker already stands and
+/// its spawn scratch, the persona file the launch wrote, is kept: a hosted spawn is live from its
+/// launch, not from its first line.
+#[test]
+fn a_critic_silent_before_its_first_line_is_live_from_its_launch() {
+    let dir = temp_project();
+    let root = dir.path().to_path_buf();
+    scaffold(&root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+    let base = scratch.to_str().unwrap().to_string();
+    let unit = critique_unit(SPEC_HASH);
+    let spawn = critique_spawn_id(SPEC_HASH, 0);
+    let marker = marker_path(&base, &unit, &spawn).unwrap();
+    let container = spawn_scratch_path(&base, &unit, &spawn).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (work, path) = stub(CLEAN_CRITIQUE);
+    let during = {
+        let (root, base, seen) = (root.clone(), base.clone(), seen.clone());
+        let (marker, container) = (marker.clone(), container.clone());
+        move || {
+            let marked = marker.exists();
+            let (out, err, ok) = run_rigger_envs(
+                &root,
+                &["reset", "--build-cache"],
+                &[("RIGGER_TMPDIR", base.as_str())],
+            );
+            *seen.lock().unwrap() = Some((marked, container.exists(), out, err, ok));
+        }
+    };
+    let held = hold_critique_stub(work.path(), during);
+    let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
+    held.join().expect("the pass was held and released");
+    assert!(ok, "the critique records; stderr:\n{err}");
+    let (marked, kept, out, err, reset_ok) = seen.lock().unwrap().take().unwrap();
+    assert!(
+        reset_ok,
+        "reset --build-cache succeeds; stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        marked,
+        "the critic's marker stands from its launch: {marker:?}"
+    );
+    assert!(
+        kept,
+        "a launched critic's scratch is kept before its first line: {container:?}; stdout {out:?}"
+    );
+}
+
 /// Given two calls that raced on one text minted one spawn id, so the critique stream holds two
 /// attempt-0 requests and no result, when the unchanged text is critiqued again, then the next
 /// attempt is the number of requests recorded for the hash, 2, never the number of distinct ids.
