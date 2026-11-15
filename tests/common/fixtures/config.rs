@@ -16,11 +16,12 @@ pub const LANGUAGE_NEUTRAL_IMPLEMENTER: &str =
      commit.\nThe workflow's gates run the full battery on the commit.\n";
 
 /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
-pub const ROLE_SEED_FILES: [&str; 5] = [
+pub const ROLE_SEED_FILES: [&str; 6] = [
     "adjudicator.md",
     "adversary.md",
     "architecture-reviewer.md",
     "planner.md",
+    "sdet-author.md",
     "sdet.md",
 ];
 

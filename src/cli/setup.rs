@@ -155,7 +155,8 @@ fn parse_template_sets(sets: &[TemplateSet]) -> Result<Vec<(&TemplateSet, SetSpe
 /// The workflow's gates and its implementer come from the first of `parsed` any of whose
 /// `detect` markers is a file at `root`, whose `implementer` persona is seeded beside the role
 /// seeds; with none, the workflow declares no gates and names the language-neutral `implementer`
-/// seed. An existing workflow or agent file is kept.
+/// seed. An existing workflow or agent file is kept, and no seed is written whose id an existing
+/// agent defines ([`write_seed_agents`]).
 fn scaffold_project(
     root: &Path,
     parsed: &[(&TemplateSet, SetSpec)],
@@ -267,10 +268,11 @@ fn scaffold_project(
 
 /// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
 /// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
-/// references (every candidate when the workflow at `root` is absent or names no agent),
-/// returning the file names it newly wrote. It creates `.rigger/agents/` when absent. An
-/// existing file is kept silently ([`write_if_absent`]), so a rerun writes nothing new and an
-/// operator's curated agent stays.
+/// references (every candidate when the workflow at `root` is absent or names no agent) and no
+/// agent already in `.rigger/agents/` defines under any file name, returning the file names it
+/// newly wrote. It creates `.rigger/agents/` when absent, and fails naming an agent file there
+/// that does not parse. An existing file is kept silently ([`write_if_absent`]), so a rerun
+/// writes nothing new and an operator's curated agent stays.
 fn write_seed_agents(
     root: &Path,
     set: Option<&SetSpec>,
@@ -303,14 +305,22 @@ fn write_seed_agents(
     // ABSENT or names no agent, never because a present one failed to parse.
     let agents_dir = project_agents_dir(root);
     std::fs::create_dir_all(&agents_dir)?;
+    // The ids the agents already on disk define, whatever their file names: a candidate carrying
+    // one would be a second agent of that id, which every later load refuses.
+    let defined: std::collections::HashSet<String> = config_store::read_agents_dir(&agents_dir)?
+        .into_iter()
+        .map(|(_, agent)| agent.id)
+        .collect();
     let mut new_agents = Vec::new();
     for (file, content) in candidates {
+        let id = seed_id(content);
         let referenced = referenced_agents.is_empty()
-            || seed_id(content).is_some_and(|id| referenced_agents.contains(&id));
+            || id.as_ref().is_some_and(|id| referenced_agents.contains(id));
+        let undefined = !id.is_some_and(|id| defined.contains(&id));
         // Report only NEWLY-written agents; an existing agent is kept silently, so a
         // rerun scaffolds nothing new (the skip-scaffolding hygiene of spec 05). A genuine
         // write failure escalates (naming the artifact), never a silent omission.
-        if referenced && write_if_absent(&agents_dir.join(&file), content)? {
+        if referenced && undefined && write_if_absent(&agents_dir.join(&file), content)? {
             new_agents.push(file);
         }
     }
@@ -459,12 +469,13 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
     Ok(true)
 }
 
-/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml. Returns an
-/// empty set when the file is genuinely ABSENT (the legitimate empty-repo signal
-/// `init_project` seeds the full default fleet on) or parses but names no agent (its stages
-/// and `defaults.review` are optional); a PRESENT-but-unparseable file - most
-/// importantly one carrying an unrecognized key - is a real `Err`, never folded into that
-/// same empty set. Routed through [`config_store::load_workflow`], the one canonical
+/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml: its
+/// `defaults.review` panel's, its stages' and its declared test author
+/// (`defaults.test_author`). Returns an empty set when the file is genuinely ABSENT (the
+/// legitimate empty-repo signal `init_project` seeds the full default fleet on) or parses but
+/// names no agent (its stages, `defaults.review` and `defaults.test_author` are optional); a
+/// PRESENT-but-unparseable file - most importantly one carrying an unrecognized key - is a
+/// real `Err`, never folded into that same empty set. Routed through [`config_store::load_workflow`], the one canonical
 /// `deny_unknown_fields`-honoring parser, rather than a second ad hoc
 /// `serde_yaml::from_str::<Workflow>` that would silently accept what that parser rejects.
 fn get_referenced_agent_ids(
@@ -492,6 +503,9 @@ fn get_referenced_agent_ids(
             ids.insert(agent_id);
         }
     }
+
+    // Add the declared test author, the agent the build seam spawns
+    ids.extend(workflow.defaults.declared_test_author().map(str::to_string));
 
     Ok(ids)
 }
@@ -1888,6 +1902,8 @@ max_parallel_units: 2\n  \
 grep_guard: true\n  \
 # The unit size cap in added lines that the planner and plan critique state; 0 = none.\n  \
 max_unit_added_lines: 3000\n  \
+# The agent that writes each unit's periphery tests after its own tests pass.\n  \
+test_author: sdet-author\n  \
 # The three-tier review panel applied to EVERY implement unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \
@@ -2149,7 +2165,8 @@ fn scaffold_workflow(set: Option<&SetSpec>) -> String {
 /// template set: a matched set's workflow names the set's own `implementer` persona, which
 /// `rigger init` writes as `<id>.md` beside the role seeds, and with no set matched it names
 /// the language-neutral `implementer` seed here. Every other referenced id is a role seed here
-/// (planner, architecture-reviewer, sdet, adversary, adjudicator), and `rigger init` writes
+/// (planner, architecture-reviewer, sdet, sdet-author, adversary, adjudicator), the
+/// sdet-author referenced as the workflow's `defaults.test_author`, and `rigger init` writes
 /// only the referenced candidates, so a fresh project holds no stray, unreferenced agent; a
 /// set's implementer reusing an id seeded here is refused by [`parse_template_set`]. The three
 /// generic placeholder personas (devils-advocate, reviewer.architecture, reviewer.technical)
@@ -2233,6 +2250,24 @@ reproduce only a specific suspicion (one named test, a reversion probe), in your
 scratch worktree, never the whole battery.\n\
 Mark a finding that records your sign-off (the review complete, no defect raised)\n\
 with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n",
+    ),
+    (
+        "sdet-author.md",
+        "---\n\
+id: sdet-author\n\
+model: opus\n\
+tools: [Read, Edit, Write, Grep, Glob, Bash, Agent]\n\
+isolation: worktree\n\
+recurse: true\n\
+---\n\
+You author the periphery tests of ONE unit inside its worktree, after the implementer's\n\
+tests pass and before the gates run: contract, API and integration tests that drive the\n\
+unit from outside. You never author or change a unit test. Find the unit's boundary\n\
+surface from its diff, write one test per behaviour at that surface.\n\
+\n\
+## A documentation-only round\n\
+\n\
+Extend the existing owner test's needle for the changed sentence, or add no pin; never a new test.\n",
     ),
     (
         "adversary.md",
@@ -2377,9 +2412,9 @@ mod tests {
     use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
     use crate::test_support::{
         assert_holds_its_critique_method, critique_method_by_persona, markdown_section,
-        ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, BOUNDED_AUDIT, CRITIQUE_METHOD,
-        DOC_ONLY_ROUND_RULE, FAN_OUT_HEADING, GROUNDING_METHOD, HAND_OVER_HEADING, LOOKUP_METHOD,
-        ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
+        sdet_author_seed, ADJUDICATOR_JUDGING_RULE, ADVERSARY_CRITIQUE_METHOD, BOUNDED_AUDIT,
+        CRITIQUE_METHOD, DOC_ONLY_ROUND_RULE, FAN_OUT_HEADING, GROUNDING_METHOD, HAND_OVER_HEADING,
+        LOOKUP_METHOD, ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
 
@@ -2818,10 +2853,10 @@ mod tests {
     fn scaffold_parses_into_a_valid_config() {
         for (label, set, workflow) in every_rendering() {
             let cfg = load_scaffold(set.as_ref(), &workflow);
-            // Six agents: the planner, the implementer (the set's own, or the language-neutral
+            // Seven agents: the planner, the implementer (the set's own, or the language-neutral
             // seed with no set), the two reviewer lenses (architecture-reviewer + sdet), the
-            // adversary, the adjudicator.
-            assert_eq!(cfg.agents.len(), 6, "{label}: scaffold agent count");
+            // sdet-author (the test author), the adversary, the adjudicator.
+            assert_eq!(cfg.agents.len(), 7, "{label}: scaffold agent count");
             // Four stages: plan -> plan-critique -> implement -> checkin.
             assert_eq!(
                 cfg.workflow.stages.len(),
@@ -4016,14 +4051,16 @@ mod tests {
     /// Spec 08 item 2: the scaffold seed and the scaffold workflow reference the SAME
     /// canonical persona set - every seeded agent is referenced by the workflow and every
     /// referenced agent is seeded (no stray, unreferenced persona on a fresh-repo init) -
-    /// and that set is the canonical six, the language-neutral `implementer` among them, with
-    /// NONE of the three generic placeholder personas. A regression re-seeding a generic stray,
-    /// or seeding an agent the workflow does not reference, fails here.
+    /// and that set is the canonical seven, the language-neutral `implementer` and the test
+    /// author `sdet-author` among them, with NONE of the three generic placeholder personas. A
+    /// regression re-seeding a generic stray, or seeding an agent the workflow does not
+    /// reference, fails here.
     #[test]
     fn scaffold_agents_and_workflow_reference_the_same_canonical_set() {
         use std::collections::BTreeSet;
 
-        // Every agent id a scaffolded workflow references.
+        // Every agent id a scaffolded workflow references: its review panel's, its stages' and
+        // its declared test author.
         let referenced_by = |workflow: &str| -> BTreeSet<String> {
             let wf: config::Workflow =
                 serde_yaml::from_str(workflow).expect("the scaffolded workflow must parse");
@@ -4032,6 +4069,7 @@ mod tests {
             for stage in wf.stages.values() {
                 referenced.extend(stage.agent_ids());
             }
+            referenced.extend(wf.defaults.declared_test_author().map(str::to_string));
             referenced
         };
         let referenced = referenced_by(&scaffold_workflow(None));
@@ -4068,6 +4106,7 @@ mod tests {
             "implementer",
             "architecture-reviewer",
             "sdet",
+            "sdet-author",
             "adversary",
             "adjudicator",
         ]
@@ -4102,7 +4141,8 @@ mod tests {
     /// Spec 08 item 3: the referenced-agent scaffold-skip filter. `init_project` scaffolds
     /// ONLY the seeded agents the workflow references, and skips (never writes) a seeded
     /// agent the workflow does not reference. Driven with a workflow that references just
-    /// two of the six seeded agents: exactly those two are written, the other four are not.
+    /// two of the seven seeded agents and declares no test author: exactly those two are
+    /// written, the other five are not.
     #[test]
     fn init_scaffolds_only_the_workflow_referenced_agents() {
         let dir = tempfile::tempdir().unwrap();
@@ -4134,6 +4174,7 @@ mod tests {
             "implementer.md",
             "architecture-reviewer.md",
             "sdet.md",
+            "sdet-author.md",
             "adjudicator.md",
         ] {
             assert!(
@@ -4195,6 +4236,7 @@ mod tests {
             "implementer.md",
             "architecture-reviewer.md",
             "sdet.md",
+            "sdet-author.md",
             "adjudicator.md",
         ] {
             assert!(
@@ -4223,6 +4265,7 @@ mod tests {
             "implementer",
             "architecture-reviewer",
             "sdet",
+            "sdet-author",
             "adversary",
             "adjudicator",
         ]
@@ -4231,7 +4274,7 @@ mod tests {
         .collect();
         assert_eq!(
             ids, want,
-            "the referenced fleet is exactly the scaffolded canonical six"
+            "the referenced fleet is exactly the scaffolded canonical seven"
         );
 
         let empty = tempfile::tempdir().unwrap();
@@ -4648,6 +4691,40 @@ mod tests {
         }
     }
 
+    /// The fresh projects a new scaffold is proven over, none initialized yet: with no template
+    /// root, and with this repository's root both matching no set and, beside a root
+    /// `Cargo.toml`, matching the Rust one. Each row is its label, the sets `init_project` is
+    /// handed, the project and the gate template set its scaffold names.
+    fn fresh_scaffold_projects() -> [(
+        &'static str,
+        Vec<TemplateSet>,
+        tempfile::TempDir,
+        Option<&'static str>,
+    ); 3] {
+        let rust_project = tempfile::tempdir().unwrap();
+        std::fs::write(rust_project.path().join("Cargo.toml"), "").unwrap();
+        [
+            (
+                "no template root",
+                Vec::new(),
+                tempfile::tempdir().unwrap(),
+                None,
+            ),
+            (
+                "this repository's root, matching no set",
+                repo_sets(),
+                tempfile::tempdir().unwrap(),
+                None,
+            ),
+            (
+                "this repository's root, matching the rust set",
+                repo_sets(),
+                rust_project,
+                Some("rust"),
+            ),
+        ]
+    }
+
     /// Spec 125's A NEW SCAFFOLD BOUNDS ITS SPAWNS: the workflow `init_project` writes into a fresh
     /// project - with no template root, and with this repository's root both matching no set and
     /// matching the Rust one - declares `defaults.max_wall_clock: 3600` once, right after
@@ -4660,26 +4737,7 @@ mod tests {
                                 spawn silent past it with no result is stopped and\n  # recorded \
                                 as an infrastructure fault, charging no attempt. 0 = unbounded.\n  \
                                 max_wall_clock: 3600\n";
-        let rows = [
-            ("no template root", Vec::new(), None, None),
-            (
-                "this repository's root, matching no set",
-                repo_sets(),
-                None,
-                None,
-            ),
-            (
-                "this repository's root, matching the rust set",
-                repo_sets(),
-                Some("Cargo.toml"),
-                Some("rust"),
-            ),
-        ];
-        for (label, sets, marker, gate_set) in rows {
-            let dir = tempfile::tempdir().unwrap();
-            if let Some(marker) = marker {
-                std::fs::write(dir.path().join(marker), "").unwrap();
-            }
+        for (label, sets, dir, gate_set) in fresh_scaffold_projects() {
             let report = init_project(dir.path(), &sets).expect("init must scaffold");
             let written =
                 std::fs::read_to_string(dir.path().join(RIGGER_DIR).join("workflow.yml")).unwrap();
@@ -4696,6 +4754,81 @@ mod tests {
                 (gate_set, 1, 1, 3600, None),
                 "{label}: the written workflow bounds every spawn once, under its comment:\n{written}"
             );
+        }
+    }
+
+    /// Spec 125's THE SCAFFOLD SEEDS A TEST AUTHOR: `init_project` into a fresh project - with no
+    /// template root, and with this repository's root both matching no set and matching the Rust
+    /// one - writes `.rigger/agents/sdet-author.md`, its frontmatter and its `## A
+    /// documentation-only round` rule byte for byte, reported new; the written workflow declares
+    /// `test_author: sdet-author` once, right after `max_unit_added_lines` under its comment; and
+    /// the written tree loads with that test author among its seven agents. A project's own
+    /// `sdet-author.md`, written before the init, is kept byte for byte and never reported new.
+    #[test]
+    fn init_project_seeds_a_test_author_and_keeps_a_projects_own() {
+        const DECLARED: &str = "  max_unit_added_lines: 3000\n  # The agent that writes each \
+                                unit's periphery tests after its own tests pass.\n  test_author: \
+                                sdet-author\n";
+        const OWN: &str = "---\nid: sdet-author\n---\nMine.\n";
+        let seed = sdet_author_seed();
+        let seeded = (
+            "opus",
+            vec!["Read", "Edit", "Write", "Grep", "Glob", "Bash", "Agent"],
+            "worktree",
+            true,
+        );
+        let cases = [
+            (None, seed.as_str(), true, 7, seeded),
+            (Some(OWN), OWN, false, 6, ("", Vec::new(), "", false)),
+        ];
+        for (own, text, reported_new, new_agents, frontmatter) in cases {
+            for (label, sets, dir, gate_set) in fresh_scaffold_projects() {
+                let agents = dir.path().join(RIGGER_DIR).join("agents");
+                if let Some(own) = own {
+                    std::fs::create_dir_all(&agents).unwrap();
+                    std::fs::write(agents.join("sdet-author.md"), own).unwrap();
+                }
+                let report = init_project(dir.path(), &sets).expect("init must scaffold");
+                let written =
+                    std::fs::read_to_string(dir.path().join(RIGGER_DIR).join("workflow.yml"))
+                        .unwrap();
+                let cfg = config_store::load(dir.path().to_str().unwrap())
+                    .unwrap_or_else(|e| panic!("{label}: the written tree must load: {e}"));
+                assert_eq!(
+                    (
+                        report.gate_set.as_deref(),
+                        std::fs::read_to_string(agents.join("sdet-author.md")).ok(),
+                        report
+                            .new_agents
+                            .iter()
+                            .any(|file| file == "sdet-author.md"),
+                        report.new_agents.len(),
+                        written.matches(DECLARED).count(),
+                        written.matches("test_author").count(),
+                        cfg.workflow.defaults.declared_test_author(),
+                        cfg.agents.get("sdet-author").map(|author| (
+                            author.model.as_str(),
+                            author.tools.iter().map(String::as_str).collect::<Vec<_>>(),
+                            author.isolation.as_str(),
+                            author.recurse,
+                        )),
+                        cfg.agents.len(),
+                    ),
+                    (
+                        gate_set,
+                        Some(text.to_string()),
+                        reported_new,
+                        new_agents,
+                        1,
+                        1,
+                        Some("sdet-author"),
+                        Some(frontmatter.clone()),
+                        7,
+                    ),
+                    "{label}, the project's own sdet-author.md {own:?}: the scaffold seeds the \
+                     test author it declares once, under its comment:\n{written}"
+                );
+            }
         }
     }
 

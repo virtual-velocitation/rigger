@@ -31,6 +31,7 @@ const DEFAULT_FLEET: &[&str] = &[
     "implementer.md",
     "architecture-reviewer.md",
     "sdet.md",
+    "sdet-author.md",
     "adversary.md",
     "adjudicator.md",
 ];
@@ -80,12 +81,13 @@ fn rigger_init_fails_loudly_on_unknown_key_workflow_and_scaffolds_no_agents() {
 }
 
 /// The destructive scenario the finding actually reproduced: an operator's ALREADY
-/// initialized project deliberately references only two of the six default agents (a
-/// curated fleet, mirroring `src/main.rs::init_scaffolds_only_the_workflow_referenced_agents`),
-/// then `workflow.yml` later picks up a typo'd key (e.g. a hand-edit). A subsequent `rigger
-/// setup` must fail loudly and must NOT reintroduce any of the four deliberately-unreferenced
-/// default agents - the exact silent re-scaffold `adv-checkin-uphold-sharpen-arch-agent-ids-
-/// silent-swallow` reproduced empirically against the pre-fix binary.
+/// initialized project deliberately references only two of the seven default agents and
+/// declares no test author (a curated fleet, mirroring
+/// `src/cli/setup.rs::init_scaffolds_only_the_workflow_referenced_agents`), then `workflow.yml`
+/// later picks up a typo'd key (e.g. a hand-edit). A subsequent `rigger setup` must fail loudly
+/// and must NOT reintroduce any of the five deliberately-unreferenced default agents - the exact
+/// silent re-scaffold `adv-checkin-uphold-sharpen-arch-agent-ids-silent-swallow` reproduced
+/// empirically against the pre-fix binary.
 #[test]
 fn rigger_setup_fails_loudly_on_unknown_key_workflow_and_never_reintroduces_the_curated_fleet() {
     let dir = temp_project();
@@ -115,6 +117,7 @@ fn rigger_setup_fails_loudly_on_unknown_key_workflow_and_never_reintroduces_the_
         "implementer.md",
         "architecture-reviewer.md",
         "sdet.md",
+        "sdet-author.md",
         "adjudicator.md",
     ] {
         assert!(
@@ -146,6 +149,7 @@ fn rigger_setup_fails_loudly_on_unknown_key_workflow_and_never_reintroduces_the_
         "implementer.md",
         "architecture-reviewer.md",
         "sdet.md",
+        "sdet-author.md",
         "adjudicator.md",
     ] {
         assert!(
