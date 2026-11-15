@@ -250,6 +250,15 @@ pub const ROUND_OUTSIDE_DELTA: &str = "A finding outside that delta blocks only 
      defect (`\"correctness\":true`); any other finding outside it is recorded for the operator \
      and never blocks. A reject this round names every item it requires in `required`.\n";
 
+/// FRAMING: the header over the findings a reviewer re-driven within its round already recorded
+/// that round, printed only when it recorded one.
+pub const ROUND_FINDINGS_YOURS: &str =
+    "\n\nYou already recorded these findings this round; each stays in the log:\n";
+
+/// FRAMING: the adjudicator's header over every finding its round recorded, printed only when the
+/// round recorded one.
+pub const ROUND_FINDINGS_ALL: &str = "\n\nEvery finding recorded this round, by id:\n";
+
 /// FRAMING: the gate evidence block's header for the `{commit}` under review, printed only when a
 /// gate ran on it.
 pub const GATE_EVIDENCE_HEADER: &str = "\n\nGATE EVIDENCE for the commit under review (commit \
@@ -305,9 +314,18 @@ pub const LOOKUP_VERBS: &str = "`rigger graph --lookup <term>...` (each term at 
      defined: `rigger graph --show <name>`.\n";
 
 /// FRAMING: the prior plan critique's rejection, `{prior_reason}`, printed only on a re-review.
-pub const DAG_PRIOR_REJECT: &str = "A prior plan-critique REJECTED this \
-     decomposition:\n{prior_reason}\n\nThe planner has since revised the DAG; re-review it \
-     below.\n\n";
+pub const DAG_PRIOR_REJECT: &str =
+    "A prior plan-critique REJECTED this decomposition:\n{prior_reason}\n\n";
+
+/// FRAMING: the re-review sentence after [`DAG_PRIOR_REJECT`], printed only when a re-plan
+/// proposed a unit at the round's attempt.
+pub const DAG_REVISED_SINCE_REJECT: &str =
+    "The planner has since revised the DAG; re-review it below.\n\n";
+
+/// FRAMING: the re-review sentence after [`DAG_PRIOR_REJECT`], printed only when no re-plan
+/// proposed a unit at the round's attempt.
+pub const DAG_UNCHANGED_SINCE_REJECT: &str = "No re-plan has proposed a unit since that \
+     rejection; re-review the DAG below against it.\n\n";
 
 /// FRAMING: the plan-critique gate's task.
 pub const DAG_CRITIQUE_OPENER: &str = "You are the plan-critique gate. Review the PROPOSED unit \
@@ -456,6 +474,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             ROUND_PATTERN,
             ROUND_OUTSIDE_DELTA,
         ],
+        "conductor::round_findings_block" => [ROUND_FINDINGS_YOURS, ROUND_FINDINGS_ALL],
         "conductor::gate_evidence_block" => [GATE_EVIDENCE_HEADER, GATE_EVIDENCE_ROW],
         "conductor::conflict_resolution_prompt" => [CONFLICT_RESOLUTION],
         "conductor::later_attempt_block" => [
@@ -469,6 +488,8 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
         "conductor::write_lookup_pointer" => [LOOKUP_LEAD_IN, LOOKUP_VERBS],
         "conductor::build_dag_critique_prompt" => [
             DAG_PRIOR_REJECT,
+            DAG_REVISED_SINCE_REJECT,
+            DAG_UNCHANGED_SINCE_REJECT,
             DAG_CRITIQUE_OPENER,
             UNIT_SIZE_CAP,
             DAG_UNITS_HEADER,
@@ -547,8 +568,10 @@ mod tests {
         ("DAG_OVERLAP_ROW", "FRAMING"),
         ("DAG_OVERLAP_UNSERIALIZED_HEADER", "FRAMING"),
         ("DAG_PRIOR_REJECT", "FRAMING"),
+        ("DAG_REVISED_SINCE_REJECT", "FRAMING"),
         ("DAG_SIZE_CAP_CAUSE", "CONTRACT"),
         ("DAG_UNITS_HEADER", "FRAMING"),
+        ("DAG_UNCHANGED_SINCE_REJECT", "FRAMING"),
         ("DAG_UNIT_ROW", "FRAMING"),
         ("DECISIONS_HEADER", "FRAMING"),
         ("DELTA_NONE", "FRAMING"),
@@ -598,6 +621,8 @@ mod tests {
         ("REVIEWER_DISCIPLINE", "FRAMING"),
         ("REVIEW_FINDING_LIVE", "FRAMING"),
         ("REVIEW_FINDING_PROTOCOL", "CONTRACT"),
+        ("ROUND_FINDINGS_ALL", "FRAMING"),
+        ("ROUND_FINDINGS_YOURS", "FRAMING"),
         ("ROUND_LEAD_IN", "FRAMING"),
         ("ROUND_OUTSIDE_DELTA", "CONTRACT"),
         ("ROUND_PATTERN", "CONTRACT"),

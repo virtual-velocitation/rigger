@@ -2447,6 +2447,77 @@ fn review_retry_window(ordinal: u32) -> std::ops::RangeInclusive<u32> {
     first..=first + REVIEWER_RESPAWN_BOUND
 }
 
+/// One ReviewFinding a review round recorded: the step `role` whose spawn recorded it, its `id`
+/// and its rendered [`record_line`].
+struct RoundFinding {
+    role: String,
+    id: String,
+    line: String,
+}
+
+/// The ReviewFindings `run` holds for unit `unit`'s review round `attempt`, in the order first
+/// recorded: each one a review step's spawn of that unit at that attempt stamped with its
+/// [`META_SPAWN`], under any retry id and any infra rerun of the round. A role that re-records
+/// an id keeps its first place with its latest text. A finding with no spawn stamp names no
+/// round, so it is never listed.
+fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> {
+    let mut found: Vec<RoundFinding> = Vec::new();
+    for e in run
+        .iter()
+        .filter(|e| e.type_ == contextgraph::TYPE_REVIEW_FINDING)
+    {
+        let Some(spawn_id) = e.meta.get(META_SPAWN) else {
+            continue;
+        };
+        let role = spawn::spawn_role(spawn_id);
+        if spawn::unit_of(spawn_id) != Some(unit)
+            || spawn::attempt_of(spawn_id) != attempt
+            || spawn::review_step_of(role).is_none()
+        {
+            continue;
+        }
+        let body: Value = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
+        let field = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("");
+        let id = field("id");
+        let by = e
+            .meta
+            .get(contextgraph::META_ACTOR)
+            .map(String::as_str)
+            .filter(|a| !a.is_empty())
+            .unwrap_or_else(|| field("by"));
+        let line = record_line(id, by, field("summary"));
+        match found.iter_mut().find(|f| f.role == role && f.id == id) {
+            Some(f) => f.line = line,
+            None => found.push(RoundFinding {
+                role: role.to_string(),
+                id: id.to_string(),
+                line,
+            }),
+        }
+    }
+    found
+}
+
+/// The block a review spawn's task closes on over its round's `findings`: for a unit's
+/// adjudicator (`all`) every one under [`ROUND_FINDINGS_ALL`], whatever file it names, which
+/// the graph slice of its prompt may leave out; for any other step's `role` the ones it recorded
+/// itself under [`ROUND_FINDINGS_YOURS`], so a reviewer re-driven within its round knows what it
+/// already recorded. Empty when there is none to list.
+fn round_findings_block(findings: &[RoundFinding], role: &str, all: bool) -> String {
+    let lines: String = findings
+        .iter()
+        .filter(|f| all || f.role == role)
+        .map(|f| f.line.as_str())
+        .collect();
+    if lines.is_empty() {
+        String::new()
+    } else if all {
+        format!("{ROUND_FINDINGS_ALL}{lines}")
+    } else {
+        format!("{ROUND_FINDINGS_YOURS}{lines}")
+    }
+}
+
 /// What a review-tier spawn's stdout carries, which decides when
 /// [`RunCtx::reviewer_result_is_degenerate`] reads its result as degenerate.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -8440,6 +8511,7 @@ impl RunCtx<'_> {
             // Stdout is NOT the verdict - the findings go to the graph - so an empty stdout is
             // degenerate only when the reviewer also emitted no ReviewFinding.
             ReviewerOutput::Findings,
+            false,
             &prompt,
             resume.as_deref(),
             wt,
@@ -8493,7 +8565,9 @@ impl RunCtx<'_> {
     /// degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
-    /// sentinel exactly like the original spawn. `reviews` is the routed review roster
+    /// sentinel exactly like the original spawn. Every spawn's task, `prompt` or the
+    /// `resume_task`, closes on the [`round_findings_block`] of the findings its round already
+    /// recorded: every one when `whole_round` is set (a unit's adjudicator), else the role's own. `reviews` is the routed review roster
     /// (spec 67, criterion 4) this spawn's `SpawnOpts` carries verbatim - empty for a lens,
     /// the tokens of every earlier step's spawns for an adversary or the adjudicator - always
     /// the CALLER's already-computed value, never re-derived here.
@@ -8511,6 +8585,9 @@ impl RunCtx<'_> {
         ordinal: u32,
         parallel: bool,
         output: ReviewerOutput,
+        // Whether this spawn's task lists every finding its round recorded (a unit's
+        // adjudicator) rather than the ones its own role recorded.
+        whole_round: bool,
         prompt: &str,
         // What a later review round sends this role's resumed session in place of `prompt`
         // ([`RunCtx::review_resume_task`]), or `None` when the caller has no round to
@@ -8556,11 +8633,17 @@ impl RunCtx<'_> {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
+            // The findings this round already recorded, read afresh for every spawn: a reviewer
+            // re-driven within its round (its driver died after it recorded, or its result was
+            // degenerate or verdict-less) is told its own, and the adjudicator every one.
+            let found = round_findings(&self.read_current_run()?, &st.name, attempt);
+            let block = round_findings_block(&found, role, whole_round);
+            let held = found.iter().any(|f| f.role == role);
             // A later round's first spawn of this role continues the session the role's last
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
             // starts fresh rather than continuing the session that produced it.
             let opts = if retry == first_retry {
-                self.continue_prior_session(opts, role, resume_task.map(str::to_string))?
+                self.continue_prior_session(opts, role, resume_task.map(|t| format!("{t}{block}")))?
             } else {
                 opts
             };
@@ -8608,74 +8691,72 @@ impl RunCtx<'_> {
                 // keys on to exclude a sibling's approve.
                 self.emit_agent(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
-            let result =
-                match self
-                    .deps
-                    .driver
-                    .spawn(agent_def, &refused.task(prompt), &opts, &emit)
-                {
-                    Ok(result) => {
-                        self.record_session(&opts, &result)?;
-                        result
+            let result = match self.deps.driver.spawn(
+                agent_def,
+                &refused.task(&format!("{prompt}{block}")),
+                &opts,
+                &emit,
+            ) {
+                Ok(result) => {
+                    self.record_session(&opts, &result)?;
+                    result
+                }
+                Err(e) if refused.reruns(&e, retry < last_retry) => continue,
+                Err(e) => {
+                    // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
+                    // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
+                    // exhaustion, a crash) whose error the host (or the operator's `rigger
+                    // result --error`) recorded on its id - is an INFRASTRUCTURE fault, NOT a
+                    // verdict. An error is not a verdict: review must COMPLETE. So the
+                    // conductor does NOT adopt the error as the review outcome and does NOT
+                    // fail the step; it charges the unit no attempt (the work was never judged)
+                    // and RE-PARKS a FRESH attempt of the SAME review by looping to the next
+                    // `spawn_retry_id`. That id is unrecorded, so the host launches it fresh (a
+                    // parking driver parks it for a later step); a completed real verdict then
+                    // folds through the NORMAL adjudication path below. The round's window
+                    // bounds it exactly like the degenerate loop: a round whose window ends
+                    // with a recorded error among its spawns is an outage of the round, so it
+                    // returns the crash below the loop, and the single lane reruns the review
+                    // uncharged under its F3 infra retry in the next ordinal's window until the
+                    // taxonomy's infra limit halts the step
+                    // (op-105-errored-review-window-joins-the-infra-retry).
+                    //
+                    // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
+                    // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
+                    // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
+                    // The headless host RECORDS its result, and on
+                    // `rigger run` the decorator records an unmarked error the host hands back
+                    // for a spawn the run has not ended, so a failed hosted review re-drives
+                    // through this same bound. Where no result is recorded (the cli
+                    // driver records none), `review_spawn_errored` is false and the genuine
+                    // crash surfaces marked ([`SPAWN_CRASH_MARKER`]), so the single lane
+                    // reruns the whole review uncharged under its F3 infra retry
+                    // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
+                    // its own handling of a failed review.
+                    if !is_parked_or_refused(&e, BUDGET_MARKER) && self.review_spawn_errored(&id)? {
+                        errored = Some(failed(&e));
+                        continue;
                     }
-                    Err(e) if refused.reruns(&e, retry < last_retry) => continue,
-                    Err(e) => {
-                        // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
-                        // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
-                        // exhaustion, a crash) whose error the host (or the operator's `rigger
-                        // result --error`) recorded on its id - is an INFRASTRUCTURE fault, NOT a
-                        // verdict. An error is not a verdict: review must COMPLETE. So the
-                        // conductor does NOT adopt the error as the review outcome and does NOT
-                        // fail the step; it charges the unit no attempt (the work was never judged)
-                        // and RE-PARKS a FRESH attempt of the SAME review by looping to the next
-                        // `spawn_retry_id`. That id is unrecorded, so the host launches it fresh (a
-                        // parking driver parks it for a later step); a completed real verdict then
-                        // folds through the NORMAL adjudication path below. The round's window
-                        // bounds it exactly like the degenerate loop: a round whose window ends
-                        // with a recorded error among its spawns is an outage of the round, so it
-                        // returns the crash below the loop, and the single lane reruns the review
-                        // uncharged under its F3 infra retry in the next ordinal's window until the
-                        // taxonomy's infra limit halts the step
-                        // (op-105-errored-review-window-joins-the-infra-retry).
-                        //
-                        // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
-                        // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
-                        // The headless host RECORDS its result, and on
-                        // `rigger run` the decorator records an unmarked error the host hands back
-                        // for a spawn the run has not ended, so a failed hosted review re-drives
-                        // through this same bound. Where no result is recorded (the cli
-                        // driver records none), `review_spawn_errored` is false and the genuine
-                        // crash surfaces marked ([`SPAWN_CRASH_MARKER`]), so the single lane
-                        // reruns the whole review uncharged under its F3 infra retry
-                        // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
-                        // its own handling of a failed review.
-                        if !is_parked_or_refused(&e, BUDGET_MARKER)
-                            && self.review_spawn_errored(&id)?
+                    // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
+                    // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
+                    // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
+                    // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
+                    // are unaffected. A park, a budget refusal or a refused record is no crash.
+                    let message = failed(&e);
+                    return Err(
+                        if is_parked_or_refused(&e, BUDGET_MARKER)
+                            || carries_marker(&e, EMIT_REFUSED_MARKER)
                         {
-                            errored = Some(failed(&e));
-                            continue;
-                        }
-                        // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
-                        // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
-                        // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
-                        // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
-                        // are unaffected. A park, a budget refusal or a refused record is no crash.
-                        let message = failed(&e);
-                        return Err(
-                            if is_parked_or_refused(&e, BUDGET_MARKER)
-                                || carries_marker(&e, EMIT_REFUSED_MARKER)
-                            {
-                                Error(message)
-                            } else {
-                                spawn_crash(message)
-                            },
-                        );
-                    }
-                };
+                            Error(message)
+                        } else {
+                            spawn_crash(message)
+                        },
+                    );
+                }
+            };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
-            if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get())? {
+            if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get(), held)? {
                 // Runtime verdict-channel mismatch backstop (spec 18, unit 3): a GATING
                 // spawn (a verdict `output`) that returned a non-degenerate result with NO
                 // parseable verdict line, yet emitted an approve-shaped verdict via
@@ -8845,13 +8926,17 @@ impl RunCtx<'_> {
     ///   lens/adversary that correctly emitted its findings and self-reported an empty
     ///   success is NOT misread as degenerate on an out-of-process driver
     ///   (adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-degenerate), with no
-    ///   fragile per-spawn actor attribution of the recorded findings.
+    ///   fragile per-spawn actor attribution of the recorded findings. A lens/adversary
+    ///   whose role already recorded a finding in this round (`held`, a spawn re-driven after
+    ///   its driver died) did its work too, so its empty result is no degeneracy either.
     fn reviewer_result_is_degenerate(
         &self,
         output: ReviewerOutput,
         id: &str,
         result: &AgentResult,
         findings_emitted: u32,
+        // Whether this spawn's role already recorded a finding this round, before it ran.
+        held: bool,
     ) -> Result<bool, Error> {
         if output == ReviewerOutput::RoundVerdict && rejects_without_required(&result.output) {
             // A later round's reject that names no REQUIRED item is no verdict the next
@@ -8866,8 +8951,9 @@ impl RunCtx<'_> {
             // live and the replay path.
             return Ok(true);
         }
-        if findings_emitted > 0 {
-            // A lens/adversary that emitted a ReviewFinding this spawn did its work.
+        if findings_emitted > 0 || held {
+            // A lens/adversary that emitted a ReviewFinding this spawn, or that its round
+            // already holds one from, did its work.
             return Ok(false);
         }
         // Empty stdout, zero observed findings: degenerate only if the agent actually ran
@@ -8886,9 +8972,9 @@ impl RunCtx<'_> {
     /// Run the adjudicator and return whether it approves PLUS its raw output (the
     /// verdict reasoning). Its verdict gates the stage. The adjudicator grounds LAST,
     /// so the lenses' and the adversary's ReviewFindings are already in the graph and
-    /// its grounded prompt (via `graph_context`) surfaces them - it weighs the prior
-    /// tiers by retrieving their findings through the graph, not from a hand-threaded
-    /// block. The reviewer produces no code to integrate. The returned output is the
+    /// its grounded prompt (via `graph_context`) surfaces the ones about its seed, and its
+    /// task closes on every finding its round recorded, by id, whatever file each names
+    /// ([`round_findings_block`]). The reviewer produces no code to integrate. The returned output is the
     /// verdict reason: it is folded into the unit's `reviewed` evidence on approval
     /// (item 4) and into the next attempt's prompt on a reject (item 5). `roster` is the
     /// step's routed review roster (spec 67, criterion 4) - the CALLER's already-computed value
@@ -8953,6 +9039,9 @@ impl RunCtx<'_> {
             } else {
                 ReviewerOutput::Verdict
             },
+            // The graph slice carries only the findings about its seed; the verdict weighs
+            // every finding of the round.
+            true,
             &prompt,
             resume.as_deref(),
             wt,
@@ -9119,6 +9208,20 @@ impl RunCtx<'_> {
                 strip_failure_marker(&e)
             ))
         })
+    }
+
+    /// Whether a re-plan of `plan_name` at critique attempt `attempt` recorded a `UnitProposed`
+    /// in the current run: the re-plan's own emits carry its [`META_SPAWN`] stamp
+    /// (`plan/replan#<attempt>`, a `~retry{n}` rerun included). A round a resume opens, or one
+    /// a later process enters after its re-plan parked unanswered, finds none.
+    fn re_plan_proposed(&self, plan_name: &str, attempt: u32) -> Result<bool, Error> {
+        let seat = format!("{plan_name}/{ROLE_REPLAN}");
+        Ok(self.read_current_run()?.iter().any(|e| {
+            e.type_ == TYPE_UNIT_PROPOSED
+                && e.meta.get(META_SPAWN).is_some_and(|id| {
+                    spawn::unit_role_of(id) == seat && spawn::attempt_of(id) == attempt
+                })
+        }))
     }
 
     /// Run the adversarial plan-critique gate (Unit 1, spec 10): the existing adversary +
@@ -9288,6 +9391,7 @@ impl RunCtx<'_> {
                 &conflicts,
                 serialized,
                 &prior_reason,
+                self.re_plan_proposed(plan_name, attempts)?,
                 self.declared_unit_size_cap(),
             );
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
@@ -9306,6 +9410,7 @@ impl RunCtx<'_> {
                     0,
                     false,
                     ReviewerOutput::Findings,
+                    false,
                     &format!(
                         "{prompt}{}",
                         review_protocol(ROLE_ADVERSARY, reviewer_carries_build_cache(dir))
@@ -9331,6 +9436,7 @@ impl RunCtx<'_> {
                     0,
                     false,
                     ReviewerOutput::Verdict,
+                    false,
                     &prompt,
                     None,
                     None,
@@ -13620,9 +13726,10 @@ fn render_plan_protocol(cap: Option<u32>, implementer: &str, criteria: &[String]
 /// run side by side unless one `needs` the other, and closes with the verdict paragraph, whose cause contract tells a
 /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
 /// criterion 5) from one a re-plan can fix, naming a unit over the size cap
-/// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
-/// leads with the prior rejection so the reviewer judges the revised
-/// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
+/// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-review it
+/// leads with the prior rejection so the reviewer judges the DAG against what was wrong before,
+/// saying the planner revised it only when `revised` (a re-plan proposed at the round's
+/// attempt). The same prompt feeds the adversary (which appends the
 /// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
 /// fan-out).
 fn build_dag_critique_prompt(
@@ -13631,6 +13738,7 @@ fn build_dag_critique_prompt(
     conflicts: &[(String, String, Vec<String>)],
     serialized: bool,
     prior_reason: &str,
+    revised: bool,
     cap: Option<u32>,
 ) -> String {
     let mut b = String::new();
@@ -13639,6 +13747,11 @@ fn build_dag_critique_prompt(
             DAG_PRIOR_REJECT,
             &[("prior_reason", prior_reason.trim())],
         ));
+        b.push_str(if revised {
+            DAG_REVISED_SINCE_REJECT
+        } else {
+            DAG_UNCHANGED_SINCE_REJECT
+        });
     }
     b.push_str(DAG_CRITIQUE_OPENER);
     b.push_str(&unit_size_cap_then(cap, "\n\n"));
@@ -14297,7 +14410,17 @@ fn write_capped_section<'g>(
 /// and lessons sections.
 fn plain_node_line(n: &contextgraph::Node) -> String {
     let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
-    format!("- {}: {}\n", n.id, summary)
+    record_line(&n.id, "", summary)
+}
+
+/// One record's line: `- {by} ({id}): {summary}` naming the reviewer `by` that raised it, or the
+/// plain `- {id}: {summary}` when it names none. The one shape every record list renders.
+fn record_line(id: &str, by: &str, summary: &str) -> String {
+    if by.is_empty() {
+        format!("- {id}: {summary}\n")
+    } else {
+        format!("- {by} ({id}): {summary}\n")
+    }
 }
 
 /// Render the "Code neighborhood" section (spec 29c criterion 1): the code-entity DEFINITIONS the
@@ -14656,15 +14779,8 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         // Findings keep pure recency (spec exclusion: only the lessons slice gains relevance).
         false,
         |n| {
-            let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
-            if by.is_empty() {
-                // No raising reviewer recorded: fall back to the shared plain body so the
-                // `- {id}: {summary}` line lives in exactly one place (arch-u1gap17).
-                plain_node_line(n)
-            } else {
-                let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
-                format!("- {by} ({}): {summary}\n", n.id)
-            }
+            let attr = |k: &str| n.attrs.get(k).map(String::as_str).unwrap_or("");
+            record_line(&n.id, attr("by"), attr("summary"))
         },
     );
 }
@@ -17384,6 +17500,9 @@ mod tests {
         /// reaches the sdet seam) and PARK only the sdet-author spawn, exercising the parked
         /// arm at the sdet seam that `fail_spawn_ids` (a non-parked crash) cannot.
         park_spawn_ids: std::collections::HashSet<String>,
+        /// Per-SPAWN-ID PARK after the spawn's emits: the spawn records what it emits, then
+        /// parks unanswered - a reviewer that recorded its findings before its driver died.
+        park_after_emits_ids: std::collections::HashSet<String>,
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
@@ -17499,6 +17618,7 @@ mod tests {
                 output_by_spawn_id: HashMap::new(),
                 fail_spawn_ids: std::collections::HashSet::new(),
                 park_spawn_ids: std::collections::HashSet::new(),
+                park_after_emits_ids: std::collections::HashSet::new(),
                 spawn_ids: Mutex::new(Vec::new()),
                 resolved_model_by_agent: HashMap::new(),
                 fail_spawn: false,
@@ -17755,6 +17875,9 @@ mod tests {
                 for (t, v) in per {
                     emit(t, v.clone())?;
                 }
+            }
+            if self.park_after_emits_ids.contains(&opts.id) {
+                return Err(parked_spawn(&opts.id));
             }
             // A REVIEWER's own side effect destroying the worktree mid-review (spec 64
             // criterion 3, round 4), mirroring `GateSideEffect::DeleteWorktree`'s
@@ -30142,6 +30265,152 @@ mod tests {
         );
     }
 
+    /// The records a test spawn emits, each its event type and its payload.
+    type Emits = Vec<(String, Value)>;
+
+    /// A [`ReviewFinding`](contextgraph::TYPE_REVIEW_FINDING) a test reviewer records: `id`
+    /// with `summary`, about `about`.
+    fn finding(id: &str, summary: &str, about: &str) -> (String, Value) {
+        (
+            contextgraph::TYPE_REVIEW_FINDING.to_string(),
+            json!({"id": id, "summary": summary, "about": [about]}),
+        )
+    }
+
+    /// The [`session_cfg`] unit run in two processes over one store and repository, its round-0
+    /// adjudicator rejecting and its round-1 one approving: in the first, the lens spawn of
+    /// round `attempt` records `findings` and then parks (its driver died after it recorded
+    /// them); the second, a relaunch by adoption under `relaunched`, re-drives that spawn.
+    /// Returns the second process's run state.
+    fn relaunch_after_recording(attempt: u32, findings: Emits, relaunched: &Stub) -> RunState {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let lens = spawn_id("implement", &lens_role("lens"), attempt);
+        let st = Store::open(":memory:").unwrap();
+        let first = Stub {
+            emits_by_spawn_id: HashMap::from([(lens.clone(), findings)]),
+            park_after_emits_ids: [lens].into_iter().collect(),
+            ..session_stub(&relaunch_verdicts())
+        };
+        run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &first, Vec::new())
+            },
+        )
+        .unwrap();
+        run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path,
+                ..stub_deps(&st, relaunched, Vec::new())
+            },
+        )
+        .unwrap()
+    }
+
+    /// The verdicts of a [`relaunch_after_recording`] unit: round 0 rejects, round 1 approves.
+    fn relaunch_verdicts() -> [(String, &'static str); 2] {
+        [
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]
+    }
+
+    /// A reviewer re-driven within its round after its driver died is told the findings it
+    /// already recorded that round, each still in the log: a first round's re-driven lens reads
+    /// them after its prompt, a later round's in the task its resumed session is sent, and a
+    /// lens that recorded none is told nothing. A re-driven lens that already holds findings
+    /// did its work, so an empty result from it is no degenerate one to respawn.
+    #[test]
+    fn a_reviewer_re_driven_within_its_round_is_told_the_findings_it_already_recorded() {
+        const YOURS: &str =
+            "You already recorded these findings this round; each stays in the log:";
+        let two = || {
+            vec![
+                finding("f-1", "the read is unscoped", "feature.rs"),
+                finding("f-2", "the guard is skipped", "feature.rs"),
+            ]
+        };
+        let lines = [
+            "- lens:lens (f-1): the read is unscoped\n",
+            "- lens:lens (f-2): the guard is skipped\n",
+        ];
+        let silent_lens = || {
+            let mut driver = session_stub(&relaunch_verdicts());
+            driver
+                .output_by_spawn_id
+                .insert(spawn_id("implement", &lens_role("lens"), 0), String::new());
+            driver
+        };
+        let rows: [(&str, u32, Emits, Stub, &[&str]); 4] = [
+            (
+                "a first round's re-driven lens",
+                0,
+                two(),
+                session_stub(&relaunch_verdicts()),
+                &lines,
+            ),
+            (
+                "a later round's resumed lens",
+                1,
+                two(),
+                session_stub(&relaunch_verdicts()),
+                &lines,
+            ),
+            (
+                "a re-driven lens that recorded nothing",
+                0,
+                Vec::new(),
+                session_stub(&relaunch_verdicts()),
+                &[],
+            ),
+            (
+                "a re-driven lens holding findings that returns empty",
+                0,
+                two(),
+                silent_lens(),
+                &lines,
+            ),
+        ];
+        for (case, attempt, findings, relaunched, expected) in rows {
+            let rs = relaunch_after_recording(attempt, findings, &relaunched);
+            assert_eq!(
+                rs.units["implement"].status,
+                ledger::Status::Integrated,
+                "{case}: premise: the relaunch finishes the unit"
+            );
+            let lens = spawn_id("implement", &lens_role("lens"), attempt);
+            let told = if attempt == 0 {
+                relaunched.prompts_for("lens").first().cloned()
+            } else {
+                relaunched.resume_of(&lens).map(|(_, task)| task)
+            }
+            .unwrap_or_default();
+            let block = if expected.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n{YOURS}\n{}", expected.concat())
+            };
+            assert!(
+                block.is_empty() && !told.contains(YOURS) || told.ends_with(&block),
+                "{case}: the re-driven lens must close on the findings it recorded, \
+                 {block:?}; got:\n{told}"
+            );
+            assert!(
+                !relaunched.spawn_ids().contains(&spawn_retry_id(
+                    "implement",
+                    &lens_role("lens"),
+                    attempt,
+                    1
+                )),
+                "{case}: the re-driven lens is never respawned within the round; spawns: {:?}",
+                relaunched.spawn_ids()
+            );
+        }
+    }
+
     /// How a [`assert_a_gated_attempt_never_re_runs_the_sdet_seam`] row re-enters attempt 0
     /// after its gates ran and its review round began.
     #[derive(Clone, Copy)]
@@ -37898,6 +38167,194 @@ mod tests {
                 .iter()
                 .any(|n| n.id == "f1" && n.kind == contextgraph::KIND_FINDING),
             "the emitted ReviewFinding must fold into a KIND_FINDING node in the graph"
+        );
+    }
+
+    /// The adjudicator's prompt in a `review` stage over the real graph whose lens records a
+    /// finding about the grounded `combat.rs` and one about `other.rs`, outside the stage's
+    /// seed, and whose adversary records one about `other.rs`.
+    fn adjudicator_prompt_over_an_out_of_seed_finding() -> String {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("combat.rs"), "fn combat() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
+        let mut cfg = Config::default();
+        for id in ["lens", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+                coverage: "combat".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits_by_agent: HashMap::from([
+                (
+                    "lens".to_string(),
+                    vec![
+                        finding("f1", "IN_SEED_unscoped_read", "combat.rs"),
+                        finding("f2", "OUT_OF_SEED_skipped_guard", "other.rs"),
+                    ],
+                ),
+                (
+                    "adversary".to_string(),
+                    vec![finding("a1", "OUT_OF_SEED_lost_write", "other.rs")],
+                ),
+            ]),
+            output: "reviewed the diff".into(),
+            output_by_agent: HashMap::from([(
+                "adj".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+            log: &|_| {},
+            check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
+            code_store: None,
+            context: Some(&context),
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
+        driver.prompts_for("adj").pop().unwrap_or_default()
+    }
+
+    /// What the round-1 adjudicator of the [`session_cfg`] unit is sent to continue its session
+    /// when the round-0 lens records `g0` and the round-1 lens `g1`.
+    fn round_one_adjudicator_resume_task() -> String {
+        let repo = temp_git_project_with_commit();
+        let mut driver = session_stub(&relaunch_verdicts());
+        for (attempt, record) in [
+            finding("g0", "ROUND_ZERO_finding", "feature.rs"),
+            finding("g1", "ROUND_ONE_finding", "fix1.rs"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            driver.emits_by_spawn_id.insert(
+                spawn_id("implement", &lens_role("lens"), attempt as u32),
+                vec![record],
+            );
+        }
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        driver
+            .resume_of(&adjudicator_at(1, 0))
+            .map(|(_, task)| task)
+            .unwrap_or_default()
+    }
+
+    /// The prompt of the [`per_unit_panel_cfg`] adjudicator re-driven within round 0 after its
+    /// first spawn recorded a finding and returned narration with no verdict line.
+    fn verdictless_adjudicator_re_drive_prompt() -> String {
+        let repo = temp_git_project_with_commit();
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: HashMap::from([
+                (adjudicator_at(0, 0), "still reading the diff".to_string()),
+                (adjudicator_at(0, 1), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            emits_by_spawn_id: HashMap::from([(
+                adjudicator_at(0, 0),
+                vec![finding("j1", "ADJUDICATOR_finding", "feature.rs")],
+            )]),
+            write_files_by_spawn_id: HashMap::from([(
+                spawn_id("implement", ROLE_IMPLEMENTER, 0),
+                vec!["feature.rs".to_string()],
+            )]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&per_unit_panel_cfg(None), &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        driver
+            .prompts_for("adj")
+            .get(1)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The adjudicator is told every finding its unit's round recorded, by id, whatever file it
+    /// names: over the real graph a finding outside the stage's seed, which the graph slice
+    /// leaves out, is listed beside the one the slice carries; a later round's resumed
+    /// adjudicator is sent that round's findings and never an earlier round's; and an
+    /// adjudicator re-driven within its round is told the finding its first spawn recorded.
+    #[test]
+    fn the_adjudicator_is_told_every_finding_its_round_recorded_whatever_file_it_names() {
+        const ALL: &str = "Every finding recorded this round, by id:";
+        let rows: [(&str, String, &[&str], &[&str]); 3] = [
+            (
+                "a finding outside the seed",
+                adjudicator_prompt_over_an_out_of_seed_finding(),
+                &[
+                    "- lens:lens (f1): IN_SEED_unscoped_read\n",
+                    "- lens:lens (f2): OUT_OF_SEED_skipped_guard\n",
+                    "- adversary (a1): OUT_OF_SEED_lost_write\n",
+                ],
+                &[],
+            ),
+            (
+                "a later round's resumed adjudicator",
+                round_one_adjudicator_resume_task(),
+                &["- lens:lens (g1): ROUND_ONE_finding\n"],
+                &["ROUND_ZERO_finding"],
+            ),
+            (
+                "an adjudicator re-driven within its round",
+                verdictless_adjudicator_re_drive_prompt(),
+                &["- adjudicator (j1): ADJUDICATOR_finding\n"],
+                &[],
+            ),
+        ];
+        for (case, told, listed, absent) in rows {
+            let block = format!("\n\n{ALL}\n{}", listed.concat());
+            assert!(
+                told.ends_with(&block),
+                "{case}: the adjudicator must close on every finding of its round, {block:?}; \
+                 got:\n{told}"
+            );
+            for text in absent {
+                assert!(
+                    !told.contains(text),
+                    "{case}: another round's finding {text:?} is never listed; got:\n{told}"
+                );
+            }
+        }
+        let seeded = adjudicator_prompt_over_an_out_of_seed_finding();
+        let slice = seeded.split(ALL).next().unwrap_or_default();
+        assert!(
+            slice.contains(FINDINGS_HEADER)
+                && slice.contains("IN_SEED_unscoped_read")
+                && !slice.contains("OUT_OF_SEED"),
+            "premise: the graph slice carries the in-seed finding and neither out-of-seed one; \
+             got:\n{slice}"
         );
     }
 
@@ -48904,6 +49361,38 @@ mod tests {
         );
     }
 
+    /// The plan-critique adversary spawns only after the planner's wave returned and its
+    /// proposals were harvested: under a driver whose planner answers in the step, the
+    /// adversary follows the planner and critiques the units the planner proposed.
+    #[test]
+    fn the_plan_critique_adversary_spawns_only_after_the_planners_wave_is_harvested() {
+        let driver = Stub {
+            emits_by_agent: HashMap::from([("planner".to_string(), widget_split())]),
+            output_by_agent: HashMap::from([
+                ("planner".to_string(), "proposed the DAG".to_string()),
+                ("adversary".to_string(), "reviewed the DAG".to_string()),
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            ..Stub::new()
+        };
+        critique_step(&Store::open(":memory:").unwrap(), &driver);
+        let order = driver.call_order.lock().unwrap().clone();
+        let at = |agent: &str| order.iter().position(|a| a == agent);
+        assert!(
+            matches!((at("planner"), at("adversary")), (Some(p), Some(a)) if p < a),
+            "the planner spawns before the adversary; order: {order:?}"
+        );
+        let critique = driver
+            .prompts_for("adversary")
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            critique.contains("`u-a`") && critique.contains("`u-b`"),
+            "the adversary critiques the units the planner proposed; got:\n{critique}"
+        );
+    }
+
     #[test]
     fn a_rule_7_or_8_defect_rejects_then_releases_on_the_revision() {
         // The gate's REAL value: a cross-unit ownership (rule 7) or open-disposition (rule
@@ -49767,10 +50256,71 @@ mod tests {
         critique_step(&st, &re_entering);
         assert_eq!(
             re_entering.prompts_for("judge").first(),
-            Some(retry_round),
-            "the round re-entered in a later process must open with the logged reject, exactly \
-             as the in-process retry round does"
+            Some(&retry_round.replacen(DAG_REVISED, DAG_UNCHANGED, 1)),
+            "the round re-entered in a later process must open with the logged reject as the \
+             in-process retry round does, saying the DAG is unchanged since its re-plan parked \
+             before proposing"
         );
+    }
+
+    /// The sentence a critique round's prior-reject block closes with when a re-plan proposed
+    /// at the round's attempt.
+    const DAG_REVISED: &str = "The planner has since revised the DAG; re-review it below.";
+
+    /// The sentence a critique round's prior-reject block closes with when no re-plan proposed
+    /// at the round's attempt.
+    const DAG_UNCHANGED: &str =
+        "No re-plan has proposed a unit since that rejection; re-review the DAG below against it.";
+
+    /// A critique round's prior-reject block says the planner revised the DAG only when a
+    /// re-plan proposed at the round's attempt: a round a resume of its stopped gate opens
+    /// re-plans nothing and says the DAG is unchanged, while the in-process round after a
+    /// re-plan that proposed says it was revised.
+    #[test]
+    fn a_critique_round_says_the_dag_was_revised_only_after_a_re_plan_proposed() {
+        let resumed_round = || {
+            let (st, _, _) = stopped_run();
+            grant_resume(&st, "plan-critique", 2);
+            let resumed = critique_rounds(&[]);
+            critique_step(&st, &resumed);
+            resumed
+                .prompts_for("judge")
+                .first()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let re_planned_round = || {
+            let in_process = reject_then_approve_critique(false);
+            critique_step(&Store::open(":memory:").unwrap(), &in_process);
+            in_process
+                .prompts_for("judge")
+                .get(1)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let rows = [
+            (
+                "a round a resume of its stopped gate opens",
+                resumed_round(),
+                DAG_UNCHANGED,
+                DAG_REVISED,
+            ),
+            (
+                "a round after a re-plan that proposed",
+                re_planned_round(),
+                DAG_REVISED,
+                DAG_UNCHANGED,
+            ),
+        ];
+        for (case, prompt, said, unsaid) in rows {
+            assert!(
+                prompt.starts_with(DAG_PRIOR_REJECT_HEADER)
+                    && prompt.contains(said)
+                    && !prompt.contains(unsaid),
+                "{case}: the round opens with the logged reject and says {said:?}, never \
+                 {unsaid:?}; got:\n{prompt}"
+            );
+        }
     }
 
     // --- A RECORD THE EMIT GUARD REFUSES RE-RUNS ITS SPAWN ONCE, TOLD WHY ---
@@ -51528,8 +52078,8 @@ mod tests {
     /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
     /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, a
     /// re-plan under a cap whose unit holds each and overlaps another under the partition rule, its
-    /// rows' lists filled into their slots, and a first plan whose overlap the rule does not
-    /// serialize.
+    /// rows' lists filled into their slots, a first plan whose overlap the rule does not
+    /// serialize, and a re-review no re-plan proposed for.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -51542,6 +52092,7 @@ mod tests {
                         conflicts: &[(String, String, Vec<String>)],
                         serialized: bool,
                         prior: &str,
+                        revised: bool,
                         cap: Option<u32>| {
             let stage = Stage {
                 name: "{name}".to_string(),
@@ -51551,7 +52102,7 @@ mod tests {
             };
             let stages = BTreeMap::from([("{name}".to_string(), stage)]);
             let radii = [("{name}".to_string(), strings(radius))];
-            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, cap)
+            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, revised, cap)
         };
         let contract = |size_cap_cause: &str| {
             fill(
@@ -51570,7 +52121,7 @@ mod tests {
         let cases = [
             (
                 "a first plan",
-                critique("  ", &[], &[], &[], true, "  ", None),
+                critique("  ", &[], &[], &[], true, "  ", false, None),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51588,7 +52139,16 @@ mod tests {
             ),
             (
                 "a first plan whose criterion holds a quote and a backslash",
-                critique(r#" keep "a\b" whole "#, &[], &[], &[], true, "", None),
+                critique(
+                    r#" keep "a\b" whole "#,
+                    &[],
+                    &[],
+                    &[],
+                    true,
+                    "",
+                    false,
+                    None,
+                ),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51613,11 +52173,16 @@ mod tests {
                     &overlap,
                     true,
                     "{prior_reason}",
+                    true,
                     Some(7),
                 ),
                 format!(
                     "{}{}\n\n{}{}{}",
-                    dag(&["DAG_PRIOR_REJECT", "DAG_CRITIQUE_OPENER"]),
+                    dag(&[
+                        "DAG_PRIOR_REJECT",
+                        "DAG_REVISED_SINCE_REJECT",
+                        "DAG_CRITIQUE_OPENER"
+                    ]),
                     fill(&dag(&["UNIT_SIZE_CAP"]), &[("cap", "7")]),
                     fill(
                         &dag(&["DAG_UNITS_HEADER", "DAG_UNIT_ROW"]),
@@ -51632,7 +52197,16 @@ mod tests {
             ),
             (
                 "a first plan whose overlap the partition rule does not serialize",
-                critique("{criterion}", &[], &["{p}"], &overlap, false, "", None),
+                critique(
+                    "{criterion}",
+                    &[],
+                    &["{p}"],
+                    &overlap,
+                    false,
+                    "",
+                    false,
+                    None,
+                ),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51644,6 +52218,29 @@ mod tests {
                         &dag(&["DAG_OVERLAP_UNSERIALIZED_HEADER", "DAG_OVERLAP_ROW"]),
                         &[("shared", "{s}, {t}")]
                     ),
+                    contract("")
+                ),
+            ),
+            (
+                "a re-review no re-plan proposed for",
+                critique("  ", &[], &[], &[], true, "{prior_reason}", false, None),
+                format!(
+                    "{}{}{}{}",
+                    dag(&[
+                        "DAG_PRIOR_REJECT",
+                        "DAG_UNCHANGED_SINCE_REJECT",
+                        "DAG_CRITIQUE_OPENER",
+                        "DAG_UNITS_HEADER"
+                    ]),
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[
+                            ("criterion", &dag(&["DAG_NO_CRITERION"])),
+                            ("needs", &dag(&["DAG_NO_NEEDS"])),
+                            ("radius", &dag(&["DAG_NO_RADIUS"])),
+                        ]
+                    ),
+                    dag(&["DAG_OVERLAP_DISJOINT"]),
                     contract("")
                 ),
             ),
@@ -51868,6 +52465,81 @@ mod tests {
         ]);
         for (case, render, expected) in &cases {
             assert_renders(case, render, expected);
+        }
+    }
+    /// Over the placeholder fixture the round's findings block is its registry group on each
+    /// branch: a lens is listed only the findings its own role recorded at its unit's round, an
+    /// adjudicator every one, each in the order first recorded with a re-recorded id's latest
+    /// text and its reviewer the stamped actor or else its `by`, and either renders nothing when
+    /// it has none to list. A finding of another unit,
+    /// another round, no review step, or with no spawn stamp names no finding of the round.
+    #[test]
+    fn the_round_findings_block_is_its_group_on_each_branch() {
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let group = |name: &str| picks.rendered("conductor::round_findings_block", &[name]);
+        let lens = lens_role("lens");
+        let recorded = |spawn: Option<String>, id: &str, summary: &str| {
+            let e = Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(&json!({"id": id, "summary": summary, "by": "{by}"})).unwrap(),
+            );
+            match spawn {
+                Some(s) => e
+                    .with_meta(contextgraph::META_ACTOR, spawn::spawn_role(&s))
+                    .with_meta(META_SPAWN, &s),
+                None => e,
+            }
+        };
+        let run = [
+            recorded(Some(spawn_id("u", &lens, 1)), "f1", "{first}"),
+            {
+                // A record the host stamped with its spawn alone names its reviewer by `by`.
+                let mut e = recorded(
+                    Some(spawn_retry_id("u", ROLE_ADVERSARY, 1, 2)),
+                    "a1",
+                    "{second}",
+                );
+                e.meta.remove(contextgraph::META_ACTOR);
+                e
+            },
+            recorded(Some(spawn_retry_id("u", &lens, 1, 1)), "f1", "{latest}"),
+            recorded(Some(spawn_id("other", &lens, 1)), "o1", "OTHER_UNIT"),
+            recorded(Some(spawn_id("u", &lens, 0)), "r0", "OTHER_ROUND"),
+            recorded(Some(spawn_id("u", ROLE_IMPLEMENTER, 1)), "i1", "NO_STEP"),
+            recorded(None, "n1", "UNSTAMPED"),
+        ];
+        let found = round_findings(&run, "u", 1);
+        let cases = [
+            (
+                "a lens's own findings",
+                round_findings_block(&found, &lens, false),
+                format!(
+                    "{}- lens:lens (f1): {{latest}}\n",
+                    group("ROUND_FINDINGS_YOURS")
+                ),
+            ),
+            (
+                "a role that recorded none",
+                round_findings_block(&found, "lens:other", false),
+                String::new(),
+            ),
+            (
+                "the adjudicator's every finding",
+                round_findings_block(&found, ROLE_ADJUDICATOR, true),
+                format!(
+                    "{}- lens:lens (f1): {{latest}}\n- {{by}} (a1): {{second}}\n",
+                    group("ROUND_FINDINGS_ALL")
+                ),
+            ),
+            (
+                "a round that recorded none",
+                round_findings_block(&round_findings(&run, "u", 2), ROLE_ADJUDICATOR, true),
+                String::new(),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
         }
     }
 }
