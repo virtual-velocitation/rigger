@@ -15611,6 +15611,109 @@ fn a_relaunch_that_would_adopt_another_run_refuses_and_clears_its_record() {
     );
 }
 
+/// The environment of an invocation that starts a real relaunch of the run `ended` left under
+/// `scratch`: the fake host first on PATH, that scratch root, the state home `state` and the host's
+/// own launcher.
+fn real_relaunch_envs<'a>(
+    ended: &'a common::cli::EndedRun,
+    scratch: &'a Path,
+    state: &'a Path,
+) -> [(&'a str, &'a str); 4] {
+    [
+        ("PATH", ended.path_env.as_str()),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+        ("XDG_STATE_HOME", state.to_str().unwrap()),
+        (common::RELAUNCH_ENV, ""),
+    ]
+}
+
+/// THE ADOPTION CHANGES NOTHING IT REFUSES: a relaunch into a checkout the operator moved off the
+/// run branch, with a change staged and a further edit on disk, refuses before any start effect,
+/// so HEAD, the index and the file are as the operator left them and the dead driver's open launch
+/// is still open.
+#[test]
+fn a_relaunch_into_a_checkout_on_another_branch_refuses_and_changes_nothing() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], common::fixtures::cleanup);
+    common::cli::release_the_unit(ended.fake.path());
+    git_ok(root, &["checkout", "-q", "-b", "elsewhere"]);
+    std::fs::write(root.join("dirty.txt"), "the operator's change\n").unwrap();
+    git_ok(root, &["add", "dirty.txt"]);
+    std::fs::write(
+        root.join("dirty.txt"),
+        "the operator's change, edited again\n",
+    )
+    .unwrap();
+    let checkout = || {
+        (
+            common::git::git_out(root, &["symbolic-ref", "HEAD"]),
+            common::git::git_out(root, &["rev-parse", "HEAD"]),
+            common::git::git_out(root, &["diff", "--cached"]),
+            std::fs::read_to_string(root.join("dirty.txt")).unwrap(),
+            recorded_launches(root),
+        )
+    };
+    let before = checkout();
+    let state = tempfile::tempdir().unwrap();
+    let envs = real_relaunch_envs(&ended, &scratch, state.path());
+    let (out, err, ok) = run_rigger_envs(root, &["status"], &envs);
+    assert!(
+        ok && err.contains(RELAUNCHED),
+        "the invocation relaunches the dead driver; stdout: {out}\nstderr: {err}"
+    );
+    let ended_up = common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
+        common::cli::driver_record(root).is_empty() && common::cli::step_lock_free(root)
+    });
+    assert!(
+        ended_up,
+        "the relaunched driver refuses, ends and clears its record"
+    );
+    assert_eq!(
+        checkout(),
+        before,
+        "the refused relaunch leaves HEAD, the index, the file and the open launch untouched"
+    );
+}
+
+/// THE ADOPTION OF A FINISHED RUN IS REFUSED: a record a run left behind after it was driven to
+/// its end relaunches a driver that refuses before it starts anything, naming the run done,
+/// appends nothing and clears the record.
+#[test]
+fn a_relaunch_of_a_finished_run_refuses_and_clears_its_record() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], common::fixtures::cleanup);
+    common::cli::release_the_unit(ended.fake.path());
+    let run = common::cli::current_run_id_of(root).expect("the run started before its driver died");
+    let envs = common::cli::fake_claude_env(&ended.path_env, &scratch);
+    let (out, err, ok) = run_rigger_envs(root, &["run"], &envs);
+    assert!(
+        ok && !common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED).is_empty(),
+        "the run is driven to its end; stdout: {out}\nstderr: {err}"
+    );
+    std::fs::write(common::cli::rigger_file(root, "step.lock"), &ended.record).unwrap();
+    let before = (read_run_events(root).len(), recorded_launches(root));
+    let (out, err, ok) = run_rigger_envs(root, &["run", "--adopt", &run], &envs);
+    assert!(
+        !ok && err.contains(&format!("run {run} is done")),
+        "the relaunch of a finished run refuses naming it done; stdout: {out}\nstderr: {err}"
+    );
+    assert_eq!(
+        (
+            read_run_events(root).len(),
+            recorded_launches(root),
+            common::cli::driver_record(root)
+        ),
+        (before.0, before.1, String::new()),
+        "the refusal appends nothing, launches nothing and clears the record"
+    );
+}
+
 /// STOPPED ON PURPOSE: a driver the operator interrupts (Ctrl-C) clears its record as it ends, so
 /// the next invocation relaunches nothing.
 #[cfg(unix)]
@@ -15653,12 +15756,7 @@ fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
     let started = common::cli::unit_started(ended.fake.path());
     std::fs::remove_file(&started).unwrap();
     let state = tempfile::tempdir().unwrap();
-    let envs = [
-        ("PATH", ended.path_env.as_str()),
-        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-        ("XDG_STATE_HOME", state.path().to_str().unwrap()),
-        (common::RELAUNCH_ENV, ""),
-    ];
+    let envs = real_relaunch_envs(&ended, &scratch, state.path());
     let (out, err, ok) = run_rigger_envs(root, &["status"], &envs);
     assert!(
         ok && err.contains(RELAUNCHED),
