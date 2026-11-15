@@ -3726,12 +3726,17 @@ fn watch_poll_over(
         .map(|s| s.trim().to_string())
         .is_some_and(|attempted_run| !attempted_run.is_empty() && attempted_run == run_id);
 
+    // An operator hold on the run is its stop: `watch` reports it held, never its driver dead.
+    let operator_held = runscope::read::read_current_hold(run_store, conductor::STREAM)?
+        .is_some_and(|hold| hold.operator);
+
     let inputs = watch::WatchInputs {
         run_events: &run_events,
         now,
         last_event_at,
         step_lock_free,
         driver_record_left,
+        operator_held,
         wave_liveness_ages: &wave_liveness_ages,
         dash,
         run_started_at,

@@ -15543,6 +15543,12 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
         (&["help"], Over::Dead, false, None),
         (&["no-such-verb"], Over::Dead, false, None),
         (&["status"], Over::Held, false, Some("`rigger release`")),
+        (
+            &["watch", "--once"],
+            Over::Held,
+            false,
+            Some("held by the operator, and no driver runs it; `rigger release` relaunches it"),
+        ),
         (&["status"], Over::LinkedWorktree, false, None),
         (&["prime"], Over::LinkedWorktree, false, None),
         (

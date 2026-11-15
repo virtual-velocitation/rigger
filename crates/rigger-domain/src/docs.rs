@@ -1032,7 +1032,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  pid and the file its output goes to (`.rigger/driver.out`, which `rigger status` \
                  names while it holds what a relaunched driver said before it ended). `rigger \
                  watch` relaunches nothing: it names the dead driver and `rigger status` as what \
-                 brings it back. A driver that returned is never relaunched, save one that parked on an \
+                 brings it back, and under an operator hold it reports the run held and names \
+                 `rigger release`. A driver that returned is never relaunched, save one that parked on an \
                  operator hold, which `rigger release` relaunches. A \
                  driver that dies again within ten minutes of its relaunch, a relaunch that never \
                  started, or one whose recorded binary no longer exists is left stopped, and the \
