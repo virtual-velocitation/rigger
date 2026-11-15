@@ -58,7 +58,7 @@ use rigger::eventstore::Event;
 mod real_driver_spy;
 #[path = "common/real_gate_run.rs"]
 mod real_gate_run;
-use real_gate_run::run_real_gate_and_agent;
+use real_gate_run::{run_real_gate_and_agent, write_agent_running};
 
 // `env_test_lock()` serializes every test in this file that touches the real ambient `RIGGER_RUN_BASE` process
 // env (only the "unset" test below removes it) against a concurrent thread that might
@@ -71,31 +71,11 @@ use real_gate_run::run_real_gate_and_agent;
 
 const GATE_CMD: &str = "echo RIGGER_RUN_BASE=$RIGGER_RUN_BASE";
 
-/// A fixture "agent" that echoes `RIGGER_RUN_BASE`, the run base every spawn's environment
-/// carries (see this file's own doc comment), alongside the final structured JSON line
-/// every real `cli::Driver::spawn` needs to parse a result, then the handover line its task asks
-/// for (`tests/fixtures/launch-args.sh`'s `hand_over`), mirroring
-/// `tests/fixtures/env-echo-agent.sh`'s own shape but written per-test so this file stays
-/// self-contained.
+/// A fixture "agent" in `dir` that echoes `RIGGER_RUN_BASE`, the run base every spawn's
+/// environment carries (see this file's own doc comment), with the same [`GATE_CMD`] the gate
+/// runs, written by the shared [`write_agent_running`].
 fn write_agent_fixture(dir: &Path) -> std::path::PathBuf {
-    let path = dir.join("agent.sh");
-    let launch_args = common::repo::repo_root().join("tests/fixtures/launch-args.sh");
-    std::fs::write(
-        &path,
-        format!(
-            "#!/bin/sh\necho RIGGER_RUN_BASE=$RIGGER_RUN_BASE\necho '{{\"id\":\"final\",\"pass\":true}}'\n\
-             . '{}'\nhand_over \"$(cat)\"\n",
-            launch_args.display()
-        ),
-    )
-    .expect("write agent fixture");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod agent fixture");
-    }
-    path
+    write_agent_running(dir, GATE_CMD)
 }
 
 /// Drive one full `conductor::run` against `store` (so a caller can pre-seed its `RunStarted`

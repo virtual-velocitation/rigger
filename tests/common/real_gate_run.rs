@@ -82,6 +82,31 @@ pub fn echo_agent_path() -> PathBuf {
     crate::common::repo::repo_root().join("tests/fixtures/env-echo-agent.sh")
 }
 
+/// A fixture "agent" written to `dir` that runs the shell `body`, then prints the final
+/// structured line every real `cli::Driver::spawn` parses a result from and hands its task over
+/// (`tests/fixtures/launch-args.sh`'s `hand_over`): `tests/fixtures/env-echo-agent.sh`'s shape
+/// with the body a suite observes its spawn through.
+pub fn write_agent_running(dir: &Path, body: &str) -> PathBuf {
+    let path = dir.join("agent.sh");
+    let launch_args = crate::common::repo::repo_root().join("tests/fixtures/launch-args.sh");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n{body}\necho '{{\"id\":\"final\",\"pass\":true}}'\n\
+             . '{}'\nhand_over \"$(cat)\"\n",
+            launch_args.display()
+        ),
+    )
+    .expect("write agent fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod agent fixture");
+    }
+    path
+}
+
 /// A workflow of ONE `worker` stage whose one gate of kind `gate_kind` runs `gate_cmd`, with
 /// `build` configured.
 fn one_gate_workflow(build: BuildConfig, gate_kind: &str, gate_cmd: &str) -> Config {
