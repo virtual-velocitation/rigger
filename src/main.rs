@@ -134,7 +134,9 @@ fn main() {
     let verb = args[1].as_str();
     let check = check_point(&args[1..]);
     if check == CheckPoint::Before {
-        relaunch_a_dead_driver(&Site::here(), false);
+        let site = Site::here();
+        relaunch_a_dead_driver(&site, false);
+        site.lend_discovery();
     }
     if let Some(code) = answer_help(&args[1], &args[2..]) {
         std::process::exit(code);

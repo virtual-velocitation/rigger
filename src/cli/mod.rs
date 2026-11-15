@@ -1347,7 +1347,7 @@ fn worktree_prefix(start: &Path) -> Result<PathBuf, String> {
 /// repository lies once per open. Discovery is deferred to the first rule that needs it, so a
 /// command that resolves no repository (a courier under the gate store fence) never walks above
 /// its directory.
-/// The discovery the invocation's relaunch check made at the cwd, lent to the verb's sites.
+/// The discovery the relaunch check before a verb made at the cwd, lent to the verb's sites.
 static LENT_DISCOVERY: std::sync::OnceLock<(PathBuf, Result<Option<Repository>, String>)> =
     std::sync::OnceLock::new();
 
@@ -1376,8 +1376,8 @@ impl Site {
         }
     }
 
-    /// The site at the cwd, starting from the discovery the invocation's relaunch check lent
-    /// ([`Site::lend_discovery`]) when it stood at the same directory, so the check costs a verb
+    /// The site at the cwd, starting from the discovery the relaunch check before the verb lent
+    /// ([`Site::lend_discovery`]) when it stood at the same directory, so the check costs the verb
     /// no second ask of where the repository lies.
     pub(crate) fn here() -> Self {
         let site = Self::of(Path::new(""));
@@ -1390,8 +1390,9 @@ impl Site {
     }
 
     /// Lend this site's discovery, once it has made one, to every later site at its directory
-    /// in this process ([`Site::here`]). Only the relaunch check lends, before the verb runs, so a
-    /// verb starts from the discovery it would have made itself at the same moment.
+    /// in this process ([`Site::here`]). Only the site of the relaunch check made before the verb
+    /// runs (`prime`, a person's `status`) lends, so the verb starts from the discovery it would
+    /// have made itself at the same moment; a check made after the verb lends nothing.
     pub(crate) fn lend_discovery(&self) {
         if let Some(found) = self.repository.get() {
             let _ = LENT_DISCOVERY.set((self.dir.clone(), found.clone()));

@@ -298,9 +298,7 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
     if inside_a_run {
         return;
     }
-    let root = site.project_root();
-    site.lend_discovery();
-    let Ok(root) = root else {
+    let Ok(root) = site.project_root() else {
         return;
     };
     let dir = root.join(RIGGER_DIR);
