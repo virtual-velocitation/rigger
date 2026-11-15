@@ -1162,6 +1162,8 @@ mod tests {
     /// A quiet run between one unit's landing and the next unit's start is
     /// not done while its recorded DAG owes a unit not yet started, so the dead-driver signal
     /// still fires there; once every owed unit has landed the run is done and it stays quiet.
+    /// An operator hold on such a run reads held, not dead, whether the driver is found dead by
+    /// the quiet store or by the record it left.
     #[test]
     fn a_dead_driver_is_reported_while_the_recorded_dag_owes_an_unstarted_unit() {
         let landed_a = [
@@ -1173,26 +1175,62 @@ mod tests {
             ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"b"}"#),
             ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"b","commit":"d"}"#),
         ];
-        // (case, the events, the signals detected)
-        let rows: [(&str, Vec<Event>, Vec<Signal>); 2] = [
+        let landed_all = [&landed_a[..], &landed_b[..]].concat();
+        // (case, the events, whether a driver record is left, whether an operator hold stands,
+        // the signals detected)
+        let rows = [
             (
                 "an owed unit not yet started",
                 landed_a.to_vec(),
+                false,
+                false,
                 vec![Signal::DeadDriver],
             ),
             (
+                "an owed unit not yet started, its driver record left",
+                landed_a.to_vec(),
+                true,
+                false,
+                vec![Signal::DeadDriver],
+            ),
+            (
+                "an owed unit not yet started, under an operator hold",
+                landed_a.to_vec(),
+                false,
+                true,
+                vec![Signal::OperatorHold],
+            ),
+            (
+                "an owed unit not yet started, its driver record left, under an operator hold",
+                landed_a.to_vec(),
+                true,
+                true,
+                vec![Signal::OperatorHold],
+            ),
+            (
                 "every owed unit landed",
-                [&landed_a[..], &landed_b[..]].concat(),
+                landed_all.clone(),
+                false,
+                false,
+                vec![],
+            ),
+            (
+                "every owed unit landed, its driver record left, under an operator hold",
+                landed_all,
+                true,
+                true,
                 vec![],
             ),
         ];
         let ages = BTreeMap::new();
-        for (case, events, signals) in rows {
+        for (case, events, left, held, signals) in rows {
             let events = positioned(events);
             let now = SystemTime::now();
             let inputs = WatchInputs {
                 last_event_at: Some(now - Duration::from_secs(999_999)),
                 now,
+                driver_record_left: left,
+                operator_held: held,
                 ..empty_inputs(&events, &ages)
             };
             assert_eq!(
