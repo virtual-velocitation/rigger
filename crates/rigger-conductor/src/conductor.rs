@@ -2447,6 +2447,77 @@ fn review_retry_window(ordinal: u32) -> std::ops::RangeInclusive<u32> {
     first..=first + REVIEWER_RESPAWN_BOUND
 }
 
+/// One ReviewFinding a review round recorded: the step `role` whose spawn recorded it, its `id`
+/// and its rendered [`record_line`].
+struct RoundFinding {
+    role: String,
+    id: String,
+    line: String,
+}
+
+/// The ReviewFindings `run` holds for unit `unit`'s review round `attempt`, in the order first
+/// recorded: each one a review step's spawn of that unit at that attempt stamped with its
+/// [`META_SPAWN`], under any retry id and any infra rerun of the round. A role that re-records
+/// an id keeps its first place with its latest text. A finding with no spawn stamp names no
+/// round, so it is never listed.
+fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> {
+    let mut found: Vec<RoundFinding> = Vec::new();
+    for e in run
+        .iter()
+        .filter(|e| e.type_ == contextgraph::TYPE_REVIEW_FINDING)
+    {
+        let Some(spawn_id) = e.meta.get(META_SPAWN) else {
+            continue;
+        };
+        let role = spawn::spawn_role(spawn_id);
+        if spawn::unit_of(spawn_id) != Some(unit)
+            || spawn::attempt_of(spawn_id) != attempt
+            || spawn::review_step_of(role).is_none()
+        {
+            continue;
+        }
+        let body: Value = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
+        let field = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("");
+        let id = field("id");
+        let by = e
+            .meta
+            .get(contextgraph::META_ACTOR)
+            .map(String::as_str)
+            .filter(|a| !a.is_empty())
+            .unwrap_or_else(|| field("by"));
+        let line = record_line(id, by, field("summary"));
+        match found.iter_mut().find(|f| f.role == role && f.id == id) {
+            Some(f) => f.line = line,
+            None => found.push(RoundFinding {
+                role: role.to_string(),
+                id: id.to_string(),
+                line,
+            }),
+        }
+    }
+    found
+}
+
+/// The block a review spawn's task closes on over its round's `findings`: for a gating spawn
+/// (`all`, the adjudicator) every one under [`ROUND_FINDINGS_ALL`], whatever file it names, which
+/// the graph slice of its prompt may leave out; for any other step's `role` the ones it recorded
+/// itself under [`ROUND_FINDINGS_YOURS`], so a reviewer re-driven within its round knows what it
+/// already recorded. Empty when there is none to list.
+fn round_findings_block(findings: &[RoundFinding], role: &str, all: bool) -> String {
+    let lines: String = findings
+        .iter()
+        .filter(|f| all || f.role == role)
+        .map(|f| f.line.as_str())
+        .collect();
+    if lines.is_empty() {
+        String::new()
+    } else if all {
+        format!("{ROUND_FINDINGS_ALL}{lines}")
+    } else {
+        format!("{ROUND_FINDINGS_YOURS}{lines}")
+    }
+}
+
 /// What a review-tier spawn's stdout carries, which decides when
 /// [`RunCtx::reviewer_result_is_degenerate`] reads its result as degenerate.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -8493,7 +8564,9 @@ impl RunCtx<'_> {
     /// degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
-    /// sentinel exactly like the original spawn. `reviews` is the routed review roster
+    /// sentinel exactly like the original spawn. Every spawn's task, `prompt` or the
+    /// `resume_task`, closes on the [`round_findings_block`] of the findings its round already
+    /// recorded: the role's own for a lens or the adversary, every one for a gating spawn. `reviews` is the routed review roster
     /// (spec 67, criterion 4) this spawn's `SpawnOpts` carries verbatim - empty for a lens,
     /// the tokens of every earlier step's spawns for an adversary or the adjudicator - always
     /// the CALLER's already-computed value, never re-derived here.
@@ -8556,11 +8629,17 @@ impl RunCtx<'_> {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
+            // The findings this round already recorded, read afresh for every spawn: a reviewer
+            // re-driven within its round (its driver died after it recorded, or its result was
+            // degenerate or verdict-less) is told its own, and the adjudicator every one.
+            let found = round_findings(&self.read_current_run()?, &st.name, attempt);
+            let block = round_findings_block(&found, role, output != ReviewerOutput::Findings);
+            let held = found.iter().any(|f| f.role == role);
             // A later round's first spawn of this role continues the session the role's last
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
             // starts fresh rather than continuing the session that produced it.
             let opts = if retry == first_retry {
-                self.continue_prior_session(opts, role, resume_task.map(str::to_string))?
+                self.continue_prior_session(opts, role, resume_task.map(|t| format!("{t}{block}")))?
             } else {
                 opts
             };
@@ -8608,74 +8687,72 @@ impl RunCtx<'_> {
                 // keys on to exclude a sibling's approve.
                 self.emit_agent(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
-            let result =
-                match self
-                    .deps
-                    .driver
-                    .spawn(agent_def, &refused.task(prompt), &opts, &emit)
-                {
-                    Ok(result) => {
-                        self.record_session(&opts, &result)?;
-                        result
+            let result = match self.deps.driver.spawn(
+                agent_def,
+                &refused.task(&format!("{prompt}{block}")),
+                &opts,
+                &emit,
+            ) {
+                Ok(result) => {
+                    self.record_session(&opts, &result)?;
+                    result
+                }
+                Err(e) if refused.reruns(&e, retry < last_retry) => continue,
+                Err(e) => {
+                    // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
+                    // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
+                    // exhaustion, a crash) whose error the host (or the operator's `rigger
+                    // result --error`) recorded on its id - is an INFRASTRUCTURE fault, NOT a
+                    // verdict. An error is not a verdict: review must COMPLETE. So the
+                    // conductor does NOT adopt the error as the review outcome and does NOT
+                    // fail the step; it charges the unit no attempt (the work was never judged)
+                    // and RE-PARKS a FRESH attempt of the SAME review by looping to the next
+                    // `spawn_retry_id`. That id is unrecorded, so the host launches it fresh (a
+                    // parking driver parks it for a later step); a completed real verdict then
+                    // folds through the NORMAL adjudication path below. The round's window
+                    // bounds it exactly like the degenerate loop: a round whose window ends
+                    // with a recorded error among its spawns is an outage of the round, so it
+                    // returns the crash below the loop, and the single lane reruns the review
+                    // uncharged under its F3 infra retry in the next ordinal's window until the
+                    // taxonomy's infra limit halts the step
+                    // (op-105-errored-review-window-joins-the-infra-retry).
+                    //
+                    // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
+                    // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
+                    // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
+                    // The headless host RECORDS its result, and on
+                    // `rigger run` the decorator records an unmarked error the host hands back
+                    // for a spawn the run has not ended, so a failed hosted review re-drives
+                    // through this same bound. Where no result is recorded (the cli
+                    // driver records none), `review_spawn_errored` is false and the genuine
+                    // crash surfaces marked ([`SPAWN_CRASH_MARKER`]), so the single lane
+                    // reruns the whole review uncharged under its F3 infra retry
+                    // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
+                    // its own handling of a failed review.
+                    if !is_parked_or_refused(&e, BUDGET_MARKER) && self.review_spawn_errored(&id)? {
+                        errored = Some(failed(&e));
+                        continue;
                     }
-                    Err(e) if refused.reruns(&e, retry < last_retry) => continue,
-                    Err(e) => {
-                        // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
-                        // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
-                        // exhaustion, a crash) whose error the host (or the operator's `rigger
-                        // result --error`) recorded on its id - is an INFRASTRUCTURE fault, NOT a
-                        // verdict. An error is not a verdict: review must COMPLETE. So the
-                        // conductor does NOT adopt the error as the review outcome and does NOT
-                        // fail the step; it charges the unit no attempt (the work was never judged)
-                        // and RE-PARKS a FRESH attempt of the SAME review by looping to the next
-                        // `spawn_retry_id`. That id is unrecorded, so the host launches it fresh (a
-                        // parking driver parks it for a later step); a completed real verdict then
-                        // folds through the NORMAL adjudication path below. The round's window
-                        // bounds it exactly like the degenerate loop: a round whose window ends
-                        // with a recorded error among its spawns is an outage of the round, so it
-                        // returns the crash below the loop, and the single lane reruns the review
-                        // uncharged under its F3 infra retry in the next ordinal's window until the
-                        // taxonomy's infra limit halts the step
-                        // (op-105-errored-review-window-joins-the-infra-retry).
-                        //
-                        // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
-                        // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
-                        // The headless host RECORDS its result, and on
-                        // `rigger run` the decorator records an unmarked error the host hands back
-                        // for a spawn the run has not ended, so a failed hosted review re-drives
-                        // through this same bound. Where no result is recorded (the cli
-                        // driver records none), `review_spawn_errored` is false and the genuine
-                        // crash surfaces marked ([`SPAWN_CRASH_MARKER`]), so the single lane
-                        // reruns the whole review uncharged under its F3 infra retry
-                        // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
-                        // its own handling of a failed review.
-                        if !is_parked_or_refused(&e, BUDGET_MARKER)
-                            && self.review_spawn_errored(&id)?
+                    // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
+                    // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
+                    // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
+                    // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
+                    // are unaffected. A park, a budget refusal or a refused record is no crash.
+                    let message = failed(&e);
+                    return Err(
+                        if is_parked_or_refused(&e, BUDGET_MARKER)
+                            || carries_marker(&e, EMIT_REFUSED_MARKER)
                         {
-                            errored = Some(failed(&e));
-                            continue;
-                        }
-                        // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
-                        // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
-                        // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
-                        // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
-                        // are unaffected. A park, a budget refusal or a refused record is no crash.
-                        let message = failed(&e);
-                        return Err(
-                            if is_parked_or_refused(&e, BUDGET_MARKER)
-                                || carries_marker(&e, EMIT_REFUSED_MARKER)
-                            {
-                                Error(message)
-                            } else {
-                                spawn_crash(message)
-                            },
-                        );
-                    }
-                };
+                            Error(message)
+                        } else {
+                            spawn_crash(message)
+                        },
+                    );
+                }
+            };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
-            if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get())? {
+            if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get(), held)? {
                 // Runtime verdict-channel mismatch backstop (spec 18, unit 3): a GATING
                 // spawn (a verdict `output`) that returned a non-degenerate result with NO
                 // parseable verdict line, yet emitted an approve-shaped verdict via
@@ -8845,13 +8922,17 @@ impl RunCtx<'_> {
     ///   lens/adversary that correctly emitted its findings and self-reported an empty
     ///   success is NOT misread as degenerate on an out-of-process driver
     ///   (adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-degenerate), with no
-    ///   fragile per-spawn actor attribution of the recorded findings.
+    ///   fragile per-spawn actor attribution of the recorded findings. A lens/adversary
+    ///   whose role already recorded a finding in this round (`held`, a spawn re-driven after
+    ///   its driver died) did its work too, so its empty result is no degeneracy either.
     fn reviewer_result_is_degenerate(
         &self,
         output: ReviewerOutput,
         id: &str,
         result: &AgentResult,
         findings_emitted: u32,
+        // Whether this spawn's role already recorded a finding this round, before it ran.
+        held: bool,
     ) -> Result<bool, Error> {
         if output == ReviewerOutput::RoundVerdict && rejects_without_required(&result.output) {
             // A later round's reject that names no REQUIRED item is no verdict the next
@@ -8866,8 +8947,9 @@ impl RunCtx<'_> {
             // live and the replay path.
             return Ok(true);
         }
-        if findings_emitted > 0 {
-            // A lens/adversary that emitted a ReviewFinding this spawn did its work.
+        if findings_emitted > 0 || held {
+            // A lens/adversary that emitted a ReviewFinding this spawn, or that its round
+            // already holds one from, did its work.
             return Ok(false);
         }
         // Empty stdout, zero observed findings: degenerate only if the agent actually ran
@@ -8886,9 +8968,9 @@ impl RunCtx<'_> {
     /// Run the adjudicator and return whether it approves PLUS its raw output (the
     /// verdict reasoning). Its verdict gates the stage. The adjudicator grounds LAST,
     /// so the lenses' and the adversary's ReviewFindings are already in the graph and
-    /// its grounded prompt (via `graph_context`) surfaces them - it weighs the prior
-    /// tiers by retrieving their findings through the graph, not from a hand-threaded
-    /// block. The reviewer produces no code to integrate. The returned output is the
+    /// its grounded prompt (via `graph_context`) surfaces the ones about its seed, and its
+    /// task closes on every finding its round recorded, by id, whatever file each names
+    /// ([`round_findings_block`]). The reviewer produces no code to integrate. The returned output is the
     /// verdict reason: it is folded into the unit's `reviewed` evidence on approval
     /// (item 4) and into the next attempt's prompt on a reject (item 5). `roster` is the
     /// step's routed review roster (spec 67, criterion 4) - the CALLER's already-computed value
@@ -14319,7 +14401,17 @@ fn write_capped_section<'g>(
 /// and lessons sections.
 fn plain_node_line(n: &contextgraph::Node) -> String {
     let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
-    format!("- {}: {}\n", n.id, summary)
+    record_line(&n.id, "", summary)
+}
+
+/// One record's line: `- {by} ({id}): {summary}` naming the reviewer `by` that raised it, or the
+/// plain `- {id}: {summary}` when it names none. The one shape every record list renders.
+fn record_line(id: &str, by: &str, summary: &str) -> String {
+    if by.is_empty() {
+        format!("- {id}: {summary}\n")
+    } else {
+        format!("- {by} ({id}): {summary}\n")
+    }
 }
 
 /// Render the "Code neighborhood" section (spec 29c criterion 1): the code-entity DEFINITIONS the
@@ -14678,15 +14770,8 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         // Findings keep pure recency (spec exclusion: only the lessons slice gains relevance).
         false,
         |n| {
-            let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
-            if by.is_empty() {
-                // No raising reviewer recorded: fall back to the shared plain body so the
-                // `- {id}: {summary}` line lives in exactly one place (arch-u1gap17).
-                plain_node_line(n)
-            } else {
-                let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
-                format!("- {by} ({}): {summary}\n", n.id)
-            }
+            let attr = |k: &str| n.attrs.get(k).map(String::as_str).unwrap_or("");
+            record_line(&n.id, attr("by"), attr("summary"))
         },
     );
 }
@@ -52372,6 +52457,81 @@ mod tests {
         ]);
         for (case, render, expected) in &cases {
             assert_renders(case, render, expected);
+        }
+    }
+    /// Over the placeholder fixture the round's findings block is its registry group on each
+    /// branch: a lens is listed only the findings its own role recorded at its unit's round, an
+    /// adjudicator every one, each in the order first recorded with a re-recorded id's latest
+    /// text and its reviewer the stamped actor or else its `by`, and either renders nothing when
+    /// it has none to list. A finding of another unit,
+    /// another round, no review step, or with no spawn stamp names no finding of the round.
+    #[test]
+    fn the_round_findings_block_is_its_group_on_each_branch() {
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let group = |name: &str| picks.rendered("conductor::round_findings_block", &[name]);
+        let lens = lens_role("lens");
+        let recorded = |spawn: Option<String>, id: &str, summary: &str| {
+            let e = Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(&json!({"id": id, "summary": summary, "by": "{by}"})).unwrap(),
+            );
+            match spawn {
+                Some(s) => e
+                    .with_meta(contextgraph::META_ACTOR, spawn::spawn_role(&s))
+                    .with_meta(META_SPAWN, &s),
+                None => e,
+            }
+        };
+        let run = [
+            recorded(Some(spawn_id("u", &lens, 1)), "f1", "{first}"),
+            {
+                // A record the host stamped with its spawn alone names its reviewer by `by`.
+                let mut e = recorded(
+                    Some(spawn_retry_id("u", ROLE_ADVERSARY, 1, 2)),
+                    "a1",
+                    "{second}",
+                );
+                e.meta.remove(contextgraph::META_ACTOR);
+                e
+            },
+            recorded(Some(spawn_retry_id("u", &lens, 1, 1)), "f1", "{latest}"),
+            recorded(Some(spawn_id("other", &lens, 1)), "o1", "OTHER_UNIT"),
+            recorded(Some(spawn_id("u", &lens, 0)), "r0", "OTHER_ROUND"),
+            recorded(Some(spawn_id("u", ROLE_IMPLEMENTER, 1)), "i1", "NO_STEP"),
+            recorded(None, "n1", "UNSTAMPED"),
+        ];
+        let found = round_findings(&run, "u", 1);
+        let cases = [
+            (
+                "a lens's own findings",
+                round_findings_block(&found, &lens, false),
+                format!(
+                    "{}- lens:lens (f1): {{latest}}\n",
+                    group("ROUND_FINDINGS_YOURS")
+                ),
+            ),
+            (
+                "a role that recorded none",
+                round_findings_block(&found, "lens:other", false),
+                String::new(),
+            ),
+            (
+                "the adjudicator's every finding",
+                round_findings_block(&found, ROLE_ADJUDICATOR, true),
+                format!(
+                    "{}- lens:lens (f1): {{latest}}\n- {{by}} (a1): {{second}}\n",
+                    group("ROUND_FINDINGS_ALL")
+                ),
+            ),
+            (
+                "a round that recorded none",
+                round_findings_block(&round_findings(&run, "u", 2), ROLE_ADJUDICATOR, true),
+                String::new(),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
         }
     }
 }

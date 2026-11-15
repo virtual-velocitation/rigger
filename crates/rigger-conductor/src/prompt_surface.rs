@@ -250,6 +250,15 @@ pub const ROUND_OUTSIDE_DELTA: &str = "A finding outside that delta blocks only 
      defect (`\"correctness\":true`); any other finding outside it is recorded for the operator \
      and never blocks. A reject this round names every item it requires in `required`.\n";
 
+/// FRAMING: the header over the findings a reviewer re-driven within its round already recorded
+/// that round, printed only when it recorded one.
+pub const ROUND_FINDINGS_YOURS: &str =
+    "\n\nYou already recorded these findings this round; each stays in the log:\n";
+
+/// FRAMING: the adjudicator's header over every finding its round recorded, printed only when the
+/// round recorded one.
+pub const ROUND_FINDINGS_ALL: &str = "\n\nEvery finding recorded this round, by id:\n";
+
 /// FRAMING: the gate evidence block's header for the `{commit}` under review, printed only when a
 /// gate ran on it.
 pub const GATE_EVIDENCE_HEADER: &str = "\n\nGATE EVIDENCE for the commit under review (commit \
@@ -465,6 +474,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             ROUND_PATTERN,
             ROUND_OUTSIDE_DELTA,
         ],
+        "conductor::round_findings_block" => [ROUND_FINDINGS_YOURS, ROUND_FINDINGS_ALL],
         "conductor::gate_evidence_block" => [GATE_EVIDENCE_HEADER, GATE_EVIDENCE_ROW],
         "conductor::conflict_resolution_prompt" => [CONFLICT_RESOLUTION],
         "conductor::later_attempt_block" => [
@@ -611,6 +621,8 @@ mod tests {
         ("REVIEWER_DISCIPLINE", "FRAMING"),
         ("REVIEW_FINDING_LIVE", "FRAMING"),
         ("REVIEW_FINDING_PROTOCOL", "CONTRACT"),
+        ("ROUND_FINDINGS_ALL", "FRAMING"),
+        ("ROUND_FINDINGS_YOURS", "FRAMING"),
         ("ROUND_LEAD_IN", "FRAMING"),
         ("ROUND_OUTSIDE_DELTA", "CONTRACT"),
         ("ROUND_PATTERN", "CONTRACT"),
