@@ -747,6 +747,31 @@ impl<'r> Composed<'r> {
     }
 }
 
+/// An open of the whole graph that answers only the whole graph ([`Composed::whole_at`]): it
+/// cannot be walked, so it reads nothing only a walk reads.
+pub struct WholeOpen<'r>(Composed<'r>);
+
+impl WholeOpen<'_> {
+    /// The whole graph, its withheld part and its label ([`ContextGraph::into_whole`]).
+    pub fn into_whole(self) -> Result<WholeRead, Error> {
+        Box::new(self.0).into_whole()
+    }
+}
+
+impl<'r> Composed<'r> {
+    /// [`Self::at`] opened for its whole graph alone ([`WholeOpen`]): the read the dash's graph
+    /// view makes.
+    pub fn whole_at(
+        records: &'r dyn Neighbors,
+        view: &dyn CodeView,
+        filter: ViewFilter,
+        honesty: Honesty,
+        resolution: f64,
+    ) -> Result<WholeOpen<'r>, Error> {
+        Self::at(records, view, filter, honesty, resolution).map(WholeOpen)
+    }
+}
+
 impl<'r, C: CodeHalf> Composed<'r, C> {
     /// `records` composed with `code`, a view of the tree `tip`, labelled by `honesty`.
     fn over(
@@ -1753,6 +1778,112 @@ mod tests {
         }
         fn groupings(&self) -> &Groupings {
             &self.groupings
+        }
+    }
+
+    /// [`view`] whose definitions read by leaf are recorded, to count the leaves an open
+    /// resolves, holding what a store settles as a snapshot does.
+    struct DefsCounted<'v> {
+        view: &'v Grouped,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl CodeView for DefsCounted<'_> {
+        fn stamp(&self) -> &Stamp {
+            self.view.stamp()
+        }
+        fn files(&self) -> Box<dyn Iterator<Item = FileRef<'_>> + '_> {
+            self.view.files()
+        }
+        fn file(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
+            self.view.file(path)
+        }
+        fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_> {
+            self.asked.lock().unwrap().push(leaf.to_string());
+            self.view.defs_named(leaf)
+        }
+        fn mentions_named(&self, leaf: &str) -> Box<dyn Iterator<Item = MentionRef<'_>> + '_> {
+            self.view.mentions_named(leaf)
+        }
+        fn groupings(&self) -> &Groupings {
+            self.view.groupings()
+        }
+        fn settled(&self) -> Option<&dyn crate::code_view::Settled> {
+            Some(self)
+        }
+    }
+
+    /// What a store settles for the view at advance: no test file, and no proof, its one test
+    /// call landing on a placeholder; a read takes them rather than walking the test calls.
+    impl crate::code_view::Settled for DefsCounted<'_> {
+        fn test_files(&self) -> Vec<&str> {
+            Vec::new()
+        }
+        fn proofs(&self, _of: crate::code_view::Proofs<'_>) -> Vec<ProofCall> {
+            Vec::new()
+        }
+    }
+
+    /// A whole read resolves no leaf only a walk reads: GIVEN a test in a code file calling
+    /// `helper`, which nothing defines, so the call lands on a placeholder, WHEN the graph is
+    /// opened for walks and for its whole graph alone under each filter, THEN only the open for
+    /// walks hiding tests reads `helper`'s definitions (the callers a walk reaches through its
+    /// placeholder), the open showing tests reads them once for the call's edge, and both opens
+    /// answer the same whole graph.
+    #[test]
+    fn a_whole_read_resolves_no_leaf_only_a_walk_reads() {
+        let mut grouped = view(Some("c1"));
+        let mut files: Vec<FileFacts> = (grouped.facts.files())
+            .filter_map(|f| grouped.facts.file(f.path).map(Cow::into_owned))
+            .collect();
+        let mut check = def("check");
+        check.test = true;
+        files.push(rust(
+            "src/c.rs",
+            vec![def("serve"), check],
+            vec![Mention {
+                enclosing: Some(1),
+                name: "helper".into(),
+                leaf: "helper".into(),
+                kind: MentionKind::Call,
+                line: 1,
+                test: true,
+            }],
+        ));
+        grouped.facts = FactsView::new(grouped.facts.stamp().clone(), files);
+        let records = records();
+        // (open, filter, the reads of `helper`'s definitions)
+        let cases = [
+            ("walks", Tests::Exclude, 1),
+            ("whole", Tests::Exclude, 0),
+            ("walks", Tests::Include, 1),
+            ("whole", Tests::Include, 1),
+        ];
+        let mut wholes = BTreeMap::new();
+        for (open, tests, want) in cases {
+            let counted = DefsCounted {
+                view: &grouped,
+                asked: Mutex::new(Vec::new()),
+            };
+            let filter = ViewFilter { tests };
+            let read = match open {
+                "walks" => Box::new(
+                    Composed::at(&records, &counted, filter, exact(), DEFAULT_RESOLUTION).unwrap(),
+                )
+                .into_whole(),
+                _ => Composed::whole_at(&records, &counted, filter, exact(), DEFAULT_RESOLUTION)
+                    .unwrap()
+                    .into_whole(),
+            }
+            .unwrap();
+            let asked = counted.asked.lock().unwrap();
+            let helper = asked.iter().filter(|leaf| *leaf == "helper").count();
+            assert_eq!(helper, want, "{open} under {tests:?}: reads of helper");
+            let graph = format!("{:?}", read.graph);
+            let first = wholes
+                .entry(format!("{tests:?}"))
+                .or_insert_with(|| graph.clone());
+            assert_eq!(*first, graph, "{open} under {tests:?}: the whole graph");
         }
     }
 
