@@ -483,6 +483,7 @@ mod tests {
     };
     use crate::test_support::{
         build_block_declaring, build_declaring, DECLARED_BJL, REFUSED_DECLARATIONS,
+        RETIRED_BUILD_KEYS,
     };
 
     // ---- instruction injection: the operator layer loader ----
@@ -2603,16 +2604,27 @@ class: product\n";
         assert_eq!(cfg.validate().map_err(|e| e.0), Ok(vec![]));
     }
 
-    /// `auto` and `off` never fail validation regardless of PATH content: validation reads
-    /// the declared build environment, never the wrapper.
+    /// The `build.wrapper` and `build.cache_dir` keys are RETIRED: rigger exports only what
+    /// `build.env` declares. A workflow.yml still carrying either parses, and validation refuses a
+    /// value, `auto`, `off` and a named wrapper included, naming the key and the line to delete;
+    /// an empty or whitespace-only value passes.
     #[test]
-    fn validate_accepts_auto_and_off_wrapper_regardless_of_path() {
-        for wrapper in ["auto", "off", "", "  "] {
-            let mut cfg = Config::default();
-            cfg.workflow.build.wrapper = wrapper.into();
-            assert!(
-                cfg.validate().is_ok(),
-                "build.wrapper: {wrapper:?} must never fail validation"
+    fn validate_refuses_the_retired_build_wrapper_and_cache_dir_keys_with_the_line_to_delete() {
+        for row in RETIRED_BUILD_KEYS {
+            let workflow: Workflow = crate::config::parse_yaml_naming_unknown_keys(row.block)
+                .unwrap_or_else(|e| panic!("{}: a retired key still parses: {e}", row.why));
+            let cfg = Config {
+                workflow,
+                ..Default::default()
+            };
+            assert_eq!(
+                cfg.validate().map_err(|e| e.0),
+                match row.refusal {
+                    Some(refusal) => Err(refusal.to_string()),
+                    None => Ok(vec![]),
+                },
+                "{}",
+                row.why
             );
         }
     }

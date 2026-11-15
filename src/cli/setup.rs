@@ -4464,20 +4464,29 @@ mod tests {
         );
     }
 
-    /// The scaffolded workflow (`rigger init`/`setup` on a NEW project) declares
-    /// `build: { wrapper: auto }` (spec 65 Design: "`rigger setup` writes the `build:`
-    /// section with `wrapper: auto` for new projects") - a fresh project benefits from a
-    /// machine's already-installed compilation-cache wrapper with no further config.
+    /// The scaffolded workflow (`rigger init`/`setup` on a NEW project) carries neither retired
+    /// `build` key (spec 125 criterion 4): `rigger validate` refuses a `build.wrapper` or
+    /// `build.cache_dir` value, so no rendering writes a `wrapper:` or `cache_dir:` line and
+    /// both keys load empty.
     #[test]
-    fn scaffold_workflow_declares_build_wrapper_auto() {
+    fn scaffold_workflow_carries_neither_retired_build_key() {
         for (label, set, workflow) in every_rendering() {
+            let build = load_scaffold(set.as_ref(), &workflow).workflow.build;
+            let retired_lines = workflow
+                .lines()
+                .filter(|l| {
+                    let key = l.trim_start();
+                    key.starts_with("wrapper:") || key.starts_with("cache_dir:")
+                })
+                .count();
             assert_eq!(
-                load_scaffold(set.as_ref(), &workflow)
-                    .workflow
-                    .build
-                    .wrapper,
-                "auto",
-                "{label}: a freshly scaffolded workflow.yml must default build.wrapper to auto"
+                (
+                    build.wrapper.as_str(),
+                    build.cache_dir.as_str(),
+                    retired_lines
+                ),
+                ("", "", 0),
+                "{label}: a freshly scaffolded workflow.yml carries no retired build key"
             );
         }
     }
@@ -4550,23 +4559,22 @@ mod tests {
 
     /// `rigger setup`/`init` NEVER clobbers an existing `workflow.yml` (spec 65 Design:
     /// "never clobbers an existing one") - including a committed `build:` section that
-    /// differs from the fresh-project default. A project that has already opted OUT
-    /// (`wrapper: off`) must stay opted out across a rerun, never silently flipped back to
-    /// `auto`.
+    /// differs from the fresh-project default. A project's own `build.env` declaration must
+    /// stay exactly as written across a rerun, never replaced by the scaffold's.
     #[test]
     fn init_project_never_clobbers_an_existing_build_section() {
         let dir = tempfile::tempdir().unwrap();
         let rigger_dir = dir.path().join(RIGGER_DIR);
         std::fs::create_dir_all(&rigger_dir).unwrap();
         let workflow_path = rigger_dir.join("workflow.yml");
-        std::fs::write(&workflow_path, "build:\n  wrapper: off\n").unwrap();
+        std::fs::write(&workflow_path, "build:\n  env: {L: lit}\n").unwrap();
 
         init_project(dir.path(), &repo_sets())
             .expect("a rerun over an existing project must succeed");
 
         let after = std::fs::read_to_string(&workflow_path).unwrap();
         assert_eq!(
-            after, "build:\n  wrapper: off\n",
+            after, "build:\n  env: {L: lit}\n",
             "an existing workflow.yml's build: section must be left byte-for-byte untouched"
         );
     }

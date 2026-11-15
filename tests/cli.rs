@@ -53,7 +53,9 @@ use common::fixtures::{
     api_retry_lines, headless_progress_frame, recorded_argv, recorded_task, stand_in_launches,
     ERROR_RESULT, GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
 };
-use common::fixtures::{build_block_declaring, DECLARED_BJL, REFUSED_DECLARATIONS};
+use common::fixtures::{
+    build_block_declaring, DECLARED_BJL, REFUSED_DECLARATIONS, RETIRED_BUILD_KEYS,
+};
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
@@ -12843,10 +12845,9 @@ fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
 // ---------------------------------------------------------------------------
 
 /// Set a test's `build:` block on a scaffolded project's `.rigger/workflow.yml`, REPLACING
-/// any `build:` the scaffold already wrote rather than blindly appending a second one:
-/// `rigger init` scaffolds a `build:` block on every fresh project, so a bare append would
-/// leave two top-level `build:` keys - a YAML parse error ("duplicate field `build`"), not the
-/// single block each test below means to exercise.
+/// any `build:` block the file already holds (the scaffold's, or one an earlier call set)
+/// rather than blindly appending a second one: two top-level `build:` keys are a YAML parse
+/// error ("duplicate field `build`"), not the single block each test below means to exercise.
 fn append_build_block(root: &Path, block: &str) {
     let path = root.join(".rigger").join("workflow.yml");
     let existing = std::fs::read_to_string(&path).unwrap();
@@ -12932,28 +12933,36 @@ rigger::test_cases! {
         );
 }
 
-/// A REFUSED DECLARATION FAILS VALIDATE: GIVEN an initialized project whose workflow's
-/// `build.env` declares an entry the one check refuses - a name that is not a variable name, a
-/// name rigger sets itself, an unknown placeholder or a stray brace - WHEN the operator runs
-/// `rigger validate`, THEN it refuses before any output, naming the variable in the one refusal
-/// line.
+/// A REFUSED BUILD BLOCK FAILS VALIDATE: GIVEN an initialized project whose workflow's `build:`
+/// block declares a `build.env` entry the one check refuses - a name that is not a variable name,
+/// a name rigger sets itself, an unknown placeholder or a stray brace - or still carries a value
+/// for a retired key, `build.wrapper` or `build.cache_dir`, WHEN the operator runs
+/// `rigger validate`, THEN it refuses before any output, in the one refusal line naming the
+/// variable, or the retired key and the line to delete.
 #[test]
-fn validate_refuses_each_refused_build_env_declaration_before_any_output() {
+fn validate_refuses_each_refused_build_block_before_any_output() {
     let dir = initialized_project();
     let root = dir.path();
-    for refused in REFUSED_DECLARATIONS {
-        let why = format!("{:?}: {:?}", refused.name, refused.value);
-        append_build_block(
-            root,
-            &build_block_declaring(&[(refused.name, refused.value)], 3),
-        );
+    let declarations = REFUSED_DECLARATIONS.iter().map(|refused| {
+        (
+            format!("{:?}: {:?}", refused.name, refused.value),
+            build_block_declaring(&[(refused.name, refused.value)], 3),
+            refused.message,
+        )
+    });
+    let retired = RETIRED_BUILD_KEYS.iter().filter_map(|row| {
+        row.refusal
+            .map(|refusal| (row.why.to_string(), row.block.to_string(), refusal))
+    });
+    for (why, block, message) in declarations.chain(retired) {
+        append_build_block(root, &block);
         let (out, err, ok) = run_rigger(root, &["validate"]);
         assert!(
             !ok,
             "{why}: validate refuses; stdout:\n{out}\nstderr:\n{err}"
         );
         assert_eq!(out, "", "{why}: the refusal comes before any output");
-        let line = format!("rigger: config: {}", refused.message);
+        let line = format!("rigger: config: {message}");
         assert_eq!(
             err.lines().filter(|l| *l == line).count(),
             1,

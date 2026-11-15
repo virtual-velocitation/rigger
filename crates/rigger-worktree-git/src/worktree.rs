@@ -4058,40 +4058,21 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_unit_worktree_writes_the_scratch_roots_shared_build_location_once() {
-        // Spec 77 criterion 1's mechanical half: the first unit worktree under a scratch root
-        // leaves `<root>/.cargo/config.toml` pointing unpinned cargo runs at the root's shared
-        // cache; a second worktree leaves an existing file alone; a non-unit worktree writes
-        // nothing.
+    fn creating_a_unit_worktree_writes_nothing_beside_it_under_the_scratch_root() {
+        // Spec 125 criterion 4: rigger writes no toolchain's build configuration. Creating a
+        // unit worktree under a scratch root leaves that root holding the worktree alone - no
+        // `.cargo/config.toml` steering a build tool anywhere.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let root = std::env::temp_dir().join(format!("rigger-scratch-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let wt_a = root.join("rigger-wt-unit-a");
-        Worktree::create(&repo_path, wt_a.to_str().unwrap(), "rigger/u/unit-a", "").unwrap();
-        let cfg = root.join(".cargo").join("config.toml");
-        let written = std::fs::read_to_string(&cfg).expect("the root carries a cargo config");
-        assert!(
-            written.contains("[build]") && written.contains("target-dir = \"cargo-target-shared\""),
-            "unpinned cargo inside a unit worktree builds into the root's shared cache: {written}"
-        );
-        std::fs::write(&cfg, "[build]\ntarget-dir = \"operator-tuned\"\n").unwrap();
-        let wt_b = root.join("rigger-wt-unit-b");
-        Worktree::create(&repo_path, wt_b.to_str().unwrap(), "rigger/u/unit-b", "").unwrap();
-        assert!(
-            std::fs::read_to_string(&cfg)
-                .unwrap()
-                .contains("operator-tuned"),
-            "an existing file is never rewritten"
-        );
-        let other = std::env::temp_dir().join(format!("rigger-other-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&other).unwrap();
-        let review = other.join("rigger-review-panel-0");
-        Worktree::create(&repo_path, review.to_str().unwrap(), "rigger/review-0", "").unwrap();
-        assert!(
-            !other.join(".cargo").exists(),
-            "a review worktree is no unit and writes no build location"
-        );
+        let root = tempfile::tempdir().unwrap();
+        let wt = root.path().join("rigger-wt-unit-a");
+        Worktree::create(&repo_path, wt.to_str().unwrap(), "rigger/u/unit-a", "").unwrap();
+        let mut entries: Vec<String> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        assert_eq!(entries, vec!["rigger-wt-unit-a".to_string()]);
     }
 
     #[test]
