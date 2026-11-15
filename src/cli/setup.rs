@@ -2356,6 +2356,7 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::language_marker_hits;
     use crate::test_support::read_text;
+    use crate::test_support::run_git;
     use crate::test_support::sorted_dir_names;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
@@ -3815,6 +3816,107 @@ mod tests {
             assert_init_gitignores_idempotently(&[".rigger/driver.out"]);
     }
 
+    /// What `git check-ignore --verbose --non-matching` answers for each of `paths` in the
+    /// repository at `root`, in order: each path beside the file and the pattern of the rule that
+    /// ignores it, or `None` when no rule does. The excludes file is an absent one, so the
+    /// operator's own global ignore rules never answer for the project's.
+    fn ignoring_rules(root: &Path, paths: &[&str]) -> Vec<(String, Option<(String, String)>)> {
+        let excludes = format!(
+            "core.excludesFile={}",
+            root.join("absent-excludes").display()
+        );
+        let check = [
+            "-c",
+            &excludes,
+            "check-ignore",
+            "--verbose",
+            "--non-matching",
+            "--",
+        ];
+        let out = run_git(root, &[&check[..], paths].concat());
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|line| {
+                let (rule, path) = line.split_once('\t').unwrap_or((line, ""));
+                let mut fields = rule.splitn(3, ':');
+                let (file, pattern) = (
+                    fields.next().unwrap_or_default(),
+                    fields.nth(1).unwrap_or_default(),
+                );
+                let source = (!file.is_empty()).then(|| (file.to_string(), pattern.to_string()));
+                (path.to_string(), source)
+            })
+            .collect()
+    }
+
+    /// Spec 125, criterion 13: in a fresh git repository `init_project` has run on, the
+    /// project's own `.gitignore` ignores each file rigger writes at run time by the line naming
+    /// its class, and none of the project's configuration, which stays tracked. Each row is a
+    /// path and the `.gitignore` pattern git reports ignoring it, as written (a trailing `/`
+    /// trimmed), or `None` for a path no rule ignores.
+    #[test]
+    fn a_new_project_ignores_riggers_runtime_files_by_class_and_keeps_its_configuration() {
+        let rows: [(&str, Option<&str>); 23] = [
+            (".claude/settings.json", Some(".claude")),
+            (".rigger/events.db", Some(".rigger/*.db")),
+            (".rigger/events.db-wal", Some(".rigger/*.db-wal")),
+            (".rigger/events.db-shm", Some(".rigger/*.db-shm")),
+            (".rigger/graph.db", Some(".rigger/*.db")),
+            (".rigger/graph.db.lock", Some(".rigger/*.lock")),
+            (".rigger/progress.db", Some(".rigger/*.db")),
+            (".rigger/step.lock", Some(".rigger/*.lock")),
+            (".rigger/store/x", Some(".rigger/store")),
+            (".rigger/tmp/x", Some(".rigger/tmp")),
+            (".rigger/playbooks/x", Some(".rigger/playbooks")),
+            (".rigger/dash.url", Some(".rigger/dash.url")),
+            (".rigger/dash.marker", Some(".rigger/dash.marker")),
+            (".rigger/dash.attempt", Some(".rigger/dash.attempt")),
+            (".rigger/driver.out", Some(".rigger/driver.out")),
+            (".rigger/store.conn", Some(".rigger/store.conn")),
+            (".rigger/events.db.bak-x", Some(".rigger/*.bak-*")),
+            (".rigger/workflow.yml", None),
+            (".rigger/agents/planner.md", None),
+            (".rigger/project.id", None),
+            (".rigger/gates/red-before-green.sh", None),
+            (".rigger/instructions/README.md", None),
+            (".rigger/docs-overlay.yml", None),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        init_project(dir.path(), &[]).expect("init must scaffold");
+        let paths: Vec<&str> = rows.iter().map(|(path, _)| *path).collect();
+        let expected: Vec<(String, Option<(String, String)>)> = rows
+            .iter()
+            .map(|(path, pattern)| {
+                let source = pattern.map(|p| (".gitignore".to_string(), p.to_string()));
+                (path.to_string(), source)
+            })
+            .collect();
+        assert_eq!(
+            ignoring_rules(dir.path(), &paths),
+            expected,
+            "each runtime file is ignored by its class line in the project's .gitignore, and no \
+             configuration file is"
+        );
+    }
+
+    /// The summary's `.gitignore` line names every pattern the run appended, in order, as
+    /// keeping machine-local installs and rigger's runtime files untracked.
+    #[test]
+    fn scaffold_summary_names_the_appended_ignore_lines_as_keeping_runtime_files_untracked() {
+        let report = ScaffoldReport {
+            gitignore_added: vec![".claude/".to_string(), ".rigger/*.db".to_string()],
+            ..ScaffoldReport::default()
+        };
+        assert_eq!(
+            scaffold_summary_lines(&report),
+            [
+                "added .gitignore entries so machine-local installs and rigger's runtime files \
+                 stay untracked: .claude/, .rigger/*.db"
+            ]
+        );
+    }
+
     /// The code store's facts memo lies under `.rigger/store`, so in a project setup has run on
     /// the project's own `.gitignore` ignores it by the code store's line: a memo entry never
     /// reads as a dirty tree nor rides a commit.
@@ -3825,21 +3927,14 @@ mod tests {
         init_project(dir.path(), &repo_sets()).expect("init must scaffold");
         let memo = rigger_store::code::Store::new(dir.path()).memo_dir();
         let entry = memo.join("entry.facts");
-        let relative = entry.strip_prefix(dir.path()).unwrap();
-        let out = std::process::Command::new("git")
-            .args(["check-ignore", "-v"])
-            .arg(relative)
-            .current_dir(dir.path())
-            .output()
-            .expect("git runs");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let source = stdout.split('\t').next().unwrap_or_default();
-        let mut fields = source.splitn(3, ':');
-        let (file, pattern) = (fields.next(), fields.nth(1));
+        let relative = entry.strip_prefix(dir.path()).unwrap().to_str().unwrap();
         assert_eq!(
-            (out.status.success(), file, pattern),
-            (true, Some(".gitignore"), Some(".rigger/store")),
-            "the memo is ignored by the project's .rigger/store line; git said: {stdout}"
+            ignoring_rules(dir.path(), &[relative]),
+            [(
+                relative.to_string(),
+                Some((".gitignore".to_string(), ".rigger/store".to_string()))
+            )],
+            "the memo is ignored by the project's .rigger/store line"
         );
     }
 
