@@ -96,6 +96,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "same-id refine resolves to a criterion its unit does not ser",
             "conductor invariant violated: fan-out unit '{name}' has an e",
             "conductor invariant violated: fan-out unit '{name}' (an unma",
+            "{who}: the session ended without handing over (no {AUTHOR_HA",
         ],
     ),
     (

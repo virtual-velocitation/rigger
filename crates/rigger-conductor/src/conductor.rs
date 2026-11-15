@@ -6144,14 +6144,15 @@ impl RunCtx<'_> {
     /// implementer's EXISTING worktree (its files swept in by the caller's commit, not a fresh
     /// worktree of its own).
     ///
-    /// Returns `Ok(())` when the caller may proceed to its commit: a normal result (files
+    /// Returns `Ok(())` when the caller may proceed to its commit: a handed-over result (files
     /// authored), no declared test author, or a budget refusal. Returns the PARK signal
     /// `Err(parked)` when the spawn parked (a driver's unrecorded frontier); the caller
     /// unwinds per its own discipline - the single lane propagates it (holding the unit, no
     /// commit), a speculation lane collects it into `any_parked` and does NOT commit that
     /// candidate, so a later step replays the sdet and its periphery tests land. Returns the stage
     /// error naming the crash, marked [`SPAWN_CRASH_MARKER`], when the spawn or its opts guard
-    /// failed any other way: no gate may run on a tree the seam never touched, so the single lane
+    /// failed any other way, or its session ended without handing over: no gate may run on a tree
+    /// the seam never finished, so the single lane
     /// reruns the stage uncharged under the F3 infra retry and halts loudly past the infra limit,
     /// and a speculation candidate loses. Returns the stage error naming the refusal when the emit
     /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed, never
@@ -6162,7 +6163,9 @@ impl RunCtx<'_> {
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends that round's fact ([`doc_only_round`]) to the prompt and to a resumed session's
-    /// task.
+    /// task. Both then end with the handover contract ([`author_handover`]): a session that ends
+    /// without its line ([`author_handed_over`]) stopped mid-work, so it takes the crash
+    /// disposition before any commit or gate.
     fn spawn_sdet_author(
         &self,
         st: &Stage,
@@ -6215,6 +6218,14 @@ impl RunCtx<'_> {
         // periphery tests in line with (and the doc-only fact when it holds).
         let mut resume_task = later_attempt_block(delta.as_ref(), gate_evidence);
         resume_task.push_str(doc_only);
+        // The handover contract ends the prompt and the resumed task alike, so the session hands
+        // over whichever it read. An empty resume task stays empty: there is nothing to send, so
+        // the spawn starts fresh on its full prompt.
+        let handover = author_handover();
+        sdet_prompt.push_str(&handover);
+        if !resume_task.is_empty() {
+            resume_task.push_str(&handover);
+        }
         let resume_task = Some(resume_task);
         let sdet_emit = |t: &str, v: Value| {
             self.emit_agent(t, v, &[(contextgraph::META_ACTOR, ROLE_SDET_AUTHOR)])
@@ -6270,10 +6281,19 @@ impl RunCtx<'_> {
                 .driver
                 .spawn(sdet_def, &refused.task(&sdet_prompt), &opts, &sdet_emit)
             {
-                // A normal result: its authored files are already in the worktree, so the
+                // A handed-over result: its authored files are already in the worktree, so the
                 // caller falls through to the commit that sweeps them in. The session it ran as
-                // is recorded for its next attempt to continue.
-                Ok(result) => self.record_session(&opts, &result),
+                // is recorded for its next attempt to continue. A session that ended without
+                // handing over stopped mid-work: it takes the crash disposition, so no checkpoint
+                // and no gate follow until the seam reruns.
+                Ok(result) => {
+                    self.record_session(&opts, &result)?;
+                    if author_handed_over(&result) {
+                        Ok(())
+                    } else {
+                        Err(crashed(&Error(not_handed_over("the sdet author"))))
+                    }
+                }
                 // A PARKED spawn (its driver reached an unrecorded frontier, [`is_parked`]):
                 // surface the park so the caller unwinds cleanly - no UnitFailed, no
                 // remediation - and a later step over the log replays the result. A refused record
@@ -6766,6 +6786,15 @@ impl RunCtx<'_> {
                     let notes = run_notes(&events).map_err(|e| Error(e.to_string()))?;
                     prompt.push_str(&notes_block(&notes));
                 }
+                // An implementer is an author: its prompt and its resumed task end with the
+                // handover contract, which its result is checked against below. A producer
+                // writes no attempt to check, so it carries none.
+                let handover = if is_producer(st) {
+                    String::new()
+                } else {
+                    author_handover()
+                };
+                prompt.push_str(&handover);
                 // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
                 // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
@@ -6845,11 +6874,26 @@ impl RunCtx<'_> {
                         ..SpawnOpts::new(self.spawn_host())
                     },
                     ROLE_IMPLEMENTER,
-                    Some(prior.block(&st.name, attempts)),
+                    Some(prior.block(&st.name, attempts))
+                        .filter(|block| !block.trim().is_empty())
+                        .map(|block| block + &handover),
                 )?;
                 match isolation_check
                     .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit))
                 {
+                    // An implementer session that ended without handing over (a denied
+                    // command, a turn that ended mid-work) stopped before its work was done: it
+                    // takes the crash arm's disposition below, before any `green` stamp or
+                    // checkpoint, and reruns uncharged over the tree it left.
+                    Ok(result) if !is_producer(st) && !author_handed_over(&result) => {
+                        self.record_session(&opts, &result)?;
+                        spawn_err = Some(format!(
+                            "agent {:?}: {}",
+                            st.agent,
+                            not_handed_over("the implementer")
+                        ));
+                        cause = CAUSE_INFRA_SPAWN.to_string();
+                    }
                     Ok(result) => {
                         self.record_session(&opts, &result)?;
                         // The resolved model the driver reported (spec 05 line 52):
@@ -6858,7 +6902,8 @@ impl RunCtx<'_> {
                         // (non-replay) driver that does not learn the resolved id.
                         resolved_model = result.resolved_model;
                         // The green status records that the implementer produced a
-                        // diff (item 4): the per-unit evidence names the agent that
+                        // diff (item 4) and handed it over (the arm above takes a session
+                        // that did not): the per-unit evidence names the agent that
                         // implemented it.
                         let mut green = BTreeMap::new();
                         green.insert("green".to_string(), format!("implemented by {}", st.agent));
@@ -7488,8 +7533,11 @@ impl RunCtx<'_> {
             // Speculation lanes are implementer candidates by construction (`speculates` excludes
             // producers), so each candidate gets the trimmed implement slice - byte-identical to the
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
-            let prompt =
+            let mut prompt =
                 self.build_prompt_with_failure(st, &logged, lane, GroundingSlice::Implement)?;
+            // A lane's implementer is an author: its prompt ends with the handover contract,
+            // and a session that ended without the line loses the lane as a crash does.
+            prompt.push_str(&author_handover());
             let emit = |t: &str, v: Value| {
                 self.emit_agent(t, v, &[(contextgraph::META_ACTOR, st.agent.as_str())])
             };
@@ -7554,6 +7602,13 @@ impl RunCtx<'_> {
                 // crashed, or whose record the emit guard refused again after its one re-run,
                 // takes the crash arm: the candidate loses, as a losing candidate has no later
                 // attempt or infra rerun to carry the crash or the refusal into (infra ordinal 0).
+                .and_then(|result| {
+                    if author_handed_over(&result) {
+                        Ok(result)
+                    } else {
+                        Err(Error(not_handed_over("the speculation lane's implementer")))
+                    }
+                })
                 .and_then(|result| {
                     self.spawn_sdet_author(st, Some(&wt), &dir, lane, 0, &[])
                         .map(|()| result)
@@ -15219,6 +15274,37 @@ fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[S
     fill(LATER_ATTEMPT, &[("causes", &causes.join("; and "))])
 }
 
+/// The handover contract every author spawn's prompt and resumed task end with: the single-lane
+/// implementer that is not a producer, each speculation lane's implementer and the test author.
+/// [`author_handed_over`] reads the line it names off the session's result.
+fn author_handover() -> String {
+    fill(AUTHOR_HANDOVER, &[("line", AUTHOR_HANDOVER_LINE)])
+}
+
+/// Whether an author spawn's `result` handed its work over: its driver ran no session (an empty
+/// `session_id`: the workflow and replay drivers and the in-process doubles, which have no
+/// session to end early), or its output's last non-blank line, trimmed, is
+/// [`AUTHOR_HANDOVER_LINE`]. A session that ended without the line (a denied command, a turn
+/// that ended mid-work) stopped before its work was done, so its arm takes its crash
+/// disposition before any `green` stamp or checkpoint commit. A result recorded before the
+/// contract existed and answered from the log carries no line, so it is rerun once, uncharged.
+fn author_handed_over(result: &AgentResult) -> bool {
+    result.session_id.is_empty()
+        || result
+            .output
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            == Some(AUTHOR_HANDOVER_LINE)
+}
+
+/// What an author session that ended without handing over its work failed with, naming `who`:
+/// its arm's crash disposition reads it as any other crash's message.
+fn not_handed_over(who: &str) -> String {
+    format!("{who}: the session ended without handing over (no {AUTHOR_HANDOVER_LINE} line)")
+}
+
 /// The fact the sdet-author's fresh prompt and a resumed session's task state on a round
 /// whose `delta` changed documentation only ([`is_documentation_only`]): [`DOC_ONLY_ROUND`],
 /// else nothing - on any other round, and with no delta. It is the round's fact alone: what
@@ -18463,8 +18549,14 @@ mod tests {
         );
         assert_eq!(
             checkin_prompt(&driver),
-            format!("{}{}", emit_protocol(), notes_block(&want)),
-            "the check-in prompt is today's, then each upheld note once"
+            format!(
+                "{}{}{}",
+                emit_protocol(),
+                notes_block(&want),
+                author_handover()
+            ),
+            "the check-in prompt is today's, then each upheld note once, then the handover \
+             contract every author prompt ends with"
         );
         let judged = driver.prompts_for("adj");
         assert_eq!(judged.len(), 4, "premise: four review rounds were judged");
@@ -18492,7 +18584,10 @@ mod tests {
             Vec::new(),
             &[],
         );
-        assert_eq!(checkin_prompt(&driver), emit_protocol());
+        assert_eq!(
+            checkin_prompt(&driver),
+            format!("{}{}", emit_protocol(), author_handover())
+        );
         let mut want = Vec::new();
         for unit in [u1.as_str(), u2.as_str(), "checkin"] {
             want.extend([
@@ -47848,7 +47943,8 @@ mod tests {
     }
 
     /// A round that changed documentation only - `*.md` files and paths under `docs/` - since
-    /// its reviewers rejected the unit states that fact to the sdet-author, last and once, in a
+    /// its reviewers rejected the unit states that fact to the sdet-author once, last before the
+    /// handover contract every author turn ends with, in a
     /// fresh spawn's prompt and in a resumed session's task alike, and no turn carries the rule
     /// such a round asks of the periphery tests: the rule is the sdet-author persona's. The
     /// first round (no review has judged the unit yet), a round that changed code beside its
@@ -47882,16 +47978,18 @@ mod tests {
                 );
                 for (round, (resumed, turn)) in turns.iter().enumerate() {
                     let stated = told && round == 1;
+                    let handover = author_handover();
                     let tail = if *resumed {
-                        format!("{LATER_ATTEMPT_CLOSE}\n{FACT}")
+                        format!("{LATER_ATTEMPT_CLOSE}\n{FACT}{handover}")
                     } else {
-                        format!("\n\n{FACT}")
+                        format!("\n\n{FACT}{handover}")
                     };
                     assert_eq!(
                         (turn.matches(FACT).count(), turn.ends_with(&tail)),
                         (usize::from(stated), stated),
-                        "{why}, round {round} (resumed: {resumed}): the turn states the fact once \
-                         and last exactly when the round changed documentation only:\n{turn}"
+                        "{why}, round {round} (resumed: {resumed}): the turn states the fact once, \
+                         last before the handover contract, exactly when the round changed \
+                         documentation only:\n{turn}"
                     );
                     assert!(
                         !turn
@@ -48727,6 +48825,57 @@ mod tests {
                 index_of("s/green#0") > index_of("s/infra-retry#0~0"),
                 "the attempt's green is recorded only after the rerun: {why}"
             );
+        }
+    }
+
+    /// Spec 126 criterion 13's predicate: a result hands over when its driver ran no session, or
+    /// when its output's last non-blank line, trimmed, is the handover line.
+    #[test]
+    fn an_author_result_hands_over_on_its_last_non_blank_line_or_with_no_session() {
+        let line = AUTHOR_HANDOVER_LINE;
+        // (session id, output, hands over, why)
+        let rows = [
+            ("", "", true, "a driver that runs no session"),
+            ("", "work stopped", true, "no session, whatever the output"),
+            (
+                "s-1",
+                &format!("done\n{line}") as &str,
+                true,
+                "the line last",
+            ),
+            (
+                "s-1",
+                &format!("done\n  {line}  \n\n \n"),
+                true,
+                "trailing spaces and blank lines",
+            ),
+            ("s-1", "", false, "a session with no output"),
+            (
+                "s-1",
+                "I could not run cargo",
+                false,
+                "a session that ended mid-work",
+            ),
+            (
+                "s-1",
+                &format!("{line}\nthen more"),
+                false,
+                "the line not last",
+            ),
+            (
+                "s-1",
+                &format!("done {line}"),
+                false,
+                "the line inside another",
+            ),
+        ];
+        for (session_id, output, want, why) in rows {
+            let result = AgentResult {
+                output: output.to_string(),
+                session_id: session_id.to_string(),
+                ..AgentResult::default()
+            };
+            assert_eq!(author_handed_over(&result), want, "{why}");
         }
     }
 
@@ -51625,6 +51774,17 @@ mod tests {
                 String::new(),
             ),
             ("no round", doc_only_round(None).to_string(), String::new()),
+            (
+                "the author handover",
+                author_handover(),
+                fill(
+                    &picks.rendered("conductor::author_handover", &["AUTHOR_HANDOVER"]),
+                    &[(
+                        "line",
+                        &picks.rendered("conductor::author_handover", &["AUTHOR_HANDOVER_LINE"]),
+                    )],
+                ),
+            ),
             (
                 "the peers pointer",
                 pushed(write_peers_pointer),

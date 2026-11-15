@@ -4419,7 +4419,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         });
         let again = (
             case.again.0.to_string(),
-            String::new(),
+            common::cli::handed_over(""),
             String::new(),
             false,
         );
@@ -6403,7 +6403,12 @@ fn a_session_dying_with_no_result_relaunches_only_on_a_held_run() {
             ],
             "{name}: the closes; stderr: {err}"
         );
-        results.push((again.to_string(), String::new(), String::new(), false));
+        results.push((
+            again.to_string(),
+            common::cli::handed_over(""),
+            String::new(),
+            false,
+        ));
         assert_eq!(
             common::fixtures::spawn_result_rows(&read_run_events(root)),
             results,
@@ -7654,7 +7659,7 @@ fn a_hosted_spawns_result_lands_on_the_run_stream_once() {
         results,
         vec![SpawnResult {
             id: "a/implementer#0".to_string(),
-            output: "the unit is built".to_string(),
+            output: common::cli::handed_over("the unit is built"),
             error: String::new(),
             meta: serde_json::json!({
                 "resolved_model": "",
@@ -7769,8 +7774,13 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
     assert_eq!(flag_value(&argv, "--resume"), session);
     assert_eq!(
         recorded_task(&fake.path().join("bin/first-message")),
-        format!("{RED_GATE_RETRY_TASK}{}", headless_progress_frame()),
-        "the resumed launch's first message is the retry task, framed once"
+        format!(
+            "{RED_GATE_RETRY_TASK}{}{}",
+            common::cli::handover_contract(),
+            headless_progress_frame()
+        ),
+        "the resumed launch's first message is the retry task and the handover contract, framed \
+         once"
     );
 }
 
@@ -7847,7 +7857,7 @@ fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &st
         common::fixtures::spawn_result_rows(&read_run_events(root)),
         ["solo/implementer#0", "solo/implementer#1"].map(|id| (
             id.to_string(),
-            "the unit is built".to_string(),
+            common::cli::handed_over("the unit is built"),
             String::new(),
             false,
         )),
@@ -8160,7 +8170,14 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
                 .collect::<Vec<_>>(),
             "{name}: the re-attempt's records; stderr: {err}"
         );
-        let built = |id: &str| (id.to_string(), BUILT.to_string(), String::new(), false);
+        let built = |id: &str| {
+            (
+                id.to_string(),
+                common::cli::handed_over(BUILT),
+                String::new(),
+                false,
+            )
+        };
         let stopped = case
             .fault
             .map(|error| (RESUMED.to_string(), String::new(), error.to_string(), true));
@@ -8260,7 +8277,8 @@ fn the_attempt_after_a_fallback_resumes_the_fresh_session() {
              {{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\
              \"supersedes\":\"<prior-id-or-empty>\"}}\n\
              This writes it to the shared event log live, so other agents see it immediately.\
-             {}",
+             {}{}",
+            common::cli::handover_contract(),
             headless_progress_frame()
         ),
         "the fallback's launch carries the whole prompt, not the resumed session's short task"
@@ -8334,6 +8352,11 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
     let answer_of = |spawn: &str| match spawn {
         "solo/adjudicator#0" => REQUIRED_REJECT.to_string(),
         "solo/adjudicator#1" => r#"{"verdict":"approve"}"#.to_string(),
+        author
+            if author.starts_with("solo/implementer") || author.starts_with("solo/sdet-author") =>
+        {
+            common::cli::handed_over(&format!("{author} answered"))
+        }
         other => format!("{other} answered"),
     };
     let mut spawns = Vec::new();
@@ -8523,21 +8546,27 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                     format!(
                         "LATER ATTEMPT: the implementer has revised this unit since review sent \
                          this unit back at {base} - `git diff {base}..HEAD` since changed \
-                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{}",
+                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{}{}",
+                        common::cli::handover_contract(),
                         headless_progress_frame()
                     ),
                     "{at}: the resumed session's whole task"
                 );
             } else {
-                let last = format!("\n\n{DOC_ONLY_ROUND_FACT}{}", headless_progress_frame());
+                let last = format!(
+                    "\n\n{DOC_ONLY_ROUND_FACT}{}{}",
+                    common::cli::handover_contract(),
+                    headless_progress_frame()
+                );
                 assert_eq!(
                     (
                         closing.matches(DOC_ONLY_ROUND_FACT).count(),
                         closing.ends_with(&last)
                     ),
                     (usize::from(stated), stated),
-                    "{at}: the fresh launch's whole prompt states the fact once and last exactly \
-                     when the round changed documentation only:\n{closing}"
+                    "{at}: the fresh launch's whole prompt states the fact once, last before the \
+                     handover contract, exactly when the round changed documentation only:\n\
+                     {closing}"
                 );
             }
             for (attempt, task) in [(0, &opening), (1, &closing)] {
@@ -11538,10 +11567,11 @@ fn a_fresh_run_launches_each_spawn_only_a_prior_run_ended() {
     ;;
 {APPROVING_REVIEWER_ARMS}"#
     );
+    let implemented = common::cli::handed_over("");
     let answers = [
         ("solo/adjudicator#0", r#"{"verdict":"approve"}"#),
         ("solo/adversary#0", "tried and failed"),
-        ("solo/implementer#0", ""),
+        ("solo/implementer#0", implemented.as_str()),
         ("solo/lens:lens#0", "reviewed: no blocker"),
     ];
     let launched: Vec<_> = answers
@@ -11690,11 +11720,12 @@ fn a_resolver_round_ending_on_an_error_is_spent_and_a_restart_answers_it_from_th
         .unwrap_or_else(|| panic!("a first resolution round closed; stderr: {err}"));
     let unit = &errored[..errored.find('/').unwrap()];
     let resolving = format!("{unit}/implementer#0~retry2");
+    let implemented = common::cli::handed_over("");
     let approved: Vec<_> = ["a", "b"]
         .into_iter()
         .flat_map(|unit| {
             [
-                (format!("{unit}/implementer#0"), ""),
+                (format!("{unit}/implementer#0"), implemented.as_str()),
                 (format!("{unit}/lens:lens#0"), "reviewed: no blocker"),
                 (format!("{unit}/adjudicator#0"), r#"{"verdict":"approve"}"#),
             ]

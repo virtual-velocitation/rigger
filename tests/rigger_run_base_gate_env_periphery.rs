@@ -73,14 +73,20 @@ const GATE_CMD: &str = "echo RIGGER_RUN_BASE=$RIGGER_RUN_BASE";
 
 /// A fixture "agent" that echoes `RIGGER_RUN_BASE`, the run base every spawn's environment
 /// carries (see this file's own doc comment), alongside the final structured JSON line
-/// every real `cli::Driver::spawn` needs to parse a result, mirroring
+/// every real `cli::Driver::spawn` needs to parse a result, then the handover line its task asks
+/// for (`tests/fixtures/launch-args.sh`'s `hand_over`), mirroring
 /// `tests/fixtures/env-echo-agent.sh`'s own shape but written per-test so this file stays
 /// self-contained.
 fn write_agent_fixture(dir: &Path) -> std::path::PathBuf {
     let path = dir.join("agent.sh");
+    let launch_args = common::repo::repo_root().join("tests/fixtures/launch-args.sh");
     std::fs::write(
         &path,
-        "#!/bin/sh\necho RIGGER_RUN_BASE=$RIGGER_RUN_BASE\necho '{\"id\":\"final\",\"pass\":true}'\n",
+        format!(
+            "#!/bin/sh\necho RIGGER_RUN_BASE=$RIGGER_RUN_BASE\necho '{{\"id\":\"final\",\"pass\":true}}'\n\
+             . '{}'\nhand_over \"$(cat)\"\n",
+            launch_args.display()
+        ),
     )
     .expect("write agent fixture");
     #[cfg(unix)]

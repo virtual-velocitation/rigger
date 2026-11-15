@@ -22,3 +22,8 @@ echo "RIGGER_SPAWN=$RIGGER_SPAWN"
 echo "CLAUDE_CODE_OAUTH_TOKEN=$CLAUDE_CODE_OAUTH_TOKEN"
 echo "RIGGER_CLAUDE_CODE_OAUTH_TOKEN=$RIGGER_CLAUDE_CODE_OAUTH_TOKEN"
 echo '{"id":"final","pass":true}'
+# The task on stdin, read to its end: an author's task carries the handover contract, which the
+# answer then ends with (`launch-args.sh`'s `hand_over`).
+self=$(readlink "$0") || self=$0
+. "$(dirname "$self")/launch-args.sh"
+hand_over "$(cat)"

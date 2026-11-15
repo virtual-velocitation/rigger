@@ -13,8 +13,9 @@
 # hosts drive it: under
 # `--input-format` (the headless host, which keeps stdin open until a `result`) it takes the
 # first user message and answers in stream-json; otherwise (the cli host, `rigger canary`) it
-# takes stdin to its end and prints its answer. Checked in, never written at test time, for the
-# same reason as its sibling fixtures.
+# takes stdin to its end and prints its answer. Either way the answer ends with the handover
+# line when the task carries the author handover contract (`launch-args.sh`'s `hand_over`).
+# Checked in, never written at test time, for the same reason as its sibling fixtures.
 : "${PROMPT_CAPTURE_DIR:?the test names the capture directory}"
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
@@ -40,9 +41,12 @@ if [ -n "$sp" ]; then
     cat "$sp" > "$PROMPT_CAPTURE_DIR/system-prompt"
     printf '%s' "$sp" > "$PROMPT_CAPTURE_DIR/system-prompt-path"
 fi
+task=$(cat "$PROMPT_CAPTURE_DIR/stdin")
 if [ "$stream" = "1" ]; then
+    handover=$(hand_over_json "$task")
     printf '%s\n' '{"type":"system","subtype":"init","session_id":"'"$sid"'","mcp_servers":[{"name":"rigger","status":"connected"}]}'
-    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"capture","result":"{\"id\":\"final\",\"pass\":true}"}'
+    printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"num_turns":1,"session_id":"capture","result":"{\"id\":\"final\",\"pass\":true}'"$handover"'"}'
 else
     echo '{"id":"final","pass":true}'
+    hand_over "$task"
 fi

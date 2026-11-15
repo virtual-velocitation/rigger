@@ -2625,6 +2625,22 @@ pub fn run_on_arms(
     (out, err, ok, fakebin)
 }
 
+/// What an author session answers once its work is done, as the stand-in `claude` prints it:
+/// `answer`, then the handover line the author handover contract asks its final message to end
+/// with.
+pub fn handed_over(answer: &str) -> String {
+    format!(
+        "{answer}\n{}",
+        rigger_conductor::prompt_surface::AUTHOR_HANDOVER_LINE
+    )
+}
+
+/// The author handover contract the conductor appends to every author's task, its line filled.
+pub fn handover_contract() -> String {
+    use rigger_conductor::prompt_surface::{AUTHOR_HANDOVER, AUTHOR_HANDOVER_LINE};
+    rigger_domain::prompt_surface::fill(AUTHOR_HANDOVER, &[("line", AUTHOR_HANDOVER_LINE)])
+}
+
 /// The environment a run of [`install_fake_claude`]'s fake takes: `path_env` and the scratch root
 /// `scratch`.
 pub fn fake_claude_env<'a>(path_env: &'a str, scratch: &'a Path) -> [(&'a str, &'a str); 2] {
