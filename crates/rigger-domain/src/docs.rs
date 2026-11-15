@@ -1040,8 +1040,9 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  driver that dies again within ten minutes of its relaunch, a relaunch that never \
                  started, or one whose recorded binary no longer exists is left stopped, and the \
                  line names the command that relaunches it by hand. A driver that gave its agents \
-                 the login token in `RIGGER_CLAUDE_CODE_OAUTH_TOKEN` is relaunched only from an \
-                 environment that sets it too; from any other, the line names that command and \
+                 the login token in `RIGGER_CLAUDE_CODE_OAUTH_TOKEN`, or drove the server store \
+                 named in `KURRENTDB_CONN`, is relaunched only from an environment that sets it \
+                 too; from any other, the line names that command and \
                  nothing is relaunched.\n",
                 stop = DRIVER_STOP_RULE
             ),
