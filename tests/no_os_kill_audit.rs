@@ -25,6 +25,10 @@
 //! exactly what those two files exist to make, and the reaper's `send_signal` is the one
 //! Windows termination site.
 //!
+//! The test module also runs the shipped script itself, by path, over one fixture unit branch
+//! per row, so the script's own patterns for the two Windows shapes are pinned by its exit and
+//! its whole output, not only mirrored by this file's needles.
+//!
 //! SOURCE HYGIENE (load-bearing - read this before touching a needle or a fixture below).
 //! This file's whole job is to DETECT the shapes the `no-os-kill` gate forbids, and its own
 //! fixtures must PROVE detection by containing samples of them. But the gate does not parse
@@ -397,6 +401,19 @@ mod tests {
         assert!(findings.is_empty(), "{why}; {findings:?}");
     }
 
+    /// A line opening a call of the Windows process-termination function.
+    fn windows_termination_call() -> String {
+        format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open())
+    }
+
+    /// A line shelling out to the Windows process-termination utility (task-kill).
+    fn task_kill_shell_out() -> String {
+        format!(
+            "let _ = std::process::Command::new(\"{}\");\n",
+            prefixed_kill("task")
+        )
+    }
+
     #[test]
     fn command_new_shell_out_is_caught_outside_the_sanctioned_files() {
         // `killall`, not the p-kill utility - it does not ALSO satisfy the standalone-token
@@ -456,15 +473,12 @@ mod tests {
         );
         windows_termination_call_is_caught_outside_reap_rs: caught_as(
             "crates/somewhere/src/lib.rs",
-            &format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open()),
+            &windows_termination_call(),
             "Windows process-termination call",
         );
         taskkill_shell_out_is_caught_outside_the_sanctioned_files: caught_as(
             "src/somewhere.rs",
-            &format!(
-                "let _ = std::process::Command::new(\"{}\");\n",
-                prefixed_kill("task")
-            ),
+            &task_kill_shell_out(),
             "Command::new",
         );
     }
@@ -531,7 +545,7 @@ mod tests {
         /// The test helper is sanctioned for the unix signal call only, never the Windows call.
         a_windows_termination_call_in_the_test_helper_is_caught: caught_as(
             "tests/common/mod.rs",
-            &format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open()),
+            &windows_termination_call(),
             "Windows process-termination call",
         );
         /// Naming the Windows function without calling it (an import, a doc) is never a call.
@@ -548,10 +562,7 @@ mod tests {
         /// A shell-out to the Windows termination utility is banned even inside reap.rs.
         a_taskkill_shell_out_inside_a_sanctioned_file_is_still_caught: caught_as(
             "crates/rigger-process/src/reap.rs",
-            &format!(
-                "let _ = std::process::Command::new(\"{}\");\n",
-                prefixed_kill("task")
-            ),
+            &task_kill_shell_out(),
             "Command::new",
         );
         /// The same violation, rooted outside src/, crates/ and tests/ entirely, must be invisible.
@@ -564,6 +575,117 @@ mod tests {
                 ),
             )],
             "a .rs file outside src/, crates/ and tests/ must never be scanned",
+        );
+    }
+
+    /// The shipped gate's whole output when its main check fires: a forbidden shape added outside
+    /// the two sanctioned lifecycle files.
+    const OUTSIDE_THE_SANCTIONED_FILES: &str = "no-os-kill gate FAILED: an OS-level kill, a \
+        process-group target, or a direct signal call was introduced outside the sanctioned \
+        lifecycle helpers (crates/rigger-process/src/reap.rs, tests/common/mod.rs). Lifecycle is \
+        handle-bound: Child::kill()/wait(), or the shared helper. See \
+        specs/78-no-os-level-kills.md\n";
+
+    /// The shipped gate's whole output when its sanctioned-file check fires: a shell-out added
+    /// inside one of the two sanctioned lifecycle files.
+    const SHELL_OUT_IN_A_SANCTIONED_FILE: &str = "no-os-kill gate FAILED: a sanctioned lifecycle \
+        file shelled out to kill or formatted a process-group target; use the internal guarded \
+        signal call only\n";
+
+    /// The shipped gate's whole output when its Windows check fires: the Windows
+    /// process-termination call added outside the reaper.
+    fn windows_termination_outside_the_reaper() -> String {
+        format!(
+            "no-os-kill gate FAILED: the Windows process-termination call ({}) was introduced \
+             outside crates/rigger-process/src/reap.rs, whose send_signal is its one sanctioned \
+             site. See specs/78-no-os-level-kills.md\n",
+            join("Terminate", "Process")
+        )
+    }
+
+    /// The shipped `.rigger/gates/content.sh no-os-kill`, run by path from a fixture repository as
+    /// a unit's gate runs it, judges a unit branch whose one commit adds `line` at `rel` on a
+    /// `rigger-run` base, and answers exactly `(passed, output)`.
+    fn gate_judges(rel: &str, line: &str, (passed, output): (bool, &str)) {
+        let (dir, _) =
+            common::git::unit_branch_repo("pub fn f() {}\n", &[(rel, line, "adds the line")]);
+        assert_eq!(
+            common::repo::run_gate_script(dir.path(), "content.sh", &["no-os-kill"], &[]),
+            (passed, output.to_string()),
+            "the no-os-kill gate's verdict on {rel} adding {line:?}"
+        );
+    }
+
+    // GIVEN a unit branch whose one commit adds a line, WHEN the shipped no-os-kill gate judges
+    // its diff from the run branch, THEN an opened call of the Windows process-termination
+    // function fails it in every code root but the reaper, the test helper included, while the
+    // function's name imported without a call, or a call named in prose outside the code roots,
+    // passes; and a shell-out to the Windows termination utility fails it in every code root, the
+    // reaper and the test helper included. Each failure prints the message of the check that
+    // caught it.
+    rigger::test_cases! {
+        the_gate_fails_a_windows_termination_call_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &windows_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_fails_a_windows_termination_call_added_to_the_bin: gate_judges(
+            "src/somewhere.rs",
+            &windows_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_fails_a_windows_termination_call_added_to_a_test_suite: gate_judges(
+            "tests/somewhere.rs",
+            &windows_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_fails_a_windows_termination_call_added_to_the_test_helper: gate_judges(
+            "tests/common/mod.rs",
+            &windows_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_passes_a_windows_termination_call_added_to_the_reaper: gate_judges(
+            REAPER,
+            &windows_termination_call(),
+            (true, ""),
+        );
+        the_gate_passes_the_windows_termination_name_imported_without_a_call: gate_judges(
+            "src/somewhere.rs",
+            &format!(
+                "use windows_sys::Win32::System::Threading::{{{}}};\n",
+                join("Terminate", "Process")
+            ),
+            (true, ""),
+        );
+        the_gate_passes_a_windows_termination_call_named_in_prose: gate_judges(
+            "docs/somewhere.md",
+            &windows_termination_call(),
+            (true, ""),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &task_kill_shell_out(),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_the_bin: gate_judges(
+            "src/somewhere.rs",
+            &task_kill_shell_out(),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_a_test_suite: gate_judges(
+            "tests/somewhere.rs",
+            &task_kill_shell_out(),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_the_reaper: gate_judges(
+            REAPER,
+            &task_kill_shell_out(),
+            (false, SHELL_OUT_IN_A_SANCTIONED_FILE),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_the_test_helper: gate_judges(
+            "tests/common/mod.rs",
+            &task_kill_shell_out(),
+            (false, SHELL_OUT_IN_A_SANCTIONED_FILE),
         );
     }
 
