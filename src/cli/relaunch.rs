@@ -5,9 +5,10 @@
 //! the background, as a hand `rigger run <spec> --base <ref>` would.
 //!
 //! STOPPED ON PURPOSE is every end the driver itself sees: any return of `rigger run` after it
-//! took the step lock (done, escalated with nothing left, a halt, a refusal, an error), a panic,
-//! and the operator's interactive interrupt (Ctrl-C), which the driver answers by emptying its
-//! record ([`rigger::interrupt`]). Each empties the record, so nothing relaunches the run. A held
+//! took the step lock (done, escalated with nothing left, a halt, a refusal, an error), a panic
+//! that unwinds it, and the operator's interactive interrupt (Ctrl-C), which the driver answers by
+//! emptying its record ([`rigger::interrupt`]); a driver started ignoring interrupts is not ended
+//! by one. Each empties the record, so nothing relaunches the run. A held
 //! run is relaunched and waits in its hold, so `rigger hold` is how an operator keeps a run from
 //! spending whatever ends its driver.
 //!

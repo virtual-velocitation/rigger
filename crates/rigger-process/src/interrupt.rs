@@ -11,8 +11,8 @@
 use std::fs::File;
 
 /// While this lives, an interactive interrupt of this process empties the file
-/// [`empty_on_interrupt`] was handed before the process ends; dropped, the interrupt ends the
-/// process as it did before.
+/// [`empty_on_interrupt`] was handed before the process ends; dropped, the interrupt does what it
+/// did before. An interrupt the process was started ignoring stays ignored.
 #[must_use = "the trigger is removed when the guard drops"]
 pub struct InterruptTrigger(());
 
@@ -34,13 +34,18 @@ std::cfg_select! {
     unix => {
         /// The unix trigger: a `SIGINT` handler that truncates the armed descriptor and ends the
         /// process with status 130, calling only the async-signal-safe `ftruncate` and `_exit`.
+        /// A process started ignoring `SIGINT` (a background start by a shell without job
+        /// control) is never ended by one, so it is left ignoring it and nothing is armed.
         mod native {
             use std::fs::File;
             use std::os::fd::AsRawFd;
-            use std::sync::atomic::{AtomicI32, Ordering};
+            use std::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
 
             /// The armed descriptor, `-1` while disarmed.
             static ARMED: AtomicI32 = AtomicI32::new(-1);
+            /// The disposition `arm` replaced, which `disarm` restores; `SIG_ERR` while nothing
+            /// is replaced.
+            static REPLACED: AtomicUsize = AtomicUsize::new(libc::SIG_ERR);
 
             extern "C" fn on_interrupt(_signal: libc::c_int) {
                 let fd = ARMED.load(Ordering::SeqCst);
@@ -54,19 +59,41 @@ std::cfg_select! {
                 }
             }
 
-            pub(super) fn arm(file: &File) {
-                ARMED.store(file.as_raw_fd(), Ordering::SeqCst);
-                let handler = on_interrupt as extern "C" fn(libc::c_int);
-                // SAFETY: the handler calls only async-signal-safe functions.
+            /// The current disposition of `SIGINT`, read without changing it.
+            pub(super) fn current() -> libc::sighandler_t {
+                // SAFETY: a query: a null new action changes nothing, and `old` is a valid
+                // out-pointer.
                 unsafe {
-                    libc::signal(libc::SIGINT, handler as libc::sighandler_t);
+                    let mut old: libc::sigaction = std::mem::zeroed();
+                    libc::sigaction(libc::SIGINT, std::ptr::null(), &mut old);
+                    old.sa_sigaction
                 }
             }
 
+            pub(super) fn arm(file: &File) {
+                if current() == libc::SIG_IGN {
+                    return;
+                }
+                ARMED.store(file.as_raw_fd(), Ordering::SeqCst);
+                let handler = on_interrupt as extern "C" fn(libc::c_int);
+                // SAFETY: the handler calls only async-signal-safe functions.
+                let replaced = unsafe { libc::signal(libc::SIGINT, handler as libc::sighandler_t) };
+                // A second arm keeps the disposition the first one replaced.
+                let _ = REPLACED.compare_exchange(
+                    libc::SIG_ERR,
+                    replaced,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+            }
+
             pub(super) fn disarm() {
-                // SAFETY: restoring the default disposition of `SIGINT`.
-                unsafe {
-                    libc::signal(libc::SIGINT, libc::SIG_DFL);
+                let replaced = REPLACED.swap(libc::SIG_ERR, Ordering::SeqCst);
+                if replaced != libc::SIG_ERR {
+                    // SAFETY: restoring the disposition `arm` replaced.
+                    unsafe {
+                        libc::signal(libc::SIGINT, replaced);
+                    }
                 }
                 ARMED.store(-1, Ordering::SeqCst);
             }
@@ -129,16 +156,6 @@ std::cfg_select! {
 mod tests {
     use super::*;
 
-    /// The disposition of `SIGINT` in this process, read without changing it.
-    fn disposition() -> libc::sighandler_t {
-        // SAFETY: a query: a null new action changes nothing, and `old` is a valid out-pointer.
-        unsafe {
-            let mut old: libc::sigaction = std::mem::zeroed();
-            libc::sigaction(libc::SIGINT, std::ptr::null(), &mut old);
-            old.sa_sigaction
-        }
-    }
-
     /// An interrupt the process was started ignoring (a background start by a shell without job
     /// control) stays ignored, so the driver it would not have ended keeps running and its record;
     /// any other is answered while the trigger lives, and the disposition the trigger replaced
@@ -156,10 +173,10 @@ mod tests {
                 libc::signal(libc::SIGINT, inherited);
             }
             let trigger = empty_on_interrupt(&file);
-            let armed = disposition();
+            let armed = native::current();
             drop(trigger);
             assert_eq!(
-                (armed != inherited, disposition()),
+                (armed != inherited, native::current()),
                 (answered, inherited),
                 "{case}: whether the trigger answers the interrupt, and what its drop leaves"
             );
