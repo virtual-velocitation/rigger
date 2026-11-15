@@ -4350,6 +4350,21 @@ impl RunCtx<'_> {
         Ok(crate::run::read::read_current_run(self.deps.store, STREAM)?.0)
     }
 
+    /// Whether author spawn `id`'s `result` handed its work over ([`author_handed_over`]), read
+    /// against the request the current run recorded for `id`, if any: the ONE handover check
+    /// the implementer, the test author and each speculation lane take. A result with no session
+    /// reads no log.
+    fn handed_over(&self, id: &str, result: &AgentResult) -> Result<bool, Error> {
+        if result.session_id.is_empty() {
+            return Ok(true);
+        }
+        let recorded = spawn::recorded_lenient(&self.read_current_run()?).remove(id);
+        Ok(author_handed_over(
+            result,
+            recorded.as_ref().map(|req| req.prompt.as_str()),
+        ))
+    }
+
     /// The integrating commit(s) of `unit` to REVERT for a compensation (spec 12, unit 4):
     /// the REAL git commits its `UnitIntegrated` events recorded in THIS run, in REVERSE
     /// integration order (newest first, so reverting the newest never conflicts with an
@@ -6288,7 +6303,7 @@ impl RunCtx<'_> {
                 // and no gate follow until the seam reruns.
                 Ok(result) => {
                     self.record_session(&opts, &result)?;
-                    if author_handed_over(&result, None) {
+                    if self.handed_over(&opts.id, &result)? {
                         Ok(())
                     } else {
                         Err(crashed(&Error(not_handed_over("the sdet author"))))
@@ -6878,14 +6893,18 @@ impl RunCtx<'_> {
                         .filter(|block| !block.trim().is_empty())
                         .map(|block| block + &handover),
                 )?;
-                match isolation_check
-                    .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit))
-                {
+                let spawned = isolation_check
+                    .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit));
+                let handed_over = match &spawned {
+                    Ok(result) if !is_producer(st) => self.handed_over(&opts.id, result)?,
+                    _ => true,
+                };
+                match spawned {
                     // An implementer session that ended without handing over (a denied
                     // command, a turn that ended mid-work) stopped before its work was done: it
                     // takes the crash arm's disposition below, before any `green` stamp or
                     // checkpoint, and reruns uncharged over the tree it left.
-                    Ok(result) if !is_producer(st) && !author_handed_over(&result, None) => {
+                    Ok(result) if !handed_over => {
                         self.record_session(&opts, &result)?;
                         spawn_err = Some(format!(
                             "agent {:?}: {}",
@@ -7603,7 +7622,7 @@ impl RunCtx<'_> {
                 // takes the crash arm: the candidate loses, as a losing candidate has no later
                 // attempt or infra rerun to carry the crash or the refusal into (infra ordinal 0).
                 .and_then(|result| {
-                    if author_handed_over(&result, None) {
+                    if self.handed_over(&impl_id, &result)? {
                         Ok(result)
                     } else {
                         Err(Error(not_handed_over("the speculation lane's implementer")))
@@ -15283,13 +15302,15 @@ fn author_handover() -> String {
 
 /// Whether an author spawn's `result` handed its work over: its driver ran no session (an empty
 /// `session_id`: the workflow and replay drivers and the in-process doubles, which have no
-/// session to end early), or its output's last non-blank line, trimmed, is
-/// [`AUTHOR_HANDOVER_LINE`]. A session that ended without the line (a denied command, a turn
-/// that ended mid-work) stopped before its work was done, so its arm takes its crash
-/// disposition before any `green` stamp or checkpoint commit. A result recorded before the
-/// contract existed and answered from the log carries no line, so it is rerun once, uncharged.
-fn author_handed_over(result: &AgentResult, _recorded: Option<&str>) -> bool {
+/// session to end early), the prompt of the request the run `recorded` for the spawn carries no
+/// [`AUTHOR_HANDOVER_LINE`] (a session recorded before the contract existed was never told it,
+/// so it cannot miss it; every request recorded since carries it), or its output's last
+/// non-blank line, trimmed, is [`AUTHOR_HANDOVER_LINE`]. A told session that ended without the
+/// line (a denied command, a turn that ended mid-work) stopped before its work was done, so its
+/// arm takes its crash disposition before any `green` stamp or checkpoint commit.
+fn author_handed_over(result: &AgentResult, recorded: Option<&str>) -> bool {
     result.session_id.is_empty()
+        || recorded.is_some_and(|prompt| !prompt.contains(AUTHOR_HANDOVER_LINE))
         || result
             .output
             .lines()
