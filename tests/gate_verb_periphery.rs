@@ -4,8 +4,8 @@
 //! OWNED HERE: the verb's CLI face with no driver serving the project (it runs the gate for
 //! information only, prints the result, says it recorded nothing and records nothing, a stale
 //! socket file included); the socket it asks, the one its driver addresses or else the one the
-//! shared path rule names, whose file name is the digits the Windows gate pipe's name carries for
-//! the same project; its refusals of an uncommitted tree, an undeclared gate and a relative
+//! shared path rule names, whose file name carries the digits `pipe_name` gives the Windows gate
+//! pipe for the same canonical root; its refusals of an uncommitted tree, an undeclared gate and a relative
 //! address; and `rigger emit`'s refusal of a GateVerdict, the forge a worker would otherwise reach for.
 //!
 //! NOT OWNED HERE: the driver's answer to a request (the gate run, the signed verdict, its reuse
