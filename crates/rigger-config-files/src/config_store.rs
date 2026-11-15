@@ -39,6 +39,11 @@ use crate::failure;
 #[cfg(test)]
 use std::time::Duration;
 
+/// Why the `build.wrapper` and `build.cache_dir` keys are retired, and what replaces them.
+const BUILD_KEY_RETIRED_WHY: &str = "rigger exports only what `build.env` declares; declare \
+     there each variable your builds need (your build cache over `{build_cache}`, your job count \
+     over `{jobs}`)";
+
 /// Refuse a RETIRED workflow key that still carries a value: a key nothing reads any more
 /// fails loudly, naming the key, why it was retired and the line to delete, rather than
 /// silently no-op'ing a setting the operator believes is still wired. An absent key passes.
@@ -388,6 +393,20 @@ impl Config {
         // still sets it fails loudly at the exact line to delete rather than carrying a setting
         // the operator believes does something.
         reject_retired_key(&wf.name, "name", "the `name:` line", "nothing reads it")?;
+        // The `build.wrapper` and `build.cache_dir` keys are retired too: rigger resolves no
+        // compilation-cache wrapper and exports no cache directory of its own.
+        reject_retired_key(
+            &wf.build.wrapper,
+            "build.wrapper",
+            "the `wrapper:` line under `build:`",
+            BUILD_KEY_RETIRED_WHY,
+        )?;
+        reject_retired_key(
+            &wf.build.cache_dir,
+            "build.cache_dir",
+            "the `cache_dir:` line under `build:`",
+            BUILD_KEY_RETIRED_WHY,
+        )?;
         for id in self.agents.keys() {
             check_agent_id(id).map_err(|m| err(format!("agents {m}")))?;
         }
@@ -1536,7 +1555,8 @@ mod tests {
             );
         };
         /// `build.wrapper` / `build.cache_dir` are retired keys no run reads, kept as fields so a
-        /// workflow still carrying them parses. An omitted `build:` section (the common case)
+        /// workflow still carrying them parses and `Config::validate` refuses a non-empty value
+        /// naming the line to delete. An omitted `build:` section (the common case)
         /// parses to the defaults - empty wrapper, empty cache_dir - and an explicit value parses
         /// through.
         build_config_parses_wrapper_and_cache_dir_and_defaults_when_omitted: {

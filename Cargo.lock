@@ -2479,7 +2479,6 @@ dependencies = [
  "fs2",
  "rigger-domain",
  "rigger-process",
- "rigger-store-sqlite",
  "tempfile",
  "thiserror",
 ]

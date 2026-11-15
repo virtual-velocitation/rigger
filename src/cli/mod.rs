@@ -4463,7 +4463,7 @@ const FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED: &str =
 /// the operator verb that does.
 const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
     "no run or spawn owns this, so nothing reclaims it automatically - `rigger reset \
-     --build-cache` reclaims it now; point future manual scratch/CARGO_TARGET_DIR at the \
+     --build-cache` reclaims it now; point future manual scratch/your build cache variable at the \
      `rigger_scratch` tool's own container instead of a hardcoded agent-scratch/<name> literal";
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix

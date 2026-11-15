@@ -1873,13 +1873,6 @@ lenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses\n    \
 adversary: adversary           # tier 2: reviews the lenses and refutes them\n    \
 adjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\n\
 \n\
-# The compilation-cache wrapper (spec 65): `auto` probes PATH for a known wrapper\n\
-# (sccache, ccache) and uses it when present, so a machine that already has one\n\
-# installed benefits with no further config; `off` disables the shared-cache\n\
-# layer entirely. See `rigger validate` for the resolved wrapper/cache dir/budget.\n\
-build:\n  \
-wrapper: auto\n\
-\n\
 # A reusable library of gate commands, referenced by name from the stages below.\n\
 @GATES@\n\
 \n\
