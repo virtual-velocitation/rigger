@@ -15355,6 +15355,11 @@ fn a_relaunch_inside_its_grace_reads_as_a_live_driver() {
 const RELAUNCHED: &str = "relaunched it in the background";
 /// The variable an operator gives spawned agents their login token in.
 const AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
+/// The variable an operator gives the server event store's connection string in.
+const CONN_VAR: &str = "KURRENTDB_CONN";
+/// What the stderr line of an invocation without the store connection its dead driver ran on
+/// says: the variable, never its value.
+const CONN_MISSING: &str = "ran with KURRENTDB_CONN set, which this invocation's environment does not set, so rigger relaunched nothing";
 /// What the stderr line of an invocation without the login token its dead driver ran on says.
 const TOKEN_MISSING: &str = "environment does not set, so rigger relaunched nothing; relaunch it by hand from an environment that sets it: rigger run";
 /// What the stderr line of an invocation whose earlier relaunch never took the step lock says.
@@ -15714,18 +15719,26 @@ fn an_invocation_relaunches_only_a_dead_driver_it_has_not_just_relaunched() {
     let fence = tempfile::tempdir().unwrap();
     let fence = fence.path().to_str().unwrap();
     let hour_ago = serde_json::json!(now - 3600);
-    let rows: [RelaunchRow; 13] = [
+    let rows: [RelaunchRow; 14] = [
         (
             "a driver on a login token, invoked without one",
-            with("agent_token", serde_json::json!(true)),
+            with("credentials", serde_json::json!([AGENT_TOKEN_VAR])),
             &[(AGENT_TOKEN_VAR, "")],
             false,
             Left::Kept,
             Some(TOKEN_MISSING),
         ),
         (
+            "a driver on a store connection, invoked without one",
+            with("credentials", serde_json::json!([CONN_VAR])),
+            &[(CONN_VAR, "")],
+            false,
+            Left::Kept,
+            Some(CONN_MISSING),
+        ),
+        (
             "a driver on a login token, invoked with one",
-            with("agent_token", serde_json::json!(true)),
+            with("credentials", serde_json::json!([AGENT_TOKEN_VAR])),
             &[(AGENT_TOKEN_VAR, "another-token")],
             false,
             Left::Stamped,
@@ -16344,7 +16357,8 @@ fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
     );
     let kept: serde_json::Value = serde_json::from_str(&ended.record).unwrap_or_default();
     assert!(
-        kept["agent_token"] == true && !ended.record.contains(token),
+        kept["credentials"] == serde_json::json!([AGENT_TOKEN_VAR])
+            && !ended.record.contains(token),
         "the record keeps that the driver had a login token, never its value; {}",
         ended.record
     );

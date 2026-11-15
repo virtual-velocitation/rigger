@@ -6,8 +6,8 @@
 //! holds is a driver that died, by a crash, a forced end, a hangup or a reboot, and the check
 //! relaunches it by adoption, in the background, through the binary it recorded and with the
 //! variables its roots resolve from set as it had them ([`ROOTS_ENV`]), as a hand
-//! `rigger run <spec> --base <ref>` would. A driver that gave its agents the login token is
-//! relaunched only by a check whose environment gives it too. The relaunched driver's stdout and stderr go to one
+//! `rigger run <spec> --base <ref>` would. A driver that ran on a credential ([`CREDENTIALS_ENV`])
+//! is relaunched only by a check whose environment sets it too. The relaunched driver's stdout and stderr go to one
 //! file under the store (`.rigger/driver.out`, [`DRIVER_OUTPUT_FILE`]), what it would have said on
 //! the operator's terminal; each relaunch overwrites it and `rigger reset --runs` removes it once no driver holds the step
 //! lock.
@@ -29,7 +29,7 @@
 
 use super::*;
 use rigger::interrupt::{empty_on_interrupt, InterruptTrigger};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -57,6 +57,33 @@ const ROOTS_ENV: [&str; 6] = [
     rigger_worktree_git::discover::CEILINGS,
     rigger_worktree_git::discover::ACROSS_DEVICES,
 ];
+
+/// The credentials a driver can run on, each by the variable it is read from and the reader that
+/// tells it set: the login token its agents get, and the server event store's connection string.
+/// A driver records which it had set, never a value, and only a check whose environment sets each
+/// of them relaunches it, since a relaunch without one runs its agents on another login or drives
+/// another store.
+const CREDENTIALS_ENV: [(&str, fn() -> bool); 2] = [
+    (
+        rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
+        rigger::claude_auth::agent_token_set,
+    ),
+    (CONN_ENV, conn_set),
+];
+
+/// Whether this process's environment sets the store connection string ([`env_conn`]).
+fn conn_set() -> bool {
+    env_conn().is_some()
+}
+
+/// The variables of [`CREDENTIALS_ENV`] this process's environment sets.
+fn credentials_set() -> BTreeSet<String> {
+    CREDENTIALS_ENV
+        .iter()
+        .filter(|(_, set)| set())
+        .map(|(var, _)| (*var).to_string())
+        .collect()
+}
 
 /// Each of [`ROOTS_ENV`] with its value in this process, `None` where it is unset.
 fn roots_env() -> BTreeMap<String, Option<OsString>> {
@@ -87,10 +114,9 @@ struct DriverRecord {
     /// record an older driver wrote has none, and is relaunched with the checker's.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     env: BTreeMap<String, Option<OsString>>,
-    /// Whether the driver gave its agents the login token
-    /// ([`rigger::claude_auth::agent_token_set`]): never the token itself.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    agent_token: bool,
+    /// Which of [`CREDENTIALS_ENV`] the driver had set: never a value.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    credentials: BTreeSet<String>,
     /// When a check started a relaunch of this record, in seconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relaunched_at: Option<u64>,
@@ -203,7 +229,7 @@ impl KeptRecord {
             bin: Some(standing_executable()),
             run: run.to_string(),
             env: roots_env(),
-            agent_token: rigger::claude_auth::agent_token_set(),
+            credentials: credentials_set(),
             relaunched_at: None,
             revived_at,
         };
@@ -387,7 +413,7 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
         released,
         in_main_checkout: &|| main_worktree_or_refuse(site, "").is_ok(),
         operator_holds: &|run| operator_holds(site, run),
-        agent_token: rigger::claude_auth::agent_token_set(),
+        credentials: credentials_set(),
     };
     let said = launcher().map_or_else(Some, |launcher| revive(&dir, &check, launcher.as_ref()));
     if let Some(line) = said {
@@ -412,14 +438,13 @@ fn operator_holds(site: &Site, run: &str) -> bool {
 
 /// What one check reads beside the step lock: the time it runs at, whether it follows the
 /// operator's `rigger release`, whether it was invoked from the project's main checkout, whether
-/// an operator hold stands on a run, and whether its own environment gives agents the login
-/// token.
+/// an operator hold stands on a run, and which credentials its own environment sets.
 struct Check<'a> {
     now: u64,
     released: bool,
     in_main_checkout: &'a dyn Fn() -> bool,
     operator_holds: &'a dyn Fn(&str) -> bool,
-    agent_token: bool,
+    credentials: BTreeSet<String>,
 }
 
 /// Relaunch the driver whose record the step lock under `dir` holds when no driver holds that
@@ -427,8 +452,8 @@ struct Check<'a> {
 /// say. Every failure to read the lock is read as nothing to do. A check invoked from a linked
 /// worktree, and a run an operator hold stands on, leave the record as it is: the hold is the
 /// run's stop. A check that follows the operator's release relaunches a driver that died soon
-/// after its own relaunch too, since the operator asked for it. A driver that gave its agents the
-/// login token is relaunched only from an environment that has it too, and is otherwise left as
+/// after its own relaunch too, since the operator asked for it. A driver that ran on a
+/// credential is relaunched only from an environment that sets it too, and is otherwise left as
 /// it is, naming the command that relaunches it by hand. A record whose binary is gone is
 /// cleared, naming that command.
 fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> {
@@ -491,13 +516,12 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             record.by_hand()
         ));
     }
-    if record.agent_token && !check.agent_token {
+    if let Some(var) = record.credentials.difference(&check.credentials).next() {
         return Some(format!(
-            "rigger: the driver of run {} ran its agents on the login token in {}, which this \
-             invocation's environment does not set, so rigger relaunched nothing; relaunch it by \
-             hand from an environment that sets it: {}",
+            "rigger: the driver of run {} ran with {var} set, which this invocation's environment \
+             does not set, so rigger relaunched nothing; relaunch it by hand from an environment \
+             that sets it: {}",
             record.run,
-            rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
             record.by_hand()
         ));
     }
@@ -648,7 +672,7 @@ mod tests {
                 bin: Some(standing_executable()),
                 run: "a-run".into(),
                 env: env.clone(),
-                agent_token: false,
+                credentials: BTreeSet::new(),
                 relaunched_at: None,
                 revived_at: None,
             };
@@ -662,7 +686,7 @@ mod tests {
                 released: false,
                 in_main_checkout: &|| true,
                 operator_holds: &|_| false,
-                agent_token: false,
+                credentials: BTreeSet::new(),
             };
             let keeper = EnvKeeper::default();
             revive(dir.path(), &check, &keeper);
