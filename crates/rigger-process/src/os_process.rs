@@ -8,7 +8,10 @@
 //!
 //! Every reader is best-effort: a process that is gone, or one this process may not read,
 //! answers absent (`None`, an empty list, an empty command), never an error, and on an OS with
-//! no native adapter every reader answers absent.
+//! no native adapter every reader answers absent. The native adapters are Linux's (`/proc`),
+//! macOS's (libproc) and Windows's (the Win32 process, IP Helper and Restart Manager calls);
+//! Windows reports no other process's working directory, run state or open files, so there those
+//! three readers answer absent.
 
 use std::path::{Path, PathBuf};
 
@@ -19,11 +22,21 @@ std::cfg_select! {
         pub(crate) mod linux;
         use linux as native;
     }
+    target_os = "macos" => {
+        mod macos;
+        use macos as native;
+    }
+    target_os = "windows" => {
+        mod windows;
+        use windows as native;
+    }
     _ => {
         /// The OSes with no native adapter, the `_` arm of the dispatch above: every process
         /// answers absent.
         mod unsupported {
             use std::path::PathBuf;
+
+            pub(super) use super::scan_holders as holders;
 
             pub(super) fn pids() -> Vec<u32> {
                 Vec::new()
@@ -66,10 +79,12 @@ std::cfg_select! {
                 use crate::os_process::*;
 
                 /// On an OS with no native adapter, this process answers absent from every
-                /// reader.
+                /// reader, a port it listens on names no listener, and no directory has a holder.
                 #[test]
                 fn every_reader_answers_absent_for_this_process() {
                     let me = std::process::id();
+                    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+                    let port = listener.local_addr().unwrap().port();
                     assert_eq!(
                         (
                             pids(),
@@ -80,8 +95,21 @@ std::cfg_select! {
                             state(me),
                             open_files(me),
                             is_unexeced_fork_of(me, me),
+                            listening_pid(port),
+                            holders(std::path::Path::new("/")),
                         ),
-                        (Vec::new(), None, None, None, String::new(), None, Vec::new(), false)
+                        (
+                            Vec::new(),
+                            None,
+                            None,
+                            None,
+                            String::new(),
+                            None,
+                            Vec::new(),
+                            false,
+                            None,
+                            Vec::new()
+                        )
                     );
                 }
             }
@@ -114,9 +142,10 @@ pub fn cwd(pid: u32) -> Option<PathBuf> {
     native::cwd(pid)
 }
 
-/// Process `pid`'s command line, its arguments joined by single spaces, or its short name when
-/// its arguments cannot be read: descriptive only, it names a process in a message and decides
-/// nothing. Empty when `pid` is gone.
+/// Process `pid`'s command: on Linux its arguments joined by single spaces, or its short name when
+/// its arguments cannot be read; on macOS and Windows the full path of its executable.
+/// Descriptive only, it names a process in a message and decides nothing. Empty when `pid` is
+/// gone.
 pub fn command(pid: u32) -> String {
     native::command(pid)
 }
@@ -151,9 +180,19 @@ pub fn listening_pid(port: u16) -> Option<u32> {
 /// child of it that has forked but not yet exec'd ([`is_unexeced_fork_of`]): until its exec
 /// completes it is still this process's own image over copies of this process's descriptors, and
 /// the close-on-exec ones (every descriptor the standard library opens) close at that exec;
-/// whatever the child still holds once it has exec'd counts from then on. The check a reclaim
-/// runs before it deletes a directory it counts as dead.
+/// whatever the child still holds once it has exec'd counts from then on. On Windows, which
+/// reports no other process's working directory or open files, they are the processes the
+/// Restart Manager reports holding a file in `dir` or inside it open. The check a reclaim runs
+/// before it deletes a directory it counts as dead.
 pub fn holders(dir: &Path) -> Vec<u32> {
+    native::holders(dir)
+}
+
+/// The composed holder scan [`holders`] answers on every OS that reports a process's working
+/// directory and open files: each process but this one and its un-exec'd forks that [`holds`]
+/// `dir`.
+#[cfg(not(target_os = "windows"))]
+fn scan_holders(dir: &Path) -> Vec<u32> {
     let me = std::process::id();
     pids()
         .into_iter()
@@ -163,6 +202,7 @@ pub fn holders(dir: &Path) -> Vec<u32> {
 
 /// Whether process `pid`'s working directory or one of its open files lies in `dir` or inside
 /// it, matched on path components.
+#[cfg(not(target_os = "windows"))]
 fn holds(pid: u32, dir: &Path) -> bool {
     cwd(pid).is_some_and(|cwd| cwd.starts_with(dir))
         || open_files(pid).iter().any(|file| file.starts_with(dir))
@@ -266,8 +306,8 @@ mod tests {
         );
     }
 
-    /// A process's command is its arguments joined by single spaces.
-    #[cfg(unix)]
+    /// On Linux a process's command is its arguments joined by single spaces.
+    #[cfg(target_os = "linux")]
     #[test]
     fn a_processes_command_is_its_arguments_joined_by_spaces() {
         let mut child = sleeper_in(Path::new("/"));
@@ -281,6 +321,30 @@ mod tests {
             (
                 std::env::args().collect::<Vec<_>>().join(" "),
                 "sleep 300".to_string()
+            )
+        );
+    }
+
+    /// On macOS a process's command is the full path of its executable.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_processes_command_is_its_executables_path() {
+        let mut child = sleeper_in(Path::new("/"));
+        // `spawn` returns while the child's exec may still be under way, when the OS reports this
+        // test's own executable for it, so the child's command is read once its exec has finished.
+        wait_until(|| command(child.id()) == "/bin/sleep");
+        let child_command = command(child.id());
+        cleanup(&mut child);
+        assert_eq!(
+            (command(std::process::id()), child_command),
+            (
+                std::env::current_exe()
+                    .unwrap()
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                "/bin/sleep".to_string()
             )
         );
     }

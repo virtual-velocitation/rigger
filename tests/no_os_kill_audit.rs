@@ -3,23 +3,27 @@
 //! the run base; this test walks EVERY `.rs` file under `src/`, `crates/` and `tests/` in the checked-out
 //! tree and fails, naming file and line, on any of the gate's forbidden shapes found outside
 //! the two sanctioned lifecycle helpers (`crates/rigger-process/src/reap.rs`, `tests/common/mod.rs`) - or on a
-//! shell-out / `--` argv separator / negative-pid `format!` found INSIDE those two files,
+//! shell-out / `--` argv separator / negative-pid `format!` found INSIDE those two files (and
+//! on the Windows process-termination call inside the test helper),
 //! where calling the internal signal API directly is exactly the point and must NOT be
 //! flagged. It runs under plain `cargo test`, so unlike the shell gate it also covers CI
 //! (`.github/workflows/rust.yml`), which runs `cargo test` but not the rigger-loop gate.
 //!
-//! The nine forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
+//! The ten forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
 //! that file (out of the gate's own scope, so it may name the literal pattern text) for the
-//! precise regex. In prose: a `Command::new` shell-out to any of four OS process-termination
-//! utility names; the bare shell form of two of those names, invoked with a leading-hyphen
-//! signal argument; one of the four also appearing as a standalone shell token on its own;
-//! the libc process-group signal call name; a direct call through `libc` or a `signal`
-//! module; the sanctioned rustix call itself (forbidden only OUTSIDE the two sanctioned
-//! files - see below); the `--` argv separator passed to `.arg(...)`; and a `format!` call
-//! shaped to build a leading-hyphen (negative-pid-style) argument. Inside the two sanctioned
-//! files only the Command::new shell-out, the `--` separator and the negative-pid `format!`
-//! remain banned (the gate's own narrower second check) - the direct signal call is exactly
-//! what those two files exist to make.
+//! precise regex. In prose: a `Command::new` shell-out to any of five OS process-termination
+//! utility names, the Windows one among them; the bare shell form of two of those names,
+//! invoked with a leading-hyphen signal argument; one of the five also appearing as a
+//! standalone shell token on its own; the libc process-group signal call name; a direct call
+//! through `libc` or a `signal` module; the sanctioned rustix call itself (forbidden only
+//! OUTSIDE the two sanctioned files - see below); the `--` argv separator passed to
+//! `.arg(...)`; a `format!` call shaped to build a leading-hyphen (negative-pid-style)
+//! argument; and an opened call of the Windows process-termination function, forbidden in
+//! every file but `reap.rs`. Inside the two sanctioned files the Command::new shell-out, the
+//! `--` separator and the negative-pid `format!` remain banned (the gate's own narrower second
+//! check), and so does the Windows call inside the test helper - the direct unix signal call is
+//! exactly what those two files exist to make, and the reaper's `send_signal` is the one
+//! Windows termination site.
 //!
 //! SOURCE HYGIENE (load-bearing - read this before touching a needle or a fixture below).
 //! This file's whole job is to DETECT the shapes the `no-os-kill` gate forbids, and its own
@@ -105,7 +109,8 @@ fn shell_kill_words() -> Vec<String> {
 // ---------------------------------------------------------------------------------------
 
 /// The gate's Command::new shell-out shape (see `.rigger/gates/content.sh` for the literal
-/// pattern) - a shell-out to one of the four OS process-termination utility names.
+/// pattern) - a shell-out to one of the five OS process-termination utility names, the Windows
+/// one (task-kill) among them.
 fn shape_command_new_signal(line: &str) -> bool {
     let chars: Vec<char> = line.chars().collect();
     let marker: Vec<char> = "Command::new(".chars().collect();
@@ -113,6 +118,7 @@ fn shape_command_new_signal(line: &str) -> bool {
         prefixed_kill("p"),
         suffixed_kill("all"),
         prefixed_kill("x"),
+        prefixed_kill("task"),
         kill_word(),
     ];
     let mlen = marker.len();
@@ -232,10 +238,16 @@ fn has_marker_shape(line: &str, (marker, tail): MarkerShape) -> bool {
 /// `interrupt_pid`, and `is_alive`) - this audit's own
 /// record of the boundary, checked against each scanned file's REPO-RELATIVE, forward-slash
 /// path, independent of `.rigger/gates/content.sh`'s copy.
-const SANCTIONED_FILES: [&str; 2] = ["crates/rigger-process/src/reap.rs", "tests/common/mod.rs"];
+const SANCTIONED_FILES: [&str; 2] = [REAPER, "tests/common/mod.rs"];
+
+/// The reaper, whose `send_signal` is the one site of the Windows process-termination call:
+/// the one file [`scan_tree`] never flags for it (the test helper is sanctioned for the unix
+/// signal call only).
+const REAPER: &str = "crates/rigger-process/src/reap.rs";
 
 /// Every forbidden shape found in one line of a file that is NOT one of the two sanctioned
-/// lifecycle helpers - the gate's full nine-shape ban.
+/// lifecycle helpers - the gate's ban on every shape but the Windows process-termination call,
+/// which [`scan_tree`] checks in every file but [`REAPER`].
 fn general_hits(line: &str) -> Vec<&'static str> {
     let mut hits = Vec::new();
     if shape_command_new_signal(line) {
@@ -281,13 +293,15 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
 
 /// Scan every `.rs` file under `root/src`, `root/crates` and `root/tests`, deterministically ordered by
 /// (file, line), applying [`general_hits`] outside [`SANCTIONED_FILES`] and
-/// [`sanctioned_hits`] inside them - the whole-tree twin of the diff-scoped `no-os-kill`
-/// gate (spec 78, THE AUDIT TEST).
+/// [`sanctioned_hits`] inside them, and flagging the Windows process-termination call in every
+/// file but [`REAPER`] - the whole-tree twin of the diff-scoped `no-os-kill` gate (spec 78, THE
+/// AUDIT TEST).
 fn scan_tree(root: &Path) -> Vec<Finding> {
     let mut files = Vec::new();
     for top in ["src", "crates", "tests"] {
         collect_rs_files(&root.join(top), &mut files);
     }
+    let windows_termination = windows_termination_open();
     let mut findings = Vec::new();
     for path in &files {
         let rel = path
@@ -300,11 +314,14 @@ fn scan_tree(root: &Path) -> Vec<Finding> {
             continue;
         };
         for (i, line) in content.lines().enumerate() {
-            let hits = if sanctioned {
+            let mut hits = if sanctioned {
                 sanctioned_hits(line)
             } else {
                 general_hits(line)
             };
+            if rel != REAPER && line.contains(&windows_termination) {
+                hits.push("Windows process-termination call outside reap.rs");
+            }
             for shape in hits {
                 findings.push(Finding {
                     file: rel.clone(),

@@ -338,7 +338,8 @@ fn signal_descendant_if_unchanged(
 }
 
 /// The two ways the reaper ends a process: [`Signal::Term`] asks it to exit, and
-/// [`Signal::Hard`] ends it without asking.
+/// [`Signal::Hard`] ends it without asking. Windows has no request to exit that an arbitrary
+/// process can catch, so there both end the process at once.
 #[derive(Clone, Copy)]
 enum Signal {
     /// Ask the process to exit (`SIGTERM` on unix).
@@ -349,8 +350,10 @@ enum Signal {
 
 /// Send `signal` to `pid` - the reaper's ONE sanctioned signalling call (the `no-os-kill`
 /// gate, spec 78, excludes only this function and `tests/common/mod.rs::terminate_pid` from
-/// its ban on shelling out to `kill`/`pkill`/`killall` or calling a signal API directly): on
-/// unix the internal rustix syscall, on any other OS nothing. `pid > 1` is an EXPLICIT guard
+/// its ban on shelling out to `kill`/`pkill`/`killall` or calling a signal API directly, and
+/// this function alone from its ban on the Windows process-termination call): on unix the
+/// internal rustix syscall, on Windows the process opened for termination and ended with exit
+/// code 1, on any other OS nothing. `pid > 1` is an EXPLICIT guard
 /// here too (belt-and-braces alongside [`is_signal_eligible`]'s own check, since the pinned
 /// rustix's `Pid::from_raw` accepts negative raw values and rejects only zero). Best-effort:
 /// ESRCH (the process already exited) or any other failure (permission, ...) is silently
@@ -374,6 +377,24 @@ fn send_signal(signal: Signal, pid: u32) {
                 Signal::Hard => rustix::process::Signal::KILL,
             };
             let _ = rustix::process::kill_process(rpid, signal);
+        }
+        target_os = "windows" => {
+            use windows_sys::Win32::Foundation::{CloseHandle, FALSE};
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, TerminateProcess, PROCESS_TERMINATE,
+            };
+            // Both signals end the process: see [`Signal`].
+            let _ = signal;
+            // SAFETY: the call takes no pointer and answers a null handle on failure.
+            let handle = unsafe { OpenProcess(PROCESS_TERMINATE, FALSE, pid) };
+            if handle.is_null() {
+                return;
+            }
+            // SAFETY: the handle was opened above with termination access, and is closed once.
+            unsafe {
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+            }
         }
         _ => {
             let _ = signal;

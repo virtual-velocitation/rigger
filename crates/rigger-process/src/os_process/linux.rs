@@ -5,6 +5,8 @@
 
 use std::path::{Path, PathBuf};
 
+pub(super) use super::scan_holders as holders;
+
 /// The `/proc` directory of process `pid`.
 fn proc_of(pid: u32) -> PathBuf {
     Path::new("/proc").join(pid.to_string())
