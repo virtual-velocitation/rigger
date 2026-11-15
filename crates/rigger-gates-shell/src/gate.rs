@@ -725,6 +725,7 @@ fn cap_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subprocess::is_executable_file;
     use crate::test_support::{
         build_declaring, wait_until_for, DECLARED_BJL, REFUSED_DECLARATIONS,
     };
@@ -1313,35 +1314,67 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             wait_until_for(400, || started.exists()),
             "the gate command must start and touch its marker"
         );
-        {
-            use fs2::FileExt;
-            let probe = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&guard_path)
-                .expect("open guard for probe");
-            assert!(
-                probe.try_lock_exclusive().is_err(),
-                "a running shared-cache gate build must hold the guard SHARED, blocking an \
-                 exclusive probe"
-            );
-        }
+        assert!(
+            try_exclusive_lock(&guard_path).is_err(),
+            "a running shared-cache gate build must hold the guard SHARED, blocking an \
+             exclusive probe"
+        );
         let res = handle.join().expect("gate thread must not panic").unwrap();
         assert!(res.pass, "the gate command must pass: {res:?}");
-        {
-            use fs2::FileExt;
-            let probe = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&guard_path)
-                .expect("open guard for probe");
-            assert!(
-                probe.try_lock_exclusive().is_ok(),
-                "once the gate build exits its shared hold must be released"
-            );
-        }
+        assert!(
+            try_exclusive_lock(&guard_path).is_ok(),
+            "once the gate build exits its shared hold must be released"
+        );
+    }
+
+    /// An exclusive try-lock on the guard at `path` through a second open of it, as
+    /// `rigger reset --build-cache` takes one: `Ok` when no process holds the guard, else the
+    /// refusal's OS error code. The lock, when taken, is released as the open closes.
+    fn try_exclusive_lock(path: &std::path::Path) -> Result<(), Option<i32>> {
+        let guard = open_build_cache_guard(path).expect("a second open of the guard");
+        fs2::FileExt::try_lock_exclusive(&guard).map_err(|e| e.raw_os_error())
+    }
+
+    /// Spec 125 criterion 10 (THE SHELL AND THE LOCK ARE PORTABLE): the shared lock a guarded
+    /// gate takes belongs to every process its command starts, not to the gate's run alone. A
+    /// command that backgrounds a child with its stdout and stderr sent away from the gate's
+    /// pipes returns at once, and the child still holds the guard: an exclusive try-lock is
+    /// refused after the run returns while the child lives, and taken once the child exits.
+    /// The child waits on a marker the test removes, bounded so it never outlives the test.
+    #[cfg(unix)]
+    #[test]
+    fn a_guarded_gates_background_child_holds_the_shared_lock_until_it_exits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guard = dir.path().join("cargo-target.lock");
+        let hold = dir.path().join("hold");
+        std::fs::write(&hold, b"").expect("write the hold marker");
+        let res = ExecRunner
+            .run(
+                &gate_cmd(&format!(
+                    "(i=0; while [ -e '{}' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); \
+                     done) >/dev/null 2>&1 &",
+                    hold.display()
+                )),
+                "",
+                "",
+                "",
+                "",
+                guard.to_str().unwrap(),
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .expect("a usable guard runs the gate");
+        assert_eq!(
+            (res.pass, try_exclusive_lock(&guard)),
+            (true, Err(fs2::lock_contended_error().raw_os_error())),
+            "the gate's run has returned and its background child still holds the guard"
+        );
+        std::fs::remove_file(&hold).expect("release the background child");
+        assert!(
+            wait_until_for(400, || try_exclusive_lock(&guard) == Ok(())),
+            "once the background child exits the guard is free"
+        );
     }
 
     #[test]
@@ -1365,7 +1398,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     /// the run, the OS error the guard's probe must meet (`None` for a usable guard). A usable
     /// guard runs the command guarded, creating the guard file and building into the shared
     /// cache; an unusable one returns [`ProbeFault`] naming the guard and that error, and runs
-    /// and builds nothing.
+    /// and builds nothing, and [`hold_shared_lock`] on it fails with that fault's message.
     fn assert_guard_probe(
         lay_out: fn(&std::path::Path) -> std::path::PathBuf,
         os_error: Option<fn(&std::path::Path) -> std::io::Error>,
@@ -1410,6 +1443,18 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                     (false, false),
                     "a faulted probe runs no command and leaves no build directory"
                 );
+                assert_eq!(
+                    hold_shared_lock(guard_str)
+                        .map(drop)
+                        .map_err(|fault| fault.to_string()),
+                    Err(format!(
+                        "build cache guard {guard_str:?} failed its probe: {}; fix the path or \
+                         set the project's scratch root to a filesystem with advisory locks, \
+                         then relaunch",
+                        os_error.expect("an unusable guard's OS error")(&guard)
+                    )),
+                    "a guard that cannot be locked fails with the probe fault's message"
+                );
             }
             None => {
                 assert_eq!(
@@ -1421,6 +1466,13 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                     (ran_and_built, guard.is_file()),
                     ((true, true), true),
                     "a usable guard is created and the command builds into the shared cache"
+                );
+                assert_eq!(
+                    hold_shared_lock(guard_str)
+                        .map(drop)
+                        .map_err(|fault| fault.to_string()),
+                    Ok(()),
+                    "a usable guard is locked"
                 );
             }
         }

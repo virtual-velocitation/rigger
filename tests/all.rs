@@ -172,6 +172,7 @@ mod one_path_is_one_event_periphery;
 mod one_shot_reads_periphery;
 mod os_home_boundary;
 mod os_process_boundary;
+mod os_shell_boundary;
 mod parallel_ordered_emit;
 mod plan_critique_spec_defect_stop_periphery;
 mod plan_stage_commit_landing_periphery;

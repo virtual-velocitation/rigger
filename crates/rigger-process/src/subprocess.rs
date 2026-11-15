@@ -191,4 +191,53 @@ mod tests {
             );
         }
     }
+
+    /// `pathext_candidates` is the Windows by-name rule on every host: a name with no extension
+    /// becomes the name with each `PATHEXT` extension, in order, an empty entry skipped and the
+    /// bare name never among them; a name carrying an extension is the name alone.
+    #[test]
+    fn pathext_candidates_extend_a_bare_name_by_each_listed_extension() {
+        let rows: [(&str, &str, &[&str]); 5] = [
+            ("git", ".COM;.EXE", &["git.COM", "git.EXE"]),
+            ("git.exe", ".COM;.EXE", &["git.exe"]),
+            ("git", ";.COM;;.EXE;", &["git.COM", "git.EXE"]),
+            ("git", "", &[]),
+            ("git.exe", "", &["git.exe"]),
+        ];
+        for (name, pathext, candidates) in rows {
+            assert_eq!(
+                pathext_candidates(name, pathext),
+                candidates,
+                "{name:?} over {pathext:?}"
+            );
+        }
+    }
+
+    /// On unix, `inherit_on_exec` hands an open file to the command it marks, and only to it:
+    /// the marked shell writes through the file's descriptor number, and an unmarked one finds
+    /// that descriptor closed, since every file this process opens closes on exec.
+    #[cfg(unix)]
+    #[test]
+    fn inherit_on_exec_hands_the_file_to_the_marked_command_only() {
+        use std::os::fd::AsRawFd;
+        for (inherit, outcome) in [(true, (true, "hi")), (false, (false, ""))] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("held");
+            let file = std::fs::File::create(&path).expect("create the held file");
+            let mut cmd = shell_command(
+                &format!("printf hi >> /dev/fd/{}", file.as_raw_fd()),
+                dir.path(),
+            );
+            if inherit {
+                inherit_on_exec(&mut cmd, &file);
+            }
+            let ran = cmd.output().expect("run the shell").status.success();
+            let written = std::fs::read_to_string(&path).expect("read the held file");
+            assert_eq!(
+                (ran, written.as_str()),
+                outcome,
+                "marked for inheritance: {inherit}"
+            );
+        }
+    }
 }

@@ -10,9 +10,9 @@
 //! and the token readers the boundary audit reads its tokens with ([`ref_punct`], [`ref_token`],
 //! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
 //! [`imported_names`]). And the boundary scans' one rule, [`literal_outside`], with the fixture
-//! reader [`flagged_by`] and its empty expectation [`none`], which `tests/os_process_boundary.rs`
-//! and `tests/os_home_boundary.rs` share. Each suite uses the subset it needs (hence the
-//! module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
+//! reader [`flagged_by`] and its empty expectation [`none`], which `tests/os_process_boundary.rs`,
+//! `tests/os_shell_boundary.rs` and `tests/os_home_boundary.rs` share. Each suite uses the subset
+//! it needs (hence the module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
 
