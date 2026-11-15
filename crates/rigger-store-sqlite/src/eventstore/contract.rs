@@ -67,7 +67,7 @@ fn group_head(position: u64, t: &str, group: &str, name: &str, value: &str) -> G
 /// named types whose data holds the record id as its top-level `"id"` string - every restatement,
 /// never an event of another type or stream carrying the id, never an event whose `"id"` is not a
 /// string or whose data is not a JSON object, and nothing for an id no event holds or for no
-/// type named.
+/// type named. A repeated `"id"` key holds its first value.
 fn a_record_read_hands_back_the_events_of_its_types_holding_the_id(store: &dyn EventStore) {
     let at = |t: &str, data: &str| Event::new(t, data.as_bytes().to_vec());
     store
@@ -83,6 +83,7 @@ fn a_record_read_hands_back_the_events_of_its_types_holding_the_id(store: &dyn E
                 at("Decision", r#"["r-1"]"#),
                 at("Finding", r#"{"n":6,"id":"r-1"}"#),
                 at("Decision", r#"{"id":"r-1","n":7}"#),
+                at("Decision", r#"{"id":"r-3","id":"r-1","n":8}"#),
             ],
         )
         .expect("the fixture stream appends");
@@ -90,7 +91,7 @@ fn a_record_read_hands_back_the_events_of_its_types_holding_the_id(store: &dyn E
         .append(
             "c-record-sibling",
             ExpectedRevision::NoStream,
-            &[at("Decision", r#"{"id":"r-1","n":8}"#)],
+            &[at("Decision", r#"{"id":"r-1","n":9}"#)],
         )
         .expect("the sibling stream appends");
     let read = |types: &[&str], id: &str| -> Vec<i64> {
@@ -104,7 +105,7 @@ fn a_record_read_hands_back_the_events_of_its_types_holding_the_id(store: &dyn E
             })
             .collect()
     };
-    let rows: [(&[&str], &str, &[i64], &str); 5] = [
+    let rows: [(&[&str], &str, &[i64], &str); 6] = [
         (
             &["Decision", "Finding"],
             "r-1",
@@ -113,6 +114,12 @@ fn a_record_read_hands_back_the_events_of_its_types_holding_the_id(store: &dyn E
         ),
         (&["Decision"], "r-1", &[0, 7], "only the named types"),
         (&["Finding"], "r-2", &[1], "each id its own records"),
+        (
+            &["Decision"],
+            "r-3",
+            &[8],
+            "a repeated id key holds its first value",
+        ),
         (
             &["Decision", "Finding"],
             "r-9",

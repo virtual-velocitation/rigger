@@ -945,9 +945,13 @@ mod record_id_tests {
 
     #[test]
     fn a_record_id_is_the_id_string_of_an_object_and_nothing_else() {
-        let rows: [(&str, Option<&str>); 7] = [
+        let rows: [(&str, Option<&str>); 10] = [
             (r#"{"id":"r-1","n":0}"#, Some("r-1")),
             (r#"{"n":6,"id":"r-1"}"#, Some("r-1")),
+            // A repeated key reads its first value, as SQLite's JSON path does.
+            (r#"{"id":"r-1","id":"r-2"}"#, Some("r-1")),
+            (r#"{"id":1,"id":"r-2"}"#, None),
+            (r#"{"\u0069d":"r-1"}"#, Some("r-1")),
             (r#"["r-1"]"#, None),
             (r#"{"id":1}"#, None),
             (r#"{"n":1}"#, None),
