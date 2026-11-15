@@ -48904,6 +48904,38 @@ mod tests {
         );
     }
 
+    /// The plan-critique adversary spawns only after the planner's wave returned and its
+    /// proposals were harvested: under a driver whose planner answers in the step, the
+    /// adversary follows the planner and critiques the units the planner proposed.
+    #[test]
+    fn the_plan_critique_adversary_spawns_only_after_the_planners_wave_is_harvested() {
+        let driver = Stub {
+            emits_by_agent: HashMap::from([("planner".to_string(), widget_split())]),
+            output_by_agent: HashMap::from([
+                ("planner".to_string(), "proposed the DAG".to_string()),
+                ("adversary".to_string(), "reviewed the DAG".to_string()),
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            ..Stub::new()
+        };
+        critique_step(&Store::open(":memory:").unwrap(), &driver);
+        let order = driver.call_order.lock().unwrap().clone();
+        let at = |agent: &str| order.iter().position(|a| a == agent);
+        assert!(
+            matches!((at("planner"), at("adversary")), (Some(p), Some(a)) if p < a),
+            "the planner spawns before the adversary; order: {order:?}"
+        );
+        let critique = driver
+            .prompts_for("adversary")
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            critique.contains("`u-a`") && critique.contains("`u-b`"),
+            "the adversary critiques the units the planner proposed; got:\n{critique}"
+        );
+    }
+
     #[test]
     fn a_rule_7_or_8_defect_rejects_then_releases_on_the_revision() {
         // The gate's REAL value: a cross-unit ownership (rule 7) or open-disposition (rule
