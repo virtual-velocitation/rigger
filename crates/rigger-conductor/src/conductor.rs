@@ -13330,6 +13330,21 @@ impl RunCtx<'_> {
                 terminal.insert(id);
             }
         }
+        // THE DAG IS RECORDED (spec 126, criterion 2): this is the one place the DAG's membership
+        // changes once the run built it (the template's removal and the baselines come before the
+        // first call; the supersede removal and every added proposal happen above), so the units
+        // it now holds are recorded here whenever they differ from the latest record in the slice
+        // read at the start. Every key of `stages` is a stage the conductor starts as a unit, so
+        // the record is what the run owes ([`ledger::RunState::owed`]). Comparing with the log
+        // keeps a repeated harvest, a replay and a resume over an unchanged DAG from appending,
+        // and lets a process that died before the emit leave its record to the next one's
+        // catch-up harvest; an empty DAG equals the empty set no record means.
+        let recorded = ledger::recorded_dag(&events).map_err(|e| Error(e.to_string()))?;
+        if stages.keys().ne(recorded.iter()) {
+            let body = serde_json::to_value(ledger::DagRecorded::of(stages.keys()))
+                .map_err(|e| Error(e.to_string()))?;
+            self.emit(ledger::TYPE_DAG_RECORDED, body)?;
+        }
         Ok(())
     }
 
@@ -19881,7 +19896,7 @@ mod tests {
             st.read_stream(STREAM, 0, Direction::Forward)
                 .unwrap()
                 .into_iter()
-                .filter(|e| e.type_ == "DagRecorded")
+                .filter(|e| e.type_ == ledger::TYPE_DAG_RECORDED)
                 .map(|e| {
                     let body: Value = serde_json::from_slice(&e.data).unwrap();
                     serde_json::from_value(body["units"].clone()).unwrap()
