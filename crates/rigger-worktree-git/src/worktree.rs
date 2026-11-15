@@ -2736,22 +2736,23 @@ pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 /// `env_override` (the `RIGGER_TMPDIR` environment variable, machine-local placement) >
 /// `configured` (`defaults.workdir` from workflow.yml, versioned placement) > the
 /// cache-home default (spec 89, criterion 2 - see [`cache_scratch_root_from`]). A leading
-/// `~/` expands to $HOME, and an override or configured root that is still relative resolves
-/// against `repo`. NEVER the OS temp dir: worktrees carry multi-gigabyte build
-/// dirs, and on the common small-root/large-home partition layout the OS disk is the one
-/// that cannot absorb them (design-intent Gap 14). The resolved dir is created if absent.
+/// `~/` expands to the home directory ([`rigger_process::home_dir`]), and an override or
+/// configured root that is still relative resolves against `repo`. NEVER the OS temp dir:
+/// worktrees carry multi-gigabyte build dirs, and on the common small-root/large-home
+/// partition layout the OS disk is the one that cannot absorb them (design-intent Gap 14). The
+/// resolved dir is created if absent.
 pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
     scratch_root_with(
         repo,
         configured,
         env_override,
         std::env::var_os(crate::driver::replay::CACHE_HOME_ENV),
-        std::env::var_os(crate::driver::replay::HOME_ENV),
+        rigger_process::home_dir(),
     )
 }
 
-/// [`scratch_root`] with the caller's own `XDG_CACHE_HOME`/`HOME` values as plain arguments
-/// (the shape [`cache_scratch_root_from`] already has), so a unit test drives the whole
+/// [`scratch_root`] with the caller's own `XDG_CACHE_HOME` value and home directory as plain
+/// arguments (the shape [`cache_scratch_root_from`] already has), so a unit test drives the whole
 /// create-and-sweep path against a throwaway cache home without touching the process
 /// environment.
 ///
@@ -2835,22 +2836,23 @@ pub fn sweep_orphan_scratch_roots(cache_dir: &std::path::Path) -> usize {
 /// `TMPDIR` (or the `rigger_scratch` tool's container) walk up into the REAL repo's
 /// `.rigger/events.db` - either binding a store it should not have, or (spec 89 Problem 4)
 /// having a running spec's live unit worktrees swept as a stray fixture's. A repo-less
-/// caller or a homeless environment (neither `XDG_CACHE_HOME` nor `HOME` set) has nothing
-/// to key a cache path on and keeps the OLD repo-nested degrade - the one case this
+/// caller or a homeless environment (neither `XDG_CACHE_HOME` nor a home directory known) has
+/// nothing to key a cache path on and keeps the OLD repo-nested degrade - the one case this
 /// criterion leaves alone, since a real spawn (this criterion's actual subject) always has
-/// both a real repo and a real machine `HOME`.
+/// both a real repo and a real machine home directory.
 pub fn scratch_root_path(repo: &str, configured: &str, env_override: Option<&str>) -> String {
     scratch_root_path_with(
         repo,
         configured,
         env_override,
         std::env::var_os(crate::driver::replay::CACHE_HOME_ENV),
-        std::env::var_os(crate::driver::replay::HOME_ENV),
+        rigger_process::home_dir(),
     )
 }
 
-/// [`scratch_root_path`] with the caller's own `XDG_CACHE_HOME`/`HOME` values as plain
-/// arguments - the pure resolver both [`scratch_root_path`] and [`scratch_root_with`] share.
+/// [`scratch_root_path`] with the caller's own `XDG_CACHE_HOME` value and home directory as
+/// plain arguments - the pure resolver both [`scratch_root_path`] and [`scratch_root_with`]
+/// share.
 pub fn scratch_root_path_with(
     repo: &str,
     configured: &str,
@@ -2887,8 +2889,8 @@ pub fn scratch_root_path_with(
     }
 }
 
-/// `path` with a leading `~/` expanded to `home` (the caller's `HOME`), or as given when it has
-/// none or `home` is absent or not UTF-8.
+/// `path` with a leading `~/` expanded to `home` (the caller's home directory), or as given when
+/// it has none or `home` is absent or not UTF-8.
 fn expand_home(path: String, home: Option<&std::ffi::OsStr>) -> String {
     match (
         path.strip_prefix("~/"),
@@ -2900,14 +2902,14 @@ fn expand_home(path: String, home: Option<&std::ffi::OsStr>) -> String {
 }
 
 /// The cache-home scratch root for `repo` (spec 89, criterion 2): `<cache-home>/rigger/
-/// <encoded repo>`. `xdg`/`home` are the caller's own `XDG_CACHE_HOME`/`HOME` values,
+/// <encoded repo>`. `xdg`/`home` are the caller's own `XDG_CACHE_HOME` value and home directory,
 /// taken as plain arguments rather than read from `std::env` internally - mirroring
 /// [`crate::driver::replay::cache_home_from`]'s own shape - so this stays a PURE function a
 /// unit test drives directly with explicit values, never by mutating (and so racing
 /// concurrently-running tests over) the real process environment.
 ///
 /// Reuses TWO existing single authorities rather than inventing a THIRD, narrower identity
-/// scheme: [`crate::driver::replay::cache_home_from`] (the exact XDG-then-`$HOME/.cache`
+/// scheme: [`crate::driver::replay::cache_home_from`] (the exact XDG-then-`<home>/.cache`
 /// resolution spec 77 already established for the agent scratch root) supplies the
 /// cache home, and [`crate::liveness::marker_filename`] (spec 77's own injective,
 /// filesystem-safe byte-hex encoding, already the run-id/spawn-id authority

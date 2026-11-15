@@ -15,6 +15,9 @@
 //! entry per call), and - the headline claim - a single courier call revives an entry the
 //! registry's own idle-window judgment (`is_stale`) already considers aged out, with no driver
 //! and no heartbeat thread involved at all.
+//!
+//! For spec 125's one home read (THE HOME), it also proves which state home a courier's entry
+//! lands under: `XDG_STATE_HOME` when set, the home read's `$HOME/.local/state` when not.
 
 use std::time::Duration;
 
@@ -216,6 +219,58 @@ fn a_homeless_environment_never_fails_a_courier_command() {
         "the courier's own output is unaffected by the registry's degrade: {}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+/// Spec 125 criterion 11 (THE HOME): given `HOME` set and `XDG_STATE_HOME` set when
+/// `xdg_state_home_set`, removed otherwise, when one courier call (`progress`) runs, then its
+/// registry entry lands under the state home that wins - `XDG_STATE_HOME` when set, the home
+/// read's `$HOME/.local/state` when not - naming this project's root, and nothing lands under
+/// the other.
+#[cfg(unix)]
+fn assert_a_courier_registers_under_the_winning_state_home(xdg_state_home_set: bool) {
+    let project = courier_project();
+    let root = project.path();
+    let home = tempfile::tempdir().expect("a temp HOME");
+    let xdg = tempfile::tempdir().expect("a temp XDG_STATE_HOME");
+    let args = ["progress", "u1/impl#0", "did a thing"];
+    let mut cmd = common::cli::rigger_command(root, &args, &[], xdg.path());
+    cmd.env("HOME", home.path());
+    if !xdg_state_home_set {
+        cmd.env_remove("XDG_STATE_HOME");
+    }
+    let out = cmd.output().expect("the rigger binary runs");
+    assert_ok(&out, &args);
+    let roots = |state_home: &std::path::Path| -> Vec<String> {
+        registry_entries(state_home)
+            .into_iter()
+            .map(|(_, inst)| inst.root)
+            .collect()
+    };
+    let registered = vec![root.to_str().unwrap().to_string()];
+    let (under_xdg, under_home) = if xdg_state_home_set {
+        (registered, Vec::new())
+    } else {
+        (Vec::new(), registered)
+    };
+    assert_eq!(
+        (
+            roots(xdg.path()),
+            roots(&home.path().join(".local").join("state"))
+        ),
+        (under_xdg, under_home),
+        "the courier registers under the winning state home and nowhere else"
+    );
+}
+
+rigger::test_cases! {
+    /// `XDG_STATE_HOME` removed: the home read's `$HOME/.local/state` holds the entry.
+    #[cfg(unix)]
+    a_courier_registers_under_home_dot_local_state_when_xdg_state_home_is_removed:
+        assert_a_courier_registers_under_the_winning_state_home(false);
+    /// `XDG_STATE_HOME` set beside `HOME`: the XDG state home wins.
+    #[cfg(unix)]
+    a_courier_registers_under_xdg_state_home_over_home_dot_local_state:
+        assert_a_courier_registers_under_the_winning_state_home(true);
 }
 
 /// Regression pin for `sdet-u62c4r3-kurrentdb-leak-not-blast-radius-audited` /
