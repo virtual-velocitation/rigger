@@ -424,7 +424,10 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
         return None;
     }
     if !(check.in_main_checkout)() {
-        return None;
+        return check
+            .released
+            .then(|| unrelaunched_release(&path))
+            .flatten();
     }
     let lock = HeldLock::try_take(&path).ok()??;
     let text = lock.contents().ok()?;
@@ -528,6 +531,19 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             }
         },
     )
+}
+
+/// What a `rigger release` invoked from a linked worktree says of the dead driver whose record
+/// the step lock at `path` holds, read without the lock since nothing here changes it: that its
+/// run is released and what relaunches it, since no check from a linked worktree relaunches.
+fn unrelaunched_release(path: &Path) -> Option<String> {
+    let record = serde_json::from_str::<DriverRecord>(&std::fs::read_to_string(path).ok()?).ok()?;
+    Some(format!(
+        "rigger: run {} is released, and no driver is alive for it; this is a linked worktree, \
+         so rigger relaunched nothing: `rigger status` or `rigger release` from the main \
+         checkout relaunches it",
+        record.run
+    ))
 }
 
 /// What `rigger status` says of a relaunched driver that ended before its run did: the file its

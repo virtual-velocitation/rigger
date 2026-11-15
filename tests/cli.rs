@@ -15449,7 +15449,8 @@ fn relaunch_line(record: &str) -> String {
 
 /// What a row of [`only_the_checking_verbs_relaunch_a_run_whose_driver_died`] invokes over: the
 /// dead driver's record as it stands, or that record with the run held, with another binary
-/// recorded, with a recorded binary since removed, or invoked from a linked worktree.
+/// recorded, with a recorded binary since removed, or invoked from a linked worktree, the run
+/// held or not.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Over {
     Dead,
@@ -15457,6 +15458,7 @@ enum Over {
     LaneBinary,
     GoneBinary,
     LinkedWorktree,
+    HeldLinkedWorktree,
 }
 
 /// A RUN SURVIVES ITS DRIVER, BY AN ALLOW-LIST: after a run's driver dies mid-unit, only the
@@ -15544,6 +15546,18 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
         (&["status"], Over::LinkedWorktree, false, None),
         (&["prime"], Over::LinkedWorktree, false, None),
         (
+            &["release"],
+            Over::HeldLinkedWorktree,
+            false,
+            Some("`rigger status` or `rigger release` from the main checkout relaunches it"),
+        ),
+        (
+            &["resume-unit", "no-such-unit"],
+            Over::LinkedWorktree,
+            false,
+            None,
+        ),
+        (
             &["status"],
             Over::GoneBinary,
             false,
@@ -15554,10 +15568,10 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
         let (given, cwd) = match over {
             Over::LaneBinary => (with_bin(&lane_bin), root),
             Over::GoneBinary => (with_bin(&gone_bin), root),
-            Over::LinkedWorktree => (record.clone(), linked.as_path()),
+            Over::LinkedWorktree | Over::HeldLinkedWorktree => (record.clone(), linked.as_path()),
             Over::Dead | Over::Held => (record.clone(), root),
         };
-        if over == Over::Held {
+        if matches!(over, Over::Held | Over::HeldLinkedWorktree) {
             hold_the_run(root);
         }
         let case = format!("rigger {args:?} over {over:?}");
