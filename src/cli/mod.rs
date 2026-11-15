@@ -4268,15 +4268,18 @@ fn is_build_cache_tombstone(name: &str) -> bool {
 /// between call sites (spec 77 Global Constraint 3: fail-safe deletion only, skip anything
 /// a liveness guard claims).
 ///
-/// EXCLUSION: a reader-writer flock on [`rigger::worktree::shared_build_cache_guard_path`] of
-/// `scratch_root`, acquired EXCLUSIVE and NON-BLOCKING here. Every rigger-launched shared-cache build
-/// ([`rigger::gate`]'s `ExecRunner::run`, via an exec-replacing `flock -s -F` wrapper around
-/// the gate command itself) holds the SAME guard SHARED for as long as its cargo/rustc
-/// process tree is alive, so this can only succeed when no such build is in flight - on
-/// contention it returns `Ok(BuildCacheReclaim::Busy)` immediately, never queuing (spec 77
-/// Design: "never waiting, so no build can queue behind the delete" - a prior, now-
-/// superseded design proved a queued waiter can only ever resume into a hole, since flock
-/// never gates a concurrent unlink).
+/// EXCLUSION: a reader-writer advisory lock on
+/// [`rigger::worktree::shared_build_cache_guard_path`] of `scratch_root`, acquired EXCLUSIVE and
+/// NON-BLOCKING here. Every rigger-launched shared-cache build ([`rigger::gate`]'s
+/// `ExecRunner::run`) holds the SAME guard SHARED: the in-process lock
+/// [`rigger::gate::hold_shared_lock`] takes, which the gate command's processes inherit through
+/// [`rigger::subprocess::inherit_on_exec`]. On unix it lives while any process the gate started
+/// keeps the inherited descriptor, so this can only succeed when no such build is in flight; on
+/// Windows it lives as long as the gate's run, and a child the gate leaves running is left to
+/// the holder check [`reclaim_dead_footprint`] runs before any removal. On contention it returns
+/// `Ok(BuildCacheReclaim::Busy)` immediately, never queuing (spec 77 Design: "never waiting, so
+/// no build can queue behind the delete" - a prior, now-superseded design proved a queued waiter
+/// can only ever resume into a hole, since an advisory lock never gates a concurrent unlink).
 ///
 /// RECLAIM: rename-then-delete, not delete-in-place - a successful rename onto a
 /// process-unique tombstone name ([`build_cache_tombstone_path`]) IS the reclaim (cargo
@@ -4309,7 +4312,7 @@ fn reclaim_shared_build_cache(
     let guard_path =
         rigger::worktree::shared_build_cache_guard_path(&scratch_root.to_string_lossy());
     let guard = rigger::gate::open_build_cache_guard(Path::new(&guard_path))?;
-    // Fully-qualified, matching `gate::probe_build_cache_guard`'s own reasoning: std's
+    // Fully-qualified, matching `gate::hold_shared_lock`'s own reasoning: std's
     // more recently stabilized `File::try_lock`/`lock`/`unlock` share these exact names with
     // `fs2::FileExt`, and a plain method call would silently prefer the std inherent method
     // (leaving this crate's deliberate `fs2` choice unused) rather than genuinely exercising it.
@@ -7798,8 +7801,8 @@ mod tests {
     fn reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard() {
         // spec 77 Design: the exclusion is EXCLUSIVE and NON-BLOCKING - "never waiting, so
         // no build can queue behind the delete". Simulate a rigger-launched shared-cache
-        // build by holding the SAME guard path SHARED (as a build's `flock -s` wrapper does,
-        // via `gate::ExecRunner::run`) before calling the reclaim.
+        // build by holding the SAME guard path SHARED (as `gate::ExecRunner::run` does through
+        // `gate::hold_shared_lock`) before calling the reclaim.
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cargo-target");
         write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);

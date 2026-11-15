@@ -98,6 +98,23 @@ pub fn committed_project(workflow: &str) -> (tempfile::TempDir, tempfile::TempDi
     (root, short_scratch())
 }
 
+/// The workflow block declaring the one gate `g`, which runs `run`, under no build budget, so a
+/// gate run takes no slot from a machine-wide pool.
+pub fn one_gate_workflow(run: &str) -> String {
+    format!("build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"{run}\"\n    kind: core\n")
+}
+
+/// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
+/// (stdout, stderr, success).
+pub fn rigger_in(root: &Path, scratch: &Path, args: &[&str]) -> (String, String, bool) {
+    let scratch = scratch.to_str().unwrap();
+    run_rigger_envs(
+        root,
+        args,
+        &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
+    )
+}
+
 /// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
 /// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
 /// only about a hundred bytes, which a long `TMPDIR` would exceed.

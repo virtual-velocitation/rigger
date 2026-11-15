@@ -18,13 +18,20 @@
 //!     (spec 121 criterion 19); and the same fault at the operator's surface - a `rigger run`
 //!     whose deferred gate's guard probe fails exits non-zero printing that fault as the
 //!     conductor's error, with no deferred verdict, nothing charged and the inline verdict
-//!     kept, and the next run after the guard is fixed finishes (spec 121 criterion 19).
+//!     kept, and the next run after the guard is fixed finishes (spec 121 criterion 19); and
+//!     the lock's lifetime between the real producer and the real consumer - after
+//!     `rigger gate` has run and exited, a gate command's background child, its output sent
+//!     away from the gate's pipes, keeps the guard and so keeps `rigger reset --build-cache`
+//!     refused with the cache untouched until it exits, and the reset reclaims the cache once
+//!     it has (spec 125 criterion 10).
 //!   - NOT OWNED: the exclusion PRIMITIVE's own unit-level contract
 //!     (`reclaim_shared_build_cache`'s rename/idempotent-zero/busy/prompt-release behavior) -
 //!     pinned in-crate beside its definition in `src/cli/mod.rs`; the PRODUCER half's OWN
-//!     internal shape (the flock-wrap construction, the guard probe's fault decision, holding
-//!     the guard SHARED for a genuinely guarded cargo invocation) - pinned in
-//!     `crates/rigger-gates-shell/src/gate.rs` and `crates/rigger-conductor/src/conductor.rs`;
+//!     internal shape (how `gate::hold_shared_lock` takes the shared lock and
+//!     `subprocess::inherit_on_exec` hands its descriptor across exec, the guard probe's fault
+//!     decision, holding the guard SHARED for a genuinely guarded cargo invocation) - pinned in
+//!     `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-process/src/subprocess.rs` and
+//!     `crates/rigger-conductor/src/conductor.rs`;
 //!     the probe fault's literal message - pinned in `crates/rigger-conductor/src/conductor.rs`'s
 //!     `assert_probe_fault_halts_the_step`, which this file's run test prints through; and
 //!     `rigger validate`'s FOOTPRINT ACCOUNTING category for this cache - spec 77 criterion 5's
@@ -313,14 +320,14 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     // driver's own liveness heartbeat exists around) must never let `reset --build-cache`
     // reclaim a cache a still-running, now-orphaned build is mid-write into.
     //
-    // Simulates the FIXED `gate::ExecRunner::run` command shape end to end with real
-    // processes (mirroring this file's own `..._refuses_rather_than_waits...` test's
+    // Simulates the lifetime of the shared lock `gate::ExecRunner::run` takes end to end with
+    // real processes (mirroring this file's own `..._refuses_rather_than_waits...` test's
     // simulate-via-real-`flock` style, never re-invoking Rust code cross-process): an
     // "orchestrator" (`sh -c "... & wait"`, spawned and owned by THIS test exactly the way
     // the real rigger process is spawned and owned by whatever launches it) backgrounds
-    // `flock -s -F <guard> sh -c '<script>'` - the exact exec-replacing wrapper
-    // `ExecRunner::run` now uses (spec 78's no-os-kill audit bans the bare `--` argv
-    // separator tree-wide, so the wrapper no longer passes one) - then blocks on `wait`,
+    // `flock -s -F <guard> sh -c '<script>'`, whose exec'd shell keeps the locked guard just
+    // as the processes `ExecRunner::run` starts keep the shared lock `gate::hold_shared_lock`
+    // takes, inherited through `subprocess::inherit_on_exec` - then blocks on `wait`,
     // mirroring `Command::output()`'s own blocking wait for its child. `&` guarantees the
     // backgrounded chain is a genuinely separate, already-forked process before the
     // orchestrator ever dies (no shell tail-call exec-replace ambiguity, unlike a bare
@@ -352,10 +359,9 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
             .unwrap_or(false)
     }
 
-    // The simulated "orchestrator": backgrounds the exact `flock -s -F <guard>
-    // sh -c '<script>'` command `ExecRunner::run` now constructs (no `--` separator - spec
-    // 78's no-os-kill audit bans that argv shape tree-wide), then blocks on `wait` for it -
-    // the same spawn-then-block shape `Command::output()` gives the real orchestrator.
+    // The simulated "orchestrator": backgrounds `flock -s -F <guard> sh -c '<script>'`, a gate
+    // command holding the inherited shared lock, then blocks on `wait` for it - the same
+    // spawn-then-block shape `Command::output()` gives the real orchestrator.
     let script = format!(
         "flock -s -F {guard_str} sh -c 'echo $$ > {pidfile_str}; touch {started_str}; \
          sleep 30' & wait"
@@ -421,6 +427,81 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     assert!(
         cache.join("debug").join("a.rlib").exists(),
         "a refused reclaim must leave the cache completely untouched"
+    );
+}
+
+/// Spec 125 criterion 10, THE SHELL AND THE LOCK ARE PORTABLE, through the real producer and the
+/// real consumer: GIVEN a committed project whose gate backgrounds a child with its stdout and
+/// stderr sent away from the gate's pipes, and a populated shared build cache under the project's
+/// scratch root, WHEN an agent runs `rigger gate g` (no driver serves the project, so the gate
+/// runs over the shared cache under its guard) and the binary has exited, THEN the child still
+/// holds the guard: an exclusive try-lock through a second open of it is refused, and
+/// `rigger reset --build-cache` refuses with the cache byte-for-byte untouched; once the child
+/// exits, the try-lock is taken and the reset reclaims the cache's exact bytes. The child waits
+/// on a marker the test removes, bounded so it never outlives the test, and the test removes it
+/// before asserting, so a red run never strands the child on the guard.
+#[cfg(unix)]
+#[test]
+fn a_guarded_gates_background_child_keeps_reset_build_cache_refused_until_it_exits() {
+    use common::cli::{committed_project, one_gate_workflow, rigger_in};
+    use common::fixtures::{background_hold_command, git_out, try_exclusive_lock, wait_until_for};
+
+    let markers = tempfile::tempdir().expect("tempdir for the hold marker");
+    let hold = markers.path().join("hold");
+    std::fs::write(&hold, b"").expect("write the hold marker");
+    let (project, scratch) = committed_project(&one_gate_workflow(&background_hold_command(&hold)));
+    let (root, scratch) = (project.path(), scratch.path());
+    let cache = scratch.join(SHARED_CACHE);
+    write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
+    let guard = scratch.join(CACHE_GUARD);
+    let head = git_out(root, &["rev-parse", "HEAD"]);
+
+    let (gate_out, gate_err, gate_ok) = rigger_in(root, scratch, &["gate", "g"]);
+    let held = try_exclusive_lock(&guard);
+    let (busy_out, busy_err, busy_ok) = rigger_in(root, scratch, &["reset", "--build-cache"]);
+    let busy_bytes = dir_bytes(&cache);
+    std::fs::remove_file(&hold).expect("release the background child");
+    let freed = wait_until_for(400, || try_exclusive_lock(&guard) == Ok(()));
+    let (reset_out, reset_err, reset_ok) = rigger_in(root, scratch, &["reset", "--build-cache"]);
+
+    assert_eq!(
+        (gate_ok, gate_out.lines().next()),
+        (true, Some(format!("PASS gate g on {head}").as_str())),
+        "the gate passes on the committed tree; stderr:\n{gate_err}"
+    );
+    assert_eq!(
+        held,
+        Err(fs2::lock_contended_error().raw_os_error()),
+        "the binary has exited and its gate's background child still holds the guard"
+    );
+    assert_eq!(
+        (
+            busy_ok,
+            busy_out.as_str(),
+            busy_err.lines().last(),
+            busy_bytes
+        ),
+        (
+            false,
+            "",
+            Some(
+                "rigger: reset --build-cache: the shared gate build cache is in use by a \
+                 rigger-launched build (its guard lock is held); refusing rather than waiting - \
+                 retry once it is idle"
+            ),
+            64
+        ),
+        "reset refuses while the child lives and leaves the cache untouched"
+    );
+    assert!(freed, "once the background child exits the guard is free");
+    assert_eq!(
+        (reset_ok, reset_out.as_str(), cache.exists()),
+        (
+            true,
+            "--build-cache: reclaimed 64B (64 byte(s)) from the shared gate build cache\n",
+            false
+        ),
+        "reset reclaims the cache once the child has exited; stderr:\n{reset_err}"
     );
 }
 
