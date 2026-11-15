@@ -304,7 +304,7 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
     assert!(
         validated
             .lines()
-            .any(|l| l == "config valid: 6 agents, 4 stages, 0 gates"),
+            .any(|l| l == "config valid: 7 agents, 4 stages, 0 gates"),
         "stdout:\n{validated}"
     );
     assert!(
@@ -496,7 +496,7 @@ fn init_rerun_on_a_rust_project_writes_back_only_a_deleted_set_file() {
     assert!(
         validated
             .lines()
-            .any(|l| l == "config valid: 6 agents, 4 stages, 5 gates"),
+            .any(|l| l == "config valid: 7 agents, 4 stages, 5 gates"),
         "stdout:\n{validated}"
     );
 }
@@ -600,12 +600,14 @@ fn init_rerun_matching_no_set_does_not_repeat_the_no_set_line() {
 /// The line a fresh scaffold matching no set prints for its agents: the seeds in seed order, the
 /// language-neutral `implementer` among them.
 const NO_SET_AGENTS_LINE: &str = "scaffolded .rigger/agents/{planner.md, implementer.md, \
-                                  architecture-reviewer.md, sdet.md, adversary.md, adjudicator.md}";
+                                  architecture-reviewer.md, sdet.md, sdet-author.md, adversary.md, \
+                                  adjudicator.md}";
 
 /// The line a fresh scaffold from the Rust set prints for its agents: the role seeds in seed
 /// order, then the set's `rust-engineer`.
 const RUST_AGENTS_LINE: &str = "scaffolded .rigger/agents/{planner.md, architecture-reviewer.md, \
-                                sdet.md, adversary.md, adjudicator.md, rust-engineer.md}";
+                                sdet.md, sdet-author.md, adversary.md, adjudicator.md, \
+                                rust-engineer.md}";
 
 /// Given a project matching no set or the Rust set, when the operator runs `rigger init` or
 /// `rigger setup`, then the implement and checkin stages both run the implementer the set brings -
@@ -750,7 +752,8 @@ const DEMO_CHECK_LINE: &str = "scaffolded .rigger/gates/check.sh";
 /// The agents line a fresh scaffold from the operator's own set prints: the role seeds in seed
 /// order, then the set's implementer.
 const DEMO_AGENTS_LINE: &str = "scaffolded .rigger/agents/{planner.md, architecture-reviewer.md, \
-                                sdet.md, adversary.md, adjudicator.md, demo-engineer.md}";
+                                sdet.md, sdet-author.md, adversary.md, adjudicator.md, \
+                                demo-engineer.md}";
 
 /// The no-set line over the operator's template root, naming its one set's two markers and no
 /// set of this repository's.
