@@ -1,18 +1,21 @@
-//! INIT SCAFFOLDS GATES AND THE IMPLEMENTER FROM THE PROJECT'S TEMPLATE SET (specs 113 and 121),
-//! driven through the built binary: what an operator sees `rigger init` and `rigger setup` print,
-//! and what each leaves on disk, in a project matching the Rust set, a project matching no set, a
+//! INIT SCAFFOLDS GATES AND THE IMPLEMENTER FROM THE PROJECT'S TEMPLATE SET (specs 113, 121 and
+//! 125), driven through the built binary: what an operator sees `rigger init --template <dir>` and
+//! `rigger setup --template <dir>` print with this repository's root as the template root, and
+//! what each leaves on disk, in a project matching the Rust set, a project matching no set, a
 //! project that already has a workflow, and on a rerun - the gates and the implementer persona the
-//! implement and checkin stages run among it - and that `rigger validate` accepts both fresh
-//! scaffolds.
+//! implement and checkin stages run among it - that `rigger validate` accepts both fresh
+//! scaffolds, that a command naming no template root scaffolds no gate, and that a template root
+//! holding no `scaffold/` is refused before any write.
 
 use crate::common;
 use common::cli::{
-    cargo_project, loaded_config, run_rigger, run_rigger_ok, setup_ok, temp_project,
+    cargo_project, failure_line, loaded_config, refusal_line, run_rigger, run_rigger_ok,
+    temp_project,
 };
 use common::fixtures::{
     agents_beside, sorted_dir_names, stage_agents, LANGUAGE_NEUTRAL_IMPLEMENTER,
 };
-use common::repo::repo_root;
+use common::repo::{collect_files, repo_root};
 use std::path::Path;
 
 /// The line `rigger init` prints for a workflow written from the Rust set.
@@ -21,17 +24,17 @@ const RUST_WORKFLOW_LINE: &str = "scaffolded .rigger/workflow.yml (gate template
 /// The line `rigger init` prints for a workflow written with no set.
 const PLAIN_WORKFLOW_LINE: &str = "scaffolded .rigger/workflow.yml";
 
-/// The no-set line, naming every embedded set's markers.
+/// The no-set line, naming the markers of every set this repository's template root holds.
 const NO_SET_LINE: &str = "no gate template set matches this project (rust: Cargo.toml at the \
                            project root), so .rigger/workflow.yml declares no gates - declare \
                            your own under gates:";
 
+/// The no-root line: what a command naming no template root prints after the workflow line.
+const NO_ROOT_LINE: &str = "no template root was given (--template <dir>), so \
+                            .rigger/workflow.yml declares no gates - declare your own under gates:";
+
 /// The line one written set file gets, for each path the Rust set lists, in listed order.
-const RUST_SET_FILE_LINES: [&str; 3] = [
-    "scaffolded .rigger/gates/red-before-green.sh",
-    "scaffolded .rigger/gates/mutation.sh",
-    "scaffolded .rigger/gates/container-env.sh",
-];
+const RUST_SET_FILE_LINES: [&str; 1] = ["scaffolded .rigger/gates/red-before-green.sh"];
 
 /// What a rerun with nothing left to scaffold prints, in full.
 const ALREADY_INITIALIZED: &str = "rigger init: already initialized; nothing to scaffold\n";
@@ -48,7 +51,7 @@ fn set_lines(out: &str) -> Vec<&str> {
         .collect()
 }
 
-/// The repository's `scaffold/rust/set.yml`, the Rust set the binary embeds.
+/// The repository's `scaffold/rust/set.yml`, the Rust set `--template <repository root>` loads.
 fn rust_set() -> serde_yaml::Value {
     serde_yaml::from_str(
         &std::fs::read_to_string(repo_root().join("scaffold/rust/set.yml")).unwrap(),
@@ -64,15 +67,33 @@ fn rust_set_implementer() -> String {
         .to_string()
 }
 
-/// `rigger init` in `root`, returning its stdout.
+/// This repository's root, as the `--template` argument naming it.
+fn template_root() -> String {
+    repo_root().to_str().unwrap().to_string()
+}
+
+/// `rigger init --template <repository root>` in `root`, returning its stdout.
 fn init(root: &Path) -> String {
+    run_rigger_ok(root, &["init", "--template", &template_root()])
+}
+
+/// `rigger setup --template <repository root>` in `root`, returning its stdout.
+fn setup(root: &Path) -> String {
+    run_rigger_ok(root, &["setup", "--template", &template_root()])
+}
+
+/// `rigger init` naming no template root, in `root`, returning its stdout.
+fn init_with_no_root(root: &Path) -> String {
     run_rigger_ok(root, &["init"])
 }
 
-/// `rigger setup` in `root`, with the npm step stubbed, returning its stdout.
-fn setup(root: &Path) -> String {
-    setup_ok(root, &[])
+/// `rigger setup` naming no template root, in `root`, returning its stdout.
+fn setup_with_no_root(root: &Path) -> String {
+    run_rigger_ok(root, &["setup"])
 }
+
+/// A command run in a project root, returning its stdout.
+type Command = fn(&Path) -> String;
 
 /// The two unit stages' gate lists, `(implement, checkin)`.
 fn stage_lists(cfg: &rigger::config::Config) -> (Vec<String>, Vec<String>) {
@@ -82,28 +103,36 @@ fn stage_lists(cfg: &rigger::config::Config) -> (Vec<String>, Vec<String>) {
     )
 }
 
-/// Asserts `out` and `root` show a no-set scaffold: the plain workflow line directly followed by
-/// the no-set line, no `.rigger/gates/`, and a workflow declaring no gate with `[]` on both unit
-/// stages.
-fn assert_no_set_scaffold(root: &Path, out: &str) {
-    assert_eq!(
-        set_lines(out),
-        [PLAIN_WORKFLOW_LINE, NO_SET_LINE],
-        "stdout:\n{out}"
-    );
+/// Every file under `root` but its `.git/`, as root-relative paths in sorted order.
+fn project_files(root: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    collect_files(root, &mut files);
+    files
+        .iter()
+        .map(|path| path.strip_prefix(root).unwrap())
+        .filter(|rel| !rel.starts_with(".git"))
+        .map(|rel| rel.to_str().unwrap().to_string())
+        .collect()
+}
+
+/// Asserts `out` and `root` show a gateless scaffold: the plain workflow line directly followed by
+/// `why` - the no-set line, or the no-root line - no `.rigger/gates/`, and a workflow declaring no
+/// gate with `[]` on both unit stages.
+fn assert_gateless_scaffold(root: &Path, out: &str, why: &str) {
+    assert_eq!(set_lines(out), [PLAIN_WORKFLOW_LINE, why], "stdout:\n{out}");
     let lines: Vec<&str> = out.lines().collect();
     let at = lines
         .iter()
         .position(|l| *l == PLAIN_WORKFLOW_LINE)
         .unwrap();
     assert_eq!(
-        lines[at + 1],
-        NO_SET_LINE,
-        "the no-set line follows the workflow line"
+        lines.get(at + 1),
+        Some(&why),
+        "the line saying why no gate is declared follows the workflow line; stdout:\n{out}"
     );
     assert!(
         !root.join(".rigger/gates").exists(),
-        "a project matching no set gets no gate script"
+        "a gateless scaffold gets no gate script"
     );
     let cfg = loaded_config(root);
     assert_eq!(cfg.workflow.gates.len(), 0, "no gate declared");
@@ -117,7 +146,7 @@ fn assert_no_set_scaffold(root: &Path, out: &str) {
 #[test]
 fn init_beside_a_root_cargo_toml_names_the_rust_set_and_reports_each_listed_file() {
     let dir = cargo_project();
-    let out = run_rigger_ok(dir.path(), &["init"]);
+    let out = init(dir.path());
     let mut expected = vec![RUST_WORKFLOW_LINE];
     expected.extend(RUST_SET_FILE_LINES);
     assert_eq!(set_lines(&out), expected, "stdout:\n{out}");
@@ -131,7 +160,7 @@ fn init_beside_a_root_cargo_toml_names_the_rust_set_and_reports_each_listed_file
     let workflow = std::fs::read_to_string(dir.path().join(".rigger/workflow.yml")).unwrap();
     assert!(
         workflow.contains(&format!("\ngates:\n{indented}")),
-        "the workflow carries the embedded gates text verbatim under gates:\n{workflow}"
+        "the workflow carries the set's gates text verbatim under gates:\n{workflow}"
     );
     let cfg = loaded_config(dir.path());
     let runs: Vec<(&str, &str)> = cfg
@@ -156,6 +185,93 @@ fn init_beside_a_root_cargo_toml_names_the_rust_set_and_reports_each_listed_file
     );
 }
 
+/// Given a project holding `Cargo.toml`, when the operator runs `rigger init --template <this
+/// repository's root>`, then it writes the Rust set's gates - `.rigger/gates/` holds exactly
+/// `red-before-green.sh`, with the repository's bytes - and the Rust set's implementer, it writes
+/// exactly the scaffold's own files, and no file it wrote holds `crates/<name>` for any directory
+/// `<name>` under this repository's `crates/`: the template root lends its sets, never its own
+/// layout.
+#[test]
+fn init_from_this_repositorys_root_writes_the_rust_set_and_nothing_of_its_crates() {
+    let dir = cargo_project();
+    let root = dir.path();
+    let out = init(root);
+    assert_eq!(
+        set_lines(&out),
+        [RUST_WORKFLOW_LINE, RUST_SET_FILE_LINES[0]],
+        "stdout:\n{out}"
+    );
+    let script = ".rigger/gates/red-before-green.sh";
+    assert_eq!(
+        sorted_dir_names(&root.join(".rigger/gates")),
+        ["red-before-green.sh"]
+    );
+    assert_eq!(
+        std::fs::read(root.join(script)).unwrap(),
+        std::fs::read(repo_root().join(script)).unwrap(),
+        "{script} carries the repository's bytes"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".rigger/agents/rust-engineer.md")).unwrap(),
+        rust_set_implementer(),
+        "the Rust set's implementer"
+    );
+
+    let mut expected: Vec<String> = [
+        ".claude/agents/lookup.md",
+        ".claude/agents/verify.md",
+        ".claude/settings.json",
+        ".gitignore",
+    ]
+    .map(String::from)
+    .to_vec();
+    expected.extend(
+        agents_beside("rust-engineer.md")
+            .iter()
+            .map(|file| format!(".rigger/agents/{file}")),
+    );
+    expected.extend(
+        [
+            script,
+            ".rigger/instructions/README.md",
+            ".rigger/project.id",
+            ".rigger/workflow.yml",
+            "Cargo.toml",
+        ]
+        .map(String::from),
+    );
+    let written = project_files(root);
+    assert_eq!(written, expected, "the files the project holds after init");
+
+    let crates: Vec<String> = std::fs::read_dir(repo_root().join("crates"))
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| format!("crates/{}", entry.file_name().to_str().unwrap()))
+        .collect();
+    assert_ne!(
+        crates,
+        Vec::<String>::new(),
+        "this repository's crates/ holds the directories the check reads"
+    );
+    let hits: Vec<(&String, &String)> = written
+        .iter()
+        .flat_map(|rel| {
+            let text =
+                String::from_utf8_lossy(&std::fs::read(root.join(rel)).unwrap()).into_owned();
+            crates
+                .iter()
+                .filter(move |needle| text.contains(needle.as_str()))
+                .map(move |needle| (rel, needle))
+        })
+        .collect();
+    assert_eq!(
+        hits,
+        Vec::<(&String, &String)>::new(),
+        "no written file names a crate of the template root"
+    );
+}
+
 /// Given a project matching no set, when the operator runs `rigger init`, then it prints the
 /// plain workflow line followed directly by the no-set line, writes no `.rigger/gates/`, and the
 /// workflow loads declaring no gate with `[]` on both unit stages - and `rigger validate`
@@ -163,8 +279,8 @@ fn init_beside_a_root_cargo_toml_names_the_rust_set_and_reports_each_listed_file
 #[test]
 fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() {
     let dir = temp_project();
-    let out = run_rigger_ok(dir.path(), &["init"]);
-    assert_no_set_scaffold(dir.path(), &out);
+    let out = init(dir.path());
+    assert_gateless_scaffold(dir.path(), &out, NO_SET_LINE);
 
     let (validated, warned, ok) = run_rigger(dir.path(), &["validate"]);
     assert!(
@@ -186,32 +302,85 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
     );
 }
 
-/// Given an initialized Rust project, a rerun prints only the already-initialized line and
-/// rewrites no listed file; with one listed file deleted, a rerun writes it back with the
+/// Given a project holding `Cargo.toml`, when the operator runs `rigger init` or `rigger setup`
+/// naming no template root, then no set is loaded, so even the Rust marker matches nothing: it
+/// prints the plain workflow line followed directly by the no-root line, writes no
+/// `.rigger/gates/`, the workflow loads declaring no gate with `[]` on both unit stages, and the
+/// implementer it seeds is the language-neutral one.
+#[test]
+fn a_command_naming_no_template_root_prints_the_no_root_line_and_writes_a_gateless_workflow() {
+    let rows: [(&str, Command); 2] = [("init", init_with_no_root), ("setup", setup_with_no_root)];
+    for (label, verb) in rows {
+        let dir = cargo_project();
+        let out = verb(dir.path());
+        assert_gateless_scaffold(dir.path(), &out, NO_ROOT_LINE);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".rigger/agents/implementer.md")).unwrap(),
+            LANGUAGE_NEUTRAL_IMPLEMENTER,
+            "{label}: the language-neutral implementer, as with no set matched"
+        );
+    }
+}
+
+/// Given a template root holding no `scaffold/`, when the operator runs `rigger init --template
+/// <root>` or `rigger setup --template <root>`, then the command fails on the refusal naming the
+/// root's `scaffold/` and why it could not be read, before any write: the project holds exactly
+/// the files it held before.
+#[test]
+fn a_template_root_holding_no_scaffold_dir_is_refused_before_any_write() {
+    for command in ["init", "setup"] {
+        let dir = cargo_project();
+        let template = tempfile::tempdir().unwrap();
+        let before = project_files(dir.path());
+        let (out, err, ok) = run_rigger(
+            dir.path(),
+            &[command, "--template", template.path().to_str().unwrap()],
+        );
+        let unreadable = std::fs::read_dir(template.path().join("scaffold")).unwrap_err();
+        assert_eq!(
+            failure_line(ok, &err),
+            Some(refusal_line(&format!(
+                "{}/scaffold/: the gate template sets directory is unreadable: {unreadable}",
+                template.path().display()
+            ))),
+            "{command}: stdout:\n{out}"
+        );
+        assert_eq!(out, "", "{command}: nothing is reported scaffolded");
+        assert_eq!(
+            project_files(dir.path()),
+            before,
+            "{command}: the project is left as it was"
+        );
+        assert_eq!(before, ["Cargo.toml"], "{command}");
+    }
+}
+
+/// Given an initialized Rust project, a rerun prints only the already-initialized line and keeps
+/// a listed file the operator rewrote; with that file deleted, a rerun writes it back with the
 /// repository's bytes and reports exactly that one file; `rigger validate` accepts the scaffold.
 #[test]
 fn init_rerun_on_a_rust_project_writes_back_only_a_deleted_set_file() {
     let dir = cargo_project();
-    run_rigger_ok(dir.path(), &["init"]);
-    let mine = dir.path().join(".rigger/gates/red-before-green.sh");
+    init(dir.path());
+    let script = ".rigger/gates/red-before-green.sh";
+    let mine = dir.path().join(script);
     std::fs::write(&mine, "# my own gate\n").unwrap();
 
-    assert_eq!(run_rigger_ok(dir.path(), &["init"]), ALREADY_INITIALIZED);
+    assert_eq!(init(dir.path()), ALREADY_INITIALIZED);
     assert_eq!(
         std::fs::read_to_string(&mine).unwrap(),
         "# my own gate\n",
         "a present set file is kept"
     );
 
-    let mutation = ".rigger/gates/mutation.sh";
-    std::fs::remove_file(dir.path().join(mutation)).unwrap();
+    std::fs::remove_file(&mine).unwrap();
     assert_eq!(
-        run_rigger_ok(dir.path(), &["init"]),
-        "scaffolded .rigger/gates/mutation.sh\n"
+        init(dir.path()),
+        "scaffolded .rigger/gates/red-before-green.sh\n"
     );
     assert_eq!(
-        std::fs::read(dir.path().join(mutation)).unwrap(),
-        std::fs::read(repo_root().join(mutation)).unwrap(),
+        std::fs::read(&mine).unwrap(),
+        std::fs::read(repo_root().join(script)).unwrap(),
         "the rewritten file carries the repository's bytes"
     );
 
@@ -235,7 +404,7 @@ fn init_keeps_an_existing_workflow_and_still_writes_the_rust_sets_files() {
     let own = "stages:\n  plan:\n    agent: planner\n";
     std::fs::write(rigger_dir.join("workflow.yml"), own).unwrap();
 
-    let out = run_rigger_ok(dir.path(), &["init"]);
+    let out = init(dir.path());
     assert_eq!(set_lines(&out), RUST_SET_FILE_LINES, "stdout:\n{out}");
     assert_eq!(
         std::fs::read_to_string(rigger_dir.join("workflow.yml")).unwrap(),
@@ -257,7 +426,7 @@ fn init_keeps_an_existing_workflow_and_still_writes_the_rust_sets_files() {
 #[test]
 fn setup_beside_a_root_cargo_toml_scaffolds_from_the_rust_set() {
     let dir = cargo_project();
-    let out = setup_ok(dir.path(), &[]);
+    let out = setup(dir.path());
     let mut expected = vec![RUST_WORKFLOW_LINE];
     expected.extend(RUST_SET_FILE_LINES);
     assert_eq!(set_lines(&out), expected, "stdout:\n{out}");
@@ -288,8 +457,8 @@ fn init_with_a_cargo_toml_only_below_the_root_matches_no_set() {
     )
     .unwrap();
 
-    let out = run_rigger_ok(dir.path(), &["init"]);
-    assert_no_set_scaffold(dir.path(), &out);
+    let out = init(dir.path());
+    assert_gateless_scaffold(dir.path(), &out, NO_SET_LINE);
 }
 
 /// Given a project matching no set, `rigger setup` scaffolds exactly as `rigger init` does: the
@@ -298,8 +467,8 @@ fn init_with_a_cargo_toml_only_below_the_root_matches_no_set() {
 #[test]
 fn setup_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() {
     let dir = temp_project();
-    let out = setup_ok(dir.path(), &[]);
-    assert_no_set_scaffold(dir.path(), &out);
+    let out = setup(dir.path());
+    assert_gateless_scaffold(dir.path(), &out, NO_SET_LINE);
 }
 
 /// Given a project already initialized with no set matching, a rerun of `rigger init` prints only
@@ -308,11 +477,11 @@ fn setup_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow()
 #[test]
 fn init_rerun_matching_no_set_does_not_repeat_the_no_set_line() {
     let dir = temp_project();
-    run_rigger_ok(dir.path(), &["init"]);
+    init(dir.path());
     let workflow = dir.path().join(".rigger/workflow.yml");
     let before = std::fs::read(&workflow).unwrap();
 
-    assert_eq!(run_rigger_ok(dir.path(), &["init"]), ALREADY_INITIALIZED);
+    assert_eq!(init(dir.path()), ALREADY_INITIALIZED);
     assert_eq!(
         std::fs::read(&workflow).unwrap(),
         before,
