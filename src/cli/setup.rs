@@ -152,10 +152,10 @@ fn parse_template_sets(sets: &[TemplateSet]) -> Result<Vec<(&TemplateSet, SetSpe
 /// exists and matches, so a rerun on an initialized project changes nothing and reports
 /// `changed: false`.
 ///
-/// The workflow's gates and its implementer come from the first of `parsed` any of whose
-/// `detect` markers is a file at `root`, whose `implementer` persona is seeded beside the role
-/// seeds; with none, the workflow declares no gates and names the language-neutral `implementer`
-/// seed. An existing workflow or agent file is kept.
+/// The workflow's gates, its implementer and its `build.env` come from the first of `parsed` any
+/// of whose `detect` markers is a file at `root`, whose `implementer` persona is seeded beside
+/// the role seeds; with none, the workflow declares no gates and no build variable and names the
+/// language-neutral `implementer` seed. An existing workflow or agent file is kept.
 fn scaffold_project(
     root: &Path,
     parsed: &[(&TemplateSet, SetSpec)],
@@ -1846,13 +1846,14 @@ as a definition drift. Edit them between runs, or continue with `--rebase-defini
 
 /// The scaffolded workflow template (§3.2): a worked plan -> implement pipeline where the
 /// review is PER UNIT. It demonstrates the documented shape - a `defaults:` block
-/// (autonomy + grounder + the three-tier `review` panel), a reusable `gates:`
-/// library, and an implement stage that runs each unit's complete lifecycle
-/// (implement -> gates -> three-tier review of THIS unit -> integrate). Its four
-/// placeholders - `@GATES@` on its own line, `@IMPLEMENT_GATES@`, `@CHECKIN_GATES@` and
-/// `@IMPLEMENTER@`, the implement and checkin stages' agent - are filled by
-/// [`scaffold_workflow`] from the matched gate template set; every rendering loads through
-/// `config::load` against the agents scaffolded alongside it.
+/// (autonomy + grounder + the three-tier `review` panel), a `build:` block declaring the
+/// environment rigger exports, a reusable `gates:` library, and an implement stage that runs
+/// each unit's complete lifecycle (implement -> gates -> three-tier review of THIS unit ->
+/// integrate). Its five placeholders - `@GATES@` on its own line, `@IMPLEMENT_GATES@`,
+/// `@CHECKIN_GATES@`, `@IMPLEMENTER@`, the implement and checkin stages' agent, and
+/// `@BUILD_ENV@`, the `build.env` flow map - are filled by [`scaffold_workflow`] from the
+/// matched gate template set, `@BUILD_ENV@` from the matched set's `env` or as `{}`; every
+/// rendering loads through `config::load` against the agents scaffolded alongside it.
 const SCAFFOLD_WORKFLOW: &str =
     "# Scaffolded by `rigger init`. A worked plan -> implement pipeline where the\n\
 # review is PER UNIT: each unit implements, three-tier-reviews ITSELF (lenses ->\n\
@@ -1894,6 +1895,11 @@ review:\n    \
 lenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses\n    \
 adversary: adversary           # tier 2: reviews the lenses and refutes them\n    \
 adjudicator: adjudicator   # tier 3: neutral judge; its verdict gates the unit\n\
+\n\
+# The variables rigger exports to every gate and spawn, each a template over\n\
+# {build_cache} (the site's build cache) and {jobs} (build.jobs); none by default.\n\
+build:\n  \
+env: @BUILD_ENV@\n\
 \n\
 # A reusable library of gate commands, referenced by name from the stages below.\n\
 @GATES@\n\
@@ -2052,8 +2058,9 @@ fn not_a_name(component: std::path::Component) -> Option<&'static str> {
 }
 
 /// A gate template set's `set.yml`: the marker file names whose presence at the project root
-/// selects it, the text of its `gates:` block (comments kept), the two stages' gate lists, and
-/// its `implementer` persona in markdown-with-frontmatter form. `implementer_id` is no
+/// selects it, the text of its `gates:` block (comments kept), the two stages' gate lists, its
+/// `implementer` persona in markdown-with-frontmatter form, and the `env` the scaffolded
+/// workflow declares under `build:` (empty when the set names none). `implementer_id` is no
 /// `set.yml` key: it is the `id` that persona's frontmatter carries, which
 /// [`parse_template_set`] reads.
 #[derive(Debug, serde::Deserialize)]
@@ -2064,16 +2071,19 @@ struct SetSpec {
     implement: Vec<String>,
     checkin: Vec<String>,
     implementer: String,
+    #[serde(default)]
+    env: std::collections::BTreeMap<String, String>,
     #[serde(skip)]
     implementer_id: String,
 }
 
 /// Parse a gate template set: its `set.yml`, then its `gates` text as a mapping whose keys are
 /// the declared gate ids, then its `implementer` persona, whose `id` becomes the spec's
-/// `implementer_id`. A `gates` text declaring nothing (empty or comments only) comes back
-/// empty. Refuses, naming the set key, a `set.yml` or `gates` text that fails to parse, a stage
-/// list naming a gate id the `gates` text does not declare, an `implementer` persona that fails
-/// to parse and one whose `id` is a [`SCAFFOLD_AGENTS`] seed's.
+/// `implementer_id`, then its `env`. A `gates` text declaring nothing (empty or comments only)
+/// comes back empty. Refuses, naming the set key, a `set.yml` or `gates` text that fails to
+/// parse, a stage list naming a gate id the `gates` text does not declare, an `implementer`
+/// persona that fails to parse, one whose `id` is a [`SCAFFOLD_AGENTS`] seed's, and an `env`
+/// that [`BuildEnv::declared`], the one check of a workflow's `build.env`, refuses.
 fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
     let refuse = |why: String| format!("gate template set {}: {why}", set.key);
     let mut spec: SetSpec = serde_yaml::from_str(&set.set).map_err(|e| refuse(e.to_string()))?;
@@ -2098,6 +2108,11 @@ fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
             "implementer id {id} is a scaffold seed's id"
         )));
     }
+    BuildEnv::declared(&config::BuildConfig {
+        env: spec.env.clone(),
+        ..Default::default()
+    })
+    .map_err(|e| refuse(format!("env: {e}")))?;
     spec.implementer_id = id;
     if declared.is_empty() {
         spec.gates.clear();
@@ -2113,9 +2128,10 @@ fn seed_id(persona: &str) -> Option<String> {
 }
 
 /// Render [`SCAFFOLD_WORKFLOW`] for `set`: its `gates` text under `gates:`, indented two spaces
-/// (`gates: {}` when it declares nothing), its two stage lists as YAML flow sequences, and its
-/// `implementer_id` as the implement and checkin stages' agent; with no set, `gates: {}`, `[]`
-/// for both lists and the language-neutral [`SCAFFOLD_AGENTS`] seed `implementer` as the agent.
+/// (`gates: {}` when it declares nothing), its two stage lists as YAML flow sequences, its
+/// `implementer_id` as the implement and checkin stages' agent, and its `env` under `build:`
+/// as [`yaml_flow_map`] writes it; with no set, `gates: {}`, `[]` for both lists, the
+/// language-neutral [`SCAFFOLD_AGENTS`] seed `implementer` as the agent and `env: {}`.
 fn scaffold_workflow(set: Option<&SetSpec>) -> String {
     let gates = match set.filter(|spec| !spec.gates.is_empty()) {
         Some(spec) => {
@@ -2142,6 +2158,53 @@ fn scaffold_workflow(set: Option<&SetSpec>) -> String {
             "@IMPLEMENTER@",
             set.map_or("implementer", |spec| &spec.implementer_id),
         )
+        .replace(
+            "@BUILD_ENV@",
+            &yaml_flow_map(set.map(|spec| &spec.env).unwrap_or(&Default::default())),
+        )
+}
+
+/// `map` as a one-line YAML flow mapping in name order, `{}` when empty, that loads back as
+/// exactly `map`. Each name is written plain but for the nine spellings YAML reads as null or a
+/// boolean, which are double-quoted; each value is [`yaml_double_quoted`].
+fn yaml_flow_map(map: &std::collections::BTreeMap<String, String>) -> String {
+    let entries: Vec<String> = map
+        .iter()
+        .map(|(name, value)| {
+            let name = match name.as_str() {
+                "null" | "Null" | "NULL" | "true" | "True" | "TRUE" | "false" | "False"
+                | "FALSE" => format!("\"{name}\""),
+                _ => name.clone(),
+            };
+            format!("{name}: {}", yaml_double_quoted(value))
+        })
+        .collect();
+    format!("{{{}}}", entries.join(", "))
+}
+
+/// `value` as a YAML double-quoted scalar that loads back as exactly `value`: `"`, `\`, each
+/// character below U+0020 or in U+007F-U+009F, and U+2028, U+2029, U+FFFE and U+FFFF are
+/// written `\uXXXX`, every other character as itself.
+fn yaml_double_quoted(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for c in value.chars() {
+        if matches!(
+            c,
+            '"' | '\\'
+                | '\0'..='\u{1f}'
+                | '\u{7f}'..='\u{9f}'
+                | '\u{2028}'
+                | '\u{2029}'
+                | '\u{fffe}'
+                | '\u{ffff}'
+        ) {
+            quoted.push_str(&format!("\\u{:04X}", c as u32));
+        } else {
+            quoted.push(c);
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 /// The agents the scaffolded workflow references - a fresh-repo SEED template, not a

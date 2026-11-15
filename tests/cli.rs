@@ -12974,15 +12974,16 @@ fn validate_refuses_each_refused_build_block_before_any_output() {
 }
 
 /// THE VALIDATE REPORT NAMES THE DECLARATION: GIVEN an initialized project whose workflow is the
-/// fresh scaffold's, untouched, with no `build:` block, or whose `build:` block declares `B`, `J`
-/// and `L`, or carries a retired `build.wrapper` or `build.cache_dir` key with an empty or
-/// whitespace-only value, WHEN the operator runs `rigger validate`, THEN it passes, and its build
-/// lines are one `build env: NAME=template` line per declared variable in name order, or
-/// `build env: none declared`, followed by the build budget.
+/// fresh scaffold's, untouched, its `build:` block declaring `env: {}`, or whose `build:` block
+/// declares `B`, `J` and `L`, or carries a retired `build.wrapper` or `build.cache_dir` key with
+/// an empty or whitespace-only value, WHEN the operator runs `rigger validate`, THEN it passes,
+/// and its build lines are one `build env: NAME=template` line per declared variable in name
+/// order, or `build env: none declared`, followed by the build budget.
 #[test]
 fn validate_reports_each_declared_build_variable_then_the_budget() {
-    // Nothing declared and no budget key: a workflow with no `build:` block and a `build:` block
-    // without `max_concurrent` both resolve the budget to 4.
+    // Nothing declared and no budget key: the fresh scaffold's `build:` block, declaring
+    // `env: {}`, and a `build:` block carrying only an empty or whitespace-only retired key both
+    // resolve the budget to 4.
     const NONE_DECLARED: &[&str] = &["build env: none declared", "build budget: 4"];
     let cases: [(&str, Option<String>, &[&str]); 2] = [
         ("the fresh scaffold, untouched", None, NONE_DECLARED),
