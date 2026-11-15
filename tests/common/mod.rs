@@ -378,7 +378,7 @@ pub fn isolated_workdir(repo: &Path) -> String {
 }
 
 /// Shared guard for every sanctioned test-side signal helper below (`terminate_pid`,
-/// `stop_pid`) - panics for pid <= 1 (init, or "no real pid") or a pid equal to THIS test
+/// `stop_pid`, `interrupt_pid`) - panics for pid <= 1 (init, or "no real pid") or a pid equal to THIS test
 /// process's own, either being a bug in the fixture handing over a pid to signal, never a
 /// race worth tolerating silently the way an already-exited target is. `verb` names the
 /// signal action in the panic message ("terminate", "SIGSTOP", ...) so each caller keeps its
@@ -406,25 +406,18 @@ fn validated_target_pid(pid: u32, verb: &str) {
 }
 
 /// Terminate a process this test does not hold a [`std::process::Child`] handle to (spec 78,
-/// THE TEST HELPER) - the ONE sanctioned test-side signal call, mirroring
-/// [`rigger::reap`]'s production counterpart `send_signal` (the `no-os-kill` gate excludes
-/// only these two functions from its tree-wide ban on shelling out to an OS termination
-/// command or calling a signal API directly). Every former `tests/cli.rs::reap_pid` and
+/// THE TEST HELPER), mirroring [`rigger::reap`]'s production counterpart `send_signal`. Every
+/// test-side signal goes through the one call in [`delivered`], which this, [`stop_pid`] and
+/// [`interrupt_pid`] share, in this file the `no-os-kill` gate licenses
+/// (`tests/no_os_kill_audit.rs`). Every former `tests/cli.rs::reap_pid` and
 /// `tests/reset_build_cache_periphery.rs` shelled-out SIGKILL call site is this function now.
 ///
 /// Panics via [`validated_target_pid`] for pid <= 1 or this test process's own pid. Otherwise
-/// SIGKILLs via the internal `rustix` syscall (never a shell-out, never `libc`, never a
-/// process-group/negative pid) and silently ignores ESRCH: the target having already exited
-/// is exactly the state a "make sure this is dead" caller wants.
+/// SIGKILLs through the `rustix` syscall (never a shell-out, never `libc`, never a
+/// process-group/negative pid) and ignores a delivery that fails because the target already
+/// exited: that is exactly the state a "make sure this is dead" caller wants.
 pub fn terminate_pid(pid: u32) {
-    validated_target_pid(pid, "terminate");
-    let Ok(raw) = i32::try_from(pid) else {
-        return;
-    };
-    let Some(rpid) = rustix::process::Pid::from_raw(raw) else {
-        return;
-    };
-    let _ = rustix::process::kill_process(rpid, rustix::process::Signal::KILL);
+    let _ = delivered(pid, "terminate", rustix::process::Signal::KILL);
 }
 
 /// SIGSTOP a process this test does not hold a [`std::process::Child`] handle to (spec 62,
@@ -456,7 +449,8 @@ pub fn interrupt_pid(pid: u32) -> bool {
 }
 
 /// Whether `signal` reached `pid`, under [`validated_target_pid`]'s guard with `verb` naming the
-/// signal: the one delivery [`stop_pid`] and [`interrupt_pid`] share.
+/// signal: the one test-side signal call, which [`terminate_pid`], [`stop_pid`] and
+/// [`interrupt_pid`] share.
 fn delivered(pid: u32, verb: &str, signal: rustix::process::Signal) -> bool {
     validated_target_pid(pid, verb);
     let Ok(raw) = i32::try_from(pid) else {
