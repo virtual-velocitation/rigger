@@ -22,6 +22,8 @@ pub mod interrupt;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod keep_awake;
 #[cfg(any(feature = "store", not(feature = "core")))]
+pub mod os_process;
+#[cfg(any(feature = "store", not(feature = "core")))]
 pub mod parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod reap;
