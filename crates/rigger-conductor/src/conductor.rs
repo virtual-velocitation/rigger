@@ -49799,10 +49799,71 @@ mod tests {
         critique_step(&st, &re_entering);
         assert_eq!(
             re_entering.prompts_for("judge").first(),
-            Some(retry_round),
-            "the round re-entered in a later process must open with the logged reject, exactly \
-             as the in-process retry round does"
+            Some(&retry_round.replacen(DAG_REVISED, DAG_UNCHANGED, 1)),
+            "the round re-entered in a later process must open with the logged reject as the \
+             in-process retry round does, saying the DAG is unchanged since its re-plan parked \
+             before proposing"
         );
+    }
+
+    /// The sentence a critique round's prior-reject block closes with when a re-plan proposed
+    /// at the round's attempt.
+    const DAG_REVISED: &str = "The planner has since revised the DAG; re-review it below.";
+
+    /// The sentence a critique round's prior-reject block closes with when no re-plan proposed
+    /// at the round's attempt.
+    const DAG_UNCHANGED: &str =
+        "No re-plan has proposed a unit since that rejection; re-review the DAG below against it.";
+
+    /// A critique round's prior-reject block says the planner revised the DAG only when a
+    /// re-plan proposed at the round's attempt: a round a resume of its stopped gate opens
+    /// re-plans nothing and says the DAG is unchanged, while the in-process round after a
+    /// re-plan that proposed says it was revised.
+    #[test]
+    fn a_critique_round_says_the_dag_was_revised_only_after_a_re_plan_proposed() {
+        let resumed_round = || {
+            let (st, _, _) = stopped_run();
+            grant_resume(&st, "plan-critique", 2);
+            let resumed = critique_rounds(&[]);
+            critique_step(&st, &resumed);
+            resumed
+                .prompts_for("judge")
+                .first()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let re_planned_round = || {
+            let in_process = reject_then_approve_critique(false);
+            critique_step(&Store::open(":memory:").unwrap(), &in_process);
+            in_process
+                .prompts_for("judge")
+                .get(1)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let rows = [
+            (
+                "a round a resume of its stopped gate opens",
+                resumed_round(),
+                DAG_UNCHANGED,
+                DAG_REVISED,
+            ),
+            (
+                "a round after a re-plan that proposed",
+                re_planned_round(),
+                DAG_REVISED,
+                DAG_UNCHANGED,
+            ),
+        ];
+        for (case, prompt, said, unsaid) in rows {
+            assert!(
+                prompt.starts_with(DAG_PRIOR_REJECT_HEADER)
+                    && prompt.contains(said)
+                    && !prompt.contains(unsaid),
+                "{case}: the round opens with the logged reject and says {said:?}, never \
+                 {unsaid:?}; got:\n{prompt}"
+            );
+        }
     }
 
     // --- A RECORD THE EMIT GUARD REFUSES RE-RUNS ITS SPAWN ONCE, TOLD WHY ---
