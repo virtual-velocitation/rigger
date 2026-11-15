@@ -38055,6 +38055,194 @@ mod tests {
         );
     }
 
+    /// The adjudicator's prompt in a `review` stage over the real graph whose lens records a
+    /// finding about the grounded `combat.rs` and one about `other.rs`, outside the stage's
+    /// seed, and whose adversary records one about `other.rs`.
+    fn adjudicator_prompt_over_an_out_of_seed_finding() -> String {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("combat.rs"), "fn combat() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
+        let mut cfg = Config::default();
+        for id in ["lens", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+                coverage: "combat".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits_by_agent: HashMap::from([
+                (
+                    "lens".to_string(),
+                    vec![
+                        finding("f1", "IN_SEED_unscoped_read", "combat.rs"),
+                        finding("f2", "OUT_OF_SEED_skipped_guard", "other.rs"),
+                    ],
+                ),
+                (
+                    "adversary".to_string(),
+                    vec![finding("a1", "OUT_OF_SEED_lost_write", "other.rs")],
+                ),
+            ]),
+            output: "reviewed the diff".into(),
+            output_by_agent: HashMap::from([(
+                "adj".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+            log: &|_| {},
+            check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
+            code_store: None,
+            context: Some(&context),
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
+        driver.prompts_for("adj").pop().unwrap_or_default()
+    }
+
+    /// What the round-1 adjudicator of the [`session_cfg`] unit is sent to continue its session
+    /// when the round-0 lens records `g0` and the round-1 lens `g1`.
+    fn round_one_adjudicator_resume_task() -> String {
+        let repo = temp_git_project_with_commit();
+        let mut driver = session_stub(&relaunch_verdicts());
+        for (attempt, record) in [
+            finding("g0", "ROUND_ZERO_finding", "feature.rs"),
+            finding("g1", "ROUND_ONE_finding", "fix1.rs"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            driver.emits_by_spawn_id.insert(
+                spawn_id("implement", &lens_role("lens"), attempt as u32),
+                vec![record],
+            );
+        }
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        driver
+            .resume_of(&adjudicator_at(1, 0))
+            .map(|(_, task)| task)
+            .unwrap_or_default()
+    }
+
+    /// The prompt of the [`per_unit_panel_cfg`] adjudicator re-driven within round 0 after its
+    /// first spawn recorded a finding and returned narration with no verdict line.
+    fn verdictless_adjudicator_re_drive_prompt() -> String {
+        let repo = temp_git_project_with_commit();
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: HashMap::from([
+                (adjudicator_at(0, 0), "still reading the diff".to_string()),
+                (adjudicator_at(0, 1), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            emits_by_spawn_id: HashMap::from([(
+                adjudicator_at(0, 0),
+                vec![finding("j1", "ADJUDICATOR_finding", "feature.rs")],
+            )]),
+            write_files_by_spawn_id: HashMap::from([(
+                spawn_id("implement", ROLE_IMPLEMENTER, 0),
+                vec!["feature.rs".to_string()],
+            )]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&per_unit_panel_cfg(None), &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        driver
+            .prompts_for("adj")
+            .get(1)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The adjudicator is told every finding its unit's round recorded, by id, whatever file it
+    /// names: over the real graph a finding outside the stage's seed, which the graph slice
+    /// leaves out, is listed beside the one the slice carries; a later round's resumed
+    /// adjudicator is sent that round's findings and never an earlier round's; and an
+    /// adjudicator re-driven within its round is told the finding its first spawn recorded.
+    #[test]
+    fn the_adjudicator_is_told_every_finding_its_round_recorded_whatever_file_it_names() {
+        const ALL: &str = "Every finding recorded this round, by id:";
+        let rows: [(&str, String, &[&str], &[&str]); 3] = [
+            (
+                "a finding outside the seed",
+                adjudicator_prompt_over_an_out_of_seed_finding(),
+                &[
+                    "- lens:lens (f1): IN_SEED_unscoped_read\n",
+                    "- lens:lens (f2): OUT_OF_SEED_skipped_guard\n",
+                    "- adversary (a1): OUT_OF_SEED_lost_write\n",
+                ],
+                &[],
+            ),
+            (
+                "a later round's resumed adjudicator",
+                round_one_adjudicator_resume_task(),
+                &["- lens:lens (g1): ROUND_ONE_finding\n"],
+                &["ROUND_ZERO_finding"],
+            ),
+            (
+                "an adjudicator re-driven within its round",
+                verdictless_adjudicator_re_drive_prompt(),
+                &["- adjudicator (j1): ADJUDICATOR_finding\n"],
+                &[],
+            ),
+        ];
+        for (case, told, listed, absent) in rows {
+            let block = format!("\n\n{ALL}\n{}", listed.concat());
+            assert!(
+                told.ends_with(&block),
+                "{case}: the adjudicator must close on every finding of its round, {block:?}; \
+                 got:\n{told}"
+            );
+            for text in absent {
+                assert!(
+                    !told.contains(text),
+                    "{case}: another round's finding {text:?} is never listed; got:\n{told}"
+                );
+            }
+        }
+        let seeded = adjudicator_prompt_over_an_out_of_seed_finding();
+        let slice = seeded.split(ALL).next().unwrap_or_default();
+        assert!(
+            slice.contains(FINDINGS_HEADER)
+                && slice.contains("IN_SEED_unscoped_read")
+                && !slice.contains("OUT_OF_SEED"),
+            "premise: the graph slice carries the in-seed finding and neither out-of-seed one; \
+             got:\n{slice}"
+        );
+    }
+
     /// The input digest of the `ok` gate's verdict the `implement` unit recorded at `attempt`.
     fn ok_gate_digest(events: &[Event], attempt: u32) -> String {
         let key = gate_key(GateKey::Verdict, "implement", attempt, 0, "ok");
