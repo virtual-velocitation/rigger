@@ -1694,6 +1694,66 @@ mod tests {
         crate::eventstore::contract::assert_contract(&s);
     }
 
+    /// BOTH SQLITE RECORD READS SHARE ONE EXPRESSION: GIVEN rows no rigger writer makes, on which
+    /// SQLite's JSON and a strict JSON decoder disagree, WHEN the record read runs with its index
+    /// and then without it, THEN both answer exactly the rows SQLite's JSON reads the id from, so
+    /// one log answers alike before and after `rigger setup` indexes it.
+    #[test]
+    fn the_record_read_answers_alike_with_its_index_and_without_it() {
+        let deep = format!(
+            r#"{{"id":"r-1","x":{}{}}}"#,
+            "[".repeat(1000),
+            "]".repeat(1000)
+        );
+        // (row, its data, whether SQLite's JSON reads the id `r-1` from it)
+        let rows: [(&str, Vec<u8>, bool); 4] = [
+            (
+                "an object holding the id",
+                br#"{"id":"r-1"}"#.to_vec(),
+                true,
+            ),
+            (
+                "a key holding a lone surrogate escape",
+                br#"{"\ud800":1,"id":"r-1"}"#.to_vec(),
+                true,
+            ),
+            (
+                "a key holding a raw 0xff byte",
+                b"{\"\xff\":1,\"id\":\"r-1\"}".to_vec(),
+                true,
+            ),
+            (
+                "a value nested 1000 deep after the id",
+                deep.into_bytes(),
+                false,
+            ),
+        ];
+        let s = Store::open(":memory:").unwrap();
+        let events: Vec<Event> = rows
+            .iter()
+            .map(|(_, data, _)| Event::new("X", data.clone()))
+            .collect();
+        s.append("rigger", ExpectedRevision::NoStream, &events)
+            .unwrap();
+        let read = |s: &Store| -> Vec<&str> {
+            let held = s.read_by_record_id("rigger", &["X"], "r-1").unwrap();
+            held.into_iter()
+                .map(|e| rows[e.revision as usize].0)
+                .collect()
+        };
+        let expected: Vec<&str> = rows.iter().filter(|r| r.2).map(|r| r.0).collect();
+        let indexed = read(&s);
+        (s.conn.lock().unwrap())
+            .execute_batch("DROP INDEX idx_events_record")
+            .unwrap();
+        let unindexed = read(&s);
+        assert_eq!(
+            (indexed, unindexed),
+            (expected.clone(), expected),
+            "(with the index, without it)"
+        );
+    }
+
     /// `rigger reset --derived`'s rewrite keeps the record index: GIVEN a store holding free pages,
     /// WHEN its derived events are deleted and its space reclaimed, the file rewritten in full,
     /// THEN the file still holds the record index.
