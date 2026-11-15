@@ -883,9 +883,9 @@ impl<T: SpawnEventBody> SpawnEvent for T {
 }
 
 /// The [`TYPE_SPAWN_REQUESTED`] events in `events`, still serialized - the ONE prefilter
-/// [`requests`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
-/// event is skipped in exactly one place rather than three times over.
-fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
+/// [`requests`], [`is_recorded`], [`recorded_lenient`] and [`recorded_request_lenient`] all fold
+/// over, so a non-spawn event is skipped in exactly one place rather than in each.
+fn spawn_requested_events(events: &[Event]) -> impl DoubleEndedIterator<Item = &Event> {
     events.iter().filter(|e| e.type_ == TYPE_SPAWN_REQUESTED)
 }
 
@@ -943,6 +943,15 @@ pub fn recorded_lenient(events: &[Event]) -> BTreeMap<String, SpawnRequest> {
         }
     }
     out
+}
+
+/// The request recorded for spawn `id` in `events`, as [`recorded_lenient`] files it: the latest
+/// readable request of that id, a malformed body skipped. It reads back from the newest event and
+/// stops at the first match, never building the map, for a caller that wants one id.
+pub fn recorded_request_lenient(events: &[Event], id: &str) -> Option<SpawnRequest> {
+    spawn_requested_events(events)
+        .rev()
+        .find_map(|e| SpawnRequest::from_event(e).ok().filter(|req| req.id == id))
 }
 
 /// The latest [`TYPE_SPAWN_RESULT`] event of each spawn id in `events`, and the first result

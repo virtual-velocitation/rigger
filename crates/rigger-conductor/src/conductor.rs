@@ -4519,18 +4519,27 @@ impl RunCtx<'_> {
     /// run recorded for `id`, if any: the ONE handover check the implementer, the test author
     /// and each speculation lane take. The miss carries the result's last line and the
     /// permission denials the run's recorded result for `id` counts, when one was recorded. A
-    /// result with no session reads no log.
+    /// result with no session, or one ending on the hand-over line, reads no log; a would-be miss
+    /// reads only the run's spawn requests and results.
     fn handover_miss(
         &self,
         who: &str,
         id: &str,
         result: &AgentResult,
     ) -> Result<Option<HandoverMiss>, Error> {
-        if result.session_id.is_empty() {
+        if author_handed_over(result, None) {
             return Ok(None);
         }
-        let events = self.read_current_run()?;
-        let recorded = spawn::recorded_lenient(&events).remove(id);
+        let events = crate::run::read::read_current_run_typed(
+            self.deps.store,
+            STREAM,
+            &[
+                crate::run::TYPE_RUN_STARTED,
+                spawn::TYPE_SPAWN_REQUESTED,
+                spawn::TYPE_SPAWN_RESULT,
+            ],
+        )?;
+        let recorded = spawn::recorded_request_lenient(&events, id);
         if author_handed_over(result, recorded.as_ref().map(|req| req.prompt.as_str())) {
             return Ok(None);
         }
