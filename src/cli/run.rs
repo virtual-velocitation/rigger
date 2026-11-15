@@ -865,6 +865,22 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // The lock keeps this driver's record ([`KeptRecord`]), emptied however the driver ends
     // short of a death, so an invocation that finds a record nobody holds relaunches the run.
     let step_record = KeptRecord::hold(acquire_step_lock(&loc.dir)?);
+    // `--adopt <run>` is checked first of all, before any start effect: an adoption this start
+    // cannot make refuses here, and the record's keeper clears the record as it returns.
+    if let Some(wanted) = &parsed.adopt {
+        refuse_an_adoption_it_cannot_make(
+            &AdoptionSite {
+                repo: &repo,
+                loc: &loc,
+                selection: &selection,
+                site: &site,
+            },
+            &criteria,
+            parsed.spec.is_some(),
+            wanted,
+            command,
+        )?;
+    }
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
     // before opening the run backend (spec 09). Local-sqlite only - the migration renames
     // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
@@ -893,7 +909,11 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // threaded to `fresh_run_if_requested` so a mint persists the tip the run genuinely
     // started at. `""` on the repo-less path.
     let mut base_tip = String::new();
-    if !repo.is_empty() {
+    // An adopting start is on the run branch already ([`refuse_an_adoption_it_cannot_make`]), so
+    // it checks out and anchors nothing.
+    if !repo.is_empty() && parsed.adopt.is_some() {
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
+    } else if !repo.is_empty() {
         let (base, base_explicit) = resolve_run_base(
             parsed.base.as_deref(),
             std::env::var("RIGGER_BASE").ok().as_deref(),
@@ -1196,9 +1216,8 @@ fn reclaim_orphans_at_start(
 /// `helpers` are the fan-out helpers the caller's spawn host resolved, so the definition the run
 /// pins folds the same helper copies its spawns carry ([`definition_hash`]).
 ///
-/// `--adopt <run>` is checked first of all: a start that would not adopt that run, because
-/// another is latest or a new one would be minted, refuses naming both before anything is read or
-/// appended. It returns the id of the run it began or adopted.
+/// `--adopt <run>` was checked before this ([`refuse_an_adoption_it_cannot_make`]). It returns the
+/// id of the run it began or adopted.
 fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
@@ -1207,15 +1226,6 @@ fn fresh_run_if_requested(
     helpers: &[conductor::HelperCopy],
     critique: &RunStartCritique,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    if let Some(wanted) = &parsed.adopt {
-        refuse_unless_adopting(
-            store,
-            criteria,
-            parsed.spec.is_some(),
-            wanted,
-            critique.command,
-        )?;
-    }
     // A HELD RUN IS NAMED FIRST: a plain run reads its hold ahead of the critique refusal, so a
     // held run names its hold before anything refuses it and a hold it cannot read fails the run
     // before any refusal. `--fresh` decides its refusal first, since its mint ends the hold.
@@ -1260,6 +1270,57 @@ fn fresh_run_if_requested(
         base_tip,
         parsed.spec.as_deref().unwrap_or(""),
     )
+}
+
+/// Where an adopting start reads what it refuses on: the checkout `repo` (`""` for none), and the
+/// run store at `loc` under `selection`, its identity read from `site`.
+struct AdoptionSite<'a> {
+    repo: &'a str,
+    loc: &'a StoreLocation,
+    selection: &'a StoreSelection,
+    site: &'a Site,
+}
+
+/// THE ADOPTION IS CHECKED FIRST OF ALL: refuse a `command` start with `--adopt <wanted>`, before
+/// it closes a launch, checks out a branch or sweeps a worktree, when it cannot adopt that run as
+/// it stands: a checkout off the run branch (another branch or a detached HEAD, never checked out
+/// or recreated here), a start that would adopt another run or mint one
+/// ([`refuse_unless_adopting`]), or a run already done. It reads the run store as the run opens it
+/// later and writes nothing.
+fn refuse_an_adoption_it_cannot_make(
+    at: &AdoptionSite,
+    criteria: &[String],
+    by_spec: bool,
+    wanted: &str,
+    command: &str,
+) -> Res {
+    if !at.repo.is_empty() {
+        let on = rigger::worktree::current_branch(at.repo);
+        if on.as_deref() != Some(RUN_BRANCH) {
+            let on = on.map_or_else(
+                || "a detached HEAD".to_string(),
+                |b| format!("branch {b:?}"),
+            );
+            return Err(format!(
+                "{command}: --adopt {wanted}: the checkout is on {on}, not the run branch \
+                 {RUN_BRANCH:?}, so it refuses and changed nothing; check out {RUN_BRANCH:?} and \
+                 start it again"
+            )
+            .into());
+        }
+    }
+    let backend = resolve_store(at.selection, &at.loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &at.loc.identity_in(at.site)?);
+    refuse_unless_adopting(&store, criteria, by_spec, wanted, command)?;
+    let (events, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
+    if ledger::project(&events)?.done() {
+        return Err(format!(
+            "{command}: --adopt {wanted}: run {wanted} is done, so there is nothing to adopt; it \
+             refuses and changed nothing"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Refuse a `command` start with `--adopt <wanted>` unless the mint decision
