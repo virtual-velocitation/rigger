@@ -4,7 +4,9 @@
 //! one at the operator checkout and describes that checkout's HEAD.
 
 use crate::common;
-use common::cli::{repository_code_store, run_rigger, run_rigger_ok, source_repository, SOURCE};
+use common::cli::{
+    head_of, repository_code_store, run_rigger, run_rigger_ok, source_repository, SOURCE,
+};
 use common::fixtures::{
     assert_outside_any_repository, git_commit_all, git_out, init_repo, review_or_adjudicate,
     test_spawn_host, write_files, MergeBreakDriver, MERGE_BREAK_BASE,
@@ -30,11 +32,6 @@ fn stamp_at(root: &Path) -> Stamp {
         .in_force()
         .expect("the store reads")
         .unwrap_or_else(|| panic!("the store at {} holds a snapshot", root.display()))
-}
-
-/// The commit the checkout at `root` has checked out.
-fn head_of(root: &Path) -> String {
-    git_out(root, &["rev-parse", "HEAD"])
 }
 
 /// A [`source_repository`] that `rigger setup` provisioned, everything setup wrote committed, so

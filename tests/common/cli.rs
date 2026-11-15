@@ -1738,6 +1738,11 @@ pub fn source_repository() -> (tempfile::TempDir, PathBuf) {
     (dir, root)
 }
 
+/// The commit the checkout at `root` has checked out.
+pub fn head_of(root: &Path) -> String {
+    super::fixtures::git_out(root, &["rev-parse", "HEAD"])
+}
+
 /// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
 /// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
 /// code store to.

@@ -51,9 +51,9 @@ fn rigger_validate_accepts_each_well_formed_extractors_declaration_and_refuses_e
 }
 
 #[cfg(feature = "symbols")]
-use common::cli::{repository_code_store, run_rigger_ok, source_repository};
+use common::cli::{head_of, repository_code_store, run_rigger_ok, source_repository};
 #[cfg(feature = "symbols")]
-use common::fixtures::{git_ok, git_out};
+use common::fixtures::git_ok;
 #[cfg(feature = "symbols")]
 use rigger_domain::code_view::CodeView;
 #[cfg(feature = "symbols")]
@@ -107,6 +107,8 @@ fn with_no_declaration_or_a_failing_one_graph_build_advances_the_bundled_grammar
             ok,
             "{workflow:?}: graph build succeeds; stdout: {out}; stderr: {err}"
         );
+        // Each read of the declaration says why it fails, and graph build reads it for the store
+        // in force and again to open the store, so the lines it says are compared as a set.
         assert_eq!(
             err.lines().collect::<BTreeSet<_>>(),
             why.map(|why| format!("rigger: extractors: {why}"))
@@ -115,7 +117,7 @@ fn with_no_declaration_or_a_failing_one_graph_build_advances_the_bundled_grammar
                 .collect::<BTreeSet<_>>(),
             "{workflow:?}: every line graph build says on stderr"
         );
-        let head = git_out(&root, &["rev-parse", "HEAD"]);
+        let head = head_of(&root);
         let advanced = Store::new(&root)
             .current(bundled)
             .expect("the store reads")
