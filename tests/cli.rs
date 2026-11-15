@@ -12845,8 +12845,8 @@ fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
 // ---------------------------------------------------------------------------
 
 /// Set a test's `build:` block on a scaffolded project's `.rigger/workflow.yml`, REPLACING
-/// any `build:` block the file already holds (the scaffold's, or one an earlier call set)
-/// rather than blindly appending a second one: two top-level `build:` keys are a YAML parse
+/// any `build:` block the file already holds (one an earlier call set, say) rather than
+/// blindly appending a second one: two top-level `build:` keys are a YAML parse
 /// error ("duplicate field `build`"), not the single block each test below means to exercise.
 fn append_build_block(root: &Path, block: &str) {
     let path = root.join(".rigger").join("workflow.yml");
@@ -12860,7 +12860,7 @@ fn append_build_block(root: &Path, block: &str) {
         }
         if in_build {
             if line.trim().is_empty() || line.starts_with(' ') || line.starts_with('\t') {
-                continue; // still inside the scaffolded build: block (or its trailing blank)
+                continue; // still inside the existing build: block (or its trailing blank)
             }
             in_build = false;
         }
