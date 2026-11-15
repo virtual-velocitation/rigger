@@ -205,8 +205,8 @@ pub(crate) fn cmd_progress(args: &[String]) -> Res {
 }
 
 /// Spec 94 CONSTRAINTS WALK's own empty-store text ("no run recorded; start one with `rigger
-/// run <spec>`"): the ONE placeholder [`cmd_status`]'s `--line` path renders for the literal
-/// state `rigger setup` itself leaves every project in (no `.rigger/events.db` anywhere yet,
+/// run <spec>`"): the ONE placeholder [`cmd_status`] and `rigger watch --once` ([`cmd_watch`])
+/// render for the literal state `rigger setup` itself leaves every project in (no `.rigger/events.db` anywhere yet,
 /// until the first `rigger run` - or again after a store reset), so this line and the future
 /// console page's identical empty-store render (specs 95-98) are never two independently-
 /// worded copies of the same fact.
@@ -255,18 +255,17 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // [`store_if_any`], which DOWNCASTS on [`NoStoreFound`] specifically (never a string match on
     // its message), so every OTHER `--line` failure (a corrupt store, an unreadable stream) still
     // propagates exactly as before this round - only the no-store-at-all case degrades. The
-    // default and `--json` paths below are human-invoked and keep the CLI's existing hard
-    // refusal unchanged: this fast path is `--line`-only.
-    let (loc, selection) = if line {
-        match store_if_any()? {
-            Some(pair) => pair,
-            None => {
-                println!("{NO_RUN_RECORDED_LINE}");
-                return Ok(());
-            }
-        }
+    // default and `--json` paths are human-invoked: a project set up before its first run
+    // says the same (`--json` as the empty view it is), and a directory with no store at all
+    // keeps the wrong-directory refusal ([`store_to_report`]).
+    let found = if line {
+        store_if_any()?
     } else {
-        require_store_dir()?
+        store_to_report()?
+    };
+    let Some((loc, selection)) = found else {
+        println!("{}", if json { "[]" } else { NO_RUN_RECORDED_LINE });
+        return Ok(());
     };
     let now = std::time::SystemTime::now();
 
@@ -533,7 +532,15 @@ pub(crate) fn cmd_watch(args: &[String]) -> Res {
     let mut dedup = watch::Dedup::new();
     let mut ci_unread: Option<String> = None;
     loop {
-        let poll = require_store_dir().and_then(|(loc, selection)| {
+        // A project set up before its first run has nothing to watch yet: `--once` says so, and
+        // the watch polls on until the first run writes the log ([`store_to_report`]).
+        let poll = store_to_report().and_then(|found| {
+            let Some((loc, selection)) = found else {
+                if once {
+                    println!("{NO_RUN_RECORDED_LINE}");
+                }
+                return Ok(Vec::new());
+            };
             let ci = run_tip_ci(&loc.repo_root());
             if let Some(note) = unread_ci_note(&ci, &mut ci_unread) {
                 eprintln!("{note}");

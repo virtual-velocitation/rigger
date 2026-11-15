@@ -13436,6 +13436,21 @@ impl RunCtx<'_> {
                 terminal.insert(id);
             }
         }
+        // THE DAG IS RECORDED (spec 126, criterion 2): this is the one place the DAG's membership
+        // changes once the run built it (the template's removal and the baselines come before the
+        // first call; the supersede removal and every added proposal happen above), so the units
+        // it now holds are recorded here whenever they differ from the latest record in the slice
+        // read at the start. Every key of `stages` is a stage the conductor starts as a unit, so
+        // the record is what the run owes ([`ledger::RunState::owed`]). Comparing with the log
+        // keeps a repeated harvest, a replay and a resume over an unchanged DAG from appending,
+        // and lets a process that died before the emit leave its record to the next one's
+        // catch-up harvest; an empty DAG equals the empty set no record means.
+        let recorded = ledger::recorded_dag(&events).map_err(|e| Error(e.to_string()))?;
+        if stages.keys().ne(recorded.iter()) {
+            let body = serde_json::to_value(ledger::DagRecorded::of(stages.keys()))
+                .map_err(|e| Error(e.to_string()))?;
+            self.emit(ledger::TYPE_DAG_RECORDED, body)?;
+        }
         Ok(())
     }
 
@@ -19973,6 +19988,100 @@ mod tests {
         )
         .unwrap();
         stages
+    }
+
+    /// Spec 126, criterion 2 (THE CONDUCTOR RECORDS ITS DAG): `harvest_proposed` records the
+    /// units its DAG holds whenever that set changes, and only then. Over a two-criterion
+    /// fan-out whose planner proposes one unit per criterion, the record names the static stages
+    /// and both proposals and no superseded baseline; a second harvest, live or in a resumed
+    /// process, appends nothing; a later episode's proposal superseding an unstarted unit
+    /// appends a record without it.
+    #[test]
+    fn harvest_records_the_dag_it_holds_each_time_the_set_changes() {
+        let crit_a = "criterion A: the alpha module is implemented";
+        let crit_b = "criterion B: the beta module is implemented";
+        let (cid_a, cid_b) = (
+            criterion_stable_id(1, crit_a),
+            criterion_stable_id(2, crit_b),
+        );
+        let st = Store::open(":memory:").unwrap();
+        let first = "plan/implementer#0";
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                proposal_event(proposal_data("u-a", crit_a, &cid_a), Some(first)),
+                proposal_event(proposal_data("u-b", crit_b, &cid_b), Some(first)),
+            ],
+        )
+        .unwrap();
+        let recorded = |st: &Store| -> Vec<Vec<String>> {
+            st.read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .into_iter()
+                .filter(|e| e.type_ == ledger::TYPE_DAG_RECORDED)
+                .map(|e| {
+                    let body: Value = serde_json::from_slice(&e.data).unwrap();
+                    serde_json::from_value(body["units"].clone()).unwrap()
+                })
+                .collect()
+        };
+        let set = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let planned = set(&["plan", "plan-critique", "u-a", "u-b"]);
+        let replanned = set(&["plan", "plan-critique", "u-a", "u-b2"]);
+
+        let cfg = supersede_cfg();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let (mut proposed, mut integrated, mut terminal) =
+            (HashSet::new(), HashSet::new(), HashSet::new());
+
+        enum Step {
+            /// The live process harvests again over its own DAG.
+            Live,
+            /// A fresh process seeds the DAG and harvests the whole log, as a resume does.
+            Resumed,
+            /// A later planner episode proposes `id` for criterion B, then the live process
+            /// harvests.
+            LaterProposal(&'static str),
+        }
+        // (the step, every record the log holds after it)
+        let steps = [
+            (Step::Live, vec![planned.clone()]),
+            (Step::Live, vec![planned.clone()]),
+            (Step::Resumed, vec![planned.clone()]),
+            (
+                Step::LaterProposal("u-b2"),
+                vec![planned.clone(), replanned.clone()],
+            ),
+            (Step::Resumed, vec![planned, replanned]),
+        ];
+        for (n, (step, want)) in steps.into_iter().enumerate() {
+            match step {
+                Step::Live => {}
+                Step::Resumed => {
+                    harvest_seeded(&st, &[crit_a, crit_b]);
+                    assert_eq!(recorded(&st), want, "step {n}: a resumed harvest");
+                    continue;
+                }
+                Step::LaterProposal(id) => st
+                    .append(
+                        STREAM,
+                        ExpectedRevision::Any,
+                        &[proposal_event(
+                            proposal_data(id, crit_b, &cid_b),
+                            Some("plan/replan#1"),
+                        )],
+                    )
+                    .map(|_| ())
+                    .unwrap(),
+            }
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
+                .unwrap();
+            assert_eq!(recorded(&st), want, "step {n}: a live harvest");
+        }
     }
 
     /// The spec both runs of a landed-criterion row run under, unless the row moves run 1.
@@ -49391,6 +49500,77 @@ mod tests {
             critique.contains("`u-a`") && critique.contains("`u-b`"),
             "the adversary critiques the units the planner proposed; got:\n{critique}"
         );
+    }
+
+    /// Spec 126 (D01 through D02): over a whole run through the real conductor - a clean
+    /// approve, a reject that feeds a re-plan, and a planner unit superseding a baseline - the
+    /// log the run writes reads not done after every landing but the last and done after the
+    /// last, so no reader of the log claims done between one unit's landing and the next
+    /// unit's start.
+    #[test]
+    fn a_whole_run_reads_done_only_once_its_last_unit_lands() {
+        let crit_a = "the alpha module is implemented";
+        let crit_b = "the beta module is implemented";
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit_a}\n")).unwrap();
+        std::fs::write(dir.path().join("beta.rs"), format!("// {crit_b}\n")).unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let approving = CritiqueDriver::new(Vec::new());
+        let rejecting_once = CritiqueDriver::rejecting(Vec::new(), false);
+        let superseding = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id": "planner-unit-a", "agent": "worker", "criterion": crit_a,
+                       "gates": ["ok"]}),
+            )],
+            ..Stub::new()
+        };
+        // (case, the workflow, the driver)
+        let rows: [(&str, Config, &dyn AgentDriver); 3] = [
+            ("a clean decomposition approves", critique_cfg(), &approving),
+            (
+                "a reject feeds a re-plan that approves",
+                critique_cfg(),
+                &rejecting_once,
+            ),
+            (
+                "a planner unit supersedes a baseline",
+                supersede_cfg(),
+                &superseding,
+            ),
+        ];
+        for (case, cfg, driver) in rows {
+            let st = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                grounder: Some(&grep),
+                ..stub_deps(&st, driver, vec![crit_a.to_string(), crit_b.to_string()])
+            };
+            run_isolated(&cfg, &deps).unwrap();
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let landings: Vec<usize> = events
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+                .map(|(i, _)| i)
+                .collect();
+            assert!(
+                landings.len() >= 3,
+                "{case}: the run lands the planner and both criteria's units: {landings:?}"
+            );
+            let read: Vec<bool> = landings
+                .iter()
+                .map(|&i| ledger::project(&events[..=i]).unwrap().done())
+                .collect();
+            let mut expected = vec![false; landings.len() - 1];
+            expected.push(true);
+            assert_eq!(read, expected, "{case}: done after each landing, in order");
+            assert!(
+                ledger::project(&events).unwrap().done(),
+                "{case}: the finished run reads done"
+            );
+        }
     }
 
     #[test]

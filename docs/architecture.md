@@ -375,7 +375,7 @@ flowchart LR
 ```
 
 **"done" is a machine-verifiable predicate:** every spec criterion covered + every unit
-integrated + every gate green. Never "looks done."
+the run's recorded DAG owes integrated + every gate green. Never "looks done."
 
 ### 4.2 Durable state: the ledger *is* a projection of the event log
 
