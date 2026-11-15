@@ -14,11 +14,13 @@ path = "src/lib.rs"
 # `any(feature = "store", not(feature = "core"))` there carries the same gate here, and the
 # root forwards both features, so every lane compiles exactly the surface it did before.
 default = ["store"]
-store = ["rigger-domain/store"]
-core = ["rigger-domain/core"]
+store = ["rigger-domain/store", "rigger-process/store"]
+core = ["rigger-domain/core", "rigger-process/core"]
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
+# The one read of the user's home directory, the state home's fallback (a same-ring edge).
+rigger-process = { path = "../rigger-process", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

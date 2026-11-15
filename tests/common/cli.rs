@@ -98,6 +98,23 @@ pub fn committed_project(workflow: &str) -> (tempfile::TempDir, tempfile::TempDi
     (root, short_scratch())
 }
 
+/// The workflow block declaring the one gate `g`, which runs `run`, under no build budget, so a
+/// gate run takes no slot from a machine-wide pool.
+pub fn one_gate_workflow(run: &str) -> String {
+    format!("build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"{run}\"\n    kind: core\n")
+}
+
+/// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
+/// (stdout, stderr, success).
+pub fn rigger_in(root: &Path, scratch: &Path, args: &[&str]) -> (String, String, bool) {
+    let scratch = scratch.to_str().unwrap();
+    run_rigger_envs(
+        root,
+        args,
+        &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
+    )
+}
+
 /// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
 /// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
 /// only about a hundred bytes, which a long `TMPDIR` would exceed.
@@ -2627,6 +2644,16 @@ pub fn wall_clock_advisory_naming(roles: &str) -> String {
 pub fn wall_clock_advisory_lines(stderr: &str) -> Vec<&str> {
     lines_where(stderr, |line| line.contains("gating role(s)"))
 }
+
+/// Every line of `stdout`, what `rigger validate` printed there, that reports the build
+/// environment, in order: each `build env:` line, then the `build budget:` line.
+pub fn build_report_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("build "))
+}
+
+/// The [`build_report_lines`] of a workflow declaring no build variable and no build budget:
+/// none declared, then the default budget of 4.
+pub const UNDECLARED_BUILD_REPORT: &[&str] = &["build env: none declared", "build budget: 4"];
 
 /// The lines of `text` that `keep` admits, in order: the one picker of the lines a command
 /// printed that a test compares.

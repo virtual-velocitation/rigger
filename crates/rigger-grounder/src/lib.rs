@@ -5,7 +5,7 @@
 //! re-exports them under their historical `rigger::grounder` and `rigger::ingest` paths.
 
 /// Extraction to facts: a file's path and bytes read into the facts the code store holds, over the
-/// symbol, design and workflow extractors.
+/// symbol, design and workflow extractors and the extractors a project's workflow declares.
 #[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 pub mod facts;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -77,6 +77,18 @@ mod caller_sources;
 #[allow(dead_code)]
 #[path = "../../../tests/common/fixtures/extractors.rs"]
 mod extractors_fixtures;
+
+/// THE EXTRACTOR PROTOCOL's stub extractor the declared extractions are tested against, compiled
+/// here from the same file as the root crate's tests. It runs under `sh`, so only the unix tests
+/// of the lanes holding the code store start it.
+#[cfg(all(
+    test,
+    feature = "symbols",
+    any(feature = "store", not(feature = "core"))
+))]
+#[allow(dead_code)]
+#[path = "../../../tests/common/fixtures/extractor_stub.rs"]
+mod extractor_stub;
 
 /// THE NAME FILTER SOURCES the name-filter tests extract, compiled here from the same file as the
 /// root crate's tests. It names no crate; only the default lane's tests extract them.

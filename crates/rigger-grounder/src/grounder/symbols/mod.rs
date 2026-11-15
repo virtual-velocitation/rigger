@@ -87,8 +87,8 @@ pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
 /// text only once a grammar resolves, so a path under no grammar costs no read. This is the ONE place
 /// a path's grammar is paired with the extraction its stored symbols come from, so every reader
 /// of them reads the same symbols from the same text; a show
-/// surface's body bound resolves its grammar itself and extracts through
-/// [`extract::locate_extent`].
+/// surface's body bound, for a file whose extension no declared extractor lists, resolves its
+/// grammar itself and extracts through [`extract::locate_extent`].
 #[cfg(feature = "symbols")]
 pub(crate) fn extracted<S: AsRef<str>>(
     path: &str,

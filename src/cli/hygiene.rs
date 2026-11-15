@@ -373,16 +373,16 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 
 /// `rigger reset --scratch-orphans`: reclaim every root under `<cache-home>/rigger` whose
 /// repo no longer exists ([`rigger::worktree::sweep_orphan_scratch_roots`]) and report how
-/// many went. The directory is resolved from the ambient `XDG_CACHE_HOME`/`HOME` exactly as
-/// the default scratch-root rung resolves it, so the sweep and the placement can never name
-/// different directories.
+/// many went. The directory is resolved from the ambient `XDG_CACHE_HOME` and the home directory
+/// ([`rigger_process::home_dir`]) exactly as the default scratch-root rung resolves it, so the
+/// sweep and the placement can never name different directories.
 fn reset_scratch_orphans() -> Res {
     let Some(cache_home) = rigger::driver::replay::cache_home_from(
         std::env::var_os(rigger::driver::replay::CACHE_HOME_ENV),
-        std::env::var_os(rigger::registry::HOME_ENV),
+        rigger_process::home_dir(),
     ) else {
         return Err(
-            "reset --scratch-orphans: neither XDG_CACHE_HOME nor HOME is set, so \
+            "reset --scratch-orphans: neither XDG_CACHE_HOME nor a home directory is known, so \
                     there is no cache-home scratch directory to sweep"
                 .into(),
         );

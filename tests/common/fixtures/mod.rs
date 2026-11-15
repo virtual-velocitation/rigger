@@ -19,6 +19,7 @@ mod csharp_definition_sources;
 mod docs_overlay;
 mod events;
 mod extraction_tree;
+mod extractor_stub;
 mod extractors;
 mod git;
 mod go_definition_sources;
@@ -49,6 +50,7 @@ pub use csharp_definition_sources::*;
 pub use docs_overlay::*;
 pub use events::*;
 pub use extraction_tree::*;
+pub use extractor_stub::*;
 pub use extractors::*;
 pub use git::*;
 pub use go_definition_sources::*;
@@ -73,6 +75,8 @@ pub use scratch::*;
 pub use shown::*;
 pub use spawn::*;
 
+#[cfg(any(feature = "store", not(feature = "core")))]
+mod build_cache_guard;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod canary;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -99,6 +103,8 @@ mod sqlite;
 mod store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod write_lock;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use build_cache_guard::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use canary::*;
 #[cfg(any(feature = "store", not(feature = "core")))]

@@ -9,8 +9,10 @@
 //! `tests/boundary_audit.rs` finds string literals with and its appender audit finds calls with,
 //! and the token readers the boundary audit reads its tokens with ([`ref_punct`], [`ref_token`],
 //! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
-//! [`imported_names`]). Each suite uses the subset it needs (hence the
-//! module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
+//! [`imported_names`]). And the boundary scans' one rule, [`literal_outside`], with the fixture
+//! reader [`flagged_by`] and its empty expectation [`none`], which `tests/os_process_boundary.rs`,
+//! `tests/os_shell_boundary.rs` and `tests/os_home_boundary.rs` share. Each suite uses the subset
+//! it needs (hence the module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
 
@@ -65,6 +67,58 @@ pub fn assert_real_tree_clean(scan: fn(&Path) -> Vec<Finding>, audit: &str, what
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// The rule of the boundary scans (spec 125, THE BOUNDARY SCANS) over `sources`, the production
+/// files as `(path, text)` pairs: each line holding `literal` in a file other than `home`, outside
+/// that file's `#[cfg(test)]` modules and off its comment lines, is one finding of `shape` naming
+/// the file and the line.
+pub fn literal_outside(
+    sources: &[(String, String)],
+    home: &str,
+    literal: &str,
+    shape: &'static str,
+) -> Vec<Finding> {
+    sources
+        .iter()
+        .filter(|(rel, _)| rel != home)
+        .flat_map(|(rel, content)| {
+            let lines: Vec<&str> = content.lines().collect();
+            let tests = cfg_test_ranges(&lines);
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(i, line)| {
+                    line.contains(literal) && !in_ranges(*i, &tests) && !is_comment_line(line)
+                })
+                .map(|(i, line)| Finding {
+                    file: rel.clone(),
+                    line_no: i + 1,
+                    shape,
+                    line_text: line.to_string(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The `(file, line)` of each finding `scan` yields over a fixture tree holding `content` at `rel`.
+pub fn flagged_by(
+    scan: fn(&Path) -> Vec<Finding>,
+    rel: &str,
+    content: &str,
+) -> Vec<(String, usize)> {
+    let root = tempfile::tempdir().unwrap();
+    write_file(root.path(), rel, content);
+    scan(root.path())
+        .into_iter()
+        .map(|f| (f.file, f.line_no))
+        .collect()
+}
+
+/// No finding: what [`flagged_by`] answers for a fixture its scan passes.
+pub fn none() -> Vec<(String, usize)> {
+    Vec::new()
 }
 
 /// The number of leading ASCII space characters on `line` - this audit's sole proxy for

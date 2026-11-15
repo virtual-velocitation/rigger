@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use crate::common;
 use common::git::run_git;
 
+use common::cli::build_report_lines;
 use common::cli::graph_node_ids;
 use common::cli::path_without;
 use common::cli::pin_identity;
@@ -37,6 +38,7 @@ use common::cli::temp_project;
 use common::cli::temp_repoless_project;
 use common::cli::temp_store_project;
 use common::cli::validate_after_init;
+use common::cli::UNDECLARED_BUILD_REPORT;
 use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 use common::cli::{
     declare_default, declare_grep_guard, declare_sdet_author, write_scaffold,
@@ -49,6 +51,7 @@ use common::cli::{
     run_on_arms_beside_with, run_recording, POLLS_BESIDE_A_RUN, RECORDING_WORKER_ARM,
 };
 use common::fixtures::file_len;
+use common::fixtures::MAX_PARALLEL_UNITS_DECLARED;
 use common::fixtures::{
     api_retry_lines, headless_progress_frame, recorded_argv, recorded_task, stand_in_launches,
     ERROR_RESULT, GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
@@ -1322,6 +1325,23 @@ enum ScratchHome {
     /// The suite's pinned cache home, under a root whose `workflow.yml` configures
     /// `defaults.workdir` and holds no `.rigger/agents/` fleet.
     ConfiguredWorkdir,
+    /// The suite's pinned cache home, under a root whose `workflow.yml` configures the `~/`
+    /// workdir [`TILDE_WORKDIR`], with `HOME` set as the [`TildeHome`] says.
+    TildeWorkdir(TildeHome),
+}
+
+/// The `~/` `defaults.workdir` a [`ScratchHome::TildeWorkdir`] row configures.
+const TILDE_WORKDIR: &str = "~/tilde-scratch";
+
+/// How a [`ScratchHome::TildeWorkdir`] row sets `HOME`.
+#[derive(Clone, Copy)]
+enum TildeHome {
+    /// A throwaway dir, which the leading `~/` expands to.
+    Throwaway,
+    /// The empty string, which counts as unset, so the `~/` stays unexpanded.
+    Empty,
+    /// Removed, so the `~/` stays unexpanded.
+    Removed,
 }
 
 /// Spec 77, criterion 2 (AGENT SCRATCH IS SPAWN-OWNED), with spec 89 criterion 2 (SCRATCH IS
@@ -1333,7 +1353,8 @@ enum ScratchHome {
 /// (`cache_scratch_root_from`'s XDG-then-`$HOME/.cache` precedence, wired at the real call
 /// site), the repo-nested `<repo>/.rigger/tmp` degrade only when genuinely homeless, and a
 /// configured `defaults.workdir` read without a loadable agents fleet, never the default because
-/// a full config load failed.
+/// a full config load failed. Spec 125 criterion 11 (THE HOME): a `~/` workdir expands under the
+/// one home read, which counts an empty `HOME` as unset and so leaves the `~/` unexpanded.
 fn assert_the_spawn_scratch_tool_resolves(home: ScratchHome) {
     let dir = run_started_project();
     let root = dir.path();
@@ -1364,6 +1385,18 @@ fn assert_the_spawn_scratch_tool_resolves(home: ScratchHome) {
             );
             throwaway.path().to_path_buf()
         }
+        ScratchHome::TildeWorkdir(tilde_home) => {
+            std::fs::write(
+                root.join(".rigger").join("workflow.yml"),
+                format!("defaults:\n  workdir: \"{TILDE_WORKDIR}\"\n"),
+            )
+            .unwrap();
+            let rest = TILDE_WORKDIR.strip_prefix("~/").unwrap();
+            match tilde_home {
+                TildeHome::Throwaway => throwaway.path().join(rest),
+                TildeHome::Empty | TildeHome::Removed => root.join(TILDE_WORKDIR),
+            }
+        }
     };
     let answered = spawn_scratch_tool(root, "u/implementer#0", |cmd| match home {
         ScratchHome::HomeOnly => {
@@ -1372,6 +1405,15 @@ fn assert_the_spawn_scratch_tool_resolves(home: ScratchHome) {
         }
         ScratchHome::Homeless => {
             cmd.env_remove("XDG_CACHE_HOME").env_remove("HOME");
+        }
+        ScratchHome::TildeWorkdir(TildeHome::Throwaway) => {
+            cmd.env("HOME", throwaway.path());
+        }
+        ScratchHome::TildeWorkdir(TildeHome::Empty) => {
+            cmd.env("HOME", "");
+        }
+        ScratchHome::TildeWorkdir(TildeHome::Removed) => {
+            cmd.env_remove("HOME");
         }
         ScratchHome::CacheHome | ScratchHome::ConfiguredWorkdir => {}
     });
@@ -1398,6 +1440,19 @@ rigger::test_cases! {
     /// A configured `defaults.workdir` at an agents-less owning root.
     the_spawn_scratch_tool_resolves_a_configured_workdir_with_no_agents_fleet_present:
         assert_the_spawn_scratch_tool_resolves(ScratchHome::ConfiguredWorkdir);
+    /// A `~/` workdir expands under the process `HOME` (on unix, the one home read is `HOME`).
+    #[cfg(unix)]
+    the_spawn_scratch_tool_expands_a_tilde_workdir_under_home:
+        assert_the_spawn_scratch_tool_resolves(ScratchHome::TildeWorkdir(TildeHome::Throwaway));
+    /// An empty `HOME` counts as unset: the `~/` workdir stays unexpanded and resolves against
+    /// the repository, never to the filesystem root.
+    #[cfg(unix)]
+    the_spawn_scratch_tool_leaves_a_tilde_workdir_unexpanded_when_home_is_empty:
+        assert_the_spawn_scratch_tool_resolves(ScratchHome::TildeWorkdir(TildeHome::Empty));
+    /// `HOME` removed: the `~/` workdir stays unexpanded and resolves against the repository.
+    #[cfg(unix)]
+    the_spawn_scratch_tool_leaves_a_tilde_workdir_unexpanded_when_home_is_removed:
+        assert_the_spawn_scratch_tool_resolves(ScratchHome::TildeWorkdir(TildeHome::Removed));
 }
 
 /// PERIPHERY: the spawn-bound `rigger_scratch` tool and `rigger result <id>` converge on the ONE
@@ -12973,18 +13028,22 @@ fn validate_refuses_each_refused_build_block_before_any_output() {
 }
 
 /// THE VALIDATE REPORT NAMES THE DECLARATION: GIVEN an initialized project whose workflow is the
-/// fresh scaffold's, untouched, with no `build:` block, or whose `build:` block declares `B`, `J`
-/// and `L`, or carries a retired `build.wrapper` or `build.cache_dir` key with an empty or
-/// whitespace-only value, WHEN the operator runs `rigger validate`, THEN it passes, and its build
-/// lines are one `build env: NAME=template` line per declared variable in name order, or
-/// `build env: none declared`, followed by the build budget.
+/// fresh scaffold's, untouched, its `build:` block declaring `env: {}`, or whose `build:` block
+/// declares `B`, `J` and `L`, or carries a retired `build.wrapper` or `build.cache_dir` key with
+/// an empty or whitespace-only value, WHEN the operator runs `rigger validate`, THEN it passes,
+/// and its build lines are one `build env: NAME=template` line per declared variable in name
+/// order, or `build env: none declared`, followed by the build budget.
 #[test]
 fn validate_reports_each_declared_build_variable_then_the_budget() {
-    // Nothing declared and no budget key: a workflow with no `build:` block and a `build:` block
-    // without `max_concurrent` both resolve the budget to 4.
-    const NONE_DECLARED: &[&str] = &["build env: none declared", "build budget: 4"];
+    // Nothing declared and no budget key: the fresh scaffold's `build:` block, declaring
+    // `env: {}`, and a `build:` block carrying only an empty or whitespace-only retired key both
+    // resolve the budget to 4.
     let cases: [(&str, Option<String>, &[&str]); 2] = [
-        ("the fresh scaffold, untouched", None, NONE_DECLARED),
+        (
+            "the fresh scaffold, untouched",
+            None,
+            UNDECLARED_BUILD_REPORT,
+        ),
         (
             "B, J and L with jobs 3 and no budget",
             Some(build_block_declaring(&DECLARED_BJL, 3)),
@@ -12999,7 +13058,13 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
     let retired_but_empty = RETIRED_BUILD_KEYS
         .iter()
         .filter(|row| row.refusal.is_none())
-        .map(|row| (row.why, Some(row.block.to_string()), NONE_DECLARED));
+        .map(|row| {
+            (
+                row.why,
+                Some(row.block.to_string()),
+                UNDECLARED_BUILD_REPORT,
+            )
+        });
     for (why, block, want) in cases.into_iter().chain(retired_but_empty) {
         let dir = initialized_project();
         let root = dir.path();
@@ -13008,13 +13073,7 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
         }
         let (out, err, ok) = run_rigger(root, &["validate"]);
         assert!(ok, "{why}: validate passes; stdout:\n{out}\nstderr:\n{err}");
-        assert_eq!(
-            out.lines()
-                .filter(|l| l.starts_with("build "))
-                .collect::<Vec<_>>(),
-            want,
-            "{why}: stdout:\n{out}"
-        );
+        assert_eq!(build_report_lines(&out), want, "{why}: stdout:\n{out}");
     }
 }
 
@@ -13042,15 +13101,14 @@ fn a_fresh_scaffolded_init_writes_max_parallel_units_and_validates_through_the_b
 
     let workflow_path = root.join(".rigger").join("workflow.yml");
     let workflow = std::fs::read_to_string(&workflow_path).unwrap();
-    assert!(
-        workflow.contains("max_parallel_units: 2\n"),
-        "a fresh scaffold must declare max_parallel_units: 2 verbatim on disk; \
-         workflow.yml:\n{workflow}"
-    );
-    assert!(
-        workflow.contains("build cache"),
-        "the scaffold must carry the sizing comment next to max_parallel_units, not a \
-         bare unexplained number; workflow.yml:\n{workflow}"
+    assert_eq!(
+        (
+            workflow.matches(MAX_PARALLEL_UNITS_DECLARED).count(),
+            workflow.matches("max_parallel_units").count()
+        ),
+        (1, 1),
+        "a fresh scaffold must declare max_parallel_units: 2 verbatim on disk, right under the \
+         sizing comment, not a bare unexplained number; workflow.yml:\n{workflow}"
     );
 
     let path = real_path_dir_of("git");
@@ -29438,6 +29496,136 @@ fn reset_scratch_orphans_reclaims_cache_roots_whose_repo_is_gone_and_keeps_the_r
         out.contains("reclaimed 0 scratch root(s)"),
         "second pass is a no-op: {out}"
     );
+}
+
+/// `rigger reset --scratch-orphans` with `XDG_CACHE_HOME` removed and `HOME` set to `home`, or
+/// removed when `home` is `None`, knows no cache home: it fails with exit code 1, prints nothing
+/// to stdout and prints the one refusal line to stderr.
+#[cfg(unix)]
+fn assert_scratch_orphans_refuses_with_no_home(home: Option<&str>) {
+    let dir = temp_store_project();
+    let state = tempfile::tempdir().unwrap();
+    let mut cmd = common::cli::rigger_command(
+        dir.path(),
+        &["reset", "--scratch-orphans"],
+        &[],
+        state.path(),
+    );
+    cmd.env_remove("XDG_CACHE_HOME");
+    match home {
+        Some(home) => cmd.env("HOME", home),
+        None => cmd.env_remove("HOME"),
+    };
+    let out = cmd.output().expect("the rigger binary runs");
+    assert_eq!(
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ),
+        (
+            Some(1),
+            String::new(),
+            "rigger: reset --scratch-orphans: neither XDG_CACHE_HOME nor a home directory is \
+             known, so there is no cache-home scratch directory to sweep\n"
+                .to_string(),
+        )
+    );
+}
+
+rigger::test_cases! {
+    /// `HOME` removed: no home directory is known.
+    #[cfg(unix)]
+    reset_scratch_orphans_refuses_when_home_is_removed:
+        assert_scratch_orphans_refuses_with_no_home(None);
+    /// `HOME` empty: an empty value counts as unset, so no home directory is known either.
+    #[cfg(unix)]
+    reset_scratch_orphans_refuses_when_home_is_empty:
+        assert_scratch_orphans_refuses_with_no_home(Some(""));
+}
+
+/// Given the same three scratch roots planted under both `<HOME>/.cache/rigger` and
+/// `<XDG_CACHE_HOME>/rigger` (one keyed on this live project, one keyed on a deleted checkout,
+/// one that is not an encoded repo path), when `rigger reset --scratch-orphans` runs with `HOME`
+/// set and `XDG_CACHE_HOME` set when `xdg_cache_home_set`, removed otherwise, then it sweeps
+/// ONLY the cache home that wins (the XDG one when set, `$HOME/.cache` when not): it exits 0,
+/// prints the one reclaimed line naming that directory, and leaves the other directory's three
+/// roots untouched.
+#[cfg(unix)]
+fn assert_scratch_orphans_sweeps_the_winning_cache_home(xdg_cache_home_set: bool) {
+    let dir = temp_store_project();
+    let root = dir.path();
+    let state = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let xdg = tempfile::tempdir().unwrap();
+    let home_rigger = home.path().join(".cache").join("rigger");
+    let xdg_rigger = xdg.path().join("rigger");
+    let enc = |p: &str| rigger::liveness::marker_filename(p).unwrap();
+    let live = enc(root.to_str().unwrap());
+    let gone = enc(&format!("{}/deleted-checkout", root.display()));
+    let plain = "test-tmp".to_string();
+    for rigger_dir in [&home_rigger, &xdg_rigger] {
+        for name in [&live, &gone, &plain] {
+            std::fs::create_dir_all(rigger_dir.join(name).join("rigger-wt-unit")).unwrap();
+        }
+    }
+    let mut cmd =
+        common::cli::rigger_command(root, &["reset", "--scratch-orphans"], &[], state.path());
+    cmd.env("HOME", home.path());
+    if xdg_cache_home_set {
+        cmd.env("XDG_CACHE_HOME", xdg.path());
+    } else {
+        cmd.env_remove("XDG_CACHE_HOME");
+    }
+    let swept = if xdg_cache_home_set {
+        &xdg_rigger
+    } else {
+        &home_rigger
+    };
+    let out = cmd.output().expect("the rigger binary runs");
+    assert_eq!(
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ),
+        (
+            Some(0),
+            format!(
+                "--scratch-orphans: reclaimed 1 scratch root(s) whose repo no longer exists under {}\n",
+                swept.display()
+            ),
+            String::new(),
+        )
+    );
+    let mut kept = vec![live.clone(), plain.clone()];
+    kept.sort();
+    let mut untouched = vec![live, gone, plain];
+    untouched.sort();
+    let (home_left, xdg_left) = if xdg_cache_home_set {
+        (untouched, kept)
+    } else {
+        (kept, untouched)
+    };
+    assert_eq!(
+        (
+            common::fixtures::sorted_dir_names(&home_rigger),
+            common::fixtures::sorted_dir_names(&xdg_rigger),
+        ),
+        (home_left, xdg_left),
+        "only the winning cache home's orphan root is reclaimed"
+    );
+}
+
+rigger::test_cases! {
+    /// `XDG_CACHE_HOME` removed: the home read's `$HOME/.cache` is the cache home swept.
+    #[cfg(unix)]
+    reset_scratch_orphans_sweeps_home_dot_cache_when_xdg_cache_home_is_removed:
+        assert_scratch_orphans_sweeps_the_winning_cache_home(false);
+    /// `XDG_CACHE_HOME` set beside `HOME`: the XDG cache home wins, `$HOME/.cache` is untouched.
+    #[cfg(unix)]
+    reset_scratch_orphans_sweeps_xdg_cache_home_over_home_dot_cache:
+        assert_scratch_orphans_sweeps_the_winning_cache_home(true);
 }
 
 #[test]

@@ -11,6 +11,8 @@ gates: |
   red-before-green: { run: "sh .rigger/gates/red-before-green.sh", kind: core }
 implement: [fmt, build, test, lint, red-before-green]
 checkin: [fmt, build, test, lint]
+# The variables rigger exports to every gate and spawn: cargo's job count and its build cache.
+env: {CARGO_BUILD_JOBS: "{jobs}", CARGO_TARGET_DIR: "{build_cache}"}
 # The implement and checkin stages' agent: rigger init writes it as .rigger/agents/<id>.md.
 implementer: |
   ---

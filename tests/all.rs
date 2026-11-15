@@ -99,6 +99,8 @@ mod dash_release_ready;
 mod dash_run_tree_spine;
 mod dash_whole_projection_reach;
 mod data_member_is_no_call_target_periphery;
+#[cfg(all(unix, feature = "symbols"))]
+mod declared_extractor_grounds_its_language_periphery;
 mod dedup_seeding_periphery;
 mod derived_append_refusal_periphery;
 mod derived_types_refused_periphery;
@@ -168,7 +170,9 @@ mod no_os_kill_audit;
 mod no_os_kill_test_helper_periphery;
 mod one_path_is_one_event_periphery;
 mod one_shot_reads_periphery;
+mod os_home_boundary;
 mod os_process_boundary;
+mod os_shell_boundary;
 mod parallel_ordered_emit;
 mod plan_critique_spec_defect_stop_periphery;
 mod plan_stage_commit_landing_periphery;

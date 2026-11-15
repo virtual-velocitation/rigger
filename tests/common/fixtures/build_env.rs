@@ -1,13 +1,26 @@
-//! The declared build environment's shared rows (spec 125 criterion 4): the declaration the
+//! The declared build environment's shared rows (spec 125 criteria 4 and 6): the declaration the
 //! criterion names, the `build` block that declares a set of variables, in its typed and its
-//! workflow-file form, every `build.env` entry the one check refuses with the exact refusal it
-//! names, and every `build` block carrying a retired key with what validation answers for it. It
-//! names only the domain crate, so the gate adapter's, the config adapter's, the conductor's and
-//! the root crate's tests read one copy.
+//! workflow-file form, the Rust gate template set's `env` and the `build.env` a scaffold from that
+//! set writes, every `build.env` entry the one check refuses with the exact refusal it names and
+//! the `set.yml` line declaring it, and every `build` block carrying a retired key with what
+//! validation answers for it. It names only the domain crate, so the gate adapter's, the config
+//! adapter's, the conductor's and the root crate's tests read one copy.
 
 /// The criterion's declaration: `B` over the site's build cache, `J` the jobs cap, `L` a literal.
 pub const DECLARED_BJL: [(&str, &str); 3] =
     [("B", "{build_cache}/x"), ("J", "{jobs}"), ("L", "lit")];
+
+/// The Rust gate template set's `env`, in name order: cargo's job count over `{jobs}` and its
+/// build cache over `{build_cache}`.
+pub const RUST_SET_ENV: [(&str, &str); 2] = [
+    ("CARGO_BUILD_JOBS", "{jobs}"),
+    ("CARGO_TARGET_DIR", "{build_cache}"),
+];
+
+/// The `build.env` value a scaffold from the Rust gate template set writes under `build:`, byte
+/// for byte: [`RUST_SET_ENV`] as a flow map.
+pub const RUST_SET_ENV_WRITTEN: &str =
+    "{CARGO_BUILD_JOBS: \"{jobs}\", CARGO_TARGET_DIR: \"{build_cache}\"}";
 
 /// The `build` block declaring `pairs` under `build.env`, with `build.jobs` set to `jobs` and
 /// every other key at its default.
@@ -41,6 +54,14 @@ pub struct RefusedDeclaration {
     pub name: &'static str,
     pub value: &'static str,
     pub message: &'static str,
+}
+
+impl RefusedDeclaration {
+    /// The `env:` line of a gate template set's `set.yml` declaring this entry alone, as a flow
+    /// map of its name and value, each double-quoted.
+    pub fn set_env_line(&self) -> String {
+        format!("env: {{{:?}: {:?}}}\n", self.name, self.value)
+    }
 }
 
 const fn refused(

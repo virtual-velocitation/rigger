@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::process::Command;
 
 use crate::budget::BuildBudget;
+use crate::subprocess::{find_executable, inherit_on_exec, session_dir, shell_command};
 
 pub use rigger_domain::gate::*;
 
@@ -65,9 +66,10 @@ pub use rigger_domain::gate::*;
 /// inherits a root from the process that runs it. rigger never creates the root; a gate that
 /// uses it does, and touches only the names it created there.
 ///
-/// A non-empty `build_cache_guard` is probed before anything runs (spec 121 criterion 19): a
-/// guard whose probe fails is the [`ProbeFault`] `Err`, never a [`GateResult`], and the gate
-/// command never runs, so nothing is built anywhere.
+/// A non-empty `build_cache_guard` is locked shared through [`hold_shared_lock`] before the gate
+/// command runs (spec 121 criterion 19, spec 125 criterion 10): a guard that cannot be locked is
+/// the [`ProbeFault`] `Err`, never a [`GateResult`], and the gate command never runs, so nothing
+/// is built anywhere.
 pub trait Runner: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     fn run(
@@ -84,9 +86,9 @@ pub trait Runner: Send + Sync {
     ) -> Result<GateResult, ProbeFault>;
 }
 
-/// A requested shared-cache guard whose probe failed (spec 121 criterion 19): its parent
-/// directory could not be created, the guard could not be opened, or its filesystem refused
-/// an advisory lock. An infrastructure fault, not a gate failure: no wait and no rerun changes
+/// A requested shared-cache guard [`hold_shared_lock`] could not lock, its probe (spec 121
+/// criterion 19): its parent directory could not be created, the guard could not be opened, or
+/// its filesystem refused an advisory lock. An infrastructure fault, not a gate failure: no wait and no rerun changes
 /// a local filesystem's answer, only the operator's fix, so its text names the guard path, the
 /// OS error and that fix.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -323,36 +325,6 @@ pub fn gate_site_cache(target_dir: &str, build_cache_dir: &str) -> String {
     }
 }
 
-/// Pure: the first executable regular file named `bin` inside a directory of `path_var` (a
-/// PATH-style, platform-separator-joined directory list from [`std::env::split_paths`]),
-/// checked in listed order. An empty or relative component is skipped, so every path
-/// answered is absolute. `bin` is a file name: one holding `/` names no file in a directory
-/// and finds nothing, and an empty one joins to the directory itself, which is no regular
-/// file. Symlinks are followed (through [`is_executable_file`]'s `std::fs::metadata`), and a
-/// found symlink is answered at its own path.
-fn find_executable(path_var: &std::ffi::OsStr, bin: &str) -> Option<std::path::PathBuf> {
-    if bin.contains('/') {
-        return None;
-    }
-    std::env::split_paths(path_var)
-        .filter(|dir| dir.is_absolute())
-        .map(|dir| dir.join(bin))
-        .find(|candidate| is_executable_file(candidate))
-}
-
-#[cfg(unix)]
-fn is_executable_file(path: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable_file(path: &std::path::Path) -> bool {
-    path.is_file()
-}
-
 /// One requirement a gate declares, resolved: the `requires` entry as written (`name`) and the
 /// absolute path of the executable it resolved to (`at`) - spec 113, A GATE DECLARES WHAT IT
 /// REQUIRES.
@@ -383,9 +355,9 @@ pub struct RequirementUnavailable {
     pub requirement: String,
 }
 
-/// The one requirement resolver (pure core, PATH as a value): every entry of every declared
-/// gate, in gate-id order and then list order, as written - a name listed twice resolves
-/// twice - each looked up through [`find_executable`]. The first entry that resolves to
+/// The one requirement resolver (PATH as a value, and on Windows the environment's `PATHEXT`):
+/// every entry of every declared gate, in gate-id order and then list order, as written - a name
+/// listed twice resolves twice - each looked up through [`find_executable`]. The first entry that resolves to
 /// nothing is the `Err`, so the success value holds resolved entries only.
 pub fn resolve_requirements(
     gates: &BTreeMap<String, rigger_domain::config::Gate>,
@@ -467,59 +439,9 @@ impl Runner for ExecRunner {
         build_env: &BuildEnv,
         budget: &BuildBudget,
     ) -> Result<GateResult, ProbeFault> {
-        // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77
-        // criterion 5, BOUNDED SHARED CACHE), FIXED round 2 for
-        // adv-u77c5bsc-guard-lifetime-bound-to-orchestrator-not-the-cargo-child: a
-        // non-empty `build_cache_guard` now wraps the WHOLE gate command through an
-        // EXEC-REPLACING `flock -s -F <guard> sh -c '<g.run>'`, rather than opening
-        // and `fs2`-locking the guard fd IN THIS PROCESS and merely holding it across a
-        // separately spawned child (`Command::output()`'s own fork+exec). That older
-        // shape tied the lock's lifetime to THIS orchestrator process: std's `File`
-        // always opens close-on-exec, so the spawned `sh -c` child never inherited the
-        // locked fd, and the lock was released the instant this process died - even
-        // while a live, orphaned cargo/rustc tree that child had spawned kept writing
-        // into the very cache the lock exists to protect. `flock(1)`'s `-F`/`--no-fork`
-        // takes the shared lock ITSELF, in the CHILD process `Command::output()` forks,
-        // then execve()s directly into the wrapped `sh -c` - preserving the locked fd
-        // across that exec (flock deliberately does not set close-on-exec on it) - so
-        // the exec'd shell, and every cargo/rustc descendant it forks in turn, inherits
-        // the SAME open file description the lock is held against and keeps it held for
-        // as long as ANY of them is alive. If this orchestrator alone is killed
-        // mid-build (the exact "killed runs never clean up" crash shape spec 77's own
-        // Problem statement targets, and the class the driver's own liveness heartbeat
-        // exists around), the already-forked child is a genuinely separate OS process
-        // and is wholly unaffected - it keeps the fd it always held, never re-acquiring
-        // anything. This mirrors `src/budget.rs`'s own proven pattern for the identical
-        // "supervisor may die independently of the work it launched" problem class (its
-        // own test fixture already relies on this exact flock(1)-preserves-the-fd-
-        // across-exec guarantee to simulate an abnormally-killed holder).
-        //
-        // `probe_build_cache_guard` is a released-before-use PROBE (never held across the
-        // child): a requested guard whose probe fails returns its [`ProbeFault`] before
-        // anything runs (spec 121 criterion 19), so a gate never builds unguarded into the
-        // directory the guard protects nor anywhere else.
-        // No leading-`--` end-of-options separator before `build_cache_guard`: unlike a
-        // generic external filename, this argument is never operator- or agent-supplied -
-        // it always comes from `worktree::shared_build_cache_guard_path`, which formats it
-        // as `{scratch_root}/cargo-target.lock` onto an already-absolute `scratch_root`, so
-        // it structurally cannot begin with `-` and `flock` can never misparse it as an
-        // option (spec 78's `no-os-kill` audit bans the bare `--` argv-separator shape
-        // tree-wide, regardless of context - it is the exact argv trick a prior incident
-        // used to paper over a negative-pid kill target rather than removing the hazard
-        // class, so the rule removes the shape everywhere rather than judging each call
-        // site's intent case by case).
-        let guarded = !build_cache_guard.is_empty();
-        if guarded {
-            probe_build_cache_guard(build_cache_guard)?;
-        }
-        let mut cmd = if guarded {
-            let mut c = crate::subprocess::command_in("flock", dir);
-            c.arg("-s").arg("-F").arg(build_cache_guard).arg("sh");
-            c
-        } else {
-            crate::subprocess::command_in("sh", dir)
-        };
-        cmd.arg("-c").arg(&g.run);
+        // The gate's command line runs whole in the host's shell (spec 125 criterion 10): `sh
+        // -c` on Linux and macOS, `cmd` on Windows, in `dir` or this process's own directory.
+        let mut cmd = shell_command(&g.run, session_dir(dir));
         if !target_dir.is_empty() {
             // The gate store fence (spec 70 criterion 3): a non-empty
             // target_dir means this gate runs inside a unit worktree, so a store-opening
@@ -574,6 +496,31 @@ impl Runner for ExecRunner {
         // frees its slot the instant it is killed, and no other code path in the crate
         // acquires a slot, so non-build work is never gated.
         let _slot = budget.acquire();
+        // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77 criterion 5,
+        // BOUNDED SHARED CACHE; spec 125 criterion 10): a non-empty `build_cache_guard` names the
+        // lock file `rigger reset --build-cache` takes EXCLUSIVE before it reclaims the shared
+        // cache, and a guarded gate holds it SHARED for as long as what it started may still
+        // build there. `hold_shared_lock` takes the lock in this process, immediately before the
+        // command spawns, and `inherit_on_exec` hands its open guard across the command's exec;
+        // this process closes its own handle once the command returns, never unlocking. On unix
+        // the lock belongs to the open guard every process the gate started shares while it
+        // keeps the inherited descriptor, so it lives until the last of them exits: a build the
+        // command leaves running in the background, or one this process leaves behind when it
+        // dies mid-build, keeps the cache excluded. On Windows it lives as long as this process's
+        // handle, the gate's run: a child the gate leaves running is outside the exclusion, and
+        // the holder check the reclaim runs before any removal (`reclaim_dead_footprint`) leaves
+        // in place an entry that child holds a file in. A guard that cannot be locked returns
+        // its [`ProbeFault`] before the command runs, releasing the slot (spec 121 criterion
+        // 19), so a gate never builds unguarded into the directory the guard protects nor
+        // anywhere else. An empty guard takes no lock: a unit's own build cache is never one
+        // `rigger reset --build-cache` reclaims.
+        let _lock = if build_cache_guard.is_empty() {
+            None
+        } else {
+            let lock = hold_shared_lock(build_cache_guard)?;
+            inherit_on_exec(&mut cmd, &lock);
+            Some(lock)
+        };
         Ok(match cmd.output() {
             Ok(out) => {
                 let mut evidence = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -593,8 +540,8 @@ impl Runner for ExecRunner {
 }
 
 /// Opens the shared-cache guard file at `path`, creating its parent directory and the file
-/// when absent and never truncating it: the one open both the gate's probe
-/// ([`ExecRunner::run`]) and `rigger reset --build-cache`'s reclaim take on the guard.
+/// when absent and never truncating it: the one open both a gate's shared lock
+/// ([`hold_shared_lock`]) and `rigger reset --build-cache`'s reclaim take on the guard.
 pub fn open_build_cache_guard(path: &std::path::Path) -> std::io::Result<std::fs::File> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -606,34 +553,28 @@ pub fn open_build_cache_guard(path: &std::path::Path) -> std::io::Result<std::fs
         .open(path)
 }
 
-/// Capability PROBE for `path` as a shared-cache guard (spec 77 criterion 5, BOUNDED SHARED
-/// CACHE; spec 121 criterion 19): opens it through [`open_build_cache_guard`], so a missing
-/// scratch root is created rather than faulted, takes a shared `fs2` lock and immediately
-/// releases it - never held across anything - to confirm the path is writable and this
-/// filesystem supports advisory locks. A refused create, open or lock is the [`ProbeFault`]
-/// naming `path` and the OS error. Only a non-empty guard is probed (a per-unit build's own
-/// `cargo-target-<slug>` cache is never at risk from `rigger reset --build-cache`, matching
-/// `target_dir`'s own "empty means off" convention).
-///
-/// The REAL, invocation-lifetime lock is taken by the external `flock(1)` process
-/// `ExecRunner::run` execs into when this returns `Ok` - never by this probe. Locking
-/// in-process here, even briefly, is safe only because it is released before the gate
-/// command ever spawns; holding it across that spawn is precisely the bug this function's
-/// caller exists to fix (see `ExecRunner::run`'s own doc comment).
-fn probe_build_cache_guard(path: &str) -> Result<(), ProbeFault> {
+/// Takes the in-process shared lock on the shared-cache guard at `guard` (spec 77 criterion 5,
+/// BOUNDED SHARED CACHE; spec 121 criterion 19; spec 125 criterion 10) and answers the open
+/// guard holding it. The guard is opened through [`open_build_cache_guard`], so a missing
+/// scratch root is created rather than faulted, and locked shared through the file-lock
+/// dependency (`flock(2)` on unix, `LockFileEx` on Windows), waiting while
+/// `rigger reset --build-cache` holds it exclusive. Nothing here unlocks it: the lock lasts
+/// while the answered file stays open, and on unix while any process that inherited its
+/// descriptor ([`inherit_on_exec`]) keeps it. A refused create, open or lock is the
+/// [`ProbeFault`] naming `guard` and the OS error.
+pub fn hold_shared_lock(guard: &str) -> Result<std::fs::File, ProbeFault> {
     let fault = |e: std::io::Error| ProbeFault {
-        guard: path.to_string(),
+        guard: guard.to_string(),
         error: e.to_string(),
     };
-    let f = open_build_cache_guard(std::path::Path::new(path)).map_err(fault)?;
-    // Fully-qualified (not `f.lock_shared()`): this crate deliberately uses `fs2` for
+    let file = open_build_cache_guard(std::path::Path::new(guard)).map_err(fault)?;
+    // Fully-qualified (not `file.lock_shared()`): this crate deliberately uses `fs2` for
     // every advisory lock ([`crate::budget`], `main.rs`'s step lock) rather than std's
     // more recently stabilized `File::lock_shared`, which shares this exact method name -
     // a plain method call would silently resolve to the std inherent method (inherent
     // methods always win over a trait's) and leave the `fs2` import genuinely unused.
-    fs2::FileExt::lock_shared(&f).map_err(fault)?;
-    let _ = fs2::FileExt::unlock(&f);
-    Ok(())
+    fs2::FileExt::lock_shared(&file).map_err(fault)?;
+    Ok(file)
 }
 
 /// Cap on the length of any single evidence line (§3.3).
@@ -725,8 +666,9 @@ fn cap_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::subprocess::is_executable_file;
     use crate::test_support::{
-        build_declaring, wait_until_for, DECLARED_BJL, REFUSED_DECLARATIONS,
+        build_declaring, try_exclusive_lock, wait_until_for, DECLARED_BJL, REFUSED_DECLARATIONS,
     };
 
     fn gate(autonomy: Autonomy, passes: usize) -> Gate {
@@ -953,7 +895,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 
     /// The gate site (spec 125 criterion 4): a gate run exports the declared environment over
     /// its site's build cache - the unit's `target_dir` when it has one, else the shared
-    /// `build_cache_dir` - through the flock guard too, and with nothing declared sets no
+    /// `build_cache_dir` - under the guard's shared lock too, and with nothing declared sets no
     /// build-cache variable, so `CARGO_TARGET_DIR` reaches the gate exactly as this process
     /// holds it. A declared variable the site cannot resolve is neither set nor cleared.
     #[test]
@@ -999,7 +941,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                 sees: bjl(Some("/tmp/rigger-site-t/x")),
             },
             Case {
-                why: "the declared variables reach the gate through the flock guard",
+                why: "the declared variables reach the gate under the guard's shared lock",
                 target_dir: "",
                 build_cache_dir: "/tmp/rigger-site-s",
                 guarded: true,
@@ -1313,35 +1255,55 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             wait_until_for(400, || started.exists()),
             "the gate command must start and touch its marker"
         );
-        {
-            use fs2::FileExt;
-            let probe = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&guard_path)
-                .expect("open guard for probe");
-            assert!(
-                probe.try_lock_exclusive().is_err(),
-                "a running shared-cache gate build must hold the guard SHARED, blocking an \
-                 exclusive probe"
-            );
-        }
+        assert!(
+            try_exclusive_lock(&guard_path).is_err(),
+            "a running shared-cache gate build must hold the guard SHARED, blocking an \
+             exclusive probe"
+        );
         let res = handle.join().expect("gate thread must not panic").unwrap();
         assert!(res.pass, "the gate command must pass: {res:?}");
-        {
-            use fs2::FileExt;
-            let probe = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&guard_path)
-                .expect("open guard for probe");
-            assert!(
-                probe.try_lock_exclusive().is_ok(),
-                "once the gate build exits its shared hold must be released"
-            );
-        }
+        assert!(
+            try_exclusive_lock(&guard_path).is_ok(),
+            "once the gate build exits its shared hold must be released"
+        );
+    }
+
+    /// Spec 125 criterion 10 (THE SHELL AND THE LOCK ARE PORTABLE): the shared lock a guarded
+    /// gate takes belongs to every process its command starts, not to the gate's run alone. A
+    /// command that backgrounds a child with its stdout and stderr sent away from the gate's
+    /// pipes returns at once, and the child still holds the guard: an exclusive try-lock is
+    /// refused after the run returns while the child lives, and taken once the child exits.
+    /// The child waits on a marker the test removes, bounded so it never outlives the test.
+    #[cfg(unix)]
+    #[test]
+    fn a_guarded_gates_background_child_holds_the_shared_lock_until_it_exits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guard = dir.path().join("cargo-target.lock");
+        let hold = dir.path().join("hold");
+        std::fs::write(&hold, b"").expect("write the hold marker");
+        let res = ExecRunner
+            .run(
+                &gate_cmd(&crate::test_support::background_hold_command(&hold)),
+                "",
+                "",
+                "",
+                "",
+                guard.to_str().unwrap(),
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .expect("a usable guard runs the gate");
+        assert_eq!(
+            (res.pass, try_exclusive_lock(&guard)),
+            (true, Err(fs2::lock_contended_error().raw_os_error())),
+            "the gate's run has returned and its background child still holds the guard"
+        );
+        std::fs::remove_file(&hold).expect("release the background child");
+        assert!(
+            wait_until_for(400, || try_exclusive_lock(&guard) == Ok(())),
+            "once the background child exits the guard is free"
+        );
     }
 
     #[test]
@@ -1365,7 +1327,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     /// the run, the OS error the guard's probe must meet (`None` for a usable guard). A usable
     /// guard runs the command guarded, creating the guard file and building into the shared
     /// cache; an unusable one returns [`ProbeFault`] naming the guard and that error, and runs
-    /// and builds nothing.
+    /// and builds nothing, and [`hold_shared_lock`] on it fails with that fault's message.
     fn assert_guard_probe(
         lay_out: fn(&std::path::Path) -> std::path::PathBuf,
         os_error: Option<fn(&std::path::Path) -> std::io::Error>,
@@ -1410,6 +1372,18 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                     (false, false),
                     "a faulted probe runs no command and leaves no build directory"
                 );
+                assert_eq!(
+                    hold_shared_lock(guard_str)
+                        .map(drop)
+                        .map_err(|fault| fault.to_string()),
+                    Err(format!(
+                        "build cache guard {guard_str:?} failed its probe: {}; fix the path or \
+                         set the project's scratch root to a filesystem with advisory locks, \
+                         then relaunch",
+                        os_error.expect("an unusable guard's OS error")(&guard)
+                    )),
+                    "a guard that cannot be locked fails with the probe fault's message"
+                );
             }
             None => {
                 assert_eq!(
@@ -1421,6 +1395,13 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                     (ran_and_built, guard.is_file()),
                     ((true, true), true),
                     "a usable guard is created and the command builds into the shared cache"
+                );
+                assert_eq!(
+                    hold_shared_lock(guard_str)
+                        .map(drop)
+                        .map_err(|fault| fault.to_string()),
+                    Ok(()),
+                    "a usable guard is locked"
                 );
             }
         }
