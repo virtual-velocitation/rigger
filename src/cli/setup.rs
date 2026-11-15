@@ -91,8 +91,8 @@ struct ScaffoldReport {
     /// True when this run installed or updated the SessionStart hook in
     /// `.claude/settings.json` (false when the hook was already present unchanged).
     wrote_hook: bool,
-    /// `.gitignore` patterns this run newly appended (empty when every machine-local
-    /// pattern was already ignored or tracked).
+    /// `.gitignore` patterns this run newly appended, in [`RUNTIME_IGNORES`] order (empty when
+    /// every one was already a line in `.gitignore` or a tracked path).
     gitignore_added: Vec<String>,
     /// The durable project id this run newly MINTED into `.rigger/project.id` (spec 09),
     /// or `None` when the file already existed and was left untouched.
@@ -228,35 +228,11 @@ fn scaffold_project(
         }
     }
 
-    // 4. Write .gitignore entries for machine-local installs, the always-on dash's runtime
-    // breadcrumbs, and the per-machine store-connection secret file, when they are not already
-    // ignored or tracked. `.claude/` is the machine-local install;
-    // `.rigger/dash.url` and `.rigger/dash.marker` are the dash's discoverability breadcrumbs
-    // (spec 39), which `rigger status` and `rigger watch` read - left untracked-and-not-ignored
-    // they get swept into a unit worktree's commit by `git add` and then collide with the live
-    // dash's rewrites when the conductor merges the unit ("untracked working tree files would be
-    // overwritten"). `.rigger/dash.attempt` (spec 69, round-8 fix) is a THIRD runtime breadcrumb of
-    // the identical shape - `start_run_dashboard` rewrites it on every dash start exactly as it
-    // rewrites `dash.url` - so it collides the same way if left untracked-and-not-ignored, and is
-    // ignored here for the same reason. `.rigger/store.conn` is the store resolver's per-machine
-    // secret file (spec 48 rung 3): it carries the connection string's credentials, so it is
-    // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
-    // `.rigger/store` holds the code store's snapshots, a per-machine projection of the tree
-    // that every graph read rewrites, and its facts memo, so left untracked they would read as a
-    // dirty tree. `.rigger/driver.out` is the output of the driver a check last relaunched, which
-    // each relaunch rewrites, ignored for the same reason.
-    // Record WHICH patterns were appended so the summary reports the real gitignore change and
-    // nothing it did not do.
+    // 4. Write each `RUNTIME_IGNORES` line to `.gitignore` when it is not already a line there
+    // or a tracked path. Record WHICH patterns were appended so the summary reports the real
+    // gitignore change and nothing it did not do.
     let mut gitignore_added = Vec::new();
-    for pattern in [
-        ".claude/",
-        ".rigger/dash.url",
-        ".rigger/dash.marker",
-        ".rigger/dash.attempt",
-        ".rigger/driver.out",
-        ".rigger/store.conn",
-        ".rigger/store",
-    ] {
+    for pattern in RUNTIME_IGNORES {
         if write_gitignore_entries(root, pattern)? {
             gitignore_added.push(pattern.to_string());
         }
@@ -372,6 +348,48 @@ fn print_orientation() {
         dash::DEFAULT_PORT
     );
 }
+
+/// The `.gitignore` lines [`scaffold_project`] writes, each through [`write_gitignore_entries`]
+/// (a trailing `/` trimmed), each naming a class of file rigger writes on one machine at run
+/// time. Left untracked and not ignored, such a file reads as a dirty tree, and `git add` sweeps
+/// it into a unit's commit, whose merge then collides with the live file ("untracked working
+/// tree files would be overwritten"). A class covers a database, lock or scratch file rigger adds
+/// later with no edit here. `.rigger/workflow.yml`, `agents/`, `gates/`, `instructions/`,
+/// `project.id` and `docs-overlay.yml` match no line and stay tracked.
+///
+/// - `.claude/`: the machine-local Claude Code install.
+/// - `.rigger/*.db`, `.rigger/*.db-wal`, `.rigger/*.db-shm`: a store (the event log, the graph,
+///   the progress store) and its write-ahead log and shared memory.
+/// - `.rigger/*.lock`: a lock file a process holds (a run's step lock, the graph's rebuild lock).
+/// - `.rigger/dash.url`, `.rigger/dash.marker`, `.rigger/dash.attempt`: the always-on dash's
+///   breadcrumbs, which a run rewrites as it starts its dash.
+/// - `.rigger/driver.out`: the output of the driver a check last relaunched, which each relaunch
+///   rewrites.
+/// - `.rigger/store.conn`: the store resolver's secret file, which carries the connection
+///   string's credentials, so they never ride a commit.
+/// - `.rigger/store`: the code store's snapshots and facts memo, a projection of the tree each
+///   graph read rewrites.
+/// - `.rigger/*.bak-*`: a store file's backup, named `<store file>.bak-<suffix>`.
+/// - `.rigger/tmp/`: the run's scratch (unit and review worktrees, liveness markers, the shared
+///   build cache) when it falls back to the repository, with no cache home to key it on.
+/// - `.rigger/playbooks/`: the playbook pool, a projection of the log
+///   `rigger playbooks --rebuild` remakes.
+const RUNTIME_IGNORES: [&str; 14] = [
+    ".claude/",
+    ".rigger/*.db",
+    ".rigger/*.db-wal",
+    ".rigger/*.db-shm",
+    ".rigger/*.lock",
+    ".rigger/dash.url",
+    ".rigger/dash.marker",
+    ".rigger/dash.attempt",
+    ".rigger/driver.out",
+    ".rigger/store.conn",
+    ".rigger/store",
+    ".rigger/*.bak-*",
+    ".rigger/tmp/",
+    ".rigger/playbooks/",
+];
 
 /// Write a .gitignore entry for the given pattern if it is not already an explicit line
 /// or a tracked path, returning whether it APPENDED an entry (`true`) or left `.gitignore`
@@ -548,7 +566,8 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
     }
     if !report.gitignore_added.is_empty() {
         lines.push(format!(
-            "added .gitignore entries so machine-local installs stay untracked: {}",
+            "added .gitignore entries so machine-local installs and rigger's runtime files stay \
+             untracked: {}",
             report.gitignore_added.join(", ")
         ));
     }
@@ -1855,6 +1874,9 @@ budget: 60\n  \
 # escalating prematurely. It loosens the depth limit, never the review bar. Absent\n  \
 # falls back to 3 (the historical default); bounded by `budget` above.\n  \
 max_retries: 3\n  \
+# The per-spawn wall-clock bound in seconds: a spawn silent past it with no result is stopped and\n  \
+# recorded as an infrastructure fault, charging no attempt. 0 = unbounded.\n  \
+max_wall_clock: 3600\n  \
 # How many implement units build at once (spec 102, per-unit pipelining). Each\n  \
 # live unit owns its own build cache, and unbounded parallelism can fill disk on\n  \
 # a wide fan-out. 0 (the default) is unbounded, unchanged until you set this; 2\n  \
@@ -2349,6 +2371,7 @@ mod tests {
     use crate::test_support::git_init_quiet;
     use crate::test_support::language_marker_hits;
     use crate::test_support::read_text;
+    use crate::test_support::run_git;
     use crate::test_support::sorted_dir_names;
     use crate::test_support::AUTHORING_AGENTS_HANDBOOK;
     use crate::test_support::{agents_beside, stage_agents, ROLE_SEED_FILES};
@@ -3681,7 +3704,7 @@ mod tests {
     fn scaffold_summary_reports_only_the_gitignore_change_on_a_gitignore_only_repair() {
         let dir = tempfile::tempdir().unwrap();
 
-        // First init scaffolds everything AND appends the machine-local .gitignore
+        // First init scaffolds everything AND appends the `RUNTIME_IGNORES` .gitignore
         // entries (a non-git temp dir is untracked, so the entries are written).
         let first =
             init_project(dir.path(), &repo_sets()).expect("first init scaffolds the project");
@@ -3691,7 +3714,7 @@ mod tests {
         );
         assert!(
             !first.gitignore_added.is_empty(),
-            "the first init appends the machine-local .gitignore entries"
+            "the first init appends the RUNTIME_IGNORES .gitignore entries"
         );
 
         // Simulate the Gap-9 upgrade path: only `.gitignore` needs repair; every other
@@ -3808,6 +3831,107 @@ mod tests {
             assert_init_gitignores_idempotently(&[".rigger/driver.out"]);
     }
 
+    /// What `git check-ignore --verbose --non-matching` answers for each of `paths` in the
+    /// repository at `root`, in order: each path beside the file and the pattern of the rule that
+    /// ignores it, or `None` when no rule does. The excludes file is an absent one, so the
+    /// operator's own global ignore rules never answer for the project's.
+    fn ignoring_rules(root: &Path, paths: &[&str]) -> Vec<(String, Option<(String, String)>)> {
+        let excludes = format!(
+            "core.excludesFile={}",
+            root.join("absent-excludes").display()
+        );
+        let check = [
+            "-c",
+            &excludes,
+            "check-ignore",
+            "--verbose",
+            "--non-matching",
+            "--",
+        ];
+        let out = run_git(root, &[&check[..], paths].concat());
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|line| {
+                let (rule, path) = line.split_once('\t').unwrap_or((line, ""));
+                let mut fields = rule.splitn(3, ':');
+                let (file, pattern) = (
+                    fields.next().unwrap_or_default(),
+                    fields.nth(1).unwrap_or_default(),
+                );
+                let source = (!file.is_empty()).then(|| (file.to_string(), pattern.to_string()));
+                (path.to_string(), source)
+            })
+            .collect()
+    }
+
+    /// Spec 125, criterion 13: in a fresh git repository `init_project` has run on, the
+    /// project's own `.gitignore` ignores each file rigger writes at run time by the line naming
+    /// its class, and none of the project's configuration, which stays tracked. Each row is a
+    /// path and the `.gitignore` pattern git reports ignoring it, as written (a trailing `/`
+    /// trimmed), or `None` for a path no rule ignores.
+    #[test]
+    fn a_new_project_ignores_riggers_runtime_files_by_class_and_keeps_its_configuration() {
+        let rows: [(&str, Option<&str>); 23] = [
+            (".claude/settings.json", Some(".claude")),
+            (".rigger/events.db", Some(".rigger/*.db")),
+            (".rigger/events.db-wal", Some(".rigger/*.db-wal")),
+            (".rigger/events.db-shm", Some(".rigger/*.db-shm")),
+            (".rigger/graph.db", Some(".rigger/*.db")),
+            (".rigger/graph.db.lock", Some(".rigger/*.lock")),
+            (".rigger/progress.db", Some(".rigger/*.db")),
+            (".rigger/step.lock", Some(".rigger/*.lock")),
+            (".rigger/store/x", Some(".rigger/store")),
+            (".rigger/tmp/x", Some(".rigger/tmp")),
+            (".rigger/playbooks/x", Some(".rigger/playbooks")),
+            (".rigger/dash.url", Some(".rigger/dash.url")),
+            (".rigger/dash.marker", Some(".rigger/dash.marker")),
+            (".rigger/dash.attempt", Some(".rigger/dash.attempt")),
+            (".rigger/driver.out", Some(".rigger/driver.out")),
+            (".rigger/store.conn", Some(".rigger/store.conn")),
+            (".rigger/events.db.bak-x", Some(".rigger/*.bak-*")),
+            (".rigger/workflow.yml", None),
+            (".rigger/agents/planner.md", None),
+            (".rigger/project.id", None),
+            (".rigger/gates/red-before-green.sh", None),
+            (".rigger/instructions/README.md", None),
+            (".rigger/docs-overlay.yml", None),
+        ];
+        let dir = tempfile::tempdir().unwrap();
+        git_init_quiet(dir.path());
+        init_project(dir.path(), &[]).expect("init must scaffold");
+        let paths: Vec<&str> = rows.iter().map(|(path, _)| *path).collect();
+        let expected: Vec<(String, Option<(String, String)>)> = rows
+            .iter()
+            .map(|(path, pattern)| {
+                let source = pattern.map(|p| (".gitignore".to_string(), p.to_string()));
+                (path.to_string(), source)
+            })
+            .collect();
+        assert_eq!(
+            ignoring_rules(dir.path(), &paths),
+            expected,
+            "each runtime file is ignored by its class line in the project's .gitignore, and no \
+             configuration file is"
+        );
+    }
+
+    /// The summary's `.gitignore` line names every pattern the run appended, in order, as
+    /// keeping machine-local installs and rigger's runtime files untracked.
+    #[test]
+    fn scaffold_summary_names_the_appended_ignore_lines_as_keeping_runtime_files_untracked() {
+        let report = ScaffoldReport {
+            gitignore_added: vec![".claude/".to_string(), ".rigger/*.db".to_string()],
+            ..ScaffoldReport::default()
+        };
+        assert_eq!(
+            scaffold_summary_lines(&report),
+            [
+                "added .gitignore entries so machine-local installs and rigger's runtime files \
+                 stay untracked: .claude/, .rigger/*.db"
+            ]
+        );
+    }
+
     /// The code store's facts memo lies under `.rigger/store`, so in a project setup has run on
     /// the project's own `.gitignore` ignores it by the code store's line: a memo entry never
     /// reads as a dirty tree nor rides a commit.
@@ -3818,21 +3942,14 @@ mod tests {
         init_project(dir.path(), &repo_sets()).expect("init must scaffold");
         let memo = rigger_store::code::Store::new(dir.path()).memo_dir();
         let entry = memo.join("entry.facts");
-        let relative = entry.strip_prefix(dir.path()).unwrap();
-        let out = std::process::Command::new("git")
-            .args(["check-ignore", "-v"])
-            .arg(relative)
-            .current_dir(dir.path())
-            .output()
-            .expect("git runs");
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let source = stdout.split('\t').next().unwrap_or_default();
-        let mut fields = source.splitn(3, ':');
-        let (file, pattern) = (fields.next(), fields.nth(1));
+        let relative = entry.strip_prefix(dir.path()).unwrap().to_str().unwrap();
         assert_eq!(
-            (out.status.success(), file, pattern),
-            (true, Some(".gitignore"), Some(".rigger/store")),
-            "the memo is ignored by the project's .rigger/store line; git said: {stdout}"
+            ignoring_rules(dir.path(), &[relative]),
+            [(
+                relative.to_string(),
+                Some((".gitignore".to_string(), ".rigger/store".to_string()))
+            )],
+            "the memo is ignored by the project's .rigger/store line"
         );
     }
 
@@ -4527,6 +4644,57 @@ mod tests {
                 ),
                 (3000, 1, 1),
                 "{label}: the scaffold declares the cap once, under its comment:\n{workflow}"
+            );
+        }
+    }
+
+    /// Spec 125's A NEW SCAFFOLD BOUNDS ITS SPAWNS: the workflow `init_project` writes into a fresh
+    /// project - with no template root, and with this repository's root both matching no set and
+    /// matching the Rust one - declares `defaults.max_wall_clock: 3600` once, right after
+    /// `max_retries` under its comment, and the written tree loads with that bound, so
+    /// `unbounded_wall_clock_advisory` answers none over it.
+    #[test]
+    fn init_project_writes_a_workflow_that_bounds_every_spawn() {
+        const DECLARED: &str =
+            "  max_retries: 3\n  # The per-spawn wall-clock bound in seconds: a \
+                                spawn silent past it with no result is stopped and\n  # recorded \
+                                as an infrastructure fault, charging no attempt. 0 = unbounded.\n  \
+                                max_wall_clock: 3600\n";
+        let rows = [
+            ("no template root", Vec::new(), None, None),
+            (
+                "this repository's root, matching no set",
+                repo_sets(),
+                None,
+                None,
+            ),
+            (
+                "this repository's root, matching the rust set",
+                repo_sets(),
+                Some("Cargo.toml"),
+                Some("rust"),
+            ),
+        ];
+        for (label, sets, marker, gate_set) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(marker) = marker {
+                std::fs::write(dir.path().join(marker), "").unwrap();
+            }
+            let report = init_project(dir.path(), &sets).expect("init must scaffold");
+            let written =
+                std::fs::read_to_string(dir.path().join(RIGGER_DIR).join("workflow.yml")).unwrap();
+            let cfg = config_store::load(dir.path().to_str().unwrap())
+                .unwrap_or_else(|e| panic!("{label}: the written tree must load: {e}"));
+            assert_eq!(
+                (
+                    report.gate_set.as_deref(),
+                    written.matches(DECLARED).count(),
+                    written.matches("max_wall_clock").count(),
+                    cfg.workflow.defaults.max_wall_clock,
+                    config::unbounded_wall_clock_advisory(&cfg),
+                ),
+                (gate_set, 1, 1, 3600, None),
+                "{label}: the written workflow bounds every spawn once, under its comment:\n{written}"
             );
         }
     }
