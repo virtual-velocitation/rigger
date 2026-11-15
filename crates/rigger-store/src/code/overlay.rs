@@ -434,7 +434,7 @@ mod tests {
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
     use crate::code::Store;
     use rigger_domain::code_view::{Tests, ViewFilter};
-    use rigger_domain::composed::{Composed, Honesty, Indexed};
+    use rigger_domain::composed::{Composed, Honesty, Indexed, WholeMemo};
     use rigger_domain::contextgraph::{ContextGraph, Graph};
 
     /// What a worktree changes: each path with its bytes, or none when it deleted the file.
@@ -559,6 +559,30 @@ mod tests {
         (whole, graph.stamp_label().to_string())
     }
 
+    /// What `head` answers read whole with every test shown, through `held` when one is given.
+    fn whole_read(head: &Head, held: Option<&WholeMemo>) -> String {
+        let honesty = Honesty {
+            worktree: "W".into(),
+            compared: head.compared,
+            behind: head.behind.clone(),
+        };
+        let filter = ViewFilter {
+            tests: Tests::Include,
+        };
+        let (records, resolution) = (
+            Indexed::default(),
+            rigger_domain::community::DEFAULT_RESOLUTION,
+        );
+        let open = match held {
+            Some(held) => {
+                Composed::whole_held_at(&records, &*head.view, filter, honesty, resolution, held)
+            }
+            None => Composed::whole_at(&records, &*head.view, filter, honesty, resolution),
+        };
+        let read = open.unwrap().into_whole().unwrap();
+        format!("{:#?} {}", read.graph, read.label)
+    }
+
     fn ids(graph: &Graph) -> Vec<&str> {
         graph.nodes.iter().map(|n| n.id.as_str()).collect()
     }
@@ -582,6 +606,37 @@ mod tests {
         ("src/b.rs", "def beta\n"),
         ("tests/t.rs", "def check\ncall alpha\n"),
     ];
+
+    /// A whole read held across worktree changes answers the worktree as it stands: GIVEN one
+    /// memo of whole reads, WHEN the head is read whole through it after each row's worktree
+    /// changes in order, THEN each read answers what a read of that worktree through no memo
+    /// answers.
+    #[test]
+    fn a_held_whole_read_answers_the_worktree_as_it_stands() {
+        let fx = Fixture::new(FILES);
+        let (memo, held) = (Memo::new(Memo::BOUND), WholeMemo::new(WholeMemo::BOUND));
+        let (gamma, delta) = (
+            "def alpha\ndef gamma\ncall beta\n",
+            "def alpha\ndef delta\ncall beta\n",
+        );
+        // (worktree, its changes over the commit)
+        let rows: [(&str, Changes); 6] = [
+            ("the commit", &[]),
+            ("a modified file", &[("src/a.rs", Some(gamma))]),
+            ("the file modified again", &[("src/a.rs", Some(delta))]),
+            ("the file read again", &[("src/a.rs", Some(delta))]),
+            ("a deleted file", &[("src/b.rs", None)]),
+            ("the commit again", &[]),
+        ];
+        for (worktree, changes) in rows {
+            let head = fx.head(changes, &memo);
+            assert_eq!(
+                whole_read(&head, Some(&held)),
+                whole_read(&head, None),
+                "{worktree}"
+            );
+        }
+    }
 
     /// An overlay answers the worktree: GIVEN a worktree that modified `src/a.rs`, WHEN the head
     /// is read for it, THEN the answer holds the worktree's definitions and calls of that file and
