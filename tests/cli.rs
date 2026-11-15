@@ -15714,6 +15714,120 @@ fn a_relaunch_of_a_finished_run_refuses_and_clears_its_record() {
     );
 }
 
+/// Place an operator hold on the current run of the project at `root`, as `rigger hold` does.
+fn hold_the_run(root: &Path) {
+    let (out, err, ok) = run_rigger(root, &["hold", "--reason", "the operator stops the run"]);
+    assert!(ok, "the operator hold lands; stdout: {out}\nstderr: {err}");
+}
+
+/// AN OPERATOR HOLD IS THE STOP: a run its operator held, whether the hold came before its
+/// driver's death or after it, a relaunched driver that died at once included, is relaunched by
+/// no invocation, and its record is left as it was, until `rigger release` relaunches it.
+#[test]
+fn an_operator_hold_stops_a_run_for_good_until_its_release() {
+    // Each row: its name, whether the hold lands before the death, and whether the dead driver
+    // was itself a relaunch made just now.
+    let rows = [
+        ("a hold, then the death", true, false),
+        ("the death, then a hold", false, false),
+        ("a relaunched driver held, then dead at once", true, true),
+    ];
+    for (case, hold_first, revived) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let scratch = common::default_scratch_root(root);
+        let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], |driver| {
+            if hold_first {
+                hold_the_run(root);
+            }
+            common::fixtures::cleanup(driver);
+        });
+        common::cli::release_the_unit(ended.fake.path());
+        if !hold_first {
+            hold_the_run(root);
+        }
+        let run = common::cli::current_run_id_of(root).expect("the run started");
+        let mut record: serde_json::Value = serde_json::from_str(&ended.record).unwrap();
+        if revived {
+            record["revived_at"] = serde_json::json!(SystemTimeUnix::now());
+        }
+        let record = record.to_string();
+        for args in [&["status"][..], &["prime"], &["status"]] {
+            let after = invoke_over_record(root, &record, args, &[]);
+            assert_eq!(
+                (after.relaunches, after.left),
+                (Vec::<String>::new(), record.clone()),
+                "{case}: rigger {args:?} starts nothing and leaves the record; stderr: {}",
+                after.err
+            );
+        }
+        let released = invoke_over_record(root, &record, &["release"], &[]);
+        assert_eq!(
+            (released.relaunches, released.err.contains(RELAUNCHED)),
+            (vec![format!("relaunch run --adopt {run}")], true),
+            "{case}: `rigger release` relaunches the run; stderr: {}",
+            released.err
+        );
+    }
+}
+
+/// AN OPERATOR HOLD IS THE STOP OF AN ADOPTING DRIVER: a driver started to adopt a run its operator
+/// holds parks the run's next launch instead of waiting the hold out, so it ends, frees the step
+/// lock and leaves its record for `rigger release`, launching nothing and failing no unit.
+#[test]
+fn an_adopting_driver_under_an_operator_hold_ends_and_leaves_its_record_for_release() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], common::fixtures::cleanup);
+    common::cli::release_the_unit(ended.fake.path());
+    let run = common::cli::current_run_id_of(root).expect("the run started");
+    hold_the_run(root);
+    let opened = |root: &Path| {
+        recorded_launches(root)
+            .into_iter()
+            .filter(|(_, launch)| launch.ended.is_none())
+            .count()
+    };
+    let opened_before = opened(root);
+    let envs = common::cli::fake_claude_env(&ended.path_env, &scratch);
+    let outcome = common::cli::run_rigger_within(
+        root,
+        &["run", "--adopt", &run],
+        &envs,
+        POLLS_BESIDE_A_RUN,
+        |_| {},
+    );
+    let (out, err, _ok) = outcome.expect("the adopting driver under an operator hold ends");
+    let left: serde_json::Value =
+        serde_json::from_str(&common::cli::driver_record(root)).unwrap_or_default();
+    assert_eq!(
+        (
+            common::cli::step_lock_free(root),
+            left["run"].as_str(),
+            left["revived_at"].is_null(),
+            opened(root),
+            common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_FAILED).len(),
+        ),
+        (true, Some(run.as_str()), true, opened_before, 0),
+        "the driver frees the step lock and leaves its record, launching nothing and failing no \
+         unit; stdout: {out}\nstderr: {err}"
+    );
+    assert!(
+        err.contains("rigger release"),
+        "the driver names `rigger release` as what relaunches it; stderr: {err}"
+    );
+    let released = invoke_over_record(root, &common::cli::driver_record(root), &["release"], &[]);
+    assert_eq!(
+        released.relaunches,
+        vec![format!("relaunch run --adopt {run}")],
+        "`rigger release` relaunches the run; stderr: {}",
+        released.err
+    );
+}
+
 /// STOPPED ON PURPOSE: a driver the operator interrupts (Ctrl-C) clears its record as it ends, so
 /// the next invocation relaunches nothing.
 #[cfg(unix)]
