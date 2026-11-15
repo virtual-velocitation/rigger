@@ -378,10 +378,11 @@ impl GateChannel for GateSocket {
     }
 }
 
-/// Ask the driver serving the pipe named `path` to answer `request`: its reply, or `None` when no
-/// driver serves there (no pipe of that name, or a connection closed before any driver read the
-/// request, [`exchange`]). A pipe whose every instance is busy is waited for. The pipe is opened
-/// at the identification level, so a server that is not the driver cannot act as this user.
+/// Ask the driver serving the pipe named `path` to answer `request`: its reply, or `None` only
+/// when no pipe of that name exists. A pipe whose every instance is busy is waited for; one whose
+/// server closed before reading the request, which [`exchange`] answers `None`, is an error here,
+/// as is any other failure to open or exchange. The pipe is opened at the identification level, so
+/// a server that is not the driver cannot act as this user.
 pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> {
     loop {
         let opened = std::fs::OpenOptions::new()
@@ -390,7 +391,15 @@ pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> 
             .security_qos_flags(SECURITY_IDENTIFICATION)
             .open(path);
         match opened {
-            Ok(pipe) => return exchange(pipe, request),
+            Ok(pipe) => {
+                return match exchange(pipe, request)? {
+                    Some(reply) => Ok(Some(reply)),
+                    None => Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "the driver closed the gate pipe before reading the request",
+                    )),
+                }
+            }
             Err(e) if is(&e, ERROR_FILE_NOT_FOUND) => return Ok(None),
             Err(e) if is(&e, ERROR_PIPE_BUSY) => {
                 let name = wide(path);

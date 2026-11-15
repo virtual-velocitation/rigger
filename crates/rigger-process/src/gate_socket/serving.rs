@@ -54,9 +54,9 @@ pub(super) fn answer_one(
 /// request is written to, or resets the connection once it was written; a driver that closes a
 /// connection with the request unread resets it too. No driver took the request then, exactly as
 /// when nothing listens. A named pipe whose server is gone before the request is written breaks
-/// the pipe the same way, but one closed with the request unread ends the reply as one closed
-/// after reading it does. A driver that read the request and closed without replying is the end of
-/// file this answers as an error.
+/// the pipe the same way, which the named-pipe `ask` answers as an error, but one closed with the
+/// request unread ends the reply as one closed after reading it does. A driver that read the
+/// request and closed without replying is the end of file this answers as an error.
 pub(super) fn exchange(
     mut stream: impl io::Read + io::Write,
     request: &GateRequest,
