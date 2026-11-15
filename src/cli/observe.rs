@@ -255,7 +255,7 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
     // [`store_if_any`], which DOWNCASTS on [`NoStoreFound`] specifically (never a string match on
     // its message), so every OTHER `--line` failure (a corrupt store, an unreadable stream) still
     // propagates exactly as before this round - only the no-store-at-all case degrades. The
-    // The default and `--json` paths are human-invoked: a project set up before its first run
+    // default and `--json` paths are human-invoked: a project set up before its first run
     // says the same (`--json` as the empty view it is), and a directory with no store at all
     // keeps the wrong-directory refusal ([`store_to_report`]).
     let found = if line {
