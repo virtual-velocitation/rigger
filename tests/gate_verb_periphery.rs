@@ -4,7 +4,8 @@
 //! OWNED HERE: the verb's CLI face with no driver serving the project (it runs the gate for
 //! information only, prints the result, says it recorded nothing and records nothing, a stale
 //! socket file included); the socket it asks, the one its driver addresses or else the one the
-//! shared path rule names; its refusals of an uncommitted tree, an undeclared gate and a relative
+//! shared path rule names, whose file name is the digits the Windows gate pipe's name carries for
+//! the same project; its refusals of an uncommitted tree, an undeclared gate and a relative
 //! address; and `rigger emit`'s refusal of a GateVerdict, the forge a worker would otherwise reach for.
 //!
 //! NOT OWNED HERE: the driver's answer to a request (the gate run, the signed verdict, its reuse
@@ -99,6 +100,63 @@ fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
         err.contains("the driver heard gate g"),
         "the verb reports the served answer: {err}"
     );
+}
+
+/// THE VERB ASKS THE SOCKET NAMED BY ITS PROJECT'S PIPE DIGITS: GIVEN two projects whose gate
+/// sockets are served side by side in one runtime directory, each named by the digits `pipe_name`
+/// gives after `\\.\pipe\rigger-gate-` for its canonical root, WHEN an agent runs `rigger gate g`
+/// in each, THEN each verb reports the answer served for its own project and nothing else.
+#[cfg(unix)]
+#[test]
+fn the_gate_verb_asks_the_socket_named_by_its_projects_pipe_digits_and_two_projects_ask_two() {
+    use rigger::gate_channel::{GateChannel, GateReply, GateRequest};
+    use std::os::unix::ffi::OsStrExt;
+    let runtime = common::cli::short_scratch();
+    let projects = ["first", "second"].map(|name| {
+        let (root, _scratch) = committed_project(&one_gate_workflow("true"));
+        let canonical = root.path().canonicalize().unwrap();
+        let pipe = rigger::gate_socket::pipe_name(canonical.as_os_str().as_bytes());
+        let digits = pipe
+            .strip_prefix(r"\\.\pipe\rigger-gate-")
+            .unwrap_or_else(|| panic!("{name}: the pipe name carries the pipe prefix: {pipe}"));
+        // Only the owner directory comes from the unix path rule; the name is the pipe's digits.
+        let owner = rigger::gate_socket::socket_path_under(runtime.path(), root.path()).unwrap();
+        let path = owner.with_file_name(format!("{digits}.sock"));
+        let socket = rigger::gate_socket::GateSocket::bind(&path)
+            .unwrap_or_else(|e| panic!("{name}: its own socket {} binds: {e}", path.display()));
+        let answer = move |request: GateRequest| GateReply::Refused {
+            reason: format!("the {name} project's driver heard gate {}", request.gate),
+        };
+        (name, root, socket, answer)
+    });
+    let ran: Vec<_> = std::thread::scope(|s| {
+        let serving: Vec<_> = projects
+            .iter()
+            .map(|(_, _, socket, answer)| s.spawn(move || socket.serve(answer)))
+            .collect();
+        let ran = projects
+            .iter()
+            .map(|(_, root, ..)| rigger_in(root.path(), runtime.path(), &["gate", "g"]))
+            .collect();
+        for (_, _, socket, _) in &projects {
+            socket.close();
+        }
+        for served in serving {
+            served.join().unwrap().unwrap();
+        }
+        ran
+    });
+    for ((name, ..), got) in projects.iter().zip(ran) {
+        assert_eq!(
+            got,
+            (
+                String::new(),
+                format!("rigger: the {name} project's driver heard gate g\n"),
+                false
+            ),
+            "{name}: (stdout, stderr, success) of rigger gate g"
+        );
+    }
 }
 
 /// THE VERB ASKS WHERE ITS DRIVER SAYS: GIVEN a socket served at a path the runtime directory
