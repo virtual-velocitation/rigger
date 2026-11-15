@@ -29203,6 +29203,186 @@ mod tests {
         );
     }
 
+    /// Park the requests an earlier entry of the speculating unit `s` recorded for `lanes`, as a
+    /// host records every spawn it is asked for.
+    fn park_lane_requests(store: &Store, lanes: std::ops::Range<u32>) {
+        for lane in lanes {
+            spawn_store::park_in_run(
+                store,
+                &crate::spawn::test_request("s", "s", ROLE_IMPLEMENTER, lane, "task"),
+                "",
+                "",
+            )
+            .unwrap();
+        }
+    }
+
+    /// A post-merge `GateVerdict` of gate `ok` recorded for `s` at `attempt`, passing or not.
+    fn postmerge_verdict(attempt: u32, pass: bool) -> Event {
+        Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({
+                "gate": "ok", "pass": pass, "flaky": false, "evidence": ""
+            }))
+            .unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::PostMergeVerdict, "s", attempt, 0, "ok"),
+        )
+    }
+
+    /// The run of a group whose first entry requested lanes 0 and 1, whose lane 0's merge broke
+    /// the merged tree (its post-merge verdict red), which escalated as a group and which an
+    /// operator granted an attempt. Returns what every re-entered lane is told: the logged block.
+    fn an_escalated_and_resumed_group(store: &Store, _repo: &str) -> String {
+        seed_events_in_run(store, &[], &[]);
+        park_lane_requests(store, 0..2);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[
+                    postmerge_verdict(0, false),
+                    lane_0_merge_break(),
+                    Event::new(
+                        ledger::TYPE_UNIT_ESCALATED,
+                        serde_json::to_vec(&json!({"id": "s"})).unwrap(),
+                    )
+                    .with_meta(META_SPEC_GROUP, speculation_group_id("s")),
+                ],
+            )
+            .unwrap();
+        grant_resume(store, "s", 1);
+        LANE_0_MERGE_BREAK.to_string()
+    }
+
+    /// [`an_escalated_and_resumed_group`] whose re-entry requested lanes 2 and 3 and parked, and
+    /// whose process then died: the relaunch adds no boundary, so it keeps the re-entry's ids.
+    fn a_re_entered_group_relaunched_after_a_crash(store: &Store, repo: &str) -> String {
+        let told = an_escalated_and_resumed_group(store, repo);
+        park_lane_requests(store, 2..4);
+        told
+    }
+
+    /// The run of a group whose first entry requested lanes 0 and 1, whose lane 0's merge broke
+    /// the merged tree, and whose lane 1 then integrated at `repo`'s head, its post-merge verdict
+    /// green, before a later unit's review queued a compensation naming `s`. The relaunch drains
+    /// it. Returns what every re-entered lane is told: the compensation's contradiction.
+    fn a_compensated_group(store: &Store, repo: &str) -> String {
+        std::fs::write(Path::new(repo).join("s.rs"), "fn s_condemned() {}\n").unwrap();
+        for args in [
+            &["add", "s.rs"][..],
+            &["commit", "-q", "-m", "s integrates"][..],
+        ] {
+            run_git(repo, args);
+        }
+        let commit_c = trimmed_stdout(&run_git(repo, &["rev-parse", "HEAD"]));
+        let contradiction = "s's integrated change contradicts the later unit".to_string();
+        seed_events_in_run(store, &[], &[]);
+        park_lane_requests(store, 0..2);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[
+                    lane_0_merge_break(),
+                    postmerge_verdict(0, true),
+                    Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(&json!({"id": "s", "commit": commit_c})).unwrap(),
+                    ),
+                    Event::new(
+                        ledger::TYPE_UNIT_STATUS,
+                        serde_json::to_vec(
+                            &json!({"id": "s", "status": STATUS_COMPENSATION_QUEUED}),
+                        )
+                        .unwrap(),
+                    )
+                    .with_meta(META_COMPENSATE_TARGET, "s")
+                    .with_meta(META_CONTRADICTION, &contradiction),
+                ],
+            )
+            .unwrap();
+        contradiction
+    }
+
+    /// Spec 126 criterion 14: a speculating unit re-entered past a boundary (an operator's grant
+    /// after its escalation, or a drained compensation) runs its lanes one past the highest
+    /// attempt its run recorded before that boundary, so a host runs them as fresh sessions
+    /// rather than answering the first entry's ids from the log; a relaunch adding no boundary
+    /// keeps the re-entry's ids. Every lane's prompt carries what the unit is told on re-entry,
+    /// and the winner's post-merge gate runs under its own `base + lane` key, never replaying
+    /// the first entry's verdict at that lane.
+    fn assert_a_re_entered_group_runs_fresh_lanes_told_why(
+        seed: fn(&Store, &str) -> String,
+        why: &str,
+    ) {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let told = seed(&store, &repo_path);
+        let driver = approving_speculation_stub();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        let lanes: Vec<String> = driver
+            .spawn_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| spawn::spawn_role(id) == ROLE_IMPLEMENTER)
+            .cloned()
+            .collect();
+        assert_eq!(
+            lanes,
+            [
+                spawn_id("s", ROLE_IMPLEMENTER, 2),
+                spawn_id("s", ROLE_IMPLEMENTER, 3)
+            ],
+            "the re-entered lanes run one past the recorded attempts: {why}"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert!(
+            prompts.len() == 2 && prompts.iter().all(|p| p.contains(&told)),
+            "every re-entered lane's prompt holds {told:?}: {why}; prompts: {prompts:?}"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the re-entered lane 0 wins: {why}"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let rerun = gate_key(GateKey::PostMergeVerdict, "s", 2, 0, "ok");
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&rerun)
+            }),
+            "the winner's post-merge gate records its verdict under {rerun:?}: {why}"
+        );
+    }
+
+    crate::test_cases! {
+        an_escalated_group_resumed_by_an_operator_re_enters_on_fresh_lanes:
+            assert_a_re_entered_group_runs_fresh_lanes_told_why(
+                an_escalated_and_resumed_group,
+                "an operator's grant",
+            );
+        a_re_entered_group_relaunched_after_a_crash_keeps_its_lanes:
+            assert_a_re_entered_group_runs_fresh_lanes_told_why(
+                a_re_entered_group_relaunched_after_a_crash,
+                "a crash-resume of the re-entry",
+            );
+        a_compensated_group_re_enters_on_fresh_lanes_told_the_contradiction:
+            assert_a_re_entered_group_runs_fresh_lanes_told_why(
+                a_compensated_group,
+                "a drained compensation",
+            );
+    }
+
     #[test]
     fn assert_isolated_cwd_refuses_empty_or_repo_root_with_a_repo() {
         // The guard that makes "run in the main repo" structurally impossible: with a
