@@ -318,7 +318,8 @@ Stamp                                (a Tip plus what only advance knows)
   fingerprint the extractor's fingerprint folded with the grouper's generation and the
               settled generation: changes when any extractor's output, the groupings or the
               rows settled at advance can change (the symbol extractors' tag version, the facts
-              generation, the grouping generation and the settled generation; golden tests pin
+              generation, the digest of the extractors the project's workflow declares, when it
+              declares any, the grouping generation and the settled generation; golden tests pin
               them to digests of the facts, the groupings and the settled rows over fixtures, so
               an unbumped change fails)
   seq         the snapshot's sequence number
