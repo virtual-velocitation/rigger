@@ -708,7 +708,8 @@ mod tests {
             "A probe that edits your tree is over before your turn is.",
             "runs to completion and restores the tree before your turn ends, never as a \
              detached or background job",
-            "the attempt checkpoint commits whatever the worktree holds when your session ends",
+            "the attempt checkpoint commits whatever the worktree holds when your session ends \
+             handing its work over",
             "the sharpest case of the rule that your turn's end is your session's end",
             "each run to completion inside your turn",
         ]

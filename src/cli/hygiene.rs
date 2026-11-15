@@ -378,8 +378,8 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 /// different directories.
 fn reset_scratch_orphans() -> Res {
     let Some(cache_home) = rigger::driver::replay::cache_home_from(
-        std::env::var_os("XDG_CACHE_HOME"),
-        std::env::var_os("HOME"),
+        std::env::var_os(rigger::driver::replay::CACHE_HOME_ENV),
+        std::env::var_os(rigger::registry::HOME_ENV),
     ) else {
         return Err(
             "reset --scratch-orphans: neither XDG_CACHE_HOME nor HOME is set, so \
@@ -946,6 +946,13 @@ fn reset_runs(loc: &StoreLocation, selection: &StoreSelection, env: &ResetEnv) -
         // a run this reset is closing; the graph prune below takes no part in
         // it.
         let probe = live_writer_facts(loc, selection, env, &events)?;
+        // A driver holding the step lock may be the relaunched one still writing its output.
+        if !probe.facts.step_lock_held && relaunch::forget_driver_output(&loc.dir)? {
+            println!(
+                "reset --runs: removed {}, the output of the driver a check last relaunched",
+                relaunch::DRIVER_OUTPUT_FILE
+            );
+        }
         close_landed_units(loc, store, &graph, &events, &probe.facts)?;
         std::mem::drop(probe);
         let removed = graph.prune(&drop, boundary)?;

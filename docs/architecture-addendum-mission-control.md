@@ -129,7 +129,8 @@ Only **console events** count toward N: the run-lifecycle types (`RunStarted`,
 `UnitProposed`, `UnitStarted`, `UnitStatus`, `UnitIntegrated`, `UnitFailed`, `UnitEscalated`,
 `UnitResumed`, `SpawnRequested`, `SpawnResult`, `StepTaken`, `GateVerdict`, `ReviewFinding`,
 `DecisionMade`, `LessonLearned`, `BlastRadiusComputed`, `FileTouched`,
-`DefinitionSuperseded`, `BudgetExhausted`, `RunHeld`, `RunReleased`). The graph-extraction
+`DefinitionSuperseded`, `BudgetExhausted`, `RunHeld`, `RunReleased`, `DagRecorded`,
+`SpecDefect`, `DeferredGateFailed`). The graph-extraction
 types that share the stream (`CodeEntityExtracted`, `EdgeInferred`, `DocLinkExtracted`,
 `DocConceptExtracted`) are the knowledge graph's and reach the console only as the graph payload; they never appear on the
 scrubber. A run of this repository's size has a few thousand console events and two million
@@ -469,8 +470,10 @@ last `StepTaken` is older than the bound), churn (amber when any open unit has t
 rejects), dash (the stream connection), store (the server's last successful read), plus the
 budget chip (the run's recorded tokens).
 
-The **statusline** is one line: unit focus, review round, units landed, health word, step age,
-live or replay - produced by the core's `statusline` function. `rigger status --line` prints
+The **statusline** is one line: unit focus, review round, units landed of the units the run
+owes (its recorded DAG's units and every unit it started), health word, step age, live or
+replay - produced by the core's `statusline` function. It says done only once every owed unit
+has landed. `rigger status --line` prints
 the same line, and `rigger setup` registers that command as the editor's status line, so the
 line the editor shows under the conversation and the line the console shows are one text.
 

@@ -432,8 +432,9 @@ thinking out loud, not json\n\
     #[test]
     fn spawn_shells_out_and_bridges_the_agents_emits() {
         // End-to-end through the real spawn path: a tiny executable shell script
-        // acts as the "agent" binary. It ignores its args and its stdin (the task) and
-        // prints two emit-protocol lines plus chatter. The driver
+        // acts as the "agent" binary. It ignores its args, reads its stdin (the task) only for
+        // the handover contract an author's task carries, and prints two emit-protocol lines
+        // plus chatter. The driver
         // must shell out, capture stdout, and bridge BOTH emits through the
         // callback - proving the cli path records decisions and extends the DAG.
         //

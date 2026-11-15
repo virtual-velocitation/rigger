@@ -689,6 +689,10 @@ pub const META_RESOLVED_MODEL: &str = "resolved_model";
 /// result carries the session back to the conductor, which records it as the spawn's session.
 pub const META_SESSION_ID: &str = "session_id";
 
+/// The [`SpawnResult::meta`] key a session host records the count of tool calls the session was
+/// denied under: a permission refusal or a hook's block.
+pub const META_PERMISSION_DENIALS: &str = "permission_denials";
+
 /// The [`SpawnResult::meta`] key the driver stamps on a spawn it recorded as a LIVENESS
 /// fault (spec 10, unit 3): its value is the failure CLASS the taxonomy assigned the hung
 /// agent (e.g. `"infra"`). Its presence marks the result as a driver-synthesized liveness
@@ -832,6 +836,11 @@ impl SpawnEventBody for SpawnResult {
 /// spawn's, and the managed pre-commit hook reads it to find the build it checks the docs with.
 pub const BUILD_CACHE_ENV: &str = "CARGO_TARGET_DIR";
 
+/// The environment variable that names the run's base: the run branch's tip when the run
+/// started ([`crate::run::current_run_base_tip`]). The conductor's one build environment sets
+/// it, so every gate and every spawn of a run that recorded a base carries it.
+pub const RUN_BASE_ENV: &str = "RIGGER_RUN_BASE";
+
 /// One entry of the pending frontier: the identity of a parked spawn that still awaits its
 /// result - which spawn, of which unit, at which stage. The dash, `rigger status`, `rigger watch`
 /// and the activity view read it; the prompt, persona and placement stay on the recorded
@@ -874,9 +883,9 @@ impl<T: SpawnEventBody> SpawnEvent for T {
 }
 
 /// The [`TYPE_SPAWN_REQUESTED`] events in `events`, still serialized - the ONE prefilter
-/// [`requests`], [`is_recorded`] and [`recorded_lenient`] all fold over, so a non-spawn
-/// event is skipped in exactly one place rather than three times over.
-fn spawn_requested_events(events: &[Event]) -> impl Iterator<Item = &Event> {
+/// [`requests`], [`is_recorded`], [`recorded_lenient`] and [`recorded_request_lenient`] all fold
+/// over, so a non-spawn event is skipped in exactly one place rather than in each.
+fn spawn_requested_events(events: &[Event]) -> impl DoubleEndedIterator<Item = &Event> {
     events.iter().filter(|e| e.type_ == TYPE_SPAWN_REQUESTED)
 }
 
@@ -934,6 +943,15 @@ pub fn recorded_lenient(events: &[Event]) -> BTreeMap<String, SpawnRequest> {
         }
     }
     out
+}
+
+/// The request recorded for spawn `id` in `events`, as [`recorded_lenient`] files it: the latest
+/// readable request of that id, a malformed body skipped. It reads back from the newest event and
+/// stops at the first match, never building the map, for a caller that wants one id.
+pub fn recorded_request_lenient(events: &[Event], id: &str) -> Option<SpawnRequest> {
+    spawn_requested_events(events)
+        .rev()
+        .find_map(|e| SpawnRequest::from_event(e).ok().filter(|req| req.id == id))
 }
 
 /// The latest [`TYPE_SPAWN_RESULT`] event of each spawn id in `events`, and the first result

@@ -14,7 +14,6 @@ use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
 use crate::config::{AgentDef, Config, RegenerateRule, ReviewStep, Stage};
-#[cfg(test)]
 use crate::config_store;
 use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
@@ -23,6 +22,7 @@ use crate::eventstore::{Appended, Event, EventStore};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder, StampedRadius};
+use crate::hooks;
 use crate::ledger::{self, RequiredItem, RunState};
 use crate::liveness;
 use crate::playbooks::fnv1a_64;
@@ -854,9 +854,11 @@ impl GreenDigests {
 }
 
 /// The build environment every gate of `cfg` builds under (spec 65): the configured wrapper and
-/// cache layer resolved into the [`gate::BuildEnv`] a gate and an agent's spawn both carry. The one
-/// resolution [`RunCtx::build_env`] and [`gate_once`] share; its `Err` is the config's own.
-fn build_env_of(cfg: &Config) -> Result<gate::BuildEnv, Error> {
+/// cache layer resolved into the [`gate::BuildEnv`] a gate and an agent's spawn both carry, with
+/// `run_base` as [`crate::spawn::RUN_BASE_ENV`] (empty adds nothing). The one resolution
+/// [`RunCtx::build_env`] and [`GateInputs::resolve`] share, so every gate and every spawn of a
+/// run carries the same run base; its `Err` is the config's own.
+fn build_env_of(cfg: &Config, run_base: &str) -> Result<gate::BuildEnv, Error> {
     let wrapper =
         gate::resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir)
             .map_err(|e| Error(e.to_string()))?;
@@ -864,7 +866,8 @@ fn build_env_of(cfg: &Config) -> Result<gate::BuildEnv, Error> {
         wrapper.as_deref().unwrap_or(""),
         &cfg.workflow.build.cache_dir,
         cfg.workflow.build.jobs,
-    ))
+    )
+    .with_var(crate::spawn::RUN_BASE_ENV, run_base))
 }
 
 /// The machine-wide build budget of `cfg` (spec 65): `build.max_concurrent` slots in the OS-wide
@@ -1007,10 +1010,10 @@ impl GateInputs {
             build_cache_dir,
             build_cache_guard,
             store_fence,
-            // The ONE build-environment authority (spec 65), layered with `$RIGGER_RUN_BASE`
-            // (spec 91, THE GATE ENVIRONMENT): the SAME bag every gate command already receives
-            // unconditionally (`gate::ExecRunner::run`'s `build_env.apply`).
-            build_env: build_env_of(cfg)?.with_var("RIGGER_RUN_BASE", run_base),
+            // The ONE build-environment authority (spec 65), carrying `$RIGGER_RUN_BASE`: the
+            // SAME bag every gate command receives unconditionally (`gate::ExecRunner::run`'s
+            // `build_env.apply`) and every spawn's environment is built from.
+            build_env: build_env_of(cfg, run_base)?,
             // The machine-wide build budget (spec 65), threaded to every gate this resolves for.
             budget: build_budget_of(cfg),
             // The content address of the gate's inputs (spec 12, unit 1): the HEAD commit of the
@@ -1676,15 +1679,131 @@ struct Compensation {
 }
 
 /// One parked-and-recorded first-green-wins speculation candidate (spec 13, unit 3) awaiting
-/// evaluation: its `lane` (which is also the attempt its gates/statuses/review key under), the
-/// isolated `wt` it committed into, that worktree's `dir`, and the `resolved_model` the worker
-/// reported (empty on a live driver that does not learn it). Held only inside
-/// [`RunCtx::run_speculation`] between the parallel-spawn phase and the winner-selection phase.
+/// evaluation: its `attempt` (the group's [`speculation_lane_base`] plus its lane, which its
+/// spawns, gates, statuses and review key under, while its worktree and branch stay keyed by
+/// the lane), the isolated `wt` it committed into, that worktree's `dir`, and the
+/// `resolved_model` the worker reported (empty on a live driver that does not learn it). Held
+/// only inside [`RunCtx::run_speculation`] between the parallel-spawn phase and the
+/// winner-selection phase.
 struct SpecCandidate {
-    lane: u32,
+    attempt: u32,
     wt: Worktree,
     dir: String,
     resolved_model: String,
+}
+
+/// What a speculation group's losing lanes failed with, gathered in lane order: each red gate's
+/// evidence and each review's rejection, with the first loss's cause. A group with no winner
+/// records it as the unit's failure. A loss to infrastructure
+/// ([`is_infra_cause`]) is left out, as the single lane charges an outage no `UnitFailed`.
+///
+/// A group writes its lanes' failures only once its outcome is known, so one loss is one
+/// failure: a lane whose merge broke post-merge is held in `breaks`, written as its own
+/// `UnitFailed` when a later lane wins, and carried in the group's one record when none does.
+#[derive(Default)]
+struct LostLanes {
+    cause: Option<String>,
+    failure: PriorFailure,
+    breaks: Vec<LaneBreak>,
+}
+
+/// A speculation lane whose merge broke post-merge: its attempt, the re-gate's evidence and the
+/// lane worktree's sha, read after that worktree was re-asserted.
+struct LaneBreak {
+    attempt: u32,
+    evidence: Vec<String>,
+    sha: String,
+}
+
+impl LostLanes {
+    /// A lane at `attempt` whose merge broke post-merge with `evidence`, its worktree at `sha`.
+    fn post_merge(&mut self, attempt: u32, evidence: Vec<String>, sha: String) {
+        self.gates(CAUSE_INTEGRATE_CONFLICT.to_string(), evidence.clone());
+        self.breaks.push(LaneBreak {
+            attempt,
+            evidence,
+            sha,
+        });
+    }
+
+    /// The worktree sha of the first lane whose merge broke post-merge, if one did.
+    fn break_sha(&self) -> Option<String> {
+        self.breaks.first().map(|b| b.sha.clone())
+    }
+
+    /// A lane lost on red gates (narrowed, exhaustive or post-merge) with `evidence`.
+    fn gates(&mut self, cause: String, evidence: Vec<String>) {
+        if is_infra_cause(&cause) {
+            return;
+        }
+        self.cause.get_or_insert(cause);
+        self.failure.gate_evidence.extend(evidence);
+    }
+
+    /// A lane lost on its review's rejection `reason`.
+    fn review(&mut self, cause: String, reason: &str) {
+        if is_infra_cause(&cause) {
+            return;
+        }
+        self.cause.get_or_insert(cause);
+        let reasons = &mut self.failure.review_reason;
+        if !reasons.is_empty() {
+            reasons.push_str("\n\n");
+        }
+        reasons.push_str(reason);
+    }
+
+    /// The first loss's cause and the gathered failure, or none when no lane lost on its gates
+    /// or review other than to infrastructure.
+    fn failure(self) -> Option<(String, PriorFailure)> {
+        self.cause.map(|cause| (cause, self.failure))
+    }
+}
+
+/// The attempt a speculation group of `unit` numbers its lane 0 at, read from the run slice
+/// `events` at the group's start. The group's RE-ENTRY BOUNDARY is the
+/// later in log order of the unit's latest `UnitResumed` (an operator's grant after its
+/// escalation) and its latest compensating `UnitFailed` ([`META_COMPENSATED`]). With no boundary
+/// the base is 0; past one it is one past the highest attempt over the spawn ids of the unit the
+/// run requested before it, so a re-entered lane never asks for an id a host would answer from
+/// the log, and a crash-resume of a parked group, which adds no boundary, keeps its ids. A
+/// crashed lane's request counts.
+fn speculation_lane_base(events: &[Event], unit: &str) -> u32 {
+    let names = |e: &Event, field: &str| {
+        serde_json::from_slice::<Value>(&e.data)
+            .is_ok_and(|v| v.get(field).and_then(Value::as_str) == Some(unit))
+    };
+    let boundary = events.iter().rposition(|e| {
+        (e.type_ == ledger::TYPE_UNIT_RESUMED && names(e, "unit"))
+            || (e.type_ == ledger::TYPE_UNIT_FAILED
+                && e.meta.contains_key(META_COMPENSATED)
+                && names(e, "id"))
+    });
+    let Some(boundary) = boundary else {
+        return 0;
+    };
+    spawn::recorded_lenient(&events[..boundary])
+        .keys()
+        .filter(|id| spawn::unit_of(id) == Some(unit))
+        .map(|id| spawn::attempt_of(id) + 1)
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether `unit`'s latest `UnitEscalated` in the run slice `events` escalated a speculation
+/// group ([`META_SPEC_GROUP`]): a group with no winner deletes every lane branch, the canonical
+/// unit branch among them, and re-enters on fresh lane worktrees, so a resume of it needs no
+/// branch to re-park on.
+pub fn escalated_as_speculation_group(events: &[Event], unit: &str) -> bool {
+    events
+        .iter()
+        .rev()
+        .find(|e| {
+            e.type_ == ledger::TYPE_UNIT_ESCALATED
+                && serde_json::from_slice::<Value>(&e.data)
+                    .is_ok_and(|v| v.get("id").and_then(Value::as_str) == Some(unit))
+        })
+        .is_some_and(|e| e.meta.contains_key(META_SPEC_GROUP))
 }
 
 /// The compensations STILL PENDING at run start (spec 12, unit 4): a durable
@@ -2447,6 +2566,77 @@ fn review_retry_window(ordinal: u32) -> std::ops::RangeInclusive<u32> {
     first..=first + REVIEWER_RESPAWN_BOUND
 }
 
+/// One ReviewFinding a review round recorded: the step `role` whose spawn recorded it, its `id`
+/// and its rendered [`record_line`].
+struct RoundFinding {
+    role: String,
+    id: String,
+    line: String,
+}
+
+/// The ReviewFindings `run` holds for unit `unit`'s review round `attempt`, in the order first
+/// recorded: each one a review step's spawn of that unit at that attempt stamped with its
+/// [`META_SPAWN`], under any retry id and any infra rerun of the round. A role that re-records
+/// an id keeps its first place with its latest text. A finding with no spawn stamp names no
+/// round, so it is never listed.
+fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> {
+    let mut found: Vec<RoundFinding> = Vec::new();
+    for e in run
+        .iter()
+        .filter(|e| e.type_ == contextgraph::TYPE_REVIEW_FINDING)
+    {
+        let Some(spawn_id) = e.meta.get(META_SPAWN) else {
+            continue;
+        };
+        let role = spawn::spawn_role(spawn_id);
+        if spawn::unit_of(spawn_id) != Some(unit)
+            || spawn::attempt_of(spawn_id) != attempt
+            || spawn::review_step_of(role).is_none()
+        {
+            continue;
+        }
+        let body: Value = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
+        let field = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("");
+        let id = field("id");
+        let by = e
+            .meta
+            .get(contextgraph::META_ACTOR)
+            .map(String::as_str)
+            .filter(|a| !a.is_empty())
+            .unwrap_or_else(|| field("by"));
+        let line = record_line(id, by, field("summary"));
+        match found.iter_mut().find(|f| f.role == role && f.id == id) {
+            Some(f) => f.line = line,
+            None => found.push(RoundFinding {
+                role: role.to_string(),
+                id: id.to_string(),
+                line,
+            }),
+        }
+    }
+    found
+}
+
+/// The block a review spawn's task closes on over its round's `findings`: for a unit's
+/// adjudicator (`all`) every one under [`ROUND_FINDINGS_ALL`], whatever file it names, which
+/// the graph slice of its prompt may leave out; for any other step's `role` the ones it recorded
+/// itself under [`ROUND_FINDINGS_YOURS`], so a reviewer re-driven within its round knows what it
+/// already recorded. Empty when there is none to list.
+fn round_findings_block(findings: &[RoundFinding], role: &str, all: bool) -> String {
+    let lines: String = findings
+        .iter()
+        .filter(|f| all || f.role == role)
+        .map(|f| f.line.as_str())
+        .collect();
+    if lines.is_empty() {
+        String::new()
+    } else if all {
+        format!("{ROUND_FINDINGS_ALL}{lines}")
+    } else {
+        format!("{ROUND_FINDINGS_YOURS}{lines}")
+    }
+}
+
 /// What a review-tier spawn's stdout carries, which decides when
 /// [`RunCtx::reviewer_result_is_degenerate`] reads its result as degenerate.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2722,6 +2912,24 @@ fn infra_halt(unit: &str, attempt: u32, cause: &str, evidence: &str) -> Error {
     ))
 }
 
+/// The halt error a unit's stage returns once its infra reruns reach the taxonomy's infra limit
+/// on an author's missed handover ([`CAUSE_INFRA_HANDOVER`]): [`infra_halt`]'s shape, naming the
+/// handover, how many `misses` the bound counted, and what the infra-retry marks hold to tell a
+/// refused tool call from a session that stopped or printed a last line of its own.
+fn handover_halt(unit: &str, attempt: u32, misses: u32, evidence: &str) -> Error {
+    let times = if misses == 1 { "time" } else { "times" };
+    Error(format!(
+        "{INFRA_MARKER}infra: {evidence}\n(unit {unit:?}'s author session ended without its \
+         hand-over line ({AUTHOR_HANDOVER_LINE}) {misses} {times} at attempt {attempt}, past the \
+         failure taxonomy's infra limit, so the step halts and the unit is charged no attempt. \
+         Each infra-retry mark records the session's last line and its permission denials: \
+         denials mean a tool call the session needed was refused, so grant it; none mean the \
+         session stopped early or printed a last line of its own, so check the author persona \
+         asks for no final line. Then re-run: the unit resumes at the same attempt with a fresh \
+         bound)"
+    ))
+}
+
 /// A unit's infra reruns at one attempt (F3), folded from its [`STATUS_INFRA_RETRY`] and
 /// [`STATUS_INFRA_HALT`] marks so a later conductor process over the run resumes the same counts -
 /// log-carried, never process state.
@@ -2736,6 +2944,10 @@ struct InfraRetries {
     /// taxonomy's infra limit bounds. A halt resets it, so a relaunch after the outage gets a
     /// fresh bound while the ordinal keeps counting past every spoiled run.
     since_halt: u32,
+    /// The reruns since this attempt's latest infra halt that an author's missed handover
+    /// caused (marks naming the missed spawn, [`META_SPAWN`]): the count a handover halt
+    /// ([`handover_halt`]) names.
+    misses: u32,
 }
 
 impl InfraRetries {
@@ -2744,22 +2956,27 @@ impl InfraRetries {
     fn recorded(events: &[Event], unit: &str, attempt: u32) -> Self {
         unit_status_marks(events, unit, &[STATUS_INFRA_RETRY, STATUS_INFRA_HALT])
             .filter(|(_, at, _)| *at == u64::from(attempt))
-            .fold(Self::default(), |infra, (status, _, _)| infra.after(status))
+            .fold(Self::default(), |infra, (status, _, e)| {
+                infra.after(status, e.meta.contains_key(META_SPAWN))
+            })
     }
 
-    /// The state after one more infra mark of `status`: a rerun ([`STATUS_INFRA_RETRY`])
-    /// advances both counts, a halt ([`STATUS_INFRA_HALT`]) restarts the bound and keeps the
-    /// ordinal. The one transition the log fold and the live rerun both apply, so the two can
-    /// never disagree on the next ordinal.
-    fn after(self, status: &str) -> Self {
+    /// The state after one more infra mark of `status`, `missed` when it records an author's
+    /// missed handover: a rerun ([`STATUS_INFRA_RETRY`]) advances both counts and, when
+    /// `missed`, the misses; a halt ([`STATUS_INFRA_HALT`]) restarts the bound and the misses
+    /// and keeps the ordinal. The one transition the log fold and the live rerun both apply, so
+    /// the two can never disagree on the next ordinal.
+    fn after(self, status: &str, missed: bool) -> Self {
         if status == STATUS_INFRA_RETRY {
             InfraRetries {
                 ordinal: self.ordinal + 1,
                 since_halt: self.since_halt + 1,
+                misses: self.misses + u32::from(missed),
             }
         } else {
             InfraRetries {
                 since_halt: 0,
+                misses: 0,
                 ..self
             }
         }
@@ -3939,6 +4156,51 @@ impl RunCtx<'_> {
         self.deps.spawn_host.clone()
     }
 
+    /// The definition the run checkout holds now, hashed exactly as a launch of this run hashes
+    /// it ([`config_store::definition_hash`] over the project the config was loaded from, folding
+    /// the helper copies the checkout holds), or None where there is no checkout or no on-disk
+    /// project to hash, or a file of it cannot be read: a move then re-pins nothing and the next
+    /// launch decides on what it reads.
+    fn checkout_definition(&self) -> Option<String> {
+        if self.deps.repo.is_empty() || self.cfg.dir.is_empty() || self.run_id.is_empty() {
+            return None;
+        }
+        let helpers = hooks::resolved_helpers(Path::new(&self.deps.repo)).ok()?;
+        config_store::definition_hash(&self.cfg.dir, &helpers).ok()
+    }
+
+    /// Run `move_branch`, a move of the run branch the checkout holds, and re-pin the run to the
+    /// definition the move left there when the move changed a definition that matched the pin
+    /// ([`crate::run_store::record_definition_move`]): a run's own landing is never definition
+    /// drift to a relaunch, while an edit from outside the run still is. Called with
+    /// `integrate_mu` held, so no other move lands between the two hashes. A crash between the
+    /// move and the re-pin leaves the move unpinned, and that relaunch halts on drift as before.
+    fn moving_the_run_branch<T, E>(
+        &self,
+        move_branch: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, Error>
+    where
+        Error: From<E>,
+    {
+        let before = self.checkout_definition();
+        let moved = move_branch()?;
+        if let (Some(before), Some(after)) = (before, self.checkout_definition()) {
+            if crate::run_store::record_definition_move(
+                &self.deps.folding(),
+                &self.run_id,
+                &before,
+                &after,
+            )? {
+                (self.deps.log)(&format!(
+                    "rigger: the run landed a definition change; re-pinned run {} from {before} \
+                     to {after}",
+                    self.run_id
+                ));
+            }
+        }
+        Ok(moved)
+    }
+
     fn emit(&self, type_: &str, payload: Value) -> Result<(), Error> {
         self.emit_with_actor("", type_, payload)
     }
@@ -4211,6 +4473,27 @@ impl RunCtx<'_> {
         }
     }
 
+    /// What `unit` is told on entering its lifecycle at attempt `attempts`, the one reader the
+    /// single-lane path and every speculation lane share: the
+    /// [`logged_prior_failure`](RunCtx::logged_prior_failure), then, on a compensation re-entry
+    /// (spec 12, unit 4), the recorded contradiction, so a unit a later unit's review proved
+    /// wrong, reverted and re-entered fixes that specific defect rather than blindly
+    /// restarting. The contradiction is read once at the unit's entry; a later re-review reject
+    /// carries its own reason instead.
+    fn re_entry_failure(&self, unit: &str, attempts: u32) -> PriorFailure {
+        let mut prior = self.logged_prior_failure(unit, attempts);
+        if let Some(reason) = self
+            .compensation_feedback
+            .lock()
+            .unwrap()
+            .get(unit)
+            .cloned()
+        {
+            prior.contradiction = reason;
+        }
+        prior
+    }
+
     /// The highest attempt at which `unit` has a recorded gate verdict in the LIVE
     /// [`gate_verdicts`](RunCtx::gate_verdicts) cache (spec 12, unit 4). The cache is keyed by
     /// [`gate_key`] (`{unit}/gate:{gate}#{attempt}`), seeded once at run start from the
@@ -4280,11 +4563,13 @@ impl RunCtx<'_> {
                 let _lock = self.integrate_mu.lock().unwrap();
                 let mut done: Vec<String> = Vec::new();
                 for commit in &commits {
-                    Worktree::revert_on_base(
-                        &self.deps.repo,
-                        commit,
-                        &format!("rigger: compensate {} (revert {commit})", comp.target),
-                    )?;
+                    self.moving_the_run_branch(|| {
+                        Worktree::revert_on_base(
+                            &self.deps.repo,
+                            commit,
+                            &format!("rigger: compensate {} (revert {commit})", comp.target),
+                        )
+                    })?;
                     done.push(commit.clone());
                 }
                 done
@@ -4345,6 +4630,53 @@ impl RunCtx<'_> {
     /// this context takes.
     fn read_current_run(&self) -> Result<Vec<Event>, Error> {
         Ok(crate::run::read::read_current_run(self.deps.store, STREAM)?.0)
+    }
+
+    /// The missed handover of author spawn `id`'s `result`, naming the author `who`, when it did
+    /// not hand its work over ([`author_handed_over`]), read against the request the current
+    /// run recorded for `id`, if any: the ONE handover check the implementer, the test author
+    /// and each speculation lane take. The miss carries the result's last line and the
+    /// permission denials the run's recorded result for `id` counts, when one was recorded. A
+    /// result with no session, or one ending on the hand-over line, reads no log; a would-be miss
+    /// reads only the run's spawn requests and results.
+    fn handover_miss(
+        &self,
+        who: &str,
+        id: &str,
+        result: &AgentResult,
+    ) -> Result<Option<HandoverMiss>, Error> {
+        if author_handed_over(result, None) {
+            return Ok(None);
+        }
+        let events = crate::run::read::read_current_run_typed(
+            self.deps.store,
+            STREAM,
+            &[
+                crate::run::TYPE_RUN_STARTED,
+                spawn::TYPE_SPAWN_REQUESTED,
+                spawn::TYPE_SPAWN_RESULT,
+            ],
+        )?;
+        let recorded = spawn::recorded_request_lenient(&events, id);
+        if author_handed_over(result, recorded.as_ref().map(|req| req.prompt.as_str())) {
+            return Ok(None);
+        }
+        // A result body that cannot be read leaves the count unknown: the miss is the finding,
+        // the count only its context.
+        let denials = spawn::result_of(&events, id)
+            .ok()
+            .flatten()
+            .and_then(|res| {
+                res.meta
+                    .get(spawn::META_PERMISSION_DENIALS)
+                    .and_then(Value::as_u64)
+            });
+        Ok(Some(HandoverMiss {
+            who: who.to_string(),
+            id: id.to_string(),
+            last_line: bounded_last_line(&result.output),
+            denials,
+        }))
     }
 
     /// The integrating commit(s) of `unit` to REVERT for a compensation (spec 12, unit 4):
@@ -6141,14 +6473,15 @@ impl RunCtx<'_> {
     /// implementer's EXISTING worktree (its files swept in by the caller's commit, not a fresh
     /// worktree of its own).
     ///
-    /// Returns `Ok(())` when the caller may proceed to its commit: a normal result (files
+    /// Returns `Ok(())` when the caller may proceed to its commit: a handed-over result (files
     /// authored), no declared test author, or a budget refusal. Returns the PARK signal
     /// `Err(parked)` when the spawn parked (a driver's unrecorded frontier); the caller
     /// unwinds per its own discipline - the single lane propagates it (holding the unit, no
     /// commit), a speculation lane collects it into `any_parked` and does NOT commit that
     /// candidate, so a later step replays the sdet and its periphery tests land. Returns the stage
     /// error naming the crash, marked [`SPAWN_CRASH_MARKER`], when the spawn or its opts guard
-    /// failed any other way: no gate may run on a tree the seam never touched, so the single lane
+    /// failed any other way, or its session ended without handing over: no gate may run on a tree
+    /// the seam never finished, so the single lane
     /// reruns the stage uncharged under the F3 infra retry and halts loudly past the infra limit,
     /// and a speculation candidate loses. Returns the stage error naming the refusal when the emit
     /// guard refused the re-run's record too: a refusal is a defect in what the sdet printed, never
@@ -6159,7 +6492,9 @@ impl RunCtx<'_> {
     ///
     /// A round whose [`round_delta`](RunCtx::round_delta) in `wt` changed documentation only
     /// appends that round's fact ([`doc_only_round`]) to the prompt and to a resumed session's
-    /// task.
+    /// task. Both then end with the handover contract ([`author_handover`]): a session that ends
+    /// without its line ([`author_handed_over`]) stopped mid-work, so it takes the crash
+    /// disposition before any commit or gate.
     fn spawn_sdet_author(
         &self,
         st: &Stage,
@@ -6174,18 +6509,18 @@ impl RunCtx<'_> {
         // implementer is handed): what a later attempt's resumed session is told changed when
         // no review round sent the unit back. Empty on a first attempt.
         gate_evidence: &[String],
-    ) -> Result<(), Error> {
+    ) -> Result<Option<HandoverMiss>, Error> {
         // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
         // committed tree for periphery tests to land in, and a write-capable agent must never
         // run in the live main checkout. Skip BEFORE reserving so no budget slot is spent on a
         // spawn that cannot happen.
         if dir.is_empty() {
-            return Ok(());
+            return Ok(None);
         }
         // No declared test author is a clean no-op (the build proceeds without the seam),
         // whatever agents the project defines: the seam spawns only the agent the workflow names.
         let Some(author) = self.cfg.workflow.defaults.declared_test_author() else {
-            return Ok(());
+            return Ok(None);
         };
         // A load refuses a declared id no agent defines (`Config::validate`); a config that never
         // went through one fails here, before any budget slot, as an unknown review agent does.
@@ -6212,6 +6547,29 @@ impl RunCtx<'_> {
         // periphery tests in line with (and the doc-only fact when it holds).
         let mut resume_task = later_attempt_block(delta.as_ref(), gate_evidence);
         resume_task.push_str(doc_only);
+        // The handover contract ends the prompt and the resumed task alike, so the session hands
+        // over whichever it read. An empty resume task stays empty: there is nothing to send, so
+        // the spawn starts fresh on its full prompt.
+        let handover = author_handover();
+        // A rerun after this attempt's sdet-author missed its handover continues the session
+        // that missed; its fresh prompt, read when that session cannot be continued, says the
+        // tree holds that session's partial work. A speculation candidate (ordinal 0) never
+        // reruns.
+        let missed_session = if ordinal > 0 {
+            missed_handover(
+                &self.read_current_run()?,
+                &st.name,
+                ROLE_SDET_AUTHOR,
+                attempt,
+            )
+        } else {
+            None
+        };
+        sdet_prompt.push_str(missed_handover_note(missed_session.as_deref()));
+        sdet_prompt.push_str(&handover);
+        if !resume_task.is_empty() {
+            resume_task.push_str(&handover);
+        }
         let resume_task = Some(resume_task);
         let sdet_emit = |t: &str, v: Value| {
             self.emit_agent(t, v, &[(contextgraph::META_ACTOR, ROLE_SDET_AUTHOR)])
@@ -6238,7 +6596,7 @@ impl RunCtx<'_> {
             // (spawn_is_recorded). Refused at a spent budget => do not spawn (proceed
             // author-less).
             if !self.reserve_spawn(&sdet_id) {
-                return Ok(());
+                return Ok(None);
             }
             let opts = match self.reviewer_spawn_opts(
                 &sdet_id,
@@ -6256,7 +6614,14 @@ impl RunCtx<'_> {
                 // re-run after a refusal starts fresh rather than continuing the session that
                 // printed the refused record.
                 Ok(opts) if retry == first_retry => {
-                    self.continue_prior_session(opts, ROLE_SDET_AUTHOR, resume_task.clone())?
+                    match missed_session.as_deref().filter(|s| !s.is_empty()) {
+                        Some(session) => resume_missed(opts, session, &handover),
+                        None => self.continue_prior_session(
+                            opts,
+                            ROLE_SDET_AUTHOR,
+                            resume_task.clone(),
+                        )?,
+                    }
                 }
                 Ok(opts) => opts,
                 // An opts-guard error is a crash of the seam: the spawn cannot run.
@@ -6267,10 +6632,19 @@ impl RunCtx<'_> {
                 .driver
                 .spawn(sdet_def, &refused.task(&sdet_prompt), &opts, &sdet_emit)
             {
-                // A normal result: its authored files are already in the worktree, so the
+                // A handed-over result: its authored files are already in the worktree, so the
                 // caller falls through to the commit that sweeps them in. The session it ran as
-                // is recorded for its next attempt to continue.
-                Ok(result) => self.record_session(&opts, &result),
+                // is recorded for its next attempt to continue. A session that ended without
+                // handing over stopped mid-work: the miss returns, so no checkpoint and no gate
+                // follow until the seam reruns continuing that session.
+                Ok(result) => {
+                    self.record_session(&opts, &result)?;
+                    self.handover_miss(
+                        &format!("stage {:?} sdet author: the sdet author", st.name),
+                        &opts.id,
+                        &result,
+                    )
+                }
                 // A PARKED spawn (its driver reached an unrecorded frontier, [`is_parked`]):
                 // surface the park so the caller unwinds cleanly - no UnitFailed, no
                 // remediation - and a later step over the log replays the result. A refused record
@@ -6330,10 +6704,12 @@ impl RunCtx<'_> {
 
     /// Record an infrastructure failure of `unit`'s stage run at `attempt` under `infra`'s
     /// ordinal (F3): never charged - no `remediate`, no `UnitFailed` - but marked
-    /// [`STATUS_INFRA_RETRY`] with its `cause` and `evidence`. Returns the state the stage
-    /// reruns under (the next retry ordinal) while the taxonomy's infra limit allows another
-    /// run; past it, marks [`STATUS_INFRA_HALT`] and returns the [`infra_halt`] error that
-    /// halts the step.
+    /// [`STATUS_INFRA_RETRY`] with its `cause` and `evidence`, and the `missed` spawn when an
+    /// author's missed handover caused it ([`META_SPAWN`], which the rerun reads back to continue
+    /// that session, [`missed_handover`]). Returns the state the stage reruns under (the next
+    /// retry ordinal) while the taxonomy's infra limit allows another run; past it, marks
+    /// [`STATUS_INFRA_HALT`] and returns the error that halts the step: [`handover_halt`] after
+    /// a missed handover, [`infra_halt`] after any other outage.
     fn retry_infra_failure(
         &self,
         unit: &str,
@@ -6341,14 +6717,34 @@ impl RunCtx<'_> {
         infra: InfraRetries,
         cause: &str,
         evidence: &str,
+        missed: Option<&str>,
     ) -> Result<InfraRetries, Error> {
         let detail = format!("{cause}: {evidence}");
-        self.emit_infra_mark(unit, STATUS_INFRA_RETRY, attempt, infra.ordinal, &detail)?;
+        let spawn = missed.unwrap_or_default();
+        self.emit_infra_mark(
+            unit,
+            STATUS_INFRA_RETRY,
+            attempt,
+            infra.ordinal,
+            &detail,
+            spawn,
+        )?;
         if !infra.exhausted(self.taxonomy.infra_limit()) {
-            return Ok(infra.after(STATUS_INFRA_RETRY));
+            return Ok(infra.after(STATUS_INFRA_RETRY, missed.is_some()));
         }
-        self.emit_infra_mark(unit, STATUS_INFRA_HALT, attempt, infra.ordinal, &detail)?;
-        Err(infra_halt(unit, attempt, cause, evidence))
+        self.emit_infra_mark(
+            unit,
+            STATUS_INFRA_HALT,
+            attempt,
+            infra.ordinal,
+            &detail,
+            spawn,
+        )?;
+        Err(if missed.is_some() {
+            handover_halt(unit, attempt, infra.misses + 1, evidence)
+        } else {
+            infra_halt(unit, attempt, cause, evidence)
+        })
     }
 
     /// Integrate `st` at `attempts` under `approval`, rerunning the merge uncharged on a
@@ -6374,6 +6770,7 @@ impl RunCtx<'_> {
                         *infra,
                         CAUSE_INFRA_SPAWN,
                         &crash,
+                        None,
                     )?
                 }
             }
@@ -6381,7 +6778,8 @@ impl RunCtx<'_> {
     }
 
     /// Append one infra mark ([`STATUS_INFRA_RETRY`] / [`STATUS_INFRA_HALT`]) for `unit`'s run
-    /// at `(attempt, ordinal)`, its `detail` riding as the unit's evidence under the status.
+    /// at `(attempt, ordinal)`, its `detail` riding as the unit's evidence under the status and
+    /// the author `spawn` whose missed handover caused it, when not empty, as its [`META_SPAWN`].
     fn emit_infra_mark(
         &self,
         unit: &str,
@@ -6389,8 +6787,9 @@ impl RunCtx<'_> {
         attempt: u32,
         ordinal: u32,
         detail: &str,
+        spawn: &str,
     ) -> Result<(), Error> {
-        self.emit_keyed(
+        self.emit_keyed_meta(
             &infra_mark_key(unit, status, attempt, ordinal),
             ledger::TYPE_UNIT_STATUS,
             json!({
@@ -6399,6 +6798,7 @@ impl RunCtx<'_> {
                 "attempt": attempt,
                 "evidence": { status: detail },
             }),
+            &[(META_SPAWN, spawn)],
         )
     }
 
@@ -6539,6 +6939,7 @@ impl RunCtx<'_> {
                     infra,
                     &full.cause(),
                     &full.evidence.join(" | "),
+                    None,
                 )?;
             };
             if !full.pass {
@@ -6631,22 +7032,9 @@ impl RunCtx<'_> {
         // at (gap 61: a `rigger resume-unit` grant, or a step picking up a
         // mid-remediation unit) starts from that failure, read back from the log, so
         // its prompt carries the block an in-process retry would.
-        let mut prior = self.logged_prior_failure(&st.name, attempts);
+        let mut prior = self.re_entry_failure(&st.name, attempts);
         if !halted_commit.is_empty() {
             prior.halted_commit = halted_commit;
-        }
-        // Compensation re-entry (spec 12, unit 4): a unit that a later unit's review proved
-        // wrong was reverted and re-entered here; its FIRST re-attempt is prompted with the
-        // recorded contradiction so it fixes the specific defect, not blindly restart. Read
-        // once at the top; a subsequent re-review reject then carries its own reason instead.
-        if let Some(reason) = self
-            .compensation_feedback
-            .lock()
-            .unwrap()
-            .get(&st.name)
-            .cloned()
-        {
-            prior.contradiction = reason;
         }
         // Resume-continuity, Implemented phase: the unit was implemented in a prior
         // window and its branch carries the committed code, but it was not yet
@@ -6685,6 +7073,10 @@ impl RunCtx<'_> {
             // [`SPAWN_CRASH_MARKER`]) that failed this attempt as an outage: the F3 evidence
             // names it, and the rerun keeps the committed implementation.
             let mut tier_crash: Option<String> = None;
+            // The author spawn whose missed handover failed this attempt as an outage
+            // ([`CAUSE_INFRA_HANDOVER`]): its infra-retry mark names it, so the rerun continues
+            // that session.
+            let mut missed: Option<String> = None;
             // The cause wire (spec 69, criterion 3): set at whichever branch below
             // actually fails this attempt, so the single convergent `UnitFailed` emit
             // near the bottom of this loop stamps the REAL cause rather than inferring
@@ -6763,6 +7155,29 @@ impl RunCtx<'_> {
                     let notes = run_notes(&events).map_err(|e| Error(e.to_string()))?;
                     prompt.push_str(&notes_block(&notes));
                 }
+                // An implementer is an author: its prompt and its resumed task end with the
+                // handover contract, which its result is checked against below. A producer
+                // writes no attempt to check, so it carries none.
+                let handover = if is_producer(st) {
+                    String::new()
+                } else {
+                    author_handover()
+                };
+                // A rerun after this attempt's implementer missed its handover continues the
+                // session that missed; its fresh prompt, read when that session cannot be
+                // continued, says the tree holds that session's partial work.
+                let missed_session = if infra.ordinal > 0 {
+                    missed_handover(
+                        &self.read_current_run()?,
+                        &st.name,
+                        ROLE_IMPLEMENTER,
+                        attempts,
+                    )
+                } else {
+                    None
+                };
+                prompt.push_str(missed_handover_note(missed_session.as_deref()));
+                prompt.push_str(&handover);
                 // spec 72 round-2 REJECT fix (adv-u72c1-metaspawn-remedy-viable-but-
                 // undercosted): stamp META_SPAWN alongside the actor, not only the actor,
                 // so a producer/planner spawn's UnitProposed events carry THIS spawn's own
@@ -6803,50 +7218,77 @@ impl RunCtx<'_> {
                 };
                 // A RE-ATTEMPT CONTINUES THE IMPLEMENTER'S SESSION: a later attempt resumes the
                 // session its earlier attempt ran as, sent the prior-failure block alone - the
-                // session already holds the criterion and the slice.
-                let opts = self.continue_prior_session(
-                    SpawnOpts {
-                        system_prompt: self.build_system_prompt(agent_def),
-                        dir: dir.to_string(),
-                        isolation: wt.is_some(),
-                        parallel: false,
-                        blast_radius: blast_radius.clone(),
-                        id: implementer_id.clone(),
-                        unit: st.name.clone(),
-                        stage: st.name.clone(),
-                        // The live work-line: the unit's criterion, so the run's live views
-                        // narrate the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
-                        title: st.coverage.trim().to_string(),
-                        // The cascade rung the driver resolves for this attempt (spec 10
-                        // unit 4) - the same `attempts` the alias stamp above uses.
-                        attempt: attempts,
-                        run_id: self.run_id.clone(),
-                        // The ONE build-environment authority (spec 65) PLUS this
-                        // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
-                        // BUILD LOCATION): the implementer's own `cargo build`/`cargo
-                        // test` invocations get the same wrapper/cache/incremental
-                        // vars a gate build gets, AND land in the same per-unit
-                        // cache a gate build for this `dir` gets, instead of
-                        // embedding a `target/` dir inside the worktree itself.
-                        env: self.spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
-                        // An implementer is never a review tier: no roster to render
-                        // (spec 67, criterion 4).
-                        reviews: Vec::new(),
-                        // The headless host and the cli driver read `settings_json`; the
-                        // other drivers ignore it.
-                        settings_json: String::new(),
-                        // Set by `continue_prior_session` below when there is a session
-                        // to continue.
-                        resumed_from: String::new(),
-                        resume_task: String::new(),
-                        ..SpawnOpts::new(self.spawn_host())
-                    },
-                    ROLE_IMPLEMENTER,
-                    Some(prior.block(&st.name, attempts)),
-                )?;
-                match isolation_check
-                    .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit))
-                {
+                // session already holds the criterion and the slice. A rerun after a missed
+                // handover resumes the session that missed instead.
+                let fresh = SpawnOpts {
+                    system_prompt: self.build_system_prompt(agent_def),
+                    dir: dir.to_string(),
+                    isolation: wt.is_some(),
+                    parallel: false,
+                    blast_radius: blast_radius.clone(),
+                    id: implementer_id.clone(),
+                    unit: st.name.clone(),
+                    stage: st.name.clone(),
+                    // The live work-line: the unit's criterion, so the run's live views
+                    // narrate the actual WORK, not just `{unit}:{stage}` (spec 19a, c4).
+                    title: st.coverage.trim().to_string(),
+                    // The cascade rung the driver resolves for this attempt (spec 10
+                    // unit 4) - the same `attempts` the alias stamp above uses.
+                    attempt: attempts,
+                    run_id: self.run_id.clone(),
+                    // The ONE build-environment authority (spec 65) PLUS this
+                    // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
+                    // BUILD LOCATION): the implementer's own `cargo build`/`cargo
+                    // test` invocations get the same wrapper/cache/incremental
+                    // vars a gate build gets, AND land in the same per-unit
+                    // cache a gate build for this `dir` gets, instead of
+                    // embedding a `target/` dir inside the worktree itself.
+                    env: self.spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
+                    // An implementer is never a review tier: no roster to render
+                    // (spec 67, criterion 4).
+                    reviews: Vec::new(),
+                    // The headless host and the cli driver read `settings_json`; the
+                    // other drivers ignore it.
+                    settings_json: String::new(),
+                    // Set below when there is a session to continue.
+                    resumed_from: String::new(),
+                    resume_task: String::new(),
+                    ..SpawnOpts::new(self.spawn_host())
+                };
+                let opts = match missed_session.as_deref().filter(|s| !s.is_empty()) {
+                    Some(session) => resume_missed(fresh, session, &handover),
+                    None => self.continue_prior_session(
+                        fresh,
+                        ROLE_IMPLEMENTER,
+                        Some(prior.block(&st.name, attempts))
+                            .filter(|block| !block.trim().is_empty())
+                            .map(|block| block + &handover),
+                    )?,
+                };
+                let spawned = isolation_check
+                    .and_then(|()| self.deps.driver.spawn(agent_def, &prompt, &opts, &emit));
+                let miss = match &spawned {
+                    Ok(result) if !is_producer(st) => self.handover_miss(
+                        &format!("agent {:?}: the implementer", st.agent),
+                        &opts.id,
+                        result,
+                    )?,
+                    _ => None,
+                };
+                match spawned {
+                    // An implementer session that ended without handing over (a denied
+                    // command, a turn that ended mid-work) stopped before its work was done: it
+                    // takes the crash arm's disposition below, before any `green` stamp or
+                    // checkpoint, and reruns uncharged over the tree it left, continuing the
+                    // session that missed.
+                    Ok(result) if miss.is_some() => {
+                        self.record_session(&opts, &result)?;
+                        if let Some(miss) = miss {
+                            spawn_err = Some(miss.evidence());
+                            missed = Some(miss.id);
+                        }
+                        cause = CAUSE_INFRA_HANDOVER.to_string();
+                    }
                     Ok(result) => {
                         self.record_session(&opts, &result)?;
                         // The resolved model the driver reported (spec 05 line 52):
@@ -6855,7 +7297,8 @@ impl RunCtx<'_> {
                         // (non-replay) driver that does not learn the resolved id.
                         resolved_model = result.resolved_model;
                         // The green status records that the implementer produced a
-                        // diff (item 4): the per-unit evidence names the agent that
+                        // diff (item 4) and handed it over (the arm above takes a session
+                        // that did not): the per-unit evidence names the agent that
                         // implemented it.
                         let mut green = BTreeMap::new();
                         green.insert("green".to_string(), format!("implemented by {}", st.agent));
@@ -6936,9 +7379,17 @@ impl RunCtx<'_> {
                     infra.ordinal,
                     &prior.gate_evidence,
                 );
-                if let Err(crash) = infra_crash(seam)? {
-                    tier_crash = Some(crash);
-                    cause = CAUSE_INFRA_SPAWN.to_string();
+                match infra_crash(seam)? {
+                    Err(crash) => {
+                        tier_crash = Some(crash);
+                        cause = CAUSE_INFRA_SPAWN.to_string();
+                    }
+                    Ok(Some(miss)) => {
+                        tier_crash = Some(miss.evidence());
+                        missed = Some(miss.id);
+                        cause = CAUSE_INFRA_HANDOVER.to_string();
+                    }
+                    Ok(None) => {}
                 }
             }
 
@@ -7280,7 +7731,14 @@ impl RunCtx<'_> {
                     .clone()
                     .or_else(|| tier_crash.clone())
                     .unwrap_or_else(|| next.summary());
-                infra = self.retry_infra_failure(&st.name, attempts, infra, &cause, &evidence)?;
+                infra = self.retry_infra_failure(
+                    &st.name,
+                    attempts,
+                    infra,
+                    &cause,
+                    &evidence,
+                    missed.as_deref(),
+                )?;
                 skip_implement = spawn_err.is_none();
                 // The rerun spawns every review tier afresh under its own window, so a park of
                 // the round the outage spoiled no longer holds this unit's worktree; a park of
@@ -7406,8 +7864,10 @@ impl RunCtx<'_> {
     /// speculation group) in isolated worktrees; the FIRST candidate to pass its gates AND the
     /// adjudicator wins and integrates, and every other candidate is CANCELLED - the group,
     /// winner, and losers recorded as metadata on the existing event vocabulary (no new event
-    /// type). Candidate `lane` runs at attempt `lane`, so each candidate's gates, statuses, and
-    /// review tiers key apart while staying a PURE function of the run structure (replay-safe).
+    /// type). Candidate `lane` runs at attempt `base + lane` ([`speculation_lane_base`]: 0 on a
+    /// first entry, past every recorded attempt on a re-entry), so each candidate's gates,
+    /// statuses, and review tiers key apart while staying a PURE function of the run structure
+    /// (replay-safe).
     ///
     /// This REUSES the single mutation authorities - [`Self::run_gates`], [`Self::review_unit`],
     /// [`Self::integrate_and_emit`] - and adds only the K-lane fan-out and winner selection;
@@ -7455,11 +7915,17 @@ impl RunCtx<'_> {
         // Gap 61: a group re-entered in a LATER process than the one that saw its failure (an
         // operator's `rigger resume-unit` grant re-enters every lane) starts from the failure
         // the log recorded - a lane's post-merge block - so every lane's prompt carries the
-        // block a single-lane retry would. All K lanes are spawned before any is judged, so a
-        // group has no in-process retry to thread a failure into; the log is its only source.
-        // Read at the group's counted attempts, so a compensation re-entry, which advanced past
-        // that failure, is never handed it.
-        let logged = self.logged_prior_failure(&st.name, self.counted_attempts(&st.name));
+        // block a single-lane retry would, and a compensation re-entry carries its
+        // contradiction. All K lanes are spawned before any is judged, so a group has no
+        // in-process retry to thread a failure into; the log is its only source. Read at the
+        // group's counted attempts, so a compensation re-entry, which advanced past that
+        // failure, is never handed it.
+        let logged = self.re_entry_failure(&st.name, self.counted_attempts(&st.name));
+        // A re-entered group numbers its lanes past every attempt its
+        // run recorded before the re-entry, so a grant or a compensation re-drives the lanes
+        // instead of answering the first entry's ids from the log. Lane `n` runs at attempt
+        // `base + n`; its worktree and branch stay keyed by `n`.
+        let base = speculation_lane_base(&self.read_current_run()?, &st.name);
 
         // PHASE A: park/spawn every candidate. Lane worktree dirs are kept ALIVE across a
         // park (removed only at a terminal outcome below), so the out-of-process worker
@@ -7473,7 +7939,8 @@ impl RunCtx<'_> {
             // spawn. A refusal (the budget is spent) sets `budget_broke` and unwinds the unit
             // cleanly - the run loop trips the ONE breaker path - exactly like the single-lane
             // implementer's `Ok(false)` refusal.
-            let impl_id = spawn_id(&st.name, ROLE_IMPLEMENTER, lane);
+            let attempt = base + lane;
+            let impl_id = spawn_id(&st.name, ROLE_IMPLEMENTER, attempt);
             if !self.reserve_spawn(&impl_id) {
                 return Ok(false);
             }
@@ -7485,8 +7952,11 @@ impl RunCtx<'_> {
             // Speculation lanes are implementer candidates by construction (`speculates` excludes
             // producers), so each candidate gets the trimmed implement slice - byte-identical to the
             // single-lane implementer's, since the lanes differ only in SCHEDULING, not assembly.
-            let prompt =
-                self.build_prompt_with_failure(st, &logged, lane, GroundingSlice::Implement)?;
+            let mut prompt =
+                self.build_prompt_with_failure(st, &logged, attempt, GroundingSlice::Implement)?;
+            // A lane's implementer is an author: its prompt ends with the handover contract,
+            // and a session that ended without the line loses the lane as a crash does.
+            prompt.push_str(&author_handover());
             let emit = |t: &str, v: Value| {
                 self.emit_agent(t, v, &[(contextgraph::META_ACTOR, st.agent.as_str())])
             };
@@ -7508,7 +7978,7 @@ impl RunCtx<'_> {
                             // The live work-line: the unit's criterion, so each speculation
                             // candidate narrates the WORK, not just `{unit}:{stage}` (spec 19a, c4).
                             title: st.coverage.trim().to_string(),
-                            attempt: lane,
+                            attempt,
                             run_id: self.run_id.clone(),
                             // The ONE build-environment authority (spec 65) PLUS this lane's
                             // own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION):
@@ -7539,7 +8009,7 @@ impl RunCtx<'_> {
                 // seam authority. So the committed tree PHASE B's gates judge (and the winner
                 // integrates) carries the periphery tests for WHICHEVER candidate wins - a
                 // speculation-built unit is not a silent hole in the "no boundary surface lands
-                // untested" guarantee. Each lane reserves its OWN sdet id (keyed on the `lane`
+                // untested" guarantee. Each lane reserves its OWN sdet id (keyed on the lane's
                 // attempt), so the budget breaker counts every candidate's sdet exactly as it counts
                 // every candidate's implementer.
                 //
@@ -7552,8 +8022,20 @@ impl RunCtx<'_> {
                 // takes the crash arm: the candidate loses, as a losing candidate has no later
                 // attempt or infra rerun to carry the crash or the refusal into (infra ordinal 0).
                 .and_then(|result| {
-                    self.spawn_sdet_author(st, Some(&wt), &dir, lane, 0, &[])
-                        .map(|()| result)
+                    match self.handover_miss(
+                        "the speculation lane's implementer",
+                        &impl_id,
+                        &result,
+                    )? {
+                        None => Ok(result),
+                        Some(miss) => Err(Error(miss.evidence())),
+                    }
+                })
+                .and_then(|result| {
+                    match self.spawn_sdet_author(st, Some(&wt), &dir, attempt, 0, &[])? {
+                        None => Ok(result),
+                        Some(miss) => Err(Error(miss.evidence())),
+                    }
                 }) {
                 Ok(result) => {
                     // The candidate produced a diff: commit its worktree so the gates measure
@@ -7569,7 +8051,7 @@ impl RunCtx<'_> {
                         st.name
                     ))?;
                     candidates.push(SpecCandidate {
-                        lane,
+                        attempt,
                         wt,
                         dir,
                         resolved_model: result.resolved_model,
@@ -7603,13 +8085,16 @@ impl RunCtx<'_> {
         // PHASE B: evaluate candidates in deterministic lane order; the FIRST gate-green
         // adjudicator-approved candidate WINS and integrates, and every other candidate is
         // cancelled. A candidate's review tiers park across steps exactly like the single-lane
-        // path (their spawns are keyed by the candidate's `lane` attempt).
+        // path (their spawns are keyed by the candidate's attempt). Every lane's loss is gathered
+        // into `lost`, so a group with no winner records why it lost for its re-entry.
+        let mut lost = LostLanes::default();
         for i in 0..candidates.len() {
-            let lane = candidates[i].lane;
+            let attempt = candidates[i].attempt;
             let dir = candidates[i].dir.clone();
             let gate_outcome =
-                self.run_gates(st, &dir, lane, GateSelection::Narrowed(&blast_radius))?;
+                self.run_gates(st, &dir, attempt, GateSelection::Narrowed(&blast_radius))?;
             if !gate_outcome.pass {
+                lost.gates(gate_outcome.cause(), gate_outcome.evidence);
                 continue; // gate-red candidate loses; a later candidate may still win.
             }
             // This candidate's gates are green: review it. Its `green`/`verified`/`reviewed`
@@ -7633,7 +8118,7 @@ impl RunCtx<'_> {
             let review = self.review_unit(
                 st,
                 &dir,
-                lane,
+                attempt,
                 0,
                 false,
                 true,
@@ -7649,7 +8134,7 @@ impl RunCtx<'_> {
             if let Some(target) = &review.compensate {
                 if target != &st.name {
                     self.emit_keyed_meta(
-                        &compensation_queued_key(&st.name, target, lane),
+                        &compensation_queued_key(&st.name, target, attempt),
                         ledger::TYPE_UNIT_STATUS,
                         json!({
                             "id": target,
@@ -7673,52 +8158,54 @@ impl RunCtx<'_> {
                 // winner), so a speculating unit would report inflated review quality to the
                 // spec-13 self-improvement loop. A fold-neutral marker keeps the shared unit
                 // `Fresh` for resume while the metrics fold counts the reject.
-                self.record_speculation_reject(st, lane, &dir, &group, &candidates[i].wt)?;
+                self.record_speculation_reject(st, attempt, &dir, &group, &candidates[i].wt)?;
+                lost.review(review_failure_cause(&review.reason), &review.reason);
                 continue; // rejected candidate loses; try the next candidate.
             }
             // A candidate that passed its narrowed gates AND the adjudicator. Assert the
             // exhaustive suite (the integrate door, spec 12 unit 3) before merging.
-            let full = self.run_gates(st, &dir, lane, GateSelection::Exhaustive)?;
+            let full = self.run_gates(st, &dir, attempt, GateSelection::Exhaustive)?;
             if !full.pass {
+                lost.gates(full.cause(), full.evidence);
                 continue; // even a full-suite-red candidate cannot land - try the next.
             }
             let losers: Vec<String> = candidates
                 .iter()
-                .filter(|c| c.lane != lane)
-                .map(|c| spawn_id(&st.name, ROLE_IMPLEMENTER, c.lane))
+                .filter(|c| c.attempt != attempt)
+                .map(|c| spawn_id(&st.name, ROLE_IMPLEMENTER, c.attempt))
                 .collect();
             if !integrates(st) {
                 // Verified + approved but never merges (`on_pass: none`): the group settled on a
                 // winner, but no code lands. Record the winner's deferred green/verified/reviewed
                 // (the verified-but-unmerged checkpoint - the group is terminal here, so no later
                 // lane is in flight), cancel the other candidates, and stop.
+                self.record_lane_breaks(st, &lost)?;
                 self.emit_speculation_winner_status(
                     st,
-                    lane,
+                    attempt,
                     &group,
                     &dir,
                     &candidates[i],
                     &review,
                 )?;
-                self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+                self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
                 return Ok(false);
             }
             let integration = self.integrate_and_emit(
                 Some(&candidates[i].wt),
                 st,
-                lane,
+                attempt,
                 IntegrationApproval::approved(),
             )?;
             if let Some(evidence) = integration.blocked {
                 // The post-merge re-gate went RED (spec 12, unit 5): the merge was rolled back,
-                // so this candidate cannot land this step. CAPTURE the merge-break evidence as
-                // UnitFailed (mirroring the single-lane path) so the signal is not lost and the
-                // escalation lesson stays accurate, then treat it as a loser and try the next.
-                // The winner's green/verified/reviewed are DEFERRED PAST this check, so a blocked
-                // candidate followed by a later parking lane leaves the unit folded `Failed` (not
-                // `Reviewed`/`Verified`), so a resume RE-ENTERS `run_speculation` instead of
+                // so this candidate cannot land this step. CAPTURE the merge-break evidence so the
+                // signal is not lost and the escalation lesson stays accurate, then treat it as a
+                // loser and try the next. The winner's green/verified/reviewed are DEFERRED PAST
+                // this check, so a blocked candidate followed by a later parking lane leaves the
+                // unit folded below `green`, so a resume RE-ENTERS `run_speculation` instead of
                 // mis-routing to the review-skipping single-lane `Reviewed` path on the canonical
-                // lane.
+                // lane, where this candidate meets its integrate door again.
                 //
                 // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
                 // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the exhaustive
@@ -7729,26 +8216,25 @@ impl RunCtx<'_> {
                 // the identical guard `emit_speculation_winner_status` already uses on this
                 // same candidate below.
                 candidates[i].wt.ensure_present()?;
-                let failed_sha = worktree::head_sha_of(&dir);
-                let failure = PriorFailure {
-                    gate_evidence: evidence,
-                    ..Default::default()
-                };
-                self.emit_meta(
-                    ledger::TYPE_UNIT_FAILED,
-                    // spec 69, criterion 3: this site fires ONLY on a post-merge block
-                    // (a pre-merge gate/review loss is a silent `continue` two lines
-                    // above, never a UnitFailed) - always a merge conflict. The
-                    // merge-break evidence rides along (gap 61).
-                    failure.failed_body(&st.name, lane + 1, CAUSE_INTEGRATE_CONFLICT),
-                    &[(META_WORKTREE_SHA, &failed_sha)],
-                )?;
+                // Held until the group's outcome is known ([`LostLanes`]): written as this
+                // lane's own failure when a later lane wins, or carried in the group's one
+                // record when none does, so one loss is never counted twice.
+                lost.post_merge(attempt, evidence, worktree::head_sha_of(&dir));
                 continue;
             }
             // The winner integrated (integration.blocked is None): NOW record its DEFERRED
             // green/verified/reviewed lifecycle, then the group / winner / losers on the existing
-            // UnitIntegrated (no new event type), then cancel every displaced candidate.
-            self.emit_speculation_winner_status(st, lane, &group, &dir, &candidates[i], &review)?;
+            // UnitIntegrated (no new event type), then cancel every displaced candidate. An
+            // earlier lane whose merge broke post-merge records its failure first.
+            self.record_lane_breaks(st, &lost)?;
+            self.emit_speculation_winner_status(
+                st,
+                attempt,
+                &group,
+                &dir,
+                &candidates[i],
+                &review,
+            )?;
             self.emit_meta(
                 ledger::TYPE_UNIT_INTEGRATED,
                 json!({"id": st.name, "commit": integration.commit}),
@@ -7756,12 +8242,12 @@ impl RunCtx<'_> {
                     (META_SPEC_GROUP, &group),
                     (
                         META_SPEC_WINNER,
-                        &spawn_id(&st.name, ROLE_IMPLEMENTER, lane),
+                        &spawn_id(&st.name, ROLE_IMPLEMENTER, attempt),
                     ),
                     (META_SPEC_LOSERS, &losers.join(",")),
                 ],
             )?;
-            self.cancel_speculation_candidates(st, &group, lane, &candidates)?;
+            self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
             // The winner's work merged into the base: tear down its worktree and branch too,
             // exactly as the single-lane path deletes an integrated unit's branch.
             let _ = candidates[i].wt.remove();
@@ -7770,12 +8256,32 @@ impl RunCtx<'_> {
         }
 
         // NO candidate won: every candidate was gate-red, review-rejected, crashed, or its
-        // winning merge broke post-merge (a UnitFailed captured that above). The K candidates
+        // winning merge broke post-merge (its evidence held in `lost` above). The K candidates
         // were the unit's parallel attempts, so it ESCALATES rather than re-fanning out forever
         // on the fresh re-entry. Clean up the losing candidates' worktrees.
         for c in &candidates {
             let _ = c.wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+        }
+        // Record why the group lost as the unit's failure, one past its
+        // last lane, so an operator's grant re-drives every lane told it, as a single lane
+        // re-entering after its own failure is told. Keyed by the entry's lane base, so a
+        // relaunch replaying this entry records it once. A group whose every lane crashed
+        // records none: a crash is no feedback for the author.
+        // A lane whose merge broke post-merge is part of this one record, which names that
+        // lane's worktree sha.
+        let break_sha = lost.break_sha();
+        if let Some((cause, failure)) = lost.failure() {
+            let mut meta = vec![(META_SPEC_GROUP, group.as_str())];
+            if let Some(sha) = &break_sha {
+                meta.push((META_WORKTREE_SHA, sha));
+            }
+            self.emit_keyed_meta(
+                &format!("{}/speculation-lost#{base}", st.name),
+                ledger::TYPE_UNIT_FAILED,
+                failure.failed_body(&st.name, base + width, &cause),
+                &meta,
+            )?;
         }
         let _ = self.emit_lesson(
             None,
@@ -7795,9 +8301,28 @@ impl RunCtx<'_> {
         Ok(false)
     }
 
+    /// Record, once a later lane of `st`'s speculation group won, each earlier lane whose merge
+    /// broke post-merge as its own `UnitFailed`: the merge-break evidence (gap 61) at the
+    /// lane's attempt, cause `integrate-conflict` (spec 69, criterion 3), and the lane
+    /// worktree's sha. A group with no winner carries these in its one record instead.
+    fn record_lane_breaks(&self, st: &Stage, lost: &LostLanes) -> Result<(), Error> {
+        for lane in &lost.breaks {
+            let failure = PriorFailure {
+                gate_evidence: lane.evidence.clone(),
+                ..Default::default()
+            };
+            self.emit_meta(
+                ledger::TYPE_UNIT_FAILED,
+                failure.failed_body(&st.name, lane.attempt + 1, CAUSE_INTEGRATE_CONFLICT),
+                &[(META_WORKTREE_SHA, &lane.sha)],
+            )?;
+        }
+        Ok(())
+    }
+
     /// Record a confirmed speculation WINNER's DEFERRED lifecycle statuses (spec 13, unit 3):
     /// `green` + `verified` + (when an adjudicator actually rendered the verdict) `reviewed`,
-    /// each keyed by the winning `lane` and tagged with the speculation `group`. These are
+    /// each keyed by the winning candidate's `attempt` and tagged with the speculation `group`. These are
     /// DEFERRED from phase A/B - a candidate that never wins emits NONE of them - so a speculating
     /// unit stays folded out of `green`/`verified`/`reviewed` (`resume_phase` == `Fresh`) across
     /// every phase-B parking step until a winner is confirmed. For an integrating unit this is
@@ -7809,21 +8334,21 @@ impl RunCtx<'_> {
     fn emit_speculation_winner_status(
         &self,
         st: &Stage,
-        lane: u32,
+        attempt: u32,
         group: &str,
         dir: &str,
         candidate: &SpecCandidate,
         review: &ReviewOutcome,
     ) -> Result<(), Error> {
-        let winner_alias = self.agent_model(&st.agent, lane);
+        let winner_alias = self.agent_model(&st.agent, attempt);
         let winner_resolved = candidate.resolved_model.clone();
         let mut green = BTreeMap::new();
         green.insert(
             "green".to_string(),
-            format!("speculation winner {lane} implemented by {}", st.agent),
+            format!("speculation winner {attempt} implemented by {}", st.agent),
         );
         self.emit_keyed_meta(
-            &format!("{}/green#{lane}", st.name),
+            &format!("{}/green#{attempt}", st.name),
             ledger::TYPE_UNIT_STATUS,
             json!({"id": st.name, "status": "green", "evidence": green}),
             &[
@@ -7843,7 +8368,7 @@ impl RunCtx<'_> {
         candidate.wt.ensure_present()?;
         let winner_sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
-            &verified_key(&st.name, lane),
+            &verified_key(&st.name, attempt),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
@@ -7859,7 +8384,7 @@ impl RunCtx<'_> {
         )?;
         // The winner's `reviewed` status was DEFERRED out of `review_unit` (so a non-winning
         // approved candidate never folds the shared unit to `Reviewed`). Re-emit it here keyed
-        // by the winning lane, but ONLY when an adjudicator actually rendered the verdict: an
+        // by the winning attempt, but ONLY when an adjudicator actually rendered the verdict: an
         // empty / adjudicator-less panel approves trivially and emits no `reviewed`, exactly as
         // the single-lane path does. It carries the adjudicator's requested alias + the resolved
         // id `review_unit` stashed, and the winner's reviewed-tree sha (spec 11, unit 1).
@@ -7872,13 +8397,13 @@ impl RunCtx<'_> {
         // `review_unit` actually reviewed. `review.round_start_sha` is `review_unit`'s own
         // log-derived round-start sha (`review_round_start_sha`), carried on the outcome
         // for exactly this deferred re-emission - the same ground truth the single-lane
-        // `reviewed` stamp uses inline, never a fresh live read here. `verified#{lane}`
+        // `reviewed` stamp uses inline, never a fresh live read here. `verified#{attempt}`
         // above legitimately keeps `winner_sha`: it records what the gates verified, not
         // what the review judged.
         let steps = self.cfg.workflow.effective_review_panel(st).steps();
         if let Some(adjudicator) = step_adjudicator(&steps) {
             self.emit_keyed_meta(
-                &format!("{}/reviewed#{lane}", st.name),
+                &format!("{}/reviewed#{attempt}", st.name),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -7886,7 +8411,7 @@ impl RunCtx<'_> {
                     "evidence": review_evidence(&review.reason),
                 }),
                 &[
-                    (META_MODEL_ALIAS, &self.agent_model(adjudicator, lane)),
+                    (META_MODEL_ALIAS, &self.agent_model(adjudicator, attempt)),
                     (META_MODEL_RESOLVED, &review.adj_resolved),
                     (META_WORKTREE_SHA, &review.round_start_sha),
                     (META_SPEC_GROUP, group),
@@ -7910,13 +8435,13 @@ impl RunCtx<'_> {
     /// `UnitStatus` marker - like [`STATUS_SPECULATION_CANCELLED`], its status is not a
     /// [`ledger::Status`] variant, so the ledger fold leaves the unit's real status untouched -
     /// that the METRICS fold counts directly as a review reject. The fold stays the single
-    /// counting authority; the producer only records the fact. Keyed by lane so a resume
+    /// counting authority; the producer only records the fact. Keyed by the candidate's attempt so a resume
     /// RE-EVALUATING the recorded candidate dedups it, tagged with the `group`, and stamped with
     /// the reviewed sha so a later approve on the SAME sha reads as a flip-flop (spec 11).
     fn record_speculation_reject(
         &self,
         st: &Stage,
-        lane: u32,
+        attempt: u32,
         dir: &str,
         group: &str,
         // Ensure-on-park, defense in depth (spec 64 criterion 3, round 5): the candidate's
@@ -7933,14 +8458,14 @@ impl RunCtx<'_> {
         // candidate's reject sibling.
         wt.ensure_present()?;
         self.emit_keyed_meta(
-            &format!("{}/spec-rejected#{lane}", st.name),
+            &format!("{}/spec-rejected#{attempt}", st.name),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
                 "status": STATUS_SPECULATION_REJECTED,
                 "evidence": {
                     "speculation-rejected": format!(
-                        "candidate {lane} rejected by the adjudicator"
+                        "candidate {attempt} rejected by the adjudicator"
                     ),
                 },
             }),
@@ -7953,10 +8478,10 @@ impl RunCtx<'_> {
     }
 
     /// Cancel every non-winning speculation candidate (spec 13, unit 3): record each loser's
-    /// `speculation-cancelled` status (keyed per lane, tagged with the group so the log ties it
-    /// back to the winner) and tear down its worktree + branch - the winner's code already
-    /// landed, so the displaced candidates' isolated work is discarded. The `winner` lane is
-    /// SKIPPED here (its worktree/branch is the caller's to clean up: removed once it merged, or
+    /// `speculation-cancelled` status (keyed by its attempt, tagged with the group so the log
+    /// ties it back to the winner) and tear down its worktree + branch - the winner's code
+    /// already landed, so the displaced candidates' isolated work is discarded. The candidate
+    /// at the `winner` attempt is SKIPPED here (its worktree/branch is the caller's to clean up: removed once it merged, or
     /// kept as the verified-but-unmerged checkpoint on an `on_pass: none` unit).
     /// `STATUS_SPECULATION_CANCELLED` is not a real lifecycle status, so folding it leaves the
     /// unit's terminal state as the winner's `Integrated`.
@@ -7971,11 +8496,11 @@ impl RunCtx<'_> {
             // The winner is NOT cancelled and its worktree/branch is the caller's to clean up
             // (deleted once it MERGED, or kept as the verified-but-unmerged checkpoint on an
             // `on_pass: none` unit), so skip it entirely here.
-            if c.lane == winner {
+            if c.attempt == winner {
                 continue;
             }
             self.emit_keyed_meta(
-                &format!("{}/speculation-cancelled#{}", st.name, c.lane),
+                &format!("{}/speculation-cancelled#{}", st.name, c.attempt),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -7983,7 +8508,7 @@ impl RunCtx<'_> {
                     "evidence": {
                         "speculation-cancelled": format!(
                             "candidate {} displaced by winner {}",
-                            c.lane, winner
+                            c.attempt, winner
                         ),
                     },
                 }),
@@ -8440,6 +8965,7 @@ impl RunCtx<'_> {
             // Stdout is NOT the verdict - the findings go to the graph - so an empty stdout is
             // degenerate only when the reviewer also emitted no ReviewFinding.
             ReviewerOutput::Findings,
+            false,
             &prompt,
             resume.as_deref(),
             wt,
@@ -8493,7 +9019,9 @@ impl RunCtx<'_> {
     /// degeneracy signal (see
     /// [`reviewer_result_is_degenerate`](RunCtx::reviewer_result_is_degenerate)); `prompt`
     /// is the tier's already-grounded prompt. A budget-refused respawn surfaces the budget
-    /// sentinel exactly like the original spawn. `reviews` is the routed review roster
+    /// sentinel exactly like the original spawn. Every spawn's task, `prompt` or the
+    /// `resume_task`, closes on the [`round_findings_block`] of the findings its round already
+    /// recorded: every one when `whole_round` is set (a unit's adjudicator), else the role's own. `reviews` is the routed review roster
     /// (spec 67, criterion 4) this spawn's `SpawnOpts` carries verbatim - empty for a lens,
     /// the tokens of every earlier step's spawns for an adversary or the adjudicator - always
     /// the CALLER's already-computed value, never re-derived here.
@@ -8511,6 +9039,9 @@ impl RunCtx<'_> {
         ordinal: u32,
         parallel: bool,
         output: ReviewerOutput,
+        // Whether this spawn's task lists every finding its round recorded (a unit's
+        // adjudicator) rather than the ones its own role recorded.
+        whole_round: bool,
         prompt: &str,
         // What a later review round sends this role's resumed session in place of `prompt`
         // ([`RunCtx::review_resume_task`]), or `None` when the caller has no round to
@@ -8556,11 +9087,17 @@ impl RunCtx<'_> {
             let id = spawn_retry_id(&st.name, role, attempt, retry);
             let opts =
                 self.reviewer_spawn_opts(&id, tier, agent_id, dir, attempt, parallel, st, reviews)?;
+            // The findings this round already recorded, read afresh for every spawn: a reviewer
+            // re-driven within its round (its driver died after it recorded, or its result was
+            // degenerate or verdict-less) is told its own, and the adjudicator every one.
+            let found = round_findings(&self.read_current_run()?, &st.name, attempt);
+            let block = round_findings_block(&found, role, whole_round);
+            let held = found.iter().any(|f| f.role == role);
             // A later round's first spawn of this role continues the session the role's last
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
             // starts fresh rather than continuing the session that produced it.
             let opts = if retry == first_retry {
-                self.continue_prior_session(opts, role, resume_task.map(str::to_string))?
+                self.continue_prior_session(opts, role, resume_task.map(|t| format!("{t}{block}")))?
             } else {
                 opts
             };
@@ -8608,74 +9145,72 @@ impl RunCtx<'_> {
                 // keys on to exclude a sibling's approve.
                 self.emit_agent(t, v, &[(contextgraph::META_ACTOR, role), (META_SPAWN, &id)])
             };
-            let result =
-                match self
-                    .deps
-                    .driver
-                    .spawn(agent_def, &refused.task(prompt), &opts, &emit)
-                {
-                    Ok(result) => {
-                        self.record_session(&opts, &result)?;
-                        result
+            let result = match self.deps.driver.spawn(
+                agent_def,
+                &refused.task(&format!("{prompt}{block}")),
+                &opts,
+                &emit,
+            ) {
+                Ok(result) => {
+                    self.record_session(&opts, &result)?;
+                    result
+                }
+                Err(e) if refused.reruns(&e, retry < last_retry) => continue,
+                Err(e) => {
+                    // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
+                    // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
+                    // exhaustion, a crash) whose error the host (or the operator's `rigger
+                    // result --error`) recorded on its id - is an INFRASTRUCTURE fault, NOT a
+                    // verdict. An error is not a verdict: review must COMPLETE. So the
+                    // conductor does NOT adopt the error as the review outcome and does NOT
+                    // fail the step; it charges the unit no attempt (the work was never judged)
+                    // and RE-PARKS a FRESH attempt of the SAME review by looping to the next
+                    // `spawn_retry_id`. That id is unrecorded, so the host launches it fresh (a
+                    // parking driver parks it for a later step); a completed real verdict then
+                    // folds through the NORMAL adjudication path below. The round's window
+                    // bounds it exactly like the degenerate loop: a round whose window ends
+                    // with a recorded error among its spawns is an outage of the round, so it
+                    // returns the crash below the loop, and the single lane reruns the review
+                    // uncharged under its F3 infra retry in the next ordinal's window until the
+                    // taxonomy's infra limit halts the step
+                    // (op-105-errored-review-window-joins-the-infra-retry).
+                    //
+                    // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
+                    // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
+                    // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
+                    // The headless host RECORDS its result, and on
+                    // `rigger run` the decorator records an unmarked error the host hands back
+                    // for a spawn the run has not ended, so a failed hosted review re-drives
+                    // through this same bound. Where no result is recorded (the cli
+                    // driver records none), `review_spawn_errored` is false and the genuine
+                    // crash surfaces marked ([`SPAWN_CRASH_MARKER`]), so the single lane
+                    // reruns the whole review uncharged under its F3 infra retry
+                    // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
+                    // its own handling of a failed review.
+                    if !is_parked_or_refused(&e, BUDGET_MARKER) && self.review_spawn_errored(&id)? {
+                        errored = Some(failed(&e));
+                        continue;
                     }
-                    Err(e) if refused.reruns(&e, retry < last_retry) => continue,
-                    Err(e) => {
-                        // REVIEWER ERROR RE-PARK (spec 51, criterion 1): a REVIEW-stage spawn whose
-                        // RECORDED result is a plain ERROR - an externally-killed reviewer (quota
-                        // exhaustion, a crash) whose error the host (or the operator's `rigger
-                        // result --error`) recorded on its id - is an INFRASTRUCTURE fault, NOT a
-                        // verdict. An error is not a verdict: review must COMPLETE. So the
-                        // conductor does NOT adopt the error as the review outcome and does NOT
-                        // fail the step; it charges the unit no attempt (the work was never judged)
-                        // and RE-PARKS a FRESH attempt of the SAME review by looping to the next
-                        // `spawn_retry_id`. That id is unrecorded, so the host launches it fresh (a
-                        // parking driver parks it for a later step); a completed real verdict then
-                        // folds through the NORMAL adjudication path below. The round's window
-                        // bounds it exactly like the degenerate loop: a round whose window ends
-                        // with a recorded error among its spawns is an outage of the round, so it
-                        // returns the crash below the loop, and the single lane reruns the review
-                        // uncharged under its F3 infra retry in the next ordinal's window until the
-                        // taxonomy's infra limit halts the step
-                        // (op-105-errored-review-window-joins-the-infra-retry).
-                        //
-                        // A driver PARK (the replay frontier) or a BUDGET refusal unwinds the unit
-                        // cleanly and PROPAGATES unchanged (its marker survives the `format!` wrapping,
-                        // so `is_parked`/`carries_marker(.., BUDGET_MARKER)` still recognize it upstream).
-                        // The headless host RECORDS its result, and on
-                        // `rigger run` the decorator records an unmarked error the host hands back
-                        // for a spawn the run has not ended, so a failed hosted review re-drives
-                        // through this same bound. Where no result is recorded (the cli
-                        // driver records none), `review_spawn_errored` is false and the genuine
-                        // crash surfaces marked ([`SPAWN_CRASH_MARKER`]), so the single lane
-                        // reruns the whole review uncharged under its F3 infra retry
-                        // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
-                        // its own handling of a failed review.
-                        if !is_parked_or_refused(&e, BUDGET_MARKER)
-                            && self.review_spawn_errored(&id)?
+                    // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
+                    // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
+                    // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
+                    // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
+                    // are unaffected. A park, a budget refusal or a refused record is no crash.
+                    let message = failed(&e);
+                    return Err(
+                        if is_parked_or_refused(&e, BUDGET_MARKER)
+                            || carries_marker(&e, EMIT_REFUSED_MARKER)
                         {
-                            errored = Some(failed(&e));
-                            continue;
-                        }
-                        // adj-u104c5 REQUIRED FIX 2: `strip_failure_marker` drops only its own
-                        // `\u{2}`-bracketed class and the emit guard's refusal marker, so a
-                        // PARKED_MARKER/BUDGET_MARKER error still passes through byte-for-byte
-                        // unchanged here - `is_parked`/`carries_marker(.., BUDGET_MARKER)` upstream
-                        // are unaffected. A park, a budget refusal or a refused record is no crash.
-                        let message = failed(&e);
-                        return Err(
-                            if is_parked_or_refused(&e, BUDGET_MARKER)
-                                || carries_marker(&e, EMIT_REFUSED_MARKER)
-                            {
-                                Error(message)
-                            } else {
-                                spawn_crash(message)
-                            },
-                        );
-                    }
-                };
+                            Error(message)
+                        } else {
+                            spawn_crash(message)
+                        },
+                    );
+                }
+            };
             // A substantive result folds into the review; a degenerate one loops to respawn
             // the SAME reviewer under the next retry id.
-            if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get())? {
+            if !self.reviewer_result_is_degenerate(output, &id, &result, findings.get(), held)? {
                 // Runtime verdict-channel mismatch backstop (spec 18, unit 3): a GATING
                 // spawn (a verdict `output`) that returned a non-degenerate result with NO
                 // parseable verdict line, yet emitted an approve-shaped verdict via
@@ -8845,13 +9380,17 @@ impl RunCtx<'_> {
     ///   lens/adversary that correctly emitted its findings and self-reported an empty
     ///   success is NOT misread as degenerate on an out-of-process driver
     ///   (adv-u2gap18-empty-success-is-a-valid-outcome-misread-as-degenerate), with no
-    ///   fragile per-spawn actor attribution of the recorded findings.
+    ///   fragile per-spawn actor attribution of the recorded findings. A lens/adversary
+    ///   whose role already recorded a finding in this round (`held`, a spawn re-driven after
+    ///   its driver died) did its work too, so its empty result is no degeneracy either.
     fn reviewer_result_is_degenerate(
         &self,
         output: ReviewerOutput,
         id: &str,
         result: &AgentResult,
         findings_emitted: u32,
+        // Whether this spawn's role already recorded a finding this round, before it ran.
+        held: bool,
     ) -> Result<bool, Error> {
         if output == ReviewerOutput::RoundVerdict && rejects_without_required(&result.output) {
             // A later round's reject that names no REQUIRED item is no verdict the next
@@ -8866,8 +9405,9 @@ impl RunCtx<'_> {
             // live and the replay path.
             return Ok(true);
         }
-        if findings_emitted > 0 {
-            // A lens/adversary that emitted a ReviewFinding this spawn did its work.
+        if findings_emitted > 0 || held {
+            // A lens/adversary that emitted a ReviewFinding this spawn, or that its round
+            // already holds one from, did its work.
             return Ok(false);
         }
         // Empty stdout, zero observed findings: degenerate only if the agent actually ran
@@ -8886,9 +9426,9 @@ impl RunCtx<'_> {
     /// Run the adjudicator and return whether it approves PLUS its raw output (the
     /// verdict reasoning). Its verdict gates the stage. The adjudicator grounds LAST,
     /// so the lenses' and the adversary's ReviewFindings are already in the graph and
-    /// its grounded prompt (via `graph_context`) surfaces them - it weighs the prior
-    /// tiers by retrieving their findings through the graph, not from a hand-threaded
-    /// block. The reviewer produces no code to integrate. The returned output is the
+    /// its grounded prompt (via `graph_context`) surfaces the ones about its seed, and its
+    /// task closes on every finding its round recorded, by id, whatever file each names
+    /// ([`round_findings_block`]). The reviewer produces no code to integrate. The returned output is the
     /// verdict reason: it is folded into the unit's `reviewed` evidence on approval
     /// (item 4) and into the next attempt's prompt on a reject (item 5). `roster` is the
     /// step's routed review roster (spec 67, criterion 4) - the CALLER's already-computed value
@@ -8953,6 +9493,9 @@ impl RunCtx<'_> {
             } else {
                 ReviewerOutput::Verdict
             },
+            // The graph slice carries only the findings about its seed; the verdict weighs
+            // every finding of the round.
+            true,
             &prompt,
             resume.as_deref(),
             wt,
@@ -9119,6 +9662,20 @@ impl RunCtx<'_> {
                 strip_failure_marker(&e)
             ))
         })
+    }
+
+    /// Whether a re-plan of `plan_name` at critique attempt `attempt` recorded a `UnitProposed`
+    /// in the current run: the re-plan's own emits carry its [`META_SPAWN`] stamp
+    /// (`plan/replan#<attempt>`, a `~retry{n}` rerun included). A round a resume opens, or one
+    /// a later process enters after its re-plan parked unanswered, finds none.
+    fn re_plan_proposed(&self, plan_name: &str, attempt: u32) -> Result<bool, Error> {
+        let seat = format!("{plan_name}/{ROLE_REPLAN}");
+        Ok(self.read_current_run()?.iter().any(|e| {
+            e.type_ == TYPE_UNIT_PROPOSED
+                && e.meta.get(META_SPAWN).is_some_and(|id| {
+                    spawn::unit_role_of(id) == seat && spawn::attempt_of(id) == attempt
+                })
+        }))
     }
 
     /// Run the adversarial plan-critique gate (Unit 1, spec 10): the existing adversary +
@@ -9288,6 +9845,7 @@ impl RunCtx<'_> {
                 &conflicts,
                 serialized,
                 &prior_reason,
+                self.re_plan_proposed(plan_name, attempts)?,
                 self.declared_unit_size_cap(),
             );
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
@@ -9306,6 +9864,7 @@ impl RunCtx<'_> {
                     0,
                     false,
                     ReviewerOutput::Findings,
+                    false,
                     &format!(
                         "{prompt}{}",
                         review_protocol(ROLE_ADVERSARY, reviewer_carries_build_cache(dir))
@@ -9331,6 +9890,7 @@ impl RunCtx<'_> {
                     0,
                     false,
                     ReviewerOutput::Verdict,
+                    false,
                     &prompt,
                     None,
                     None,
@@ -9441,12 +10001,12 @@ impl RunCtx<'_> {
 
     /// The resolved build environment for this run (spec 65's ONE build-environment
     /// authority): re-derived from the committed `build.wrapper` / `build.cache_dir`
-    /// / `build.jobs` config each call rather than cached, since
-    /// [`gate::BuildEnv::resolve`] is a pure, cheap operation - a single resolver,
-    /// called from every site that needs it, so a gate build ([`run_gates`]
+    /// / `build.jobs` config and the run's recorded base ([`run_base_env`](Self::run_base_env),
+    /// read from the store) each call rather than cached - a single resolver, called from
+    /// every site that needs it, so a gate build ([`run_gates`]
     /// (Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)) and an
     /// agent-spawn build (every `SpawnOpts.env`) can never derive two disagreeing
-    /// copies, including the jobs cap (spec 65 unit 4).
+    /// copies, including the jobs cap (spec 65 unit 4) and `$RIGGER_RUN_BASE`.
     ///
     /// Extends that authority with spec 65 unit 2 (NO SILENT DEGRADE): `build.wrapper` /
     /// `build.cache_dir` are resolved through [`gate::resolve_build_layer`] FIRST, so
@@ -9466,13 +10026,12 @@ impl RunCtx<'_> {
     /// so a library caller gets the identical loud failure a CLI caller already does -
     /// whichever entry point resolves this first.
     fn build_env(&self) -> Result<gate::BuildEnv, Error> {
-        build_env_of(self.cfg)
+        build_env_of(self.cfg, &self.run_base_env())
     }
 
-    /// The run's own `$RIGGER_RUN_BASE`: the SINGLE
-    /// resolution both gate call sites ([`run_gates`](Self::run_gates) and
-    /// [`run_deferred_gates`](Self::run_deferred_gates)) layer onto their own `build_env` -
-    /// never a second, independently re-derived copy. Reads the run's own `RunStarted` off
+    /// The run's own `$RIGGER_RUN_BASE`: the SINGLE resolution the one build environment
+    /// ([`build_env`](Self::build_env), and through [`GateInputs::resolve`] every gate) carries
+    /// to every gate and every spawn - never a second, independently re-derived copy. Reads the run's own `RunStarted` off
     /// the live event stream and folds [`crate::run::current_run_base_tip`] over it: the run
     /// branch's tip commit sha AT THE MOMENT this run started, persisted once at mint
     /// (`RunStarted::base_tip`) and never re-resolved live - so a unit that lands mid-run
@@ -9507,12 +10066,15 @@ impl RunCtx<'_> {
     /// build cache variable is inherited untouched, matching `gate::Runner`'s existing
     /// "target_dir always wins, else inherit" precedence.
     ///
-    /// The SINGLE place every `SpawnOpts.env` is assembled from `build_env`: the four spawn
-    /// call sites ([`reviewer_spawn_opts`](Self::reviewer_spawn_opts) - and through it
+    /// The SINGLE place every `SpawnOpts.env` is assembled from `build_env`, so every spawn
+    /// carries `$RIGGER_RUN_BASE` beside every gate: the five spawn call sites
+    /// ([`reviewer_spawn_opts`](Self::reviewer_spawn_opts) - and through it
     /// [`spawn_sdet_author`](Self::spawn_sdet_author) - the single-lane implementer in
     /// [`run_single_stage`](Self::run_single_stage), each lane in
-    /// [`run_speculation`](Self::run_speculation), and [`re_plan`](Self::re_plan)) each pass
-    /// their own `dir` through this ONE fn so none can ever derive a disagreeing copy.
+    /// [`run_speculation`](Self::run_speculation), [`re_plan`](Self::re_plan) and
+    /// [`spawn_conflict_resolution_implementer`](Self::spawn_conflict_resolution_implementer))
+    /// each pass their own `dir` through this ONE fn so none can ever derive a disagreeing
+    /// copy.
     ///
     /// `cache` names WHICH of the unit's caches the spawn builds into: the unit's own
     /// [`worktree::UNIT_CACHE_PREFIX`] sibling for every spawn that builds the unit's tree (the
@@ -10087,12 +10649,9 @@ impl RunCtx<'_> {
             // build-environment authority's resolved wrapper/cache/incremental vars
             // (spec 65), same as every other gate this run's config resolves - and
             // the same machine-wide build budget, so this phase-boundary gate waits
-            // for a slot exactly like every inline gate does. Layered with
-            // `$RIGGER_RUN_BASE` too (spec 91), the SAME `run_base_env` resolution
-            // `run_gates` layers onto its own `build_env` - never a second copy.
-            let build_env = self
-                .build_env()?
-                .with_var("RIGGER_RUN_BASE", &self.run_base_env());
+            // for a slot exactly like every inline gate does. It carries
+            // `$RIGGER_RUN_BASE` through that same `build_env`, never a second copy.
+            let build_env = self.build_env()?;
             // The deferred gate measures the ONE integrated tree with no worktree
             // dir (empty `target_dir`, matching `run_gates`'s own "empty target"
             // shared-cache case) - so it holds the SAME shared build-cache guard
@@ -10611,7 +11170,7 @@ impl RunCtx<'_> {
                         // conflict's placeholder-staged version lands now; the real regeneration,
                         // if any, lands as a SEPARATE, later pass's own row 4).
                         self.record_landing_intent(&st.name, attempt, pass, &c, &pre_merge)?;
-                        match wt.land()? {
+                        match self.moving_the_run_branch(|| wt.land())? {
                             worktree::LandOutcome::TipMoved => {
                                 // The run branch moved after the worktree merge (an operator
                                 // commit, a sibling's landing): a fast-forward is impossible
@@ -10876,7 +11435,7 @@ impl RunCtx<'_> {
             let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             let merged = gate_result?;
             if !merged.pass {
-                Worktree::reset_to(&self.deps.repo, &pre_merge)?;
+                self.moving_the_run_branch(|| Worktree::reset_to(&self.deps.repo, &pre_merge))?;
                 // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
                 // of `wt` in this function: the post-merge gate just above is real wall-clock
                 // time - a window in which an out-of-band actor (or, as spec 88 criterion 1's
@@ -11064,7 +11623,7 @@ impl RunCtx<'_> {
         }
 
         if !still_pending.is_empty() {
-            match w.cherry_pick_onto_run_branch(&still_pending)? {
+            match self.moving_the_run_branch(|| w.cherry_pick_onto_run_branch(&still_pending))? {
                 worktree::CherryPickOutcome::Conflict(detail) => {
                     return Ok(PlanCommitOutcome::Conflict(detail));
                 }
@@ -13330,6 +13889,21 @@ impl RunCtx<'_> {
                 terminal.insert(id);
             }
         }
+        // THE DAG IS RECORDED: this is the one place the DAG's membership
+        // changes once the run built it (the template's removal and the baselines come before the
+        // first call; the supersede removal and every added proposal happen above), so the units
+        // it now holds are recorded here whenever they differ from the latest record in the slice
+        // read at the start. Every key of `stages` is a stage the conductor starts as a unit, so
+        // the record is what the run owes ([`ledger::RunState::owed`]). Comparing with the log
+        // keeps a repeated harvest, a replay and a resume over an unchanged DAG from appending,
+        // and lets a process that died before the emit leave its record to the next one's
+        // catch-up harvest; an empty DAG equals the empty set no record means.
+        let recorded = ledger::recorded_dag(&events).map_err(|e| Error(e.to_string()))?;
+        if stages.keys().ne(recorded.iter()) {
+            let body = serde_json::to_value(ledger::DagRecorded::of(stages.keys()))
+                .map_err(|e| Error(e.to_string()))?;
+            self.emit(ledger::TYPE_DAG_RECORDED, body)?;
+        }
         Ok(())
     }
 
@@ -13505,18 +14079,30 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   (spec 06 unit 6: wait-until-reset + re-spawn); [`CAUSE_INFRA_GATE`] a gate red whose
 ///   every failing gate is of the taxonomy's `infra` class ([`GateOutcome::infra`]);
 ///   [`CAUSE_INFRA_REVIEW`] an adjudicator reject blaming infrastructure
-///   ([`spawn::Adjudication::is_infra_fault`]).
+///   ([`spawn::Adjudication::is_infra_fault`]); [`CAUSE_INFRA_HANDOVER`] an author session (the
+///   implementer or the sdet-author) that ended without its handover line
+///   ([`RunCtx::handover_miss`]), whose rerun continues that session.
 const CAUSE_REJECT: &str = "reject";
 const CAUSE_INTEGRATE_CONFLICT: &str = "integrate-conflict";
 const CAUSE_INFRA_SPAWN: &str = "infra:spawn";
 const CAUSE_INFRA_GATE: &str = "infra:gate";
 const CAUSE_INFRA_REVIEW: &str = "infra:review";
+const CAUSE_INFRA_HANDOVER: &str = "infra:handover";
+
+/// The most characters of a missed hand-over's last line its evidence records.
+const HANDOVER_LAST_LINE_CHARS: usize = 200;
 
 /// Whether a stage failure's `cause` is an infrastructure failure (F3): the ONE predicate a
 /// unit's stage asks before it charges a remediation attempt, over every infra source the
 /// cause wire names.
 fn is_infra_cause(cause: &str) -> bool {
-    [CAUSE_INFRA_SPAWN, CAUSE_INFRA_GATE, CAUSE_INFRA_REVIEW].contains(&cause)
+    [
+        CAUSE_INFRA_SPAWN,
+        CAUSE_INFRA_GATE,
+        CAUSE_INFRA_REVIEW,
+        CAUSE_INFRA_HANDOVER,
+    ]
+    .contains(&cause)
 }
 
 /// The cause a review reject stamps: [`CAUSE_INFRA_REVIEW`] when the adjudicator's verdict
@@ -13620,9 +14206,10 @@ fn render_plan_protocol(cap: Option<u32>, implementer: &str, criteria: &[String]
 /// run side by side unless one `needs` the other, and closes with the verdict paragraph, whose cause contract tells a
 /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
 /// criterion 5) from one a re-plan can fix, naming a unit over the size cap
-/// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
-/// leads with the prior rejection so the reviewer judges the revised
-/// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
+/// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-review it
+/// leads with the prior rejection so the reviewer judges the DAG against what was wrong before,
+/// saying the planner revised it only when `revised` (a re-plan proposed at the round's
+/// attempt). The same prompt feeds the adversary (which appends the
 /// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
 /// fan-out).
 fn build_dag_critique_prompt(
@@ -13631,6 +14218,7 @@ fn build_dag_critique_prompt(
     conflicts: &[(String, String, Vec<String>)],
     serialized: bool,
     prior_reason: &str,
+    revised: bool,
     cap: Option<u32>,
 ) -> String {
     let mut b = String::new();
@@ -13639,6 +14227,11 @@ fn build_dag_critique_prompt(
             DAG_PRIOR_REJECT,
             &[("prior_reason", prior_reason.trim())],
         ));
+        b.push_str(if revised {
+            DAG_REVISED_SINCE_REJECT
+        } else {
+            DAG_UNCHANGED_SINCE_REJECT
+        });
     }
     b.push_str(DAG_CRITIQUE_OPENER);
     b.push_str(&unit_size_cap_then(cap, "\n\n"));
@@ -14297,7 +14890,17 @@ fn write_capped_section<'g>(
 /// and lessons sections.
 fn plain_node_line(n: &contextgraph::Node) -> String {
     let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
-    format!("- {}: {}\n", n.id, summary)
+    record_line(&n.id, "", summary)
+}
+
+/// One record's line: `- {by} ({id}): {summary}` naming the reviewer `by` that raised it, or the
+/// plain `- {id}: {summary}` when it names none. The one shape every record list renders.
+fn record_line(id: &str, by: &str, summary: &str) -> String {
+    if by.is_empty() {
+        format!("- {id}: {summary}\n")
+    } else {
+        format!("- {by} ({id}): {summary}\n")
+    }
 }
 
 /// Render the "Code neighborhood" section (spec 29c criterion 1): the code-entity DEFINITIONS the
@@ -14656,15 +15259,8 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         // Findings keep pure recency (spec exclusion: only the lessons slice gains relevance).
         false,
         |n| {
-            let by = n.attrs.get("by").map(String::as_str).unwrap_or("");
-            if by.is_empty() {
-                // No raising reviewer recorded: fall back to the shared plain body so the
-                // `- {id}: {summary}` line lives in exactly one place (arch-u1gap17).
-                plain_node_line(n)
-            } else {
-                let summary = n.attrs.get("summary").map(String::as_str).unwrap_or("");
-                format!("- {by} ({}): {summary}\n", n.id)
-            }
+            let attr = |k: &str| n.attrs.get(k).map(String::as_str).unwrap_or("");
+            record_line(&n.id, attr("by"), attr("summary"))
         },
     );
 }
@@ -15215,6 +15811,122 @@ fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[S
         return String::new();
     }
     fill(LATER_ATTEMPT, &[("causes", &causes.join("; and "))])
+}
+
+/// The handover contract every author spawn's prompt and resumed task end with: the single-lane
+/// implementer that is not a producer, each speculation lane's implementer and the test author.
+/// [`author_handed_over`] reads the line it names off the session's result.
+fn author_handover() -> String {
+    fill(AUTHOR_HANDOVER, &[("line", AUTHOR_HANDOVER_LINE)])
+}
+
+/// Whether an author spawn's `result` handed its work over: its driver ran no session (an empty
+/// `session_id`: the workflow and replay drivers and the in-process doubles, which have no
+/// session to end early), the prompt of the request the run `recorded` for the spawn carries no
+/// [`AUTHOR_HANDOVER_LINE`] (a session recorded before the contract existed was never told it,
+/// so it cannot miss it; every request recorded since carries it), or its output's last
+/// non-blank line, trimmed, is [`AUTHOR_HANDOVER_LINE`]. A told session that ended without the
+/// line (a denied command, a turn that ended mid-work) stopped before its work was done, so its
+/// arm takes its crash disposition before any `green` stamp or checkpoint commit.
+fn author_handed_over(result: &AgentResult, recorded: Option<&str>) -> bool {
+    result.session_id.is_empty()
+        || recorded.is_some_and(|prompt| !prompt.contains(AUTHOR_HANDOVER_LINE))
+        || result
+            .output
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            == Some(AUTHOR_HANDOVER_LINE)
+}
+
+/// An author session that ended without handing over its work ([`RunCtx::handover_miss`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HandoverMiss {
+    /// The author, as its arm names it.
+    who: String,
+    /// The spawn that missed: the id its infra-retry mark names ([`META_SPAWN`]).
+    id: String,
+    /// The result's last non-blank line, bounded ([`bounded_last_line`]).
+    last_line: String,
+    /// The tool calls the session was denied, from the run's recorded result for the spawn
+    /// ([`spawn::META_PERMISSION_DENIALS`]); `None` when none was recorded.
+    denials: Option<u64>,
+}
+
+impl HandoverMiss {
+    /// What the miss failed with: the author, the missing line, the session's last line and its
+    /// denial count, so an operator tells a refused tool call from a forgotten line.
+    fn evidence(&self) -> String {
+        let denials = self
+            .denials
+            .map_or_else(|| "unknown".to_string(), |n| n.to_string());
+        format!(
+            "{}: the session ended without handing over (no {AUTHOR_HANDOVER_LINE} line); its \
+             last line {:?}; permission denials: {denials}",
+            self.who, self.last_line
+        )
+    }
+}
+
+/// The last non-blank line of an author's `output`, trimmed, cut to [`HANDOVER_LAST_LINE_CHARS`]
+/// characters with `...` when longer: model output the log records, so its length is bounded.
+fn bounded_last_line(output: &str) -> String {
+    let line = output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    if line.chars().count() <= HANDOVER_LAST_LINE_CHARS {
+        return line.to_string();
+    }
+    let mut cut: String = line.chars().take(HANDOVER_LAST_LINE_CHARS).collect();
+    cut.push_str("...");
+    cut
+}
+
+/// The session to continue `role`'s rerun at `attempt` of `unit` with after a missed handover:
+/// `Some` when `unit`'s latest infra-retry mark at `attempt` records a miss of a `role` spawn
+/// ([`META_SPAWN`]), holding the session that spawn ran as, or empty when it recorded none (a
+/// rerun that cannot be continued, whose fresh prompt then says the tree holds that session's
+/// partial work); `None` when the latest rerun at `attempt` was no miss of `role`'s.
+fn missed_handover(events: &[Event], unit: &str, role: &str, attempt: u32) -> Option<String> {
+    let missed = unit_status_marks(events, unit, &[STATUS_INFRA_RETRY])
+        .filter(|(_, at, _)| *at == u64::from(attempt))
+        .last()?
+        .2
+        .meta
+        .get(META_SPAWN)
+        .filter(|id| crate::spawn::spawn_role(id) == role)?
+        .clone();
+    Some(
+        unit_status_marks(events, unit, &[STATUS_SPAWN_SESSION])
+            .filter(|(_, _, e)| e.meta.get(META_SPAWN) == Some(&missed))
+            .last()
+            .and_then(|(_, _, e)| e.meta.get(META_SESSION_ID).cloned())
+            .unwrap_or_default(),
+    )
+}
+
+/// What an author rerun's fresh prompt says after a `missed` handover ([`missed_handover`]):
+/// [`PRIOR_PARTIAL_WORK`], read when the session that missed cannot be continued, else nothing.
+fn missed_handover_note(missed: Option<&str>) -> &'static str {
+    if missed.is_some() {
+        PRIOR_PARTIAL_WORK
+    } else {
+        ""
+    }
+}
+
+/// `opts` continuing `session`, the author session that missed its handover, sent
+/// [`MISSED_HANDOVER`] and the `handover` contract: the rerun finishes that session's work.
+fn resume_missed(opts: SpawnOpts, session: &str, handover: &str) -> SpawnOpts {
+    SpawnOpts {
+        resumed_from: session.to_string(),
+        resume_task: format!("{MISSED_HANDOVER}{handover}"),
+        ..opts
+    }
 }
 
 /// The fact the sdet-author's fresh prompt and a resumed session's task state on a round
@@ -17384,6 +18096,9 @@ mod tests {
         /// reaches the sdet seam) and PARK only the sdet-author spawn, exercising the parked
         /// arm at the sdet seam that `fail_spawn_ids` (a non-parked crash) cannot.
         park_spawn_ids: std::collections::HashSet<String>,
+        /// Per-SPAWN-ID PARK after the spawn's emits: the spawn records what it emits, then
+        /// parks unanswered - a reviewer that recorded its findings before its driver died.
+        park_after_emits_ids: std::collections::HashSet<String>,
         last_prompt: Mutex<String>,
         /// Per-agent (isolation, parallel) the conductor passed at each spawn.
         opts_by_agent: Mutex<HashMap<String, (bool, bool)>>,
@@ -17462,6 +18177,11 @@ mod tests {
         resume_answer: ResumeAnswer,
         /// Every spawn's `(id, resumed_from, resume_task)`, in spawn order.
         resumes: Mutex<Vec<(String, String, String)>>,
+        /// With [`sessions`](Self::sessions): the spawns, by id, whose session ends without
+        /// handing over. Every other session spawn whose task carries [`AUTHOR_HANDOVER_LINE`]
+        /// ends its output with that line (trailing spaces and blank lines after it), as a host's
+        /// author answers the contract its task carries.
+        withhold_handover_ids: std::collections::HashSet<String>,
     }
     /// How a [`Stub::sessions`] spawn asked to continue a session answers.
     #[derive(Clone, Copy, Debug)]
@@ -17499,6 +18219,7 @@ mod tests {
                 output_by_spawn_id: HashMap::new(),
                 fail_spawn_ids: std::collections::HashSet::new(),
                 park_spawn_ids: std::collections::HashSet::new(),
+                park_after_emits_ids: std::collections::HashSet::new(),
                 spawn_ids: Mutex::new(Vec::new()),
                 resolved_model_by_agent: HashMap::new(),
                 fail_spawn: false,
@@ -17520,6 +18241,7 @@ mod tests {
                 sessions: false,
                 resume_answer: ResumeAnswer::Continued,
                 resumes: Mutex::new(Vec::new()),
+                withhold_handover_ids: std::collections::HashSet::new(),
             }
         }
 
@@ -17756,6 +18478,9 @@ mod tests {
                     emit(t, v.clone())?;
                 }
             }
+            if self.park_after_emits_ids.contains(&opts.id) {
+                return Err(parked_spawn(&opts.id));
+            }
             // A REVIEWER's own side effect destroying the worktree mid-review (spec 64
             // criterion 3, round 4), mirroring `GateSideEffect::DeleteWorktree`'s
             // gate-side deletion but at this review-tier spawn boundary: the SAME
@@ -17765,12 +18490,27 @@ mod tests {
             if !opts.dir.is_empty() && self.delete_dir_by_agent.contains(&a.id) {
                 let _ = std::fs::remove_dir_all(&opts.dir);
             }
-            let output = self
+            let mut output = self
                 .output_by_spawn_id
                 .get(&opts.id)
                 .or_else(|| self.output_by_agent.get(&a.id))
                 .cloned()
                 .unwrap_or_else(|| self.output.clone());
+            // The task the session read: a continued session reads the resume task, a fresh
+            // launch (or one whose session is gone) the full prompt.
+            let continued =
+                !opts.resumed_from.is_empty() && !matches!(self.resume_answer, ResumeAnswer::Gone);
+            let task = if continued {
+                opts.resume_task.as_str()
+            } else {
+                prompt
+            };
+            if self.sessions
+                && task.contains(AUTHOR_HANDOVER_LINE)
+                && !self.withhold_handover_ids.contains(&opts.id)
+            {
+                output.push_str(&format!("\n{AUTHOR_HANDOVER_LINE}  \n\n"));
+            }
             let (session_id, resumed_from) = match (self.sessions, opts.resumed_from.is_empty()) {
                 (false, _) => (String::new(), String::new()),
                 (true, true) => (format!("sess-{}", opts.id), String::new()),
@@ -18440,8 +19180,14 @@ mod tests {
         );
         assert_eq!(
             checkin_prompt(&driver),
-            format!("{}{}", emit_protocol(), notes_block(&want)),
-            "the check-in prompt is today's, then each upheld note once"
+            format!(
+                "{}{}{}",
+                emit_protocol(),
+                notes_block(&want),
+                author_handover()
+            ),
+            "the check-in prompt is today's, then each upheld note once, then the handover \
+             contract every author prompt ends with"
         );
         let judged = driver.prompts_for("adj");
         assert_eq!(judged.len(), 4, "premise: four review rounds were judged");
@@ -18469,7 +19215,10 @@ mod tests {
             Vec::new(),
             &[],
         );
-        assert_eq!(checkin_prompt(&driver), emit_protocol());
+        assert_eq!(
+            checkin_prompt(&driver),
+            format!("{}{}", emit_protocol(), author_handover())
+        );
         let mut want = Vec::new();
         for unit in [u1.as_str(), u2.as_str(), "checkin"] {
             want.extend([
@@ -19850,6 +20599,100 @@ mod tests {
         )
         .unwrap();
         stages
+    }
+
+    /// `harvest_proposed` records the
+    /// units its DAG holds whenever that set changes, and only then. Over a two-criterion
+    /// fan-out whose planner proposes one unit per criterion, the record names the static stages
+    /// and both proposals and no superseded baseline; a second harvest, live or in a resumed
+    /// process, appends nothing; a later episode's proposal superseding an unstarted unit
+    /// appends a record without it.
+    #[test]
+    fn harvest_records_the_dag_it_holds_each_time_the_set_changes() {
+        let crit_a = "criterion A: the alpha module is implemented";
+        let crit_b = "criterion B: the beta module is implemented";
+        let (cid_a, cid_b) = (
+            criterion_stable_id(1, crit_a),
+            criterion_stable_id(2, crit_b),
+        );
+        let st = Store::open(":memory:").unwrap();
+        let first = "plan/implementer#0";
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                proposal_event(proposal_data("u-a", crit_a, &cid_a), Some(first)),
+                proposal_event(proposal_data("u-b", crit_b, &cid_b), Some(first)),
+            ],
+        )
+        .unwrap();
+        let recorded = |st: &Store| -> Vec<Vec<String>> {
+            st.read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .into_iter()
+                .filter(|e| e.type_ == ledger::TYPE_DAG_RECORDED)
+                .map(|e| {
+                    let body: Value = serde_json::from_slice(&e.data).unwrap();
+                    serde_json::from_value(body["units"].clone()).unwrap()
+                })
+                .collect()
+        };
+        let set = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let planned = set(&["plan", "plan-critique", "u-a", "u-b"]);
+        let replanned = set(&["plan", "plan-critique", "u-a", "u-b2"]);
+
+        let cfg = supersede_cfg();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let (mut proposed, mut integrated, mut terminal) =
+            (HashSet::new(), HashSet::new(), HashSet::new());
+
+        enum Step {
+            /// The live process harvests again over its own DAG.
+            Live,
+            /// A fresh process seeds the DAG and harvests the whole log, as a resume does.
+            Resumed,
+            /// A later planner episode proposes `id` for criterion B, then the live process
+            /// harvests.
+            LaterProposal(&'static str),
+        }
+        // (the step, every record the log holds after it)
+        let steps = [
+            (Step::Live, vec![planned.clone()]),
+            (Step::Live, vec![planned.clone()]),
+            (Step::Resumed, vec![planned.clone()]),
+            (
+                Step::LaterProposal("u-b2"),
+                vec![planned.clone(), replanned.clone()],
+            ),
+            (Step::Resumed, vec![planned, replanned]),
+        ];
+        for (n, (step, want)) in steps.into_iter().enumerate() {
+            match step {
+                Step::Live => {}
+                Step::Resumed => {
+                    harvest_seeded(&st, &[crit_a, crit_b]);
+                    assert_eq!(recorded(&st), want, "step {n}: a resumed harvest");
+                    continue;
+                }
+                Step::LaterProposal(id) => st
+                    .append(
+                        STREAM,
+                        ExpectedRevision::Any,
+                        &[proposal_event(
+                            proposal_data(id, crit_b, &cid_b),
+                            Some("plan/replan#1"),
+                        )],
+                    )
+                    .map(|_| ())
+                    .unwrap(),
+            }
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
+                .unwrap();
+            assert_eq!(recorded(&st), want, "step {n}: a live harvest");
+        }
     }
 
     /// The spec both runs of a landed-criterion row run under, unless the row moves run 1.
@@ -28088,26 +28931,23 @@ mod tests {
         );
     }
 
-    #[test]
-    fn speculation_crashed_lane_is_absent_and_a_sibling_still_wins() {
-        // MUST-FIX E (sdet-u13-spec-crashed-candidate-arm-untested + arch-spec-crash-lane-worktree-
-        // leak): lane 0's implementer CRASHES (non-zero exit) while lane 1 writes + is approved.
-        // The crashed lane is simply absent from the group and the surviving sibling still wins and
-        // integrates ("the remaining candidates still race"). A mutation that propagated the lane-0
-        // error (aborting the group) leaves the unit un-integrated. AND the crash arm now tears down
-        // lane 0's ALREADY-CREATED worktree + branch: without that cleanup the canonical branch
-        // leaks (no terminal path touches the never-pushed crashed lane), so `branch_present` holds
-        // and this test FAILS.
+    /// Run a width-2 speculating unit `s` whose lane 0 is lost (`lose_lane_0` sets that up on the
+    /// driver) while lane 1 writes and is approved. The lost lane is simply absent from the group
+    /// and the surviving sibling still wins and integrates ("the remaining candidates still
+    /// race"), and the lost lane's ALREADY-CREATED worktree and branch are torn down: no terminal
+    /// path touches a never-pushed lane, so without that cleanup the canonical branch leaks. Every
+    /// lane's prompt carries the handover contract.
+    fn assert_lost_lane_is_absent_and_a_sibling_still_wins(lose_lane_0: fn(&mut Stub), why: &str) {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let cfg = spec_cfg(2);
         let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
+        let mut driver = Stub {
             write_file: Some("feature.rs".into()),
             output: r#"{"verdict":"approve"}"#.into(),
-            fail_spawn_ids: std::collections::HashSet::from([spawn_id("s", ROLE_IMPLEMENTER, 0)]),
             ..Stub::new()
         };
+        lose_lane_0(&mut driver);
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
@@ -28116,12 +28956,21 @@ mod tests {
         assert_eq!(
             rs.units["s"].status,
             ledger::Status::Integrated,
-            "lane 0 crashed but the surviving sibling lane 1 still wins and integrates"
+            "lane 0 was lost but the surviving sibling lane 1 still wins and integrates: {why}"
         );
         assert_eq!(
             occurrences(&driver.call_order, "worker"),
             2,
-            "BOTH candidate implementers were spawned - the crash did not abort the group"
+            "BOTH candidate implementers were spawned - losing lane 0 did not abort the group: \
+             {why}"
+        );
+        let contract = handover_contract();
+        assert!(
+            driver
+                .prompts_for("worker")
+                .iter()
+                .all(|prompt| prompt.contains(&contract)),
+            "every lane's prompt carries the handover contract: {why}"
         );
 
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
@@ -28135,19 +28984,92 @@ mod tests {
         assert_eq!(
             integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
             Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
-            "the surviving lane 1 is the recorded winner"
+            "the surviving lane 1 is the recorded winner: {why}"
         );
         assert!(
             !integrated
                 .meta
                 .get(META_SPEC_LOSERS)
                 .is_some_and(|l| l.contains(&spawn_id("s", ROLE_IMPLEMENTER, 0))),
-            "the CRASHED lane 0 is absent from the group (no diff), not recorded a loser"
+            "the lost lane 0 is absent from the group (no diff), not recorded a loser: {why}"
         );
-        // The crash arm removed lane 0's already-created worktree AND branch: no durable leak.
         assert!(
             !branch_present(&repo_path, &unit_branch("s")),
-            "the crashed lane's worktree branch is torn down in the crash arm, never leaked"
+            "the lost lane's worktree branch is torn down, never leaked: {why}"
+        );
+    }
+
+    crate::test_cases! {
+        /// MUST-FIX E (sdet-u13-spec-crashed-candidate-arm-untested + arch-spec-crash-lane-worktree-
+        /// leak): lane 0's implementer CRASHES (non-zero exit). A mutation that propagated the
+        /// lane-0 error (aborting the group) leaves the unit un-integrated.
+        speculation_crashed_lane_is_absent_and_a_sibling_still_wins:
+            assert_lost_lane_is_absent_and_a_sibling_still_wins(
+                |driver| driver.fail_spawn_ids = std::collections::HashSet::from([
+                    spawn_id("s", ROLE_IMPLEMENTER, 0),
+                ]),
+                "a crashed lane",
+            );
+        /// Lane 0's implementer session ends without the handover line,
+        /// so it stopped mid-work and the lane is lost as a crashed lane is, never rerun.
+        speculation_lane_without_the_handover_line_is_absent_and_a_sibling_still_wins:
+            assert_lost_lane_is_absent_and_a_sibling_still_wins(
+                |driver| {
+                    driver.sessions = true;
+                    driver.withhold_handover_ids =
+                        std::collections::HashSet::from([spawn_id("s", ROLE_IMPLEMENTER, 0)]);
+                },
+                "a lane that did not hand over",
+            );
+    }
+
+    /// A speculation lane whose request the run recorded before the
+    /// handover contract existed, answered with a result that names no line, keeps its candidate:
+    /// it races in the group (the winner or a recorded loser), never lost and torn down.
+    #[test]
+    fn a_speculation_lane_answered_with_a_pre_contract_result_keeps_its_candidate() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
+        let lane_0 = spawn_id("s", ROLE_IMPLEMENTER, 0);
+        spawn_store::park_in_run(
+            &store,
+            &crate::spawn::test_request("s", "s", ROLE_IMPLEMENTER, 0, "task"),
+            "",
+            "",
+        )
+        .unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            sessions: true,
+            withhold_handover_ids: HashSet::from([lane_0.clone()]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && String::from_utf8_lossy(&e.data).contains("\"id\":\"s\"")
+            })
+            .expect("the group integrated");
+        let raced = integrated.meta.get(META_SPEC_WINNER) == Some(&lane_0)
+            || integrated
+                .meta
+                .get(META_SPEC_LOSERS)
+                .is_some_and(|losers| losers.contains(&lane_0));
+        assert!(
+            raced,
+            "lane 0's candidate races in the group: {:?}",
+            integrated.meta
         );
     }
 
@@ -28742,6 +29664,353 @@ mod tests {
             prompts.iter().all(|p| !p.contains(LANE_0_MERGE_BREAK)),
             "a compensation re-entry is never prompted with an earlier lane's logged failure; \
              prompts:\n{prompts:?}"
+        );
+    }
+
+    /// Park the requests an earlier entry of the speculating unit `s` recorded for `lanes`, as a
+    /// host records every spawn it is asked for.
+    fn park_lane_requests(store: &Store, lanes: std::ops::Range<u32>) {
+        for lane in lanes {
+            spawn_store::park_in_run(
+                store,
+                &crate::spawn::test_request("s", "s", ROLE_IMPLEMENTER, lane, "task"),
+                "",
+                "",
+            )
+            .unwrap();
+        }
+    }
+
+    /// A post-merge `GateVerdict` of gate `ok` recorded for `s` at `attempt`, passing or not.
+    fn postmerge_verdict(attempt: u32, pass: bool) -> Event {
+        Event::new(
+            contextgraph::TYPE_GATE_VERDICT,
+            serde_json::to_vec(&json!({
+                "gate": "ok", "pass": pass, "flaky": false, "evidence": ""
+            }))
+            .unwrap(),
+        )
+        .with_meta(
+            META_REPLAY_KEY,
+            gate_key(GateKey::PostMergeVerdict, "s", attempt, 0, "ok"),
+        )
+    }
+
+    /// The run of a group whose first entry requested lanes 0 and 1, whose lane 0's merge broke
+    /// the merged tree (its post-merge verdict red), which escalated as a group and which an
+    /// operator granted an attempt. Returns what every re-entered lane is told: the logged block.
+    fn an_escalated_and_resumed_group(store: &Store, _repo: &str) -> String {
+        seed_events_in_run(store, &[], &[]);
+        park_lane_requests(store, 0..2);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[
+                    postmerge_verdict(0, false),
+                    lane_0_merge_break(),
+                    Event::new(
+                        ledger::TYPE_UNIT_ESCALATED,
+                        serde_json::to_vec(&json!({"id": "s"})).unwrap(),
+                    )
+                    .with_meta(META_SPEC_GROUP, speculation_group_id("s")),
+                ],
+            )
+            .unwrap();
+        grant_resume(store, "s", 1);
+        LANE_0_MERGE_BREAK.to_string()
+    }
+
+    /// [`an_escalated_and_resumed_group`] whose re-entry requested lanes 2 and 3 and parked, and
+    /// whose process then died: the relaunch adds no boundary, so it keeps the re-entry's ids.
+    fn a_re_entered_group_relaunched_after_a_crash(store: &Store, repo: &str) -> String {
+        let told = an_escalated_and_resumed_group(store, repo);
+        park_lane_requests(store, 2..4);
+        told
+    }
+
+    /// The run of a group whose first entry requested lanes 0 and 1, whose lane 0's merge broke
+    /// the merged tree, and whose lane 1 then integrated at `repo`'s head, its post-merge verdict
+    /// green, before a later unit's review queued a compensation naming `s`. The relaunch drains
+    /// it. Returns what every re-entered lane is told: the compensation's contradiction.
+    fn a_compensated_group(store: &Store, repo: &str) -> String {
+        std::fs::write(Path::new(repo).join("s.rs"), "fn s_condemned() {}\n").unwrap();
+        for args in [
+            &["add", "s.rs"][..],
+            &["commit", "-q", "-m", "s integrates"][..],
+        ] {
+            run_git(repo, args);
+        }
+        let commit_c = trimmed_stdout(&run_git(repo, &["rev-parse", "HEAD"]));
+        let contradiction = "s's integrated change contradicts the later unit".to_string();
+        seed_events_in_run(store, &[], &[]);
+        park_lane_requests(store, 0..2);
+        store
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[
+                    lane_0_merge_break(),
+                    postmerge_verdict(0, true),
+                    Event::new(
+                        ledger::TYPE_UNIT_INTEGRATED,
+                        serde_json::to_vec(&json!({"id": "s", "commit": commit_c})).unwrap(),
+                    ),
+                    Event::new(
+                        ledger::TYPE_UNIT_STATUS,
+                        serde_json::to_vec(
+                            &json!({"id": "s", "status": STATUS_COMPENSATION_QUEUED}),
+                        )
+                        .unwrap(),
+                    )
+                    .with_meta(META_COMPENSATE_TARGET, "s")
+                    .with_meta(META_CONTRADICTION, &contradiction),
+                ],
+            )
+            .unwrap();
+        contradiction
+    }
+
+    /// A speculating unit re-entered past a boundary (an operator's grant
+    /// after its escalation, or a drained compensation) runs its lanes one past the highest
+    /// attempt its run recorded before that boundary, so a host runs them as fresh sessions
+    /// rather than answering the first entry's ids from the log; a relaunch adding no boundary
+    /// keeps the re-entry's ids. Every lane's prompt carries what the unit is told on re-entry,
+    /// and the winner's post-merge gate runs under its own `base + lane` key, never replaying
+    /// the first entry's verdict at that lane.
+    fn assert_a_re_entered_group_runs_fresh_lanes_told_why(
+        seed: fn(&Store, &str) -> String,
+        why: &str,
+    ) {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let told = seed(&store, &repo_path);
+        let driver = approving_speculation_stub();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        let lanes: Vec<String> = driver
+            .spawn_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| spawn::spawn_role(id) == ROLE_IMPLEMENTER)
+            .cloned()
+            .collect();
+        assert_eq!(
+            lanes,
+            [
+                spawn_id("s", ROLE_IMPLEMENTER, 2),
+                spawn_id("s", ROLE_IMPLEMENTER, 3)
+            ],
+            "the re-entered lanes run one past the recorded attempts: {why}"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert!(
+            prompts.len() == 2 && prompts.iter().all(|p| p.contains(&told)),
+            "every re-entered lane's prompt holds {told:?}: {why}; prompts: {prompts:?}"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the re-entered lane 0 wins: {why}"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let rerun = gate_key(GateKey::PostMergeVerdict, "s", 2, 0, "ok");
+        assert!(
+            events.iter().any(|e| {
+                e.type_ == contextgraph::TYPE_GATE_VERDICT
+                    && e.meta.get(META_REPLAY_KEY) == Some(&rerun)
+            }),
+            "the winner's post-merge gate records its verdict under {rerun:?}: {why}"
+        );
+    }
+
+    crate::test_cases! {
+        an_escalated_group_resumed_by_an_operator_re_enters_on_fresh_lanes:
+            assert_a_re_entered_group_runs_fresh_lanes_told_why(
+                an_escalated_and_resumed_group,
+                "an operator's grant",
+            );
+        a_re_entered_group_relaunched_after_a_crash_keeps_its_lanes:
+            assert_a_re_entered_group_runs_fresh_lanes_told_why(
+                a_re_entered_group_relaunched_after_a_crash,
+                "a crash-resume of the re-entry",
+            );
+        a_compensated_group_re_enters_on_fresh_lanes_told_the_contradiction:
+            assert_a_re_entered_group_runs_fresh_lanes_told_why(
+                a_compensated_group,
+                "a drained compensation",
+            );
+    }
+
+    /// The review-rejected lanes' issue [`every_lane_review_rejected`] plants.
+    const EVERY_LANE_REJECTED: &str = "every lane's review rejected this candidate";
+    /// The red gate output [`every_lane_gate_red`] plants.
+    const EVERY_LANE_GATE_RED: &str = "every lane went gate red";
+
+    /// Every lane passes its gate and is rejected by review. Returns what each re-entered lane
+    /// is told: the review's issue.
+    fn every_lane_review_rejected(cfg: &mut Config, driver: &mut Stub) -> &'static str {
+        driver.output = format!(r#"{{"verdict":"reject","issues":["{EVERY_LANE_REJECTED}"]}}"#);
+        let _ = cfg;
+        EVERY_LANE_REJECTED
+    }
+
+    /// Every lane's gate goes red. Returns what each re-entered lane is told: the gate's output.
+    fn every_lane_gate_red(cfg: &mut Config, driver: &mut Stub) -> &'static str {
+        cfg.workflow.gates.insert(
+            "ok".into(),
+            gate_def(&format!("echo '{EVERY_LANE_GATE_RED}'; exit 1")),
+        );
+        let _ = driver;
+        EVERY_LANE_GATE_RED
+    }
+
+    /// A group whose every lane loses before any merge (`lose` sets up
+    /// how) escalates with the loss recorded, so an operator's grant re-drives its lanes as
+    /// fresh sessions told why the group lost, exactly as a single lane re-entering after its
+    /// own failure is told.
+    fn assert_a_group_whose_lanes_all_lose_re_enters_told_why(
+        lose: fn(&mut Config, &mut Stub) -> &'static str,
+        why: &str,
+    ) {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = spec_cfg(2);
+        let mut losing = approving_speculation_stub();
+        let told = lose(&mut cfg, &mut losing);
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &losing, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "premise: a group whose lanes all lose escalates: {why}"
+        );
+        // A host records every spawn it is asked for; the stub records none.
+        park_lane_requests(&store, 0..2);
+        grant_resume(&store, "s", 1);
+        let driver = approving_speculation_stub();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        let lanes: Vec<String> = driver
+            .spawn_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| spawn::spawn_role(id) == ROLE_IMPLEMENTER)
+            .cloned()
+            .collect();
+        assert_eq!(
+            lanes,
+            [
+                spawn_id("s", ROLE_IMPLEMENTER, 2),
+                spawn_id("s", ROLE_IMPLEMENTER, 3)
+            ],
+            "the re-entered lanes run one past the recorded attempts: {why}"
+        );
+        let prompts = driver.prompts_for("worker");
+        assert!(
+            prompts.len() == 2 && prompts.iter().all(|p| p.contains(told)),
+            "every re-entered lane's prompt holds {told:?}: {why}; prompts: {prompts:?}"
+        );
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Integrated,
+            "the re-entered group wins: {why}"
+        );
+    }
+
+    crate::test_cases! {
+        a_group_whose_lanes_review_rejected_re_enters_told_the_rejection:
+            assert_a_group_whose_lanes_all_lose_re_enters_told_why(
+                every_lane_review_rejected,
+                "every lane review-rejected",
+            );
+        a_group_whose_lanes_went_gate_red_re_enters_told_the_gate_output:
+            assert_a_group_whose_lanes_all_lose_re_enters_told_why(
+                every_lane_gate_red,
+                "every lane gate-red",
+            );
+    }
+
+    /// A group's lanes lost in different ways are all told: the gathered failure keeps every
+    /// genuine lane's red gate and rejection in lane order under the first loss's cause, and
+    /// leaves out a lane lost to an outage.
+    #[test]
+    fn a_group_loss_keeps_every_genuine_lanes_failure_and_drops_an_outage() {
+        let mut lost = LostLanes::default();
+        lost.gates(
+            CAUSE_INFRA_GATE.to_string(),
+            vec!["ok: the runner died".into()],
+        );
+        lost.review(
+            CAUSE_REJECT.to_string(),
+            r#"{"verdict":"reject","issues":["lane one misses the edge case"]}"#,
+        );
+        lost.gates(
+            "gate:ok".to_string(),
+            vec!["ok: lane two's test is red".into()],
+        );
+        lost.review(
+            CAUSE_REJECT.to_string(),
+            r#"{"verdict":"reject","issues":["lane three drops the error"]}"#,
+        );
+        let (cause, failure) = lost.failure().expect("genuine lanes lost");
+        assert_eq!(cause, CAUSE_REJECT, "the first genuine loss's cause");
+        let block = failure.block("s", 4);
+        for told in [
+            "lane one misses the edge case",
+            "lane two's test is red",
+            "lane three drops the error",
+        ] {
+            assert!(block.contains(told), "the block tells {told:?}: {block}");
+        }
+        assert!(
+            !block.contains("the runner died"),
+            "an outage is no feedback: {block}"
+        );
+    }
+
+    /// A lane lost to an outage is no feedback for the author, exactly as the single lane
+    /// charges an infra cause no `UnitFailed`: a group whose every lane's review blamed
+    /// infrastructure escalates with no group-loss failure recorded.
+    #[test]
+    fn a_group_whose_lanes_lost_to_infrastructure_records_no_failure_for_the_author() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: format!(
+                r#"{{"verdict":"reject","cause":"{}","issues":["the build host was down"]}}"#,
+                spawn::CAUSE_INFRA_FAULT
+            ),
+            ..approving_speculation_stub()
+        };
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "premise: a group whose lanes all lose escalates"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "an outage records no failure for the author; events: {events:?}"
         );
     }
 
@@ -30140,6 +31409,152 @@ mod tests {
             )),
             "the relaunched driver continues the session the log recorded"
         );
+    }
+
+    /// The records a test spawn emits, each its event type and its payload.
+    type Emits = Vec<(String, Value)>;
+
+    /// A [`ReviewFinding`](contextgraph::TYPE_REVIEW_FINDING) a test reviewer records: `id`
+    /// with `summary`, about `about`.
+    fn finding(id: &str, summary: &str, about: &str) -> (String, Value) {
+        (
+            contextgraph::TYPE_REVIEW_FINDING.to_string(),
+            json!({"id": id, "summary": summary, "about": [about]}),
+        )
+    }
+
+    /// The [`session_cfg`] unit run in two processes over one store and repository, its round-0
+    /// adjudicator rejecting and its round-1 one approving: in the first, the lens spawn of
+    /// round `attempt` records `findings` and then parks (its driver died after it recorded
+    /// them); the second, a relaunch by adoption under `relaunched`, re-drives that spawn.
+    /// Returns the second process's run state.
+    fn relaunch_after_recording(attempt: u32, findings: Emits, relaunched: &Stub) -> RunState {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let lens = spawn_id("implement", &lens_role("lens"), attempt);
+        let st = Store::open(":memory:").unwrap();
+        let first = Stub {
+            emits_by_spawn_id: HashMap::from([(lens.clone(), findings)]),
+            park_after_emits_ids: [lens].into_iter().collect(),
+            ..session_stub(&relaunch_verdicts())
+        };
+        run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &first, Vec::new())
+            },
+        )
+        .unwrap();
+        run_isolated(
+            &session_cfg(),
+            &Deps {
+                repo: repo_path,
+                ..stub_deps(&st, relaunched, Vec::new())
+            },
+        )
+        .unwrap()
+    }
+
+    /// The verdicts of a [`relaunch_after_recording`] unit: round 0 rejects, round 1 approves.
+    fn relaunch_verdicts() -> [(String, &'static str); 2] {
+        [
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+        ]
+    }
+
+    /// A reviewer re-driven within its round after its driver died is told the findings it
+    /// already recorded that round, each still in the log: a first round's re-driven lens reads
+    /// them after its prompt, a later round's in the task its resumed session is sent, and a
+    /// lens that recorded none is told nothing. A re-driven lens that already holds findings
+    /// did its work, so an empty result from it is no degenerate one to respawn.
+    #[test]
+    fn a_reviewer_re_driven_within_its_round_is_told_the_findings_it_already_recorded() {
+        const YOURS: &str =
+            "You already recorded these findings this round; each stays in the log:";
+        let two = || {
+            vec![
+                finding("f-1", "the read is unscoped", "feature.rs"),
+                finding("f-2", "the guard is skipped", "feature.rs"),
+            ]
+        };
+        let lines = [
+            "- lens:lens (f-1): the read is unscoped\n",
+            "- lens:lens (f-2): the guard is skipped\n",
+        ];
+        let silent_lens = || {
+            let mut driver = session_stub(&relaunch_verdicts());
+            driver
+                .output_by_spawn_id
+                .insert(spawn_id("implement", &lens_role("lens"), 0), String::new());
+            driver
+        };
+        let rows: [(&str, u32, Emits, Stub, &[&str]); 4] = [
+            (
+                "a first round's re-driven lens",
+                0,
+                two(),
+                session_stub(&relaunch_verdicts()),
+                &lines,
+            ),
+            (
+                "a later round's resumed lens",
+                1,
+                two(),
+                session_stub(&relaunch_verdicts()),
+                &lines,
+            ),
+            (
+                "a re-driven lens that recorded nothing",
+                0,
+                Vec::new(),
+                session_stub(&relaunch_verdicts()),
+                &[],
+            ),
+            (
+                "a re-driven lens holding findings that returns empty",
+                0,
+                two(),
+                silent_lens(),
+                &lines,
+            ),
+        ];
+        for (case, attempt, findings, relaunched, expected) in rows {
+            let rs = relaunch_after_recording(attempt, findings, &relaunched);
+            assert_eq!(
+                rs.units["implement"].status,
+                ledger::Status::Integrated,
+                "{case}: premise: the relaunch finishes the unit"
+            );
+            let lens = spawn_id("implement", &lens_role("lens"), attempt);
+            let told = if attempt == 0 {
+                relaunched.prompts_for("lens").first().cloned()
+            } else {
+                relaunched.resume_of(&lens).map(|(_, task)| task)
+            }
+            .unwrap_or_default();
+            let block = if expected.is_empty() {
+                String::new()
+            } else {
+                format!("\n\n{YOURS}\n{}", expected.concat())
+            };
+            assert!(
+                block.is_empty() && !told.contains(YOURS) || told.ends_with(&block),
+                "{case}: the re-driven lens must close on the findings it recorded, \
+                 {block:?}; got:\n{told}"
+            );
+            assert!(
+                !relaunched.spawn_ids().contains(&spawn_retry_id(
+                    "implement",
+                    &lens_role("lens"),
+                    attempt,
+                    1
+                )),
+                "{case}: the re-driven lens is never respawned within the round; spawns: {:?}",
+                relaunched.spawn_ids()
+            );
+        }
     }
 
     /// How a [`assert_a_gated_attempt_never_re_runs_the_sdet_seam`] row re-enters attempt 0
@@ -33875,6 +35290,97 @@ mod tests {
             "with no wrapper configured, a real unit worktree dir must still get ONLY its \
              own CARGO_TARGET_DIR: {off:?}"
         );
+    }
+
+    /// A driver that records each spawn's id beside the `SpawnOpts.env` it was handed, so a
+    /// test can say WHICH spawn carried what.
+    /// One recorded spawn: its id and the `SpawnOpts.env` it was handed.
+    type IdEnv = (String, Vec<(String, String)>);
+    struct IdEnvRecordingDriver {
+        spawns: Mutex<Vec<IdEnv>>,
+    }
+    impl AgentDriver for IdEnvRecordingDriver {
+        fn spawn(
+            &self,
+            _a: &AgentDef,
+            _prompt: &str,
+            opts: &SpawnOpts,
+            _emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.spawns
+                .lock()
+                .unwrap()
+                .push((opts.id.clone(), opts.env.clone()));
+            Ok(AgentResult::default())
+        }
+    }
+
+    #[test]
+    fn every_spawn_and_every_gate_carries_the_run_base_from_the_one_build_environment() {
+        // The run base reaches an agent the way it reaches a gate: through `build_env`, the
+        // one build-environment authority every spawn's and every gate's environment is built
+        // from. A run whose `RunStarted` carries a `base_tip` hands `RIGGER_RUN_BASE` set to
+        // it to the implementer, the check-in stage's agent and every gate; a run with an
+        // empty `base_tip` hands it to none of them.
+        let criterion = "the slice lands";
+        for (base_tip, want) in [("base-sha", Some("base-sha")), ("", None)] {
+            let cfg = fan_out_checkin_cfg("unit-check", "sweep");
+            let st = Store::open(":memory:").unwrap();
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({
+                        "run": "run-base-fixture",
+                        "criteria": [criterion],
+                        "base_tip": base_tip,
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            let driver = IdEnvRecordingDriver {
+                spawns: Mutex::new(Vec::new()),
+            };
+            let runner = RecordingRunner::new(&[]);
+            let deps = Deps {
+                gates: &runner,
+                ..stub_deps(&st, &driver, vec![criterion.to_string()])
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_eq!(rs.units["checkin"].status, ledger::Status::Integrated);
+            let run_base = |env: &[(String, String)]| {
+                env.iter()
+                    .find(|(k, _)| k == crate::spawn::RUN_BASE_ENV)
+                    .map(|(_, v)| v.clone())
+            };
+            let spawns = snapshot(&driver.spawns);
+            let implementer = spawn_id(&unit_slug(1, criterion), ROLE_IMPLEMENTER, 0);
+            let checkin = spawn_id("checkin", ROLE_IMPLEMENTER, 0);
+            for id in [&implementer, &checkin] {
+                let (_, env) = spawns
+                    .iter()
+                    .find(|(spawned, _)| spawned == id)
+                    .unwrap_or_else(|| panic!("{id} must have spawned: {spawns:?}"));
+                assert_eq!(
+                    run_base(env).as_deref(),
+                    want,
+                    "base_tip {base_tip:?}: spawn {id} must carry the run base exactly when \
+                     the run recorded one: {env:?}"
+                );
+            }
+            let gate_envs = snapshot(&runner.build_envs);
+            assert!(!gate_envs.is_empty(), "the gates must have run");
+            for env in &gate_envs {
+                assert_eq!(
+                    run_base(env).as_deref(),
+                    want,
+                    "base_tip {base_tip:?}: every gate must carry the run base exactly when \
+                     the run recorded one: {env:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -37898,6 +39404,194 @@ mod tests {
                 .iter()
                 .any(|n| n.id == "f1" && n.kind == contextgraph::KIND_FINDING),
             "the emitted ReviewFinding must fold into a KIND_FINDING node in the graph"
+        );
+    }
+
+    /// The adjudicator's prompt in a `review` stage over the real graph whose lens records a
+    /// finding about the grounded `combat.rs` and one about `other.rs`, outside the stage's
+    /// seed, and whose adversary records one about `other.rs`.
+    fn adjudicator_prompt_over_an_out_of_seed_finding() -> String {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("combat.rs"), "fn combat() {}\n").unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let graph = crate::contextgraph::sqlite::Projector::open(":memory:", "test").unwrap();
+        let context = crate::test_support::RecordsOnly(&graph);
+        let mut cfg = Config::default();
+        for id in ["lens", "adversary", "adj"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.stages.insert(
+            "review".into(),
+            Stage {
+                name: "review".into(),
+                agents: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+                coverage: "combat".into(),
+                ..Default::default()
+            },
+        );
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            emits_by_agent: HashMap::from([
+                (
+                    "lens".to_string(),
+                    vec![
+                        finding("f1", "IN_SEED_unscoped_read", "combat.rs"),
+                        finding("f2", "OUT_OF_SEED_skipped_guard", "other.rs"),
+                    ],
+                ),
+                (
+                    "adversary".to_string(),
+                    vec![finding("a1", "OUT_OF_SEED_lost_write", "other.rs")],
+                ),
+            ]),
+            output: "reviewed the diff".into(),
+            output_by_agent: HashMap::from([(
+                "adj".to_string(),
+                r#"{"verdict":"approve"}"#.to_string(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            store: &st,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: String::new(),
+            grounder: Some(&grep),
+            graph: Some(&graph),
+            criteria: Vec::new(),
+            log: &|_| {},
+            check_emit: &crate::contextgraph::check_emit,
+            spawn_host: test_spawn_host(),
+            code_store: None,
+            context: Some(&context),
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+        assert_eq!(rs.units["review"].status, ledger::Status::Integrated);
+        driver.prompts_for("adj").pop().unwrap_or_default()
+    }
+
+    /// What the round-1 adjudicator of the [`session_cfg`] unit is sent to continue its session
+    /// when the round-0 lens records `g0` and the round-1 lens `g1`.
+    fn round_one_adjudicator_resume_task() -> String {
+        let repo = temp_git_project_with_commit();
+        let mut driver = session_stub(&relaunch_verdicts());
+        for (attempt, record) in [
+            finding("g0", "ROUND_ZERO_finding", "feature.rs"),
+            finding("g1", "ROUND_ONE_finding", "fix1.rs"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            driver.emits_by_spawn_id.insert(
+                spawn_id("implement", &lens_role("lens"), attempt as u32),
+                vec![record],
+            );
+        }
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&session_cfg(), &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        driver
+            .resume_of(&adjudicator_at(1, 0))
+            .map(|(_, task)| task)
+            .unwrap_or_default()
+    }
+
+    /// The prompt of the [`per_unit_panel_cfg`] adjudicator re-driven within round 0 after its
+    /// first spawn recorded a finding and returned narration with no verdict line.
+    fn verdictless_adjudicator_re_drive_prompt() -> String {
+        let repo = temp_git_project_with_commit();
+        let driver = Stub {
+            output: "reviewed the diff".into(),
+            output_by_spawn_id: HashMap::from([
+                (adjudicator_at(0, 0), "still reading the diff".to_string()),
+                (adjudicator_at(0, 1), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            emits_by_spawn_id: HashMap::from([(
+                adjudicator_at(0, 0),
+                vec![finding("j1", "ADJUDICATOR_finding", "feature.rs")],
+            )]),
+            write_files_by_spawn_id: HashMap::from([(
+                spawn_id("implement", ROLE_IMPLEMENTER, 0),
+                vec!["feature.rs".to_string()],
+            )]),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&per_unit_panel_cfg(None), &deps).unwrap();
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        driver
+            .prompts_for("adj")
+            .get(1)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// The adjudicator is told every finding its unit's round recorded, by id, whatever file it
+    /// names: over the real graph a finding outside the stage's seed, which the graph slice
+    /// leaves out, is listed beside the one the slice carries; a later round's resumed
+    /// adjudicator is sent that round's findings and never an earlier round's; and an
+    /// adjudicator re-driven within its round is told the finding its first spawn recorded.
+    #[test]
+    fn the_adjudicator_is_told_every_finding_its_round_recorded_whatever_file_it_names() {
+        const ALL: &str = "Every finding recorded this round, by id:";
+        let rows: [(&str, String, &[&str], &[&str]); 3] = [
+            (
+                "a finding outside the seed",
+                adjudicator_prompt_over_an_out_of_seed_finding(),
+                &[
+                    "- lens:lens (f1): IN_SEED_unscoped_read\n",
+                    "- lens:lens (f2): OUT_OF_SEED_skipped_guard\n",
+                    "- adversary (a1): OUT_OF_SEED_lost_write\n",
+                ],
+                &[],
+            ),
+            (
+                "a later round's resumed adjudicator",
+                round_one_adjudicator_resume_task(),
+                &["- lens:lens (g1): ROUND_ONE_finding\n"],
+                &["ROUND_ZERO_finding"],
+            ),
+            (
+                "an adjudicator re-driven within its round",
+                verdictless_adjudicator_re_drive_prompt(),
+                &["- adjudicator (j1): ADJUDICATOR_finding\n"],
+                &[],
+            ),
+        ];
+        for (case, told, listed, absent) in rows {
+            let block = format!("\n\n{ALL}\n{}", listed.concat());
+            assert!(
+                told.ends_with(&block),
+                "{case}: the adjudicator must close on every finding of its round, {block:?}; \
+                 got:\n{told}"
+            );
+            for text in absent {
+                assert!(
+                    !told.contains(text),
+                    "{case}: another round's finding {text:?} is never listed; got:\n{told}"
+                );
+            }
+        }
+        let seeded = adjudicator_prompt_over_an_out_of_seed_finding();
+        let slice = seeded.split(ALL).next().unwrap_or_default();
+        assert!(
+            slice.contains(FINDINGS_HEADER)
+                && slice.contains("IN_SEED_unscoped_read")
+                && !slice.contains("OUT_OF_SEED"),
+            "premise: the graph slice carries the in-seed finding and neither out-of-seed one; \
+             got:\n{slice}"
         );
     }
 
@@ -47707,7 +49401,8 @@ mod tests {
     }
 
     /// A round that changed documentation only - `*.md` files and paths under `docs/` - since
-    /// its reviewers rejected the unit states that fact to the sdet-author, last and once, in a
+    /// its reviewers rejected the unit states that fact to the sdet-author once, last before the
+    /// handover contract every author turn ends with, in a
     /// fresh spawn's prompt and in a resumed session's task alike, and no turn carries the rule
     /// such a round asks of the periphery tests: the rule is the sdet-author persona's. The
     /// first round (no review has judged the unit yet), a round that changed code beside its
@@ -47741,16 +49436,18 @@ mod tests {
                 );
                 for (round, (resumed, turn)) in turns.iter().enumerate() {
                     let stated = told && round == 1;
+                    let handover = author_handover();
                     let tail = if *resumed {
-                        format!("{LATER_ATTEMPT_CLOSE}\n{FACT}")
+                        format!("{LATER_ATTEMPT_CLOSE}\n{FACT}{handover}")
                     } else {
-                        format!("\n\n{FACT}")
+                        format!("\n\n{FACT}{handover}")
                     };
                     assert_eq!(
                         (turn.matches(FACT).count(), turn.ends_with(&tail)),
                         (usize::from(stated), stated),
-                        "{why}, round {round} (resumed: {resumed}): the turn states the fact once \
-                         and last exactly when the round changed documentation only:\n{turn}"
+                        "{why}, round {round} (resumed: {resumed}): the turn states the fact once, \
+                         last before the handover contract, exactly when the round changed \
+                         documentation only:\n{turn}"
                     );
                     assert!(
                         !turn
@@ -48441,6 +50138,522 @@ mod tests {
             );
     }
 
+    /// The author handover's rendered contract, as every author spawn's task carries it.
+    fn handover_contract() -> String {
+        fill(AUTHOR_HANDOVER, &[("line", AUTHOR_HANDOVER_LINE)])
+    }
+
+    /// The commits subjected `subject` across every ref of `repo`, each with the paths it
+    /// changed.
+    fn commits_subjected(repo: &Path, subject: &str) -> Vec<Vec<String>> {
+        git_out(repo, &["log", "--all", "--format=%H %s"])
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .filter(|(_, s)| *s == subject)
+            .map(|(sha, _)| {
+                git_out(repo, &["show", "--name-only", "--format=", sha])
+                    .lines()
+                    .map(str::to_string)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The author hand-over, over one merging, gated unit `s` (its test author
+    /// declared when `with_sdet`) under a driver that runs its spawns as sessions when
+    /// `sessions`, the first run of the `withheld` role's session ending without the handover
+    /// line. Every author prompt carries the handover contract. A session that ends without the
+    /// line takes its arm's crash disposition: the stage reruns uncharged under the next infra
+    /// ordinal, recording an `infra-retry` mark naming `infra:spawn`, no gate runs and no
+    /// checkpoint commit is made before the rerun (every gate verdict is keyed `~retry1`, and
+    /// the attempt's one checkpoint commit holds the rerun's own file), and a withheld
+    /// implementer's `green` for its attempt is recorded only after the rerun. A result ending
+    /// with the line, and any result of a driver that runs no session, proceeds as today.
+    fn assert_author_handover(sessions: bool, with_sdet: bool, withheld: Option<&str>, why: &str) {
+        let implementer_rerun = spawn_retry_id("s", ROLE_IMPLEMENTER, 0, implementer_retry(1));
+        let sdet_rerun = spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, *review_retry_window(1).start());
+        let mut driver = sdet_lane_driver();
+        driver.sessions = sessions;
+        driver.withhold_handover_ids = withheld
+            .map(|role| spawn_id("s", role, 0))
+            .into_iter()
+            .collect();
+        // Each rerun authors a file of its own, so the attempt's checkpoint commit names the
+        // runs whose work it holds.
+        driver.write_files_by_spawn_id = HashMap::from([
+            (
+                implementer_rerun.clone(),
+                vec!["implementer-rerun.rs".to_string()],
+            ),
+            (sdet_rerun.clone(), vec!["sdet-rerun.rs".to_string()]),
+        ]);
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&sdet_lane_cfg(with_sdet), &deps).expect("the run completes");
+        let events = run_log(&st);
+        let contract = handover_contract();
+        assert!(
+            driver.prompts_for("worker")[0].contains(&contract),
+            "the implementer's prompt carries the handover contract: {why}"
+        );
+        if with_sdet {
+            assert!(
+                driver.prompts_for(ROLE_SDET_AUTHOR)[0].contains(&contract),
+                "the test author's prompt carries the handover contract: {why}"
+            );
+        }
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(rs.units["s"].attempts, 0, "nothing is charged: {why}");
+        assert_eq!(
+            count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+            0,
+            "no UnitFailed is written: {why}"
+        );
+        let gate_keys = unit_gate_verdict_keys(&events, "s");
+        assert!(!gate_keys.is_empty(), "premise: the unit's gates ran");
+        let checkpoints = commits_subjected(repo.path(), "rigger: s attempt 1");
+        assert_eq!(
+            checkpoints.len(),
+            1,
+            "the attempt has one checkpoint commit: {why}: {checkpoints:?}"
+        );
+        let holds = |path: &str| checkpoints[0].iter().any(|p| p == path);
+        assert!(
+            holds("feature.rs"),
+            "the checkpoint holds the implementer's work: {why}"
+        );
+        let reran = sessions && withheld.is_some();
+        if !reran {
+            assert!(
+                status_mark_keys(&events, "infra-retry").is_empty(),
+                "a handed-over attempt reruns nothing: {why}"
+            );
+            assert!(
+                gate_keys.iter().all(|key| key == "s/gate:ok#0"),
+                "the gates run once under the attempt's bare key: {why}: {gate_keys:?}"
+            );
+            assert_eq!(driver.prompts_for("worker").len(), 1, "{why}");
+            return;
+        }
+        let marks = status_mark_keys(&events, "infra-retry");
+        assert_eq!(marks, ["s/infra-retry#0~0"], "one uncharged rerun: {why}");
+        assert!(
+            rs.units["s"]
+                .evidence
+                .get("infra-retry")
+                .is_some_and(|ev| ev.starts_with(CAUSE_INFRA_HANDOVER)),
+            "the rerun names its infra cause: {why}: {:?}",
+            rs.units["s"].evidence
+        );
+        assert!(
+            gate_keys.iter().all(|key| key.ends_with("~retry1")),
+            "no gate runs before the rerun: {why}: {gate_keys:?}"
+        );
+        let index_of = |key: &str| {
+            events
+                .iter()
+                .position(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some(key))
+        };
+        let (rerun_id, rerun_file, implementer_runs) = if withheld == Some(ROLE_IMPLEMENTER) {
+            (&implementer_rerun, "implementer-rerun.rs", 2)
+        } else {
+            (&sdet_rerun, "sdet-rerun.rs", 1)
+        };
+        assert!(
+            driver.spawn_ids().contains(rerun_id),
+            "the rerun is a fresh spawn {rerun_id:?}: {why}: {:?}",
+            driver.spawn_ids()
+        );
+        assert_eq!(
+            driver.prompts_for("worker").len(),
+            implementer_runs,
+            "{why}"
+        );
+        assert!(
+            holds(rerun_file),
+            "no checkpoint is committed before the rerun, so the attempt's one checkpoint \
+             holds the rerun's work: {why}: {checkpoints:?}"
+        );
+        if withheld == Some(ROLE_IMPLEMENTER) {
+            assert!(
+                index_of("s/green#0") > index_of("s/infra-retry#0~0"),
+                "the attempt's green is recorded only after the rerun: {why}"
+            );
+        }
+    }
+
+    /// The hand-over predicate: a result hands over when its driver ran no session, when
+    /// the request the run recorded for its spawn carries no handover line (a session never told
+    /// the contract), or when its output's last non-blank line, trimmed, is the handover line.
+    #[test]
+    fn an_author_result_hands_over_on_its_last_non_blank_line_or_with_no_session() {
+        let line = AUTHOR_HANDOVER_LINE;
+        let told = handover_contract();
+        // (session id, output, the recorded request's prompt, hands over, why)
+        let rows = [
+            (
+                "s-1",
+                "I could not run cargo",
+                Some("task"),
+                true,
+                "a request recorded before the contract existed",
+            ),
+            (
+                "s-1",
+                "I could not run cargo",
+                Some(told.as_str()),
+                false,
+                "a request that told the contract",
+            ),
+            (
+                "s-1",
+                &format!("done\n{line}") as &str,
+                Some(told.as_str()),
+                true,
+                "a told request whose result ends with the line",
+            ),
+            ("", "", None, true, "a driver that runs no session"),
+            (
+                "",
+                "work stopped",
+                None,
+                true,
+                "no session, whatever the output",
+            ),
+            (
+                "s-1",
+                &format!("done\n{line}") as &str,
+                None,
+                true,
+                "the line last",
+            ),
+            (
+                "s-1",
+                &format!("done\n  {line}  \n\n \n"),
+                None,
+                true,
+                "trailing spaces and blank lines",
+            ),
+            ("s-1", "", None, false, "a session with no output"),
+            (
+                "s-1",
+                "I could not run cargo",
+                None,
+                false,
+                "a session that ended mid-work",
+            ),
+            (
+                "s-1",
+                &format!("{line}\nthen more"),
+                None,
+                false,
+                "the line not last",
+            ),
+            (
+                "s-1",
+                &format!("done {line}"),
+                None,
+                false,
+                "the line inside another",
+            ),
+        ];
+        for (session_id, output, recorded, want, why) in rows {
+            let result = AgentResult {
+                output: output.to_string(),
+                session_id: session_id.to_string(),
+                ..AgentResult::default()
+            };
+            assert_eq!(author_handed_over(&result, recorded), want, "{why}");
+        }
+    }
+
+    /// The hand-over contract over a log that recorded the `withheld` author's request before the
+    /// run re-entered: a request recorded before the handover contract existed (`told` false: its
+    /// prompt carries no handover line) answers a result that names no line, and that result
+    /// still counts as handed over, so nothing reruns; a request that told the contract and a
+    /// result without the line reruns uncharged as a live miss does.
+    fn assert_recorded_request_decides_the_handover(withheld: &str, told: bool, why: &str) {
+        let rerun = if withheld == ROLE_IMPLEMENTER {
+            spawn_retry_id("s", ROLE_IMPLEMENTER, 0, implementer_retry(1))
+        } else {
+            spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, *review_retry_window(1).start())
+        };
+        let mut driver = sdet_lane_driver();
+        driver.sessions = true;
+        driver.withhold_handover_ids = HashSet::from([spawn_id("s", withheld, 0)]);
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        crate::run_store::ensure_started(&st, &[]).unwrap();
+        let prompt = if told {
+            handover_contract()
+        } else {
+            "task".to_string()
+        };
+        spawn_store::park_in_run(
+            &st,
+            &crate::spawn::test_request("s", "s", withheld, 0, &prompt),
+            "",
+            "",
+        )
+        .unwrap();
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&sdet_lane_cfg(true), &deps).expect("the run completes");
+        let events = run_log(&st);
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(rs.units["s"].attempts, 0, "nothing is charged: {why}");
+        assert_eq!(
+            !status_mark_keys(&events, "infra-retry").is_empty(),
+            told,
+            "only a told session's missing line reruns: {why}"
+        );
+        assert_eq!(
+            driver.spawn_ids().contains(&rerun),
+            told,
+            "the rerun {rerun:?} spawns only for a told session: {why}: {:?}",
+            driver.spawn_ids()
+        );
+    }
+
+    crate::test_cases! {
+        /// An implementer result answered from a log whose request was
+        /// recorded before the contract existed is not rerun.
+        a_pre_contract_implementer_result_is_not_rerun:
+            assert_recorded_request_decides_the_handover(
+                ROLE_IMPLEMENTER,
+                false,
+                "a pre-contract implementer",
+            );
+        /// A test-author result answered from a log whose request was
+        /// recorded before the contract existed is not rerun.
+        a_pre_contract_test_author_result_is_not_rerun:
+            assert_recorded_request_decides_the_handover(
+                ROLE_SDET_AUTHOR,
+                false,
+                "a pre-contract test author",
+            );
+        /// The positive control: a recorded request that told the contract
+        /// still reruns a result without the line.
+        a_told_implementer_result_without_the_line_is_rerun:
+            assert_recorded_request_decides_the_handover(
+                ROLE_IMPLEMENTER,
+                true,
+                "a told implementer",
+            );
+    }
+
+    /// The hand-over miss path over one merging, gated unit `s` with a declared test author, whose
+    /// `withheld` author's first session ends without the handover line, the last line of its
+    /// output `last`, and, when `denials` is some, the session host's recorded result for it
+    /// carrying that permission-denial count. The rerun continues the session that missed, sent
+    /// [`MISSED_HANDOVER`] and the contract; the rerun's fresh prompt, read when that session is
+    /// gone, says the tree holds a prior session's partial work; and the miss's infra-retry mark
+    /// names the missed spawn, and its evidence the hand-over cause, the last line, bounded, and
+    /// the denial count (unknown when no result was recorded).
+    fn assert_a_handover_miss_continues_the_session_that_missed(
+        withheld: &str,
+        last: &str,
+        denials: Option<u64>,
+        why: &str,
+    ) {
+        let missed = spawn_id("s", withheld, 0);
+        let (rerun, author) = if withheld == ROLE_IMPLEMENTER {
+            (
+                spawn_retry_id("s", ROLE_IMPLEMENTER, 0, implementer_retry(1)),
+                "worker",
+            )
+        } else {
+            (
+                spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, *review_retry_window(1).start()),
+                ROLE_SDET_AUTHOR,
+            )
+        };
+        let mut driver = sdet_lane_driver();
+        driver.sessions = true;
+        driver.withhold_handover_ids = HashSet::from([missed.clone()]);
+        driver.output_by_spawn_id = HashMap::from([(missed.clone(), format!("worked\n{last}\n"))]);
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        if let Some(count) = denials {
+            crate::run_store::ensure_started(&st, &[]).unwrap();
+            spawn_store::record_result(
+                &st,
+                &crate::spawn::SpawnResult::ok(&missed, "")
+                    .with_meta(json!({ crate::spawn::META_PERMISSION_DENIALS: count })),
+            )
+            .unwrap();
+        }
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&sdet_lane_cfg(true), &deps).expect("the run completes");
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(rs.units["s"].attempts, 0, "nothing is charged: {why}");
+        let (resumed_from, task) = driver.resume_of(&rerun).expect("the rerun ran");
+        assert_eq!(
+            resumed_from,
+            format!("sess-{missed}"),
+            "the rerun continues the session that missed: {why}"
+        );
+        assert_eq!(
+            task,
+            format!("{MISSED_HANDOVER}{}", handover_contract()),
+            "the rerun's task says the last result ended without the line: {why}"
+        );
+        let prompts = driver.prompts_for(author);
+        assert!(
+            !prompts[0].contains(PRIOR_PARTIAL_WORK),
+            "the first session's prompt says nothing of prior work: {why}"
+        );
+        assert!(
+            prompts[1].contains(PRIOR_PARTIAL_WORK),
+            "the rerun's fresh prompt says the tree holds a prior session's partial work: {why}"
+        );
+        assert!(
+            prompts[1].ends_with(&handover_contract()),
+            "the contract still ends the rerun's prompt: {why}"
+        );
+        let mark = run_log(&st)
+            .into_iter()
+            .find(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("s/infra-retry#0~0"))
+            .expect("the miss records an infra-retry mark");
+        assert_eq!(
+            mark.meta.get(META_SPAWN),
+            Some(&missed),
+            "the mark names the missed spawn: {why}"
+        );
+        let detail = rs.units["s"].evidence["infra-retry"].clone();
+        assert!(
+            detail.starts_with(CAUSE_INFRA_HANDOVER),
+            "the evidence names the hand-over cause: {why}: {detail}"
+        );
+        let bounded: String = last.chars().take(HANDOVER_LAST_LINE_CHARS).collect();
+        assert!(
+            detail.contains(&bounded),
+            "the evidence records the last line: {why}: {detail}"
+        );
+        assert!(
+            last.chars().count() <= HANDOVER_LAST_LINE_CHARS || !detail.contains(last),
+            "a long last line is bounded: {why}: {detail}"
+        );
+        let count = denials.map_or_else(|| "unknown".to_string(), |n| n.to_string());
+        assert!(
+            detail.contains(&format!("permission denials: {count}")),
+            "the evidence records the denial count: {why}: {detail}"
+        );
+    }
+
+    crate::test_cases! {
+        /// A hand-over miss: an implementer's miss with no recorded result.
+        an_implementer_miss_continues_its_session_and_records_its_last_line:
+            assert_a_handover_miss_continues_the_session_that_missed(
+                ROLE_IMPLEMENTER,
+                "I will run the tests next.",
+                None,
+                "an implementer, no recorded result",
+            );
+        /// A hand-over miss: an implementer's miss whose recorded result names two denials
+        /// and whose last line runs past the bound in multibyte characters.
+        an_implementer_miss_records_a_bounded_last_line_and_its_denials:
+            assert_a_handover_miss_continues_the_session_that_missed(
+                ROLE_IMPLEMENTER,
+                &"\u{e9}".repeat(HANDOVER_LAST_LINE_CHARS + 50),
+                Some(2),
+                "an implementer, a long last line and two denials",
+            );
+        /// A hand-over miss: a test author's miss whose recorded result names no denial.
+        a_test_author_miss_continues_its_session_and_records_its_last_line:
+            assert_a_handover_miss_continues_the_session_that_missed(
+                ROLE_SDET_AUTHOR,
+                "Tests written.",
+                Some(0),
+                "a test author, no denials",
+            );
+    }
+
+    /// An implementer whose every session ends without the handover line
+    /// halts at the infra limit naming the hand-over, how many times it was missed and what to
+    /// check, never an outage to fix.
+    #[test]
+    fn an_author_that_keeps_missing_the_handover_halts_naming_the_handover() {
+        let mut driver = sdet_lane_driver();
+        driver.sessions = true;
+        driver.withhold_handover_ids = (0..=2)
+            .map(|ordinal| spawn_retry_id("s", ROLE_IMPLEMENTER, 0, implementer_retry(ordinal)))
+            .collect();
+        let (run, events) = run_sdet_lane(false, &driver);
+        let Err(Error(halt)) = run else {
+            panic!("the run halts at the infra limit");
+        };
+        assert!(
+            halt.contains(&format!(
+                "ended without its hand-over line ({AUTHOR_HANDOVER_LINE}) 3 times"
+            )),
+            "the halt names the hand-over and the count: {halt}"
+        );
+        assert!(
+            halt.contains("permission denials"),
+            "the halt says what to check: {halt}"
+        );
+        assert!(
+            !halt.contains("fix the outage"),
+            "a missed hand-over is no outage: {halt}"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-halt"),
+            ["s/infra-halt#0~2"],
+            "one halt at the third miss"
+        );
+    }
+
+    crate::test_cases! {
+        /// An implementer session that ends without the handover line
+        /// stopped mid-work, so its attempt is no finished attempt: no `green`, no checkpoint,
+        /// and an uncharged rerun under the next infra ordinal over the tree it left.
+        an_implementer_session_without_the_handover_line_records_no_green_and_reruns_uncharged:
+            assert_author_handover(
+                true,
+                false,
+                Some(ROLE_IMPLEMENTER),
+                "an implementer that did not hand over reruns uncharged",
+            );
+        /// A test author session that ends without the handover line
+        /// takes the seam's crash disposition: no checkpoint commit and no gate before its seam
+        /// reruns uncharged.
+        a_test_author_session_without_the_handover_line_reruns_its_seam_before_any_checkpoint_or_gate:
+            assert_author_handover(
+                true,
+                true,
+                Some(ROLE_SDET_AUTHOR),
+                "a test author that did not hand over reruns its seam uncharged",
+            );
+        /// Author sessions that end with the handover line, trailing
+        /// spaces and blank lines after it, proceed as today.
+        author_sessions_ending_with_the_handover_line_proceed_as_today:
+            assert_author_handover(
+                true,
+                true,
+                None,
+                "authors that handed over proceed as today",
+            );
+        /// A driver that runs no session (an empty `session_id`) has
+        /// nothing to hand over, so its results proceed as today.
+        a_driver_that_runs_no_session_proceeds_as_today:
+            assert_author_handover(
+                false,
+                true,
+                None,
+                "a sessionless driver's authors proceed as today",
+            );
+    }
+
     /// Spec 121's THE TEST AUTHOR IS DECLARED: the build seam spawns the agent
     /// `defaults.test_author` names, served that agent's own persona, under the `sdet-author` role
     /// token; it spawns nothing when the key is absent, whatever agents the project defines; a
@@ -48902,6 +51115,109 @@ mod tests {
             "the plan-critique gate's adjudicator roster is adjudicator_roster(&[], adversary) \
              - the bare adversary token, since the DAG-level critique names no lenses"
         );
+    }
+
+    /// The plan-critique adversary spawns only after the planner's wave returned and its
+    /// proposals were harvested: under a driver whose planner answers in the step, the
+    /// adversary follows the planner and critiques the units the planner proposed.
+    #[test]
+    fn the_plan_critique_adversary_spawns_only_after_the_planners_wave_is_harvested() {
+        let driver = Stub {
+            emits_by_agent: HashMap::from([("planner".to_string(), widget_split())]),
+            output_by_agent: HashMap::from([
+                ("planner".to_string(), "proposed the DAG".to_string()),
+                ("adversary".to_string(), "reviewed the DAG".to_string()),
+                ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+            ]),
+            ..Stub::new()
+        };
+        critique_step(&Store::open(":memory:").unwrap(), &driver);
+        let order = driver.call_order.lock().unwrap().clone();
+        let at = |agent: &str| order.iter().position(|a| a == agent);
+        assert!(
+            matches!((at("planner"), at("adversary")), (Some(p), Some(a)) if p < a),
+            "the planner spawns before the adversary; order: {order:?}"
+        );
+        let critique = driver
+            .prompts_for("adversary")
+            .first()
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            critique.contains("`u-a`") && critique.contains("`u-b`"),
+            "the adversary critiques the units the planner proposed; got:\n{critique}"
+        );
+    }
+
+    /// Over a whole run through the real conductor - a clean
+    /// approve, a reject that feeds a re-plan, and a planner unit superseding a baseline - the
+    /// log the run writes reads not done after every landing but the last and done after the
+    /// last, so no reader of the log claims done between one unit's landing and the next
+    /// unit's start.
+    #[test]
+    fn a_whole_run_reads_done_only_once_its_last_unit_lands() {
+        let crit_a = "the alpha module is implemented";
+        let crit_b = "the beta module is implemented";
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("alpha.rs"), format!("// {crit_a}\n")).unwrap();
+        std::fs::write(dir.path().join("beta.rs"), format!("// {crit_b}\n")).unwrap();
+        let grep = crate::grounder::Grep {
+            root: dir.path().to_string_lossy().into_owned(),
+        };
+        let approving = CritiqueDriver::new(Vec::new());
+        let rejecting_once = CritiqueDriver::rejecting(Vec::new(), false);
+        let superseding = Stub {
+            emits: vec![(
+                TYPE_UNIT_PROPOSED.to_string(),
+                json!({"id": "planner-unit-a", "agent": "worker", "criterion": crit_a,
+                       "gates": ["ok"]}),
+            )],
+            ..Stub::new()
+        };
+        // (case, the workflow, the driver)
+        let rows: [(&str, Config, &dyn AgentDriver); 3] = [
+            ("a clean decomposition approves", critique_cfg(), &approving),
+            (
+                "a reject feeds a re-plan that approves",
+                critique_cfg(),
+                &rejecting_once,
+            ),
+            (
+                "a planner unit supersedes a baseline",
+                supersede_cfg(),
+                &superseding,
+            ),
+        ];
+        for (case, cfg, driver) in rows {
+            let st = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                grounder: Some(&grep),
+                ..stub_deps(&st, driver, vec![crit_a.to_string(), crit_b.to_string()])
+            };
+            run_isolated(&cfg, &deps).unwrap();
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let landings: Vec<usize> = events
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+                .map(|(i, _)| i)
+                .collect();
+            assert!(
+                landings.len() >= 3,
+                "{case}: the run lands the planner and both criteria's units: {landings:?}"
+            );
+            let read: Vec<bool> = landings
+                .iter()
+                .map(|&i| ledger::project(&events[..=i]).unwrap().done())
+                .collect();
+            let mut expected = vec![false; landings.len() - 1];
+            expected.push(true);
+            assert_eq!(read, expected, "{case}: done after each landing, in order");
+            assert!(
+                ledger::project(&events).unwrap().done(),
+                "{case}: the finished run reads done"
+            );
+        }
     }
 
     #[test]
@@ -49767,10 +52083,71 @@ mod tests {
         critique_step(&st, &re_entering);
         assert_eq!(
             re_entering.prompts_for("judge").first(),
-            Some(retry_round),
-            "the round re-entered in a later process must open with the logged reject, exactly \
-             as the in-process retry round does"
+            Some(&retry_round.replacen(DAG_REVISED, DAG_UNCHANGED, 1)),
+            "the round re-entered in a later process must open with the logged reject as the \
+             in-process retry round does, saying the DAG is unchanged since its re-plan parked \
+             before proposing"
         );
+    }
+
+    /// The sentence a critique round's prior-reject block closes with when a re-plan proposed
+    /// at the round's attempt.
+    const DAG_REVISED: &str = "The planner has since revised the DAG; re-review it below.";
+
+    /// The sentence a critique round's prior-reject block closes with when no re-plan proposed
+    /// at the round's attempt.
+    const DAG_UNCHANGED: &str =
+        "No re-plan has proposed a unit since that rejection; re-review the DAG below against it.";
+
+    /// A critique round's prior-reject block says the planner revised the DAG only when a
+    /// re-plan proposed at the round's attempt: a round a resume of its stopped gate opens
+    /// re-plans nothing and says the DAG is unchanged, while the in-process round after a
+    /// re-plan that proposed says it was revised.
+    #[test]
+    fn a_critique_round_says_the_dag_was_revised_only_after_a_re_plan_proposed() {
+        let resumed_round = || {
+            let (st, _, _) = stopped_run();
+            grant_resume(&st, "plan-critique", 2);
+            let resumed = critique_rounds(&[]);
+            critique_step(&st, &resumed);
+            resumed
+                .prompts_for("judge")
+                .first()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let re_planned_round = || {
+            let in_process = reject_then_approve_critique(false);
+            critique_step(&Store::open(":memory:").unwrap(), &in_process);
+            in_process
+                .prompts_for("judge")
+                .get(1)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let rows = [
+            (
+                "a round a resume of its stopped gate opens",
+                resumed_round(),
+                DAG_UNCHANGED,
+                DAG_REVISED,
+            ),
+            (
+                "a round after a re-plan that proposed",
+                re_planned_round(),
+                DAG_REVISED,
+                DAG_UNCHANGED,
+            ),
+        ];
+        for (case, prompt, said, unsaid) in rows {
+            assert!(
+                prompt.starts_with(DAG_PRIOR_REJECT_HEADER)
+                    && prompt.contains(said)
+                    && !prompt.contains(unsaid),
+                "{case}: the round opens with the logged reject and says {said:?}, never \
+                 {unsaid:?}; got:\n{prompt}"
+            );
+        }
     }
 
     // --- A RECORD THE EMIT GUARD REFUSES RE-RUNS ITS SPAWN ONCE, TOLD WHY ---
@@ -51296,6 +53673,17 @@ mod tests {
             ),
             ("no round", doc_only_round(None).to_string(), String::new()),
             (
+                "the author handover",
+                author_handover(),
+                fill(
+                    &picks.rendered("conductor::author_handover", &["AUTHOR_HANDOVER"]),
+                    &[(
+                        "line",
+                        &picks.rendered("conductor::author_handover", &["AUTHOR_HANDOVER_LINE"]),
+                    )],
+                ),
+            ),
+            (
                 "the peers pointer",
                 pushed(write_peers_pointer),
                 picks.rendered(
@@ -51528,8 +53916,8 @@ mod tests {
     /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
     /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, a
     /// re-plan under a cap whose unit holds each and overlaps another under the partition rule, its
-    /// rows' lists filled into their slots, and a first plan whose overlap the rule does not
-    /// serialize.
+    /// rows' lists filled into their slots, a first plan whose overlap the rule does not
+    /// serialize, and a re-review no re-plan proposed for.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -51542,6 +53930,7 @@ mod tests {
                         conflicts: &[(String, String, Vec<String>)],
                         serialized: bool,
                         prior: &str,
+                        revised: bool,
                         cap: Option<u32>| {
             let stage = Stage {
                 name: "{name}".to_string(),
@@ -51551,7 +53940,7 @@ mod tests {
             };
             let stages = BTreeMap::from([("{name}".to_string(), stage)]);
             let radii = [("{name}".to_string(), strings(radius))];
-            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, cap)
+            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, revised, cap)
         };
         let contract = |size_cap_cause: &str| {
             fill(
@@ -51570,7 +53959,7 @@ mod tests {
         let cases = [
             (
                 "a first plan",
-                critique("  ", &[], &[], &[], true, "  ", None),
+                critique("  ", &[], &[], &[], true, "  ", false, None),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51588,7 +53977,16 @@ mod tests {
             ),
             (
                 "a first plan whose criterion holds a quote and a backslash",
-                critique(r#" keep "a\b" whole "#, &[], &[], &[], true, "", None),
+                critique(
+                    r#" keep "a\b" whole "#,
+                    &[],
+                    &[],
+                    &[],
+                    true,
+                    "",
+                    false,
+                    None,
+                ),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51613,11 +54011,16 @@ mod tests {
                     &overlap,
                     true,
                     "{prior_reason}",
+                    true,
                     Some(7),
                 ),
                 format!(
                     "{}{}\n\n{}{}{}",
-                    dag(&["DAG_PRIOR_REJECT", "DAG_CRITIQUE_OPENER"]),
+                    dag(&[
+                        "DAG_PRIOR_REJECT",
+                        "DAG_REVISED_SINCE_REJECT",
+                        "DAG_CRITIQUE_OPENER"
+                    ]),
                     fill(&dag(&["UNIT_SIZE_CAP"]), &[("cap", "7")]),
                     fill(
                         &dag(&["DAG_UNITS_HEADER", "DAG_UNIT_ROW"]),
@@ -51632,7 +54035,16 @@ mod tests {
             ),
             (
                 "a first plan whose overlap the partition rule does not serialize",
-                critique("{criterion}", &[], &["{p}"], &overlap, false, "", None),
+                critique(
+                    "{criterion}",
+                    &[],
+                    &["{p}"],
+                    &overlap,
+                    false,
+                    "",
+                    false,
+                    None,
+                ),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -51644,6 +54056,29 @@ mod tests {
                         &dag(&["DAG_OVERLAP_UNSERIALIZED_HEADER", "DAG_OVERLAP_ROW"]),
                         &[("shared", "{s}, {t}")]
                     ),
+                    contract("")
+                ),
+            ),
+            (
+                "a re-review no re-plan proposed for",
+                critique("  ", &[], &[], &[], true, "{prior_reason}", false, None),
+                format!(
+                    "{}{}{}{}",
+                    dag(&[
+                        "DAG_PRIOR_REJECT",
+                        "DAG_UNCHANGED_SINCE_REJECT",
+                        "DAG_CRITIQUE_OPENER",
+                        "DAG_UNITS_HEADER"
+                    ]),
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[
+                            ("criterion", &dag(&["DAG_NO_CRITERION"])),
+                            ("needs", &dag(&["DAG_NO_NEEDS"])),
+                            ("radius", &dag(&["DAG_NO_RADIUS"])),
+                        ]
+                    ),
+                    dag(&["DAG_OVERLAP_DISJOINT"]),
                     contract("")
                 ),
             ),
@@ -51868,6 +54303,81 @@ mod tests {
         ]);
         for (case, render, expected) in &cases {
             assert_renders(case, render, expected);
+        }
+    }
+    /// Over the placeholder fixture the round's findings block is its registry group on each
+    /// branch: a lens is listed only the findings its own role recorded at its unit's round, an
+    /// adjudicator every one, each in the order first recorded with a re-recorded id's latest
+    /// text and its reviewer the stamped actor or else its `by`, and either renders nothing when
+    /// it has none to list. A finding of another unit,
+    /// another round, no review step, or with no spawn stamp names no finding of the round.
+    #[test]
+    fn the_round_findings_block_is_its_group_on_each_branch() {
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let group = |name: &str| picks.rendered("conductor::round_findings_block", &[name]);
+        let lens = lens_role("lens");
+        let recorded = |spawn: Option<String>, id: &str, summary: &str| {
+            let e = Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(&json!({"id": id, "summary": summary, "by": "{by}"})).unwrap(),
+            );
+            match spawn {
+                Some(s) => e
+                    .with_meta(contextgraph::META_ACTOR, spawn::spawn_role(&s))
+                    .with_meta(META_SPAWN, &s),
+                None => e,
+            }
+        };
+        let run = [
+            recorded(Some(spawn_id("u", &lens, 1)), "f1", "{first}"),
+            {
+                // A record the host stamped with its spawn alone names its reviewer by `by`.
+                let mut e = recorded(
+                    Some(spawn_retry_id("u", ROLE_ADVERSARY, 1, 2)),
+                    "a1",
+                    "{second}",
+                );
+                e.meta.remove(contextgraph::META_ACTOR);
+                e
+            },
+            recorded(Some(spawn_retry_id("u", &lens, 1, 1)), "f1", "{latest}"),
+            recorded(Some(spawn_id("other", &lens, 1)), "o1", "OTHER_UNIT"),
+            recorded(Some(spawn_id("u", &lens, 0)), "r0", "OTHER_ROUND"),
+            recorded(Some(spawn_id("u", ROLE_IMPLEMENTER, 1)), "i1", "NO_STEP"),
+            recorded(None, "n1", "UNSTAMPED"),
+        ];
+        let found = round_findings(&run, "u", 1);
+        let cases = [
+            (
+                "a lens's own findings",
+                round_findings_block(&found, &lens, false),
+                format!(
+                    "{}- lens:lens (f1): {{latest}}\n",
+                    group("ROUND_FINDINGS_YOURS")
+                ),
+            ),
+            (
+                "a role that recorded none",
+                round_findings_block(&found, "lens:other", false),
+                String::new(),
+            ),
+            (
+                "the adjudicator's every finding",
+                round_findings_block(&found, ROLE_ADJUDICATOR, true),
+                format!(
+                    "{}- lens:lens (f1): {{latest}}\n- {{by}} (a1): {{second}}\n",
+                    group("ROUND_FINDINGS_ALL")
+                ),
+            ),
+            (
+                "a round that recorded none",
+                round_findings_block(&round_findings(&run, "u", 2), ROLE_ADJUDICATOR, true),
+                String::new(),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
         }
     }
 }

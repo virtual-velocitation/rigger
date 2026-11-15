@@ -3,7 +3,9 @@
 //!
 //! The run's hold is a fold of its log ([`ledger::project`]), read here before every launch, so a
 //! session already running is left alone and a gate already running finishes: only the next
-//! launch waits. A wait ends on the run's `RunReleased`. An error of a hold or wait class, or any error but a store fault while the run is held,
+//! launch waits. A wait ends on the run's `RunReleased`; an adopting driver's decorator
+//! ([`HeldDriver::parking_on_an_operator_hold`]) parks the spawn on an operator hold instead, so
+//! that driver ends. An error of a hold or wait class, or any error but a store fault while the run is held,
 //! waits the same way and launches the same spawn id again, its next ordinal coming from the host's own read of
 //! the spawn stream, so the conductor sees no failure and writes no infra mark. The hold is read
 //! after the host returns, because the host appends a third-fault hold before it returns its
@@ -29,10 +31,12 @@
 //! over one supervisor's life, so a restarted supervisor starts it again.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rigger_domain::agent::{
-    failure_class, store_fault, AgentDriver, AgentResult, Error, SpawnOpts, EMIT_REFUSED_MARKER,
+    failure_class, parked_spawn, store_fault, AgentDriver, AgentResult, Error, SpawnOpts,
+    EMIT_REFUSED_MARKER,
 };
 use serde_json::Value;
 
@@ -41,7 +45,7 @@ use crate::config::AgentDef;
 use crate::eventstore::{Event, EventStore};
 use crate::ledger;
 use crate::run::{
-    read::{hold_stands, read_current_run},
+    read::{read_current_hold, read_current_run},
     STREAM,
 };
 use crate::spawn;
@@ -59,6 +63,10 @@ pub struct HeldDriver<'a> {
     pause: &'a (dyn Fn() + Sync),
     /// Each spawn id's relaunches since its last non-error outcome.
     relaunch_counts: Mutex<HashMap<String, u32>>,
+    /// Whether an operator hold parks a spawn ([`Self::parking_on_an_operator_hold`]), and
+    /// whether one did.
+    parks_on_an_operator_hold: bool,
+    parked: AtomicBool,
 }
 
 impl<'a> HeldDriver<'a> {
@@ -77,7 +85,25 @@ impl<'a> HeldDriver<'a> {
             store,
             pause,
             relaunch_counts: Mutex::new(HashMap::new()),
+            parks_on_an_operator_hold: false,
+            parked: AtomicBool::new(false),
         }
+    }
+
+    /// This decorator, parking a spawn on an operator hold ([`parked_spawn`]) instead of waiting it
+    /// out, as an adopting driver does, so an operator hold ends it; a hold of any other writer is
+    /// still waited out.
+    pub fn parking_on_an_operator_hold(self) -> Self {
+        HeldDriver {
+            parks_on_an_operator_hold: true,
+            ..self
+        }
+    }
+
+    /// Whether this decorator parked a spawn on an operator hold since the last take, which
+    /// clears it, so a driver that drives again after the hold's release parks anew.
+    pub fn take_parked_on_an_operator_hold(&self) -> bool {
+        self.parked.swap(false, Ordering::SeqCst)
     }
 
     /// The current run's slice of the log.
@@ -86,21 +112,26 @@ impl<'a> HeldDriver<'a> {
         Ok(slice)
     }
 
-    /// Return once the run is not held. A failed read of the run ends the wait with
-    /// `relaunched`, the error of the spawn this wait relaunches, or with the read's own error
+    /// Return once the run is not held, for spawn `id`. A failed read of the run ends the wait
+    /// with `relaunched`, the error of the spawn this wait relaunches, or with the read's own error
     /// marked a store fault ([`store_fault`]) before a first launch, since a run not proved
-    /// unheld launches nothing.
-    fn wait_out_the_hold(&self, mut relaunched: Option<Error>) -> Result<(), Error> {
+    /// unheld launches nothing. An operator hold ends it with `id` parked when this decorator
+    /// parks on one.
+    fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
         loop {
-            let held = hold_stands(self.store, STREAM);
-            if !held.map_err(|read| {
+            let hold = read_current_hold(self.store, STREAM).map_err(|read| {
                 relaunched
                     .take()
                     .unwrap_or_else(|| store_fault(Error::from(read)))
-            })? {
-                return Ok(());
+            })?;
+            match hold {
+                None => return Ok(()),
+                Some(hold) if hold.operator && self.parks_on_an_operator_hold => {
+                    self.parked.store(true, Ordering::SeqCst);
+                    return Err(parked_spawn(id));
+                }
+                Some(_) => (self.pause)(),
             }
-            (self.pause)();
         }
     }
 
@@ -188,7 +219,7 @@ impl AgentDriver for HeldDriver<'_> {
     ) -> Result<AgentResult, Error> {
         let mut relaunched = None;
         loop {
-            self.wait_out_the_hold(relaunched.take())?;
+            self.wait_out_the_hold(&opts.id, relaunched.take())?;
             match self.inner.spawn(agent, prompt, opts, emit) {
                 Ok(result) => {
                     self.relaunch_counts
@@ -422,6 +453,10 @@ mod tests {
         /// Each result the decorator recorded, in order ([`spawn_result_rows`]): a result on
         /// the stream that neither the row's seed nor a launch of its script appended.
         results: Vec<(String, String, String, bool)>,
+        /// Whether the decorator parks on an operator hold
+        /// ([`HeldDriver::parking_on_an_operator_hold`]), and whether it must say it parked.
+        parks: bool,
+        parked: bool,
     }
 
     impl Default for Row {
@@ -437,6 +472,8 @@ mod tests {
                 launched: Vec::new(),
                 paused_at: Vec::new(),
                 results: Vec::new(),
+                parks: false,
+                parked: false,
             }
         }
     }
@@ -492,6 +529,11 @@ mod tests {
                 }
             };
             let held = HeldDriver::new(&host, &reads, &pause);
+            let held = if row.parks {
+                held.parking_on_an_operator_hold()
+            } else {
+                held
+            };
             for (call, (id, wants)) in row.calls.into_iter().enumerate() {
                 let answer = held
                     .spawn(
@@ -514,6 +556,14 @@ mod tests {
                 "{name}: launches"
             );
             assert_eq!(*paused_at.lock().unwrap(), row.paused_at, "{name}: pauses");
+            assert_eq!(
+                (
+                    held.take_parked_on_an_operator_hold(),
+                    held.take_parked_on_an_operator_hold()
+                ),
+                (row.parked, false),
+                "{name}: whether it parked on an operator hold, and that the take cleared it"
+            );
             let authored = authored.into_inner().unwrap();
             let recorded: Vec<Event> = store
                 .read_stream(STREAM, 0, Direction::Forward)
@@ -527,6 +577,61 @@ mod tests {
                 "{name}: the results the decorator recorded"
             );
         }
+    }
+
+    /// AN OPERATOR HOLD IS THE STOP OF AN ADOPTING DRIVER: a decorator parking on an operator hold
+    /// parks the spawn at once, an operator hold beside an outage hold included, launching and
+    /// recording nothing and saying it parked; an outage hold alone still waits and launches on its
+    /// release, and a decorator that does not park waits out an operator hold too.
+    #[test]
+    fn a_parking_driver_parks_on_an_operator_hold_and_waits_out_an_outage_hold() {
+        let operator_hold = || held_event("the operator holds the run", HOLD_BY_OPERATOR);
+        check(vec![
+            Row {
+                name: "an operator hold parks the spawn",
+                seeded: vec![operator_hold()],
+                parks: true,
+                calls: one_call(Err(parked_spawn(ID))),
+                parked: true,
+                ..Row::default()
+            },
+            Row {
+                name: "an operator hold beside an outage hold parks the spawn",
+                seeded: vec![third_fault_hold(), operator_hold()],
+                parks: true,
+                calls: one_call(Err(parked_spawn(ID))),
+                parked: true,
+                ..Row::default()
+            },
+            Row {
+                name: "an outage hold waits and launches on its release",
+                seeded: vec![third_fault_hold()],
+                parks: true,
+                script: vec![done()],
+                calls: one_call(Ok(OUTPUT)),
+                launched: vec![ID],
+                paused_at: vec![0],
+                ..Row::default()
+            },
+            Row {
+                name: "an operator hold landing on a relaunched error parks the relaunch",
+                parks: true,
+                script: vec![fails(classed(HOLD)).appending(operator_hold())],
+                calls: one_call(Err(parked_spawn(ID))),
+                launched: vec![ID],
+                parked: true,
+                ..Row::default()
+            },
+            Row {
+                name: "a driver that does not park waits out an operator hold",
+                seeded: vec![operator_hold()],
+                script: vec![done()],
+                calls: one_call(Ok(OUTPUT)),
+                launched: vec![ID],
+                paused_at: vec![0],
+                ..Row::default()
+            },
+        ]);
     }
 
     /// HELD MEANS NO LAUNCH: a hold standing at a launch keeps the host unlaunched through every

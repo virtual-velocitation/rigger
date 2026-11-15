@@ -12,6 +12,11 @@ pub struct Config {
     /// named as a built-in entry replaces that entry in place, its body not blank, or switches
     /// it off, its body blank, and every other file follows the built-in layer.
     pub instructions: Vec<crate::instructions::Instruction>,
+    /// The project directory this configuration was loaded from ([`crate::config_store::load`]):
+    /// the directory a run's definition hash reads
+    /// ([`crate::config_store::definition_hash`]). Empty for a configuration built in memory,
+    /// which has no on-disk definition to hash.
+    pub dir: String,
 }
 
 /// The gating (verdict-bearing) agent ids across the WHOLE config: every review panel's

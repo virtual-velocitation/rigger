@@ -14,7 +14,7 @@ recurse: true
 ---
 You implement ONE fully-specified unit inside your worktree. Write the failing
 test first, confirm RED, implement minimally, confirm GREEN, run the named gates,
-commit. Report the final line as JSON: {"id","pass","evidence"}.
+commit.
 ```
 
 ### Frontmatter fields
@@ -65,7 +65,7 @@ The prompts that work share a shape. Study `.rigger/agents/adversary.md` for the
 
 **Wire the memory verbs in.** Any agent that decides something must be told to record it: "Record each planning decision with the rigger_emit tool (type DecisionMade) so the implementers inherit your reasoning." An unrecorded decision does not exist to the rest of the fleet.
 
-**Fix the output contract.** Workers report machine-parseable results: `Report the final line as JSON: {"id","pass","evidence"}`. The conductor parses that line; prose around it is tolerated, absence of it is a failure.
+**Leave an author's last line to rigger.** Every task rigger gives an author (the implementer, a speculation lane, the test author) ends with the hand-over contract: once its work is done, the session prints `RIGGER-HANDOVER` alone on its last line, after anything else it prints. A session that ends without that line is treated as stopped mid-work: rigger continues that session, uncharged, to finish and print the line, and past the infra limit it halts naming the hand-over. Each such rerun's `infra-retry` mark records the session's last line and its permission denials, which tell a refused tool call from a forgotten line. An author persona therefore asks for no final line of its own.
 
 **Forbid the known cheats by name.** Prompts should expressly forbid: deferring scope ("follow-up", TODO comments), weakening or skipping a test to go green, suppressing warnings instead of fixing them, and any masking of a quality problem so a reviewer cannot find it. An agent that cannot finish must surface the hole, never hide it. If the work moves files, require the agent to confirm the deletion is actually in the commit (`git show --stat HEAD`) - orphaned sources pass every compile gate while failing every file-scanning one.
 
@@ -95,7 +95,7 @@ Only an operator file named as an entry replaces or switches it off (see the ope
 
 **Reading the composed layers.** `rigger instructions` prints exactly what your agents are held to: the three built-in entries first, each labelled with its state - `(built-in)` with its shipped body, `(replaced by .rigger/instructions/<name>.md)` with that file's body, or `(switched off by .rigger/instructions/<name>.md)` with no body - then each operator file that shadows no built-in by name, or `(none)` when no such file remains. `rigger validate` prints a warning for each built-in an operator file replaces or switches off, and still succeeds. `rigger prime` opens every session with a one-line summary of the layers in force: the built-ins in force, a replaced one marked `(replaced)` and a switched-off one left out, then the count of the operator files that shadow no built-in, or no count when there is none.
 
-**The definition pin.** Operator instruction files are part of a run's definition, alongside `workflow.yml` and the agent files. Editing one while a run is live changes the definition hash, and the next step halts as a definition drift. Edit instructions between runs, or continue deliberately with `--rebase-definition`.
+**The definition pin.** Operator instruction files are part of a run's definition, alongside `workflow.yml` and the agent files. Editing one while a run is live changes the definition hash, and the next step halts as a definition drift. A definition change the run lands itself, a unit whose change edits an agent file for one, re-pins the run to what it landed, so only an edit from outside the run halts. Edit instructions between runs, or continue deliberately with `--rebase-definition`.
 
 ## Starting from an existing collection
 

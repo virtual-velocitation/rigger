@@ -240,7 +240,21 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env("XDG_CACHE_HOME", test_cache_home());
     let record = test_cache_home().join("keep-awake");
     cmd.env(KEEP_AWAKE_ENV, format!("record:{}", record.display()));
+    cmd.env(
+        RELAUNCH_ENV,
+        format!("record:{}", relaunch_record().display()),
+    );
     cmd
+}
+
+/// The variable that selects how a rigger invocation relaunches a run whose driver died: its
+/// `record:<path>` value appends a `relaunch <argv>` line to `<path>` in place of starting one.
+pub use rigger::detached::RELAUNCH_ENV;
+
+/// The file the relaunches of this test's rigger invocations are recorded in ([`unfenced`]), so
+/// no rigger a test runs starts a detached driver unasked.
+pub fn relaunch_record() -> PathBuf {
+    test_cache_home().join("relaunch")
 }
 
 /// Clears this test process's own ambient `STORE_FENCE_ENV` (the fence a gate pins on its
@@ -364,7 +378,7 @@ pub fn isolated_workdir(repo: &Path) -> String {
 }
 
 /// Shared guard for every sanctioned test-side signal helper below (`terminate_pid`,
-/// `stop_pid`) - panics for pid <= 1 (init, or "no real pid") or a pid equal to THIS test
+/// `stop_pid`, `interrupt_pid`) - panics for pid <= 1 (init, or "no real pid") or a pid equal to THIS test
 /// process's own, either being a bug in the fixture handing over a pid to signal, never a
 /// race worth tolerating silently the way an already-exited target is. `verb` names the
 /// signal action in the panic message ("terminate", "SIGSTOP", ...) so each caller keeps its
@@ -392,25 +406,18 @@ fn validated_target_pid(pid: u32, verb: &str) {
 }
 
 /// Terminate a process this test does not hold a [`std::process::Child`] handle to (spec 78,
-/// THE TEST HELPER) - the ONE sanctioned test-side signal call, mirroring
-/// [`rigger::reap`]'s production counterpart `send_signal` (the `no-os-kill` gate excludes
-/// only these two functions from its tree-wide ban on shelling out to an OS termination
-/// command or calling a signal API directly). Every former `tests/cli.rs::reap_pid` and
+/// THE TEST HELPER), mirroring [`rigger::reap`]'s production counterpart `send_signal`. Every
+/// test-side signal goes through the one call in [`delivered`], which this, [`stop_pid`] and
+/// [`interrupt_pid`] share, in this file the `no-os-kill` gate licenses
+/// (`tests/no_os_kill_audit.rs`). Every former `tests/cli.rs::reap_pid` and
 /// `tests/reset_build_cache_periphery.rs` shelled-out SIGKILL call site is this function now.
 ///
 /// Panics via [`validated_target_pid`] for pid <= 1 or this test process's own pid. Otherwise
-/// SIGKILLs via the internal `rustix` syscall (never a shell-out, never `libc`, never a
-/// process-group/negative pid) and silently ignores ESRCH: the target having already exited
-/// is exactly the state a "make sure this is dead" caller wants.
+/// SIGKILLs through the `rustix` syscall (never a shell-out, never `libc`, never a
+/// process-group/negative pid) and ignores a delivery that fails because the target already
+/// exited: that is exactly the state a "make sure this is dead" caller wants.
 pub fn terminate_pid(pid: u32) {
-    validated_target_pid(pid, "terminate");
-    let Ok(raw) = i32::try_from(pid) else {
-        return;
-    };
-    let Some(rpid) = rustix::process::Pid::from_raw(raw) else {
-        return;
-    };
-    let _ = rustix::process::kill_process(rpid, rustix::process::Signal::KILL);
+    let _ = delivered(pid, "terminate", rustix::process::Signal::KILL);
 }
 
 /// SIGSTOP a process this test does not hold a [`std::process::Child`] handle to (spec 62,
@@ -430,14 +437,29 @@ pub fn terminate_pid(pid: u32) {
 /// gave the two fixtures this replaces. Both the guard-panic paths and this false-return path
 /// are pinned by dedicated tests in `tests/no_os_kill_test_helper_periphery.rs`.
 pub fn stop_pid(pid: u32) -> bool {
-    validated_target_pid(pid, "SIGSTOP");
+    delivered(pid, "SIGSTOP", rustix::process::Signal::STOP)
+}
+
+/// SIGINT a process this test holds a [`std::process::Child`] handle to, as an operator's Ctrl-C
+/// interrupts a driver in the foreground: std's handle ends a child only by SIGKILL, so the
+/// interrupt goes through this file, beside [`stop_pid`], under the same guard and the same
+/// delivered-or-not answer.
+pub fn interrupt_pid(pid: u32) -> bool {
+    delivered(pid, "SIGINT", rustix::process::Signal::INT)
+}
+
+/// Whether `signal` reached `pid`, under [`validated_target_pid`]'s guard with `verb` naming the
+/// signal: the one test-side signal call, which [`terminate_pid`], [`stop_pid`] and
+/// [`interrupt_pid`] share.
+fn delivered(pid: u32, verb: &str, signal: rustix::process::Signal) -> bool {
+    validated_target_pid(pid, verb);
     let Ok(raw) = i32::try_from(pid) else {
         return false;
     };
     let Some(rpid) = rustix::process::Pid::from_raw(raw) else {
         return false;
     };
-    rustix::process::kill_process(rpid, rustix::process::Signal::STOP).is_ok()
+    rustix::process::kill_process(rpid, signal).is_ok()
 }
 
 /// A process this test did not spawn and holds no [`std::process::Child`] handle to, owned from

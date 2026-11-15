@@ -3,7 +3,7 @@
 //! from conversation. Unknown event types are ignored, so the same log feeds both
 //! this projection and the context graph.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
@@ -212,6 +212,11 @@ pub struct RunState {
     /// The run's open hold: `Some` while a [`TYPE_RUN_HELD`] has no later
     /// [`TYPE_RUN_RELEASED`] in the slice [`project`] was handed.
     pub hold: Option<Hold>,
+    /// The units the run owes: the `units` of the latest [`TYPE_DAG_RECORDED`] folded, the
+    /// conductor's DAG as it last changed. Empty on a slice with no record (a run recorded by an
+    /// older binary, or a hand-built slice), which then reads exactly as [`RunState::units`]
+    /// alone does. [`RunState::unit_tally`] counts over it and `units` together.
+    pub owed: BTreeSet<String>,
 }
 
 /// A run's open hold, folded from the `RunHeld` events since its last `RunReleased`.
@@ -602,6 +607,11 @@ pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
 /// at the run's phase boundary. A deferred failure is surfaced truthfully - it gates
 /// `done` so the run never reports finished with a red phase-boundary gate.
 pub const TYPE_DEFERRED_GATE_FAILED: &str = "DeferredGateFailed";
+/// The conductor's DagRecorded event: the units the conductor's DAG
+/// holds, recorded once the plan is accepted and again whenever that set changes (a re-plan, a
+/// split, a unit added mid-run). Body: [`DagRecorded`]. Folded into [`RunState::owed`], so a run
+/// is done only when every unit it owes has landed, never merely every unit it started.
+pub const TYPE_DAG_RECORDED: &str = "DagRecorded";
 /// The conductor's ManualReview event (the conductor re-exports this as
 /// `conductor::TYPE_MANUAL_REVIEW`, the single source of the string): a Manual-autonomy
 /// gate paused its unit awaiting human review (§4.3). Folded here into
@@ -689,6 +699,35 @@ struct UnitIntegrated {
     #[serde(default)]
     commit: String,
 }
+/// The body of a [`TYPE_DAG_RECORDED`] event: every unit id the conductor's DAG holds, sorted
+/// ascending. The one shape the conductor writes and every fold reads.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DagRecorded {
+    pub units: Vec<String>,
+}
+
+impl DagRecorded {
+    /// The record naming `units`, in ascending order.
+    pub fn of<'a>(units: impl IntoIterator<Item = &'a String>) -> Self {
+        let set: BTreeSet<&String> = units.into_iter().collect();
+        DagRecorded {
+            units: set.into_iter().cloned().collect(),
+        }
+    }
+}
+
+/// The units the latest [`TYPE_DAG_RECORDED`] in `events` names, or the empty set when `events`
+/// holds none: what [`RunState::owed`] folds to over the same slice.
+pub fn recorded_dag(events: &[Event]) -> Result<BTreeSet<String>, serde_json::Error> {
+    match events.iter().rfind(|e| e.type_ == TYPE_DAG_RECORDED) {
+        Some(e) => Ok(serde_json::from_slice::<DagRecorded>(&e.data)?
+            .units
+            .into_iter()
+            .collect()),
+        None => Ok(BTreeSet::new()),
+    }
+}
+
 #[derive(Deserialize)]
 struct ManualReview {
     /// The paused unit's id. The conductor emits `unit` and `id` both equal to the unit
@@ -813,26 +852,52 @@ impl RunState {
             TYPE_DEFERRED_GATE_FAILED => {
                 self.deferred_gate_failed = true;
             }
+            TYPE_DAG_RECORDED => {
+                let p: DagRecorded = serde_json::from_slice(&e.data)?;
+                self.owed = p.units.into_iter().collect();
+            }
             _ => {}
         }
         Ok(())
     }
 
-    /// Done reports whether the run is complete: at least one unit, all integrated,
-    /// and no deferred gate failed at the phase boundary. (Coverage and inline
-    /// gate-green are enforced by the conductor's coverage gate and per-unit gates; a
-    /// unit reaches Integrated only after its inline gates pass. A deferred gate runs
-    /// ONCE at end-of-run, after every unit integrated, so its failure is folded in
-    /// here rather than at any single unit.)
+    /// The run's (landed, total) unit counts over every unit it owes ([`RunState::owed`]) and
+    /// every unit it started ([`RunState::units`]) together, landed counting the ids whose unit is
+    /// `Integrated`. With no DAG recorded the total is the started units alone, as it always was.
+    pub fn unit_tally(&self) -> (usize, usize) {
+        let ids: BTreeSet<&String> = self.owed.iter().chain(self.units.keys()).collect();
+        let landed = ids
+            .iter()
+            .filter(|id| {
+                self.units
+                    .get(**id)
+                    .is_some_and(|u| u.status == Status::Integrated)
+            })
+            .count();
+        (landed, ids.len())
+    }
+
+    /// Whether the run owes a unit it has not started yet: an id of [`RunState::owed`] with no
+    /// entry in [`RunState::units`].
+    pub fn owes_an_unstarted_unit(&self) -> bool {
+        self.owed.iter().any(|id| !self.units.contains_key(id))
+    }
+
+    /// Done reports whether the run is complete: at least one unit, every unit it owes and
+    /// every unit it started integrated ([`RunState::unit_tally`]), and no deferred gate failed
+    /// at the phase boundary. (Coverage and inline gate-green are enforced by the conductor's
+    /// coverage gate and per-unit gates; a unit reaches Integrated only after its inline gates
+    /// pass. A deferred gate runs ONCE at end-of-run, after every unit integrated, so its failure
+    /// is folded in here rather than at any single unit.) Between one unit's landing and the next
+    /// owed unit's start the run is not done.
     pub fn done(&self) -> bool {
-        !self.deferred_gate_failed
-            && !self.units.is_empty()
-            && self.units.values().all(|u| u.status == Status::Integrated)
+        let (landed, total) = self.unit_tally();
+        !self.deferred_gate_failed && total > 0 && landed == total
     }
 
     /// The ready-to-release handoff for this run (spec 38, criterion 3), or `None` when the
-    /// run has not FULLY finished the job - so an unfinished run (a unit still un-integrated,
-    /// an empty run, a failed deferred phase-boundary gate, or a run halted on an uncovered
+    /// run has not FULLY finished the job - so an unfinished run (a unit still un-integrated, an
+    /// owed unit not yet started, an empty run, a failed deferred phase-boundary gate, or a run halted on an uncovered
     /// criterion) surfaces NO release-ready signal. On a fully-done run it names `run_branch`
     /// and the release-target `base` (the resolved base ref with a leading `origin/` remote
     /// prefix stripped), and derives the two-command unique-head PR handoff (spec 82,

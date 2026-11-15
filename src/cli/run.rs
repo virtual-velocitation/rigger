@@ -143,7 +143,7 @@ fn register_run_instance(
 /// run records the supersession and continues with a notice; a drifted run WITHOUT the flag
 /// returns a loud error, so `rigger run` HALTS naming the drift instead of driving a
 /// campaign whose replay semantics silently changed. The conductor's own (unpinned)
-/// `ensure_started` then simply ADOPTS the run this ensured.
+/// `ensure_started` then simply ADOPTS the run this ensured, whose id this returns.
 ///
 /// `base` is the resolved run-branch base to persist on a freshly-minted RunStarted (spec 38,
 /// criterion 3), so `rigger status`/`rigger dash` later read the run's actual base from the
@@ -166,11 +166,11 @@ fn enforce_definition_pin(
     base: &str,
     base_tip: &str,
     spec_path: &str,
-) -> Res {
+) -> Result<String, Box<dyn std::error::Error>> {
     match runscope_store::ensure_started_pinned(
         store, criteria, definition, rebase, base, base_tip, spec_path,
     )? {
-        runscope::RunStart::Ready(_) => Ok(()),
+        runscope::RunStart::Ready(run) => Ok(run),
         runscope::RunStart::Rebased {
             run,
             pinned,
@@ -180,7 +180,7 @@ fn enforce_definition_pin(
                 "rigger: --rebase-definition: recorded the definition supersession \
                  ({pinned} -> {current}) on run {run}; continuing on the new definition."
             ));
-            Ok(())
+            Ok(run)
         }
         runscope::RunStart::Drifted {
             run,
@@ -372,7 +372,9 @@ pub(crate) fn cmd_run(args: &[String]) -> Res {
 /// durable branch no longer exists in the repo (deleted or reclaimed out of band) -
 /// named alongside a `git reflog` hint, per the spec's own constraints walk, since a
 /// resume with no branch to re-park the implementer on would strand the implementer on
-/// a fresh, empty checkout instead of the unit's actual prior work.
+/// a fresh, empty checkout instead of the unit's actual prior work. A unit that escalated
+/// as a speculation group is granted without its branch: the group re-enters on fresh lane
+/// worktrees.
 pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     let mut unit_id: Option<&str> = None;
     let mut attempts_granted: u32 = 1;
@@ -421,7 +423,10 @@ pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
             .into());
         }
         let branch = unit.branch.clone();
-        if !branch.is_empty() && !rigger::worktree::branch_exists(&loc.repo_root(), &branch) {
+        if !branch.is_empty()
+            && !conductor::escalated_as_speculation_group(&run_events, unit_id)
+            && !rigger::worktree::branch_exists(&loc.repo_root(), &branch)
+        {
             return Err(format!(
                 "resume-unit: unit {unit_id:?}'s durable branch {branch:?} is gone (deleted or \
                  reclaimed) - refusing to resume with nothing to re-park the implementer on. \
@@ -739,7 +744,7 @@ impl SleepHold for RecordingSleepHold {
 }
 
 /// Append `line` and a newline to the file at `path` in one write, creating the file when absent.
-fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
+pub(crate) fn append_line(path: &Path, line: &str) -> std::io::Result<()> {
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -862,7 +867,25 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // this run returns, before any store is opened, any launch closed or any run branch anchored,
     // so a second `rigger run` beside this one refuses with the busy refusal
     // first, and a run that hangs keeps it, which keeps `rigger watch`'s dead-driver alert silent.
-    let _step_lock = acquire_step_lock(&loc.dir)?;
+    // The lock keeps this driver's record ([`KeptRecord`]), emptied however the driver ends
+    // short of a death, so an invocation that finds a record nobody holds relaunches the run.
+    let step_record = KeptRecord::hold(acquire_step_lock(&loc.dir)?);
+    // `--adopt <run>` is checked first of all, before any start effect: an adoption this start
+    // cannot make refuses here, and the record's keeper clears the record as it returns.
+    if let Some(wanted) = &parsed.adopt {
+        refuse_an_adoption_it_cannot_make(
+            &AdoptionSite {
+                repo: &repo,
+                loc: &loc,
+                selection: &selection,
+                site: &site,
+            },
+            &criteria,
+            parsed.spec.is_some(),
+            wanted,
+            command,
+        )?;
+    }
     // Migrate a pre-spec-09 store's legacy-namespace history to the minted identity once,
     // before opening the run backend (spec 09). Local-sqlite only - the migration renames
     // streams in the local `.rigger/events.db`; a shared KurrentDB backend is out of scope.
@@ -891,7 +914,11 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // threaded to `fresh_run_if_requested` so a mint persists the tip the run genuinely
     // started at. `""` on the repo-less path.
     let mut base_tip = String::new();
-    if !repo.is_empty() {
+    // An adopting start is on the run branch already ([`refuse_an_adoption_it_cannot_make`]), so
+    // it checks out and anchors nothing.
+    if !repo.is_empty() && parsed.adopt.is_some() {
+        base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
+    } else if !repo.is_empty() {
         let (base, base_explicit) = resolve_run_base(
             parsed.base.as_deref(),
             std::env::var("RIGGER_BASE").ok().as_deref(),
@@ -944,7 +971,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // adopts this just-minted boundary instead of the (possibly wedged) latest run. See
     // `runscope_store::start_fresh` - the evented restart for a terminal escalation on an
     // unchanged spec.
-    fresh_run_if_requested(
+    let run = fresh_run_if_requested(
         parsed,
         &folding,
         &criteria,
@@ -960,6 +987,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             text: &text,
         },
     )?;
+    step_record.keep(parsed, &cwd, &loc.dir, &run);
     // The orphan sweep runs behind `--fresh`'s mint, so a superseded run's scratch reads as dead.
     if let Some(root) = sweep_root {
         reclaim_orphans_at_start(&repo, root, &cfg.workflow, &store);
@@ -977,7 +1005,14 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     };
     // The decorator records the errors it hands the conductor on the folding store the host
     // records results on, so the graph folds them as it folds the host's.
+    // An adopting driver parks on an operator hold, so the hold stops it rather than keeping it
+    // waiting with the step lock held.
     let held = HeldDriver::new(&driver, &folding, &pause_a_hold_poll);
+    let held = if parsed.adopt.is_some() {
+        held.parking_on_an_operator_hold()
+    } else {
+        held
+    };
     // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at,
     // and its site the one the run's reads find their repository from, anew for each open.
     let site = Site::of(Path::new(&repo));
@@ -1023,7 +1058,6 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // `rigger gate <id>` to it for as long as the run drives; every spawn is handed its path as
     // `RIGGER_GATE_SOCKET`. A socket that cannot be bound leaves the verb information-only. A
     // project with no repository has no unit worktree a request could come from, so it binds none.
-    let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
     let socket = (!root.is_empty())
         .then(|| {
             rigger::gate_socket::socket_path(Path::new(&root))
@@ -1040,16 +1074,34 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let channel = socket
         .as_ref()
         .map(|s| s as &dyn rigger::gate_channel::GateChannel);
-    let rs = beating(
-        &store,
-        &progress,
-        rigger::progress::SUPERVISOR_BEAT_INTERVAL,
-        || {
-            ticking(HOLD_POLL_INTERVAL, control_holds, || {
-                conductor::run_serving(&cfg, &deps, verdict_key, channel)
-            })
-        },
-    )?;
+    // A driver that parked a launch on an operator hold drives again once the hold is gone, since
+    // a release while it still runs relaunches nothing; it ends only while the hold stands. Each
+    // drive holds a verdict key of its own, as a relaunched driver would.
+    let rs = loop {
+        let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
+        let rs = beating(
+            &store,
+            &progress,
+            rigger::progress::SUPERVISOR_BEAT_INTERVAL,
+            || {
+                ticking(HOLD_POLL_INTERVAL, control_holds, || {
+                    conductor::run_serving(&cfg, &deps, verdict_key, channel)
+                })
+            },
+        )?;
+        if !held.take_parked_on_an_operator_hold() {
+            break rs;
+        }
+        if !an_operator_hold_stands(&folding) {
+            continue;
+        }
+        step_record.leave_for_release();
+        stderr_line(&format!(
+            "{command}: run {run} is held by the operator, so this driver parked its next launch \
+             and ended; `rigger release` relaunches it"
+        ));
+        break rs;
+    };
     // A done run releases its open hold, an operator hold included (spec 105); any other exit
     // leaves it to the next supervisor's probes. A failed release never fails a run that already
     // succeeded: the hold stays open for `rigger release` or the next mint.
@@ -1172,6 +1224,13 @@ fn reclaim_orphans_at_start(
     }
 }
 
+/// Whether an operator hold stands on the current run in `store`: true when the read fails, since
+/// a run not proved free of one launches nothing.
+fn an_operator_hold_stands(store: &dyn EventStore) -> bool {
+    runscope::read::read_current_hold(store, conductor::STREAM)
+        .map_or(true, |hold| hold.is_some_and(|hold| hold.operator))
+}
+
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
 /// First, a run that is not `--fresh` reads its hold and names a standing one on stderr
 /// ([`held_line`], this driver's own beat being the latest), failing on a hold it cannot read.
@@ -1192,6 +1251,9 @@ fn reclaim_orphans_at_start(
 ///
 /// `helpers` are the fan-out helpers the caller's spawn host resolved, so the definition the run
 /// pins folds the same helper copies its spawns carry ([`definition_hash`]).
+///
+/// `--adopt <run>` was checked before this ([`refuse_an_adoption_it_cannot_make`]). It returns the
+/// id of the run it began or adopted.
 fn fresh_run_if_requested(
     parsed: &RunArgs,
     store: &dyn EventStore,
@@ -1199,7 +1261,7 @@ fn fresh_run_if_requested(
     base_tip: &str,
     helpers: &[conductor::HelperCopy],
     critique: &RunStartCritique,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<String, Box<dyn std::error::Error>> {
     // A HELD RUN IS NAMED FIRST: a plain run reads its hold ahead of the critique refusal, so a
     // held run names its hold before anything refuses it and a hold it cannot read fails the run
     // before any refusal. `--fresh` decides its refusal first, since its mint ends the hold.
@@ -1243,8 +1305,86 @@ fn fresh_run_if_requested(
         &base,
         base_tip,
         parsed.spec.as_deref().unwrap_or(""),
-    )?;
+    )
+}
+
+/// Where an adopting start reads what it refuses on: the checkout `repo` (`""` for none), and the
+/// run store at `loc` under `selection`, its identity read from `site`.
+struct AdoptionSite<'a> {
+    repo: &'a str,
+    loc: &'a StoreLocation,
+    selection: &'a StoreSelection,
+    site: &'a Site,
+}
+
+/// THE ADOPTION IS CHECKED FIRST OF ALL: refuse a `command` start with `--adopt <wanted>`, before
+/// it closes a launch, checks out a branch or sweeps a worktree, when it cannot adopt that run as
+/// it stands: a checkout off the run branch (another branch or a detached HEAD, never checked out
+/// or recreated here), a start that would adopt another run or mint one
+/// ([`refuse_unless_adopting`]), or a run already done. It reads the run store as the run opens it
+/// later and writes nothing.
+fn refuse_an_adoption_it_cannot_make(
+    at: &AdoptionSite,
+    criteria: &[String],
+    by_spec: bool,
+    wanted: &str,
+    command: &str,
+) -> Res {
+    if !at.repo.is_empty() {
+        let on = rigger::worktree::current_branch(at.repo);
+        if on.as_deref() != Some(RUN_BRANCH) {
+            let on = on.map_or_else(
+                || "a detached HEAD".to_string(),
+                |b| format!("branch {b:?}"),
+            );
+            return Err(format!(
+                "{command}: --adopt {wanted}: the checkout is on {on}, not the run branch \
+                 {RUN_BRANCH:?}, so it refuses and changed nothing; check out {RUN_BRANCH:?} and \
+                 start it again"
+            )
+            .into());
+        }
+    }
+    let backend = resolve_store(at.selection, &at.loc.file("events.db"))?;
+    let store = Namespaced::new(backend.as_ref(), &at.loc.identity_in(at.site)?);
+    refuse_unless_adopting(&store, criteria, by_spec, wanted, command)?;
+    let (events, _) = runscope::read::read_current_run(&store, conductor::STREAM)?;
+    if ledger::project(&events)?.done() {
+        return Err(format!(
+            "{command}: --adopt {wanted}: run {wanted} is done, so there is nothing to adopt; it \
+             refuses and changed nothing"
+        )
+        .into());
+    }
     Ok(())
+}
+
+/// Refuse a `command` start with `--adopt <wanted>` unless the mint decision
+/// ([`runscope::adopted_run`] over the run stream's [`runscope::MINT_DECISION_TYPES`] events, as
+/// the store's own adopt-or-mint asks it for `criteria`, `by_spec` naming whether the start names
+/// a spec) adopts that very run. It writes nothing.
+fn refuse_unless_adopting(
+    store: &dyn EventStore,
+    criteria: &[String],
+    by_spec: bool,
+    wanted: &str,
+    command: &str,
+) -> Res {
+    let started = store.read_stream_typed(
+        conductor::STREAM,
+        0,
+        TypeSelection::Only(&runscope::MINT_DECISION_TYPES),
+    )?;
+    let would = match runscope::adopted_run(&started, criteria, false, by_spec) {
+        Some(run) if run.run == wanted => return Ok(()),
+        Some(run) => format!("adopt run {}", run.run),
+        None => "begin a new run".to_string(),
+    };
+    Err(format!(
+        "{command}: --adopt {wanted}: this start would {would}, not adopt run {wanted}, so it \
+         refuses and nothing was recorded"
+    )
+    .into())
 }
 
 /// What the spec-critique refusal ([`RunStartCritique::refuse_unless_clean`]) reads beside the

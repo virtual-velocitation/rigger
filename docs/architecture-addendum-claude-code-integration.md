@@ -127,7 +127,9 @@ The task and any later operator note travel as user messages on the input stream
 | exit without `result` | ends the launch as `interrupted` or `fault` by the last category seen (5.1), `unknown` when none; on a run held at its end, `interrupted` whatever the class, a FAULT class and `unknown` included |
 
 The raw stream is written beside the spawn's scratch and deleted once its turns are
-recorded. No agent self-reports a result, a model or a heartbeat.
+recorded. No agent self-reports a result, a model or a heartbeat. The host also touches the
+marker once at launch, before it writes the spawn's scratch, so a spawn is live from its launch
+and not only from its first line.
 
 ### 4.3 The spawn's MCP server
 

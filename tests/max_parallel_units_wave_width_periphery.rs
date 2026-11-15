@@ -53,7 +53,8 @@ use rigger::gate::ExecRunner;
 /// window as ONE line to `marker_log` (a single small `printf ... >>` append is one
 /// `write(2)` call under `PIPE_BUF`, so concurrent writers from independent processes never
 /// interleave mid-line), and finally prints the emit-protocol-free final-result line the cli
-/// driver only checks the exit status of.
+/// driver only checks the exit status of, then the handover line its task asks for
+/// (`tests/fixtures/launch-args.sh`'s `hand_over`).
 #[cfg(unix)]
 fn write_marker_agent(path: &Path, marker_log: &Path, sleep_secs: &str) {
     use std::os::unix::fs::PermissionsExt;
@@ -63,9 +64,14 @@ fn write_marker_agent(path: &Path, marker_log: &Path, sleep_secs: &str) {
          sleep {sleep_secs}\n\
          end=$(date +%s%N)\n\
          printf '%s %s\\n' \"$start\" \"$end\" >> '{log}'\n\
-         echo '{{\"id\":\"final\",\"pass\":true}}'\n",
+         echo '{{\"id\":\"final\",\"pass\":true}}'\n\
+         . '{launch_args}'\n\
+         hand_over \"$(cat)\"\n",
         sleep_secs = sleep_secs,
         log = marker_log.display(),
+        launch_args = common::repo::repo_root()
+            .join("tests/fixtures/launch-args.sh")
+            .display(),
     );
     std::fs::write(path, script).unwrap_or_else(|e| panic!("write marker agent {path:?}: {e}"));
     let mut perms = std::fs::metadata(path).unwrap().permissions();

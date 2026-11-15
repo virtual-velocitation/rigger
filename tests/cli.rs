@@ -755,8 +755,15 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
     // Drive the real reset. The composition root derives the boundary from r2's RunStarted, drops
     // super-d (a dead-run decision node), and reclaims exactly the ONE superseded GOVERNS(keep-d ->
     // old.rs) edge retired before that boundary - a count the pre-spec-41 reset line never reported.
+    // The output a relaunched driver left is reaped beside it.
+    let output = common::cli::rigger_file(root, "driver.out");
+    std::fs::write(&output, "a relaunched driver's refusal\n").unwrap();
     let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
     assert!(ok, "reset --runs must succeed; stderr: {err}");
+    assert!(
+        !output.exists() && out.contains("driver.out"),
+        "reset --runs removes the output a relaunched driver left and says so; got: {out:?}"
+    );
     assert!(
         out.contains("reclaimed 1 superseded edge(s)"),
         "reset --runs must reclaim the one superseded edge retired before the active run; got: {out:?}"
@@ -784,6 +791,32 @@ fn reset_runs_reclaims_superseded_edges_retired_before_the_active_run_and_report
         again.contains("reclaimed 0 superseded edge(s)"),
         "a second reset reclaims nothing - the reclamation is a stable, bounded set operation; got: {again:?}"
     );
+}
+
+/// A RELAUNCHED DRIVER'S OUTPUT IS REAPED ONCE NO DRIVER RUNS: `reset --runs` removes
+/// `.rigger/driver.out` and says so while no driver holds the step lock, and leaves it while one
+/// does, since a live relaunched driver is still writing to it.
+#[test]
+fn reset_runs_reaps_a_relaunched_drivers_output_only_while_no_driver_runs() {
+    for (case, driver_runs) in [
+        ("no driver runs", false),
+        ("a driver holds the step lock", true),
+    ] {
+        let dir = temp_store_project();
+        let root = dir.path();
+        let output = common::cli::rigger_file(root, "driver.out");
+        std::fs::write(&output, "a relaunched driver's line\n").unwrap();
+        let lock = driver_runs.then(|| common::cli::hold_step_lock(root));
+        let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+        drop(lock);
+        assert!(ok, "{case}: reset --runs succeeds; stderr: {err}");
+        assert_eq!(
+            (output.exists(), out.contains("removed driver.out")),
+            (driver_runs, !driver_runs),
+            "{case}: reset --runs removes a dead driver's output and says so, and leaves a live \
+             one's; stdout: {out:?}"
+        );
+    }
 }
 
 /// How many superseded structural edges [`bloated_graph_project`] seeds.
@@ -3530,6 +3563,119 @@ fn resume_unit_refuses_when_the_durable_branch_is_gone() {
     );
 }
 
+/// At the real binary boundary: a speculation group whose every lane fails
+/// escalates, and the no-winner tail deletes every lane branch, the canonical unit branch among
+/// them. `rigger resume-unit` still grants it, since the group re-enters on fresh lane worktrees,
+/// and the relaunched run requests its lanes one past the attempts the first entry recorded, so the
+/// host runs them as fresh sessions instead of answering the first entry's ids from the log, and
+/// each lane's prompt carries the failure the log recorded.
+///
+/// The gate passes on its first run and fails on every later one: lane 0 passes its pre-merge
+/// gate, is approved and merges, and its post-merge re-gate breaks the merged tree (the logged
+/// `UnitFailed`); lane 1 fails its gate. Lane 1's implementer advances the base with a commit of
+/// its own, so lane 0's merge is no fast-forward whose tree the pre-merge verdict would answer.
+#[test]
+fn resume_unit_re_enters_an_escalated_speculation_group_on_fresh_lanes_told_the_prior_failure() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
+    write_agent(root, "judge", "Read", "Adjudicate it.");
+    let flag = root.join("gate-ran-once");
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'if [ -f "{flag}" ]; then exit 1; else touch "{flag}"; fi'
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+            flag = flag.display()
+        ),
+    )
+    .unwrap();
+    let lane_0_ran = root.join("lane-0-ran");
+    let arms = format!(
+        r#"  *"Do the unit."*)
+    echo "pub fn work() {{}}" > work.rs
+    if [ -f "{lane_0_ran}" ]; then
+      echo "$$" >> "{root}/base-advanced.txt"
+      git -C "{root}" add base-advanced.txt
+      git -C "{root}" commit -q -m "advance the base"
+    else
+      touch "{lane_0_ran}"
+    fi
+    ;;
+  *"Adjudicate it."*)
+    echo '{{"verdict":"approve"}}'
+    ;;
+"#,
+        lane_0_ran = lane_0_ran.display(),
+        root = root.display(),
+    );
+    let scratch = common::default_scratch_root(root);
+
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, &arms);
+    assert!(ok, "an escalated group still exits 0; stderr: {err}");
+    let events = read_run_events(root);
+    assert!(
+        events.iter().any(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED
+                && e.meta.contains_key(rigger::conductor::META_SPEC_GROUP)
+        }) && events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED),
+        "premise: lane 0's merge broke post-merge and the group escalated; got: {out}"
+    );
+    let first = requested_spawns(root);
+    assert!(
+        ["solo/implementer#0", "solo/implementer#1"]
+            .iter()
+            .all(|id| first.iter().any(|s| s == id))
+            && !first.iter().any(|s| s == "solo/implementer#2"),
+        "premise: the first entry requests lanes 0 and 1; got: {first:?}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["resume-unit", "solo", "--attempts", "1"]);
+    assert!(
+        ok,
+        "resume-unit grants an escalated group whose lane branches the no-winner tail deleted; \
+         stdout: {out:?}, stderr: {err}"
+    );
+
+    let (_out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, &arms);
+    assert!(ok, "the re-entered group still exits 0; stderr: {err}");
+    let launched = rigger::spawn::recorded(&read_run_events(root)).unwrap();
+    let preamble =
+        "Your previous attempt failed the checks below. Fix exactly these - do not start over:\n";
+    for id in ["solo/implementer#2", "solo/implementer#3"] {
+        let prompt = &launched
+            .get(id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the re-entered group requests {id} afresh; requested: {:?}",
+                    launched.keys().collect::<Vec<_>>()
+                )
+            })
+            .prompt;
+        assert!(
+            prompt.starts_with(preamble) && prompt.contains("failed these gates"),
+            "{id}'s prompt opens with the failure the log recorded; got:\n{prompt}"
+        );
+    }
+}
+
 /// `event`'s stamped `worktree_sha` is a real 40-hex sha (`real_why` says why an empty or
 /// short one is wrong) equal to `expected`, the tree actually judged (`equal_why`).
 fn assert_a_real_worktree_sha(
@@ -4419,7 +4565,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         });
         let again = (
             case.again.0.to_string(),
-            String::new(),
+            common::cli::handed_over(""),
             String::new(),
             false,
         );
@@ -6403,7 +6549,12 @@ fn a_session_dying_with_no_result_relaunches_only_on_a_held_run() {
             ],
             "{name}: the closes; stderr: {err}"
         );
-        results.push((again.to_string(), String::new(), String::new(), false));
+        results.push((
+            again.to_string(),
+            common::cli::handed_over(""),
+            String::new(),
+            false,
+        ));
         assert_eq!(
             common::fixtures::spawn_result_rows(&read_run_events(root)),
             results,
@@ -7654,7 +7805,7 @@ fn a_hosted_spawns_result_lands_on_the_run_stream_once() {
         results,
         vec![SpawnResult {
             id: "a/implementer#0".to_string(),
-            output: "the unit is built".to_string(),
+            output: common::cli::handed_over("the unit is built"),
             error: String::new(),
             meta: serde_json::json!({
                 "resolved_model": "",
@@ -7769,8 +7920,13 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
     assert_eq!(flag_value(&argv, "--resume"), session);
     assert_eq!(
         recorded_task(&fake.path().join("bin/first-message")),
-        format!("{RED_GATE_RETRY_TASK}{}", headless_progress_frame()),
-        "the resumed launch's first message is the retry task, framed once"
+        format!(
+            "{RED_GATE_RETRY_TASK}{}{}",
+            common::cli::handover_contract(),
+            headless_progress_frame()
+        ),
+        "the resumed launch's first message is the retry task and the handover contract, framed \
+         once"
     );
 }
 
@@ -7847,7 +8003,7 @@ fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &st
         common::fixtures::spawn_result_rows(&read_run_events(root)),
         ["solo/implementer#0", "solo/implementer#1"].map(|id| (
             id.to_string(),
-            "the unit is built".to_string(),
+            common::cli::handed_over("the unit is built"),
             String::new(),
             false,
         )),
@@ -8160,7 +8316,14 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
                 .collect::<Vec<_>>(),
             "{name}: the re-attempt's records; stderr: {err}"
         );
-        let built = |id: &str| (id.to_string(), BUILT.to_string(), String::new(), false);
+        let built = |id: &str| {
+            (
+                id.to_string(),
+                common::cli::handed_over(BUILT),
+                String::new(),
+                false,
+            )
+        };
         let stopped = case
             .fault
             .map(|error| (RESUMED.to_string(), String::new(), error.to_string(), true));
@@ -8260,7 +8423,8 @@ fn the_attempt_after_a_fallback_resumes_the_fresh_session() {
              {{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\
              \"supersedes\":\"<prior-id-or-empty>\"}}\n\
              This writes it to the shared event log live, so other agents see it immediately.\
-             {}",
+             {}{}",
+            common::cli::handover_contract(),
             headless_progress_frame()
         ),
         "the fallback's launch carries the whole prompt, not the resumed session's short task"
@@ -8334,6 +8498,11 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
     let answer_of = |spawn: &str| match spawn {
         "solo/adjudicator#0" => REQUIRED_REJECT.to_string(),
         "solo/adjudicator#1" => r#"{"verdict":"approve"}"#.to_string(),
+        author
+            if author.starts_with("solo/implementer") || author.starts_with("solo/sdet-author") =>
+        {
+            common::cli::handed_over(&format!("{author} answered"))
+        }
         other => format!("{other} answered"),
     };
     let mut spawns = Vec::new();
@@ -8523,21 +8692,27 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                     format!(
                         "LATER ATTEMPT: the implementer has revised this unit since review sent \
                          this unit back at {base} - `git diff {base}..HEAD` since changed \
-                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{}",
+                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{}{}",
+                        common::cli::handover_contract(),
                         headless_progress_frame()
                     ),
                     "{at}: the resumed session's whole task"
                 );
             } else {
-                let last = format!("\n\n{DOC_ONLY_ROUND_FACT}{}", headless_progress_frame());
+                let last = format!(
+                    "\n\n{DOC_ONLY_ROUND_FACT}{}{}",
+                    common::cli::handover_contract(),
+                    headless_progress_frame()
+                );
                 assert_eq!(
                     (
                         closing.matches(DOC_ONLY_ROUND_FACT).count(),
                         closing.ends_with(&last)
                     ),
                     (usize::from(stated), stated),
-                    "{at}: the fresh launch's whole prompt states the fact once and last exactly \
-                     when the round changed documentation only:\n{closing}"
+                    "{at}: the fresh launch's whole prompt states the fact once, last before the \
+                     handover contract, exactly when the round changed documentation only:\n\
+                     {closing}"
                 );
             }
             for (attempt, task) in [(0, &opening), (1, &closing)] {
@@ -9673,45 +9848,44 @@ stages:
         "no candidate may integrate when every merge broke post-merge"
     );
 
-    // Every UnitFailed this run recorded (candidate 0's post-merge block, and candidate 1's
-    // own if it also reached the same door) carries a real 40-hex worktree sha - stamped
-    // AFTER a re-assert restores what the post-merge re-gate's own spawn just deleted, never
-    // a snapshot taken during the deletion window. At least candidate 0's own (attempts:1)
-    // must be present.
+    // One loss is one failure: the group's one UnitFailed carries candidate 0's post-merge
+    // block beside candidate 1's red gate, so every reader that counts failures (the evaluate
+    // scorecard, the watch's reject-recurrence streak) counts this loss once. Its worktree sha is
+    // a real 40-hex sha, stamped AFTER a re-assert restores what the post-merge re-gate's own
+    // spawn just deleted, never a snapshot taken during the deletion window.
     let failed: Vec<_> = events
         .iter()
         .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
         .collect();
-    assert!(
-        !failed.is_empty(),
-        "the blocked post-merge merge(s) must record at least one UnitFailed; events: \
-         {events:?}"
+    assert_eq!(
+        failed.len(),
+        1,
+        "a group whose post-merge block is followed by no winner records its loss once; \
+         events: {events:?}"
     );
-    assert!(
-        failed
-            .iter()
-            .any(|e| String::from_utf8_lossy(&e.data).contains(r#""attempts":1"#)),
-        "candidate 0's own post-merge block must record a UnitFailed at attempts:1; events: \
-         {events:?}"
+    let loss = failed[0];
+    let body: serde_json::Value = serde_json::from_slice(&loss.data).unwrap();
+    assert_eq!(
+        body["gate_evidence"].as_array().map(Vec::len),
+        Some(2),
+        "the one record carries candidate 0's post-merge block and candidate 1's red gate: \
+         {body}"
     );
-    for e in &failed {
-        let sha = e
-            .meta
-            .get(rigger::conductor::META_WORKTREE_SHA)
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(
-            sha.len(),
-            40,
-            "every post-merge-blocked UnitFailed's worktree_sha must be a real 40-hex sha, \
-             not the empty sentinel a read taken during the deletion window would silently \
-             stamp: {sha:?} event={e:?}"
-        );
-        assert!(
-            sha.chars().all(|c| c.is_ascii_hexdigit()),
-            "the stamped sha must be real hex: {sha:?}"
-        );
-    }
+    assert_eq!(
+        body["cause"], "integrate-conflict",
+        "the first loss's cause: {body}"
+    );
+    let sha = loss
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the post-merge-blocked candidate's worktree_sha must be a real 40-hex sha, not the \
+         empty sentinel a read taken during the deletion window would silently stamp: {sha:?} \
+         event={loss:?}"
+    );
 }
 
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger run` REGISTERS this instance in the
@@ -11538,10 +11712,11 @@ fn a_fresh_run_launches_each_spawn_only_a_prior_run_ended() {
     ;;
 {APPROVING_REVIEWER_ARMS}"#
     );
+    let implemented = common::cli::handed_over("");
     let answers = [
         ("solo/adjudicator#0", r#"{"verdict":"approve"}"#),
         ("solo/adversary#0", "tried and failed"),
-        ("solo/implementer#0", ""),
+        ("solo/implementer#0", implemented.as_str()),
         ("solo/lens:lens#0", "reviewed: no blocker"),
     ];
     let launched: Vec<_> = answers
@@ -11690,11 +11865,12 @@ fn a_resolver_round_ending_on_an_error_is_spent_and_a_restart_answers_it_from_th
         .unwrap_or_else(|| panic!("a first resolution round closed; stderr: {err}"));
     let unit = &errored[..errored.find('/').unwrap()];
     let resolving = format!("{unit}/implementer#0~retry2");
+    let implemented = common::cli::handed_over("");
     let approved: Vec<_> = ["a", "b"]
         .into_iter()
         .flat_map(|unit| {
             [
-                (format!("{unit}/implementer#0"), ""),
+                (format!("{unit}/implementer#0"), implemented.as_str()),
                 (format!("{unit}/lens:lens#0"), "reviewed: no blocker"),
                 (format!("{unit}/adjudicator#0"), r#"{"verdict":"approve"}"#),
             ]
@@ -15241,6 +15417,1113 @@ fn run_halts_on_definition_drift_and_rebase_definition_continues() {
     assert!(
         !err.contains("definition drift"),
         "the rebased definition is the pin now - no residual drift; stderr: {err}"
+    );
+}
+
+/// A run's own landings are no definition drift: a unit whose change edits an agent definition
+/// lands it on the run branch the checkout holds, and the next plain launch of that run adopts it
+/// without halting, because the run re-pinned its definition to what it landed. A hand edit of the
+/// definition after that still halts, so drift from outside the run is still caught.
+#[test]
+fn a_run_that_lands_its_own_definition_edit_relaunches_without_drift() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    git_ok(root, &["add", ".rigger/workflow.yml", ".rigger/agents"]);
+    git_ok(root, &["commit", "-q", "-m", "the definition"]);
+    let arm = "  *\"Do the unit.\"*)\n    echo \"pub fn work() {}\" > work.rs\n    \
+               echo \"Edited by the unit.\" >> .rigger/agents/worker.md\n    ;;\n";
+    let scratch = common::default_scratch_root(root);
+
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, arm);
+    let landed = std::fs::read_to_string(root.join(".rigger/agents/worker.md")).unwrap();
+    assert!(
+        ok && landed.contains("Edited by the unit."),
+        "the unit's definition edit must land in the checkout; stdout: {out}\nstderr: {err}"
+    );
+
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, arm);
+    assert!(
+        ok && !err.contains("definition drift"),
+        "a relaunch after the run landed its own definition edit must not halt on drift; \
+         stdout: {out}\nstderr: {err}"
+    );
+
+    edit_worker_prompt(root, "A hand edit from outside the run.");
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, arm);
+    assert!(
+        !ok && err.contains("definition drift"),
+        "a hand edit from outside the run still halts on drift; stdout: {out}\nstderr: {err}"
+    );
+}
+
+/// What `rigger status` says of a relaunched driver that ended before its run did.
+const STOPPED_RELAUNCH: &str = "ended before its run did";
+
+/// A RELAUNCH STILL STARTING IS A LIVE DRIVER: while a relaunch's record is inside the grace it
+/// is given to take the step lock, `rigger status` never says its driver ended before its run did
+/// and `rigger reset --runs` leaves the output it is writing; past that grace, the relaunch never
+/// started, and both say and reap as of a stopped driver.
+#[test]
+fn a_relaunch_inside_its_grace_reads_as_a_live_driver() {
+    let (dir, record, _run) = a_project_whose_driver_died();
+    let root = dir.path();
+    let now = SystemTimeUnix::now();
+    let stamped = |at: u64| {
+        let mut record: serde_json::Value = serde_json::from_str(&record).unwrap();
+        record["relaunched_at"] = serde_json::json!(at);
+        record.to_string()
+    };
+    let output = common::cli::rigger_file(root, "driver.out");
+    for (case, given, stopped) in [
+        ("a relaunch made a moment ago", stamped(now), false),
+        ("a relaunch made an hour ago", stamped(now - 3600), true),
+    ] {
+        std::fs::write(&output, "a relaunched driver's first line\n").unwrap();
+        let status = invoke_over_record(root, &given, &["status"], &[]);
+        std::fs::write(common::cli::rigger_file(root, "step.lock"), &given).unwrap();
+        let (out, err, ok) = run_rigger(root, &["reset", "--runs"]);
+        assert!(ok, "{case}: reset --runs succeeds; stderr: {err}");
+        assert_eq!(
+            (status.out.contains(STOPPED_RELAUNCH), output.exists()),
+            (stopped, !stopped),
+            "{case}: status says the relaunched driver ended, and reset --runs removes its \
+             output, only once the relaunch is past its grace; status: {}\nreset: {out}",
+            status.out
+        );
+    }
+}
+
+/// What the stderr line of an invocation that relaunched a dead driver says.
+const RELAUNCHED: &str = "relaunched it in the background";
+/// The variable an operator gives spawned agents their login token in.
+const AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
+/// The variable an operator gives the server event store's connection string in.
+const CONN_VAR: &str = "KURRENTDB_CONN";
+/// What the stderr line of an invocation without the store connection its dead driver ran on
+/// says: the variable, never its value.
+const CONN_MISSING: &str = "(KURRENTDB_CONN unset), so rigger relaunched nothing; relaunch it by hand from an environment that sets KURRENTDB_CONN, or with `--conn` and the connection string added: rigger run";
+/// What the stderr line of an invocation without the login token its dead driver ran on says.
+const TOKEN_MISSING: &str = "(RIGGER_CLAUDE_CODE_OAUTH_TOKEN unset), so rigger relaunched nothing; relaunch it by hand from an environment that sets RIGGER_CLAUDE_CODE_OAUTH_TOKEN: rigger run";
+/// What the stderr line of an invocation whose earlier relaunch never took the step lock says.
+const NEVER_STARTED: &str = "never started";
+/// What the stderr line of an invocation that leaves a twice-dead driver stopped says.
+const DIED_AGAIN: &str = "lost its driver again";
+
+/// One rigger invocation over a step lock holding `record`: the `relaunch` lines it recorded,
+/// its stdout, its success, its stderr, and the record it left.
+struct OverARecord {
+    relaunches: Vec<String>,
+    out: String,
+    ok: bool,
+    err: String,
+    left: String,
+}
+
+/// `rigger <args>` in `root` with the extra environment `envs`, after `record` is written to the
+/// step lock and the relaunch record emptied ([`common::relaunch_record`]).
+fn invoke_over_record(
+    root: &Path,
+    record: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> OverARecord {
+    invoke_over_record_in(root, root, record, args, envs)
+}
+
+/// [`invoke_over_record`] over the project at `root`, invoked from `cwd`.
+fn invoke_over_record_in(
+    root: &Path,
+    cwd: &Path,
+    record: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> OverARecord {
+    std::fs::write(common::cli::rigger_file(root, "step.lock"), record).unwrap();
+    let _ = std::fs::remove_file(common::relaunch_record());
+    let (out, err, ok) = run_rigger_envs(cwd, args, envs);
+    OverARecord {
+        relaunches: recorded_relaunches(),
+        out,
+        ok,
+        err,
+        left: common::cli::driver_record(root),
+    }
+}
+
+/// The `relaunch` lines this test's rigger invocations recorded ([`common::relaunch_record`]).
+fn recorded_relaunches() -> Vec<String> {
+    std::fs::read_to_string(common::relaunch_record())
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A git project whose reviewless one-unit run had its driver ended through its handle while its
+/// implementer was mid-unit, as a crash or a reboot ends one, the implementer then released: the
+/// project, the record the live driver kept, and the run's id.
+fn a_project_whose_driver_died() -> (tempfile::TempDir, String, String) {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], common::fixtures::cleanup);
+    common::cli::release_the_unit(ended.fake.path());
+    let run = common::cli::current_run_id_of(root).expect("the run started before its driver died");
+    assert!(
+        !ended.record.is_empty(),
+        "a live run's driver keeps a record of itself in its step lock"
+    );
+    (dir, ended.record, run)
+}
+
+/// The `relaunch` line the recording launcher writes for the driver `record` names: the binary it
+/// recorded, then the arguments that relaunch it.
+fn relaunch_line(record: &str) -> String {
+    let record: serde_json::Value = serde_json::from_str(record).expect("a driver record");
+    let args: Vec<&str> = record["args"]
+        .as_array()
+        .expect("a record's relaunch arguments")
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    format!(
+        "relaunch {} {}",
+        record["bin"].as_str().expect("the binary a record names"),
+        args.join(" ")
+    )
+}
+
+/// What a row of [`only_the_checking_verbs_relaunch_a_run_whose_driver_died`] invokes over: the
+/// dead driver's record as it stands, or that record with the run held, with another binary
+/// recorded, with a recorded binary since removed, or invoked from a linked worktree, the run
+/// held or not.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Over {
+    Dead,
+    Held,
+    LaneBinary,
+    GoneBinary,
+    LinkedWorktree,
+    HeldLinkedWorktree,
+}
+
+/// A RUN SURVIVES ITS DRIVER, BY AN ALLOW-LIST: after a run's driver dies mid-unit, only the
+/// session start (`prime`), `status` read by a person, `release` and `resume-unit` relaunch it,
+/// once, through the binary the driver recorded, and say so on stderr, answering as they do with
+/// no dead driver. Every other verb leaves the record alone and starts nothing, `watch` naming
+/// what brings the run back; so does a held run, an invocation from a linked worktree, and a
+/// record whose binary is gone, which says so and names the command to run by hand. Two
+/// invocations at once relaunch it once.
+#[test]
+fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
+    let (dir, record, run) = a_project_whose_driver_died();
+    let root = dir.path();
+    let lane = tempfile::tempdir().unwrap();
+    let lane_bin = lane.path().join("rigger");
+    std::fs::write(&lane_bin, "a lane's build").unwrap();
+    let gone_bin = lane.path().join("gone").join("rigger");
+    let linked = lane.path().join("linked");
+    git_ok(
+        root,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "a-lane",
+            linked.to_str().unwrap(),
+        ],
+    );
+    let with_bin = |bin: &Path| {
+        let mut changed: serde_json::Value = serde_json::from_str(&record).unwrap();
+        changed["bin"] = serde_json::json!(bin);
+        changed.to_string()
+    };
+    // Each row: the invocation, what it is invoked over, whether it relaunches, and what its
+    // output says when it says something of its own.
+    let rows: &[(&[&str], Over, bool, Option<&str>)] = &[
+        (&["prime"], Over::Dead, true, None),
+        (&["status"], Over::Dead, true, None),
+        (&["release"], Over::Dead, true, None),
+        (&["resume-unit", "no-such-unit"], Over::Dead, true, None),
+        (&["status"], Over::LaneBinary, true, None),
+        (&["prime", "--help"], Over::Dead, false, None),
+        (&["status", "--help"], Over::Dead, false, None),
+        (&["status", "-h"], Over::Dead, false, None),
+        (&["release", "--help"], Over::Dead, false, None),
+        (&["resume-unit", "--help"], Over::Dead, false, None),
+        (&["status", "--line"], Over::Dead, false, None),
+        (&["status", "--json"], Over::Dead, false, None),
+        (
+            &["watch", "--once"],
+            Over::Dead,
+            false,
+            Some("`rigger status`"),
+        ),
+        (&["validate"], Over::Dead, false, None),
+        (&["graph", "--lookup", "work"], Over::Dead, false, None),
+        (&["grep-guard"], Over::Dead, false, None),
+        (&["guard-write"], Over::Dead, false, None),
+        (&["hook"], Over::Dead, false, None),
+        (&["mcp"], Over::Dead, false, None),
+        (&["emit"], Over::Dead, false, None),
+        (&["result"], Over::Dead, false, None),
+        (&["progress"], Over::Dead, false, None),
+        (&["ground"], Over::Dead, false, None),
+        (&["run", "--help"], Over::Dead, false, None),
+        (&["hold", "--help"], Over::Dead, false, None),
+        (&["stats", "--help"], Over::Dead, false, None),
+        (&["canary", "--help"], Over::Dead, false, None),
+        (&["playbooks", "--help"], Over::Dead, false, None),
+        (&["replay", "--help"], Over::Dead, false, None),
+        (&["dash", "--help"], Over::Dead, false, None),
+        (&["gate", "--help"], Over::Dead, false, None),
+        (&["peers", "--help"], Over::Dead, false, None),
+        (&["reset", "--help"], Over::Dead, false, None),
+        (&["critique", "--help"], Over::Dead, false, None),
+        (&["init", "--help"], Over::Dead, false, None),
+        (&["setup", "--help"], Over::Dead, false, None),
+        (&["docs", "--help"], Over::Dead, false, None),
+        (&["instructions", "--help"], Over::Dead, false, None),
+        (&["version"], Over::Dead, false, None),
+        (&["help"], Over::Dead, false, None),
+        (&["no-such-verb"], Over::Dead, false, None),
+        (&["status"], Over::Held, false, Some("`rigger release`")),
+        (
+            &["watch", "--once"],
+            Over::Held,
+            false,
+            Some("held by the operator, and no driver runs it; `rigger release` relaunches it"),
+        ),
+        (&["status"], Over::LinkedWorktree, false, None),
+        (&["prime"], Over::LinkedWorktree, false, None),
+        (
+            &["release"],
+            Over::HeldLinkedWorktree,
+            false,
+            Some("`rigger status` or `rigger release` from the main checkout relaunches it"),
+        ),
+        (
+            &["resume-unit", "no-such-unit"],
+            Over::LinkedWorktree,
+            false,
+            None,
+        ),
+        (
+            &["status"],
+            Over::GoneBinary,
+            false,
+            Some("no longer exists"),
+        ),
+    ];
+    for &(args, over, relaunches, says) in rows {
+        let (given, cwd) = match over {
+            Over::LaneBinary => (with_bin(&lane_bin), root),
+            Over::GoneBinary => (with_bin(&gone_bin), root),
+            Over::LinkedWorktree | Over::HeldLinkedWorktree => (record.clone(), linked.as_path()),
+            Over::Dead | Over::Held => (record.clone(), root),
+        };
+        if matches!(over, Over::Held | Over::HeldLinkedWorktree) {
+            hold_the_run(root);
+        }
+        let case = format!("rigger {args:?} over {over:?}");
+        let died = invoke_over_record_in(root, cwd, &given, args, &[]);
+        if over == Over::Held {
+            let _ = invoke_over_record(root, "", &["release"], &[]);
+        }
+        let expected = if relaunches {
+            vec![relaunch_line(&given)]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            (&died.relaunches, died.err.contains(RELAUNCHED)),
+            (&expected, relaunches),
+            "{case} relaunches the dead driver once and says so, or starts nothing; stderr: {}",
+            died.err
+        );
+        let left = if relaunches {
+            serde_json::from_str::<serde_json::Value>(&died.left)
+                .ok()
+                .filter(|left| left["relaunched_at"].is_u64())
+                .map(|_| "stamped".to_string())
+        } else {
+            Some(died.left.clone())
+        };
+        let left_expected = match (relaunches, over) {
+            (true, _) => Some("stamped".to_string()),
+            (false, Over::GoneBinary) => Some(String::new()),
+            (false, _) => Some(given.clone()),
+        };
+        assert_eq!(
+            left, left_expected,
+            "{case} stamps the record it relaunches, clears one it cannot, and leaves any other"
+        );
+        if let Some(says) = says {
+            assert!(
+                died.out.contains(says) || died.err.contains(says),
+                "{case} says {says:?}; stdout: {}\nstderr: {}",
+                died.out,
+                died.err
+            );
+        }
+        if over == Over::GoneBinary {
+            assert!(
+                died.err.contains(gone_bin.to_str().unwrap())
+                    && died.err.contains(&format!("--adopt {run}")),
+                "{case} names the binary that is gone and the command to run by hand; stderr: {}",
+                died.err
+            );
+        }
+        if over != Over::Dead || args[0] == "watch" {
+            continue;
+        }
+        let quiet = invoke_over_record_in(root, cwd, "", args, &[]);
+        assert_eq!(
+            (&quiet.relaunches, quiet.err.contains(RELAUNCHED)),
+            (&Vec::new(), false),
+            "{case} relaunches nothing with no dead driver; stderr: {}",
+            quiet.err
+        );
+        // `validate`'s footprint lines measure the store, which each invocation's own reads grow.
+        let answer = |out: &str| {
+            out.lines()
+                .filter(|line| !line.starts_with("footprint: "))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert_eq!(
+            (answer(&died.out), died.ok),
+            (answer(&quiet.out), quiet.ok),
+            "{case} answers as it does with no dead driver"
+        );
+    }
+
+    std::fs::write(common::cli::rigger_file(root, "step.lock"), &record).unwrap();
+    let _ = std::fs::remove_file(common::relaunch_record());
+    // The record path is this thread's ([`common::relaunch_record`]), named to both.
+    let knob = format!("record:{}", common::relaunch_record().display());
+    let envs = [(common::RELAUNCH_ENV, knob.as_str())];
+    std::thread::scope(|both| {
+        let status = || both.spawn(|| run_rigger_envs(root, &["status"], &envs));
+        let (one, two) = (status(), status());
+        one.join().unwrap();
+        two.join().unwrap();
+    });
+    assert_eq!(
+        recorded_relaunches(),
+        vec![relaunch_line(&record)],
+        "two invocations at once relaunch the dead driver once"
+    );
+}
+
+/// What an invocation leaves in the step lock.
+#[derive(Debug, PartialEq)]
+enum Left {
+    /// The record it found.
+    Kept,
+    /// Nothing.
+    Cleared,
+    /// The record it found, stamped with the relaunch it made.
+    Stamped,
+}
+
+/// One row of [`an_invocation_relaunches_only_a_dead_driver_it_has_not_just_relaunched`]: its
+/// name, the record in the step lock, the invocation's environment, whether it relaunches, what
+/// it leaves in the lock, and what its stderr says.
+type RelaunchRow<'a> = (
+    &'a str,
+    String,
+    &'a [(&'a str, &'a str)],
+    bool,
+    Left,
+    Option<&'a str>,
+);
+
+/// A RUN SURVIVES ITS DRIVER, the cases that relaunch nothing: an invocation a run spawned or a
+/// gate fenced, a driver still alive, a relaunch still starting, one that never started, a
+/// relaunched driver that died again at once, a record of another project, one that does not
+/// parse, and none at all; and the one stamped case that does relaunch, a relaunched driver that
+/// lived long before it died.
+#[test]
+fn an_invocation_relaunches_only_a_dead_driver_it_has_not_just_relaunched() {
+    let (dir, record, run) = a_project_whose_driver_died();
+    let root = dir.path();
+    let now = SystemTimeUnix::now();
+    let dead: serde_json::Value =
+        serde_json::from_str(&record).expect("the record is one JSON object");
+    let with = |field: &str, value: serde_json::Value| {
+        let mut changed = dead.clone();
+        changed[field] = value;
+        changed.to_string()
+    };
+    let fence = tempfile::tempdir().unwrap();
+    let fence = fence.path().to_str().unwrap();
+    let hour_ago = serde_json::json!(now - 3600);
+    let rows: [RelaunchRow; 14] = [
+        (
+            "a driver on a login token, invoked without one",
+            with("credentials", serde_json::json!([AGENT_TOKEN_VAR])),
+            &[(AGENT_TOKEN_VAR, "")],
+            false,
+            Left::Kept,
+            Some(TOKEN_MISSING),
+        ),
+        (
+            "a driver on a store connection, invoked without one",
+            with("credentials", serde_json::json!([CONN_VAR])),
+            &[(CONN_VAR, "")],
+            false,
+            Left::Kept,
+            Some(CONN_MISSING),
+        ),
+        (
+            "a driver on a login token, invoked with one",
+            with("credentials", serde_json::json!([AGENT_TOKEN_VAR])),
+            &[(AGENT_TOKEN_VAR, "another-token")],
+            false,
+            Left::Stamped,
+            Some(RELAUNCHED),
+        ),
+        (
+            "a run's own spawn",
+            record.clone(),
+            &[(rigger::driver::SPAWN_ENV, "s-1")],
+            false,
+            Left::Kept,
+            None,
+        ),
+        (
+            "a gate's store fence",
+            record.clone(),
+            &[(rigger::gate::STORE_FENCE_ENV, fence)],
+            false,
+            Left::Kept,
+            None,
+        ),
+        (
+            "a gate's channel",
+            record.clone(),
+            &[(rigger::gate_channel::GATE_SOCKET_ENV, "/nowhere/gate.sock")],
+            false,
+            Left::Kept,
+            None,
+        ),
+        (
+            "a driver still holding the lock",
+            record.clone(),
+            &[],
+            true,
+            Left::Kept,
+            None,
+        ),
+        (
+            "a relaunch still starting",
+            with("relaunched_at", serde_json::json!(now)),
+            &[],
+            false,
+            Left::Kept,
+            None,
+        ),
+        (
+            "a relaunch that never started",
+            with("relaunched_at", hour_ago.clone()),
+            &[],
+            false,
+            Left::Cleared,
+            Some(NEVER_STARTED),
+        ),
+        (
+            "a relaunched driver that died again at once",
+            with("revived_at", serde_json::json!(now)),
+            &[],
+            false,
+            Left::Cleared,
+            Some(DIED_AGAIN),
+        ),
+        (
+            "a relaunched driver that died long after",
+            with("revived_at", hour_ago),
+            &[],
+            false,
+            Left::Stamped,
+            Some(RELAUNCHED),
+        ),
+        (
+            "another project's record",
+            with("dir", serde_json::json!("/elsewhere/.rigger")),
+            &[],
+            false,
+            Left::Cleared,
+            None,
+        ),
+        (
+            "a record that does not parse",
+            "not a record".to_string(),
+            &[],
+            false,
+            Left::Cleared,
+            None,
+        ),
+        ("no record", String::new(), &[], false, Left::Kept, None),
+    ];
+    for (case, given, envs, held, expected, says) in rows {
+        let lock = held.then(|| common::cli::hold_step_lock(root));
+        let after = invoke_over_record(root, &given, &["status"], envs);
+        drop(lock);
+        let left = match after.left.as_str() {
+            "" if !given.is_empty() => Left::Cleared,
+            same if same == given => Left::Kept,
+            stamped => {
+                let stamped: serde_json::Value = serde_json::from_str(stamped).unwrap();
+                assert!(
+                    stamped["run"] == run.as_str() && stamped["relaunched_at"].is_u64(),
+                    "{case}: a relaunch stamps the record it found; left: {stamped}"
+                );
+                Left::Stamped
+            }
+        };
+        let relaunched = expected == Left::Stamped;
+        assert_eq!(
+            (
+                left,
+                after.relaunches.len(),
+                says.map(|s| after.err.contains(s))
+            ),
+            (expected, usize::from(relaunched), says.map(|_| true)),
+            "{case}; stderr: {}",
+            after.err
+        );
+        if says.is_none() {
+            assert!(
+                !after.err.contains("--adopt"),
+                "{case}: nothing is said; stderr: {}",
+                after.err
+            );
+        }
+    }
+}
+
+/// Seconds since the Unix epoch, the unit a driver record stamps its relaunches in.
+struct SystemTimeUnix;
+
+impl SystemTimeUnix {
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+}
+
+/// THE RELAUNCH ADOPTS ITS OWN RUN: a `rigger run --adopt <run>` that would adopt another run, or
+/// mint one, refuses before it appends anything, naming both runs, and clears the record, so a
+/// relaunch whose run is gone never loops.
+#[test]
+fn a_relaunch_that_would_adopt_another_run_refuses_and_clears_its_record() {
+    let (dir, _record, run) = a_project_whose_driver_died();
+    let root = dir.path();
+    let before = read_run_events(root).len();
+    let (out, err, ok) = run_reporting(root, &["run", "--adopt", "not-this-run"]);
+    assert!(
+        !ok && err.contains("not-this-run") && err.contains(&run),
+        "the relaunch refuses naming the run it names and the run it would adopt; \
+         stdout: {out}\nstderr: {err}"
+    );
+    assert_eq!(
+        (
+            read_run_events(root).len(),
+            common::cli::driver_record(root)
+        ),
+        (before, String::new()),
+        "the refusal appends nothing and clears the record"
+    );
+}
+
+/// The environment of an invocation that starts a real relaunch of the run `ended` left: the fake
+/// host first on PATH and the host's own launcher. No root the run resolves is handed: the
+/// relaunched driver resolves the roots of the driver that died.
+fn real_relaunch_envs(ended: &common::cli::EndedRun) -> [(&str, &str); 2] {
+    [
+        ("PATH", ended.path_env.as_str()),
+        (common::RELAUNCH_ENV, ""),
+    ]
+}
+
+/// THE ADOPTION CHANGES NOTHING IT REFUSES: a relaunch into a checkout the operator moved off the
+/// run branch, with a change staged and a further edit on disk, refuses before any start effect,
+/// so HEAD, the index and the file are as the operator left them and the dead driver's open launch
+/// is still open.
+#[test]
+fn a_relaunch_into_a_checkout_on_another_branch_refuses_and_changes_nothing() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], common::fixtures::cleanup);
+    common::cli::release_the_unit(ended.fake.path());
+    git_ok(root, &["checkout", "-q", "-b", "elsewhere"]);
+    std::fs::write(root.join("dirty.txt"), "the operator's change\n").unwrap();
+    git_ok(root, &["add", "dirty.txt"]);
+    std::fs::write(
+        root.join("dirty.txt"),
+        "the operator's change, edited again\n",
+    )
+    .unwrap();
+    let checkout = || {
+        (
+            common::git::git_out(root, &["symbolic-ref", "HEAD"]),
+            common::git::git_out(root, &["rev-parse", "HEAD"]),
+            common::git::git_out(root, &["diff", "--cached"]),
+            std::fs::read_to_string(root.join("dirty.txt")).unwrap(),
+            recorded_launches(root),
+        )
+    };
+    let before = checkout();
+    let envs = real_relaunch_envs(&ended);
+    let (out, err, ok) = run_rigger_envs(root, &["status"], &envs);
+    assert!(
+        ok && err.contains(RELAUNCHED),
+        "the invocation relaunches the dead driver; stdout: {out}\nstderr: {err}"
+    );
+    let ended_up = common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
+        common::cli::driver_record(root).is_empty() && common::cli::step_lock_free(root)
+    });
+    assert!(
+        ended_up,
+        "the relaunched driver refuses, ends and clears its record"
+    );
+    assert_eq!(
+        checkout(),
+        before,
+        "the refused relaunch leaves HEAD, the index, the file and the open launch untouched"
+    );
+    let output =
+        std::fs::read_to_string(common::cli::rigger_file(root, "driver.out")).unwrap_or_default();
+    assert!(
+        err.contains("driver.out") && output.contains("elsewhere"),
+        "the relaunch names the file its driver's output goes to, and the driver's refusal \
+         naming the branch is in it; stderr: {err}\noutput: {output}"
+    );
+    let (out, err, _ok) = run_rigger(root, &["status"]);
+    assert!(
+        out.contains("driver.out") || err.contains("driver.out"),
+        "`rigger status` on the stopped relaunch names its driver's output; stdout: {out}\n\
+         stderr: {err}"
+    );
+}
+
+/// THE ADOPTION OF A FINISHED RUN IS REFUSED: a record a run left behind after it was driven to
+/// its end relaunches a driver that refuses before it starts anything, naming the run done,
+/// appends nothing and clears the record.
+#[test]
+fn a_relaunch_of_a_finished_run_refuses_and_clears_its_record() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], common::fixtures::cleanup);
+    common::cli::release_the_unit(ended.fake.path());
+    let run = common::cli::current_run_id_of(root).expect("the run started before its driver died");
+    let envs = common::cli::fake_claude_env(&ended.path_env, &scratch);
+    let (out, err, ok) = run_rigger_envs(root, &["run"], &envs);
+    assert!(
+        ok && !common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED).is_empty(),
+        "the run is driven to its end; stdout: {out}\nstderr: {err}"
+    );
+    std::fs::write(common::cli::rigger_file(root, "step.lock"), &ended.record).unwrap();
+    let before = (read_run_events(root).len(), recorded_launches(root));
+    let (out, err, ok) = run_rigger_envs(root, &["run", "--adopt", &run], &envs);
+    assert!(
+        !ok && err.contains(&format!("run {run} is done")),
+        "the relaunch of a finished run refuses naming it done; stdout: {out}\nstderr: {err}"
+    );
+    assert_eq!(
+        (
+            read_run_events(root).len(),
+            recorded_launches(root),
+            common::cli::driver_record(root)
+        ),
+        (before.0, before.1, String::new()),
+        "the refusal appends nothing, launches nothing and clears the record"
+    );
+}
+
+/// Place an operator hold on the current run of the project at `root`, as `rigger hold` does.
+fn hold_the_run(root: &Path) {
+    let (out, err, ok) = run_rigger(root, &["hold", "--reason", "the operator stops the run"]);
+    assert!(ok, "the operator hold lands; stdout: {out}\nstderr: {err}");
+}
+
+/// AN OPERATOR HOLD IS THE STOP: a run its operator held, whether the hold came before its
+/// driver's death or after it, a relaunched driver that died at once included, is relaunched by
+/// no invocation, and its record is left as it was, until `rigger release` relaunches it.
+#[test]
+fn an_operator_hold_stops_a_run_for_good_until_its_release() {
+    // Each row: its name, whether the hold lands before the death, and whether the dead driver
+    // was itself a relaunch made just now.
+    let rows = [
+        ("a hold, then the death", true, false),
+        ("the death, then a hold", false, false),
+        ("a relaunched driver held, then dead at once", true, true),
+    ];
+    for (case, hold_first, revived) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let scratch = common::default_scratch_root(root);
+        let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], |driver| {
+            if hold_first {
+                hold_the_run(root);
+            }
+            common::fixtures::cleanup(driver);
+        });
+        common::cli::release_the_unit(ended.fake.path());
+        if !hold_first {
+            hold_the_run(root);
+        }
+        let mut record: serde_json::Value = serde_json::from_str(&ended.record).unwrap();
+        if revived {
+            record["revived_at"] = serde_json::json!(SystemTimeUnix::now());
+        }
+        let record = record.to_string();
+        for args in [&["status"][..], &["prime"], &["status"]] {
+            let after = invoke_over_record(root, &record, args, &[]);
+            assert_eq!(
+                (after.relaunches, after.left),
+                (Vec::<String>::new(), record.clone()),
+                "{case}: rigger {args:?} starts nothing and leaves the record; stderr: {}",
+                after.err
+            );
+        }
+        let released = invoke_over_record(root, &record, &["release"], &[]);
+        assert_eq!(
+            (released.relaunches, released.err.contains(RELAUNCHED)),
+            (vec![relaunch_line(&record)], true),
+            "{case}: `rigger release` relaunches the run; stderr: {}",
+            released.err
+        );
+    }
+}
+
+/// AN OPERATOR HOLD IS THE STOP OF AN ADOPTING DRIVER: a driver started to adopt a run its operator
+/// holds parks the run's next launch instead of waiting the hold out, so it ends, frees the step
+/// lock and leaves its record for `rigger release`, launching nothing and failing no unit. Started
+/// by hand, it clears what an earlier relaunched driver said, so `rigger status` no longer says a
+/// relaunched driver ended before its run did.
+#[test]
+fn an_adopting_driver_under_an_operator_hold_ends_and_leaves_its_record_for_release() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], common::fixtures::cleanup);
+    common::cli::release_the_unit(ended.fake.path());
+    let run = common::cli::current_run_id_of(root).expect("the run started");
+    hold_the_run(root);
+    let opened = |root: &Path| {
+        recorded_launches(root)
+            .into_iter()
+            .filter(|(_, launch)| launch.ended.is_none())
+            .count()
+    };
+    let opened_before = opened(root);
+    let earlier_output = common::cli::rigger_file(root, "driver.out");
+    std::fs::write(&earlier_output, "an earlier relaunched driver's refusal\n").unwrap();
+    let envs = common::cli::fake_claude_env(&ended.path_env, &scratch);
+    let outcome = common::cli::run_rigger_within(
+        root,
+        &["run", "--adopt", &run],
+        &envs,
+        POLLS_BESIDE_A_RUN,
+        |_| {},
+    );
+    let (out, err, _ok) = outcome.expect("the adopting driver under an operator hold ends");
+    let left: serde_json::Value =
+        serde_json::from_str(&common::cli::driver_record(root)).unwrap_or_default();
+    assert_eq!(
+        (
+            common::cli::step_lock_free(root),
+            left["run"].as_str(),
+            left["revived_at"].is_null(),
+            opened(root),
+            common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_FAILED).len(),
+        ),
+        (true, Some(run.as_str()), true, opened_before, 0),
+        "the driver frees the step lock and leaves its record, launching nothing and failing no \
+         unit; stdout: {out}\nstderr: {err}"
+    );
+    assert!(
+        err.contains("rigger release"),
+        "the driver names `rigger release` as what relaunches it; stderr: {err}"
+    );
+    let parked = common::cli::driver_record(root);
+    let status = invoke_over_record(root, &parked, &["status"], &[]);
+    assert_eq!(
+        (
+            std::fs::read_to_string(&earlier_output).unwrap_or_default(),
+            status.out.contains(STOPPED_RELAUNCH)
+        ),
+        (String::new(), false),
+        "a driver started by hand clears an earlier relaunched driver's output, so status no \
+         longer says it ended; status: {}",
+        status.out
+    );
+    let released = invoke_over_record(root, &parked, &["release"], &[]);
+    assert_eq!(
+        released.relaunches,
+        vec![relaunch_line(&parked)],
+        "`rigger release` relaunches the run; stderr: {}",
+        released.err
+    );
+}
+
+/// The units of [`CHAINED_UNIT_WORKFLOW`]: `alpha` and `bravo` stand alone and `charlie` needs
+/// `alpha`, so `charlie` launches while `bravo` may still be in flight.
+const CHAINED_UNITS: [&str; 3] = ["alpha", "bravo", "charlie"];
+
+/// A reviewless workflow of [`CHAINED_UNITS`], each its own stage and agent (`Do unit <name>.`),
+/// gated by an always-passing core gate and merged on a pass.
+const CHAINED_UNIT_WORKFLOW: &str = r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok: { run: "true", kind: core }
+stages:
+  alpha:
+    agent: worker-alpha
+    gates: [ok]
+    on_pass: merge
+  bravo:
+    agent: worker-bravo
+    gates: [ok]
+    on_pass: merge
+  charlie:
+    agent: worker-charlie
+    needs: [alpha]
+    gates: [ok]
+    on_pass: merge
+"#;
+
+/// Scaffold [`CHAINED_UNIT_WORKFLOW`] under `root`, with one agent per unit.
+fn write_chained_unit_workflow(root: &Path) {
+    let agents: Vec<(String, String)> = CHAINED_UNITS
+        .iter()
+        .map(|unit| {
+            (
+                format!("worker-{unit}"),
+                format!(
+                    "---\nid: worker-{unit}\nmodel: sonnet\ntools: [Read, Edit]\n---\nDo unit \
+                     {unit}.\n"
+                ),
+            )
+        })
+        .collect();
+    let agents: Vec<(&str, &str)> = agents
+        .iter()
+        .map(|(id, body)| (id.as_str(), body.as_str()))
+        .collect();
+    common::cli::write_scaffold(root, &agents, CHAINED_UNIT_WORKFLOW);
+}
+
+/// The arms of [`CHAINED_UNITS`]' implementers: each marks `started-<unit>` beside the fake, waits
+/// for `release-<unit>` or `release` there, then writes a file of its own for its merge to land.
+fn chained_unit_arms() -> String {
+    CHAINED_UNITS
+        .iter()
+        .map(|unit| {
+            format!(
+                "  *\"Do unit {unit}.\"*)\n    : > \"$here/started-{unit}\"\n    while [ ! -e \
+                 \"$here/release-{unit}\" ] && [ ! -e \"$here/release\" ]; do sleep 0.05; done\n    \
+                 echo \"pub fn {unit}() {{}}\" > {unit}.rs\n    ;;\n"
+            )
+        })
+        .collect()
+}
+
+/// A HOLD RELEASED UNDER A LIVE PARKED DRIVER CONTINUES THE RUN: an adopting driver with two units
+/// in flight whose third unit parks on an operator hold, the hold released before the second unit
+/// finishes, drives the run to its end in the same process and clears its record.
+#[test]
+fn a_hold_released_while_a_parked_adopting_driver_runs_drives_the_run_to_its_end() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_chained_unit_workflow(root);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_units(
+        root,
+        &scratch,
+        &[],
+        &chained_unit_arms(),
+        &["started-alpha", "started-bravo"],
+        common::fixtures::cleanup,
+    );
+    let here = ended.fake.path().join("bin");
+    // The dead driver's implementers go on and end before the adopting driver launches its own.
+    std::fs::write(here.join("release"), "").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    for mark in ["release", "started-alpha", "started-bravo"] {
+        std::fs::remove_file(here.join(mark)).unwrap();
+    }
+    let run = common::cli::current_run_id_of(root).expect("the run started");
+    let unit_started = |unit: &str| {
+        common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_STARTED)
+            .iter()
+            .any(|unit_started| unit_started.to_string().contains(unit))
+    };
+    let envs = common::cli::fake_claude_env(&ended.path_env, &scratch);
+    // 0: both units in flight, so hold and let alpha end; 1: charlie started, so give its
+    // launch time to park; 2: release the hold, then let bravo and charlie end.
+    let mut step = 0;
+    let mut settle = 0;
+    let outcome = common::cli::run_rigger_within(
+        root,
+        &["run", "--adopt", &run],
+        &envs,
+        POLLS_BESIDE_A_RUN,
+        |_| match step {
+            0 if here.join("started-alpha").exists() && here.join("started-bravo").exists() => {
+                hold_the_run(root);
+                std::fs::write(here.join("release-alpha"), "").unwrap();
+                step = 1;
+            }
+            1 if unit_started("charlie") => {
+                settle += 1;
+                if settle == 80 {
+                    let (out, err, ok) = run_rigger(root, &["release"]);
+                    assert!(ok, "the hold is released; stdout: {out}\nstderr: {err}");
+                    std::fs::write(here.join("release"), "").unwrap();
+                    step = 2;
+                }
+            }
+            _ => {}
+        },
+    );
+    std::fs::write(here.join("release"), "").unwrap();
+    let (out, err, ok) = outcome.expect("the adopting driver ends");
+    let integrated = common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED).len();
+    assert_eq!(
+        (step, ok, integrated, common::cli::driver_record(root)),
+        (2, true, CHAINED_UNITS.len(), String::new()),
+        "the released run is driven to its end by the driver that parked, which clears its \
+         record; stdout: {out}\nstderr: {err}"
+    );
+}
+
+/// STOPPED ON PURPOSE: a driver the operator interrupts (Ctrl-C) clears its record as it ends, so
+/// the next invocation relaunches nothing.
+#[cfg(unix)]
+#[test]
+fn an_interrupted_driver_is_stopped_on_purpose_and_never_relaunched() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], |driver| {
+        assert!(
+            common::interrupt_pid(driver.id()),
+            "the interrupt reaches the driver"
+        );
+        driver.wait().unwrap();
+    });
+    common::cli::release_the_unit(ended.fake.path());
+    assert!(!ended.record.is_empty(), "the live driver kept its record");
+    let after = invoke_over_record(root, &common::cli::driver_record(root), &["status"], &[]);
+    assert_eq!(
+        (after.left, after.relaunches),
+        (String::new(), Vec::<String>::new()),
+        "the interrupted driver cleared its record, and nothing is relaunched; stderr: {}",
+        after.err
+    );
+}
+
+/// A RUN SURVIVES ITS DRIVER through the real background start: the invocation after a death starts
+/// a detached driver that adopts the run, re-parks its implementer and drives it to its end,
+/// carrying the relaunch it was started by, and clears its record once it is done, so the next
+/// invocation relaunches nothing. The dead driver's scratch and state roots, which the invocation
+/// does not share, are the relaunched driver's, and of the login token it ran its agents on its
+/// record keeps only that it had one.
+#[test]
+fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let roots = tempfile::tempdir().unwrap();
+    let scratch = roots.path().join("scratch");
+    let state = roots.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let token = "a-login-token-value";
+    let ended = common::cli::a_run_ended_mid_unit(
+        root,
+        &scratch,
+        &[
+            ("XDG_STATE_HOME", state.to_str().unwrap()),
+            (AGENT_TOKEN_VAR, token),
+        ],
+        common::fixtures::cleanup,
+    );
+    let run = common::cli::current_run_id_of(root).expect("the run started before its driver died");
+    let started = common::cli::unit_started(ended.fake.path());
+    std::fs::remove_file(&started).unwrap();
+    std::fs::remove_file(ended.fake.path().join("bin").join("cwd")).unwrap();
+    let instances = state.join("rigger").join("instances");
+    let _ = std::fs::remove_dir_all(&instances);
+    let mut envs = real_relaunch_envs(&ended).to_vec();
+    envs.push((AGENT_TOKEN_VAR, token));
+    let (out, err, ok) = run_rigger_envs(root, &["status"], &envs);
+    assert!(
+        ok && err.contains(RELAUNCHED),
+        "the invocation relaunches the dead driver; stdout: {out}\nstderr: {err}"
+    );
+    let reparked = common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || started.exists());
+    let live = common::cli::driver_record(root);
+    let live: serde_json::Value = serde_json::from_str(&live).unwrap_or_default();
+    let alive = !common::cli::step_lock_free(root);
+    let worked_in =
+        std::fs::read_to_string(ended.fake.path().join("bin").join("cwd")).unwrap_or_default();
+    let registered = std::fs::read_dir(&instances).is_ok_and(|mut dir| dir.next().is_some());
+    common::cli::release_the_unit(ended.fake.path());
+    assert!(
+        reparked && alive,
+        "the relaunched driver holds the step lock and re-parks the unit's implementer"
+    );
+    assert_eq!(
+        (
+            Path::new(worked_in.trim_end()).starts_with(scratch.canonicalize().unwrap()),
+            registered
+        ),
+        (true, true),
+        "the relaunched driver works under the dead driver's scratch root and registers under \
+         its state home; the implementer worked in {worked_in:?}"
+    );
+    let kept: serde_json::Value = serde_json::from_str(&ended.record).unwrap_or_default();
+    assert!(
+        kept["credentials"] == serde_json::json!([AGENT_TOKEN_VAR])
+            && !ended.record.contains(token),
+        "the record keeps that the driver had a login token, never its value; {}",
+        ended.record
+    );
+    assert!(
+        live["run"] == run.as_str()
+            && live["revived_at"].is_u64()
+            && live["relaunched_at"].is_null(),
+        "the relaunched driver keeps its own record of the run, carrying its relaunch; {live}"
+    );
+    let done = common::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
+        common::cli::driver_record(root).is_empty() && common::cli::step_lock_free(root)
+    });
+    assert!(done, "the relaunched driver ends and clears its record");
+    assert!(
+        !common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_INTEGRATED).is_empty(),
+        "the relaunched driver drove the unit to its integration"
+    );
+    let _ = std::fs::remove_file(common::relaunch_record());
+    let (_out, err, _ok) = run_rigger_envs(root, &["status"], &[]);
+    assert!(
+        recorded_relaunches().is_empty() && !err.contains(RELAUNCHED),
+        "a run driven to its end is relaunched by nothing; stderr: {err}"
     );
 }
 

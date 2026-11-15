@@ -131,6 +131,17 @@ fn main() {
     if let Some(code) = answer_help(&args[1], &args[2..]) {
         std::process::exit(code);
     }
+    // A RUN SURVIVES ITS DRIVER: the few checking verbs relaunch the project's run whose driver
+    // died, before the verb, since a verb may end the process itself, or after the verbs whose
+    // effect the relaunch must see; every other verb checks nothing, and a verb asked for its
+    // help (answered above) runs no verb, so it checks nothing either.
+    let verb = args[1].as_str();
+    let check = check_point(&args[1..]);
+    if check == CheckPoint::Before {
+        let site = Site::here();
+        relaunch_a_dead_driver(&site, false);
+        site.lend_discovery();
+    }
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),
         "resume-unit" => cmd_resume_unit(&args[2..]),
@@ -182,6 +193,9 @@ fn main() {
             1
         }
     };
+    if check == CheckPoint::After {
+        relaunch_a_dead_driver(&Site::here(), verb == "release");
+    }
 
     std::process::exit(code);
 }
@@ -198,7 +212,8 @@ rigger resume-unit <unit>   give an escalated unit of the current run more attem
 [--attempts <n>]  (default 1) on its same branch: the next `rigger run`\n                              \
 re-parks its implementer there. Refuses, recording\n                              \
 nothing, when the unit is not escalated or its branch\n                              \
-is gone\n  \
+is gone; a speculation group re-enters on fresh lane\n                              \
+worktrees, so its deleted branches are no refusal\n  \
 rigger hold --reason <text> hold the current run for the operator, the text its\n                              \
 reason: no probe ends this hold; `rigger release`, a\n                              \
 new run, or `rigger run` reaching done does. Refuses,\n                              \
@@ -385,7 +400,10 @@ prior run stays in the log as history and context\n  \
 prompts) that drifted from what this live run pinned at\n                                   \
 start: record the supersession and continue instead of\n                                   \
 halting. The explicit mid-campaign-edit escape (a live\n                                   \
-run otherwise HALTS loudly on definition drift)\n\n\
+run otherwise HALTS loudly on definition drift)\n  \
+--adopt <run>                    adopt that run and no other: refuse, recording\n                                   \
+nothing, when the start would adopt another or begin a\n                                   \
+new one. What a relaunch after a driver died passes\n\n\
 storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
 project identity so one backend can hold many projects without their data mixing.\n";
 

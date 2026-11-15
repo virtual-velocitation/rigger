@@ -2125,6 +2125,150 @@ fn a_request_made_unreadable_during_an_exhausting_pass_fails_the_call() {
     assert_eq!(out, "", "no answer is printed");
 }
 
+/// Given a critic launched and held before its session prints its first line, when `rigger reset
+/// --build-cache` runs during that silence, then the critic's liveness marker already stands and
+/// its spawn scratch, the persona file the launch wrote, is kept: a hosted spawn is live from its
+/// launch, not from its first line.
+#[test]
+fn a_critic_silent_before_its_first_line_is_live_from_its_launch() {
+    let dir = temp_project();
+    let root = dir.path().to_path_buf();
+    scaffold(&root, CRITIC_WORKFLOW);
+    let scratch = root.join("scratch");
+    let base = scratch.to_str().unwrap().to_string();
+    let unit = critique_unit(SPEC_HASH);
+    let spawn = critique_spawn_id(SPEC_HASH, 0);
+    let marker = marker_path(&base, &unit, &spawn).unwrap();
+    let container = spawn_scratch_path(&base, &unit, &spawn).unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (work, path) = stub(CLEAN_CRITIQUE);
+    let during = {
+        let (root, base, seen) = (root.clone(), base.clone(), seen.clone());
+        let (marker, container) = (marker.clone(), container.clone());
+        move || {
+            let marked = marker.exists();
+            let (out, err, ok) = run_rigger_envs(
+                &root,
+                &["reset", "--build-cache"],
+                &[("RIGGER_TMPDIR", base.as_str())],
+            );
+            *seen.lock().unwrap() = Some((marked, container.exists(), out, err, ok));
+        }
+    };
+    let held = hold_critique_stub(work.path(), during);
+    let (_, err, ok) = critique(&root, SPEC_REL, &path, &scratch);
+    held.join().expect("the pass was held and released");
+    assert!(ok, "the critique records; stderr:\n{err}");
+    let (marked, kept, out, err, reset_ok) = seen.lock().unwrap().take().unwrap();
+    assert!(
+        reset_ok,
+        "reset --build-cache succeeds; stdout {out:?} stderr {err:?}"
+    );
+    assert!(
+        marked,
+        "the critic's marker stands from its launch: {marker:?}"
+    );
+    assert!(
+        kept,
+        "a launched critic's scratch is kept before its first line: {container:?}; stdout {out:?}"
+    );
+}
+
+/// Given a critique answered from the store while critics of the same text and of another text
+/// are live, when the text is critiqued again, then the call removes the scratch of the ended and
+/// the crashed critiques and keeps every live critic's marker and scratch: the reap spares a live
+/// critique by the one liveness rule.
+#[test]
+fn an_answered_call_keeps_every_live_critics_scratch() {
+    /// What the critique's stream holds of the row's spawn.
+    enum Recorded {
+        /// Its request alone: a critic still running.
+        Requested,
+        /// Its request and its result: an ended critique.
+        Answered,
+        /// Nothing: a crashed critique's leftovers.
+        Nothing,
+    }
+    struct Row {
+        what: &'static str,
+        hash: &'static str,
+        attempt: u32,
+        recorded: Recorded,
+        kept: bool,
+    }
+    let rows = [
+        Row {
+            what: "a live critic of the same text",
+            hash: SPEC_HASH,
+            attempt: 2,
+            recorded: Recorded::Requested,
+            kept: true,
+        },
+        Row {
+            what: "a live critic of another text",
+            hash: "aaaaaaaaaaaaaaaa",
+            attempt: 0,
+            recorded: Recorded::Requested,
+            kept: true,
+        },
+        Row {
+            what: "an ended critique of another text",
+            hash: "bbbbbbbbbbbbbbbb",
+            attempt: 0,
+            recorded: Recorded::Answered,
+            kept: false,
+        },
+        Row {
+            what: "a crashed critique with no request",
+            hash: "cccccccccccccccc",
+            attempt: 0,
+            recorded: Recorded::Nothing,
+            kept: false,
+        },
+    ];
+    let dir = temp_project();
+    let root = dir.path();
+    scaffold(root, CRITIC_WORKFLOW);
+    seed_critique_spawn(root, SPEC_HASH, 0, REJECT);
+    seed_critique_spawn(root, SPEC_HASH, 1, CLEAN_CRITIQUE);
+    let scratch = root.join("scratch");
+    let base = scratch.to_str().unwrap();
+    for row in &rows {
+        match row.recorded {
+            Recorded::Requested => common::cli::seed_critique_request(root, row.hash, row.attempt),
+            Recorded::Answered => seed_critique_spawn(root, row.hash, row.attempt, CLEAN_CRITIQUE),
+            Recorded::Nothing => {}
+        }
+        let (unit, spawn) = (
+            critique_unit(row.hash),
+            critique_spawn_id(row.hash, row.attempt),
+        );
+        for file in [
+            marker_path(base, &unit, &spawn).unwrap(),
+            spawn_scratch_path(base, &unit, &spawn).unwrap().join("f"),
+        ] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, "").unwrap();
+        }
+    }
+
+    let (work, path) = stub(CLEAN_CRITIQUE);
+    let (_, err, ok) = critique(root, SPEC_REL, &path, &scratch);
+    assert!(ok, "an answered call exits 0; stderr:\n{err}");
+    assert_eq!(critique_stub_spawns(work.path()), 0, "zero spawns");
+    for row in &rows {
+        let unit = critique_unit(row.hash);
+        for area in ["agent-live", "agent-scratch"] {
+            assert_eq!(
+                scratch.join(area).join(&unit).exists(),
+                row.kept,
+                "{}: its {area} directory is kept exactly while its critic is live",
+                row.what
+            );
+        }
+    }
+}
+
 /// Given two calls that raced on one text minted one spawn id, so the critique stream holds two
 /// attempt-0 requests and no result, when the unchanged text is critiqued again, then the next
 /// attempt is the number of requests recorded for the hash, 2, never the number of distinct ids.

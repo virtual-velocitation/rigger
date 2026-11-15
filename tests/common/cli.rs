@@ -2625,6 +2625,22 @@ pub fn run_on_arms(
     (out, err, ok, fakebin)
 }
 
+/// What an author session answers once its work is done, as the stand-in `claude` prints it:
+/// `answer`, then the handover line the author handover contract asks its final message to end
+/// with.
+pub fn handed_over(answer: &str) -> String {
+    format!(
+        "{answer}\n{}",
+        rigger_conductor::prompt_surface::AUTHOR_HANDOVER_LINE
+    )
+}
+
+/// The author handover contract the conductor appends to every author's task, its line filled.
+pub fn handover_contract() -> String {
+    use rigger_conductor::prompt_surface::{AUTHOR_HANDOVER, AUTHOR_HANDOVER_LINE};
+    rigger_domain::prompt_surface::fill(AUTHOR_HANDOVER, &[("line", AUTHOR_HANDOVER_LINE)])
+}
+
 /// The environment a run of [`install_fake_claude`]'s fake takes: `path_env` and the scratch root
 /// `scratch`.
 pub fn fake_claude_env<'a>(path_env: &'a str, scratch: &'a Path) -> [(&'a str, &'a str); 2] {
@@ -2667,6 +2683,106 @@ pub fn run_on_arms_beside_with(
     })
     .expect("the run ends once its holds are released");
     (out, err, ok, fakebin)
+}
+
+/// The `Do the unit.` implementer arm that keeps a run mid-unit: it records its working directory
+/// in `cwd` beside the fake, marks `started` there, waits for a `release` there
+/// ([`release_the_unit`]), then writes the change a merging stage lands.
+pub const HOLDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
+    pwd -P > "$here/cwd"
+    : > "$here/started"
+    while [ ! -e "$here/release" ]; do sleep 0.05; done
+    echo "pub fn work() {}" > work.rs
+    ;;
+"#;
+
+/// Where a [`HOLDING_WORKER_ARM`] implementer of the fake installed at `fakebin` marks that it
+/// started: the directory its arms run in.
+pub fn unit_started(fakebin: &Path) -> PathBuf {
+    fakebin.join("bin").join("started")
+}
+
+/// Let every [`HOLDING_WORKER_ARM`] implementer of the fake installed at `fakebin` go on.
+pub fn release_the_unit(fakebin: &Path) {
+    std::fs::write(fakebin.join("bin").join("release"), "").unwrap();
+}
+
+/// What `.rigger/step.lock` under `root` holds: the record a run's driver keeps of itself.
+pub fn driver_record(root: &Path) -> String {
+    std::fs::read_to_string(rigger_file(root, "step.lock")).unwrap_or_default()
+}
+
+/// Whether no process holds the step lock under `root` now.
+pub fn step_lock_free(root: &Path) -> bool {
+    use fs2::FileExt;
+    let Ok(file) = std::fs::OpenOptions::new()
+        .write(true)
+        .open(rigger_file(root, "step.lock"))
+    else {
+        return true;
+    };
+    file.try_lock_exclusive().is_ok()
+}
+
+/// `rigger run` in `cwd` under the scratch root `scratch`, with [`HOLDING_WORKER_ARM`]'s fake
+/// first on PATH and the extra environment `envs`, driven until its implementer is mid-unit; then
+/// `end` is handed the driver's handle and ends it. The caller releases the stranded implementer
+/// ([`release_the_unit`]). A run that ends before it reaches its
+/// implementer panics with its output.
+pub fn a_run_ended_mid_unit(
+    cwd: &Path,
+    scratch: &Path,
+    envs: &[(&str, &str)],
+    end: impl FnOnce(&mut Child),
+) -> EndedRun {
+    a_run_ended_mid_units(cwd, scratch, envs, HOLDING_WORKER_ARM, &["started"], end)
+}
+
+/// [`a_run_ended_mid_unit`] over the fake host answering from `arms`, driven until each of
+/// `started`, a file its arms mark beside the fake, exists.
+pub fn a_run_ended_mid_units(
+    cwd: &Path,
+    scratch: &Path,
+    envs: &[(&str, &str)],
+    arms: &str,
+    started: &[&str],
+    end: impl FnOnce(&mut Child),
+) -> EndedRun {
+    let (fakebin, path_env) = install_fake_claude(arms);
+    let mut all = fake_claude_env(&path_env, scratch).to_vec();
+    all.extend_from_slice(envs);
+    let (state, child) = spawn_rigger(cwd, &["run"], &all);
+    let mut owned = OwnedChild::new(child);
+    let marks: Vec<PathBuf> = started
+        .iter()
+        .map(|name| fakebin.path().join("bin").join(name))
+        .collect();
+    let all_started = || marks.iter().all(|mark| mark.exists());
+    let ended = super::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
+        all_started() || !matches!(owned.child().try_wait(), Ok(None))
+    });
+    if !all_started() {
+        let outcome = ended.then(|| rigger_outcome(owned.into_child()));
+        panic!("the run must reach its implementer; it ended with {outcome:?}");
+    }
+    let record = driver_record(cwd);
+    end(owned.child());
+    EndedRun {
+        record,
+        fake: fakebin,
+        path_env,
+        _state: state,
+    }
+}
+
+/// A run [`a_run_ended_mid_unit`] ended: the record its live driver kept, the directory of its
+/// fake host, which keeps the fake alive, the `PATH` value that finds that fake first, and the
+/// state home the driver was started with, kept for the driver a relaunch starts with it.
+pub struct EndedRun {
+    pub record: String,
+    pub fake: tempfile::TempDir,
+    pub path_env: String,
+    _state: tempfile::TempDir,
 }
 
 /// Plant a stale agent stream under `scratch`, for a run that must leave it: its path.

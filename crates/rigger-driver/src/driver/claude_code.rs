@@ -338,6 +338,12 @@ impl Driver<'_> {
     ) -> Result<Launch, Error> {
         let session_id = session.id.clone();
         let container = spawn_scratch_path(&self.scratch_root, &opts.run_id, &opts.id);
+        // The spawn is live from its launch, not from its session's first line: its marker
+        // stands before its scratch is written, so no reader classes that scratch dead while the
+        // session starts.
+        liveness::touch_marker(
+            liveness::marker_path(&self.scratch_root, &opts.run_id, &opts.id).as_deref(),
+        );
         let roots = write_roots(&opts.dir, container.as_deref())?;
         // The persona travels as a file in the spawn's scratch, never as an argv string (see
         // [`SystemPromptFile`]); the spawn's terminus reclaims that scratch.
@@ -828,7 +834,7 @@ impl Driver<'_> {
 
             // "every line touches the spawn's liveness marker - the host proves life,
             // the agent is never asked to" (architecture addendum §4.2).
-            touch_liveness_marker(marker.as_deref());
+            liveness::touch_marker(marker.as_deref());
             write_stream_line(&mut stream_file, &line);
 
             let Ok(v) = serde_json::from_str::<Value>(&line) else {
@@ -1874,21 +1880,6 @@ fn canary_args(model: &str) -> Vec<String> {
     args
 }
 
-/// Touch `marker` (create it, or bump its mtime if it already exists) so a fresh liveness
-/// read from `rigger status`/the dash sees this spawn as alive - the pure filesystem side
-/// of `liveness::marker_path`'s contract. `None` (no scratch root, or a degenerate id
-/// `marker_path` itself declines - see its doc) is a silent no-op, mirroring every other
-/// caller's "no marker: leave it alone" convention. Best-effort throughout: a liveness
-/// touch that failed is a slightly-staler marker, never a reason to abort the spawn whose
-/// aliveness it exists to prove.
-fn touch_liveness_marker(marker: Option<&Path>) {
-    let Some(marker) = marker else { return };
-    if let Some(parent) = marker.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::File::create(marker);
-}
-
 /// The scratch subdirectory a spawn's raw stream-json transcript lives under (spec 104
 /// criterion 2, architecture addendum §4.2) - a sibling of `agent-live`
 /// ([`crate::liveness::MARKER_SUBDIR`]) and `agent-scratch`
@@ -2090,7 +2081,7 @@ fn spawn_result_from(v: &Value, opts: &SpawnOpts, resolved_model: &str) -> Spawn
         },
         "turns": v.get("num_turns").and_then(Value::as_u64).unwrap_or(0),
         "cost_usd": v.get("total_cost_usd").and_then(Value::as_f64).unwrap_or(0.0),
-        "permission_denials": v
+        crate::spawn::META_PERMISSION_DENIALS: v
             .get("permission_denials")
             .and_then(Value::as_array)
             .map_or(0, Vec::len),

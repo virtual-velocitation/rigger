@@ -183,6 +183,37 @@ fn release_ready_is_absent_from_the_wire_for_an_unfinished_run() {
     );
 }
 
+/// A run whose recorded DAG still owes a unit not yet started ships no
+/// `release_ready` over the wire, though every unit it has started has landed; once the owed
+/// unit lands too the handoff crosses with both units counted.
+#[test]
+fn release_ready_waits_for_every_unit_the_recorded_dag_owes() {
+    let half: &[(&str, &str)] = &[
+        ("RunStarted", r#"{"run":"r1"}"#),
+        ("DagRecorded", r#"{"units":["u1","u2"]}"#),
+        ("UnitStarted", r#"{"id":"u1"}"#),
+        ("UnitIntegrated", r#"{"id":"u1","commit":"abc"}"#),
+    ];
+    let rest: &[(&str, &str)] = &[
+        ("UnitStarted", r#"{"id":"u2"}"#),
+        ("UnitIntegrated", r#"{"id":"u2","commit":"def"}"#),
+    ];
+    // (case, the events, the integrated count the wire carries, None when it carries none)
+    let rows = [
+        ("an owed unit not yet started", half.to_vec(), None),
+        ("every owed unit landed", [half, rest].concat(), Some(2)),
+    ];
+    for (case, events, integrated) in rows {
+        let v = served_state(positioned(&events));
+        assert_eq!(
+            v.get("release_ready")
+                .map(|rr| rr["integrated_units"].as_u64()),
+            integrated.map(Some),
+            "{case}: the release_ready the wire carries; got:\n{v}"
+        );
+    }
+}
+
 /// The integrated-unit COUNT crosses the wire correctly for a run that integrated MORE THAN
 /// ONE unit (spec 38, criterion 3): the served `release_ready.integrated_units` is the value
 /// the dash's client-side render pluralizes, and every other release-ready test seeds exactly

@@ -154,16 +154,16 @@ pub fn dock(run: &RunState, events: &[Event]) -> Dock {
 /// - `"held"` - no such entry, and the run is held (spec 105), whether or not
 ///   its hold's own `held` entry stands on the dock.
 /// - `"working"` - clean of needs-you and unheld, but a unit is still mid-flight
-///   (a current-blocker line exists).
-/// - `"done"` - every unit integrated (a non-empty run with no blockers left).
+///   (a current-blocker line exists) or, while no spec defect stopped the run, a unit
+///   its recorded DAG owes has not started yet.
+/// - `"done"` - [`RunState::done`]: every unit it owes and started integrated, and
+///   no deferred gate failed.
 /// - `"healthy"` - no units yet, or nothing to report either way.
+///
+/// The counts are [`RunState::unit_tally`]: landed of every unit the run owes or
+/// started.
 pub fn statusline(run: &RunState, blockers: &[Blocker], dock: &Dock) -> String {
-    let total = run.units.len();
-    let landed = run
-        .units
-        .values()
-        .filter(|u| u.status == Status::Integrated)
-        .count();
+    let (landed, total) = run.unit_tally();
     let focus = run
         .units
         .values()
@@ -178,9 +178,9 @@ pub fn statusline(run: &RunState, blockers: &[Blocker], dock: &Dock) -> String {
         "needs-you"
     } else if run.hold.is_some() {
         "held"
-    } else if !blockers.is_empty() {
+    } else if !blockers.is_empty() || (!run.spec_defect && run.owes_an_unstarted_unit()) {
         "working"
-    } else if total > 0 && landed == total {
+    } else if run.done() {
         "done"
     } else {
         "healthy"
@@ -916,6 +916,100 @@ mod tests {
             .0,
             "u1 . 0/1 units . working"
         );
+    }
+
+    /// A run is done only when
+    /// every unit its latest recorded DAG owes has landed. Between one unit's landing and the
+    /// next unit's start the run reads not done, counts landed of owed and offers no release;
+    /// a later record replaces the owed set; a slice with no record reads as it always has.
+    #[test]
+    fn done_and_the_statusline_count_what_the_run_owes() {
+        let dag = |units: &str| {
+            ev(
+                ledger::TYPE_DAG_RECORDED,
+                &format!(r#"{{"units":{units}}}"#),
+            )
+        };
+        let started = |id: &str| ev(ledger::TYPE_UNIT_STARTED, &format!(r#"{{"id":"{id}"}}"#));
+        let landed = |id: &str| {
+            ev(
+                ledger::TYPE_UNIT_INTEGRATED,
+                &format!(r#"{{"id":"{id}","commit":"abc"}}"#),
+            )
+        };
+        let a_landed_b_owed = vec![dag(r#"["a","b"]"#), started("a"), landed("a")];
+        let both_landed = [a_landed_b_owed.clone(), vec![started("b"), landed("b")]].concat();
+        let b_dropped_c_owed = [a_landed_b_owed.clone(), vec![dag(r#"["a","c"]"#)]].concat();
+        let no_record = vec![started("a"), landed("a")];
+        let deferred_failed = [
+            both_landed.clone(),
+            vec![ev(ledger::TYPE_DEFERRED_GATE_FAILED, r#"{"gate":"itest"}"#)],
+        ]
+        .concat();
+        let coverage_gap = [
+            a_landed_b_owed.clone(),
+            vec![ev(ledger::TYPE_SPEC_DEFECT, r#"{"criterion":"c"}"#)],
+        ]
+        .concat();
+        // (case, the run slice, done, release-ready, the statusline)
+        let rows: [(&str, Vec<Event>, bool, bool, &str); 6] = [
+            (
+                "a landed, b owed and not started",
+                a_landed_b_owed,
+                false,
+                false,
+                "- . 1/2 units . working",
+            ),
+            (
+                "both owed units landed",
+                both_landed,
+                true,
+                true,
+                "- . 2/2 units . done",
+            ),
+            (
+                "a later record drops b and owes c",
+                b_dropped_c_owed,
+                false,
+                false,
+                "- . 1/2 units . working",
+            ),
+            (
+                "no record: today's reading",
+                no_record,
+                true,
+                true,
+                "- . 1/1 units . done",
+            ),
+            (
+                "every unit landed behind a failed deferred gate",
+                deferred_failed,
+                false,
+                false,
+                "- . 2/2 units . healthy",
+            ),
+            (
+                "an owed unit unstarted on a coverage-gap stop",
+                coverage_gap,
+                false,
+                false,
+                "- . 1/2 units . healthy",
+            ),
+        ];
+        for (case, events, done, release_ready, line) in rows {
+            let run = ledger::project(&events).unwrap();
+            assert_eq!(run.done(), done, "{case}: done");
+            assert_eq!(
+                run.release_ready("rigger-run", "origin/main").is_some(),
+                release_ready,
+                "{case}: release-ready"
+            );
+            assert_eq!(
+                fold(&events, 3).unwrap().statusline,
+                line,
+                "{case}: statusline"
+            );
+        }
     }
 
     /// Determinism: folding the same stream twice yields byte-identical

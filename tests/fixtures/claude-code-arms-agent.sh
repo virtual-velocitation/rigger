@@ -8,13 +8,15 @@
 # may record any of them there; what it prints is the session's answer, held in `reply.<pid>`
 # beside the stand-in until the arm ends, and what it prints to fd 3 reaches the host as raw
 # stream lines ahead of the rest. When the arm ends, or exits 0, the stand-in reports the spawn's
-# `rigger` server connected, then a `result` carrying that answer as a JSON string. An arm that
-# exits non-zero ends the session with its status and no `result`. An arm that `exec`s ends the
-# session as what it execs, the very process the host spawned and reaps, with no `result`, and
-# leaves its `reply.<pid>` beside the stand-in. Sharing the stand-in's shell, an arm leaves alone
-# what `frame` below reads: it assigns neither `verb` nor `reply`, defines no `frame`, sets no
-# `EXIT` trap of its own and never closes fd 3, else the session's answer is lost or misframed
-# with no assertion naming why. A
+# `rigger` server connected, then a `result` carrying that answer as a JSON string, ended by the
+# handover line when the session was told the author handover contract, by this launch's first
+# message or the one of a launch it resumes (`launch-args.sh`'s `session_told` and `hand_over`).
+# An arm that exits non-zero ends the session with its status and no `result`. An arm that
+# `exec`s ends the session as what it execs, the very process the host spawned and reaps, with no
+# `result`, and leaves its `reply.<pid>` beside the stand-in. Sharing the stand-in's shell, an arm
+# leaves alone what `frame` below reads: it assigns none of `first`, `told`, `verb` and `reply`,
+# defines no `frame`, sets no `EXIT` trap of its own and never closes fd 3, else the session's
+# answer is lost or misframed with no assertion naming why. A
 # launch whose first argument is `auth` (the `claude auth status --json` read) prints the arm's
 # answer as it stands, with no stream framing. A launch naming no `--system-prompt-file` (the
 # hold probe's canary) reaches the arm for the empty prompt, `""`; the stand-in finds that file
@@ -31,6 +33,7 @@ if [ -n "$sp_file" ]; then
     sp=$(cat "$sp_file")
 fi
 IFS= read -r first
+told=$(session_told "$here" "$first" "$@")
 verb=$1
 reply="$here/reply.$$"
 exec 3>&1
@@ -43,6 +46,7 @@ frame() {
         printf '%s\n' "$answer" >&3
         exit 0
     fi
+    answer="$answer$(hand_over "$told")"
     tab=$(printf '\t')
     json=$(printf '%s' "$answer" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e "s/$tab/\\\\t/g" |
         awk 'NR > 1 { printf "%s", "\\n" } { printf "%s", $0 }')

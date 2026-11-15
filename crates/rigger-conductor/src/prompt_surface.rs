@@ -98,6 +98,31 @@ pub const RUN_NOTES_CLOSING: &str =
 pub const REFUSED_RECORD_NOTE: &str =
     "{prompt}\n\nYour previous run's record was refused: {refusal}; emit it again correctly.";
 
+/// CONTRACT: how an author session (the implementer, a speculation lane, the test author) hands
+/// its work over, `{line}` holding [`AUTHOR_HANDOVER_LINE`]: the conductor checkpoints the
+/// attempt only once the session's final message ends with that line, after anything else the
+/// session prints, whatever its persona asks it to report.
+pub const AUTHOR_HANDOVER: &str = "\n\nWhen your work is complete, end your final message with \
+     this line, alone on the last line: {line}\nIt comes after everything else you print, \
+     whatever your persona asks you to report: put any report above it. Write it only once the \
+     work is done: a session that ends without it is treated as stopped mid-work and is run \
+     again.";
+
+/// FRAMING: the task a rerun continues an author session with after that session's last result
+/// ended without its hand-over line, before [`AUTHOR_HANDOVER`].
+pub const MISSED_HANDOVER: &str = "Your last result ended without the hand-over line, so rigger \
+     has not taken your work. Finish the work if it is unfinished, then hand it over.";
+
+/// FRAMING: what a rerun's fresh prompt says, read when the session that missed its hand-over
+/// cannot be continued: the worktree holds that session's partial work.
+pub const PRIOR_PARTIAL_WORK: &str = "\n\nA prior session on this task ended without handing \
+     its work over: this worktree holds that session's partial, uncommitted work. Read it (`git \
+     status`, `git diff`) and finish from it rather than starting over.";
+
+/// CONTRACT: the line an author's final message ends with to hand its work over, which
+/// [`AUTHOR_HANDOVER`] names and the conductor's handover check reads.
+pub const AUTHOR_HANDOVER_LINE: &str = "RIGGER-HANDOVER";
+
 /// CONTRACT: the `required` list an adjudicator's reject carries on its verdict line and its
 /// shape.
 pub const REQUIRED_PROTOCOL: &str = " On a reject, your verdict line also lists every item the \
@@ -250,6 +275,15 @@ pub const ROUND_OUTSIDE_DELTA: &str = "A finding outside that delta blocks only 
      defect (`\"correctness\":true`); any other finding outside it is recorded for the operator \
      and never blocks. A reject this round names every item it requires in `required`.\n";
 
+/// FRAMING: the header over the findings a reviewer re-driven within its round already recorded
+/// that round, printed only when it recorded one.
+pub const ROUND_FINDINGS_YOURS: &str =
+    "\n\nYou already recorded these findings this round; each stays in the log:\n";
+
+/// FRAMING: the adjudicator's header over every finding its round recorded, printed only when the
+/// round recorded one.
+pub const ROUND_FINDINGS_ALL: &str = "\n\nEvery finding recorded this round, by id:\n";
+
 /// FRAMING: the gate evidence block's header for the `{commit}` under review, printed only when a
 /// gate ran on it.
 pub const GATE_EVIDENCE_HEADER: &str = "\n\nGATE EVIDENCE for the commit under review (commit \
@@ -305,9 +339,18 @@ pub const LOOKUP_VERBS: &str = "`rigger graph --lookup <term>...` (each term at 
      defined: `rigger graph --show <name>`.\n";
 
 /// FRAMING: the prior plan critique's rejection, `{prior_reason}`, printed only on a re-review.
-pub const DAG_PRIOR_REJECT: &str = "A prior plan-critique REJECTED this \
-     decomposition:\n{prior_reason}\n\nThe planner has since revised the DAG; re-review it \
-     below.\n\n";
+pub const DAG_PRIOR_REJECT: &str =
+    "A prior plan-critique REJECTED this decomposition:\n{prior_reason}\n\n";
+
+/// FRAMING: the re-review sentence after [`DAG_PRIOR_REJECT`], printed only when a re-plan
+/// proposed a unit at the round's attempt.
+pub const DAG_REVISED_SINCE_REJECT: &str =
+    "The planner has since revised the DAG; re-review it below.\n\n";
+
+/// FRAMING: the re-review sentence after [`DAG_PRIOR_REJECT`], printed only when no re-plan
+/// proposed a unit at the round's attempt.
+pub const DAG_UNCHANGED_SINCE_REJECT: &str = "No re-plan has proposed a unit since that \
+     rejection; re-review the DAG below against it.\n\n";
 
 /// FRAMING: the plan-critique gate's task.
 pub const DAG_CRITIQUE_OPENER: &str = "You are the plan-critique gate. Review the PROPOSED unit \
@@ -456,6 +499,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             ROUND_PATTERN,
             ROUND_OUTSIDE_DELTA,
         ],
+        "conductor::round_findings_block" => [ROUND_FINDINGS_YOURS, ROUND_FINDINGS_ALL],
         "conductor::gate_evidence_block" => [GATE_EVIDENCE_HEADER, GATE_EVIDENCE_ROW],
         "conductor::conflict_resolution_prompt" => [CONFLICT_RESOLUTION],
         "conductor::later_attempt_block" => [
@@ -465,10 +509,15 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             LATER_ATTEMPT_GATE_CAUSE,
         ],
         "conductor::doc_only_round" => [DOC_ONLY_ROUND],
+        "conductor::author_handover" => [AUTHOR_HANDOVER, AUTHOR_HANDOVER_LINE],
+        "conductor::resume_missed" => [MISSED_HANDOVER],
+        "conductor::missed_handover_note" => [PRIOR_PARTIAL_WORK],
         "conductor::write_peers_pointer" => [PEERS_POINTER, LOOKUP_LEAD_IN, LOOKUP_VERBS],
         "conductor::write_lookup_pointer" => [LOOKUP_LEAD_IN, LOOKUP_VERBS],
         "conductor::build_dag_critique_prompt" => [
             DAG_PRIOR_REJECT,
+            DAG_REVISED_SINCE_REJECT,
+            DAG_UNCHANGED_SINCE_REJECT,
             DAG_CRITIQUE_OPENER,
             UNIT_SIZE_CAP,
             DAG_UNITS_HEADER,
@@ -530,6 +579,8 @@ mod tests {
 
     /// THE CLASS TABLE's conductor rows: each const and the class its doc comment opens with.
     const CLASS_TABLE: &[(&str, &str)] = &[
+        ("AUTHOR_HANDOVER", "CONTRACT"),
+        ("AUTHOR_HANDOVER_LINE", "CONTRACT"),
         ("CANARY_FINDINGS_LEAD", "FRAMING"),
         ("CANARY_NO_ANCHOR", "FRAMING"),
         ("CANARY_NO_FINDINGS", "FRAMING"),
@@ -547,8 +598,10 @@ mod tests {
         ("DAG_OVERLAP_ROW", "FRAMING"),
         ("DAG_OVERLAP_UNSERIALIZED_HEADER", "FRAMING"),
         ("DAG_PRIOR_REJECT", "FRAMING"),
+        ("DAG_REVISED_SINCE_REJECT", "FRAMING"),
         ("DAG_SIZE_CAP_CAUSE", "CONTRACT"),
         ("DAG_UNITS_HEADER", "FRAMING"),
+        ("DAG_UNCHANGED_SINCE_REJECT", "FRAMING"),
         ("DAG_UNIT_ROW", "FRAMING"),
         ("DECISIONS_HEADER", "FRAMING"),
         ("DELTA_NONE", "FRAMING"),
@@ -571,6 +624,7 @@ mod tests {
         ("LESSONS_HEADER", "FRAMING"),
         ("LOOKUP_LEAD_IN", "FRAMING"),
         ("LOOKUP_VERBS", "CONTRACT"),
+        ("MISSED_HANDOVER", "FRAMING"),
         ("PATTERN_LABEL", "CONTRACT"),
         ("PEERS_POINTER", "FRAMING"),
         ("PLAN_COPY_TEXT", "CONTRACT"),
@@ -585,6 +639,7 @@ mod tests {
         ("PRIOR_CONTRADICTION", "FRAMING"),
         ("PRIOR_GATE", "FRAMING"),
         ("PRIOR_HALTED", "FRAMING"),
+        ("PRIOR_PARTIAL_WORK", "FRAMING"),
         ("PRIOR_PATTERN", "CONTRACT"),
         ("PRIOR_REQUIRED_LEAD", "FRAMING"),
         ("PRIOR_RETRY_HEADER", "FRAMING"),
@@ -598,6 +653,8 @@ mod tests {
         ("REVIEWER_DISCIPLINE", "FRAMING"),
         ("REVIEW_FINDING_LIVE", "FRAMING"),
         ("REVIEW_FINDING_PROTOCOL", "CONTRACT"),
+        ("ROUND_FINDINGS_ALL", "FRAMING"),
+        ("ROUND_FINDINGS_YOURS", "FRAMING"),
         ("ROUND_LEAD_IN", "FRAMING"),
         ("ROUND_OUTSIDE_DELTA", "CONTRACT"),
         ("ROUND_PATTERN", "CONTRACT"),

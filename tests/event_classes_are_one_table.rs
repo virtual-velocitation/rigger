@@ -244,8 +244,9 @@ fn the_episodic_and_perception_lists_are_exactly_the_decided_ones() {
             "RunReleased",
             "ApiRetry",
             "SupervisorBeat",
+            "DagRecorded",
         ],
-        "the episodic list is the decided twenty, in order"
+        "the episodic list is the decided twenty-one, in order"
     );
     assert_eq!(
         PERCEPTION_TYPES,

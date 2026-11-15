@@ -28,19 +28,24 @@ use crate::run::{
     META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
-/// Record a `--rebase-definition` supersession on the current run (spec 13, unit 1): the
-/// operator explicitly accepted the on-disk definition drift, so the run re-pins from `old`
-/// to `new` and continues. It rides the existing `DecisionMade` vocabulary (no new event
-/// type - the spec-13 global constraint) so it folds into the context graph as a decision,
-/// and stamps the re-pinned hash in [`META_DEFINITION`] (and the superseded hash in
-/// [`META_DEFINITION_PRIOR`]) so [`effective_definition`] advances and subsequent steps see
-/// no drift. Scoped to the run via [`META_RUN_ID`], appended after the run's `RunStarted`.
-fn record_rebase(store: &dyn EventStore, run: &str, old: &str, new: &str) -> Result<(), Error> {
+/// Record a re-pin of the current run's definition from `old` to `new`, for `cause`: the
+/// operator's `--rebase-definition` acceptance of on-disk drift (spec 13, unit 1), or the run's
+/// own landing moving the definition its checkout holds ([`record_definition_move`]). It rides
+/// the existing `DecisionMade` vocabulary (no new event type - the spec-13 global constraint) so
+/// it folds into the context graph as a decision, and stamps the re-pinned hash in
+/// [`META_DEFINITION`] (and the superseded hash in [`META_DEFINITION_PRIOR`]) so
+/// [`effective_definition`] advances and subsequent steps see no drift. Scoped to the run via
+/// [`META_RUN_ID`], appended after the run's `RunStarted`.
+fn record_rebase(
+    store: &dyn EventStore,
+    run: &str,
+    old: &str,
+    new: &str,
+    cause: &str,
+) -> Result<(), Error> {
     let decision = serde_json::json!({
         "id": format!("definition-rebase-{new}"),
-        "summary": format!(
-            "rigger --rebase-definition: accepted definition drift on run {run}; re-pinned {old} -> {new}"
-        ),
+        "summary": format!("{cause} on run {run}; re-pinned {old} -> {new}"),
     });
     let data = serde_json::to_vec(&decision)
         .map_err(|e| Error::Backend(format!("serialize rebase: {e}")))?;
@@ -52,6 +57,42 @@ fn record_rebase(store: &dyn EventStore, run: &str, old: &str, new: &str) -> Res
         .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&ev))?
         .one(&format!("the definition re-pin of run {run}"))?;
     Ok(())
+}
+
+/// The cause [`record_rebase`] names for the operator's `--rebase-definition`.
+const CAUSE_REBASE_FLAG: &str = "rigger --rebase-definition: accepted definition drift";
+
+/// The cause [`record_definition_move`] names for a re-pin the run's own landing made.
+const CAUSE_RUN_LANDING: &str = "the run landed a definition change";
+
+/// Re-pin run `run` to the definition its own move of the run branch left in the checkout: the
+/// checkout's definition hashed `before` the move matched the run's pin and hashes `after` it
+/// differently, so the change is the run's own landing (a unit's merge, a compensating revert, a
+/// red post-merge rollback, a plan commit) and a relaunch reads it as the run's definition, not as
+/// drift. Nothing is recorded, answering false, when `run` is not the current run, the run pinned
+/// nothing, the move left the definition as it was, or the checkout already differed from the
+/// pin before the move: that difference came from outside the run and still halts the next
+/// launch. Called with the run branch held against every other move, so nothing lands between
+/// the two hashes.
+pub fn record_definition_move(
+    store: &dyn EventStore,
+    run: &str,
+    before: &str,
+    after: &str,
+) -> Result<bool, Error> {
+    if before == after {
+        return Ok(false);
+    }
+    let events = read_run(store, STREAM)?;
+    if current_run_id(&events).as_deref() != Some(run) {
+        return Ok(false);
+    }
+    let pinned = effective_definition(current_run(&events));
+    if pinned.is_empty() || pinned != before {
+        return Ok(false);
+    }
+    record_rebase(store, run, before, after, CAUSE_RUN_LANDING)?;
+    Ok(true)
 }
 
 /// Ensure a run is active for `criteria`, returning its run id.
@@ -112,7 +153,7 @@ pub fn ensure_started(store: &dyn EventStore, criteria: &[String]) -> Result<Str
 /// `base_tip` is the run branch's tip commit sha AT THE MOMENT this run started: it
 /// flows through to [`start_fresh`] and is persisted in the RunStarted BODY as
 /// `RunStarted::base_tip`, read back by `current_run_base_tip` and exported as
-/// `$RIGGER_RUN_BASE` to every gate command. Unlike `base` (an operator-chosen REF such as
+/// `$RIGGER_RUN_BASE` to every gate command and every spawn. Unlike `base` (an operator-chosen REF such as
 /// `origin/main`, meaningful only at anchor time), this is the resolved commit the run branch
 /// actually anchored the run branch's tip at - what the check-in stage's gates diff the whole
 /// spec's work against, never a `git merge-base` with the run branch (already HEAD there,
@@ -143,7 +184,7 @@ pub fn ensure_started_pinned(
         }
         // Definition drift on a LIVE run.
         if rebase {
-            record_rebase(store, &run.run, &pinned, definition)?;
+            record_rebase(store, &run.run, &pinned, definition, CAUSE_REBASE_FLAG)?;
             return Ok(RunStart::Rebased {
                 run: run.run,
                 pinned,
@@ -194,7 +235,7 @@ pub fn ensure_started_pinned(
 ///
 /// `base_tip` is the run branch's tip commit sha AT THE MOMENT this run started,
 /// persisted in the new RunStarted's BODY as `RunStarted::base_tip` - read back by
-/// `current_run_base_tip` and exported to every gate command as `$RIGGER_RUN_BASE`, the
+/// `current_run_base_tip` and exported to every gate command and every spawn as `$RIGGER_RUN_BASE`, the
 /// coordinate the check-in stage's gates diff the whole spec's work against. Pass `""` from
 /// a path with no real run branch (an offline replay, the conductor's unpinned adopt-or-mint);
 /// an empty tip decodes back as `None` and a gate script's own `test -n "$RIGGER_RUN_BASE"` guard
@@ -1863,10 +1904,91 @@ mod tests {
         // rebase record in the slice - so a run rebased A->B->C is effectively pinned at C.
         let store = Store::open(":memory:").unwrap();
         let run = start_fresh(&store, &["crit".to_string()], "hash-A", "", "", "").unwrap();
-        record_rebase(&store, &run, "hash-A", "hash-B").unwrap();
-        record_rebase(&store, &run, "hash-B", "hash-C").unwrap();
+        record_rebase(&store, &run, "hash-A", "hash-B", CAUSE_REBASE_FLAG).unwrap();
+        record_rebase(&store, &run, "hash-B", "hash-C", CAUSE_REBASE_FLAG).unwrap();
         let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
         assert_eq!(effective_definition(current_run(&events)), "hash-C");
+    }
+
+    /// A move of the run branch re-pins the run only when it is the run's own change: the
+    /// checkout matched the pin before the move and differs after it. A checkout that already
+    /// differed from the pin (an edit from outside the run), a move that left the definition as
+    /// it was, an unpinned run and a run that is no longer current record nothing; a landing
+    /// rolled back re-pins back, so each move's pin follows the checkout.
+    #[test]
+    fn a_run_branch_move_re_pins_only_the_runs_own_definition_change() {
+        type Row = (
+            &'static str,
+            &'static str,
+            bool,
+            &'static [(&'static str, &'static str)],
+        );
+        // (case, pin, superseded, moves as (before, after)) => (what each move recorded, the pin)
+        let rows: [(Row, &[bool], &str); 6] = [
+            (
+                ("the run's landing re-pins", "A", false, &[("A", "B")]),
+                &[true],
+                "B",
+            ),
+            (
+                (
+                    "an outside edit before the move does not",
+                    "A",
+                    false,
+                    &[("X", "B")],
+                ),
+                &[false],
+                "A",
+            ),
+            (
+                (
+                    "an unchanged definition does not",
+                    "A",
+                    false,
+                    &[("A", "A")],
+                ),
+                &[false],
+                "A",
+            ),
+            (
+                ("an unpinned run does not", "", false, &[("A", "B")]),
+                &[false],
+                "",
+            ),
+            (
+                (
+                    "a rolled-back landing re-pins back",
+                    "A",
+                    false,
+                    &[("A", "B"), ("B", "A")],
+                ),
+                &[true, true],
+                "A",
+            ),
+            (
+                ("a superseded run does not", "A", true, &[("A", "B")]),
+                &[false],
+                "A",
+            ),
+        ];
+        for ((name, pin, superseded, moves), recorded, pinned) in rows {
+            let store = Store::open(":memory:").unwrap();
+            let run = start_fresh(&store, &["crit".to_string()], pin, "", "", "").unwrap();
+            if superseded {
+                start_fresh(&store, &["crit".to_string()], pin, "", "", "").unwrap();
+            }
+            let got: Vec<bool> = moves
+                .iter()
+                .map(|(before, after)| record_definition_move(&store, &run, before, after).unwrap())
+                .collect();
+            assert_eq!(got, recorded, "{name}: what each move recorded");
+            let events = read_run(&store, STREAM).unwrap();
+            assert_eq!(
+                effective_definition(current_run(&events)),
+                pinned,
+                "{name}: the pin"
+            );
+        }
     }
 
     #[test]
@@ -1931,7 +2053,7 @@ mod tests {
             "and names the event whose write was lost: {message}"
         );
 
-        let err = record_rebase(&silent, "run-1", "hash-A", "hash-B")
+        let err = record_rebase(&silent, "run-1", "hash-A", "hash-B", CAUSE_REBASE_FLAG)
             .expect_err("a supersession nobody can locate has not superseded anything");
         let message = err.to_string();
         assert!(

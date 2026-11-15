@@ -166,14 +166,15 @@ impl BuildEnv {
 
     /// Layer one more `(name, value)` pair onto this environment, appended after whatever
     /// [`resolve`](Self::resolve) already produced - for a caller that must add a value
-    /// `resolve`'s pure `build.*` config resolution cannot see (the check-in stage's gates need
-    /// `$RIGGER_RUN_BASE`, the run's own recorded state, to diff the whole spec's work, never
-    /// anything `build.wrapper`/`build.cache_dir`/`build.jobs` carries). A no-op
+    /// `resolve`'s pure `build.*` config resolution cannot see (`$RIGGER_RUN_BASE`, the run's
+    /// own recorded state, which the check-in stage's gates diff the whole spec's work against,
+    /// never anything `build.wrapper`/`build.cache_dir`/`build.jobs` carries). A no-op
     /// for an empty `value` - "empty means off", the same convention every other optional var
     /// in this environment already follows - so an unconfigured caller's `apply` sets nothing
     /// extra. No new [`Runner::run`] parameter and no new call site to update: every existing
     /// caller already threads `build_env` through unconditionally, so a value layered on here
-    /// reaches every gate command this environment is passed to.
+    /// reaches every gate command this environment is passed to and every agent spawn whose
+    /// environment is built from it.
     pub fn with_var(mut self, name: &str, value: &str) -> BuildEnv {
         if !value.is_empty() {
             self.vars.push((name.to_string(), value.to_string()));
@@ -205,10 +206,13 @@ impl BuildEnv {
 /// instead of hiding the read behind an opaque wrapper a caller cannot reason
 /// about.
 fn default_cache_dir() -> String {
-    crate::registry::state_home_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
-        .map(|h| h.join("rigger").join("build-cache"))
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "rigger-build-cache".to_string())
+    crate::registry::state_home_from(
+        std::env::var_os(crate::registry::STATE_HOME_ENV),
+        std::env::var_os(crate::registry::HOME_ENV),
+    )
+    .map(|h| h.join("rigger").join("build-cache"))
+    .map(|p| p.to_string_lossy().into_owned())
+    .unwrap_or_else(|| "rigger-build-cache".to_string())
 }
 
 /// The cache-directory value [`BuildEnv::resolve`] (what the `_DIR` env var carries), the

@@ -4,9 +4,14 @@
 //! A lock is the OS advisory lock on a lock file, taken without waiting, and released when its
 //! [`HeldLock`] drops - explicitly, never by closing its descriptor alone - or when its process
 //! ends however it ends, so a holder that dies never leaves a stale lock.
+//!
+//! A lock file may carry what its holder says of itself ([`HeldLock::contents`],
+//! [`HeldLock::replace`]), read and written only through the held lock, so no reader ever sees a
+//! half-written record and the read and the write go through the one handle that holds the lock
+//! on every OS.
 
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 /// An exclusive advisory lock on a lock file, held for as long as this lives.
@@ -22,6 +27,7 @@ impl HeldLock {
     /// lock the file is the error, never read as "held".
     pub fn try_take(path: &Path) -> io::Result<Option<HeldLock>> {
         let file = OpenOptions::new()
+            .read(true)
             .write(true)
             .create(true)
             .truncate(false)
@@ -36,6 +42,26 @@ impl HeldLock {
     /// The locked file, for a caller that needs a copy of its descriptor.
     pub fn file(&self) -> &File {
         &self.file
+    }
+
+    /// What the lock file holds, read whole through the held lock.
+    pub fn contents(&self) -> io::Result<String> {
+        let mut file = &self.file;
+        file.seek(SeekFrom::Start(0))?;
+        let mut text = String::new();
+        file.read_to_string(&mut text)?;
+        Ok(text)
+    }
+
+    /// Make the lock file hold `text` and nothing else, written through the held lock and synced
+    /// to disk, so what it says outlives a power loss the moment this returns. An empty `text`
+    /// empties the file.
+    pub fn replace(&self, text: &str) -> io::Result<()> {
+        let mut file = &self.file;
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(text.as_bytes())?;
+        file.sync_data()
     }
 }
 
@@ -78,6 +104,29 @@ mod tests {
             next.is_some(),
             "the dropped lock is released, whatever other descriptor shares its description"
         );
+    }
+
+    /// What a holder writes through its lock is what the next holder reads, a shorter text leaving
+    /// nothing of a longer one behind and an empty one emptying the file, and the lock file a
+    /// holder finds keeps what the last holder left.
+    #[test]
+    fn a_held_lock_reads_back_what_its_holder_wrote_and_the_next_holder_finds_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.lock");
+        let held = HeldLock::try_take(&path).unwrap().unwrap();
+        assert_eq!(held.contents().unwrap(), "");
+        for text in ["a longer record", "short", ""] {
+            held.replace(text).unwrap();
+            assert_eq!(
+                held.contents().unwrap(),
+                text,
+                "the holder reads back {text:?}"
+            );
+        }
+        held.replace("left behind").unwrap();
+        drop(held);
+        let next = HeldLock::try_take(&path).unwrap().unwrap();
+        assert_eq!(next.contents().unwrap(), "left behind");
     }
 
     /// A lock file that cannot be opened - a directory stands at its path - is an error, never a

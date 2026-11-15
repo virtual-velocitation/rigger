@@ -186,8 +186,14 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// loss is harmless. Honoring `XDG_STATE_HOME` is also what lets a test redirect the whole
 /// registry into a temp dir with no process-global fs writes.
 pub fn state_home() -> Option<PathBuf> {
-    state_home_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+    state_home_from(std::env::var_os(STATE_HOME_ENV), std::env::var_os(HOME_ENV))
 }
+
+/// The variable that names the machine-global state directory ([`state_home`]).
+pub const STATE_HOME_ENV: &str = "XDG_STATE_HOME";
+
+/// The variable that names the user's home, the state and cache homes' fallback.
+pub const HOME_ENV: &str = "HOME";
 
 /// The PURE core of [`state_home`] over explicit `XDG_STATE_HOME` / `HOME` values, so the
 /// precedence (XDG wins; an empty value is "unset") is unit-tested with no process-global env

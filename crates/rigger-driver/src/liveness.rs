@@ -177,6 +177,20 @@ pub fn marker_path(scratch_root: &str, run_id: &str, spawn_id: &str) -> Option<s
     scratch_subpath(scratch_root, MARKER_SUBDIR, run_id, spawn_id)
 }
 
+/// Touch `marker` (create it, or bump its mtime if it already exists): the one writer of a
+/// spawn's liveness marker, which its host calls at launch, before the spawn's scratch is
+/// written, and again on every line the session prints, so every reader sees the spawn live from
+/// its launch. `None` (no scratch root, or a degenerate id [`marker_path`] declines) is a silent
+/// no-op. Best-effort: a failed touch is a staler marker, never a reason to abort the spawn whose
+/// life it proves.
+pub fn touch_marker(marker: Option<&std::path::Path>) {
+    let Some(marker) = marker else { return };
+    if let Some(parent) = marker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::File::create(marker);
+}
+
 /// Where one run's spawns keep their liveness markers (spec 101): under the scratch root each
 /// spawn's request recorded ([`spawn::META_MARKER_ROOT`]), which the driver records beside the
 /// run id when it parks the spawn, else under `fallback_root` - the reader's own resolution, for

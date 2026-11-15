@@ -62,3 +62,42 @@ as_launched() {
         cat
     fi
 }
+
+# What the session this launch runs as has been told: what the session it resumes (`--resume`)
+# was told, then its first message `$2`, kept under the directory `$1` as `told.<session>` for a
+# later launch resuming it, as a resumed session still holds what its earlier turns read. The rest
+# of the arguments are the launch's own.
+session_told() {
+    st_dir=$1
+    st_first=$2
+    shift 2
+    st_session=$(launched_session "" "$@")
+    st_resumed=$(launch_arg --resume "$@")
+    st_told=""
+    if [ -n "$st_resumed" ] && [ -e "$st_dir/told.$st_resumed" ]; then
+        st_told=$(cat "$st_dir/told.$st_resumed")
+    fi
+    st_told="$st_told$st_first"
+    if [ -n "$st_session" ]; then
+        printf '%s' "$st_told" > "$st_dir/told.$st_session"
+    fi
+    printf '%s' "$st_told"
+}
+
+# Prints the handover line, after a blank line, when the task `$1` asks for it: the author
+# handover contract the conductor appends to an author's task (`AUTHOR_HANDOVER`) asks the
+# session's final message to end with `RIGGER-HANDOVER`, and a session ending without it is
+# rerun as stopped mid-work. A stand-in prints it last, so its output hands over as a real
+# session that finished its work does; a task with no contract (a reviewer's, a planner's)
+# gets nothing.
+hand_over() {
+    case "$1" in
+        *"alone on the last line: RIGGER-HANDOVER"*) printf '\nRIGGER-HANDOVER\n' ;;
+    esac
+}
+
+# What `hand_over` prints for the task `$1`, JSON-escaped, for a stand-in splicing it onto the end
+# of a `result` string.
+hand_over_json() {
+    hand_over "$1" | sed -n 's/^\(..*\)$/\\n\\n\1/p'
+}
