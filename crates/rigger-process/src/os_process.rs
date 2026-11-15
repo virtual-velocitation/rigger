@@ -286,10 +286,10 @@ mod tests {
     }
 
     /// This process, which is running a test, is running or sleeping, and a child that exited
-    /// but is not yet reaped is a zombie. A process's state is its main thread's, here the test
-    /// harness's, which this test does not drive: the kernel reports it in uninterruptible sleep
-    /// (`D`) for the instants it waits on the address-space lock a sibling thread holds to fork,
-    /// map or unmap memory, so the state is read until it runs or sleeps.
+    /// but is not yet reaped is a zombie. On Linux a process's state is its main thread's, here the
+    /// test harness's, which this test does not drive: under load the kernel reports it in
+    /// uninterruptible sleep (`D`) for the instants it waits on the process's address-space lock,
+    /// so the state is read until it runs or sleeps.
     #[cfg(unix)]
     #[test]
     fn a_live_process_runs_or_sleeps_and_an_unreaped_exit_is_a_zombie() {
