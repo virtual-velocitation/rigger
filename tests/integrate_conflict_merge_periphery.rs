@@ -305,7 +305,9 @@ use common::fixtures::A_WORK_DRIVER;
 use common::git::git_commit_all;
 use common::git::temp_git_project_with_commit;
 use common::git::trimmed_stdout;
-use rigger::conductor::{parked_spawn, run, AgentDriver, AgentResult, Error, SpawnOpts, STREAM};
+use rigger::conductor::{
+    parked_spawn, run, AgentDriver, AgentResult, Error, SpawnOpts, META_REPLAY_KEY, STREAM,
+};
 use rigger::config::{AgentDef, Config, RegenerateRule};
 use rigger::config_store;
 use rigger::eventstore::sqlite::Store;
@@ -829,6 +831,35 @@ fn unit_integrated_records_the_landed_sha_on_every_merge_loop_path() {
                 recorded_by(&events, ledger::TYPE_UNIT_INTEGRATED, name, None, "/commit"),
                 vec![landed_at],
                 "{case}: {name}'s UnitIntegrated carries the sha it landed at"
+            );
+            // The landing that integrated was re-gated: a post-merge GateVerdict sits between
+            // the unit's last regeneration (if any) and its UnitIntegrated, so a verdict from an
+            // earlier merge pass cannot stand in for the pass that landed.
+            let at = |pred: &dyn Fn(&Event) -> bool| events.iter().rposition(pred);
+            let integrated = at(&|e| {
+                e.type_ == ledger::TYPE_UNIT_INTEGRATED
+                    && serde_json::from_slice::<Value>(&e.data).is_ok_and(|v| v["id"] == *name)
+            })
+            .unwrap_or_else(|| panic!("{case}: {name} records UnitIntegrated"));
+            let before = &events[..integrated];
+            let postmerge = format!("{name}/postmerge-gate:");
+            let verdict = before.iter().rposition(|e| {
+                e.type_ == rigger::contextgraph::TYPE_GATE_VERDICT
+                    && e.meta
+                        .get(META_REPLAY_KEY)
+                        .is_some_and(|k| k.starts_with(&postmerge))
+            });
+            let regenerated = before.iter().rposition(|e| {
+                e.type_ == ledger::TYPE_UNIT_STATUS
+                    && serde_json::from_slice::<Value>(&e.data).is_ok_and(|v| {
+                        v["id"] == *name && v["status"] == "integrate-conflict-regenerate-commit"
+                    })
+            });
+            assert!(
+                verdict.is_some_and(|v| regenerated.is_none_or(|r| v > r)),
+                "{case}: {name}'s post-merge GateVerdict precedes its UnitIntegrated and follows \
+                 its last regeneration (verdict at {verdict:?}, regeneration at {regenerated:?}, \
+                 UnitIntegrated at {integrated})"
             );
         }
         assert_eq!(
