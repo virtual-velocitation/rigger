@@ -1692,6 +1692,39 @@ struct SpecCandidate {
     resolved_model: String,
 }
 
+/// What a speculation group's losing lanes failed with, gathered in lane order: each red gate's
+/// evidence and each review's rejection, with the first loss's cause. A group with no winner
+/// records it as the unit's failure (spec 126, criterion 14).
+#[derive(Default)]
+struct LostLanes {
+    cause: Option<String>,
+    failure: PriorFailure,
+}
+
+impl LostLanes {
+    /// A lane lost on red gates (narrowed, exhaustive or post-merge) with `evidence`.
+    fn gates(&mut self, cause: String, evidence: Vec<String>) {
+        self.cause.get_or_insert(cause);
+        self.failure.gate_evidence.extend(evidence);
+    }
+
+    /// A lane lost on its review's rejection `reason`.
+    fn review(&mut self, cause: String, reason: &str) {
+        self.cause.get_or_insert(cause);
+        let reasons = &mut self.failure.review_reason;
+        if !reasons.is_empty() {
+            reasons.push_str("\n\n");
+        }
+        reasons.push_str(reason);
+    }
+
+    /// The first loss's cause and the gathered failure, or none when no lane lost on its gates
+    /// or review.
+    fn failure(self) -> Option<(String, PriorFailure)> {
+        self.cause.map(|cause| (cause, self.failure))
+    }
+}
+
 /// The attempt a speculation group of `unit` numbers its lane 0 at, read from the run slice
 /// `events` at the group's start (spec 126, criterion 14). The group's RE-ENTRY BOUNDARY is the
 /// later in log order of the unit's latest `UnitResumed` (an operator's grant after its
@@ -7890,13 +7923,16 @@ impl RunCtx<'_> {
         // PHASE B: evaluate candidates in deterministic lane order; the FIRST gate-green
         // adjudicator-approved candidate WINS and integrates, and every other candidate is
         // cancelled. A candidate's review tiers park across steps exactly like the single-lane
-        // path (their spawns are keyed by the candidate's attempt).
+        // path (their spawns are keyed by the candidate's attempt). Every lane's loss is gathered
+        // into `lost`, so a group with no winner records why it lost for its re-entry.
+        let mut lost = LostLanes::default();
         for i in 0..candidates.len() {
             let attempt = candidates[i].attempt;
             let dir = candidates[i].dir.clone();
             let gate_outcome =
                 self.run_gates(st, &dir, attempt, GateSelection::Narrowed(&blast_radius))?;
             if !gate_outcome.pass {
+                lost.gates(gate_outcome.cause(), gate_outcome.evidence);
                 continue; // gate-red candidate loses; a later candidate may still win.
             }
             // This candidate's gates are green: review it. Its `green`/`verified`/`reviewed`
@@ -7961,12 +7997,14 @@ impl RunCtx<'_> {
                 // spec-13 self-improvement loop. A fold-neutral marker keeps the shared unit
                 // `Fresh` for resume while the metrics fold counts the reject.
                 self.record_speculation_reject(st, attempt, &dir, &group, &candidates[i].wt)?;
+                lost.review(review_failure_cause(&review.reason), &review.reason);
                 continue; // rejected candidate loses; try the next candidate.
             }
             // A candidate that passed its narrowed gates AND the adjudicator. Assert the
             // exhaustive suite (the integrate door, spec 12 unit 3) before merging.
             let full = self.run_gates(st, &dir, attempt, GateSelection::Exhaustive)?;
             if !full.pass {
+                lost.gates(full.cause(), full.evidence);
                 continue; // even a full-suite-red candidate cannot land - try the next.
             }
             let losers: Vec<String> = candidates
@@ -8017,6 +8055,7 @@ impl RunCtx<'_> {
                 // same candidate below.
                 candidates[i].wt.ensure_present()?;
                 let failed_sha = worktree::head_sha_of(&dir);
+                lost.gates(CAUSE_INTEGRATE_CONFLICT.to_string(), evidence.clone());
                 let failure = PriorFailure {
                     gate_evidence: evidence,
                     ..Default::default()
@@ -8070,6 +8109,19 @@ impl RunCtx<'_> {
         for c in &candidates {
             let _ = c.wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+        }
+        // Spec 126 criterion 14: record why the group lost as the unit's failure, one past its
+        // last lane, so an operator's grant re-drives every lane told it, as a single lane
+        // re-entering after its own failure is told. Keyed by the entry's lane base, so a
+        // relaunch replaying this entry records it once. A group whose every lane crashed
+        // records none: a crash is no feedback for the author.
+        if let Some((cause, failure)) = lost.failure() {
+            self.emit_keyed_meta(
+                &format!("{}/speculation-lost#{base}", st.name),
+                ledger::TYPE_UNIT_FAILED,
+                failure.failed_body(&st.name, base + width, &cause),
+                &[(META_SPEC_GROUP, &group)],
+            )?;
         }
         let _ = self.emit_lesson(
             None,
@@ -29458,7 +29510,7 @@ mod tests {
     /// The review-rejected lanes' issue [`every_lane_review_rejected`] plants.
     const EVERY_LANE_REJECTED: &str = "every lane's review rejected this candidate";
     /// The red gate output [`every_lane_gate_red`] plants.
-    const EVERY_LANE_GATE_RED: &str = "every lane's gate went red";
+    const EVERY_LANE_GATE_RED: &str = "every lane went gate red";
 
     /// Every lane passes its gate and is rejected by review. Returns what each re-entered lane
     /// is told: the review's issue.

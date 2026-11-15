@@ -9819,10 +9819,14 @@ stages:
     // own if it also reached the same door) carries a real 40-hex worktree sha - stamped
     // AFTER a re-assert restores what the post-merge re-gate's own spawn just deleted, never
     // a snapshot taken during the deletion window. At least candidate 0's own (attempts:1)
-    // must be present.
+    // must be present. The group's own loss record, tagged with its group, names no single
+    // worktree and is not a post-merge block.
     let failed: Vec<_> = events
         .iter()
-        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .filter(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+                && !e.meta.contains_key(rigger::conductor::META_SPEC_GROUP)
+        })
         .collect();
     assert!(
         !failed.is_empty(),
