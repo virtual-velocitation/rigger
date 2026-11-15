@@ -12,6 +12,7 @@
 
 #![allow(dead_code, unused_imports)]
 
+mod build_env;
 mod caller_sources;
 mod config;
 mod csharp_definition_sources;
@@ -40,6 +41,7 @@ mod scratch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod shown;
 mod spawn;
+pub use build_env::*;
 pub use caller_sources::*;
 pub use config::*;
 pub use csharp_definition_sources::*;

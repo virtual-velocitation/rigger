@@ -32,10 +32,9 @@
 //!    proven with a real `driver::cli::Driver` subprocess spawn racing a real
 //!    `ExecRunner` build against the SAME fully-exhausted budget.
 //! 3. `build_config_max_concurrent_round_trips_through_the_real_on_disk_loader`:
-//!    mirrors the identical gap class `build_env_authority_periphery.rs` closed for
-//!    wrapper/cache_dir (unit 1), now for `max_concurrent` - the real
-//!    `.rigger/workflow.yml` loader (`config::load`, agent parsing +
-//!    `Config::validate` included), not a bare literal.
+//!    `max_concurrent` through the real `.rigger/workflow.yml` loader
+//!    (`config::load`, agent parsing + `Config::validate` included), not a bare
+//!    literal.
 //! 4. `configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds`:
 //!    the cross-module seam - `conductor::run` with `build.max_concurrent: 1` and
 //!    two independent (`needs: []`) stages, both scheduled into the SAME
@@ -46,10 +45,9 @@
 //!    this exercise `budget::default_slot_dir()` itself rather than a
 //!    caller-supplied dir, closes that pub fn's own gap too.
 //!
-//! Out of scope, owned by sibling units per spec 65: the env resolver and its two
-//! injection sites (unit 1, closed by `build_env_authority_periphery.rs`),
-//! no-silent-degrade wrapper resolution (unit 2), the jobs cap (unit 4), and the
-//! `validate`/`setup` reporting surfaces (unit 5).
+//! Out of scope: the declared build environment and its two injection sites
+//! (`build_env_authority_periphery.rs`), and the `validate`/`setup` reporting
+//! surfaces.
 //!
 //! Nothing here is feature-gated: `budget::BuildBudget`, `gate::ExecRunner`,
 //! `cli::Driver`, and `config::load` are all compiled and exercised in both
@@ -210,9 +208,7 @@ fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
     // config.rs's own unit test parses `BuildConfig` via a bare `serde_yaml::
     // from_str` literal - it never goes through the real `.rigger/workflow.yml`-
     // on-disk loading path (`config::load`), which also reads the agents
-    // directory and calls `Config::validate`. Mirrors the identical gap class
-    // build_env_authority_periphery.rs closed for wrapper/cache_dir (spec 65 unit
-    // 1), now for `max_concurrent`.
+    // directory and calls `Config::validate`.
     let configured = tempfile::tempdir().expect("create temp project");
     write_workflow(configured.path(), "build:\n  max_concurrent: 2\n");
     let cfg =
@@ -247,7 +243,7 @@ fn build_config_max_concurrent_round_trips_through_the_real_on_disk_loader() {
 /// Serializes any test in this file that redirects the process `TMPDIR` (see
 /// `configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds`): a
 /// mutation there is a process-global env change, the same POSIX setenv/getenv
-/// hazard `build_env_authority_periphery.rs`'s own `ENV_TEST_LOCK` documents. Only
+/// hazard `tests/common/mod.rs`'s `env_test_lock` documents. Only
 /// one test in this file touches it, but the lock - and the unconditional restore
 /// on every exit path, including a panic - stays as a hard discipline against a
 /// future test racing it.

@@ -16369,6 +16369,7 @@ mod tests {
     use crate::test_support::agent;
     use crate::test_support::agent_with_its_own_alias;
     use crate::test_support::agent_with_prompt;
+    use crate::test_support::build_declaring;
     use crate::test_support::commit_at_fixed_date;
     use crate::test_support::count_of_type;
     use crate::test_support::declare_test_author;
@@ -16385,6 +16386,7 @@ mod tests {
     use crate::test_support::test_spawn_host;
     use crate::test_support::trimmed_stdout;
     use crate::test_support::RecordsRead;
+    use crate::test_support::DECLARED_BJL;
     use crate::test_support::DOC_ONLY_ROUND_RULE;
     use crate::test_support::GHOST_TEST_AUTHOR_REFUSAL;
     use crate::test_support::{assert_communication_once, COMMUNICATION_SECTION};
@@ -18038,6 +18040,10 @@ mod tests {
         );
     }
 
+    /// Where one spawn builds, as [`Stub`] records it: the environment its spawn options
+    /// carried, then the `cargo_target_dir` its recorded request names.
+    type SpawnBuild = (Vec<(String, String)>, String);
+
     struct Stub {
         write_file: Option<String>,
         /// Per-AGENT file write, in addition to (and independent of) the shared
@@ -18129,10 +18135,10 @@ mod tests {
         /// adversary -> adjudicator three-tier review order.
         call_order: Mutex<Vec<String>>,
         /// Where each spawn of an agent builds, in spawn order, keyed by agent id, as
-        /// `(env, request)`: the [`crate::spawn::BUILD_CACHE_ENV`] its environment carried, and the
-        /// `cargo_target_dir` its recorded request names (empty when either names none) - the
-        /// two views of one build location.
-        targets_by_agent: Mutex<HashMap<String, Vec<(String, String)>>>,
+        /// `(env, request)`: the environment its spawn options carried, and the
+        /// `cargo_target_dir` its recorded request names (empty when it names none) - the
+        /// process host's view and the parked request's view of one build location.
+        targets_by_agent: Mutex<HashMap<String, Vec<SpawnBuild>>>,
         /// Per-agent id: THIS agent's own spawn deletes `opts.dir` wholesale, right
         /// before returning success - simulating a REVIEWER's own side effect
         /// destroying the worktree mid-review (spec 64 criterion 3, round 4), the same
@@ -18261,7 +18267,7 @@ mod tests {
         }
 
         /// Where each spawn of the named agent builds, `(env, wave)`, in spawn order.
-        fn targets_for(&self, agent_id: &str) -> Vec<(String, String)> {
+        fn targets_for(&self, agent_id: &str) -> Vec<SpawnBuild> {
             cached(&self.targets_by_agent, agent_id).unwrap_or_default()
         }
 
@@ -18375,11 +18381,7 @@ mod tests {
                 .entry(a.id.clone())
                 .or_default()
                 .push((
-                    opts.env
-                        .iter()
-                        .find(|(name, _)| name == crate::spawn::BUILD_CACHE_ENV)
-                        .map(|(_, dir)| dir.clone())
-                        .unwrap_or_default(),
+                    opts.env.clone(),
                     spawn_request(a, prompt, opts).cargo_target_dir,
                 ));
             // Recorded BEFORE this spawn's own `delete_dir_by_agent` side effect (below)
@@ -35091,22 +35093,12 @@ mod tests {
     /// [`RecordingRunner::build_envs`] and [`EnvRecordingDriver::envs`] return.
     type RecordedEnvs = Vec<Vec<(String, String)>>;
 
+    /// ONE BUILD-ENVIRONMENT AUTHORITY: a unit's gate build and its implementer's spawn both
+    /// carry exactly what the workflow's `build.env` declares, each over the unit's own cache
+    /// (the gate's site cache is its per-unit target, the spawn's its unit sibling - one
+    /// directory), and nothing when nothing is declared.
     #[test]
     fn one_build_environment_authority_reaches_both_a_gate_build_and_an_agent_spawn() {
-        // spec 65 c1's own Done-when, the reason this unit exists: with a wrapper
-        // configured, BOTH a gate build and an agent spawn's environment carry the SAME
-        // resolved wrapper/cache-dir/incremental-off vars - the ONE authority, never two
-        // independently-derived copies. With the default (no wrapper / `off`), neither
-        // carries a wrapper var.
-        //
-        // Spec 77 c1 (ONE BUILD LOCATION) extends this: the agent spawn's env ALSO
-        // carries its own per-unit `CARGO_TARGET_DIR` - UNCONDITIONALLY, independent of
-        // whether a wrapper is configured, since it is a separate facet `spawn_env`
-        // assembles alongside the wrapper vars, not a wrapper-cache concern. The gate
-        // build's OWN env (`build_envs`, the `build_env` argument `run_gates` passes) is
-        // deliberately untouched by this: a gate's per-unit `CARGO_TARGET_DIR` rides the
-        // SEPARATE `target_dir` parameter of `gate::Runner::run`, not `BuildEnv`, so this
-        // test's `gate_envs` assertions stay byte-identical to spec 65's own contract.
         fn run_once(build: config::BuildConfig) -> (RecordedEnvs, RecordedEnvs, String) {
             let repo = temp_git_project_with_commit();
             let repo_path = repo.path().to_str().unwrap().to_string();
@@ -35133,163 +35125,210 @@ mod tests {
                 ..stub_deps(&store, &driver, Vec::new())
             };
             run_isolated(&cfg, &deps).unwrap();
-            // "solo"'s own per-unit CARGO_TARGET_DIR (spec 77 c1): the SAME single-source
-            // derivation `run_gates`/`unit_cache_sibling` uses, so this test can never
-            // silently drift from the real one `spawn_env` must match.
+            // "solo"'s own per-unit cache: the SAME single-source derivation
+            // `run_gates`/`unit_cache_sibling` uses, so this test can never silently drift
+            // from the real one `spawn_env` must match.
             let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
             let target = crate::worktree::unit_cache_sibling(&unit_worktree_dir(&scratch, "solo"))
                 .expect("a unit worktree dir must derive a cache sibling");
             (snapshot(&runner.build_envs), snapshot(&driver.envs), target)
         }
 
-        // A real, actually-creatable cache dir (spec 65 unit 2, NO SILENT DEGRADE:
-        // resolution now attempts to CREATE it) - never a filesystem-root literal a
-        // non-root test process could never create.
-        let cache_dir = tempfile::tempdir().unwrap();
-        let cache_dir_str = cache_dir.path().to_string_lossy().into_owned();
-        let configured = config::BuildConfig {
-            wrapper: "sccache".into(),
-            cache_dir: cache_dir_str.clone(),
-            jobs: 0,
-            ..Default::default()
-        };
-        let want: HashMap<String, String> = [
-            ("RUSTC_WRAPPER".to_string(), "sccache".to_string()),
-            ("SCCACHE_DIR".to_string(), cache_dir_str),
-            ("CARGO_INCREMENTAL".to_string(), "0".to_string()),
-        ]
-        .into_iter()
-        .collect();
-
-        let (gate_envs, spawn_envs, target) = run_once(configured);
-        assert!(!gate_envs.is_empty(), "the gate must have run");
-        for env in &gate_envs {
-            let got: HashMap<String, String> = env.iter().cloned().collect();
-            assert_eq!(
-                got, want,
-                "a configured wrapper must reach the gate build: {env:?}"
-            );
-        }
-        assert!(!spawn_envs.is_empty(), "the implementer must have spawned");
-        for env in &spawn_envs {
-            let mut got: HashMap<String, String> = env.iter().cloned().collect();
-            // Asserted and removed separately (spec 77 c1) so the wrapper-vars
-            // comparison right below stays the exact same `want` spec 65 defined.
-            assert_eq!(
-                got.remove("CARGO_TARGET_DIR").as_deref(),
-                Some(target.as_str()),
-                "the agent's own spawned process must carry its unit's per-unit \
-                 CARGO_TARGET_DIR alongside any configured wrapper vars: {env:?}"
-            );
-            assert_eq!(
-                got, want,
-                "the SAME configured wrapper must reach the agent spawn: {env:?}"
-            );
-        }
-
-        // The default (no wrapper configured): the gate build carries nothing (spec 65's
-        // own contract, untouched). The agent spawn carries NO wrapper var either, but
-        // STILL carries its per-unit CARGO_TARGET_DIR - ONE BUILD LOCATION is
-        // unconditional, not a wrapper-cache concern (spec 77 c1).
-        let (off_gate_envs, off_spawn_envs, off_target) = run_once(config::BuildConfig::default());
-        assert!(!off_gate_envs.is_empty(), "the gate must have run");
-        assert!(
-            off_gate_envs.iter().all(Vec::is_empty),
-            "no wrapper configured must inject nothing into the gate build: {off_gate_envs:?}"
+        // Each row: why, the declaration, `build.jobs`, whether `B` lands over the unit's cache,
+        // then the other pairs every gate build and every spawn carries after it.
+        type Row<'a> = (
+            &'a str,
+            &'a [(&'a str, &'a str)],
+            u32,
+            bool,
+            &'a [(&'a str, &'a str)],
         );
-        assert!(
-            !off_spawn_envs.is_empty(),
-            "the implementer must have spawned"
-        );
-        for env in &off_spawn_envs {
-            let mut got: HashMap<String, String> = env.iter().cloned().collect();
+        let rows: [Row; 3] = [
+            ("nothing declared", &[], 3, false, &[]),
+            (
+                "B, J and L with jobs 3",
+                &DECLARED_BJL,
+                3,
+                true,
+                &[("J", "3"), ("L", "lit")],
+            ),
+            (
+                "B, J and L with jobs 0",
+                &DECLARED_BJL,
+                0,
+                true,
+                &[("L", "lit")],
+            ),
+        ];
+        for (why, declared, jobs, b_over_cache, others) in rows {
+            let (gate_envs, spawn_envs, target) = run_once(build_declaring(declared, jobs));
+            let want: Vec<(String, String)> = b_over_cache
+                .then(|| ("B".to_string(), format!("{target}/x")))
+                .into_iter()
+                .chain(
+                    others
+                        .iter()
+                        .map(|(name, value)| (name.to_string(), value.to_string())),
+                )
+                .collect();
+            assert!(!gate_envs.is_empty(), "{why}: the gate must have run");
             assert_eq!(
-                got.remove("CARGO_TARGET_DIR").as_deref(),
-                Some(off_target.as_str()),
-                "the agent spawn must carry its per-unit CARGO_TARGET_DIR even with no \
-                 wrapper configured (ONE BUILD LOCATION is unconditional): {env:?}"
+                gate_envs,
+                vec![want.clone(); gate_envs.len()],
+                "{why}: every gate build carries the declared environment over the unit's cache"
             );
             assert!(
-                got.is_empty(),
-                "no wrapper configured must inject no wrapper var into the agent spawn: \
-                 {env:?}"
+                !spawn_envs.is_empty(),
+                "{why}: the implementer must have spawned"
+            );
+            assert_eq!(
+                spawn_envs,
+                vec![want; spawn_envs.len()],
+                "{why}: every spawn carries the same declared environment over the same cache"
             );
         }
     }
 
+    /// WHAT A SPAWN CARRIES: [`RunCtx::spawn_env`] answers exactly the variables the declared
+    /// build environment exports at the spawn's site - the unit sibling its `cache` prefix names
+    /// (the unit's own cache for a spawn that builds the unit's tree, its review cache for a
+    /// review tier), or no cache when the spawn's dir has no unit sibling, so a `{build_cache}`
+    /// variable is left out - followed by the gate socket pair of a run serving a gate channel.
+    /// With nothing declared it answers only rigger's own pairs. Each row's `site` is the cache
+    /// the spawn builds into: its unit sibling when an exported variable rests on it, else empty.
     #[test]
-    fn spawn_env_adds_the_per_unit_cargo_target_dir_only_for_a_real_unit_worktree() {
-        // Pure unit coverage of `RunCtx::spawn_env` (spec 77 c1) directly: the wrapper
-        // vars always pass through unchanged, and CARGO_TARGET_DIR is appended ONLY when
-        // `dir` derives a per-unit cache sibling (a real `rigger-wt-<slug>` unit
-        // worktree) - never for an empty `dir` or a non-unit-worktree path (a review
-        // worktree, say), mirroring `unit_cache_sibling`'s own `None` semantics exactly.
-        // A run serving no gate channel, so the gate socket variable adds nothing here.
+    fn spawn_env_answers_the_declared_variables_over_the_spawns_unit_sibling() {
+        struct Case {
+            why: &'static str,
+            declared: &'static [(&'static str, &'static str)],
+            jobs: u32,
+            dir: &'static str,
+            cache: &'static str,
+            address: Option<&'static str>,
+            vars: Vec<(&'static str, &'static str)>,
+            site: &'static str,
+        }
+        let unit = crate::worktree::UNIT_CACHE_PREFIX;
+        let review = crate::worktree::UNIT_REVIEW_CACHE_PREFIX;
+        let worktree = "/scratch/rigger-wt-unit-a";
+        let cases = [
+            Case {
+                why: "nothing declared at a unit worktree",
+                declared: &[],
+                jobs: 3,
+                dir: worktree,
+                cache: unit,
+                address: None,
+                vars: vec![],
+                site: "",
+            },
+            Case {
+                why: "nothing declared in a run serving a gate channel",
+                declared: &[],
+                jobs: 3,
+                dir: worktree,
+                cache: unit,
+                address: Some("/run/rigger-gate.sock"),
+                vars: vec![(GATE_SOCKET_ENV, "/run/rigger-gate.sock")],
+                site: "",
+            },
+            Case {
+                why: "B, J and L at a unit worktree building the unit's tree",
+                declared: &DECLARED_BJL,
+                jobs: 3,
+                dir: worktree,
+                cache: unit,
+                address: None,
+                vars: vec![
+                    ("B", "/scratch/cargo-target-unit-a/x"),
+                    ("J", "3"),
+                    ("L", "lit"),
+                ],
+                site: "/scratch/cargo-target-unit-a",
+            },
+            Case {
+                why: "B, J and L for a review tier of a unit worktree",
+                declared: &DECLARED_BJL,
+                jobs: 3,
+                dir: worktree,
+                cache: review,
+                address: None,
+                vars: vec![
+                    ("B", "/scratch/review-target-unit-a/x"),
+                    ("J", "3"),
+                    ("L", "lit"),
+                ],
+                site: "/scratch/review-target-unit-a",
+            },
+            Case {
+                why: "B, J and L at an empty dir",
+                declared: &DECLARED_BJL,
+                jobs: 3,
+                dir: "",
+                cache: unit,
+                address: None,
+                vars: vec![("J", "3"), ("L", "lit")],
+                site: "",
+            },
+            Case {
+                why: "B, J and L at a review-only worktree with no unit sibling",
+                declared: &DECLARED_BJL,
+                jobs: 3,
+                dir: "/scratch/rigger-review-stage-0",
+                cache: review,
+                address: None,
+                vars: vec![("J", "3"), ("L", "lit")],
+                site: "",
+            },
+            Case {
+                why: "B, J and L with jobs 0",
+                declared: &DECLARED_BJL,
+                jobs: 0,
+                dir: worktree,
+                cache: unit,
+                address: None,
+                vars: vec![("B", "/scratch/cargo-target-unit-a/x"), ("L", "lit")],
+                site: "/scratch/cargo-target-unit-a",
+            },
+            Case {
+                why: "B, J and L in a run serving a gate channel",
+                declared: &DECLARED_BJL,
+                jobs: 3,
+                dir: worktree,
+                cache: unit,
+                address: Some("/run/rigger-gate.sock"),
+                vars: vec![
+                    ("B", "/scratch/cargo-target-unit-a/x"),
+                    ("J", "3"),
+                    ("L", "lit"),
+                    (GATE_SOCKET_ENV, "/run/rigger-gate.sock"),
+                ],
+                site: "/scratch/cargo-target-unit-a",
+            },
+        ];
         let store = Store::open(":memory:").unwrap();
         let driver = Stub::new();
         let deps = stub_deps(&store, &driver, Vec::new());
         let cfg = Config::default();
-        let ctx = RunCtx::for_test(&cfg, &deps);
-        let wrapper_vars = gate::BuildEnv::resolve("sccache", "/some/cache", 0);
-
-        let with_worktree = ctx.spawn_env(
-            &wrapper_vars,
-            "/scratch/rigger-wt-unit-a",
-            crate::worktree::UNIT_CACHE_PREFIX,
-        );
-        let want_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-a")
-            .expect("a rigger-wt- dir must derive a cache sibling");
-        assert!(
-            with_worktree.contains(&("CARGO_TARGET_DIR".to_string(), want_cache)),
-            "a real unit worktree dir must add its derived per-unit CARGO_TARGET_DIR: \
-             {with_worktree:?}"
-        );
-        assert_eq!(
-            with_worktree.len(),
-            wrapper_vars.vars().len() + 1,
-            "spawn_env must add EXACTLY one var (CARGO_TARGET_DIR) on top of the wrapper \
-             vars, never drop or duplicate any: {with_worktree:?}"
-        );
-
-        for dir in ["", "/scratch/rigger-review-stage-0"] {
-            let got = ctx.spawn_env(&wrapper_vars, dir, crate::worktree::UNIT_CACHE_PREFIX);
+        for case in cases {
+            let mut ctx = RunCtx::for_test(&cfg, &deps);
+            ctx.gate_address = case.address.map(str::to_string);
+            let build_env =
+                gate::BuildEnv::declared(&build_declaring(case.declared, case.jobs)).unwrap();
             assert_eq!(
-                got,
-                wrapper_vars.vars().to_vec(),
-                "a dir with no per-unit cache ({dir:?}) must add nothing beyond the \
-                 wrapper vars: {got:?}"
+                ctx.spawn_env(&build_env, case.dir, case.cache),
+                gate::SiteEnv {
+                    vars: case
+                        .vars
+                        .iter()
+                        .map(|(name, value)| (name.to_string(), value.to_string()))
+                        .collect(),
+                    cache: case.site.to_string(),
+                },
+                "{}",
+                case.why
             );
         }
-
-        // A review tier names the unit's review cache: the same worktree derives the
-        // `review-target-<slug>` sibling instead, never the unit's own cache.
-        assert_eq!(
-            ctx.spawn_env(
-                &gate::BuildEnv::default(),
-                "/scratch/rigger-wt-unit-a",
-                crate::worktree::UNIT_REVIEW_CACHE_PREFIX,
-            ),
-            vec![(
-                "CARGO_TARGET_DIR".to_string(),
-                "/scratch/review-target-unit-a".to_string()
-            )],
-        );
-
-        // No wrapper configured: a real unit worktree dir still gets its
-        // CARGO_TARGET_DIR (unconditional), with nothing else alongside it.
-        let off = ctx.spawn_env(
-            &gate::BuildEnv::default(),
-            "/scratch/rigger-wt-unit-b",
-            crate::worktree::UNIT_CACHE_PREFIX,
-        );
-        let want_off_cache = crate::worktree::unit_cache_sibling("/scratch/rigger-wt-unit-b")
-            .expect("a rigger-wt- dir must derive a cache sibling");
-        assert_eq!(
-            off,
-            vec![("CARGO_TARGET_DIR".to_string(), want_off_cache)],
-            "with no wrapper configured, a real unit worktree dir must still get ONLY its \
-             own CARGO_TARGET_DIR: {off:?}"
-        );
     }
 
     /// A driver that records each spawn's id beside the `SpawnOpts.env` it was handed, so a
@@ -39744,27 +39783,39 @@ mod tests {
     }
 
     /// Where each spawn builds and whether its task prompt names that build cache, for each kind
-    /// of working tree a spawn gets, under either driver. A unit's panel builds into the unit's
-    /// caches - the implementer and the test author into the unit's own, the test author by its
+    /// of working tree a spawn gets and each declared build environment, under either driver.
+    /// With `B` declared over `{build_cache}`, a unit's panel builds into the unit's caches - the
+    /// implementer and the test author into the unit's own, the test author by its
     /// `sdet-author` role token whatever id the workflow declares it under (here `test-writer`),
     /// the lenses, the adversary and the adjudicator into the unit's review cache, so a
-    /// reproduction in a reviewer's scratch
-    /// worktree never swaps a binary the unit's gates or another tier's test is using - in the
-    /// spawn environment and in the parked request the host launches. Each review tier
-    /// reads the reviewer discipline once, followed by the build-cache sentence. A spawn with no
-    /// unit sibling carries no cache variable, and its prompt names no cache. Those spawns are: a
-    /// standalone review stage's reviewers in their review-only worktree; the planner at the empty
-    /// dir of a re-plan, where its first spawn, in the plan stage's own worktree, builds into that
-    /// worktree's unit cache; and the plan-critique reviewers. Each `(agent, caches, discipline,
-    /// cache sentence)` row reads as: the agent spawns once per entry of `caches`, in order, each
-    /// spawn building into its entry's sibling of the scratch root (`None` when it carries no
-    /// cache variable), and each spawn's prompt carrying [`REVIEWER_DISCIPLINE`] `discipline`
-    /// times and [`REVIEWER_BUILD_CACHE`] `cache sentence` times, always right after the
-    /// discipline.
+    /// reproduction in a reviewer's scratch worktree never swaps a binary the unit's gates or
+    /// another tier's test is using - in the spawn environment and in the parked request the host
+    /// launches. Each review tier reads the reviewer discipline once, followed by the build-cache
+    /// sentence. A spawn with no unit sibling carries the declared variables that need no cache
+    /// and no `B`, and its prompt names no cache. Those spawns are: a standalone review stage's
+    /// reviewers in their review-only worktree; the planner at the empty dir of a re-plan, where
+    /// its first spawn, in the plan stage's own worktree, builds into that worktree's unit cache;
+    /// and the plan-critique reviewers. A workflow that declares no variable over the build cache
+    /// hands no spawn a cache, and no reviewer's prompt names one. Each `(agent, caches,
+    /// discipline, cache sentence)` row reads as: the agent spawns once per entry of `caches`, in
+    /// order, each spawn's environment carrying `B` over its entry's sibling of the scratch root
+    /// (no `B` when the entry is `None`) followed by the row's other declared pairs, its request
+    /// building into that sibling, and each spawn's prompt carrying [`REVIEWER_DISCIPLINE`]
+    /// `discipline` times and [`REVIEWER_BUILD_CACHE`] `cache sentence` times, always right after
+    /// the discipline.
     #[test]
     fn each_spawn_builds_into_the_cache_its_tree_carries_and_a_tree_with_no_unit_sibling_none() {
         type Setup = fn() -> (Config, Stub);
         type Built<'a> = Vec<(&'a str, &'a [Option<&'a str>], usize, usize)>;
+        type Row<'a> = (
+            &'a str,
+            Setup,
+            &'a [(&'a str, &'a str)],
+            &'a [(&'a str, &'a str)],
+            Built<'a>,
+        );
+        const JL: [(&str, &str); 2] = [("J", "{jobs}"), ("L", "lit")];
+        const JL_AT_3: [(&str, &str); 2] = [("J", "3"), ("L", "lit")];
         let unit_panel: Setup = || {
             let mut cfg = per_unit_panel_cfg(None);
             declare_test_author(&mut cfg, "test-writer");
@@ -39823,10 +39874,12 @@ mod tests {
             };
             (critique_cfg(), driver)
         };
-        let rows: [(&str, Setup, Built); 3] = [
+        let rows: [Row; 5] = [
             (
-                "a unit's panel",
+                "a unit's panel declaring B, J and L",
                 unit_panel,
+                &DECLARED_BJL,
+                &JL_AT_3,
                 vec![
                     ("worker", &[Some("cargo-target-implement")], 0, 0),
                     ("test-writer", &[Some("cargo-target-implement")], 0, 0),
@@ -39836,8 +39889,36 @@ mod tests {
                 ],
             ),
             (
-                "a standalone review stage",
+                "a unit's panel declaring only J and L",
+                unit_panel,
+                &JL,
+                &JL_AT_3,
+                vec![
+                    ("worker", &[None], 0, 0),
+                    ("test-writer", &[None], 0, 0),
+                    ("lens", &[None], 1, 0),
+                    ("adversary", &[None], 1, 0),
+                    ("adj", &[None], 1, 0),
+                ],
+            ),
+            (
+                "a unit's panel declaring nothing",
+                unit_panel,
+                &[],
+                &[],
+                vec![
+                    ("worker", &[None], 0, 0),
+                    ("test-writer", &[None], 0, 0),
+                    ("lens", &[None], 1, 0),
+                    ("adversary", &[None], 1, 0),
+                    ("adj", &[None], 1, 0),
+                ],
+            ),
+            (
+                "a standalone review stage declaring B, J and L",
                 review_stage,
+                &DECLARED_BJL,
+                &JL_AT_3,
                 vec![
                     ("lens", &[None], 1, 0),
                     ("adversary", &[None], 1, 0),
@@ -39845,8 +39926,10 @@ mod tests {
                 ],
             ),
             (
-                "a plan critique that rejects once",
+                "a plan critique that rejects once, declaring B, J and L",
                 plan_critique,
+                &DECLARED_BJL,
+                &JL_AT_3,
                 vec![
                     ("planner", &[Some("cargo-target-plan"), None], 0, 0),
                     ("adversary", &[None, None], 1, 0),
@@ -39854,10 +39937,11 @@ mod tests {
                 ],
             ),
         ];
-        for (case, setup, built) in rows {
+        for (case, setup, declared, others, built) in rows {
             let repo = temp_git_project_with_commit();
             let repo_path = repo.path().to_str().unwrap().to_string();
-            let (cfg, driver) = setup();
+            let (mut cfg, driver) = setup();
+            cfg.workflow.build = build_declaring(declared, 3);
             let st = Store::open(":memory:").unwrap();
             let deps = Deps {
                 repo: repo_path.clone(),
@@ -39874,7 +39958,7 @@ mod tests {
                     prompt.matches(REVIEWER_BUILD_CACHE).count(),
                 )
             };
-            type Spawned = (String, Vec<(String, String)>, Vec<(usize, usize, usize)>);
+            type Spawned = (String, Vec<SpawnBuild>, Vec<(usize, usize, usize)>);
             let (got, want): (Vec<Spawned>, Vec<Spawned>) = built
                 .iter()
                 .map(|&(agent_id, caches, discipline, sentence)| {
@@ -39892,7 +39976,14 @@ mod tests {
                                     let at = cache
                                         .map(|sibling| format!("{scratch}/{sibling}"))
                                         .unwrap_or_default();
-                                    (at.clone(), at)
+                                    let env = cache
+                                        .map(|_| ("B".to_string(), format!("{at}/x")))
+                                        .into_iter()
+                                        .chain(others.iter().map(|(name, value)| {
+                                            (name.to_string(), value.to_string())
+                                        }))
+                                        .collect();
+                                    (env, at)
                                 })
                                 .collect(),
                             vec![(discipline, sentence, sentence); caches.len()],
@@ -41026,9 +41117,9 @@ mod tests {
         /// environments never share a root, and which gate passes are handed none,
         /// mirroring `targets` above.
         gate_scratches: Mutex<Vec<String>>,
-        /// The resolved [`gate::BuildEnv`] vars handed to each run, in invocation order
-        /// (spec 65) - lets a test assert the ONE build-environment authority reaches
-        /// every gate build.
+        /// The variables the declared [`gate::BuildEnv`] exports at each run's site cache
+        /// ([`gate::gate_site_cache`]), in invocation order - lets a test assert the ONE
+        /// build-environment authority reaches every gate build.
         build_envs: Mutex<Vec<Vec<(String, String)>>>,
         /// The `store_fence` handed to each run, in invocation order (spec 70 criterion 3,
         /// u4 round 3) - lets a test assert `run_gates` derives and injects the review-worktree
@@ -41161,10 +41252,11 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(store_fence.to_string());
-            self.build_envs
-                .lock()
-                .unwrap()
-                .push(build_env.vars().to_vec());
+            self.build_envs.lock().unwrap().push(
+                build_env
+                    .at(&gate::gate_site_cache(target, build_cache_dir))
+                    .vars,
+            );
             if self.fault_at == Some(call) {
                 return Err(probe_fault());
             }
@@ -42012,8 +42104,9 @@ mod tests {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let mut cfg = review_stage_cfg("g");
-        // A jobs cap puts a variable in the build env, so the comparison has one to see.
-        cfg.workflow.build.jobs = 3;
+        // A declared build environment puts variables in the gate's, so the comparison has them
+        // to see.
+        cfg.workflow.build = build_declaring(&DECLARED_BJL, 3);
         let store = Store::open(":memory:").unwrap();
         let runner = FirstRunsFail {
             inner: RecordingRunner::new(&[]),
@@ -46523,6 +46616,9 @@ mod tests {
 
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_retries = 2;
+        // The gate's `$CARGO_TARGET_DIR` is the workflow's declaration over the gate's build
+        // cache; rigger exports nothing undeclared.
+        cfg.workflow.build = build_declaring(&[("CARGO_TARGET_DIR", "{build_cache}")], 0);
         cfg.agents.insert("worker".into(), agent("worker"));
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("judge".into(), agent("judge"));
@@ -46722,6 +46818,9 @@ mod tests {
         let log = log_dir.path().join("gate-runs.log");
 
         let mut cfg = Config::default();
+        // The gate's `$CARGO_TARGET_DIR` is the workflow's declaration over the gate's build
+        // cache; rigger exports nothing undeclared.
+        cfg.workflow.build = build_declaring(&[("CARGO_TARGET_DIR", "{build_cache}")], 0);
         cfg.agents.insert("worker".into(), agent("worker"));
         cfg.agents.insert("lens".into(), agent("lens"));
         cfg.agents.insert("judge".into(), agent("judge"));

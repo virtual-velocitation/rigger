@@ -799,6 +799,7 @@ mod tests {
         assert!(opts.run_id.is_empty());
         assert!(opts.title.is_empty());
         assert!(opts.env.is_empty());
+        assert_eq!(opts.build_cache, "");
         assert!(opts.reviews.is_empty());
     }
 

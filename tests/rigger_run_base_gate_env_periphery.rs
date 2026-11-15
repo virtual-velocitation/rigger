@@ -12,11 +12,11 @@
 //! either gate path (`RunCtx::run_gates`'s inline path, `RunCtx::run_deferred_gates`'s
 //! phase-boundary path) or an agent through `RunCtx::spawn_env`.
 //!
-//! `tests/build_env_authority_periphery.rs` proves the ONE build-environment authority
-//! (wrapper/cache/jobs) reaches BOTH a real gate subprocess AND a real agent subprocess.
-//! `$RIGGER_RUN_BASE` follows that same shape: an agent that diffs the run's work, or runs a
-//! gate command by hand, needs the same base the gate is handed, so the value lives in the one
-//! build environment rather than being layered onto the gate paths alone.
+//! `tests/build_env_authority_periphery.rs` proves the workflow's declared build environment
+//! reaches a real gate subprocess the binary launches. `$RIGGER_RUN_BASE` rides that same build
+//! environment: an agent that diffs the run's work, or runs a gate command by hand, needs the
+//! same base the gate is handed, so the value lives in the one build environment
+//! (`gate::BuildEnv::with_var`) rather than being layered onto the gate paths alone.
 //!
 //! 1. `rigger_run_base_reaches_a_real_inline_gate_subprocess_and_a_real_agent_subprocess`:
 //!    seeds a `RunStarted` with a `base_tip` (via the real `rigger::run_store::start_fresh`), then
@@ -62,10 +62,10 @@ use real_gate_run::run_real_gate_and_agent;
 
 // `env_test_lock()` serializes every test in this file that touches the real ambient `RIGGER_RUN_BASE` process
 // env (only the "unset" test below removes it) against a concurrent thread that might
-// otherwise race it - the same `env_test_lock` discipline
-// `tests/build_env_authority_periphery.rs` uses for the vars its own tests touch. Every OTHER
-// test in this file never reads or writes ambient env at all: it sets `RIGGER_RUN_BASE`
-// explicitly on the child `Command` (via the production `BuildEnv`/`apply` path), which always
+// otherwise race it - the discipline `tests/common/mod.rs`'s `env_test_lock` documents. Every
+// OTHER test in this file never reads or writes ambient env at all: it sets `RIGGER_RUN_BASE`
+// explicitly on the child `Command` (through the production `BuildEnv` and the `SiteEnv` it
+// resolves at the gate's or the spawn's site), which always
 // wins over whatever the parent process's own environment holds, so only the one test that
 // relies on ambient absence needs the lock.
 
@@ -169,8 +169,7 @@ fn rigger_run_base_reaches_a_real_deferred_gate_subprocess_too() {
 fn no_persisted_base_tip_leaves_rigger_run_base_unset_in_the_real_gate_subprocess() {
     // A fresh store, no seeding: `run`'s own `ensure_started` mints a RunStarted with an empty
     // base_tip (the legacy/no-repo case). Guards against ambient pollution in THIS test
-    // process the same way build_env_authority_periphery.rs's own tests guard RUSTC_WRAPPER
-    // etc. - see `env_test_lock`'s own doc comment.
+    // process - see `env_test_lock`'s own doc comment.
     let _guard = env_test_lock();
     std::env::remove_var("RIGGER_RUN_BASE");
 

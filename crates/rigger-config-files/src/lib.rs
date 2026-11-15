@@ -29,6 +29,10 @@ use rigger_gates_shell::gate;
 extern crate self as rigger;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/build_env.rs"]
+mod build_env_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/config.rs"]
 mod config_fixtures;
 /// THE EXTRACTION TREE whose workflow definition the bytes-form test parses, compiled here from
@@ -40,5 +44,6 @@ mod config_fixtures;
 mod extraction_tree;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
+    pub use crate::build_env_fixtures::*;
     pub use crate::config_fixtures::*;
 }

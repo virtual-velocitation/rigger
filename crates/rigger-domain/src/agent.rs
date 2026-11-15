@@ -822,8 +822,10 @@ mod tests {
     }
 
     /// The request a spawn parks is derived from its options and its agent alone: every field the
-    /// options carry, the agent's model rung for the attempt, its fan-out-stripped tools and its
-    /// wall-clock bound - and nothing else of the options (isolation, env, settings).
+    /// options carry, the build cache as its `cargo_target_dir`, the agent's model rung for the
+    /// attempt, its fan-out-stripped tools and its wall-clock bound - and nothing else of the
+    /// options (isolation, env, settings), so a `CARGO_TARGET_DIR` the environment carries is
+    /// never read as the build location.
     #[test]
     fn a_parked_request_is_derived_from_its_spawn_options_and_its_agent() {
         let agent = AgentDef {
@@ -847,8 +849,9 @@ mod tests {
             title: "the criterion".into(),
             env: vec![
                 ("K".into(), "V".into()),
-                ("CARGO_TARGET_DIR".into(), "/work/review-target-u".into()),
+                ("CARGO_TARGET_DIR".into(), "/work/declared-elsewhere".into()),
             ],
+            build_cache: "/work/review-target-u".into(),
             reviews: vec!["lens:sdet".into()],
             settings_json: "{}".into(),
             ..SpawnOpts::new(test_spawn_host())

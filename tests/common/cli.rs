@@ -84,6 +84,34 @@ pub fn identified_git_project() -> tempfile::TempDir {
     dir
 }
 
+/// An [`identified_git_project`] whose workflow file is `workflow`, its store seeded and its
+/// rigger state ignored, committed clean (a gate refuses an uncommitted tree), and the
+/// [`short_scratch`] directory its gate runs under.
+pub fn committed_project(workflow: &str) -> (tempfile::TempDir, tempfile::TempDir) {
+    let root = identified_git_project();
+    seed_store(root.path());
+    write_workflow(root.path(), workflow);
+    std::fs::write(root.path().join(".gitignore"), ".rigger/\n").unwrap();
+    std::fs::write(root.path().join("README"), "fixture\n").unwrap();
+    super::fixtures::git_ok(root.path(), &["add", "-A"]);
+    super::fixtures::git_ok(root.path(), &["commit", "-q", "-m", "fixture"]);
+    (root, short_scratch())
+}
+
+/// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
+/// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
+/// only about a hundred bytes, which a long `TMPDIR` would exceed.
+pub fn short_scratch() -> tempfile::TempDir {
+    #[cfg(unix)]
+    let base = Path::new("/tmp");
+    #[cfg(not(unix))]
+    let base = std::env::temp_dir();
+    tempfile::Builder::new()
+        .prefix("rg")
+        .tempdir_in(base)
+        .expect("a scratch dir")
+}
+
 /// A throwaway project directory that is deliberately NOT a git repo, so the conductor drives
 /// a repo-less run (no worktrees, no run branch).
 pub fn temp_repoless_project() -> tempfile::TempDir {

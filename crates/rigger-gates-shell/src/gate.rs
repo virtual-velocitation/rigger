@@ -845,7 +845,9 @@ fn cap_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::wait_until_for;
+    use crate::test_support::{
+        build_declaring, wait_until_for, DECLARED_BJL, REFUSED_DECLARATIONS,
+    };
 
     fn gate(autonomy: Autonomy, passes: usize) -> Gate {
         gate_with_kind(Kind::Core, autonomy, passes)
@@ -1048,77 +1050,358 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert!(res.pass, "{why}: {res:?}");
     }
 
+    /// A shell probe that passes exactly when each `(name, value)` pair holds in the environment
+    /// it runs in: `Some(value)` the variable set to `value`, `None` the variable unset.
+    fn probe_sees(pairs: &[(&str, Option<&str>)]) -> String {
+        pairs
+            .iter()
+            .map(|(name, value)| {
+                format!(
+                    "test \"${{{name}-<unset>}}\" = '{}'",
+                    value.unwrap_or("<unset>")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" && ")
+    }
+
+    /// The value `name` holds in this test process's own environment, which a gate run
+    /// inherits for every variable rigger neither sets nor clears.
+    fn ambient(name: &str) -> Option<String> {
+        std::env::var(name).ok()
+    }
+
+    /// The gate site (spec 125 criterion 4): a gate run exports the declared environment over
+    /// its site's build cache - the unit's `target_dir` when it has one, else the shared
+    /// `build_cache_dir` - through the flock guard too, and with nothing declared sets no
+    /// build-cache variable, so `CARGO_TARGET_DIR` reaches the gate exactly as this process
+    /// holds it. A declared variable the site cannot resolve is neither set nor cleared.
     #[test]
-    fn exec_runner_exports_cargo_target_dir_only_when_given() {
-        // Gap 19: a non-empty target_dir is exported to the gate command as
-        // CARGO_TARGET_DIR (the unit-keyed build cache); an empty one must NOT force an
-        // override, leaving the ambient env in place. The command asserts the value it
-        // sees and passes iff it matches.
-        assert_probe_passes(
-            "test \"$CARGO_TARGET_DIR\" = /tmp/rigger-gap19-probe",
-            ("/tmp/rigger-gap19-probe", "", ""),
-            &BuildEnv::default(),
-            "a non-empty target_dir must reach the gate as CARGO_TARGET_DIR",
+    fn exec_runner_exports_the_declared_environment_over_its_site_cache() {
+        struct Case {
+            why: &'static str,
+            target_dir: &'static str,
+            build_cache_dir: &'static str,
+            guarded: bool,
+            declared: &'static [(&'static str, &'static str)],
+            sees: Vec<(&'static str, Option<String>)>,
+        }
+        let bjl = |b: Option<&str>| {
+            vec![
+                ("B", b.map(str::to_string)),
+                ("J", Some("3".to_string())),
+                ("L", Some("lit".to_string())),
+            ]
+        };
+        let cases = [
+            Case {
+                why: "a unit's target_dir is the site cache",
+                target_dir: "/tmp/rigger-site-t",
+                build_cache_dir: "",
+                guarded: false,
+                declared: &DECLARED_BJL,
+                sees: bjl(Some("/tmp/rigger-site-t/x")),
+            },
+            Case {
+                why: "with no target_dir the shared build_cache_dir is the site cache",
+                target_dir: "",
+                build_cache_dir: "/tmp/rigger-site-s",
+                guarded: false,
+                declared: &DECLARED_BJL,
+                sees: bjl(Some("/tmp/rigger-site-s/x")),
+            },
+            Case {
+                why: "a target_dir wins over a build_cache_dir",
+                target_dir: "/tmp/rigger-site-t",
+                build_cache_dir: "/tmp/rigger-site-s",
+                guarded: false,
+                declared: &DECLARED_BJL,
+                sees: bjl(Some("/tmp/rigger-site-t/x")),
+            },
+            Case {
+                why: "the declared variables reach the gate through the flock guard",
+                target_dir: "",
+                build_cache_dir: "/tmp/rigger-site-s",
+                guarded: true,
+                declared: &DECLARED_BJL,
+                sees: bjl(Some("/tmp/rigger-site-s/x")),
+            },
+            Case {
+                why: "a site with no cache exports J and L and leaves B as found",
+                target_dir: "",
+                build_cache_dir: "",
+                guarded: false,
+                declared: &DECLARED_BJL,
+                sees: bjl(ambient("B").as_deref()),
+            },
+            Case {
+                why: "with nothing declared a unit gate's CARGO_TARGET_DIR is as found",
+                target_dir: "/tmp/rigger-site-t",
+                build_cache_dir: "",
+                guarded: false,
+                declared: &[],
+                sees: vec![("CARGO_TARGET_DIR", ambient("CARGO_TARGET_DIR"))],
+            },
+            Case {
+                why: "with nothing declared a shared-cache gate's CARGO_TARGET_DIR is as found",
+                target_dir: "",
+                build_cache_dir: "/tmp/rigger-site-s",
+                guarded: false,
+                declared: &[],
+                sees: vec![("CARGO_TARGET_DIR", ambient("CARGO_TARGET_DIR"))],
+            },
+        ];
+        for case in cases {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let guard_path = dir.path().join("cargo-target.lock");
+            let guard = if case.guarded {
+                guard_path.to_str().unwrap()
+            } else {
+                ""
+            };
+            let sees: Vec<(&str, Option<&str>)> = case
+                .sees
+                .iter()
+                .map(|(name, value)| (*name, value.as_deref()))
+                .collect();
+            assert_probe_passes(
+                &probe_sees(&sees),
+                (case.target_dir, case.build_cache_dir, guard),
+                &BuildEnv::declared(&build_declaring(case.declared, 3)).unwrap(),
+                case.why,
+            );
+        }
+    }
+
+    /// The build environment the `build` block declaring `pairs` with `build.jobs` = `jobs`
+    /// resolves to, at the build cache `cache`.
+    fn site_of(pairs: &[(&str, &str)], jobs: u32, cache: &str) -> SiteEnv {
+        BuildEnv::declared(&build_declaring(pairs, jobs))
+            .expect("an accepted declaration")
+            .at(cache)
+    }
+
+    fn owned(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    /// Every variable name of a letter or underscore followed by letters, digits and
+    /// underscores is accepted, `CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS` included: rigger sets it
+    /// only as a default a declaration overrides.
+    #[test]
+    fn build_env_declared_accepts_every_variable_name() {
+        for name in ["_", "a", "Z9_", "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS"] {
+            assert_eq!(
+                site_of(&[(name, "lit")], 0, "").vars,
+                owned(&[(name, "lit")]),
+                "{name}"
+            );
+        }
+    }
+
+    /// A site exports a declared variable exactly when every placeholder of its template
+    /// resolves non-empty (`{build_cache}` to the site's cache, `{jobs}` to a positive jobs
+    /// cap), and a placeholder-free template, an empty one included, everywhere, in name order.
+    /// The site's cache is the given one exactly when an exported variable uses `{build_cache}`.
+    #[test]
+    fn build_env_at_exports_each_variable_whose_placeholders_resolve() {
+        struct Case {
+            why: &'static str,
+            declared: &'static [(&'static str, &'static str)],
+            jobs: u32,
+            cache: &'static str,
+            vars: &'static [(&'static str, &'static str)],
+            site_cache: &'static str,
+        }
+        let cases = [
+            Case {
+                why: "the criterion's declaration at a cache with jobs 3",
+                declared: &DECLARED_BJL,
+                jobs: 3,
+                cache: "/c",
+                vars: &[("B", "/c/x"), ("J", "3"), ("L", "lit")],
+                site_cache: "/c",
+            },
+            Case {
+                why: "no cache exports no B",
+                declared: &DECLARED_BJL,
+                jobs: 3,
+                cache: "",
+                vars: &[("J", "3"), ("L", "lit")],
+                site_cache: "",
+            },
+            Case {
+                why: "jobs 0 exports no J",
+                declared: &DECLARED_BJL,
+                jobs: 0,
+                cache: "/c",
+                vars: &[("B", "/c/x"), ("L", "lit")],
+                site_cache: "/c",
+            },
+            Case {
+                why: "jobs 1 exports J",
+                declared: &[("J", "{jobs}")],
+                jobs: 1,
+                cache: "",
+                vars: &[("J", "1")],
+                site_cache: "",
+            },
+            Case {
+                why: "neither a cache nor jobs exports only the literal",
+                declared: &DECLARED_BJL,
+                jobs: 0,
+                cache: "",
+                vars: &[("L", "lit")],
+                site_cache: "",
+            },
+            Case {
+                why: "an empty template is exported",
+                declared: &[("E", "")],
+                jobs: 0,
+                cache: "/c",
+                vars: &[("E", "")],
+                site_cache: "",
+            },
+            Case {
+                why: "one unresolved placeholder withholds the whole variable",
+                declared: &[("M", "{build_cache}/{jobs}")],
+                jobs: 0,
+                cache: "/c",
+                vars: &[],
+                site_cache: "",
+            },
+            Case {
+                why: "both placeholders resolved",
+                declared: &[("M", "{build_cache}/{jobs}")],
+                jobs: 2,
+                cache: "/c",
+                vars: &[("M", "/c/2")],
+                site_cache: "/c",
+            },
+            Case {
+                why: "the cache unresolved",
+                declared: &[("M", "{build_cache}/{jobs}")],
+                jobs: 2,
+                cache: "",
+                vars: &[],
+                site_cache: "",
+            },
+            Case {
+                why: "a placeholder twice",
+                declared: &[("R", "{build_cache}:{build_cache}")],
+                jobs: 0,
+                cache: "/c",
+                vars: &[("R", "/c:/c")],
+                site_cache: "/c",
+            },
+            Case {
+                why: "doubled braces are literal braces, never a placeholder",
+                declared: &[("T", "{{build_cache}}")],
+                jobs: 0,
+                cache: "/c",
+                vars: &[("T", "{build_cache}")],
+                site_cache: "",
+            },
+            Case {
+                why: "doubled braces anywhere",
+                declared: &[("T", "a}}b{{c")],
+                jobs: 0,
+                cache: "",
+                vars: &[("T", "a}b{c")],
+                site_cache: "",
+            },
+            Case {
+                why: "variables in name order",
+                declared: &[("Z", "1"), ("A", "{build_cache}")],
+                jobs: 0,
+                cache: "/c",
+                vars: &[("A", "/c"), ("Z", "1")],
+                site_cache: "/c",
+            },
+            Case {
+                why: "nothing declared",
+                declared: &[],
+                jobs: 3,
+                cache: "/c",
+                vars: &[],
+                site_cache: "",
+            },
+        ];
+        for case in cases {
+            assert_eq!(
+                site_of(case.declared, case.jobs, case.cache),
+                SiteEnv {
+                    vars: owned(case.vars),
+                    cache: case.site_cache.to_string(),
+                },
+                "{}",
+                case.why
+            );
+        }
+    }
+
+    /// A `with_var` pair follows the declared variables at every site, an empty value adds
+    /// nothing, and neither makes the site's cache.
+    #[test]
+    fn build_env_at_appends_the_with_var_pairs_after_the_declared_ones() {
+        let env = BuildEnv::declared(&build_declaring(&DECLARED_BJL, 3))
+            .unwrap()
+            .with_var("RIGGER_RUN_BASE", "abc")
+            .with_var("X", "");
+        assert_eq!(
+            env.at("/c"),
+            SiteEnv {
+                vars: owned(&[
+                    ("B", "/c/x"),
+                    ("J", "3"),
+                    ("L", "lit"),
+                    ("RIGGER_RUN_BASE", "abc"),
+                ]),
+                cache: "/c".to_string(),
+            }
         );
-        assert_probe_passes(
-            "test \"$CARGO_TARGET_DIR\" != /tmp/rigger-gap19-probe",
-            ("", "", ""),
-            &BuildEnv::default(),
-            "an empty target_dir must not force a CARGO_TARGET_DIR override",
+        assert_eq!(
+            BuildEnv::default().with_var("R", "v").at("/c"),
+            SiteEnv {
+                vars: owned(&[("R", "v")]),
+                cache: String::new(),
+            }
         );
     }
 
+    /// Every refused `build.env` entry is refused naming the variable: a bad name, each name
+    /// rigger sets itself, an unknown placeholder and a stray brace.
+    #[test]
+    fn build_env_declared_refuses_each_refused_declaration_naming_the_variable() {
+        for row in REFUSED_DECLARATIONS {
+            assert_eq!(
+                BuildEnv::declared(&build_declaring(&[(row.name, row.value)], 3)),
+                Err(row.message.to_string()),
+                "{:?} = {:?}",
+                row.name,
+                row.value
+            );
+        }
+    }
+
+    /// A SiteEnv applied to a command sets each of its pairs on it.
+    #[test]
+    fn site_env_apply_sets_every_pair_on_a_command() {
+        let site = site_of(&DECLARED_BJL, 3, "/c");
+        let mut cmd = Command::new("sh");
+        site.apply(&mut cmd);
+        cmd.arg("-c").arg(probe_sees(&[
+            ("B", Some("/c/x")),
+            ("J", Some("3")),
+            ("L", Some("lit")),
+        ]));
+        assert!(cmd.status().unwrap().success(), "apply sets every pair");
+    }
+
     crate::test_cases! {
-        /// spec 77 criterion 5 (BOUNDED SHARED CACHE), the round 8/9 lesson from this same
-        /// criterion's own prior review history: when target_dir is empty (the ambient/
-        /// shared-cache case), a non-empty build_cache_dir must FORCE the real cargo
-        /// invocation's CARGO_TARGET_DIR onto it - never leaving it to whatever the
-        /// ambient/inherited process env happens to carry - so the directory a real gate
-        /// build actually writes into can never silently diverge from the directory
-        /// `build_cache_guard` (and `rigger reset --build-cache`) protects. No ambient env
-        /// mutation here (this test binary runs its suite with multiple tests concurrently,
-        /// and `std::env::set_var` is process-wide) - a direct positive assertion that the
-        /// spawned command's own CARGO_TARGET_DIR equals build_cache_dir is exactly as
-        /// conclusive and carries no cross-test race.
-        exec_runner_forces_cargo_target_dir_onto_build_cache_dir_when_target_dir_is_empty:
-            assert_probe_passes(
-                "test \"$CARGO_TARGET_DIR\" = /tmp/rigger-shared-cache-probe",
-                ("", "/tmp/rigger-shared-cache-probe", ""),
-                &BuildEnv::default(),
-                "an empty target_dir with a non-empty build_cache_dir must force CARGO_TARGET_DIR \
-                 onto build_cache_dir",
-            );
-        /// The guard wrapper (`flock -s -F <guard> sh -c '<g.run>'`, spec 77 criterion 5
-        /// round 2 fix) must never swallow the env vars this function sets on the `Command`
-        /// BEFORE exec - CARGO_TARGET_DIR here, standing in for every var this module
-        /// injects (BuildEnv's own wrapper vars, STORE_FENCE_ENV, ...). Proven with a REAL
-        /// guard (both non-empty AND usable, so `guarded` is actually true and the command
-        /// really is wrapped) - the exact combination none of this file's other
-        /// build_cache_dir/env tests exercise together, since they each leave one of the two
-        /// empty.
-        exec_runner_env_vars_reach_the_gate_command_through_the_flock_guard_wrapper: {
-            let dir = tempfile::tempdir().expect("tempdir");
-            let guard_path = dir.path().join("cargo-target.lock");
-            assert_probe_passes(
-                "test \"$CARGO_TARGET_DIR\" = /tmp/rigger-flock-env-probe",
-                ("", "/tmp/rigger-flock-env-probe", guard_path.to_str().unwrap()),
-                &BuildEnv::default(),
-                "CARGO_TARGET_DIR must reach the gate command even when wrapped through flock",
-            )
-        };
-        /// The two are mutually exclusive by every real caller's own construction
-        /// (`conductor::run_gates` only ever resolves a non-empty `target` XOR a non-empty
-        /// shared-cache pair - see `shared_build_cache_paths`), but ExecRunner's own
-        /// precedence must not silently rely on that external discipline: a non-empty
-        /// target_dir must always win, so a per-unit build can never be redirected onto the
-        /// shared cache even if a caller were to pass both.
-        exec_runner_target_dir_wins_over_build_cache_dir_when_both_are_given:
-            assert_probe_passes(
-                "test \"$CARGO_TARGET_DIR\" = /tmp/rigger-gap19-probe",
-                ("/tmp/rigger-gap19-probe", "/tmp/rigger-shared-cache-probe", ""),
-                &BuildEnv::default(),
-                "a non-empty target_dir must win over a non-empty build_cache_dir",
-            );
         /// The jobs cap reaches a real gate subprocess through the SAME injection site
         /// (ExecRunner::run) the wrapper vars already use - no second call needed.
         exec_runner_applies_the_jobs_cap_it_is_given:
@@ -1208,8 +1491,9 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     }
 
     /// One shared-cache gate run through [`ExecRunner`] under a tempdir `root`: the guard is
-    /// the path `lay_out` prepares under `root`, the shared cache is `root/cache`, and the
-    /// command marks `root/ran` and builds into `$CARGO_TARGET_DIR`. `os_error` reads, before
+    /// the path `lay_out` prepares under `root`, the shared cache is `root/cache`, the
+    /// workflow declares `CARGO_TARGET_DIR` over the build cache, and the command marks
+    /// `root/ran` and builds into `$CARGO_TARGET_DIR`. `os_error` reads, before
     /// the run, the OS error the guard's probe must meet (`None` for a usable guard). A usable
     /// guard runs the command guarded, creating the guard file and building into the shared
     /// cache; an unusable one returns [`ProbeFault`] naming the guard and that error, and runs
@@ -1238,7 +1522,11 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             cache.to_str().unwrap(),
             guard_str,
             "",
-            &BuildEnv::default(),
+            &BuildEnv::declared(&build_declaring(
+                &[("CARGO_TARGET_DIR", "{build_cache}")],
+                0,
+            ))
+            .unwrap(),
             &BuildBudget::default(),
         );
         let ran_and_built = (ran.exists(), cache.is_dir());
@@ -1525,11 +1813,14 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // environment untouched, exactly as before this authority existed. No silent
         // degrade in the other direction either: nothing is injected when nothing was
         // asked for.
-        assert!(BuildEnv::resolve("", "", 0).vars().is_empty());
-        assert!(BuildEnv::resolve("off", "/some/cache", 0).vars().is_empty());
+        assert!(BuildEnv::resolve("", "", 0).at("").vars.is_empty());
+        assert!(BuildEnv::resolve("off", "/some/cache", 0)
+            .at("")
+            .vars
+            .is_empty());
         // Matched case- and whitespace-insensitively, like the workflow's other on/off
         // scalars (`dash`, `autonomy`).
-        assert!(BuildEnv::resolve("  OFF  ", "", 0).vars().is_empty());
+        assert!(BuildEnv::resolve("  OFF  ", "", 0).at("").vars.is_empty());
     }
 
     /// `BuildEnv::resolve(wrapper, cache_dir, jobs)` carries each `expected` var with its
@@ -1540,8 +1831,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         absent: &[&str],
         total: Option<usize>,
     ) {
-        let env = BuildEnv::resolve(wrapper, cache_dir, jobs);
-        let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
+        let env = BuildEnv::resolve(wrapper, cache_dir, jobs).at("");
+        let vars: std::collections::HashMap<_, _> = env.vars.iter().cloned().collect();
         for (key, value) in expected {
             assert_eq!(vars.get(*key).map(String::as_str), Some(*value), "{key}");
         }
@@ -1549,7 +1840,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             assert!(!vars.contains_key(*key), "{key} must be absent: {env:?}");
         }
         if let Some(total) = total {
-            assert_eq!(env.vars().len(), total, "exactly {total} vars: {env:?}");
+            assert_eq!(env.vars.len(), total, "exactly {total} vars: {env:?}");
         }
     }
 
@@ -1597,8 +1888,8 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // non-empty shared location (`<state home>/rigger/build-cache`) - never an
         // empty/unset cache var, which would leave the wrapper's OWN scattered
         // per-invocation default in play instead of one shared machine-wide cache.
-        let env = BuildEnv::resolve("sccache", "", 0);
-        let vars: std::collections::HashMap<_, _> = env.vars().iter().cloned().collect();
+        let env = BuildEnv::resolve("sccache", "", 0).at("");
+        let vars: std::collections::HashMap<_, _> = env.vars.iter().cloned().collect();
         let dir = vars.get("SCCACHE_DIR").expect("a default cache dir var");
         assert!(!dir.is_empty());
         assert!(
@@ -1633,7 +1924,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     fn build_env_apply_sets_every_resolved_var_on_a_command() {
         let env = BuildEnv::resolve("sccache", "/shared/build-cache", 0);
         let mut cmd = Command::new("sh");
-        env.apply(&mut cmd);
+        env.at("").apply(&mut cmd);
         cmd.arg("-c").arg(
             "test \"$RUSTC_WRAPPER\" = sccache && test \"$SCCACHE_DIR\" = /shared/build-cache \
              && test \"$CARGO_INCREMENTAL\" = 0",
@@ -1649,11 +1940,13 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // injected, so an un-set workflow leaves cargo's own ambient default jobs
         // count untouched, exactly as before this criterion existed.
         assert!(!BuildEnv::resolve("", "", 0)
-            .vars()
+            .at("")
+            .vars
             .iter()
             .any(|(k, _)| k == "CARGO_BUILD_JOBS"));
         assert!(!BuildEnv::resolve("sccache", "/x", 0)
-            .vars()
+            .at("")
+            .vars
             .iter()
             .any(|(k, _)| k == "CARGO_BUILD_JOBS"));
     }
@@ -1663,8 +1956,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     // All of these drive the pure, injectable core (`resolve_wrapper_name_from`) against a
     // synthetic PATH built from temp dirs, never the real ambient environment - so none of
     // them touch (or race on) the process-global `PATH` var. The ambient-reading edge
-    // (`resolve_build_layer`) is exercised at the CLI level in tests/cli.rs, where a
-    // synthetic PATH is safely scoped to a child process instead.
+    // (`resolve_build_layer`) only hands this core the process's own `PATH`.
 
     fn write_executable(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
         let path = dir.join(name);

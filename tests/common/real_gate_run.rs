@@ -53,8 +53,8 @@ pub fn run_real_gate_and_agent(
 }
 
 /// Hand `run` - the PUBLIC library entry point, never through `config::load` - a one-gate
-/// workflow configured with `build` whose build environment cannot be resolved: the run must
-/// return `Err` (`must_fail` says why a silent `Ok` is wrong) before a single agent spawns.
+/// workflow configured with `build`, whose `build.env` declaration the one check refuses: the run
+/// must return `Err` (`must_fail` says why a silent `Ok` is wrong) before a single agent spawns.
 /// Returns the error's message.
 pub fn refused_run(build: BuildConfig, must_fail: &str) -> String {
     let cfg = one_gate_workflow(build, "core", "true");
@@ -70,7 +70,7 @@ pub fn refused_run(build: BuildConfig, must_fail: &str) -> String {
     };
     assert!(
         driver.outputs().is_empty(),
-        "the build-env resolution failure must surface BEFORE any agent spawns, not after \
+        "the refused build declaration must surface BEFORE any agent spawns, not after \
          wasted work: {:?}",
         driver.outputs()
     );

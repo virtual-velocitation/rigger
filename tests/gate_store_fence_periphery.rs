@@ -778,8 +778,8 @@ fn a_real_fenced_couriers_scratch_store_is_reclaimed_by_discard_too() {
 /// An `AgentDriver` that always succeeds with a fixed, canned output - the minimal double a
 /// real `conductor::run` needs for its ONE "lens" spawn to complete a fan-out review stage.
 /// Unlike `ExecRunner` (the gate side, kept 100% real below), the agent side is not this
-/// test's boundary: spec 65's own precedent (`tests/build_env_authority_periphery.rs`'s
-/// `RealDriverSpy`) keeps the driver real too when the AGENT injection site is under test,
+/// test's boundary: `tests/rigger_run_base_gate_env_periphery.rs` keeps the driver real too
+/// (`tests/common/real_driver_spy.rs`'s `RealDriverSpy`) when the AGENT injection site is under test,
 /// but here the injection site under test is `conductor::run_gates` -> `gate::Runner::run`,
 /// so the agent only needs to complete convincingly, not be spawned as a real subprocess.
 struct FixedOutputDriver {
