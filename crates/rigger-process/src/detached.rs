@@ -81,15 +81,22 @@ fn output_file(path: &Path) -> io::Result<File> {
 }
 
 /// Start `program` with `args` in `dir`, detached from this process ([`detach`]), with this
-/// process's environment, null stdin and its stdout and stderr both written to the file at
-/// `output`, emptied first: the child's pid. The child's handle is waited on by a thread of this
-/// process, so a long-lived starter never keeps an ended child as a zombie.
-pub fn start<S: AsRef<OsStr>>(
+/// process's environment but for `env`, each variable of which is set to its value or, given
+/// none, removed, null stdin and its stdout and stderr both written to the file at `output`,
+/// emptied first: the child's pid. The child's handle is waited on by a thread of this process,
+/// so a long-lived starter never keeps an ended child as a zombie.
+pub fn start<S, K, V>(
     program: &Path,
     args: &[S],
+    env: impl IntoIterator<Item = (K, Option<V>)>,
     dir: &Path,
     output: &Path,
-) -> io::Result<u32> {
+) -> io::Result<u32>
+where
+    S: AsRef<OsStr>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
     let out = output_file(output)?;
     let err = out.try_clone()?;
     let mut cmd = crate::subprocess::command(program);
@@ -98,6 +105,12 @@ pub fn start<S: AsRef<OsStr>>(
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
+    for (var, value) in env {
+        match value {
+            Some(value) => cmd.env(var, value),
+            None => cmd.env_remove(var),
+        };
+    }
     detach(&mut cmd)?;
     let mut child = cmd.spawn()?;
     let pid = child.id();
@@ -108,6 +121,51 @@ pub fn start<S: AsRef<OsStr>>(
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// No variable set or removed on the child.
+    const NO_ENV: [(&str, Option<&str>); 0] = [];
+
+    /// A started child's environment is the starter's but for the variables it was given: each
+    /// given a value is set to it, and each given none is removed, even one the starter has.
+    #[test]
+    fn a_started_child_has_the_variables_it_was_given_set_or_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("seen");
+        let output = dir.path().join("out");
+        // A variable this process has that the shell neither needs nor sets itself.
+        let had = std::env::vars_os()
+            .filter_map(|(var, _)| var.into_string().ok())
+            .find(|var| {
+                !matches!(
+                    var.as_str(),
+                    "PATH" | "PWD" | "IFS" | "PS1" | "PS2" | "PS4" | "OLDPWD"
+                ) && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .expect("this process has a variable");
+        let script = r#"eval "removed=\${$2-unset}"; printf '%s|%s\n' "${RIGGER_DETACHED_GIVEN-unset}" "$removed" > "$1""#;
+        start(
+            Path::new("/bin/sh"),
+            &["-c", script, "sh", seen.to_str().unwrap(), &had],
+            [
+                ("RIGGER_DETACHED_GIVEN", Some("a value")),
+                (had.as_str(), None),
+            ],
+            dir.path(),
+            &output,
+        )
+        .unwrap();
+        assert!(
+            crate::host_fixtures::wait_until_for(400, || {
+                std::fs::read_to_string(&seen).is_ok_and(|s| s.ends_with('\n'))
+            }),
+            "the child ran"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap(),
+            "a value|unset\n",
+            "a variable given a value is set on the child, one given none ({had}) is removed"
+        );
+    }
 
     /// A started child runs in the directory it was given and leads a process group of its own,
     /// so the starter's terminal never reaches it, and its stdout and stderr both land in the
@@ -123,6 +181,7 @@ mod tests {
         let pid = start(
             Path::new("sh"),
             &["-c", script, "sh", go.to_str().unwrap()],
+            NO_ENV,
             dir.path(),
             &output,
         )
@@ -160,6 +219,7 @@ mod tests {
         start(
             Path::new("sh"),
             &["-c", "touch \"$1\"", "sh", again.to_str().unwrap()],
+            NO_ENV,
             dir.path(),
             &output,
         )

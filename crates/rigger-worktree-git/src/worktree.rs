@@ -2783,8 +2783,8 @@ pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) ->
         repo,
         configured,
         env_override,
-        std::env::var_os("XDG_CACHE_HOME"),
-        std::env::var_os("HOME"),
+        std::env::var_os(crate::driver::replay::CACHE_HOME_ENV),
+        std::env::var_os(crate::driver::replay::HOME_ENV),
     )
 }
 
@@ -2882,8 +2882,8 @@ pub fn scratch_root_path(repo: &str, configured: &str, env_override: Option<&str
         repo,
         configured,
         env_override,
-        std::env::var_os("XDG_CACHE_HOME"),
-        std::env::var_os("HOME"),
+        std::env::var_os(crate::driver::replay::CACHE_HOME_ENV),
+        std::env::var_os(crate::driver::replay::HOME_ENV),
     )
 }
 
@@ -2974,16 +2974,19 @@ pub fn cache_scratch_root_from(
     Some(cache_home.join("rigger").join(encoded))
 }
 
+/// The variable that names the run's scratch root, the override [`scratch_root`] puts first.
+pub const SCRATCH_ROOT_ENV: &str = "RIGGER_TMPDIR";
+
 /// [`scratch_root`] with the `RIGGER_TMPDIR` environment variable as the override.
 pub fn scratch_root_from_env(repo: &str, configured: &str) -> String {
-    let env = std::env::var("RIGGER_TMPDIR").ok();
+    let env = std::env::var(SCRATCH_ROOT_ENV).ok();
     scratch_root(repo, configured, env.as_deref())
 }
 
 /// [`scratch_root_path`] with the `RIGGER_TMPDIR` environment variable as the override -
 /// the read-only resolver `rigger validate` uses to locate (never create) the scratch root.
 pub fn scratch_root_path_from_env(repo: &str, configured: &str) -> String {
-    let env = std::env::var("RIGGER_TMPDIR").ok();
+    let env = std::env::var(SCRATCH_ROOT_ENV).ok();
     scratch_root_path(repo, configured, env.as_deref())
 }
 

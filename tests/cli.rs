@@ -15316,6 +15316,10 @@ fn a_run_that_lands_its_own_definition_edit_relaunches_without_drift() {
 
 /// What the stderr line of an invocation that relaunched a dead driver says.
 const RELAUNCHED: &str = "relaunched it in the background";
+/// The variable an operator gives spawned agents their login token in.
+const AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
+/// What the stderr line of an invocation without the login token its dead driver ran on says.
+const TOKEN_MISSING: &str = "environment does not set, so rigger relaunched nothing; relaunch it by hand from an environment that sets it: rigger run";
 /// What the stderr line of an invocation whose earlier relaunch never took the step lock says.
 const NEVER_STARTED: &str = "never started";
 /// What the stderr line of an invocation that leaves a twice-dead driver stopped says.
@@ -15648,7 +15652,23 @@ fn an_invocation_relaunches_only_a_dead_driver_it_has_not_just_relaunched() {
     let fence = tempfile::tempdir().unwrap();
     let fence = fence.path().to_str().unwrap();
     let hour_ago = serde_json::json!(now - 3600);
-    let rows: [RelaunchRow; 11] = [
+    let rows: [RelaunchRow; 13] = [
+        (
+            "a driver on a login token, invoked without one",
+            with("agent_token", serde_json::json!(true)),
+            &[(AGENT_TOKEN_VAR, "")],
+            false,
+            Left::Kept,
+            Some(TOKEN_MISSING),
+        ),
+        (
+            "a driver on a login token, invoked with one",
+            with("agent_token", serde_json::json!(true)),
+            &[(AGENT_TOKEN_VAR, "another-token")],
+            false,
+            Left::Stamped,
+            Some(RELAUNCHED),
+        ),
         (
             "a run's own spawn",
             record.clone(),
@@ -15804,18 +15824,12 @@ fn a_relaunch_that_would_adopt_another_run_refuses_and_clears_its_record() {
     );
 }
 
-/// The environment of an invocation that starts a real relaunch of the run `ended` left under
-/// `scratch`: the fake host first on PATH, that scratch root, the state home `state` and the host's
-/// own launcher.
-fn real_relaunch_envs<'a>(
-    ended: &'a common::cli::EndedRun,
-    scratch: &'a Path,
-    state: &'a Path,
-) -> [(&'a str, &'a str); 4] {
+/// The environment of an invocation that starts a real relaunch of the run `ended` left: the fake
+/// host first on PATH and the host's own launcher. No root the run resolves is handed: the
+/// relaunched driver resolves the roots of the driver that died.
+fn real_relaunch_envs(ended: &common::cli::EndedRun) -> [(&str, &str); 2] {
     [
         ("PATH", ended.path_env.as_str()),
-        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
-        ("XDG_STATE_HOME", state.to_str().unwrap()),
         (common::RELAUNCH_ENV, ""),
     ]
 }
@@ -15850,8 +15864,7 @@ fn a_relaunch_into_a_checkout_on_another_branch_refuses_and_changes_nothing() {
         )
     };
     let before = checkout();
-    let state = tempfile::tempdir().unwrap();
-    let envs = real_relaunch_envs(&ended, &scratch, state.path());
+    let envs = real_relaunch_envs(&ended);
     let (out, err, ok) = run_rigger_envs(root, &["status"], &envs);
     assert!(
         ok && err.contains(RELAUNCHED),
@@ -16196,19 +16209,36 @@ fn an_interrupted_driver_is_stopped_on_purpose_and_never_relaunched() {
 /// A RUN SURVIVES ITS DRIVER through the real background start: the invocation after a death starts
 /// a detached driver that adopts the run, re-parks its implementer and drives it to its end,
 /// carrying the relaunch it was started by, and clears its record once it is done, so the next
-/// invocation relaunches nothing.
+/// invocation relaunches nothing. The dead driver's scratch and state roots, which the invocation
+/// does not share, are the relaunched driver's, and of the login token it ran its agents on its
+/// record keeps only that it had one.
 #[test]
 fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
-    let scratch = common::default_scratch_root(root);
-    let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], common::fixtures::cleanup);
+    let roots = tempfile::tempdir().unwrap();
+    let scratch = roots.path().join("scratch");
+    let state = roots.path().join("state");
+    std::fs::create_dir_all(&state).unwrap();
+    let token = "a-login-token-value";
+    let ended = common::cli::a_run_ended_mid_unit(
+        root,
+        &scratch,
+        &[
+            ("XDG_STATE_HOME", state.to_str().unwrap()),
+            (AGENT_TOKEN_VAR, token),
+        ],
+        common::fixtures::cleanup,
+    );
     let run = common::cli::current_run_id_of(root).expect("the run started before its driver died");
     let started = common::cli::unit_started(ended.fake.path());
     std::fs::remove_file(&started).unwrap();
-    let state = tempfile::tempdir().unwrap();
-    let envs = real_relaunch_envs(&ended, &scratch, state.path());
+    std::fs::remove_file(ended.fake.path().join("bin").join("cwd")).unwrap();
+    let instances = state.join("rigger").join("instances");
+    let _ = std::fs::remove_dir_all(&instances);
+    let mut envs = real_relaunch_envs(&ended).to_vec();
+    envs.push((AGENT_TOKEN_VAR, token));
     let (out, err, ok) = run_rigger_envs(root, &["status"], &envs);
     assert!(
         ok && err.contains(RELAUNCHED),
@@ -16218,10 +16248,28 @@ fn a_relaunched_driver_adopts_its_run_and_drives_it_to_its_end() {
     let live = common::cli::driver_record(root);
     let live: serde_json::Value = serde_json::from_str(&live).unwrap_or_default();
     let alive = !common::cli::step_lock_free(root);
+    let worked_in =
+        std::fs::read_to_string(ended.fake.path().join("bin").join("cwd")).unwrap_or_default();
+    let registered = std::fs::read_dir(&instances).is_ok_and(|mut dir| dir.next().is_some());
     common::cli::release_the_unit(ended.fake.path());
     assert!(
         reparked && alive,
         "the relaunched driver holds the step lock and re-parks the unit's implementer"
+    );
+    assert_eq!(
+        (
+            Path::new(worked_in.trim_end()).starts_with(scratch.canonicalize().unwrap()),
+            registered
+        ),
+        (true, true),
+        "the relaunched driver works under the dead driver's scratch root and registers under \
+         its state home; the implementer worked in {worked_in:?}"
+    );
+    let kept: serde_json::Value = serde_json::from_str(&ended.record).unwrap_or_default();
+    assert!(
+        kept["agent_token"] == true && !ended.record.contains(token),
+        "the record keeps that the driver had a login token, never its value; {}",
+        ended.record
     );
     assert!(
         live["run"] == run.as_str()

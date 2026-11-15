@@ -102,7 +102,8 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         // project's own agent-liveness marker. Only when NEITHER signal is present (no repo, no
         // env override, no configured `workdir`) does this stay empty, preserving the original
         // repo-less degrade below (no scratch to probe, no directory fabricated from a bare cwd).
-        let has_explicit_root = std::env::var("RIGGER_TMPDIR").is_ok_and(|v| !v.trim().is_empty())
+        let has_explicit_root = std::env::var(rigger::worktree::SCRATCH_ROOT_ENV)
+            .is_ok_and(|v| !v.trim().is_empty())
             || !workdir.trim().is_empty();
         if repo.is_empty() && !has_explicit_root {
             String::new()

@@ -4,8 +4,10 @@
 //! a person (neither `--line` nor `--json`), `rigger release` and `rigger resume-unit`
 //! ([`check_point`]). No other verb checks, so none pays for it. A record whose lock no driver
 //! holds is a driver that died, by a crash, a forced end, a hangup or a reboot, and the check
-//! relaunches it by adoption, in the background, through the binary it recorded, as a hand
-//! `rigger run <spec> --base <ref>` would. The relaunched driver's stdout and stderr go to one
+//! relaunches it by adoption, in the background, through the binary it recorded and with the
+//! variables its roots resolve from set as it had them ([`ROOTS_ENV`]), as a hand
+//! `rigger run <spec> --base <ref>` would. A driver that gave its agents the login token is
+//! relaunched only by a check whose environment gives it too. The relaunched driver's stdout and stderr go to one
 //! file under the store (`.rigger/driver.out`, [`DRIVER_OUTPUT_FILE`]), what it would have said on
 //! the operator's terminal; each relaunch overwrites it and `rigger reset --runs` removes it once no driver holds the step
 //! lock.
@@ -27,6 +29,8 @@
 
 use super::*;
 use rigger::interrupt::{empty_on_interrupt, InterruptTrigger};
+use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// The file under [`RIGGER_DIR`] a relaunched driver's stdout and stderr go to.
@@ -37,6 +41,30 @@ const GRACE: Duration = Duration::from_secs(30);
 /// How long a relaunched driver must live for its death to be relaunched again: a driver that
 /// dies sooner is left stopped, so a run whose driver cannot live is never relaunched in a loop.
 const BACKOFF: Duration = Duration::from_secs(600);
+
+/// The variables the run's roots resolve from, each named where it is read: the scratch root
+/// (`RIGGER_TMPDIR`, then the cache home's `XDG_CACHE_HOME` and `HOME`), the state home that
+/// roots the instance registry and the build cache (`XDG_STATE_HOME`, then `HOME`), and the walk
+/// that finds the project's repository and store (`GIT_CEILING_DIRECTORIES`,
+/// `GIT_DISCOVERY_ACROSS_FILESYSTEM`). A driver records each, set or not, and its relaunch sets or
+/// removes each on the child as the driver had it, so the relaunched driver resolves the roots the
+/// one that died did.
+const ROOTS_ENV: [&str; 6] = [
+    rigger::worktree::SCRATCH_ROOT_ENV,
+    rigger::driver::replay::CACHE_HOME_ENV,
+    rigger::registry::HOME_ENV,
+    rigger::registry::STATE_HOME_ENV,
+    rigger_worktree_git::discover::CEILINGS,
+    rigger_worktree_git::discover::ACROSS_DEVICES,
+];
+
+/// Each of [`ROOTS_ENV`] with its value in this process, `None` where it is unset.
+fn roots_env() -> BTreeMap<String, Option<OsString>> {
+    ROOTS_ENV
+        .iter()
+        .map(|var| ((*var).to_string(), std::env::var_os(var)))
+        .collect()
+}
 
 /// The record a live driver keeps of itself in its step lock: how to relaunch it, and the
 /// relaunches it carries.
@@ -55,6 +83,14 @@ struct DriverRecord {
     bin: Option<PathBuf>,
     /// The run the driver drives.
     run: String,
+    /// Each of [`ROOTS_ENV`] as the driver had it: its raw value, `None` where it was unset. A
+    /// record an older driver wrote has none, and is relaunched with the checker's.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    env: BTreeMap<String, Option<OsString>>,
+    /// Whether the driver gave its agents the login token
+    /// ([`rigger::claude_auth::agent_token_set`]): never the token itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    agent_token: bool,
     /// When a check started a relaunch of this record, in seconds since the Unix epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relaunched_at: Option<u64>,
@@ -143,6 +179,8 @@ impl KeptRecord {
             args: relaunch_args(parsed, run),
             bin: Some(PathBuf::from(running_executable())),
             run: run.to_string(),
+            env: roots_env(),
+            agent_token: rigger::claude_auth::agent_token_set(),
             relaunched_at: None,
             revived_at,
         };
@@ -194,12 +232,14 @@ fn relaunch_args(parsed: &RunArgs, run: &str) -> Vec<String> {
 /// How a check starts a relaunched driver: an interface, so a test records the relaunch it
 /// would start.
 trait Launcher {
-    /// Start the binary `bin` with `args` in `cwd`, in the background, its stdout and stderr in
-    /// the file at `output`: the started driver's pid.
+    /// Start the binary `bin` with `args` in `cwd`, in the background, with each of `env` set to
+    /// its value or, given none, removed, its stdout and stderr in the file at `output`: the
+    /// started driver's pid.
     fn launch(
         &self,
         bin: &Path,
         args: &[String],
+        env: &BTreeMap<String, Option<OsString>>,
         cwd: &Path,
         output: &Path,
     ) -> std::io::Result<u32>;
@@ -213,10 +253,17 @@ impl Launcher for DetachedLauncher {
         &self,
         bin: &Path,
         args: &[String],
+        env: &BTreeMap<String, Option<OsString>>,
         cwd: &Path,
         output: &Path,
     ) -> std::io::Result<u32> {
-        rigger::detached::start(bin, args, cwd, output)
+        rigger::detached::start(
+            bin,
+            args,
+            env.iter().map(|(var, value)| (var, value.as_ref())),
+            cwd,
+            output,
+        )
     }
 }
 
@@ -229,6 +276,7 @@ impl Launcher for RecordingLauncher {
         &self,
         bin: &Path,
         args: &[String],
+        _env: &BTreeMap<String, Option<OsString>>,
         _cwd: &Path,
         _output: &Path,
     ) -> std::io::Result<u32> {
@@ -308,6 +356,7 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
         released,
         in_main_checkout: &|| main_worktree_or_refuse(site, "").is_ok(),
         operator_holds: &|run| operator_holds(site, run),
+        agent_token: rigger::claude_auth::agent_token_set(),
     };
     let said = launcher().map_or_else(Some, |launcher| revive(&dir, &check, launcher.as_ref()));
     if let Some(line) = said {
@@ -331,13 +380,15 @@ fn operator_holds(site: &Site, run: &str) -> bool {
 }
 
 /// What one check reads beside the step lock: the time it runs at, whether it follows the
-/// operator's `rigger release`, whether it was invoked from the project's main checkout, and
-/// whether an operator hold stands on a run.
+/// operator's `rigger release`, whether it was invoked from the project's main checkout, whether
+/// an operator hold stands on a run, and whether its own environment gives agents the login
+/// token.
 struct Check<'a> {
     now: u64,
     released: bool,
     in_main_checkout: &'a dyn Fn() -> bool,
     operator_holds: &'a dyn Fn(&str) -> bool,
+    agent_token: bool,
 }
 
 /// Relaunch the driver whose record the step lock under `dir` holds when no driver holds that
@@ -345,8 +396,10 @@ struct Check<'a> {
 /// say. Every failure to read the lock is read as nothing to do. A check invoked from a linked
 /// worktree, and a run an operator hold stands on, leave the record as it is: the hold is the
 /// run's stop. A check that follows the operator's release relaunches a driver that died soon
-/// after its own relaunch too, since the operator asked for it. A record whose binary is gone is
-/// cleared, naming the command that relaunches it by hand.
+/// after its own relaunch too, since the operator asked for it. A driver that gave its agents the
+/// login token is relaunched only from an environment that has it too, and is otherwise left as
+/// it is, naming the command that relaunches it by hand. A record whose binary is gone is
+/// cleared, naming that command.
 fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> {
     let now = check.now;
     let path = dir.join("step.lock");
@@ -404,6 +457,16 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             record.by_hand()
         ));
     }
+    if record.agent_token && !check.agent_token {
+        return Some(format!(
+            "rigger: the driver of run {} ran its agents on the login token in {}, which this \
+             invocation's environment does not set, so rigger relaunched nothing; relaunch it by \
+             hand from an environment that sets it: {}",
+            record.run,
+            rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
+            record.by_hand()
+        ));
+    }
     let bin = record
         .bin
         .clone()
@@ -428,7 +491,7 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
     // The lock is released before the launch, so the relaunched driver can take it.
     drop(lock);
     Some(
-        match launcher.launch(&bin, &record.args, &record.cwd, &output) {
+        match launcher.launch(&bin, &record.args, &record.env, &record.cwd, &output) {
             Ok(pid) => format!(
             "rigger: no driver was alive for this project's run {}, so rigger relaunched it in \
              the background (pid {pid}), its output in {}: {}. Follow it with `rigger status`.",
@@ -479,6 +542,97 @@ pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A launcher that keeps the environment each launch is handed and starts nothing.
+    #[derive(Default)]
+    struct EnvKeeper(std::cell::RefCell<Vec<BTreeMap<String, Option<OsString>>>>);
+
+    impl Launcher for EnvKeeper {
+        fn launch(
+            &self,
+            _bin: &Path,
+            _args: &[String],
+            env: &BTreeMap<String, Option<OsString>>,
+            _cwd: &Path,
+            _output: &Path,
+        ) -> std::io::Result<u32> {
+            self.0.borrow_mut().push(env.clone());
+            Ok(0)
+        }
+    }
+
+    /// A relaunch hands its launcher the roots variables the dead driver recorded, each set or
+    /// removed as the driver had it, and a record an older driver wrote, which recorded none,
+    /// hands it none, so the relaunch keeps the checker's.
+    #[test]
+    fn a_relaunch_hands_the_launcher_the_roots_variables_the_driver_recorded() {
+        let recorded: BTreeMap<String, Option<OsString>> = [
+            (
+                rigger::worktree::SCRATCH_ROOT_ENV,
+                Some("/the/driver's/scratch"),
+            ),
+            (rigger::registry::STATE_HOME_ENV, None),
+        ]
+        .into_iter()
+        .map(|(var, value)| (var.to_string(), value.map(OsString::from)))
+        .collect();
+        let rows: [(&str, BTreeMap<String, Option<OsString>>); 2] = [
+            ("a driver that recorded its roots variables", recorded),
+            ("a driver that recorded none", BTreeMap::new()),
+        ];
+        for (name, env) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let record = DriverRecord {
+                dir: dir.path().canonicalize().unwrap(),
+                cwd: dir.path().to_path_buf(),
+                args: vec!["run".into(), "--adopt".into(), "a-run".into()],
+                bin: Some(PathBuf::from(running_executable())),
+                run: "a-run".into(),
+                env: env.clone(),
+                agent_token: false,
+                relaunched_at: None,
+                revived_at: None,
+            };
+            std::fs::write(
+                dir.path().join("step.lock"),
+                serde_json::to_string(&record).unwrap(),
+            )
+            .unwrap();
+            let check = Check {
+                now: now_secs(),
+                released: false,
+                in_main_checkout: &|| true,
+                operator_holds: &|_| false,
+                agent_token: false,
+            };
+            let keeper = EnvKeeper::default();
+            revive(dir.path(), &check, &keeper);
+            assert_eq!(keeper.0.into_inner(), vec![env], "{name}");
+        }
+    }
+
+    /// A kept record holds each of the roots variables as this process has it, set or not.
+    #[test]
+    fn a_kept_record_holds_each_roots_variable_as_the_driver_has_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let parsed = RunArgs {
+            store: None,
+            conn: None,
+            spec: Some("specs/a.md".into()),
+            fresh: false,
+            rebase_definition: false,
+            base: Some("main".into()),
+            adopt: None,
+        };
+        let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
+        kept.keep(&parsed, dir.path(), dir.path(), "a-run");
+        let record: DriverRecord = serde_json::from_str(&kept.lock.contents().unwrap()).unwrap();
+        let expected: BTreeMap<String, Option<OsString>> = ROOTS_ENV
+            .iter()
+            .map(|var| ((*var).to_string(), std::env::var_os(var)))
+            .collect();
+        assert_eq!(record.env, expected);
+    }
 
     /// A panic that unwinds the driver is a stop on purpose: the keeper's drop empties the record
     /// as the unwind passes it, so no check relaunches the run.
