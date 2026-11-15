@@ -3885,8 +3885,11 @@ where
     // Every other path reads through the plain `&F` the pre-existing dispatch below always
     // expected - shadowed here so that body stays byte-identical to before this criterion.
     let provider = provider.as_ref();
-    // The graph a whole-graph read drew, freed on a thread of its own once the answer is
-    // written, so neither this answer nor the next connection waits on the freeing.
+    // The graph a whole-graph read drew, freed once the answer is written and its connection
+    // closed, so the answer never waits on the freeing. It is freed here, before the next
+    // connection is read, not on a thread of its own: a freeing beside the next read contends
+    // with that read's allocations and slows both, so requests made back to back would each pay
+    // several times the freeing.
     let mut drawn = Graph::default();
     let response = match parsed {
         None => Response::text(400, "bad request"),
@@ -4002,7 +4005,7 @@ where
     };
     let written = response.write_to(&mut stream);
     drop(stream);
-    std::thread::spawn(move || drop(drawn));
+    drop(drawn);
     written
 }
 
