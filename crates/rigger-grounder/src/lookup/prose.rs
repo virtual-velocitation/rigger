@@ -10,7 +10,7 @@ use std::hash::{Hash, Hasher};
 use std::ops::ControlFlow;
 use std::path::Path;
 
-use tantivy::collector::{Count, TopDocs};
+use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
 use tantivy::schema::{Field, Schema, Value, STORED, STRING, TEXT};
 use tantivy::snippet::SnippetGenerator;
@@ -91,6 +91,11 @@ struct Source {
     file: String,
 }
 
+/// The threads the index writes on, each filling a segment of its own, and the memory they
+/// share (tantivy's least per thread is 15 MB).
+const WRITER_THREADS: usize = 4;
+const WRITER_MEMORY: usize = WRITER_THREADS * 16_000_000;
+
 /// The fields of the index's one schema.
 #[derive(Clone, Copy)]
 struct Fields {
@@ -99,6 +104,9 @@ struct Fields {
     place: Field,
     title: Field,
     body: Field,
+    /// The order the section was read in, across every refresh: what ranks sections that score
+    /// alike, whatever segment holds each.
+    read: Field,
 }
 
 /// The open in-memory index.
@@ -109,11 +117,13 @@ struct Open {
     reader: IndexReader,
 }
 
-/// The in-memory prose index and the content hash of every source it holds.
+/// The in-memory prose index, the content hash of every source it holds and the order the next
+/// section is read in.
 #[derive(Default)]
 pub(crate) struct ProseIndex {
     open: Option<Open>,
     held: BTreeMap<String, u64>,
+    read: u64,
 }
 
 impl ProseIndex {
@@ -166,7 +176,9 @@ impl ProseIndex {
                     open.fields.place => section.place,
                     open.fields.title => section.title,
                     open.fields.body => section.body,
+                    open.fields.read => self.read,
                 ))?;
+                self.read += 1;
             }
             self.held.insert(source.key, hash);
             dirty = true;
@@ -191,7 +203,8 @@ impl ProseIndex {
     }
 
     /// The top [`PROSE_TOP`] sections for `terms`' words, any of them, a heading match weighing
-    /// double.
+    /// double: by score, then in the order read, so the ranking does not hang on which segment
+    /// the writer's threads put a section in.
     fn search(&self, terms: &[&str]) -> tantivy::Result<Ranked> {
         let Some(open) = &self.open else {
             return Ok(Ranked::default());
@@ -207,15 +220,29 @@ impl ProseIndex {
             .parse_query(&query_words.join(" "))
             .map_err(|e| tantivy::TantivyError::InvalidArgument(e.to_string()))?;
         let searcher = open.reader.searcher();
-        let (top, matched) = searcher.search(
-            &query,
-            &(TopDocs::with_limit(PROSE_TOP).order_by_score(), Count),
-        )?;
+        // Every match by score, then those scoring at least the last kept one read and put in
+        // the order read, so a tie across the cut keeps the sections read first.
+        let every = usize::try_from(searcher.num_docs())
+            .unwrap_or(usize::MAX)
+            .max(1);
+        let scored = searcher.search(&query, &TopDocs::with_limit(every).order_by_score())?;
+        let matched = scored.len();
+        let floor = scored.get(PROSE_TOP - 1).map(|(score, _)| *score);
+        let mut top = Vec::new();
+        for (score, address) in scored {
+            if floor.is_some_and(|floor| score < floor) {
+                break;
+            }
+            let found: TantivyDocument = searcher.doc(address)?;
+            let read = found.get_first(open.fields.read).and_then(|v| v.as_u64());
+            top.push((score, read, found));
+        }
+        top.sort_by(|(a, a_read, _), (b, b_read, _)| b.total_cmp(a).then(a_read.cmp(b_read)));
+        top.truncate(PROSE_TOP);
         let mut snippets = SnippetGenerator::create(&searcher, &*query, open.fields.body)?;
         snippets.set_max_num_chars(SNIPPET_CHARS);
         let mut hits = Vec::with_capacity(top.len());
-        for (_, address) in top {
-            let found: TantivyDocument = searcher.doc(address)?;
+        for (_, _, found) in top {
             let text = |field: Field| {
                 found
                     .get_first(field)
@@ -253,9 +280,10 @@ fn open_index() -> tantivy::Result<Open> {
         place: schema.add_text_field("place", STORED),
         title: schema.add_text_field("title", TEXT | STORED),
         body: schema.add_text_field("body", TEXT | STORED),
+        read: schema.add_u64_field("read", STORED),
     };
     let index = Index::create_in_ram(schema.build());
-    let writer = index.writer_with_num_threads(1, 32_000_000)?;
+    let writer = index.writer_with_num_threads(WRITER_THREADS, WRITER_MEMORY)?;
     let reader = index
         .reader_builder()
         .reload_policy(ReloadPolicy::Manual)
