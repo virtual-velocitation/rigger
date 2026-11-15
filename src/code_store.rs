@@ -1,6 +1,6 @@
 //! The code store as the composition root wires it: the store at a project's root, read from the
 //! repository's objects (or from the directory, for a project with no git), extracted by
-//! [`FactsExtractor`](rigger_grounder::facts::FactsExtractor) and grouped by the production groupings. Every caller opens it through
+//! [`ProjectExtractor`](rigger_grounder::facts::ProjectExtractor) over its root and grouped by the production groupings. Every caller opens it through
 //! [`CodeStore::open`], which is `open_current`: the conductor after a landed merge, `graph build`
 //! and `setup` as writers, and every reader.
 
@@ -52,7 +52,7 @@ impl CodeStore {
     /// The stamp of the snapshot in force, read without advancing; none for an empty store, and
     /// an error for a store that cannot be read.
     pub fn in_force(&self) -> Result<Option<Stamp>, String> {
-        let current = Store::new(&self.root).current(store_fingerprint())?;
+        let current = Store::new(&self.root).current(store_fingerprint(&self.root))?;
         Ok(current.map(|view| view.stamp().clone()))
     }
 

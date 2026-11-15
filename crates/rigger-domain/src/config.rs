@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::failure;
 use crate::spawn::{ReviewKind, STEP_TOKEN_SEPARATOR};
@@ -286,6 +286,60 @@ pub struct RegenerateRule {
     pub paths: Vec<String>,
     #[serde(default)]
     pub run: String,
+}
+
+/// One extractor a project declares under `extractors:` (spec 125, THE EXTRACTORS KEY): the
+/// file extensions it reads, each without its leading dot, and the command that runs it. An
+/// absent key is its empty value, which [`check_extractors`] refuses.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractorDecl {
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub run: String,
+}
+
+/// The one check of a workflow's `extractors:` (spec 125, THE EXTRACTORS KEY). It walks the
+/// declarations in name order and refuses the first malformed one, naming `extractors.<name>`: a
+/// name outside `[a-z0-9_-]+`, a `run` naming no command, an empty `extensions`, an extension
+/// that is empty or holds `.` or `/`, and an extension an earlier extractor in name order also
+/// lists. One extractor listing an extension twice is accepted.
+pub fn check_extractors(declared: &BTreeMap<String, ExtractorDecl>) -> Result<(), String> {
+    let mut owners: HashMap<&str, &str> = HashMap::new();
+    for (name, decl) in declared {
+        let well_named = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'));
+        if !well_named {
+            return Err(format!(
+                "extractors.{name}: a name is one or more of a-z, 0-9, '_' and '-'"
+            ));
+        }
+        if decl.run.trim().is_empty() {
+            return Err(format!("extractors.{name}: run names no command"));
+        }
+        if decl.extensions.is_empty() {
+            return Err(format!("extractors.{name}: extensions lists no extension"));
+        }
+        for extension in &decl.extensions {
+            if extension.is_empty() || extension.contains(['.', '/']) {
+                return Err(format!(
+                    "extractors.{name}: extension {extension:?} is empty or holds '.' or '/'"
+                ));
+            }
+            match owners.insert(extension, name) {
+                Some(owner) if owner != name => {
+                    return Err(format!(
+                        "extractors.{name}: extension {extension:?} is also listed by extractors.{owner}"
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One declarative failure rule (spec 10, unit 2), authored under
@@ -1237,6 +1291,11 @@ pub struct Workflow {
     /// so every conflict re-parks the implementer exactly as it would otherwise.
     #[serde(default)]
     pub regenerate: Vec<RegenerateRule>,
+    /// The extractors the project declares by name (spec 125, THE EXTRACTORS KEY), checked by
+    /// [`check_extractors`]; absent (every workflow.yml committed before this key existed) is the
+    /// empty map, under which the bundled grammars extract every file alone.
+    #[serde(default)]
+    pub extractors: BTreeMap<String, ExtractorDecl>,
 }
 
 impl Workflow {

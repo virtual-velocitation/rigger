@@ -373,8 +373,8 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 }
 
 impl Config {
-    /// Validate checks that every agent id and review step sequence is well formed, every
-    /// reference resolves and the stage graph is acyclic, then, last, resolves every declared
+    /// Validate checks that every agent id, review step sequence and declared extractor is well
+    /// formed, every reference resolves and the stage graph is acyclic, then, last, resolves every declared
     /// gate's `requires` on `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
@@ -466,6 +466,8 @@ impl Config {
         // output_regex) at load rather than at the first classification, through the
         // SAME conversion the conductor uses.
         wf.failure_taxonomy()?;
+        // The declared extractors (spec 125), through the one check the code store reads them by.
+        crate::config::check_extractors(&wf.extractors).map_err(err)?;
         // Last, after every other refusal (spec 113): every declared gate's `requires`,
         // whether or not a stage lists the gate - a declared gate is a gate the operator
         // wired, so its missing tool refuses here rather than failing the gate mid-run.

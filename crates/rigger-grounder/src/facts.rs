@@ -2,9 +2,11 @@
 //! its [`FileFacts`]. It re-shapes what the per-language symbol extractors, the design-document
 //! extractor and the workflow-definition extractor already find; it is no extractor of its own,
 //! and holds no language knowledge. Every name is kept as written and nothing is resolved across
-//! files, so a file's facts are a pure function of its path and bytes.
+//! files, so a file's facts are a pure function of its path and bytes. The store's openers compose
+//! [`ProjectExtractor`], the bundled extraction under the extractors the project's workflow
+//! declares, whose fingerprint changes with the declaration.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use rigger_domain::code_facts::{
@@ -17,19 +19,20 @@ use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
 use rigger_store::code::{fingerprint, open_current, open_head, DirTreeSource, Memo, Mode, Opened};
 
-use crate::config::{RIGGER_DIR, WORKFLOW_FILE};
+use crate::config::{check_extractors, ExtractorDecl, RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
 use crate::grounder::design::extract::{extract_concepts, extract_links};
 use crate::grounder::symbols::extract::{kind_str, lang_str};
 use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
 use crate::grounder::symbols::paths::{is_dev_only, module_candidates};
-use crate::grounder::symbols::{extracted, registry};
+use crate::grounder::symbols::{content_hash, extracted, registry};
 use crate::grounder::workflowdef;
 
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
 /// it whenever any of them can give a file other facts than before, as the symbol extractors'
 /// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the extractor's fingerprint,
+/// with the digest of the project's declared extractors when it declares any ([`ProjectExtractor`]),
 /// which the store's fingerprint ([`store_fingerprint`]) folds with the grouper's generation. A golden
 /// test pins it beside the digest of the facts read over a fixture set, so a change that is not
 /// bumped fails there.
@@ -41,17 +44,24 @@ fn fingerprint_of(grammar_generation: &str, facts_generation: &str) -> u64 {
     fnv1a_64(format!("{grammar_generation}\n{facts_generation}").as_bytes())
 }
 
-/// The fingerprint every snapshot of the store [`open_store`] opens is stamped with: the
-/// extractor's and the grouper's folded, as the advance folds them.
-pub fn store_fingerprint() -> u64 {
-    fingerprint(&FactsExtractor, &ProductionGroupings)
+/// The fingerprint every snapshot of the store [`open_store`] opens at `root` is stamped with: the
+/// project's extractor's ([`ProjectExtractor::of`]) and the grouper's folded, as the advance folds
+/// them.
+pub fn store_fingerprint(root: &Path) -> u64 {
+    fingerprint(&ProjectExtractor::of(root), &ProductionGroupings)
 }
 
-/// The code store at `root` opened as `mode` says over `source`: its facts read by
-/// [`FactsExtractor`] and grouped by [`ProductionGroupings`]. Every opener of the store composes it
-/// here.
+/// The code store at `root` opened as `mode` says over `source`: its facts read by the project's
+/// extractor ([`ProjectExtractor::of`] its root) and grouped by [`ProductionGroupings`]. Every
+/// opener of the store composes it here.
 pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Opened, String> {
-    open_current(root, source, &FactsExtractor, &ProductionGroupings, mode)
+    open_current(
+        root,
+        source,
+        &ProjectExtractor::of(root),
+        &ProductionGroupings,
+        mode,
+    )
 }
 
 /// The head of the code store at `root` read for a reader in `worktree`, overlaid with the files
@@ -66,11 +76,77 @@ pub fn read_head(
     open_head(
         root,
         source,
-        &FactsExtractor,
+        &ProjectExtractor::of(root),
         &ProductionGroupings,
         worktree,
         Memo::process(),
     )
+}
+
+/// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
+/// the code store's one read of the map. A workflow that cannot be read or fails its check
+/// declares none, said on stderr as `rigger: extractors: {error}`, so the bundled grammars
+/// proceed alone.
+pub fn declared_extractors(root: &Path) -> BTreeMap<String, ExtractorDecl> {
+    read_declared_extractors(root).unwrap_or_else(|error| {
+        eprintln!("rigger: extractors: {error}");
+        BTreeMap::new()
+    })
+}
+
+/// The extractors the workflow at `root` declares, read through [`config_store::load_workflow`]
+/// and checked by [`check_extractors`]: the empty map when there is no workflow, and why when it
+/// cannot be read, does not parse or declares a malformed extractor.
+fn read_declared_extractors(root: &Path) -> Result<BTreeMap<String, ExtractorDecl>, String> {
+    let path = root.join(workflow_doc());
+    if !path
+        .try_exists()
+        .map_err(|e| format!("read workflow: {e}"))?
+    {
+        return Ok(BTreeMap::new());
+    }
+    let workflow = config_store::load_workflow(&path).map_err(|e| e.0)?;
+    check_extractors(&workflow.extractors)?;
+    Ok(workflow.extractors)
+}
+
+/// The extractor of one project: the bundled grammars ([`FactsExtractor`]) and the extractors its
+/// workflow declares ([`declared_extractors`]).
+#[derive(Clone, Debug, Default)]
+pub struct ProjectExtractor {
+    declared: BTreeMap<String, ExtractorDecl>,
+}
+
+impl ProjectExtractor {
+    /// The extractor of the project at `root`, holding the extractors its workflow declares.
+    pub fn of(root: &Path) -> Self {
+        Self {
+            declared: declared_extractors(root),
+        }
+    }
+}
+
+impl Extract for ProjectExtractor {
+    /// [`FactsExtractor`]'s with no declaration, so a store built before any is declared stays in
+    /// force; with any, the grammar generation carries the digest of the declared map's JSON in
+    /// name order, so a changed declaration is a changed extractor.
+    fn fingerprint(&self) -> u64 {
+        if self.declared.is_empty() {
+            return FactsExtractor.fingerprint();
+        }
+        let json = serde_json::to_string(&self.declared)
+            .expect("a map of strings to strings and lists of strings serializes");
+        let digest = content_hash(&json);
+        fingerprint_of(
+            &format!("{GRAMMAR_TAGS_VERSION}+{digest}"),
+            FACTS_GENERATION,
+        )
+    }
+
+    /// The bundled grammars' facts ([`FactsExtractor`]).
+    fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
+        FactsExtractor.extract(entry, bytes)
+    }
 }
 
 /// The code store of a project with no git, read from the directory at its root.
@@ -255,7 +331,8 @@ fn workflow_facts(text: &str, facts: &mut FileFacts) {
 }
 
 /// The workflow definition's path relative to a project root, its ONE spelling: the path whose
-/// bytes the code store's extractor reads as the workflow definition.
+/// bytes the code store's extractor reads as the workflow definition, and the workflow
+/// [`declared_extractors`] reads the project's extractors from.
 fn workflow_doc() -> String {
     format!("{RIGGER_DIR}/{WORKFLOW_FILE}")
 }
