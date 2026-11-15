@@ -1587,18 +1587,9 @@ fn rigger_validate_warns_of_each_unbounded_gating_agent_once() {
         write_panel_project(project.path(), &format!("defaults:\n  review: {panel}\n"));
         let (_out, err, ok) = run_rigger(project.path(), &["validate"]);
         assert!(ok, "validate must accept {panel}; stderr:\n{err}");
-        let advisories: Vec<&str> = err
-            .lines()
-            .filter(|line| line.contains("gating role(s)"))
-            .collect();
         assert_eq!(
-            advisories,
-            [format!(
-                "warning: defaults.max_wall_clock is unbounded (0) and gating role(s) {roles} \
-                 carry no per-agent bound, so a hung gating agent is never swept and the run \
-                 stalls silently. Set defaults.max_wall_clock (seconds), or a per-agent \
-                 max_wall_clock on those roles."
-            )],
+            common::cli::wall_clock_advisory_lines(&err),
+            [common::cli::wall_clock_advisory_naming(roles)],
             "{panel}"
         );
     }

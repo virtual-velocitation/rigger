@@ -13363,50 +13363,50 @@ fn status_never_checks_a_gate_requirement() {
 /// Spec 19c Unit 3: `rigger validate` WARNS (on stderr, without failing) when
 /// `defaults.max_wall_clock` is unbounded and a gating role carries no per-agent bound - so
 /// a hung gating agent that the liveness sweep never times out is visible at author time -
-/// and stays SILENT on that risk once a bound covers the gating roles. The scaffolded config
-/// leaves `defaults.max_wall_clock` at its `0` (unbounded) default and its adjudicator (a
-/// gating role) sets no per-agent bound, so a fresh project trips the advisory.
+/// and stays SILENT on that risk once a bound covers the gating roles. A fresh scaffold
+/// declares `defaults.max_wall_clock: 3600` (spec 125), so `rigger validate` on a new project
+/// prints no wall-clock advisory; with that default rewritten to `0` (unbounded), its
+/// adjudicator (the one gating role, carrying no per-agent bound) trips the advisory.
 #[test]
 fn validate_warns_when_an_unbounded_default_leaves_a_gating_role_unswept() {
     let dir = temp_project();
     let root = dir.path();
 
-    // Scaffold a valid config: `defaults.max_wall_clock` unset (0 = unbounded) and the
-    // gating adjudicator carries no per-agent bound.
-    // Unbounded default over an unbounded gating role -> WARN on stderr, but still exit 0.
+    // The scaffolded default bounds every spawn, so the gating adjudicator is swept: no
+    // wall-clock advisory, and exit 0.
     let (out, err) = validate_after_init(root, |_| {});
     assert!(
         out.contains("config valid"),
         "validate must still print its config summary; stdout:\n{out}"
     );
-    assert!(
-        err.contains("max_wall_clock")
-            && err.contains("\"adjudicator\"")
-            && err.to_lowercase().contains("swept"),
-        "validate must warn on stderr that an unbounded default leaves the gating adjudicator \
-         unswept, naming the role and the fix knob; stderr:\n{err}"
+    assert_eq!(
+        common::cli::wall_clock_advisory_lines(&err),
+        [""; 0],
+        "validate must NOT warn about an unswept gating agent on a fresh scaffold, whose \
+         default is bounded; stderr:\n{err}"
     );
 
-    // Bound the default -> the gating roles are swept, so the wall-clock advisory is gone
-    // (other advisories may remain; only this risk must clear). Still exit 0.
+    // Unbound the default -> the gating adjudicator carries no bound, so validate warns on
+    // stderr naming it and the fix knob, still exit 0.
     let workflow = root.join(".rigger").join("workflow.yml");
-    let bounded = std::fs::read_to_string(&workflow)
+    let unbounded = std::fs::read_to_string(&workflow)
         .unwrap()
-        .replace("budget: 60", "budget: 60\n  max_wall_clock: 600");
+        .replace("  max_wall_clock: 3600\n", "  max_wall_clock: 0\n");
     assert!(
-        bounded.contains("max_wall_clock: 600"),
-        "test setup: expected to inject a bounded default into the scaffolded workflow"
+        unbounded.contains("  max_wall_clock: 0\n"),
+        "test setup: expected to unbound the scaffolded default; workflow.yml:\n{unbounded}"
     );
-    std::fs::write(&workflow, bounded).unwrap();
+    std::fs::write(&workflow, unbounded).unwrap();
     let (_out, err, ok) = run_rigger(root, &["validate"]);
     assert!(
         ok,
-        "validate must succeed with a bounded default; stderr:\n{err}"
+        "validate must succeed with an unbounded default; stderr:\n{err}"
     );
-    assert!(
-        !err.contains("is never swept"),
-        "validate must NOT warn about an unswept gating agent once the default is bounded; \
-         stderr:\n{err}"
+    assert_eq!(
+        common::cli::wall_clock_advisory_lines(&err),
+        [common::cli::wall_clock_advisory_naming("\"adjudicator\"")],
+        "validate must warn on stderr that an unbounded default leaves the gating adjudicator \
+         unswept, naming the role and the fix knob; stderr:\n{err}"
     );
 }
 

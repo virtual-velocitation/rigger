@@ -4529,6 +4529,57 @@ mod tests {
         }
     }
 
+    /// Spec 125's A NEW SCAFFOLD BOUNDS ITS SPAWNS: the workflow `init_project` writes into a fresh
+    /// project - with no template root, and with this repository's root both matching no set and
+    /// matching the Rust one - declares `defaults.max_wall_clock: 3600` once, right after
+    /// `max_retries` under its comment, and the written tree loads with that bound, so
+    /// `unbounded_wall_clock_advisory` answers none over it.
+    #[test]
+    fn init_project_writes_a_workflow_that_bounds_every_spawn() {
+        const DECLARED: &str =
+            "  max_retries: 3\n  # The per-spawn wall-clock bound in seconds: a \
+                                spawn silent past it with no result is stopped and\n  # recorded \
+                                as an infrastructure fault, charging no attempt. 0 = unbounded.\n  \
+                                max_wall_clock: 3600\n";
+        let rows = [
+            ("no template root", Vec::new(), None, None),
+            (
+                "this repository's root, matching no set",
+                repo_sets(),
+                None,
+                None,
+            ),
+            (
+                "this repository's root, matching the rust set",
+                repo_sets(),
+                Some("Cargo.toml"),
+                Some("rust"),
+            ),
+        ];
+        for (label, sets, marker, gate_set) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            if let Some(marker) = marker {
+                std::fs::write(dir.path().join(marker), "").unwrap();
+            }
+            let report = init_project(dir.path(), &sets).expect("init must scaffold");
+            let written =
+                std::fs::read_to_string(dir.path().join(RIGGER_DIR).join("workflow.yml")).unwrap();
+            let cfg = config_store::load(dir.path().to_str().unwrap())
+                .unwrap_or_else(|e| panic!("{label}: the written tree must load: {e}"));
+            assert_eq!(
+                (
+                    report.gate_set.as_deref(),
+                    written.matches(DECLARED).count(),
+                    written.matches("max_wall_clock").count(),
+                    cfg.workflow.defaults.max_wall_clock,
+                    config::unbounded_wall_clock_advisory(&cfg),
+                ),
+                (gate_set, 1, 1, 3600, None),
+                "{label}: the written workflow bounds every spawn once, under its comment:\n{written}"
+            );
+        }
+    }
+
     /// Spec 102 criterion 2: `rigger init` on a FRESH project actually WRITES
     /// `defaults.max_parallel_units: 2` with its sizing comment to disk - the scaffold
     /// constant proven above must be what `init_project` emits, not just what it declares.
