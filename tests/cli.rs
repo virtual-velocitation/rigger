@@ -14504,11 +14504,13 @@ fn reset_build_cache_reclaims_a_dead_units_gate_scratch_root_and_spares_a_live_u
 }
 
 /// Spec 23 (unit 2), done-when line 60: `rigger validate` reports, as a warning-only advisory
-/// that NEVER fails validation, any process whose cwd is under the scratch root - naming its
-/// pid - and reports none once nothing is rooted there. Driving the real binary proves the
-/// config -> residue-scan -> `/proc`-scan -> stderr wiring end to end; the pure formatter is
-/// unit-tested in `src/main.rs`. On a platform without `/proc` the scan is a graceful no-op
-/// (the shared scanner returns empty), so this behaves like the no-process case, never an error.
+/// that NEVER fails validation, any process whose cwd is under the scratch root - one line
+/// naming its pid, its command and the scratch root - and reports none once nothing is rooted
+/// there. Driving the real binary proves the config -> residue-scan -> process-interface scan
+/// (`os_process`'s process list, working directory and command line) -> stderr wiring end to
+/// end; `leaked_process_advisories` is unit-tested in `src/cli/validate.rs`. On an OS the process
+/// interface cannot read the scan is a graceful no-op (the shared scanner returns empty), so
+/// this behaves like the no-process case, never an error.
 #[test]
 fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let dir = temp_project();
@@ -14521,11 +14523,7 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let probe = scratch.join("probe");
     std::fs::create_dir_all(&probe).unwrap();
     let tmp = scratch.to_str().unwrap();
-    let mut child = Command::new("sleep")
-        .arg("300")
-        .current_dir(&probe)
-        .spawn()
-        .expect("spawn probe child");
+    let mut child = common::fixtures::sleeper_in(&probe);
 
     // Wait until the kernel reports the child rooted under the scratch root, so the scan
     // validate runs is guaranteed to see it before we assert.
@@ -14560,16 +14558,31 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
         out.contains("config valid"),
         "validate still prints its config summary; stdout:\n{out}"
     );
-    assert!(
-        err.contains(&format!("pid {}", child.id())) && err.contains("scratch root"),
-        "validate warns, naming the process rooted under the scratch root; stderr:\n{err}"
+    /// The leaked-process advisory lines among validate's `stderr`, in order.
+    fn advisories(stderr: &str) -> Vec<&str> {
+        common::cli::lines_where(stderr, |line| {
+            line.starts_with("warning: process rooted under the scratch root")
+        })
+    }
+    let expected = format!(
+        "warning: process rooted under the scratch root (surfaced only - validate never reaps \
+         it): pid {} (sleep 300) - its cwd is under {tmp}; it outlives a dir rigger owns until \
+         the next teardown or run start reaps it.",
+        child.id()
+    );
+    assert_eq!(
+        advisories(&err),
+        vec![expected.as_str()],
+        "validate warns once, naming the rooted process's pid, its command and the scratch root; \
+         stderr:\n{err}"
     );
     assert!(
         ok2,
         "validate still succeeds once nothing is rooted under the scratch root; stderr:\n{err2}"
     );
-    assert!(
-        !err2.contains(&format!("pid {}", child.id())),
+    assert_eq!(
+        advisories(&err2),
+        Vec::<&str>::new(),
         "validate emits no leaked-process advisory once the process is gone; stderr:\n{err2}"
     );
 }
@@ -27220,26 +27233,23 @@ fn stopped_dash_holder(root: &Path) -> WatchedDash {
     holder
 }
 
-/// A failed bind against a STOPPED holder's `port` gets the explicit resume-or-kill diagnosis:
-/// it names the holder's pid and the held address, and names the STOPPED state explicitly.
+/// A failed bind against a STOPPED holder's `port` ends on the explicit resume-or-kill
+/// diagnosis, the whole line: the held address, the holder's pid as the process interface finds
+/// it listening (`os_process::listening_pid`), and the STOPPED state it reads for that pid
+/// (`os_process::state`). The pid is compared inside its `by pid {N}` and `kill pid {N}`
+/// phrases, never as a bare substring: under the pid-namespace test sandbox the holder's pid is
+/// a small number, often already a substring of the address 127.0.0.1 or of the port.
 fn assert_the_stopped_holder_diagnosis(err: &str, holder_pid: u32, port: u16) {
-    let pid_str = holder_pid.to_string();
-    assert!(
-        err.contains(&pid_str),
-        "the diagnosis must name the stopped holder's pid ({pid_str}); stderr:\n{err}"
+    let expected = format!(
+        "rigger: address 127.0.0.1:{port} is already in use by pid {holder_pid}, which is \
+         STOPPED - a stopped listener keeps the port bound but its process never accepts a \
+         connection; resume or kill pid {holder_pid} to free the port"
     );
-    assert!(
-        err.contains(&port.to_string()),
-        "the diagnosis must always name the held address; stderr:\n{err}"
-    );
-    let lower = err.to_lowercase();
-    assert!(
-        lower.contains("resume") && lower.contains("kill"),
-        "a STOPPED holder must get the explicit resume-or-kill diagnosis; stderr:\n{err}"
-    );
-    assert!(
-        lower.contains("stop"),
-        "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
+    assert_eq!(
+        common::cli::lines_where(err, |line| line.starts_with("rigger: ")),
+        vec![expected.as_str()],
+        "the diagnosis names the held address, the stopped holder's pid, its STOPPED state and \
+         the resume-or-kill remedy; stderr:\n{err}"
     );
 }
 
@@ -27247,9 +27257,9 @@ fn assert_the_stopped_holder_diagnosis(err: &str, holder_pid: u32, port: u16) {
 /// job-control-STOPPED predecessor keeps its listening socket bound - the kernel completed the
 /// TCP handshake into the backlog - but its process never calls `accept()` again, so a plain
 /// port probe just hangs. A real `rigger dash` is spawned, confirmed genuinely serving, then
-/// stopped with `SIGSTOP` (mirroring `crate::reap`'s own `kill(1)`-based signalling, never
-/// `libc`); a second `rigger dash` against the SAME port must fail naming the first one's pid,
-/// its STOPPED state, and the resume-or-kill remedy - never a bare `Address already in use`.
+/// stopped with `SIGSTOP` through `common::stop_pid`, the test side's one signal call; a second
+/// `rigger dash` against the SAME port must fail naming the first one's pid, its STOPPED state,
+/// and the resume-or-kill remedy - never a bare `Address already in use`.
 #[test]
 fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
     if !Path::new("/proc").is_dir() {
