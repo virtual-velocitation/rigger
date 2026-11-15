@@ -34026,8 +34026,10 @@ mod tests {
 
     /// A driver that records each spawn's id beside the `SpawnOpts.env` it was handed, so a
     /// test can say WHICH spawn carried what.
+    /// One recorded spawn: its id and the `SpawnOpts.env` it was handed.
+    type IdEnv = (String, Vec<(String, String)>);
     struct IdEnvRecordingDriver {
-        spawns: Mutex<Vec<(String, Vec<(String, String)>)>>,
+        spawns: Mutex<Vec<IdEnv>>,
     }
     impl AgentDriver for IdEnvRecordingDriver {
         fn spawn(
