@@ -920,7 +920,7 @@ impl serde::de::Visitor<'_> for IdKeyVisitor {
 /// [`EventStore::read_by_record_id`] answered from the type read alone
 /// ([`EventStore::read_stream_typed`]): every event of `types` on `stream`, less each whose data
 /// holds another record id or none ([`record_id_of`]). The read of a backend that keeps no index
-/// of the record id, or whose index is absent.
+/// of the record id.
 pub fn record_read_by_types(
     store: &(impl EventStore + ?Sized),
     stream: &str,

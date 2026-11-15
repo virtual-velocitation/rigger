@@ -67,7 +67,10 @@ fn group_head(position: u64, t: &str, group: &str, name: &str, value: &str) -> G
 /// named types whose data holds the record id as its top-level `"id"` string - every restatement,
 /// never an event of another type or stream carrying the id, never an event whose `"id"` is not a
 /// string or whose data is not a JSON object, and nothing for an id no event holds or for no
-/// type named. A repeated `"id"` key holds its first value.
+/// type named. A repeated `"id"` key holds its first value. The backends agree on every row a
+/// rigger writer makes (valid UTF-8 JSON objects), so rows only another writer could make, such as
+/// a key holding a lone surrogate escape or a value nested past 1000 levels, are kept out of this
+/// table.
 fn a_record_read_hands_back_the_events_of_its_types_holding_the_id(store: &dyn EventStore) {
     let at = |t: &str, data: &str| Event::new(t, data.as_bytes().to_vec());
     store

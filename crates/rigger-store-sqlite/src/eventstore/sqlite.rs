@@ -75,10 +75,11 @@ fn latest_in_group_sql() -> String {
     )
 }
 
-/// The expression the record index and the record read both name: the [`super::record_id_of`] of a row's
-/// `data`, the string under its top-level `"id"` key, and NULL for a data that is not JSON or holds
-/// no string id - so a row a broken writer left undecodable is simply not indexed, never an error
-/// that fails every later write or the open that creates the index.
+/// The expression the record index and both record reads name, indexed or not: the string under
+/// a row's top-level `"id"` key, as SQLite's JSON reads it, and NULL for a data that is not JSON or
+/// holds no string id - so a row a broken writer left undecodable is simply not indexed, never an
+/// error that fails every later write or the open that creates the index. It agrees with
+/// [`super::record_id_of`] on every row a rigger writer makes.
 const RECORD_ID_EXPR: &str = "CASE WHEN json_valid(CAST(data AS TEXT)) \
      AND json_type(CAST(data AS TEXT), '$.id') = 'text' \
      THEN json_extract(CAST(data AS TEXT), '$.id') END";
@@ -107,15 +108,21 @@ fn holds(conn: &Connection, name: &str) -> Result<bool, Error> {
 
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
 
-/// The record read: one seek of `idx_events_record` to the stream's events holding the record id
-/// `?2`, of the types bound from `?3` on, in log order.
-fn record_read_sql(types: usize) -> String {
+/// The record read: the stream's events holding the record id `?2`, of the types bound from `?3`
+/// on, in log order - one seek of `idx_events_record` when the store holds it, else the same
+/// filter on the same [`RECORD_ID_EXPR`] over the stream's rows, so the two cannot answer apart.
+fn record_read_sql(types: usize, indexed: bool) -> String {
     let binds = (0..types)
         .map(|i| format!("?{}", i + 3))
         .collect::<Vec<_>>()
         .join(", ");
+    let index = if indexed {
+        "INDEXED BY idx_events_record "
+    } else {
+        ""
+    };
     format!(
-        "SELECT {COLS} FROM events INDEXED BY idx_events_record \
+        "SELECT {COLS} FROM events {index}\
          WHERE stream = ?1 AND {RECORD_ID_EXPR} = ?2 AND {RECORD_ID_EXPR} IS NOT NULL \
          AND type IN ({binds}) ORDER BY position"
     )
@@ -210,8 +217,8 @@ impl Store {
 
     /// Index the record ids of every event the store holds, when it does not yet: one write
     /// transaction reading every row's data, which `rigger setup` runs on a store recorded before
-    /// the index once no run is live. A record read answers the same without it, reading the
-    /// events of its types ([`super::record_read_by_types`]).
+    /// the index once no run is live. A record read answers the same without it, filtering the
+    /// stream's rows on the same expression the index holds.
     pub fn index_record_ids(&self) -> Result<(), Error> {
         (self.conn.lock().unwrap())
             .execute_batch(&record_index_sql())
@@ -1308,15 +1315,15 @@ impl EventStore for Store {
         if types.is_empty() {
             return Ok(Vec::new());
         }
-        if !self.has_record_index()? {
-            return super::record_read_by_types(self, stream, types, id);
-        }
+        let indexed = self.has_record_index()?;
         let binds: Vec<rusqlite::types::Value> = [stream.to_string().into(), id.to_string().into()]
             .into_iter()
             .chain(types.iter().map(|t| t.to_string().into()))
             .collect();
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(&record_read_sql(types.len())).map_err(be)?;
+        let mut stmt = conn
+            .prepare(&record_read_sql(types.len(), indexed))
+            .map_err(be)?;
         let rows = stmt
             .query_map(rusqlite::params_from_iter(binds), row_to_event)
             .map_err(be)?;
@@ -1439,7 +1446,7 @@ mod tests {
                 "SEARCH events USING INTEGER PRIMARY KEY (rowid>?)",
             ),
             (
-                record_read_sql(2),
+                record_read_sql(2, true),
                 &[&"rigger", &"d-1", &"DecisionMade", &"LessonLearned"],
                 "SEARCH events USING INDEX idx_events_record (stream=? AND <expr>=?)",
             ),
@@ -1656,7 +1663,7 @@ mod tests {
         let plan: Vec<String> = {
             let conn = s.conn.lock().unwrap();
             let mut stmt = conn
-                .prepare(&format!("EXPLAIN QUERY PLAN {}", record_read_sql(1)))
+                .prepare(&format!("EXPLAIN QUERY PLAN {}", record_read_sql(1, true)))
                 .unwrap();
             let rows = stmt.query_map(params!["rigger", "r-1", "X"], |r| r.get::<_, String>(3));
             rows.unwrap().map(Result::unwrap).collect()
