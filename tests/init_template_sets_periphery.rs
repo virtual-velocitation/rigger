@@ -6,11 +6,12 @@
 //! has a workflow, and on a rerun - the gates and the implementer persona the implement and
 //! checkin stages run among it - that `rigger validate` accepts both fresh scaffolds, that a fresh
 //! scaffold bounds every spawn's wall clock so `rigger validate` prints no wall-clock warning over
-//! it, that a fresh scaffold seeds the `sdet-author` test author its workflow declares and keeps a
-//! project's own, and that a rerun writes that seed back only for the test author the workflow
-//! declares, that a command naming no template root scaffolds no gate and keeps what an earlier
-//! root scaffolded, and that every argument and template root a command refuses is refused before
-//! any write.
+//! it, that a fresh scaffold seeds the `sdet-author` test author its workflow declares and writes
+//! no seed whose id an agent of the project already defines, whatever its file name, that a rerun
+//! writes that seed back only for the test author the workflow declares and no agent defines, that
+//! an agent file that does not parse stops every seed until it is fixed, that a command naming no
+//! template root scaffolds no gate and keeps what an earlier root scaffolded, and that every
+//! argument and template root a command refuses is refused before any write.
 
 use crate::common;
 use common::cli::{
@@ -397,15 +398,18 @@ fn a_fresh_scaffold_bounds_every_spawn_so_validate_prints_no_wall_clock_warning(
     }
 }
 
-/// Given a fresh project - empty, or holding its own `.rigger/agents/sdet-author.md` - when the
-/// operator runs `rigger init` naming no template root or any command of [`fresh_scaffolds`], then
-/// the workflow declares `sdet-author` its test author and `rigger validate` accepts the seven
-/// agents: an empty project gets the seed byte for byte, named on the agents line and loaded, and
-/// a project's own persona is kept byte for byte, loaded in the seed's place, and left off the
-/// agents line.
+/// Given a fresh project - empty, or holding an agent of its own: its own `sdet-author.md`, a
+/// persona defining `sdet-author` under another file name, or one defining `planner` under another
+/// file name - when the operator runs `rigger init` naming no template root or any command of
+/// [`fresh_scaffolds`], then the workflow declares `sdet-author` its test author and `rigger
+/// validate` accepts the seven agents: the agents line names every seed whose id no agent of the
+/// project defines, the `sdet-author` seed among them is written byte for byte and loaded, and the
+/// project's own agent is kept byte for byte and loaded in the place of the seed of its id, which
+/// is neither written nor named.
 #[test]
 fn a_fresh_scaffold_seeds_the_test_author_it_declares_and_keeps_a_projects_own() {
-    const OWN: &str = "---\nid: sdet-author\nmodel: sonnet\n---\nThe project's own test author.\n";
+    let own_agent =
+        |id: &str| format!("---\nid: {id}\nmodel: sonnet\n---\nThe project's own agent.\n");
     let no_root: FreshScaffold = (
         "init, no template root",
         temp_project,
@@ -415,44 +419,63 @@ fn a_fresh_scaffold_seeds_the_test_author_it_declares_and_keeps_a_projects_own()
     );
     for (label, project, verb, agents_line, gates) in fresh_scaffolds().into_iter().chain([no_root])
     {
-        // (the persona the project holds before the command, the one it holds after, the agents
-        // line the command prints, the loaded test author's model).
+        // (the agent file the project holds before the command and the id it defines, the seed
+        // that agent keeps from being written, the sdet-author.md the project holds after the
+        // command, the loaded models of `sdet-author` and `planner`).
         let arms = [
-            (None, sdet_author_seed(), agents_line.to_string(), "opus"),
+            (None, None, Some(sdet_author_seed()), ["opus", "opus"]),
             (
-                Some(OWN),
-                OWN.to_string(),
-                agents_line.replacen(" sdet-author.md,", "", 1),
-                "sonnet",
+                Some(("sdet-author.md", "sdet-author")),
+                Some("sdet-author.md"),
+                Some(own_agent("sdet-author")),
+                ["sonnet", "opus"],
+            ),
+            (
+                Some(("tester.md", "sdet-author")),
+                Some("sdet-author.md"),
+                None,
+                ["sonnet", "opus"],
+            ),
+            (
+                Some(("my-planner.md", "planner")),
+                Some("planner.md"),
+                Some(sdet_author_seed()),
+                ["opus", "sonnet"],
             ),
         ];
-        for (own, persona, printed, model) in arms {
+        for (own, displaced, author, models) in arms {
             let dir = project();
-            let author = dir.path().join(".rigger/agents/sdet-author.md");
-            if let Some(own) = own {
-                write_files(dir.path(), &[(".rigger/agents/sdet-author.md", own)]);
+            let agents = dir.path().join(".rigger/agents");
+            if let Some((file, id)) = own {
+                write_files(&agents, &[(file, own_agent(id).as_str())]);
             }
             let out = verb(dir.path());
             let (validated, err, ok) = run_rigger(dir.path(), &["validate"]);
             let cfg = loaded_config(dir.path());
+            let printed = displaced.map_or(agents_line.to_string(), |seed| {
+                agents_line.replacen(&format!("{seed}, "), "", 1)
+            });
             assert_eq!(
                 (
                     agents_lines(&out),
-                    std::fs::read_to_string(&author).ok(),
+                    std::fs::read_to_string(agents.join("sdet-author.md")).ok(),
+                    own.map(|(file, _)| std::fs::read_to_string(agents.join(file)).unwrap()),
                     cfg.workflow.defaults.declared_test_author(),
-                    cfg.agents.get("sdet-author").map(|a| a.model.as_str()),
+                    ["sdet-author", "planner"]
+                        .map(|id| cfg.agents.get(id).map(|a| a.model.as_str())),
                     ok,
                     config_valid_lines(&validated),
                 ),
                 (
                     vec![printed.as_str()],
-                    Some(persona),
+                    author,
+                    own.map(|(_, id)| own_agent(id)),
                     Some("sdet-author"),
-                    Some(model),
+                    models.map(Some),
                     true,
                     vec![format!("config valid: 7 agents, 4 stages, {gates} gates").as_str()],
                 ),
-                "{label}, the project's own sdet-author.md {own:?}: stdout:\n{out}\nstderr:\n{err}"
+                "{label}, the project's own agent {own:?}: stdout:\n{out}\nstderr:\n{err}"
             );
         }
     }
@@ -531,6 +554,56 @@ fn a_rerun_writes_back_the_seed_only_for_the_test_author_the_workflow_declares()
             ),
             "the workflow declaring {declared}, my-author.md defining {id}: stdout:\n{out}\n\
              stderr:\n{err}"
+        );
+    }
+}
+
+/// Given a fresh project holding an agent file that does not parse, when the operator runs `rigger
+/// init` or `rigger setup` naming no template root, then the command fails, printing only the line
+/// `rigger validate` prints for that file, and writes no seed beside it; once the operator fixes
+/// the file, the same command writes every seed and `rigger validate` accepts the eight agents.
+#[test]
+fn an_agent_file_that_does_not_parse_stops_every_seed_until_it_is_fixed() {
+    const BROKEN: &str = "---\nid: broken\nrecurse: not-a-bool\n---\nThe project's own agent.\n";
+    const FIXED: &str = "---\nid: broken\nrecurse: true\n---\nThe project's own agent.\n";
+    const REFUSAL: &str = "rigger: config: broken.md: config: frontmatter: recurse: invalid \
+                           type: string \"not-a-bool\", expected a boolean at line 2 column 10\n";
+    for verb in ["init", "setup"] {
+        let dir = temp_project();
+        let root = dir.path();
+        let agents = root.join(".rigger/agents");
+        write_files(&agents, &[("broken.md", BROKEN)]);
+        let (out, err, ok) = run_rigger(root, &[verb]);
+        let (_, refused, _) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            (
+                ok,
+                out.as_str(),
+                err.as_str(),
+                refused.as_str(),
+                sorted_dir_names(&agents)
+            ),
+            (false, "", REFUSAL, REFUSAL, vec!["broken.md".to_string()]),
+            "{verb} over an agent file that does not parse"
+        );
+
+        write_files(&agents, &[("broken.md", FIXED)]);
+        let (out, err, ok) = run_rigger(root, &[verb]);
+        let (validated, _, valid) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            (
+                ok,
+                agents_lines(&out),
+                valid,
+                config_valid_lines(&validated)
+            ),
+            (
+                true,
+                vec![NO_SET_AGENTS_LINE],
+                true,
+                vec!["config valid: 8 agents, 4 stages, 0 gates"]
+            ),
+            "{verb} once the file is fixed: stdout:\n{out}\nstderr:\n{err}"
         );
     }
 }
