@@ -286,18 +286,22 @@ mod tests {
     }
 
     /// This process, which is running a test, is running or sleeping, and a child that exited
-    /// but is not yet reaped is a zombie.
+    /// but is not yet reaped is a zombie. A process's state is its main thread's, here the test
+    /// harness's, which this test does not drive: the kernel reports it in uninterruptible sleep
+    /// (`D`) for the instants it waits on the address-space lock a sibling thread holds to fork,
+    /// map or unmap memory, so the state is read until it runs or sleeps.
     #[cfg(unix)]
     #[test]
     fn a_live_process_runs_or_sleeps_and_an_unreaped_exit_is_a_zombie() {
         let mut child = crate::subprocess::command("true").spawn().unwrap();
         let zombie = wait_until(|| state(child.id()) == Some('Z'));
         child.wait().unwrap();
-        let mine = state(std::process::id());
-        assert!(
-            matches!(mine, Some('R' | 'S')),
-            "this process runs or sleeps: {mine:?}"
-        );
+        let mut mine = None;
+        let runs_or_sleeps = wait_until(|| {
+            mine = state(std::process::id());
+            matches!(mine, Some('R' | 'S'))
+        });
+        assert!(runs_or_sleeps, "this process runs or sleeps: {mine:?}");
         assert!(zombie, "an exited child not yet reaped is a zombie");
     }
 
