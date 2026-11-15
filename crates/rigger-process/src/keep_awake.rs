@@ -185,8 +185,9 @@ mod tests {
     /// Spec 105's macOS and Windows adapters, which compile out on this host, pinned through the
     /// manifest and the lock: the Windows adapter's `windows-sys` is declared under the Windows
     /// target alone, at the version the lock already resolves for the crates beside it, so the
-    /// lock holds no package for that edge alone; and the macOS adapter, which reaches IOKit and
-    /// CoreFoundation through `extern` declarations, declares no crate in any table.
+    /// lock holds no package for that edge alone, as it holds none for the interrupt trigger's
+    /// `libc` alone; and the macOS adapter, which reaches IOKit and CoreFoundation through
+    /// `extern` declarations, declares no crate in any table.
     #[test]
     fn the_windows_adapter_takes_a_locked_windows_sys_and_the_macos_adapter_no_crate() {
         let declared: Vec<String> = MANIFEST
@@ -205,7 +206,7 @@ mod tests {
                 "[dependencies] rigger-domain",
                 "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies] rustix fs2",
                 "[target.'cfg(target_os = \"linux\")'.dependencies] zbus tokio",
-                "[target.'cfg(unix)'.dependencies] ring",
+                "[target.'cfg(unix)'.dependencies] ring libc",
                 "[target.'cfg(target_os = \"windows\")'.dependencies] windows-sys",
                 "[dev-dependencies] tempfile",
                 "[target.'cfg(target_os = \"linux\")'.dev-dependencies] zbus",
@@ -229,6 +230,12 @@ mod tests {
             held_only_through(&graph, &workspace, (process, ("windows-sys", "0.61.2"))),
             Vec::<Package>::new(),
             "the packages the lock holds for rigger-process's windows-sys edge alone"
+        );
+        // The interrupt trigger's libc is the one the lock already resolves for other crates.
+        assert_eq!(
+            held_only_through(&graph, &workspace, (process, ("libc", "0.2.186"))),
+            Vec::<Package>::new(),
+            "the packages the lock holds for rigger-process's libc edge alone"
         );
     }
 }

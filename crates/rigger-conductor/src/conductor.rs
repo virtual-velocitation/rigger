@@ -14,7 +14,6 @@ use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
 use crate::config::{AgentDef, Config, RegenerateRule, ReviewStep, Stage};
-#[cfg(test)]
 use crate::config_store;
 use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
@@ -23,6 +22,7 @@ use crate::eventstore::{Appended, Event, EventStore};
 use crate::failure::{self, Signal};
 use crate::gate::{self, Gate};
 use crate::grounder::{BlastRadius, Grounder, StampedRadius};
+use crate::hooks;
 use crate::ledger::{self, RequiredItem, RunState};
 use crate::liveness;
 use crate::playbooks::fnv1a_64;
@@ -4128,6 +4128,51 @@ impl RunCtx<'_> {
         self.deps.spawn_host.clone()
     }
 
+    /// The definition the run checkout holds now, hashed exactly as a launch of this run hashes
+    /// it ([`config_store::definition_hash`] over the project the config was loaded from, folding
+    /// the helper copies the checkout holds), or None where there is no checkout or no on-disk
+    /// project to hash, or a file of it cannot be read: a move then re-pins nothing and the next
+    /// launch decides on what it reads.
+    fn checkout_definition(&self) -> Option<String> {
+        if self.deps.repo.is_empty() || self.cfg.dir.is_empty() || self.run_id.is_empty() {
+            return None;
+        }
+        let helpers = hooks::resolved_helpers(Path::new(&self.deps.repo)).ok()?;
+        config_store::definition_hash(&self.cfg.dir, &helpers).ok()
+    }
+
+    /// Run `move_branch`, a move of the run branch the checkout holds, and re-pin the run to the
+    /// definition the move left there when the move changed a definition that matched the pin
+    /// ([`crate::run_store::record_definition_move`]): a run's own landing is never definition
+    /// drift to a relaunch, while an edit from outside the run still is. Called with
+    /// `integrate_mu` held, so no other move lands between the two hashes. A crash between the
+    /// move and the re-pin leaves the move unpinned, and that relaunch halts on drift as before.
+    fn moving_the_run_branch<T, E>(
+        &self,
+        move_branch: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, Error>
+    where
+        Error: From<E>,
+    {
+        let before = self.checkout_definition();
+        let moved = move_branch()?;
+        if let (Some(before), Some(after)) = (before, self.checkout_definition()) {
+            if crate::run_store::record_definition_move(
+                &self.deps.folding(),
+                &self.run_id,
+                &before,
+                &after,
+            )? {
+                (self.deps.log)(&format!(
+                    "rigger: the run landed a definition change; re-pinned run {} from {before} \
+                     to {after}",
+                    self.run_id
+                ));
+            }
+        }
+        Ok(moved)
+    }
+
     fn emit(&self, type_: &str, payload: Value) -> Result<(), Error> {
         self.emit_with_actor("", type_, payload)
     }
@@ -4490,11 +4535,13 @@ impl RunCtx<'_> {
                 let _lock = self.integrate_mu.lock().unwrap();
                 let mut done: Vec<String> = Vec::new();
                 for commit in &commits {
-                    Worktree::revert_on_base(
-                        &self.deps.repo,
-                        commit,
-                        &format!("rigger: compensate {} (revert {commit})", comp.target),
-                    )?;
+                    self.moving_the_run_branch(|| {
+                        Worktree::revert_on_base(
+                            &self.deps.repo,
+                            commit,
+                            &format!("rigger: compensate {} (revert {commit})", comp.target),
+                        )
+                    })?;
                     done.push(commit.clone());
                 }
                 done
@@ -11069,7 +11116,7 @@ impl RunCtx<'_> {
                         // conflict's placeholder-staged version lands now; the real regeneration,
                         // if any, lands as a SEPARATE, later pass's own row 4).
                         self.record_landing_intent(&st.name, attempt, pass, &c, &pre_merge)?;
-                        match wt.land()? {
+                        match self.moving_the_run_branch(|| wt.land())? {
                             worktree::LandOutcome::TipMoved => {
                                 // The run branch moved after the worktree merge (an operator
                                 // commit, a sibling's landing): a fast-forward is impossible
@@ -11334,7 +11381,7 @@ impl RunCtx<'_> {
             let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             let merged = gate_result?;
             if !merged.pass {
-                Worktree::reset_to(&self.deps.repo, &pre_merge)?;
+                self.moving_the_run_branch(|| Worktree::reset_to(&self.deps.repo, &pre_merge))?;
                 // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
                 // of `wt` in this function: the post-merge gate just above is real wall-clock
                 // time - a window in which an out-of-band actor (or, as spec 88 criterion 1's
@@ -11522,7 +11569,7 @@ impl RunCtx<'_> {
         }
 
         if !still_pending.is_empty() {
-            match w.cherry_pick_onto_run_branch(&still_pending)? {
+            match self.moving_the_run_branch(|| w.cherry_pick_onto_run_branch(&still_pending))? {
                 worktree::CherryPickOutcome::Conflict(detail) => {
                     return Ok(PlanCommitOutcome::Conflict(detail));
                 }

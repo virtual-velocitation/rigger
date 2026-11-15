@@ -1,19 +1,24 @@
 //! Rigger's process adapters, ring 3 of the workspace: the one process-spawn port every child
 //! is built through, the reaper that ends processes rooted inside a directory, the read-only
 //! check for a process still holding a directory, the machine-wide
-//! build-slot budget, the ordered parallel map, the whole-line writer for a stream other processes share and the
+//! build-slot budget, the ordered parallel map, the whole-line writer for a stream other processes share, the
 //! keep-awake adapter behind the domain's
-//! `SleepHold` port. They know `std::process`, the filesystem, threads and the host's OS
+//! `SleepHold` port, the detached start of a process that outlives its starter, and the trigger an
+//! interactive interrupt fires. They know `std::process`, the filesystem, threads and the host's OS
 //! facilities; the root `rigger` crate re-exports every module under its historical path.
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod budget;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod detached;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod file_trust;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod gate_socket;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod holders;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod interrupt;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod keep_awake;
 #[cfg(any(feature = "store", not(feature = "core")))]

@@ -98,6 +98,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "conductor invariant violated: fan-out unit '{name}' has an e",
             "conductor invariant violated: fan-out unit '{name}' (an unma",
             "{}: the session ended without handing over (no {AUTHOR_HANDO",
+            "rigger: the run landed a definition change; re-pinned run {}",
         ],
     ),
     (
@@ -291,6 +292,7 @@ const ALLOW_LIST: &[Allowed] = &[
         &[
             "{verb}: --eventstore expects sqlite|kurrentdb, got {other:?}",
             "{verb}: unexpected second positional argument {arg:?}",
+            "run: --adopt names the run to adopt, --fresh begins a new on",
             "note: {} - until then the context graph answers as it stands",
             "note: graph.db passed over {} event(s) {by_cause}; {PASSED_O",
             "a rebuild under a later fold rule retries them",
@@ -298,7 +300,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "the project config's store.backend is {other:?}; only \"sqlit",
             "the server event store is selected but no connection string",
             "rigger: instance registry refresh skipped ({e}); discovery i",
-            "definition hash: read {RIGGER_DIR}/{WORKFLOW_FILE}: {e}",
             "ambiguous project identity: the event store holds history un",
             "migrated project history to the durable identity: renamed {n",
             "rigger: migrated project identity - renamed {n} stream(s) fr",

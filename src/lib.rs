@@ -111,11 +111,17 @@ pub use rigger_grounder::ingest;
 /// The combined lookup engine `rigger graph --lookup` and `rigger_graph`'s `lookup` answer through.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_grounder::lookup;
+/// The detached start of a process that outlives its starter: see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::detached;
 /// The gate request channel's adapters: the driver's socket and the verb's request over it.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::gate_socket;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::holders;
+/// The trigger an interactive interrupt fires: see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::interrupt;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::keep_awake;
 #[cfg(any(feature = "store", not(feature = "core")))]

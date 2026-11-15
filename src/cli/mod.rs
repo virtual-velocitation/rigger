@@ -10,7 +10,7 @@ use rigger::canary_store;
 use rigger::community;
 use rigger::conductor::{self, Deps};
 use rigger::config;
-use rigger::config_store;
+use rigger::config_store::{self, definition_hash};
 use rigger::console;
 use rigger::contextgraph::{
     self, fold_clause, fold_loss_clause, not_folded,
@@ -56,6 +56,7 @@ mod hold;
 mod hygiene;
 mod observe;
 mod prime;
+mod relaunch;
 mod run;
 mod setup;
 mod validate;
@@ -69,6 +70,8 @@ pub(crate) use hold::*;
 pub(crate) use hygiene::*;
 pub(crate) use observe::*;
 pub(crate) use prime::*;
+use relaunch::KeptRecord;
+pub(crate) use relaunch::{check_point, relaunch_a_dead_driver, CheckPoint};
 pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
@@ -222,6 +225,10 @@ struct RunArgs {
     /// the `RIGGER_BASE` env override or the load-bearing [`DEFAULT_BASE_REF`] (`origin/main`)
     /// - the default stays unchanged.
     base: Option<String>,
+    /// `--adopt <run>`: the run this start must adopt, and no other. The background relaunch of a
+    /// run whose driver died ([`relaunch`]) passes it, so a relaunch whose run is gone, or would be
+    /// minted anew, refuses before it appends anything instead of driving another run.
+    adopt: Option<String>,
 }
 
 /// The backend an `--eventstore` flag's `value` names, for `verb`'s flag parser: `rigger run`'s
@@ -266,8 +273,8 @@ fn spec_positional(
 
 /// Parse `rigger run`'s flags: `--fresh`, `--rebase-definition`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
-/// criterion 6), and a single positional spec path. Unknown flags and a second positional
-/// are rejected (§10).
+/// criterion 6), `--adopt <run>`, and a single positional spec path. Unknown flags, a second
+/// positional, and `--adopt` beside `--fresh`, which mints rather than adopts, are rejected (§10).
 fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>> {
     let mut store = None;
     let mut conn = None;
@@ -275,10 +282,18 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
     let mut fresh = false;
     let mut rebase_definition = false;
     let mut base = None;
+    let mut adopt = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--fresh" => fresh = true,
+            "--adopt" => {
+                i += 1;
+                adopt = match args.get(i) {
+                    Some(run) => Some(run.clone()),
+                    None => return Err("run: --adopt expects a run id".into()),
+                };
+            }
             "--rebase-definition" => rebase_definition = true,
             "--base" => {
                 i += 1;
@@ -299,6 +314,11 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         }
         i += 1;
     }
+    if fresh && adopt.is_some() {
+        return Err(
+            "run: --adopt names the run to adopt, --fresh begins a new one; pass one".into(),
+        );
+    }
     Ok(RunArgs {
         store,
         conn,
@@ -306,6 +326,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         fresh,
         rebase_definition,
         base,
+        adopt,
     })
 }
 
@@ -987,88 +1008,6 @@ fn read_project_id(base: &Path) -> Option<String> {
     }
 }
 
-/// Canonicalize definition text for hashing (spec 13, unit 1): normalize CRLF -> LF and
-/// strip trailing whitespace from each line, so a checkout's line-ending or trailing-space
-/// noise never reads as a definition change while any real edit does.
-fn canonical_definition_text(s: &str) -> String {
-    s.replace("\r\n", "\n")
-        .lines()
-        .map(str::trim_end)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The definition hash a run PINS (spec 13, unit 1): a stable FNV-1a digest over the on-disk
-/// definition - the `.rigger/workflow.yml`, the FULL agent-prompt set (every
-/// `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter), the operator's
-/// copy of each fan-out helper among `helpers` (the ones [`hooks::resolved_helpers`] found
-/// present, tagged by file name in helper order; an absent helper folds nothing) and the operator
-/// instruction layer (every `.rigger/instructions/*.md`, absent means empty) - canonicalized
-/// ([`canonical_definition_text`]) and folded in sorted-filename order. So the same definition
-/// hashes identically across machines and checkouts (the [`fnv1a_64`] idiom is fixed-seed and
-/// build-stable), while ANY content change - a mid-campaign prompt edit above all - changes it.
-///
-/// This is the hash a run pins at start and every relaunch of a live run re-checks; a mismatch on a
-/// live run HALTS loudly (see [`enforce_definition_pin`]). Hashing the on-disk files directly (not
-/// the parsed `Config`) is faithful to the design's "workflow.yml + the full agent-prompt set" and
-/// conservative: it needs no serialization of the config and errs toward halting, and the
-/// `--rebase-definition` escape makes an intended edit a one-flag continue.
-fn definition_hash(
-    dir: &str,
-    helpers: &[conductor::HelperCopy],
-) -> Result<String, Box<dyn std::error::Error>> {
-    let base = Path::new(dir).join(RIGGER_DIR);
-    let mut buf = String::new();
-    // workflow.yml first, tagged so an (impossible-here) empty agents set is still distinct
-    // from an empty workflow.
-    let workflow = std::fs::read_to_string(base.join(WORKFLOW_FILE))
-        .map_err(|e| format!("definition hash: read {RIGGER_DIR}/{WORKFLOW_FILE}: {e}"))?;
-    push_definition_section(&mut buf, WORKFLOW_FILE, &workflow);
-    // Every agent definition, folded in sorted-filename order so the hash is independent of
-    // directory iteration order.
-    let agents_dir = project_agents_dir(Path::new(dir));
-    let mut agents: Vec<(String, String)> = Vec::new();
-    for entry in std::fs::read_dir(&agents_dir)
-        .map_err(|e| format!("definition hash: read {}: {e}", agents_dir.display()))?
-    {
-        let path = entry?.path();
-        if path.extension().and_then(|x| x.to_str()) != Some("md") {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .and_then(|x| x.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let content = std::fs::read_to_string(&path)
-            .map_err(|e| format!("definition hash: read {}: {e}", path.display()))?;
-        agents.push((name, content));
-    }
-    agents.sort();
-    for (name, content) in agents {
-        push_definition_section(&mut buf, &format!("agent:{name}"), &content);
-    }
-    for helper in helpers.iter().filter(|h| h.present) {
-        push_definition_section(&mut buf, &format!("helper:{}", helper.name), &helper.text);
-    }
-    // The operator instruction layer, through the ONE loader that decides which files are
-    // instructions (filename order); an absent directory contributes nothing.
-    for ins in config_store::load_instructions(Path::new(dir))
-        .map_err(|e| format!("definition hash: {e}"))?
-    {
-        push_definition_section(&mut buf, &format!("instruction:{}.md", ins.name), &ins.body);
-    }
-    Ok(format!("{:016x}", fnv1a_64(buf.as_bytes())))
-}
-
-/// Fold one tagged, canonicalized definition file into the [`definition_hash`] buffer.
-fn push_definition_section(buf: &mut String, tag: &str, content: &str) {
-    buf.push_str(tag);
-    buf.push('\n');
-    buf.push_str(&canonical_definition_text(content));
-    buf.push('\n');
-}
-
 /// What the spec-09 open-time identity migration should do, given whether each namespace
 /// holds history. Pure over the two facts, so the decision is unit-testable without a store.
 #[derive(Debug, PartialEq, Eq)]
@@ -1408,6 +1347,10 @@ fn worktree_prefix(start: &Path) -> Result<PathBuf, String> {
 /// repository lies once per open. Discovery is deferred to the first rule that needs it, so a
 /// command that resolves no repository (a courier under the gate store fence) never walks above
 /// its directory.
+/// The discovery the relaunch check before a verb made at the cwd, lent to the verb's sites.
+static LENT_DISCOVERY: std::sync::OnceLock<(PathBuf, Result<Option<Repository>, String>)> =
+    std::sync::OnceLock::new();
+
 pub(crate) struct Site {
     dir: PathBuf,
     /// Why the cwd could not be read, for a site at an unreadable cwd, whose `dir` is then `.`.
@@ -1433,9 +1376,27 @@ impl Site {
         }
     }
 
-    /// The site at the cwd.
+    /// The site at the cwd, starting from the discovery the relaunch check before the verb lent
+    /// ([`Site::lend_discovery`]) when it stood at the same directory, so the check costs the verb
+    /// no second ask of where the repository lies.
     pub(crate) fn here() -> Self {
-        Self::of(Path::new(""))
+        let site = Self::of(Path::new(""));
+        if let Some((dir, found)) = LENT_DISCOVERY.get() {
+            if *dir == site.dir && site.unread.is_none() {
+                let _ = site.repository.set(found.clone());
+            }
+        }
+        site
+    }
+
+    /// Lend this site's discovery, once it has made one, to every later site at its directory
+    /// in this process ([`Site::here`]). Only the site of the relaunch check made before the verb
+    /// runs (`prime`, a person's `status`) lends, so the verb starts from the discovery it would
+    /// have made itself at the same moment; a check made after the verb lends nothing.
+    pub(crate) fn lend_discovery(&self) {
+        if let Some(found) = self.repository.get() {
+            let _ = LENT_DISCOVERY.set((self.dir.clone(), found.clone()));
+        }
     }
 
     /// A site at the same directory that has not yet asked where its repository lies.
@@ -3616,7 +3577,12 @@ fn watch_poll_over(
 
     // No `rigger run` holds the step lock right now: a non-blocking try-lock that succeeds
     // means free. Dropped immediately either way, so this probe never holds the lock.
-    let step_lock_free = acquire_step_lock(&loc.dir).is_ok();
+    // A driver's record left in the free lock is read through the held probe.
+    let step_lock = acquire_step_lock(&loc.dir).ok();
+    let step_lock_free = step_lock.is_some();
+    let driver_record_left = step_lock
+        .and_then(|lock| lock.contents().ok())
+        .is_some_and(|record| !record.is_empty());
 
     // Each currently-parked spawn's heartbeat-marker age (spec 19a), through the builder
     // `cmd_status` calls but on wall clock, with no hold subtracted: `DeadDriver` needs every
@@ -3784,6 +3750,7 @@ fn watch_poll_over(
         now,
         last_event_at,
         step_lock_free,
+        driver_record_left,
         wave_liveness_ages: &wave_liveness_ages,
         dash,
         run_started_at,
@@ -4602,7 +4569,9 @@ fn scratch_footprint(
 /// (spec 77 Design, "the store and its backups"; every backup this codebase creates names
 /// itself `<store-file>.bak-<suffix>`), and every other file whose name starts with
 /// `events.db`, `graph.db`, or `progress.db` (covering each store file's own `-shm`/`-wal`
-/// sidecars) is the live STORE. Neither category has a `dead_bytes` split or a reclaim
+/// sidecars) is the live STORE, as is the relaunched driver's output
+/// ([`relaunch::DRIVER_OUTPUT_FILE`], which each relaunch overwrites and `rigger reset --runs`
+/// removes). Neither category has a `dead_bytes` split or a reclaim
 /// command - spec 77 Global Constraint 4 forbids rigger from ever auto-deleting either, so
 /// accounting only reports their size.
 fn store_and_backup_bytes(rigger_dir: &Path) -> (u64, u64) {
@@ -4623,6 +4592,7 @@ fn store_and_backup_bytes(rigger_dir: &Path) -> (u64, u64) {
         } else if name.starts_with("events.db")
             || name.starts_with("graph.db")
             || name.starts_with("progress.db")
+            || name == relaunch::DRIVER_OUTPUT_FILE
         {
             store += size;
         }
@@ -8018,6 +7988,7 @@ mod tests {
         write_file(&rigger_dir.join("events.db-wal"), &[0u8; 10]);
         write_file(&rigger_dir.join("graph.db"), &[0u8; 50]);
         write_file(&rigger_dir.join("progress.db"), &[0u8; 5]);
+        write_file(&rigger_dir.join(relaunch::DRIVER_OUTPUT_FILE), &[0u8; 3]);
         write_file(&rigger_dir.join("events.db.bak-20260810"), &[0u8; 200]);
         write_file(&rigger_dir.join("events.db.bak-20260810-wal"), &[0u8; 20]);
         write_file(&rigger_dir.join("workflow.yml"), &[0u8; 7]); // neither category
@@ -8026,8 +7997,8 @@ mod tests {
 
         assert_eq!(
             store,
-            100 + 10 + 50 + 5,
-            "every store file + sidecar, no backups"
+            100 + 10 + 50 + 5 + 3,
+            "every store file + sidecar and the relaunched driver's output, no backups"
         );
         assert_eq!(backups, 200 + 20, "every .bak- file, no live store files");
     }
@@ -9442,8 +9413,25 @@ mod tests {
                 &["--eventstore", "bogus"],
                 &["--nope"],
                 &["a", "b"],
+                &["--adopt"],
+                &["--fresh", "--adopt", "r-1"],
             ],
         );
+    }
+
+    /// `rigger run --adopt <run>` names the run the start must adopt, beside a spec in either
+    /// order; with no flag it names none.
+    #[test]
+    fn parse_run_args_reads_the_run_to_adopt() {
+        let r = |a: &[&str]| parse_run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(r(&[]).unwrap().adopt, None);
+        for args in [["--adopt", "r-1", "spec.md"], ["spec.md", "--adopt", "r-1"]] {
+            let a = r(&args).unwrap();
+            assert_eq!(
+                (a.adopt.as_deref(), a.spec.as_deref()),
+                (Some("r-1"), Some("spec.md"))
+            );
+        }
     }
 
     /// `rigger run` accepts `--base <ref>` (spec 18, criterion 6): it is no
@@ -9645,12 +9633,12 @@ mod tests {
         ];
         for (name, helpers, folded) in rows {
             let mut buf = String::new();
-            push_definition_section(&mut buf, WORKFLOW_FILE, WORKFLOW);
-            push_definition_section(&mut buf, "agent:worker.md", WORKER);
+            config_store::push_definition_section(&mut buf, WORKFLOW_FILE, WORKFLOW);
+            config_store::push_definition_section(&mut buf, "agent:worker.md", WORKER);
             for (tag, content) in folded {
-                push_definition_section(&mut buf, tag, content);
+                config_store::push_definition_section(&mut buf, tag, content);
             }
-            push_definition_section(&mut buf, "instruction:10-house.md", HOUSE);
+            config_store::push_definition_section(&mut buf, "instruction:10-house.md", HOUSE);
             assert_eq!(
                 definition_hash(dir, &helpers).map_err(|e| e.to_string()),
                 Ok(format!("{:016x}", fnv1a_64(buf.as_bytes()))),

@@ -316,7 +316,8 @@ fn discipline_body(ctx: &DocsContext) -> String {
          refuses, recording nothing, when no run is live: none has started, or the current run \
          is done. `rigger release` ends the current run's hold, whichever \
          writer declared it, an outage hold included, so the next launch goes at once instead of \
-         after the next probe. With no hold open it records nothing and says so.\n"
+         after the next probe. With no hold open it records nothing and says so. {stop}\n",
+        stop = DRIVER_STOP_RULE
     );
 
     let _ = writeln!(s, "## Auto-integration on approve\n");
@@ -878,6 +879,16 @@ fn render_operation_skill(
     s
 }
 
+/// How an operator stops a run and what brings back a driver that died, the one statement every
+/// document that tells an operator to stop a driver carries, the hand-written handbook included.
+pub const DRIVER_STOP_RULE: &str = "A hold (`rigger hold --reason <text>`) stops a run and Ctrl-C \
+     stops its driver: a held run launches nothing, a driver that ends while the hold stands is \
+     relaunched by `rigger release` alone, and an interrupted driver is never relaunched. Ending a \
+     driver's process any other way is a death, and the next `rigger status` (not `--line` or \
+     `--json`) or session start (`rigger prime`) brings it back by adoption, as `rigger release` \
+     and `rigger resume-unit` do, each invoked from the main checkout; no other command relaunches \
+     it.";
+
 /// Render the `rigger-reset-store` skill (spec 68, criterion 2): store hygiene for the
 /// three files under `.rigger/`. `ctx` is accepted only to match the registry's uniform
 /// signature; nothing here is drift-prone enough to interpolate from it.
@@ -906,7 +917,8 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
             "`rigger reset` with no flags is the MENU, not an error: it exits 0 and prints one \
              line per prunable accumulation, each with a measured count and the flag that acts \
              on it. It is read-only - safe to run any time just to look.\n",
-            "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
+            &format!(
+                "- `rigger reset --runs` prunes dead-run rows and superseded edges out of \
              `graph.db`. It works over ANY event-store backend (the graph is always a local \
              file); rerun it any time, especially before a large run. When no driver is alive \
              (no `rigger run` holds the lock, no in-flight spawn's liveness \
@@ -915,14 +927,18 @@ fn render_reset_store_skill(_ctx: &DocsContext) -> String {
              real result, it also closes the current run's units whose branch work is already \
              landed on `rigger-run`: a unit landed by hand gets the `UnitIntegrated` only the \
              conductor mints, so `rigger status` stops reporting the finished run as working. It \
-             only appends; a live run is left untouched. A spawn answered only by its liveness \
+             only appends; a live run is left untouched, so stop its driver first: {stop} A \
+             spawn answered only by its liveness \
              fault has not ended - the run halts on it and a relaunched driver re-parks it - so \
              a dead run with a hung spawn stays open and the reset names it: record its real \
              result with `rigger result <id>`, then rerun `rigger reset --runs`. Every `rigger \
              run` registers as the run's driver, so a hand-landed unit closes once the last \
              run's stamp is older than the idle window; a courier's \
              (`emit`, `result`, `progress`) discovery refresh never counts as a driver, so your \
-             own courier just before the reset never holds it back.",
+             own courier just before the reset never holds it back. It also removes the output a \
+             relaunched driver left (`.rigger/driver.out`) once no driver holds the step lock.",
+                stop = DRIVER_STOP_RULE
+            ),
             "- `rigger reset --derived` deletes every derived event of `events.db` in one \
              transaction and vacuums so the file shrinks on disk; `rigger setup` runs the same \
              delete once the graph it rebuilds is in place. Every other event - every decision, \
@@ -972,9 +988,13 @@ fn render_build_graph_skill(_ctx: &DocsContext) -> String {
              store incrementally: an unchanged file re-ingests nothing, and \
              it reuses the exact same walk-and-content-key ingest authority a live run uses, so a \
              standalone build and a run can never fold the same file under two different keys.\n",
-            "Rerun it any time it is convenient - on a schedule, after pulling a large set of \
+            &format!(
+                "Rerun it any time it is convenient - on a schedule, after pulling a large set of \
              changes, or simply because a lookup came back empty and you want to check. It is \
-             always safe: nothing is deleted, only appended and incrementally refreshed.\n",
+             always safe: nothing is deleted, only appended and incrementally refreshed, so it \
+             never asks for a driver to be stopped. When something else does: {stop}\n",
+                stop = DRIVER_STOP_RULE
+            ),
         ],
         "Never force a rebuild by deleting `.rigger/graph.db` (or `events.db`) and \
          re-running `rigger graph build` on the empty result. Deleting the log throws away \
@@ -1006,7 +1026,21 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              Under an open hold the heartbeat age stops at the hold's start, so a driver that \
              dies inside a hold never reads stale there: `rigger watch` reads the heartbeat on \
              wall clock and names it.\n",
-            "Relaunch the same driver on the same spec WITHOUT `--fresh` - `rigger run <spec> \
+            &format!(
+                "A `rigger run` driver that died needs no hand relaunch. {stop} The relaunch \
+                 adopts the run in the background and says so in one line on stderr, naming its \
+                 pid and the file its output goes to (`.rigger/driver.out`, which `rigger status` \
+                 names while it holds what a relaunched driver said before it ended). `rigger \
+                 watch` relaunches nothing: it names the dead driver and `rigger status` as what \
+                 brings it back. A driver that returned is never relaunched, save one that parked on an \
+                 operator hold, which `rigger release` relaunches. A \
+                 driver that dies again within ten minutes of its relaunch, a relaunch that never \
+                 started, or one whose recorded binary no longer exists is left stopped, and the \
+                 line names the command that relaunches it by hand.\n",
+                stop = DRIVER_STOP_RULE
+            ),
+            "When that line says the run was left stopped, or a driver was stopped on purpose, \
+             relaunch the same driver on the same spec WITHOUT `--fresh` - `rigger run <spec> \
              --base <ref>`, in the background as before. Because the run lives in the \
              event log, not in the dead process, the conductor's own run-starting step adopts \
              the existing run instead of minting a new one: it replays the log, rebuilds its \
@@ -1026,7 +1060,9 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              runs none. `rigger release` ends any hold at once. No probe ends \
              one you declared with `rigger hold --reason <text>`: `rigger release` does, as do \
              the start of a new run and a `rigger run` run reaching done. A release with no hold \
-             open records nothing and says so.\n",
+             open records nothing and says so. A hold outlives its driver: no check relaunches a \
+             held run, a relaunched driver that finds an operator hold parks its next launch and \
+             ends, and `rigger release` relaunches the run.\n",
         ],
         "Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \
@@ -1059,12 +1095,16 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
                  placeholder, and that reason is the bounded remedy you are about to apply.\n",
                 max = ctx.max_retries
             ),
-            "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
+            &format!(
+                "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
              branch rigger itself created and kept for this unit's committed work across every \
              attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run \
              <spec> --base <ref> --fresh` - against the same, otherwise-unchanged spec: the \
              conductor mints a new run boundary, and the loop picks the escalated unit back up \
-             with a clean remediation budget.\n",
+             with a clean remediation budget. Stop the old driver first if it still runs, so the \
+             run you relaunch is the only one driving: {stop}\n",
+                stop = DRIVER_STOP_RULE
+            ),
         ],
         "Never hand-merge the unit's durable branch onto the run branch yourself - that \
          bypasses review and integration and forks the merged code away from what the event \
@@ -1129,8 +1169,8 @@ fn render_watch_a_run_skill(ctx: &DocsContext) -> String {
                 "5. **{}** - is the run actually consuming what it spawns? A spawn id surviving \
                  consecutive looks, an hours-old last run event under \"working\" agents, or a \
                  repeating wave is a STALL even though every signal above reads clean - this is why \
-                 progress is its own signal, not a restatement of liveness. Respond: {}.\n",
-                frontier_stall.name, frontier_stall.response
+                 progress is its own signal, not a restatement of liveness. Respond: {}. {}\n",
+                frontier_stall.name, frontier_stall.response, DRIVER_STOP_RULE
             ),
             &format!(
                 "FIRST instruction, every time: on launch, ARM `rigger watch` under the harness's \

@@ -128,6 +128,16 @@ fn main() {
         usage();
         std::process::exit(2);
     }
+    // A RUN SURVIVES ITS DRIVER: the few checking verbs relaunch the project's run whose driver
+    // died, before the verb, since a verb may end the process itself, or after the verbs whose
+    // effect the relaunch must see; every other verb checks nothing.
+    let verb = args[1].as_str();
+    let check = check_point(&args[1..]);
+    if check == CheckPoint::Before {
+        let site = Site::here();
+        relaunch_a_dead_driver(&site, false);
+        site.lend_discovery();
+    }
     if let Some(code) = answer_help(&args[1], &args[2..]) {
         std::process::exit(code);
     }
@@ -182,6 +192,9 @@ fn main() {
             1
         }
     };
+    if check == CheckPoint::After {
+        relaunch_a_dead_driver(&Site::here(), verb == "release");
+    }
 
     std::process::exit(code);
 }
@@ -386,7 +399,10 @@ prior run stays in the log as history and context\n  \
 prompts) that drifted from what this live run pinned at\n                                   \
 start: record the supersession and continue instead of\n                                   \
 halting. The explicit mid-campaign-edit escape (a live\n                                   \
-run otherwise HALTS loudly on definition drift)\n\n\
+run otherwise HALTS loudly on definition drift)\n  \
+--adopt <run>                    adopt that run and no other: refuse, recording\n                                   \
+nothing, when the start would adopt another or begin a\n                                   \
+new one. What a relaunch after a driver died passes\n\n\
 storage and graph live in ./.rigger/ (per project, like .git/), scoped to the\n\
 project identity so one backend can hold many projects without their data mixing.\n";
 

@@ -225,7 +225,8 @@ fn init_project(
     // git-ignored BY CONSTRUCTION - a developer's credentials can never ride a committed file.
     // `.rigger/store` holds the code store's snapshots, a per-machine projection of the tree
     // that every graph read rewrites, and its facts memo, so left untracked they would read as a
-    // dirty tree.
+    // dirty tree. `.rigger/driver.out` is the output of the driver a check last relaunched, which
+    // each relaunch rewrites, ignored for the same reason.
     // Record WHICH patterns were appended so the summary reports the real gitignore change and
     // nothing it did not do.
     let mut gitignore_added = Vec::new();
@@ -234,6 +235,7 @@ fn init_project(
         ".rigger/dash.url",
         ".rigger/dash.marker",
         ".rigger/dash.attempt",
+        ".rigger/driver.out",
         ".rigger/store.conn",
         ".rigger/store",
     ] {
@@ -3425,6 +3427,10 @@ mod tests {
         /// every graph read, so `rigger init`/`setup` ignores them like the other runtime state.
         init_project_gitignores_the_code_store_idempotently:
             assert_init_gitignores_idempotently(&[".rigger/store"]);
+        /// The output of the driver a check last relaunched is per-machine runtime state,
+        /// rewritten at every relaunch, so `rigger init`/`setup` ignores it like the dash's.
+        init_project_gitignores_the_relaunched_driver_output_idempotently:
+            assert_init_gitignores_idempotently(&[".rigger/driver.out"]);
     }
 
     /// The code store's facts memo lies under `.rigger/store`, so in a project setup has run on
@@ -5594,6 +5600,20 @@ mod tests {
             rigger::wave::normalize_ws(markdown_section(&text, HEADING)),
             format!("{HEADING} {DOC_ONLY_ROUND_RULE}"),
             "sdet-author.md's last section holds the rule's sentence verbatim and nothing else"
+        );
+    }
+
+    /// The handbook's paragraph on driving a run states how to stop one in the one sentence
+    /// every rendered document that tells an operator to stop a driver carries.
+    #[test]
+    fn the_handbook_states_the_driver_stop_rule_verbatim() {
+        let page = read_text(&repo().join("docs/handbook/authoring-loops.md"));
+        assert_eq!(
+            rigger::wave::normalize_ws(&page)
+                .matches(&rigger::wave::normalize_ws(rigger::docs::DRIVER_STOP_RULE))
+                .count(),
+            1,
+            "authoring-loops.md states the driver stop rule once, verbatim"
         );
     }
 

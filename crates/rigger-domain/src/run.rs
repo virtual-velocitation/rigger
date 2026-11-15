@@ -392,8 +392,9 @@ pub fn run_attribution(events: &[Event]) -> BTreeMap<usize, RunOf> {
 }
 
 /// The definition hash currently in force for a run (spec 13, unit 1): the hash the run
-/// pinned at start ([`RunStarted::definition`]), advanced by any `--rebase-definition`
-/// supersession recorded since (each carries the re-pinned hash in [`META_DEFINITION`]).
+/// pinned at start ([`RunStarted::definition`]), advanced by any re-pin recorded since - an
+/// operator's `--rebase-definition` supersession, or the run's own landing of a definition
+/// change - each carrying the re-pinned hash in [`META_DEFINITION`].
 /// The LAST authority wins, so a rebased run's effective pin is the rebased-to hash and a
 /// plain step after a rebase no longer re-halts. Empty when the run pinned nothing (a
 /// legacy/unpinned start), which the drift check reads as "unpinned - never drifts".

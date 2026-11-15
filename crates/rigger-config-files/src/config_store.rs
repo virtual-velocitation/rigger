@@ -22,6 +22,8 @@ use crate::config::{
 };
 use crate::gate::GateRequirements;
 use crate::instructions::Instruction;
+use rigger_domain::agent::HelperCopy;
+use rigger_domain::playbooks::fnv1a_64;
 // The rest of `config`'s pure surface this file's own PRODUCTION code never touches, but its
 // moved test module (spec 93, criterion 1 - see this file's own doc) does: Duration for a
 // backoff fixture, `failure` for classify() round-trips, and the lint/validate helpers'
@@ -78,6 +80,7 @@ pub fn load_with_gate_requirements(dir: &str) -> Result<LoadedConfig, Error> {
         agents,
         workflow,
         instructions,
+        dir: dir.to_string(),
     };
     let gate_requirements = cfg.validate()?;
     Ok(LoadedConfig {
@@ -126,6 +129,94 @@ pub fn load_instructions(dir: &Path) -> Result<Vec<Instruction>, Error> {
 /// The file that documents `.rigger/instructions/` (scaffolded by `rigger init`); it
 /// describes the operator layer and is never itself part of it.
 pub const INSTRUCTIONS_README: &str = "README.md";
+
+/// Canonicalize definition text for hashing (spec 13, unit 1): normalize CRLF -> LF and
+/// strip trailing whitespace from each line, so a checkout's line-ending or trailing-space
+/// noise never reads as a definition change while any real edit does.
+fn canonical_definition_text(s: &str) -> String {
+    s.replace("\r\n", "\n")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The definition hash a run PINS (spec 13, unit 1): a stable FNV-1a digest over the on-disk
+/// definition of the project at `dir` - the `.rigger/workflow.yml`, the FULL agent-prompt set
+/// (every `.rigger/agents/*.md`, which carries each agent's prompt and frontmatter), the
+/// operator's copy of each fan-out helper among `helpers` (the ones the spawn host found present,
+/// tagged by file name in helper order; an absent helper folds nothing) and the operator
+/// instruction layer (every `.rigger/instructions/*.md`, absent means empty) - canonicalized
+/// ([`canonical_definition_text`]) and folded in sorted-filename order. So the same definition
+/// hashes identically across machines and checkouts (the [`fnv1a_64`] idiom is fixed-seed and
+/// build-stable), while ANY content change - a mid-campaign prompt edit above all - changes it.
+///
+/// This is the hash a run pins at start and every relaunch of a live run re-checks, and the one a
+/// run re-pins to when its own landing moves the definition its checkout holds. Hashing the
+/// on-disk files directly (not the parsed `Config`) is faithful to the design's "workflow.yml +
+/// the full agent-prompt set" and conservative: it needs no serialization of the config and errs
+/// toward halting, and the `--rebase-definition` escape makes an intended edit a one-flag
+/// continue.
+pub fn definition_hash(dir: &str, helpers: &[HelperCopy]) -> Result<String, Error> {
+    let base = Path::new(dir).join(RIGGER_DIR);
+    let mut buf = String::new();
+    // workflow.yml first, tagged so an (impossible-here) empty agents set is still distinct
+    // from an empty workflow.
+    let workflow = std::fs::read_to_string(base.join(WORKFLOW_FILE)).map_err(|e| {
+        err(format!(
+            "definition hash: read {RIGGER_DIR}/{WORKFLOW_FILE}: {e}"
+        ))
+    })?;
+    push_definition_section(&mut buf, WORKFLOW_FILE, &workflow);
+    // Every agent definition, folded in sorted-filename order so the hash is independent of
+    // directory iteration order.
+    let agents_dir = base.join("agents");
+    let read_dir_error = |e: std::io::Error| {
+        err(format!(
+            "definition hash: read {}: {e}",
+            agents_dir.display()
+        ))
+    };
+    let mut agents: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(&agents_dir).map_err(read_dir_error)? {
+        let path = entry.map_err(read_dir_error)?.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("md") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|x| x.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let content = std::fs::read_to_string(&path)
+            .map_err(|e| err(format!("definition hash: read {}: {e}", path.display())))?;
+        agents.push((name, content));
+    }
+    agents.sort();
+    for (name, content) in agents {
+        push_definition_section(&mut buf, &format!("agent:{name}"), &content);
+    }
+    for helper in helpers.iter().filter(|h| h.present) {
+        push_definition_section(&mut buf, &format!("helper:{}", helper.name), &helper.text);
+    }
+    // The operator instruction layer, through the ONE loader that decides which files are
+    // instructions (filename order); an absent directory contributes nothing.
+    for ins in
+        load_instructions(Path::new(dir)).map_err(|e| err(format!("definition hash: {e}")))?
+    {
+        push_definition_section(&mut buf, &format!("instruction:{}.md", ins.name), &ins.body);
+    }
+    Ok(format!("{:016x}", fnv1a_64(buf.as_bytes())))
+}
+
+/// Fold one tagged, canonicalized definition file into the [`definition_hash`] buffer: the one
+/// section shape, so a test that rebuilds an expected hash folds exactly what the hash folds.
+pub fn push_definition_section(buf: &mut String, tag: &str, content: &str) {
+    buf.push_str(tag);
+    buf.push('\n');
+    buf.push_str(&canonical_definition_text(content));
+    buf.push('\n');
+}
 
 fn load_agents(dir: &Path) -> Result<BTreeMap<String, AgentDef>, Error> {
     index_agents(read_agents_dir(dir)?)

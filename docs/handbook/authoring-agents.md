@@ -95,7 +95,7 @@ Only an operator file named as an entry replaces or switches it off (see the ope
 
 **Reading the composed layers.** `rigger instructions` prints exactly what your agents are held to: the three built-in entries first, each labelled with its state - `(built-in)` with its shipped body, `(replaced by .rigger/instructions/<name>.md)` with that file's body, or `(switched off by .rigger/instructions/<name>.md)` with no body - then each operator file that shadows no built-in by name, or `(none)` when no such file remains. `rigger validate` prints a warning for each built-in an operator file replaces or switches off, and still succeeds. `rigger prime` opens every session with a one-line summary of the layers in force: the built-ins in force, a replaced one marked `(replaced)` and a switched-off one left out, then the count of the operator files that shadow no built-in, or no count when there is none.
 
-**The definition pin.** Operator instruction files are part of a run's definition, alongside `workflow.yml` and the agent files. Editing one while a run is live changes the definition hash, and the next step halts as a definition drift. Edit instructions between runs, or continue deliberately with `--rebase-definition`.
+**The definition pin.** Operator instruction files are part of a run's definition, alongside `workflow.yml` and the agent files. Editing one while a run is live changes the definition hash, and the next step halts as a definition drift. A definition change the run lands itself, a unit whose change edits an agent file for one, re-pins the run to what it landed, so only an edit from outside the run halts. Edit instructions between runs, or continue deliberately with `--rebase-definition`.
 
 ## Starting from an existing collection
 

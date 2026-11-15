@@ -216,6 +216,7 @@ mod review_round_speculation_winner_no_merge_round_start_sha_periphery;
 mod review_steps_periphery;
 mod rigger_run_base_gate_env_periphery;
 mod run_boundary_lookup_periphery;
+mod run_branch_move_repin_periphery;
 mod run_hold_periphery;
 mod run_root_resolution_periphery;
 mod run_scoping_survives_periphery;
