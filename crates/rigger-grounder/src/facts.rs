@@ -694,7 +694,7 @@ fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
-    use crate::extractor_stub::{answer_defining, declared_identity, StubExtractor};
+    use crate::extractor_stub::{answer_defining, declared_identity, request_for, StubExtractor};
     use crate::extractors_fixtures::{workflow_declaring_extractors, EXTRACTOR_REFUSALS};
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::content_hash;
@@ -2334,7 +2334,7 @@ mod tests {
                 vec![root_dir; 4],
                 3,
                 ["a", "b", "c", "d", "e", "f"]
-                    .map(|name| format!(r#"{{"path":"{name}.zig","text":"x\n"}}"#))
+                    .map(|name| request_for(&format!("{name}.zig"), "x\n"))
                     .to_vec(),
             ),
             "dropping the extractor closes the session it holds"

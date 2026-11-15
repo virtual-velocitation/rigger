@@ -4,8 +4,8 @@
 //! each time its input ended, so a test pins what the code store asked and how many sessions it
 //! started and closed. It lives in its own directory, outside the project it serves, so no walk
 //! of the project reads it. It runs under `sh`, so only a unix test starts it. Beside it lie the
-//! one-function answer line a test writes for it and the identity facts a declared file holds
-//! when it holds no symbols.
+//! request line it reads for a file, the one-function answer line a test writes for it and the
+//! identity facts a declared file holds when it holds no symbols.
 
 use std::path::{Path, PathBuf};
 
@@ -91,6 +91,15 @@ impl StubExtractor {
             Err(e) => panic!("read the stub's {name}: {e}"),
         }
     }
+}
+
+/// The request line the stub reads for the file `path` holding `text`, a text holding no character
+/// JSON escapes but the line end.
+pub fn request_for(path: &str, text: &str) -> String {
+    format!(
+        r#"{{"path":"{path}","text":"{}"}}"#,
+        text.replace('\n', "\\n")
+    )
 }
 
 /// The answer line giving the file `path` one file-level function `leaf` on its first line.

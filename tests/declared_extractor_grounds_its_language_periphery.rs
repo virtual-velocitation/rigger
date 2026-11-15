@@ -14,8 +14,8 @@ use std::path::Path;
 use crate::common;
 use common::cli::{run_rigger, source_repository, write_scaffold, BuiltGraph, SOURCE};
 use common::fixtures::{
-    answer_defining, declared_identity, git_ok, git_out, workflow_declaring_extractors,
-    write_files, StubExtractor,
+    answer_defining, declared_identity, git_ok, git_out, request_for,
+    workflow_declaring_extractors, write_files, StubExtractor,
 };
 use common::git::linked_worktree;
 use rigger_domain::code_facts::{Def, FileFacts};
@@ -53,15 +53,6 @@ fn commit(root: &Path, files: &[(&str, &str)]) {
 /// The id of the blob the head commit holds at `path`.
 fn committed_blob(root: &Path, path: &str) -> String {
     git_out(root, &["rev-parse", &format!("HEAD:{path}")])
-}
-
-/// The request line the code store sends the extractor for `path` holding `text`, a text holding
-/// no character JSON escapes but the line end.
-fn request(path: &str, text: &str) -> String {
-    format!(
-        r#"{{"path":"{path}","text":"{}"}}"#,
-        text.replace('\n', "\\n")
-    )
 }
 
 /// The facts the head commit's `path` holds under the declared extractor `lang` when its answer
@@ -188,7 +179,7 @@ fn graph_build_grounds_each_committed_declared_file_from_one_session() {
                 sorted(
                     declared
                         .iter()
-                        .map(|(path, text, _)| request(path, text))
+                        .map(|(path, text, _)| request_for(path, text))
                         .collect()
                 ),
                 ended(1),
@@ -277,7 +268,7 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
     let failed: Vec<String> = first
         .iter()
         .filter(|(.., why)| why.is_some())
-        .map(|(path, text, ..)| request(path, text))
+        .map(|(path, text, ..)| request_for(path, text))
         .collect();
     let requests = stub.requests();
     let restarts = requests[..requests.len() - 1]
@@ -291,7 +282,7 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
             sorted(
                 first
                     .iter()
-                    .map(|(path, text, ..)| request(path, text))
+                    .map(|(path, text, ..)| request_for(path, text))
                     .collect()
             ),
             ended(restarts),
@@ -325,7 +316,7 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
             &[("src/a.zig", "a2\n")],
             vec![good("src/a.zig", "a")],
             "[zig]",
-            vec![request("src/a.zig", "a2\n")],
+            vec![request_for("src/a.zig", "a2\n")],
             [&["a"], &[], &[], &[], &["e"]],
         ),
         (
@@ -344,7 +335,7 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
                 ("src/d.zig", "d\n"),
                 ("src/e.zig", "e\n"),
             ]
-            .map(|(path, text)| request(path, text))
+            .map(|(path, text)| request_for(path, text))
             .to_vec(),
             [&["a"], &["b"], &["c"], &["d"], &["e"]],
         ),
@@ -431,7 +422,7 @@ fn a_read_in_a_linked_worktree_asks_the_roots_extractor_for_the_text_it_changed(
         ),
         "the lookup in the worktree answers the stub's definition of its text:\n{out}"
     );
-    requests.push(request("src/a.zig", "fresh\n"));
+    requests.push(request_for("src/a.zig", "fresh\n"));
     assert_eq!(
         (stub.starts(), stub.requests(), stub.ends()),
         (vec![root.display().to_string(); 2], requests, ended(2)),
