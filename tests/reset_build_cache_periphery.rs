@@ -22,8 +22,8 @@
 //!   - NOT OWNED: the exclusion PRIMITIVE's own unit-level contract
 //!     (`reclaim_shared_build_cache`'s rename/idempotent-zero/busy/prompt-release behavior) -
 //!     pinned in-crate beside its definition in `src/cli/mod.rs`; the PRODUCER half's OWN
-//!     internal shape (the flock-wrap construction, the guard probe's fault decision, holding
-//!     the guard SHARED for a genuinely guarded cargo invocation) - pinned in
+//!     internal shape (the shared lock it takes and hands across exec, the guard probe's fault
+//!     decision, holding the guard SHARED for a genuinely guarded cargo invocation) - pinned in
 //!     `crates/rigger-gates-shell/src/gate.rs` and `crates/rigger-conductor/src/conductor.rs`;
 //!     the probe fault's literal message - pinned in `crates/rigger-conductor/src/conductor.rs`'s
 //!     `assert_probe_fault_halts_the_step`, which this file's run test prints through; and
@@ -313,14 +313,14 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     // driver's own liveness heartbeat exists around) must never let `reset --build-cache`
     // reclaim a cache a still-running, now-orphaned build is mid-write into.
     //
-    // Simulates the FIXED `gate::ExecRunner::run` command shape end to end with real
-    // processes (mirroring this file's own `..._refuses_rather_than_waits...` test's
+    // Simulates the lifetime of the shared lock `gate::ExecRunner::run` takes end to end with
+    // real processes (mirroring this file's own `..._refuses_rather_than_waits...` test's
     // simulate-via-real-`flock` style, never re-invoking Rust code cross-process): an
     // "orchestrator" (`sh -c "... & wait"`, spawned and owned by THIS test exactly the way
     // the real rigger process is spawned and owned by whatever launches it) backgrounds
-    // `flock -s -F <guard> sh -c '<script>'` - the exact exec-replacing wrapper
-    // `ExecRunner::run` now uses (spec 78's no-os-kill audit bans the bare `--` argv
-    // separator tree-wide, so the wrapper no longer passes one) - then blocks on `wait`,
+    // `flock -s -F <guard> sh -c '<script>'`, whose exec'd shell keeps the locked guard just
+    // as the processes `ExecRunner::run` starts keep the shared lock `gate::hold_shared_lock`
+    // takes, inherited through `subprocess::inherit_on_exec` - then blocks on `wait`,
     // mirroring `Command::output()`'s own blocking wait for its child. `&` guarantees the
     // backgrounded chain is a genuinely separate, already-forked process before the
     // orchestrator ever dies (no shell tail-call exec-replace ambiguity, unlike a bare
@@ -352,10 +352,9 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
             .unwrap_or(false)
     }
 
-    // The simulated "orchestrator": backgrounds the exact `flock -s -F <guard>
-    // sh -c '<script>'` command `ExecRunner::run` now constructs (no `--` separator - spec
-    // 78's no-os-kill audit bans that argv shape tree-wide), then blocks on `wait` for it -
-    // the same spawn-then-block shape `Command::output()` gives the real orchestrator.
+    // The simulated "orchestrator": backgrounds `flock -s -F <guard> sh -c '<script>'`, a gate
+    // command holding the inherited shared lock, then blocks on `wait` for it - the same
+    // spawn-then-block shape `Command::output()` gives the real orchestrator.
     let script = format!(
         "flock -s -F {guard_str} sh -c 'echo $$ > {pidfile_str}; touch {started_str}; \
          sleep 30' & wait"

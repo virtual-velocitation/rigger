@@ -655,7 +655,6 @@ fn git_hooks_dir(root: &Path) -> Result<Option<PathBuf>, String> {
 fn install_precommit_hook(
     root: &Path,
 ) -> Result<Option<InstallOutcome>, Box<dyn std::error::Error>> {
-    use std::os::unix::fs::PermissionsExt;
     let Some(hooks_dir) = git_hooks_dir(root)? else {
         return Ok(None);
     };
@@ -675,6 +674,7 @@ fn install_precommit_hook(
     // ignored, which would defeat the whole feature.
     #[cfg(unix)]
     {
+        use std::os::unix::fs::PermissionsExt;
         let mut perms = std::fs::metadata(&hook_path)?.permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(&hook_path, perms)?;

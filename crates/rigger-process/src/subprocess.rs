@@ -2,21 +2,93 @@
 //!
 //! Every process this crate starts - git, the gate shell, the agent CLI, the dash child, a declared
 //! extractor - is built here and handed back for the caller to add its own arguments and run. One
-//! seam means one place owning how a child is launched: the working-directory rule every caller
+//! seam means one place owning how a child is launched: the program a name resolves to on
+//! Windows ([`command`], through [`find_executable`]), the working-directory rule every caller
 //! shares ([`command_in`]), the host's shell given a project's command line whole
-//! ([`shell_command`]) and the `git -C <dir>` shape nearly every git call takes, its repository
-//! found from `dir` alone ([`git_in`]). Beyond those rules it adds no policy of its own: the
-//! caller still picks the arguments, the environment, the stdio and how the child is waited on,
-//! and a child is only ever ended through its own spawning handle.
+//! ([`shell_command`]), the one open file a child inherits across its exec ([`inherit_on_exec`])
+//! and the `git -C <dir>` shape nearly every git call takes, its repository found from `dir`
+//! alone ([`git_in`]). Beyond those rules it adds no policy of its own: the caller still picks
+//! the arguments, the environment, the stdio and how the child is waited on, and a child is only
+//! ever ended through its own spawning handle.
 
 use std::ffi::OsStr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A fresh command for `program`, inheriting this process's environment, working directory
-/// and stdio exactly as [`Command::new`] does.
+/// and stdio exactly as [`Command::new`] does. On Windows a program name holding no path
+/// separator is spawned at the path [`find_executable`] resolves it to over `PATH`, and as
+/// given when that resolves nothing; elsewhere `program` goes to [`Command::new`] unchanged.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
-    Command::new(program)
+    let program = program.as_ref();
+    let resolved = if cfg!(windows) {
+        program
+            .to_str()
+            .and_then(|name| find_executable(&std::env::var_os("PATH").unwrap_or_default(), name))
+    } else {
+        None
+    };
+    match resolved {
+        Some(path) => Command::new(path),
+        None => Command::new(program),
+    }
+}
+
+/// The first executable regular file named `bin` inside a directory of `path_var` (a
+/// PATH-style, platform-separator-joined directory list from [`std::env::split_paths`]),
+/// checked in listed order. An empty or relative component is skipped, so every path
+/// answered is absolute. `bin` is a file name: one holding a path separator (`/`, and on
+/// Windows `\` too) names no file in a directory and finds nothing, and an empty one joins to
+/// the directory itself, which is no regular file. Each directory is tried with `bin` alone,
+/// and on Windows with each of [`pathext_candidates`] of `bin` over the environment's
+/// `PATHEXT` in turn, an unset `PATHEXT` reading as empty. Symlinks are followed (through
+/// [`is_executable_file`]'s `std::fs::metadata`), and a found symlink is answered at its own
+/// path.
+pub fn find_executable(path_var: &OsStr, bin: &str) -> Option<PathBuf> {
+    if bin.contains(|c| c == '/' || (cfg!(windows) && c == '\\')) {
+        return None;
+    }
+    let candidates = if cfg!(windows) {
+        pathext_candidates(bin, &std::env::var("PATHEXT").unwrap_or_default())
+    } else {
+        vec![bin.to_string()]
+    };
+    std::env::split_paths(path_var)
+        .filter(|dir| dir.is_absolute())
+        .flat_map(|dir| candidates.iter().map(move |name| dir.join(name)))
+        .find(|candidate| is_executable_file(candidate))
+}
+
+/// The file names Windows tries for the program `name` over `pathext`, a `PATHEXT`-style list
+/// of `;`-separated extensions: a name with no extension is the name with each listed extension
+/// appended, in order, an empty entry skipped and the bare name never among them; a name
+/// carrying an extension is the name alone. A plain string rule, so every host builds and tests
+/// it.
+pub fn pathext_candidates(name: &str, pathext: &str) -> Vec<String> {
+    if Path::new(name).extension().is_some() {
+        return vec![name.to_string()];
+    }
+    pathext
+        .split(';')
+        .filter(|extension| !extension.is_empty())
+        .map(|extension| format!("{name}{extension}"))
+        .collect()
+}
+
+/// Whether `path` is a regular file with an execute permission bit set, following symlinks.
+#[cfg(unix)]
+pub fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+/// Whether `path` is a regular file, following symlinks: a host without unix permission bits
+/// reads every regular file as executable.
+#[cfg(not(unix))]
+pub fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// The directory a child given `dir` runs in: `dir` itself, or this process's own working
@@ -67,6 +139,35 @@ pub fn shell_command(run: &str, dir: &Path) -> Command {
     cmd.current_dir(dir);
     cmd
 }
+
+/// Hands the open `file` to `cmd`'s child across its exec, so the child and every process it
+/// starts share the open file, and any lock taken on it, for as long as one of them keeps it.
+/// On unix a hook run in the child between fork and exec clears the descriptor's close-on-exec
+/// flag there alone: the flag stays set in this process, so a child another thread spawns
+/// meanwhile never inherits the file. Elsewhere it does nothing. `file` must stay open until
+/// `cmd` has spawned.
+#[cfg(unix)]
+pub fn inherit_on_exec(cmd: &mut Command, file: &std::fs::File) {
+    use std::os::fd::{AsRawFd, BorrowedFd};
+    use std::os::unix::process::CommandExt;
+    let raw = file.as_raw_fd();
+    // SAFETY: the hook runs in the forked child before exec and makes two `fcntl` calls, which
+    // allocate nothing, take no lock and are async-signal-safe. `raw` is open in that child:
+    // it is forked while the caller still holds `file` open, and a fork copies every descriptor.
+    unsafe {
+        cmd.pre_exec(move || {
+            let fd = BorrowedFd::borrow_raw(raw);
+            let flags = rustix::io::fcntl_getfd(fd)?;
+            rustix::io::fcntl_setfd(fd, flags.difference(rustix::io::FdFlags::CLOEXEC))?;
+            Ok(())
+        });
+    }
+}
+
+/// Hands the open `file` to `cmd`'s child across its exec on unix; on this host it does
+/// nothing, and the file stays this process's alone.
+#[cfg(not(unix))]
+pub fn inherit_on_exec(_cmd: &mut Command, _file: &std::fs::File) {}
 
 /// The variables through which an environment names the repository git operates on, apart from
 /// the directory git starts in: the repository itself, its work tree, its index, its object
