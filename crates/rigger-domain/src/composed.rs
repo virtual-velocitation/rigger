@@ -772,6 +772,31 @@ impl CodeHalf for Arc<Whole> {
 /// Of one tree it holds at most its bound, dropping the least recently read beyond that.
 pub struct WholeMemo {
     bound: usize,
+    held: Mutex<HeldWholes>,
+}
+
+/// What names a held whole: the tree, the worktree files over it, the filter and the grain.
+#[derive(Clone, PartialEq)]
+struct WholeKey {
+    stamp: crate::code_facts::Stamp,
+    overlaid: Vec<(String, Option<String>)>,
+    tests: Tests,
+    /// The resolution's bits, so a grain is held by exactly the value read.
+    resolution: u64,
+}
+
+impl WholeKey {
+    /// Whether `self` and `other` describe one tree: the same stamp and worktree files.
+    fn of_tree(&self, other: &WholeKey) -> bool {
+        self.stamp == other.stamp && self.overlaid == other.overlaid
+    }
+}
+
+/// A memo's wholes, each with the tick it was last read or held at.
+#[derive(Default)]
+struct HeldWholes {
+    tick: u64,
+    wholes: Vec<(WholeKey, u64, Arc<Whole>)>,
 }
 
 impl WholeMemo {
@@ -781,13 +806,56 @@ impl WholeMemo {
 
     /// An empty memo holding at most `bound` reads of one tree.
     pub fn new(bound: usize) -> Self {
-        Self { bound }
+        Self {
+            bound,
+            held: Mutex::new(HeldWholes::default()),
+        }
     }
 
-    /// `view` resolved whole under `filter` at `resolution` for a whole read.
+    /// `view` resolved whole under `filter` at `resolution` for a whole read: the held whole of
+    /// the read when the memo holds it, else resolved now and held. It resolves outside the
+    /// memo's lock, so a read of the memo never waits on another's resolve.
     fn whole(&self, view: &dyn CodeView, filter: ViewFilter, resolution: f64) -> Arc<Whole> {
-        let _ = self.bound;
-        Arc::new(Whole::read(view, filter, resolution, false))
+        let key = WholeKey {
+            stamp: view.stamp().clone(),
+            overlaid: view.overlaid(),
+            tests: filter.tests,
+            resolution: resolution.to_bits(),
+        };
+        if let Some(whole) = self.get(&key) {
+            return whole;
+        }
+        let whole = Arc::new(Whole::read(view, filter, resolution, false));
+        self.put(key, Arc::clone(&whole));
+        whole
+    }
+
+    fn get(&self, key: &WholeKey) -> Option<Arc<Whole>> {
+        let mut held = self.held.lock().ok()?;
+        held.tick += 1;
+        let tick = held.tick;
+        let (_, read, whole) = held.wholes.iter_mut().find(|(k, ..)| k == key)?;
+        *read = tick;
+        Some(Arc::clone(whole))
+    }
+
+    fn put(&self, key: WholeKey, whole: Arc<Whole>) {
+        let Ok(mut held) = self.held.lock() else {
+            return;
+        };
+        held.tick += 1;
+        let tick = held.tick;
+        held.wholes.retain(|(k, ..)| k.of_tree(&key) && *k != key);
+        held.wholes.push((key, tick, whole));
+        while held.wholes.len() > self.bound {
+            let oldest = (held.wholes.iter().enumerate())
+                .min_by_key(|(_, (_, read, _))| *read)
+                .map(|(at, _)| at);
+            match oldest {
+                Some(at) => held.wholes.remove(at),
+                None => break,
+            };
+        }
     }
 }
 

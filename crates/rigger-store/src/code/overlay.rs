@@ -303,6 +303,16 @@ impl CodeView for Overlay {
     fn settled(&self) -> Option<&dyn Settled> {
         self.view.base.settled().map(|_| self as &dyn Settled)
     }
+    /// Every differing file, each with the content id of the worktree's bytes the overlay read,
+    /// or none when the worktree deleted it.
+    fn overlaid(&self) -> Vec<(String, Option<String>)> {
+        (self.view.hidden.iter())
+            .map(|path| {
+                let blob = self.view.changed.file(path).map(|f| f.blob.clone());
+                (path.clone(), blob)
+            })
+            .collect()
+    }
 }
 
 impl Settled for Overlay {

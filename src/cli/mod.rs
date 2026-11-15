@@ -2082,20 +2082,24 @@ impl ReadGraph<'_> {
     }
 
     /// [`Self::open_at`] opened for its whole graph alone
-    /// ([`rigger_domain::composed::Composed::whole_at`]): the read of the dash's graph view.
+    /// ([`rigger_domain::composed::Composed::whole_at`]): the read of the dash's graph view, its
+    /// code half taken from `held` when it is given and holds this read
+    /// ([`rigger_domain::composed::Composed::whole_held_at`]).
     pub(crate) fn open_whole_at(
         &self,
         filter: rigger_domain::code_view::ViewFilter,
         resolution: f64,
+        held: Option<&rigger_domain::composed::WholeMemo>,
     ) -> Result<rigger_domain::composed::WholeOpen<'_>, contextgraph::Error> {
+        use rigger_domain::composed::Composed;
         let head = self.head().map_err(contextgraph::Error)?;
-        rigger_domain::composed::Composed::whole_at(
-            self.records,
-            &*head.view,
-            filter,
-            Self::honesty(&head),
-            resolution,
-        )
+        let (view, honesty) = (&*head.view, Self::honesty(&head));
+        match held {
+            Some(held) => {
+                Composed::whole_held_at(self.records, view, filter, honesty, resolution, held)
+            }
+            None => Composed::whole_at(self.records, view, filter, honesty, resolution),
+        }
     }
 
     /// The graph composed over `head` under `filter`, the groupings at `resolution` beside the
