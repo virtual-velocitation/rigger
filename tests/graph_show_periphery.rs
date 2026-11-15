@@ -87,6 +87,42 @@ fn graph_show_unknown_entity_reports_not_found() {
     );
 }
 
+/// NONE face, nearest names: GIVEN a built tree holding `alpha`, `alphabet` and `delta`, WHEN
+/// `--show` names no entity the graph locates, THEN under the not-found note it names what the
+/// term is nearest to the way `--lookup`'s graph section does - the entities a case variant, a
+/// prefix or a misspelling reaches by id, else the names sharing the term's longest prefix, else
+/// that the graph holds no near name.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_show_a_miss_names_what_the_term_is_nearest_to() {
+    let dir = temp_project();
+    let root = dir.path();
+    seed_rigger_dir(root);
+    std::fs::write(
+        root.join("a.rs"),
+        "fn alpha() {}\nfn alphabet() {}\nfn delta() {}\n",
+    )
+    .unwrap();
+    common::fixtures::commit_tree(root);
+    // (the term, the line under the not-found note)
+    let cases = [
+        ("Delta", "  nearest: a.rs::delta"),
+        ("alphab", "  nearest: a.rs::alphabet"),
+        ("alpga", "  nearest: a.rs::alpha"),
+        ("alphzqlong", "  nearest: alpha, alphabet"),
+        ("zzz_nothing", "  the graph holds no near name"),
+    ];
+    for (term, nearest) in cases {
+        let (out, err, ok) = run_rigger(root, &["graph", "--show", term]);
+        assert!(ok, "{term}: stderr {err}");
+        let lines: Vec<&str> = out.lines().collect();
+        let note = (lines.iter())
+            .position(|l| l.starts_with(&format!("show {term:?}: no such entity")))
+            .unwrap_or_else(|| panic!("{term}: the not-found note:\n{out}"));
+        assert_eq!(lines.get(note + 1), Some(&nearest), "{term}:\n{out}");
+    }
+}
+
 /// DEGRADE face at a stored definition: GIVEN a `graph.db` whose record half holds a named code
 /// entity with a line - as a file folded under a fold rule before the records-only one does until
 /// `rigger setup` rebuilds it, and which every graph read serves as it stands - and the committed
