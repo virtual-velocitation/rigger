@@ -1815,14 +1815,14 @@ mod tests {
         }
     }
 
-    /// [`view`] whose definitions read by leaf are recorded, to count the leaves an open
-    /// resolves, holding what a store settles as a snapshot does.
-    struct DefsCounted<'v> {
+    /// [`view`] whose file reads and definitions read by leaf are recorded, to count the files
+    /// and leaves an open resolves, holding what a store settles as a snapshot does.
+    struct Counted<'v> {
         view: &'v Grouped,
         asked: Mutex<Vec<String>>,
     }
 
-    impl CodeView for DefsCounted<'_> {
+    impl CodeView for Counted<'_> {
         fn stamp(&self) -> &Stamp {
             self.view.stamp()
         }
@@ -1830,10 +1830,11 @@ mod tests {
             self.view.files()
         }
         fn file(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
+            self.asked.lock().unwrap().push(format!("file {path}"));
             self.view.file(path)
         }
         fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_> {
-            self.asked.lock().unwrap().push(leaf.to_string());
+            self.asked.lock().unwrap().push(format!("defs {leaf}"));
             self.view.defs_named(leaf)
         }
         fn mentions_named(&self, leaf: &str) -> Box<dyn Iterator<Item = MentionRef<'_>> + '_> {
@@ -1849,7 +1850,7 @@ mod tests {
 
     /// What a store settles for the view at advance: no test file, and no proof, its one test
     /// call landing on a placeholder; a read takes them rather than walking the test calls.
-    impl crate::code_view::Settled for DefsCounted<'_> {
+    impl crate::code_view::Settled for Counted<'_> {
         fn test_files(&self) -> Vec<&str> {
             Vec::new()
         }
@@ -1896,7 +1897,7 @@ mod tests {
         ];
         let mut wholes = BTreeMap::new();
         for (open, tests, want) in cases {
-            let counted = DefsCounted {
+            let counted = Counted {
                 view: &grouped,
                 asked: Mutex::new(Vec::new()),
             };
@@ -1912,7 +1913,7 @@ mod tests {
             }
             .unwrap();
             let asked = counted.asked.lock().unwrap();
-            let helper = asked.iter().filter(|leaf| *leaf == "helper").count();
+            let helper = asked.iter().filter(|read| *read == "defs helper").count();
             assert_eq!(helper, want, "{open} under {tests:?}: reads of helper");
             let hidden = Composed::at(&records, &grouped, filter, exact(), DEFAULT_RESOLUTION)
                 .unwrap()
@@ -1928,6 +1929,61 @@ mod tests {
                 .entry(format!("{tests:?}"))
                 .or_insert_with(|| graph.clone());
             assert_eq!(*first, graph, "{open} under {tests:?}: the whole graph");
+        }
+    }
+
+    /// A neighbourhood's last level resolves no file past it: GIVEN `dec-9`, about
+    /// `src/b.rs::compute` and governing `src/z.rs`, a file nothing else reaches, in a concept or
+    /// not, WHEN the neighbourhood of `compute` one hop deep is read near it, THEN `dec-9` at the
+    /// last level reads none of `src/z.rs` (its edge there, and an attachment to a concept the
+    /// walk never reached, are dropped unread), and the neighbourhood is the whole open's.
+    #[test]
+    fn a_neighbourhood_s_last_level_resolves_no_file_past_it() {
+        // (case, whether a concept groups `src/z.rs`)
+        let cases = [("in a concept", true), ("in no concept", false)];
+        for (case, grouped) in cases {
+            let mut view = view(Some("c1"));
+            let mut files: Vec<FileFacts> = (view.facts.files())
+                .filter_map(|f| view.facts.file(f.path).map(Cow::into_owned))
+                .collect();
+            files.push(rust("src/z.rs", vec![def("idle")], Vec::new()));
+            view.facts = FactsView::new(view.facts.stamp().clone(), files);
+            if grouped {
+                view.groupings.concepts.push(Cluster {
+                    id: "concept/1/1".into(),
+                    label: "idle".into(),
+                    resolution: 1.0,
+                    hash: "z".into(),
+                    members: vec!["src/z.rs".into()],
+                });
+            }
+            let (mut rows, aliases) = record_rows();
+            rows.nodes.push(node("dec-9", KIND_DECISION, &[]));
+            rows.edges
+                .push(edge("dec-9", "src/b.rs::compute", REL_ABOUT));
+            rows.edges.push(edge("dec-9", "src/z.rs", REL_GOVERNS));
+            let records = Indexed::new(rows, aliases);
+            let counted = Counted {
+                view: &view,
+                asked: Mutex::new(Vec::new()),
+            };
+            let seed = ["src/b.rs::compute".to_string()];
+            let near = Composed::near(&records, &counted, ViewFilter::default(), exact()).unwrap();
+            let got = near.subgraph(&seed, 1).unwrap();
+            let asked = counted.asked.lock().unwrap();
+            let past: Vec<&String> = asked.iter().filter(|r| r.contains("src/z.rs")).collect();
+            assert!(
+                past.is_empty(),
+                "{case}: read past the last level: {past:?}"
+            );
+            let whole = composed(&records, &view, exact())
+                .subgraph(&seed, 1)
+                .unwrap();
+            assert_eq!(
+                format!("{got:?}"),
+                format!("{whole:?}"),
+                "{case}: the whole open's neighbourhood"
+            );
         }
     }
 
