@@ -633,14 +633,15 @@ mod tests {
     }
 
     /// The hand-over section states each outcome an author's tree must meet before it reports,
-    /// with the check that proves it, and no check owes a record: the gates green in the author's
-    /// worktree, each run to completion inside the turn; generated files committed with their
-    /// inputs; tests table-driven - the cases of one behaviour over different values rows of one
-    /// table, never copies of a test function - and each table, fixture, helper, builder or
-    /// oracle added existing once, looked up where the test helpers live and moved to the shared
-    /// home when a second test home needs it, duplication the author did not write named as the
-    /// tree's debt and never lifted, a lift's call-site rewrite never making a statement the
-    /// author's, checked by the duplication gate and each behaviour reading as one table; every
+    /// with the check that proves it, and no check owes a record: the checks the change needs
+    /// run in the author's worktree, each to completion inside the turn; generated files
+    /// committed with their inputs; tests table-driven - the cases of one behaviour over different
+    /// values rows of one table, never copies of a test function - and each table, fixture,
+    /// helper, builder or oracle added existing once, looked up where the test helpers live and
+    /// moved to the shared home when a second test home needs it, duplication the author did not
+    /// write named as the tree's debt and never lifted, a lift's call-site rewrite never making a
+    /// statement the author's, checked by each added shape having been looked up where the test
+    /// helpers live and each behaviour reading as one table, no gate run asked; every
     /// sentence about the changed behaviour true at head, checked by reading the changed files'
     /// module docs and the docs of the changed items and of their callers, read from the graph at
     /// depth 1, against head, a renamed or retired name's old spelling counted to zero or each
@@ -683,8 +684,6 @@ mod tests {
              no assertion or expected value changed.",
             "Duplication you did not write is the tree's debt: your hand-over names it and you \
              do not lift it, and a lift's call-site rewrite does not make a statement yours.",
-            "Check: the project's duplication gate is green, and each behaviour your tests check \
-             over several values reads as one table.",
             "Every sentence about the changed behaviour is true at head.",
             "module docs, test names, test docs, assertion messages and operator docs say what \
              the code at head does",
@@ -715,8 +714,10 @@ mod tests {
         ]
         .into_iter()
         .chain(crate::test_support::BOUNDED_AUDIT)
-        .chain([crate::test_support::GATE_VERB_REUSE])
-        {
+        .chain([
+            crate::test_support::GATE_VERB_REUSE,
+            crate::test_support::TABLE_CHECK,
+        ]) {
             assert!(
                 words.contains(phrase),
                 "the hand-over section must say {phrase:?}"

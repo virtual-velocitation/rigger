@@ -1,8 +1,9 @@
 //! THE PRINCIPLE GATES ARE DEFINITION: the gates that hold every unit to the engineering
-//! principles mechanically are declared in the workflow `rigger init` scaffolds for a consumer
-//! project from the gate template set matching its language, each listed on the stages it
-//! guards. That scaffolded workflow, written beside a root `Cargo.toml` from the Rust set, is the
-//! one workflow this file reads, loaded through the production parser
+//! principles mechanically are declared in the workflow `rigger init --template <dir>` scaffolds
+//! for a consumer project from the gate template set in that root matching its language, each
+//! listed on the stages it guards. That scaffolded workflow, written beside a root `Cargo.toml`
+//! from the Rust set this repository's root holds, is the one workflow this file reads, loaded
+//! through the production parser
 //! (`rigger::config_store::load`), so a gate that is merely mentioned in a comment, or declared
 //! but never listed on a stage, fails.
 
@@ -19,10 +20,15 @@ use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
-/// A fixture project holding a root `Cargo.toml`, after `rigger init` ran in it.
+/// A fixture project holding a root `Cargo.toml`, after `rigger init --template <this repository's
+/// root>` ran in it.
 fn rust_project_after_init() -> tempfile::TempDir {
     let dir = cargo_project();
-    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
+    let template = repo_root();
+    let (_out, err, ok) = run_rigger(
+        dir.path(),
+        &["init", "--template", template.to_str().unwrap()],
+    );
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
     dir
 }
@@ -62,12 +68,8 @@ fn init_writes_each_file_the_rust_set_lists() {
     let paths: Vec<&str> = listed.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(
         paths,
-        [
-            ".rigger/gates/red-before-green.sh",
-            ".rigger/gates/mutation.sh",
-            ".rigger/gates/container-env.sh",
-        ],
-        "the Rust set lists its three scripts"
+        [".rigger/gates/red-before-green.sh"],
+        "the Rust set lists its one script"
     );
     for path in paths {
         let shipped = std::fs::read(repo_root().join(path))

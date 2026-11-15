@@ -208,8 +208,8 @@ isolation: worktree          # run in an isolated git worktree
 recurse: false               # no Agent tool => cannot fan out (runaway-proof)
 ---
 You implement ONE fully-specified finding inside your worktree. Write the failing
-test first, confirm RED, implement minimally, confirm GREEN, run the named gates,
-commit, push.
+test first, confirm RED, implement minimally, confirm GREEN, run the checks your
+change needs, commit. The workflow's gates run the full battery on the commit.
 ```
 
 The agent file is a **pure capability + persona declaration**, with no flow logic. The flow
@@ -1096,7 +1096,7 @@ github.com/virtual-velocitation/rigger
 |   |-- grounder/                symbols (structural; the default) + grep + nop (opt-out)
 |   |-- gate.rs safety.rs ledger.rs config.rs spec.rs worktree.rs sidecar.rs mcpserver.rs
 |-- examples/demo/               a worked example: a fictional project's .rigger config
-|-- .github/workflows/rust.yml   CI: build-test, install-nolock, kurrentdb jobs
+|-- .github/workflows/rust.yml   CI: build-test, install-nolock, kurrentdb, cross-os-check jobs
 ```
 
 ```bash
