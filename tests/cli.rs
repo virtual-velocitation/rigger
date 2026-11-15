@@ -15359,9 +15359,9 @@ const AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
 const CONN_VAR: &str = "KURRENTDB_CONN";
 /// What the stderr line of an invocation without the store connection its dead driver ran on
 /// says: the variable, never its value.
-const CONN_MISSING: &str = "ran with KURRENTDB_CONN set, which this invocation's environment does not set, so rigger relaunched nothing";
+const CONN_MISSING: &str = "(KURRENTDB_CONN unset), so rigger relaunched nothing; relaunch it by hand from an environment that sets KURRENTDB_CONN, or with `--conn` and the connection string added: rigger run";
 /// What the stderr line of an invocation without the login token its dead driver ran on says.
-const TOKEN_MISSING: &str = "environment does not set, so rigger relaunched nothing; relaunch it by hand from an environment that sets it: rigger run";
+const TOKEN_MISSING: &str = "(RIGGER_CLAUDE_CODE_OAUTH_TOKEN unset), so rigger relaunched nothing; relaunch it by hand from an environment that sets RIGGER_CLAUDE_CODE_OAUTH_TOKEN: rigger run";
 /// What the stderr line of an invocation whose earlier relaunch never took the step lock says.
 const NEVER_STARTED: &str = "never started";
 /// What the stderr line of an invocation that leaves a twice-dead driver stopped says.
