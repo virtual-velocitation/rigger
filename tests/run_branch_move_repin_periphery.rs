@@ -148,8 +148,10 @@ fn unit(name: &str, needs: &[&str]) -> Stage {
 /// A config over `repo` declaring `agents`, the gate `g` running `gate` (re-run on the merged
 /// tree) and `stages`, loaded from the project at `project`.
 fn config(repo: &Path, project: &Path, agents: &[&str], gate: &str, stages: Vec<Stage>) -> Config {
-    let mut cfg = Config::default();
-    cfg.dir = project.to_str().unwrap().to_string();
+    let mut cfg = Config {
+        dir: project.to_str().unwrap().to_string(),
+        ..Config::default()
+    };
     cfg.workflow.defaults.workdir = common::isolated_workdir(repo);
     cfg.workflow.defaults.max_retries = 1;
     for id in agents {
