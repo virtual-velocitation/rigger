@@ -9815,49 +9815,44 @@ stages:
         "no candidate may integrate when every merge broke post-merge"
     );
 
-    // Every UnitFailed this run recorded (candidate 0's post-merge block, and candidate 1's
-    // own if it also reached the same door) carries a real 40-hex worktree sha - stamped
-    // AFTER a re-assert restores what the post-merge re-gate's own spawn just deleted, never
-    // a snapshot taken during the deletion window. At least candidate 0's own (attempts:1)
-    // must be present. The group's own loss record, tagged with its group, names no single
-    // worktree and is not a post-merge block.
+    // One loss is one failure: the group's one UnitFailed carries candidate 0's post-merge
+    // block beside candidate 1's red gate, so every reader that counts failures (the evaluate
+    // scorecard, the watch's reject-recurrence streak) counts this loss once. Its worktree sha is
+    // a real 40-hex sha, stamped AFTER a re-assert restores what the post-merge re-gate's own
+    // spawn just deleted, never a snapshot taken during the deletion window.
     let failed: Vec<_> = events
         .iter()
-        .filter(|e| {
-            e.type_ == rigger::ledger::TYPE_UNIT_FAILED
-                && !e.meta.contains_key(rigger::conductor::META_SPEC_GROUP)
-        })
+        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
         .collect();
-    assert!(
-        !failed.is_empty(),
-        "the blocked post-merge merge(s) must record at least one UnitFailed; events: \
-         {events:?}"
+    assert_eq!(
+        failed.len(),
+        1,
+        "a group whose post-merge block is followed by no winner records its loss once; \
+         events: {events:?}"
     );
-    assert!(
-        failed
-            .iter()
-            .any(|e| String::from_utf8_lossy(&e.data).contains(r#""attempts":1"#)),
-        "candidate 0's own post-merge block must record a UnitFailed at attempts:1; events: \
-         {events:?}"
+    let loss = failed[0];
+    let body: serde_json::Value = serde_json::from_slice(&loss.data).unwrap();
+    assert_eq!(
+        body["gate_evidence"].as_array().map(Vec::len),
+        Some(2),
+        "the one record carries candidate 0's post-merge block and candidate 1's red gate: \
+         {body}"
     );
-    for e in &failed {
-        let sha = e
-            .meta
-            .get(rigger::conductor::META_WORKTREE_SHA)
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(
-            sha.len(),
-            40,
-            "every post-merge-blocked UnitFailed's worktree_sha must be a real 40-hex sha, \
-             not the empty sentinel a read taken during the deletion window would silently \
-             stamp: {sha:?} event={e:?}"
-        );
-        assert!(
-            sha.chars().all(|c| c.is_ascii_hexdigit()),
-            "the stamped sha must be real hex: {sha:?}"
-        );
-    }
+    assert_eq!(
+        body["cause"], "integrate-conflict",
+        "the first loss's cause: {body}"
+    );
+    let sha = loss
+        .meta
+        .get(rigger::conductor::META_WORKTREE_SHA)
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()),
+        "the post-merge-blocked candidate's worktree_sha must be a real 40-hex sha, not the \
+         empty sentinel a read taken during the deletion window would silently stamp: {sha:?} \
+         event={loss:?}"
+    );
 }
 
 /// Spec 50, criterion 2 (the REGISTRY lifecycle): `rigger run` REGISTERS this instance in the
