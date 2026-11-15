@@ -9121,6 +9121,20 @@ impl RunCtx<'_> {
         })
     }
 
+    /// Whether a re-plan of `plan_name` at critique attempt `attempt` recorded a `UnitProposed`
+    /// in the current run: the re-plan's own emits carry its [`META_SPAWN`] stamp
+    /// (`plan/replan#<attempt>`, a `~retry{n}` rerun included). A round a resume opens, or one
+    /// a later process enters after its re-plan parked unanswered, finds none.
+    fn re_plan_proposed(&self, plan_name: &str, attempt: u32) -> Result<bool, Error> {
+        let seat = format!("{plan_name}/{ROLE_REPLAN}");
+        Ok(self.read_current_run()?.iter().any(|e| {
+            e.type_ == TYPE_UNIT_PROPOSED
+                && e.meta.get(META_SPAWN).is_some_and(|id| {
+                    spawn::unit_role_of(id) == seat && spawn::attempt_of(id) == attempt
+                })
+        }))
+    }
+
     /// Run the adversarial plan-critique gate (Unit 1, spec 10): the existing adversary +
     /// adjudicator review the PROPOSED unit DAG BEFORE any implementer runs. It runs
     /// SYNCHRONOUSLY inside the producer prelude (after the planner wave and its harvest, or,
@@ -9288,6 +9302,7 @@ impl RunCtx<'_> {
                 &conflicts,
                 serialized,
                 &prior_reason,
+                self.re_plan_proposed(plan_name, attempts)?,
                 self.declared_unit_size_cap(),
             );
             // TIER 2: the adversary reviews the DAG and emits its findings to the graph
@@ -13620,9 +13635,10 @@ fn render_plan_protocol(cap: Option<u32>, implementer: &str, criteria: &[String]
 /// run side by side unless one `needs` the other, and closes with the verdict paragraph, whose cause contract tells a
 /// defect in a criterion's own text (`spec-ambiguity`, which can stop the run - spec 112,
 /// criterion 5) from one a re-plan can fix, naming a unit over the size cap
-/// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-plan it
-/// leads with the prior rejection so the reviewer judges the revised
-/// DAG against what was wrong before. The same prompt feeds the adversary (which appends the
+/// ([`DAG_SIZE_CAP_CAUSE`]) among the latter only when a cap is declared. On a re-review it
+/// leads with the prior rejection so the reviewer judges the DAG against what was wrong before,
+/// saying the planner revised it only when `revised` (a re-plan proposed at the round's
+/// attempt). The same prompt feeds the adversary (which appends the
 /// review_protocol and emits findings) and the adjudicator (whose stdout verdict gates the
 /// fan-out).
 fn build_dag_critique_prompt(
@@ -13631,6 +13647,7 @@ fn build_dag_critique_prompt(
     conflicts: &[(String, String, Vec<String>)],
     serialized: bool,
     prior_reason: &str,
+    revised: bool,
     cap: Option<u32>,
 ) -> String {
     let mut b = String::new();
@@ -13639,6 +13656,11 @@ fn build_dag_critique_prompt(
             DAG_PRIOR_REJECT,
             &[("prior_reason", prior_reason.trim())],
         ));
+        b.push_str(if revised {
+            DAG_REVISED_SINCE_REJECT
+        } else {
+            DAG_UNCHANGED_SINCE_REJECT
+        });
     }
     b.push_str(DAG_CRITIQUE_OPENER);
     b.push_str(&unit_size_cap_then(cap, "\n\n"));
@@ -51963,8 +51985,8 @@ mod tests {
     /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
     /// none, one whose criterion holds a quote and a backslash, filled trimmed and escaped, a
     /// re-plan under a cap whose unit holds each and overlaps another under the partition rule, its
-    /// rows' lists filled into their slots, and a first plan whose overlap the rule does not
-    /// serialize.
+    /// rows' lists filled into their slots, a first plan whose overlap the rule does not
+    /// serialize, and a re-review no re-plan proposed for.
     #[test]
     fn the_plan_critique_and_re_plan_prompts_are_their_groups_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -51977,6 +51999,7 @@ mod tests {
                         conflicts: &[(String, String, Vec<String>)],
                         serialized: bool,
                         prior: &str,
+                        revised: bool,
                         cap: Option<u32>| {
             let stage = Stage {
                 name: "{name}".to_string(),
@@ -51986,7 +52009,7 @@ mod tests {
             };
             let stages = BTreeMap::from([("{name}".to_string(), stage)]);
             let radii = [("{name}".to_string(), strings(radius))];
-            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, cap)
+            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, revised, cap)
         };
         let contract = |size_cap_cause: &str| {
             fill(
@@ -52005,7 +52028,7 @@ mod tests {
         let cases = [
             (
                 "a first plan",
-                critique("  ", &[], &[], &[], true, "  ", None),
+                critique("  ", &[], &[], &[], true, "  ", false, None),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -52023,7 +52046,16 @@ mod tests {
             ),
             (
                 "a first plan whose criterion holds a quote and a backslash",
-                critique(r#" keep "a\b" whole "#, &[], &[], &[], true, "", None),
+                critique(
+                    r#" keep "a\b" whole "#,
+                    &[],
+                    &[],
+                    &[],
+                    true,
+                    "",
+                    false,
+                    None,
+                ),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -52048,11 +52080,16 @@ mod tests {
                     &overlap,
                     true,
                     "{prior_reason}",
+                    true,
                     Some(7),
                 ),
                 format!(
                     "{}{}\n\n{}{}{}",
-                    dag(&["DAG_PRIOR_REJECT", "DAG_CRITIQUE_OPENER"]),
+                    dag(&[
+                        "DAG_PRIOR_REJECT",
+                        "DAG_REVISED_SINCE_REJECT",
+                        "DAG_CRITIQUE_OPENER"
+                    ]),
                     fill(&dag(&["UNIT_SIZE_CAP"]), &[("cap", "7")]),
                     fill(
                         &dag(&["DAG_UNITS_HEADER", "DAG_UNIT_ROW"]),
@@ -52067,7 +52104,16 @@ mod tests {
             ),
             (
                 "a first plan whose overlap the partition rule does not serialize",
-                critique("{criterion}", &[], &["{p}"], &overlap, false, "", None),
+                critique(
+                    "{criterion}",
+                    &[],
+                    &["{p}"],
+                    &overlap,
+                    false,
+                    "",
+                    false,
+                    None,
+                ),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
@@ -52079,6 +52125,29 @@ mod tests {
                         &dag(&["DAG_OVERLAP_UNSERIALIZED_HEADER", "DAG_OVERLAP_ROW"]),
                         &[("shared", "{s}, {t}")]
                     ),
+                    contract("")
+                ),
+            ),
+            (
+                "a re-review no re-plan proposed for",
+                critique("  ", &[], &[], &[], true, "{prior_reason}", false, None),
+                format!(
+                    "{}{}{}{}",
+                    dag(&[
+                        "DAG_PRIOR_REJECT",
+                        "DAG_UNCHANGED_SINCE_REJECT",
+                        "DAG_CRITIQUE_OPENER",
+                        "DAG_UNITS_HEADER"
+                    ]),
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[
+                            ("criterion", &dag(&["DAG_NO_CRITERION"])),
+                            ("needs", &dag(&["DAG_NO_NEEDS"])),
+                            ("radius", &dag(&["DAG_NO_RADIUS"])),
+                        ]
+                    ),
+                    dag(&["DAG_OVERLAP_DISJOINT"]),
                     contract("")
                 ),
             ),
