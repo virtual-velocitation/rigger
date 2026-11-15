@@ -689,6 +689,10 @@ pub const META_RESOLVED_MODEL: &str = "resolved_model";
 /// result carries the session back to the conductor, which records it as the spawn's session.
 pub const META_SESSION_ID: &str = "session_id";
 
+/// The [`SpawnResult::meta`] key a session host records the count of tool calls the session was
+/// denied under: a permission refusal or a hook's block.
+pub const META_PERMISSION_DENIALS: &str = "permission_denials";
+
 /// The [`SpawnResult::meta`] key the driver stamps on a spawn it recorded as a LIVENESS
 /// fault (spec 10, unit 3): its value is the failure CLASS the taxonomy assigned the hung
 /// agent (e.g. `"infra"`). Its presence marks the result as a driver-synthesized liveness

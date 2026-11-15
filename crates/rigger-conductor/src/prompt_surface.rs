@@ -108,6 +108,17 @@ pub const AUTHOR_HANDOVER: &str = "\n\nWhen your work is complete, end your fina
      work is done: a session that ends without it is treated as stopped mid-work and is run \
      again.";
 
+/// FRAMING: the task a rerun continues an author session with after that session's last result
+/// ended without its hand-over line, before [`AUTHOR_HANDOVER`].
+pub const MISSED_HANDOVER: &str = "Your last result ended without the hand-over line, so rigger \
+     has not taken your work. Finish the work if it is unfinished, then hand it over.";
+
+/// FRAMING: what a rerun's fresh prompt says, read when the session that missed its hand-over
+/// cannot be continued: the worktree holds that session's partial work.
+pub const PRIOR_PARTIAL_WORK: &str = "\n\nA prior session on this task ended without handing \
+     its work over: this worktree holds that session's partial, uncommitted work. Read it (`git \
+     status`, `git diff`) and finish from it rather than starting over.";
+
 /// CONTRACT: the line an author's final message ends with to hand its work over, which
 /// [`AUTHOR_HANDOVER`] names and the conductor's handover check reads.
 pub const AUTHOR_HANDOVER_LINE: &str = "RIGGER-HANDOVER";

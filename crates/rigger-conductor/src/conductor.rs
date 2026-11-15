@@ -13587,6 +13587,10 @@ const CAUSE_INTEGRATE_CONFLICT: &str = "integrate-conflict";
 const CAUSE_INFRA_SPAWN: &str = "infra:spawn";
 const CAUSE_INFRA_GATE: &str = "infra:gate";
 const CAUSE_INFRA_REVIEW: &str = "infra:review";
+const CAUSE_INFRA_HANDOVER: &str = "infra:handover";
+
+/// The most characters of a missed hand-over's last line its evidence records.
+const HANDOVER_LAST_LINE_CHARS: usize = 200;
 
 /// Whether a stage failure's `cause` is an infrastructure failure (F3): the ONE predicate a
 /// unit's stage asks before it charges a remediation attempt, over every infra source the
@@ -48860,7 +48864,7 @@ mod tests {
             rs.units["s"]
                 .evidence
                 .get("infra-retry")
-                .is_some_and(|ev| ev.starts_with(CAUSE_INFRA_SPAWN)),
+                .is_some_and(|ev| ev.starts_with(CAUSE_INFRA_HANDOVER)),
             "the rerun names its infra cause: {why}: {:?}",
             rs.units["s"].evidence
         );
@@ -49061,6 +49065,171 @@ mod tests {
                 true,
                 "a told implementer",
             );
+    }
+
+    /// Spec 126's miss path over one merging, gated unit `s` with a declared test author, whose
+    /// `withheld` author's first session ends without the handover line, the last line of its
+    /// output `last`, and, when `denials` is some, the session host's recorded result for it
+    /// carrying that permission-denial count. The rerun continues the session that missed, sent
+    /// [`MISSED_HANDOVER`] and the contract; the rerun's fresh prompt, read when that session is
+    /// gone, says the tree holds a prior session's partial work; and the miss's infra-retry mark
+    /// names the missed spawn, and its evidence the hand-over cause, the last line, bounded, and
+    /// the denial count (unknown when no result was recorded).
+    fn assert_a_handover_miss_continues_the_session_that_missed(
+        withheld: &str,
+        last: &str,
+        denials: Option<u64>,
+        why: &str,
+    ) {
+        let missed = spawn_id("s", withheld, 0);
+        let (rerun, author) = if withheld == ROLE_IMPLEMENTER {
+            (
+                spawn_retry_id("s", ROLE_IMPLEMENTER, 0, implementer_retry(1)),
+                "worker",
+            )
+        } else {
+            (
+                spawn_retry_id("s", ROLE_SDET_AUTHOR, 0, *review_retry_window(1).start()),
+                ROLE_SDET_AUTHOR,
+            )
+        };
+        let mut driver = sdet_lane_driver();
+        driver.sessions = true;
+        driver.withhold_handover_ids = HashSet::from([missed.clone()]);
+        driver.output_by_spawn_id = HashMap::from([(missed.clone(), format!("worked\n{last}\n"))]);
+        let repo = temp_git_project_with_commit();
+        let st = Store::open(":memory:").unwrap();
+        if let Some(count) = denials {
+            crate::run_store::ensure_started(&st, &[]).unwrap();
+            spawn_store::record_result(
+                &st,
+                &crate::spawn::SpawnResult::ok(&missed, "")
+                    .with_meta(json!({ crate::spawn::META_PERMISSION_DENIALS: count })),
+            )
+            .unwrap();
+        }
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&sdet_lane_cfg(true), &deps).expect("the run completes");
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{why}");
+        assert_eq!(rs.units["s"].attempts, 0, "nothing is charged: {why}");
+        let (resumed_from, task) = driver.resume_of(&rerun).expect("the rerun ran");
+        assert_eq!(
+            resumed_from,
+            format!("sess-{missed}"),
+            "the rerun continues the session that missed: {why}"
+        );
+        assert_eq!(
+            task,
+            format!("{MISSED_HANDOVER}{}", handover_contract()),
+            "the rerun's task says the last result ended without the line: {why}"
+        );
+        let prompts = driver.prompts_for(author);
+        assert!(
+            !prompts[0].contains(PRIOR_PARTIAL_WORK),
+            "the first session's prompt says nothing of prior work: {why}"
+        );
+        assert!(
+            prompts[1].contains(PRIOR_PARTIAL_WORK),
+            "the rerun's fresh prompt says the tree holds a prior session's partial work: {why}"
+        );
+        assert!(
+            prompts[1].ends_with(&handover_contract()),
+            "the contract still ends the rerun's prompt: {why}"
+        );
+        let mark = run_log(&st)
+            .into_iter()
+            .find(|e| e.meta.get(META_REPLAY_KEY).map(String::as_str) == Some("s/infra-retry#0~0"))
+            .expect("the miss records an infra-retry mark");
+        assert_eq!(
+            mark.meta.get(META_SPAWN),
+            Some(&missed),
+            "the mark names the missed spawn: {why}"
+        );
+        let detail = rs.units["s"].evidence["infra-retry"].clone();
+        assert!(
+            detail.starts_with(CAUSE_INFRA_HANDOVER),
+            "the evidence names the hand-over cause: {why}: {detail}"
+        );
+        let bounded: String = last.chars().take(HANDOVER_LAST_LINE_CHARS).collect();
+        assert!(
+            detail.contains(&bounded),
+            "the evidence records the last line: {why}: {detail}"
+        );
+        assert!(
+            last.chars().count() <= HANDOVER_LAST_LINE_CHARS || !detail.contains(last),
+            "a long last line is bounded: {why}: {detail}"
+        );
+        let count = denials.map_or_else(|| "unknown".to_string(), |n| n.to_string());
+        assert!(
+            detail.contains(&format!("permission denials: {count}")),
+            "the evidence records the denial count: {why}: {detail}"
+        );
+    }
+
+    crate::test_cases! {
+        /// Spec 126's miss path: an implementer's miss with no recorded result.
+        an_implementer_miss_continues_its_session_and_records_its_last_line:
+            assert_a_handover_miss_continues_the_session_that_missed(
+                ROLE_IMPLEMENTER,
+                "I will run the tests next.",
+                None,
+                "an implementer, no recorded result",
+            );
+        /// Spec 126's miss path: an implementer's miss whose recorded result names two denials
+        /// and whose last line runs past the bound in multibyte characters.
+        an_implementer_miss_records_a_bounded_last_line_and_its_denials:
+            assert_a_handover_miss_continues_the_session_that_missed(
+                ROLE_IMPLEMENTER,
+                &"\u{e9}".repeat(HANDOVER_LAST_LINE_CHARS + 50),
+                Some(2),
+                "an implementer, a long last line and two denials",
+            );
+        /// Spec 126's miss path: a test author's miss whose recorded result names no denial.
+        a_test_author_miss_continues_its_session_and_records_its_last_line:
+            assert_a_handover_miss_continues_the_session_that_missed(
+                ROLE_SDET_AUTHOR,
+                "Tests written.",
+                Some(0),
+                "a test author, no denials",
+            );
+    }
+
+    /// Spec 126's miss path: an implementer whose every session ends without the handover line
+    /// halts at the infra limit naming the hand-over, how many times it was missed and what to
+    /// check, never an outage to fix.
+    #[test]
+    fn an_author_that_keeps_missing_the_handover_halts_naming_the_handover() {
+        let mut driver = sdet_lane_driver();
+        driver.sessions = true;
+        driver.withhold_handover_ids = (0..=2)
+            .map(|ordinal| spawn_retry_id("s", ROLE_IMPLEMENTER, 0, implementer_retry(ordinal)))
+            .collect();
+        let (run, events) = run_sdet_lane(false, &driver);
+        let Err(Error(halt)) = run else {
+            panic!("the run halts at the infra limit");
+        };
+        assert!(
+            halt.contains(&format!(
+                "ended without its hand-over line ({AUTHOR_HANDOVER_LINE}) 3 times"
+            )),
+            "the halt names the hand-over and the count: {halt}"
+        );
+        assert!(
+            halt.contains("permission denials"),
+            "the halt says what to check: {halt}"
+        );
+        assert!(
+            !halt.contains("fix the outage"),
+            "a missed hand-over is no outage: {halt}"
+        );
+        assert_eq!(
+            status_mark_keys(&events, "infra-halt"),
+            ["s/infra-halt#0~2"],
+            "one halt at the third miss"
+        );
     }
 
     crate::test_cases! {
