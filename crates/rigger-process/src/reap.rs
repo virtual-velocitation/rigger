@@ -30,6 +30,7 @@
 //! list, a process's cwd, command, parent and start time - comes through the process interface
 //! ([`crate::os_process`]); on an OS that interface cannot read, detection is a graceful no-op
 //! returning empty, NEVER a hard error, so teardown and validate keep working on any platform.
+//! Windows reports no process's working directory, so there the cwd scan finds nothing.
 //!
 //! SAFETY BOUNDARY (load-bearing, spec 23 + spec 78): the scan matches ONLY a process whose
 //! canonicalized cwd equals the base dir or lies strictly under it (`<base>/...`), by path
@@ -71,7 +72,8 @@
 //! SIGNAL API (spec 78): every signal rigger issues to a process it does not hold a
 //! [`std::process::Child`] handle to goes through [`send_signal`], whose unix arm is
 //! `rustix::process::kill_process` - never a shell-out to `kill(1)`, never `libc::kill`, never
-//! a process-group (negative pid) target - and whose arm for any other OS sends nothing.
+//! a process-group (negative pid) target - whose Windows arm opens the one pid for termination
+//! and ends it, and whose arm for any other OS sends nothing.
 //! `rustix::process::Pid::from_raw` accepts negative raw values (it rejects only zero), so
 //! [`send_signal`] and [`is_signal_eligible`] each carry their OWN explicit `pid > 1` guard
 //! rather than leaning on the type to refuse one. `default-features = false` + `std` +

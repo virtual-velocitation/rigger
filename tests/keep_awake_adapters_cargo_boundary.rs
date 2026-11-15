@@ -61,11 +61,13 @@ fn version_of(dependencies: &[(String, String)], name: &str) -> String {
 }
 
 /// Given the committed manifest and lock, when the resolver is asked what each OS's build of
-/// `rigger-process` takes, then Windows alone takes `windows-sys` for its power request, macOS
-/// takes no crate for its IOKit assertion, and Linux takes `zbus` for its logind inhibitor and
-/// `tokio` for the runtime its acquire drives that client on. Every Unix build also takes `ring`
-/// for the gate socket's path rule and `libc` for the interrupt trigger's signal handler, which
-/// Windows, with no gate socket adapter and a console handler from `windows-sys`, does not.
+/// `rigger-process` takes, then Windows alone takes `windows-sys` for its power request (and for
+/// its process adapter's reads and the reaper's signal), macOS takes no crate for its IOKit
+/// assertion, and Linux takes `zbus` for its logind inhibitor and `tokio` for the runtime its
+/// acquire drives that client on. Every Unix build also takes `ring` for the gate socket's path
+/// rule and `libc` for the interrupt trigger's signal handler (and, on macOS, the process
+/// adapter's libproc reads), which Windows, with no gate socket adapter and a console handler
+/// from `windows-sys`, does not.
 #[test]
 fn each_os_build_of_rigger_process_takes_its_own_keep_awake_adapters_crate_alone() {
     let rows: [(&str, &[&str]); 3] = [

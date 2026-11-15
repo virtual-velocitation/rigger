@@ -10,9 +10,10 @@ pub use crate::os_process::open_files;
 
 /// Every process other than this one, and other than a fork of it that has not exec'd, whose
 /// working directory or any open file lies in `dir` or inside it, as pids
-/// ([`os_process::holders`] over `dir` resolved). Empty when `dir` cannot be resolved -
-/// best-effort, like the reaper's own scan ([`crate::reap::processes_rooted_under`]), whose cwd
-/// rule this extends with open files.
+/// ([`os_process::holders`] over `dir` resolved); on Windows, which reports neither, every other
+/// process the Restart Manager reports holding a file inside it. Empty when `dir` cannot be
+/// resolved - best-effort, like the reaper's own scan ([`crate::reap::processes_rooted_under`]),
+/// whose cwd rule this extends with open files.
 pub fn processes_holding(dir: &Path) -> Vec<u32> {
     let Ok(base) = dir.canonicalize() else {
         return Vec::new();
