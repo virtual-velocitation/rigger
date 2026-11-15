@@ -694,7 +694,7 @@ fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
-    use crate::extractor_stub::StubExtractor;
+    use crate::extractor_stub::{answer_defining, declared_identity, StubExtractor};
     use crate::extractors_fixtures::{workflow_declaring_extractors, EXTRACTOR_REFUSALS};
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::content_hash;
@@ -2058,18 +2058,6 @@ mod tests {
         project
     }
 
-    /// The facts a declared extraction gives a file it holds no symbols for: its identity, the
-    /// code half and the declared name as its language.
-    fn declared_identity(path: &str, blob: &str, lang: &str) -> FileFacts {
-        FileFacts {
-            path: path.to_string(),
-            blob: blob.to_string(),
-            lang: lang.to_string(),
-            half: Half::Code,
-            ..FileFacts::default()
-        }
-    }
-
     /// The physical directory of the project at `root`, as the stub records where it started.
     fn root_dir_of(root: &Path) -> String {
         root.canonicalize()
@@ -2297,11 +2285,7 @@ mod tests {
         let kept = tempfile::tempdir().expect("tempdir");
         let stub = StubExtractor::new(kept.path());
         let project = stub_project(&stub, "zig", "[zig]", &[]);
-        let good = |name: &str| {
-            format!(
-                r#"{{"path":"{name}.zig","defs":[{{"kind":"Function","name":"{name}","line":1,"end_line":1,"path":"{name}"}}],"refs":[]}}"#
-            )
-        };
+        let good = |name: &str| answer_defining(&format!("{name}.zig"), name);
         // (the file's name, its answer, the leaves it holds, the stub's starts and ends after it)
         type Row<'a> = (&'a str, Option<String>, &'a [&'a str], usize, usize);
         let rows: [Row; 6] = [
@@ -2366,10 +2350,7 @@ mod tests {
         let kept = tempfile::tempdir().expect("tempdir");
         let stub = StubExtractor::new(kept.path());
         let project = stub_project(&stub, "rust", "[rs]", &[]);
-        stub.answers(
-            "src/lib.rs",
-            r#"{"path":"src/lib.rs","defs":[{"kind":"Function","name":"declared","line":1,"end_line":1,"path":"declared"}],"refs":[]}"#,
-        );
+        stub.answers("src/lib.rs", &answer_defining("src/lib.rs", "declared"));
         let extractor = ProjectExtractor::of(project.path());
         // (the file, its text, the language it holds, the leaves of its definitions)
         let rows: [(&str, &str, &str, &[&str]); 3] = [

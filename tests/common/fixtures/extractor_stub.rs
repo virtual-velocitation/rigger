@@ -3,9 +3,13 @@
 //! for the request's path, and records the directory it started in, every request it read and
 //! each time its input ended, so a test pins what the code store asked and how many sessions it
 //! started and closed. It lives in its own directory, outside the project it serves, so no walk
-//! of the project reads it. It runs under `sh`, so only a unix test starts it.
+//! of the project reads it. It runs under `sh`, so only a unix test starts it. Beside it lie the
+//! one-function answer line a test writes for it and the identity facts a declared file holds
+//! when it holds no symbols.
 
 use std::path::{Path, PathBuf};
+
+use rigger_domain::code_facts::{FileFacts, Half};
 
 /// The stub's script, run as `sh <script> <dir>`. It appends the physical directory it started
 /// in to `<dir>/starts`; for each request line it appends the line to `<dir>/requests` and prints
@@ -86,5 +90,24 @@ impl StubExtractor {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(e) => panic!("read the stub's {name}: {e}"),
         }
+    }
+}
+
+/// The answer line giving the file `path` one file-level function `leaf` on its first line.
+pub fn answer_defining(path: &str, leaf: &str) -> String {
+    format!(
+        r#"{{"path":"{path}","defs":[{{"kind":"Function","name":"{leaf}","line":1,"end_line":1,"path":"{leaf}"}}],"refs":[]}}"#
+    )
+}
+
+/// The facts a declared extraction gives a file it holds no symbols for: its identity, the
+/// code half and the declared name as its language.
+pub fn declared_identity(path: &str, blob: &str, lang: &str) -> FileFacts {
+    FileFacts {
+        path: path.to_string(),
+        blob: blob.to_string(),
+        lang: lang.to_string(),
+        half: Half::Code,
+        ..FileFacts::default()
     }
 }
