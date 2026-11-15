@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 use crate::common;
 use common::git::run_git;
 
+use common::cli::build_report_lines;
 use common::cli::graph_node_ids;
 use common::cli::path_without;
 use common::cli::pin_identity;
@@ -37,6 +38,7 @@ use common::cli::temp_project;
 use common::cli::temp_repoless_project;
 use common::cli::temp_store_project;
 use common::cli::validate_after_init;
+use common::cli::UNDECLARED_BUILD_REPORT;
 use common::cli::{assert_stopped_at_the_grounder, stopping_at_the_grounder};
 use common::cli::{
     declare_default, declare_grep_guard, declare_sdet_author, write_scaffold,
@@ -12984,9 +12986,12 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
     // Nothing declared and no budget key: the fresh scaffold's `build:` block, declaring
     // `env: {}`, and a `build:` block carrying only an empty or whitespace-only retired key both
     // resolve the budget to 4.
-    const NONE_DECLARED: &[&str] = &["build env: none declared", "build budget: 4"];
     let cases: [(&str, Option<String>, &[&str]); 2] = [
-        ("the fresh scaffold, untouched", None, NONE_DECLARED),
+        (
+            "the fresh scaffold, untouched",
+            None,
+            UNDECLARED_BUILD_REPORT,
+        ),
         (
             "B, J and L with jobs 3 and no budget",
             Some(build_block_declaring(&DECLARED_BJL, 3)),
@@ -13001,7 +13006,13 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
     let retired_but_empty = RETIRED_BUILD_KEYS
         .iter()
         .filter(|row| row.refusal.is_none())
-        .map(|row| (row.why, Some(row.block.to_string()), NONE_DECLARED));
+        .map(|row| {
+            (
+                row.why,
+                Some(row.block.to_string()),
+                UNDECLARED_BUILD_REPORT,
+            )
+        });
     for (why, block, want) in cases.into_iter().chain(retired_but_empty) {
         let dir = initialized_project();
         let root = dir.path();
@@ -13010,13 +13021,7 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
         }
         let (out, err, ok) = run_rigger(root, &["validate"]);
         assert!(ok, "{why}: validate passes; stdout:\n{out}\nstderr:\n{err}");
-        assert_eq!(
-            out.lines()
-                .filter(|l| l.starts_with("build "))
-                .collect::<Vec<_>>(),
-            want,
-            "{why}: stdout:\n{out}"
-        );
+        assert_eq!(build_report_lines(&out), want, "{why}: stdout:\n{out}");
     }
 }
 

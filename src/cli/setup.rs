@@ -2447,6 +2447,7 @@ mod tests {
         ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{production_boundary, production_files};
+    use crate::test_support::{RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
 
     rigger::test_cases! {
         /// `rigger setup` deletes what an earlier setup installed for an in-session driver rigger
@@ -3249,10 +3250,9 @@ mod tests {
         .chain(REFUSED_DECLARATIONS.iter().map(|refused| {
             (
                 format!(
-                    "{}env: {{{:?}: {:?}}}\n",
+                    "{}{}",
                     with_implementer!("detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n"),
-                    refused.name,
-                    refused.value
+                    refused.set_env_line()
                 ),
                 format!("gate template set synthetic: env: {}", refused.message),
             )
@@ -4825,16 +4825,9 @@ mod tests {
     /// The written tree loads declaring exactly those variables.
     #[test]
     fn init_project_writes_the_matched_sets_build_env() {
-        let rust_env = [
-            ("CARGO_BUILD_JOBS", "{jobs}"),
-            ("CARGO_TARGET_DIR", "{build_cache}"),
-        ];
         for (label, sets, dir, gate_set) in fresh_scaffold_projects() {
             let (env, declared): (&str, &[(&str, &str)]) = match gate_set {
-                Some("rust") => (
-                    "{CARGO_BUILD_JOBS: \"{jobs}\", CARGO_TARGET_DIR: \"{build_cache}\"}",
-                    &rust_env,
-                ),
+                Some("rust") => (RUST_SET_ENV_WRITTEN, &RUST_SET_ENV),
                 None => ("{}", &[]),
                 Some(other) => panic!("{label}: no expected env for the set {other}"),
             };
