@@ -1069,12 +1069,7 @@ impl EventStore for Store {
         types: &[&str],
         id: &str,
     ) -> Result<Vec<Event>, Error> {
-        if types.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut events = self.read_stream_typed(stream, 0, TypeSelection::Only(types))?;
-        events.retain(|e| super::record_id_of(&e.data).as_deref() == Some(id));
-        Ok(events)
+        super::record_read_by_types(self, stream, types, id)
     }
 
     /// The newest-first read ([`Store::newest_first`]) of the identity's group stream, each link

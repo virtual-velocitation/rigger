@@ -85,8 +85,9 @@ const RECORD_ID_EXPR: &str = "CASE WHEN json_valid(CAST(data AS TEXT)) \
 
 /// The record index behind [`EventStore::read_by_record_id`]: a PARTIAL expression index over the
 /// stream and [`RECORD_ID_EXPR`], holding only the rows whose data carries a record id, created
-/// with the schema (an older store gains it at its next open). Its rows go with the events they
-/// index. The read's `WHERE` names the identical expression, so the planner seeks it.
+/// with the schema of a new store; a store recorded before it gains it at `rigger setup`
+/// ([`Store::index_record_ids`]), and is read without it until then. Its rows go with the events
+/// they index. The read's `WHERE` names the identical expression, so the planner seeks it.
 fn record_index_sql() -> String {
     format!(
         "CREATE INDEX IF NOT EXISTS idx_events_record ON events(stream, {RECORD_ID_EXPR}, position) \
@@ -179,11 +180,24 @@ pub struct Store {
 
 impl Store {
     /// Open (creating if needed) the store at path. Use ":memory:" in tests.
+    ///
+    /// A new store is created with the record index in the transaction that creates its table;
+    /// an existing one is never given it here ([`Store::index_record_ids`]), so an open of a store
+    /// that holds its table writes nothing the store did not already hold.
     pub fn open(path: &str) -> Result<Self, Error> {
-        let conn = open_connection(path).map_err(be)?;
-        conn.execute_batch(SCHEMA).map_err(be)?;
-        conn.execute_batch(&group_index_sql()).map_err(be)?;
-        conn.execute_batch(&record_index_sql()).map_err(be)?;
+        let mut conn = open_connection(path).map_err(be)?;
+        if holds(&conn, "events")? {
+            conn.execute_batch(SCHEMA).map_err(be)?;
+            conn.execute_batch(&group_index_sql()).map_err(be)?;
+        } else {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(be)?;
+            tx.execute_batch(SCHEMA).map_err(be)?;
+            tx.execute_batch(&group_index_sql()).map_err(be)?;
+            tx.execute_batch(&record_index_sql()).map_err(be)?;
+            tx.commit().map_err(be)?;
+        }
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -195,7 +209,9 @@ impl Store {
     }
 
     /// Index the record ids of every event the store holds, when it does not yet: one write
-    /// transaction reading every row's data.
+    /// transaction reading every row's data, which `rigger setup` runs on a store recorded before
+    /// the index once no run is live. A record read answers the same without it, reading the
+    /// events of its types ([`super::record_read_by_types`]).
     pub fn index_record_ids(&self) -> Result<(), Error> {
         (self.conn.lock().unwrap())
             .execute_batch(&record_index_sql())
@@ -1291,6 +1307,9 @@ impl EventStore for Store {
     ) -> Result<Vec<Event>, Error> {
         if types.is_empty() {
             return Ok(Vec::new());
+        }
+        if !self.has_record_index()? {
+            return super::record_read_by_types(self, stream, types, id);
         }
         let binds: Vec<rusqlite::types::Value> = [stream.to_string().into(), id.to_string().into()]
             .into_iter()

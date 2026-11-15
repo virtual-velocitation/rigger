@@ -1233,17 +1233,40 @@ fn delete_derived_once_rebuilt(
     })
 }
 
-/// The record index `rigger setup` gives an event log from before it once the graph it rebuilt
+/// The record index `rigger setup` gives an event log recorded before it once the graph it rebuilt
 /// stands ([`rigger::eventstore::sqlite::Store::index_record_ids`]), answering the lines to print.
+/// It reads no liveness and touches nothing when the log holds the index, so a new log - and a
+/// project with no `events.db` - is left as it stands; otherwise it asks `refuse_live` first and
+/// holds the step lock its probe took while it indexes. A live run, or a probe or index that
+/// fails, indexes nothing and fails nothing: a record read answers the same without the index,
+/// so setup carries on with a line naming why, and the next setup with no live run indexes it.
 fn index_record_ids_once_rebuilt(
-    _store: &rigger::eventstore::sqlite::Store,
-    _refuse_live: &dyn Fn() -> Result<Option<HeldLock>, Box<dyn std::error::Error>>,
+    store: &rigger::eventstore::sqlite::Store,
+    refuse_live: &dyn Fn() -> Result<Option<HeldLock>, Box<dyn std::error::Error>>,
 ) -> Vec<String> {
-    Vec::new()
+    let indexed = store
+        .has_record_index()
+        .map_err(Into::into)
+        .and_then(|held| match held {
+            true => Ok(Vec::new()),
+            false => refuse_live().and_then(|_step_lock| {
+                store.index_record_ids()?;
+                Ok(vec![
+                    "rigger setup: indexed the event log's record ids".to_string()
+                ])
+            }),
+        });
+    indexed.unwrap_or_else(|e| {
+        vec![format!(
+            "rigger setup: did not index the event log's record ids - {e}; a record read scans \
+             its types until a setup with no live run indexes them"
+        )]
+    })
 }
 
-/// What the live-run refusal of setup's delete of the derived events says, `reasons` being what
-/// the live-writer probe names, joined: the run is live, so the delete waits for it to stop.
+/// What the live-run refusal of setup's delete of the derived events, and of its index of the
+/// log's record ids, says, `reasons` being what the live-writer probe names, joined: the run is
+/// live, so the step waits for it to stop.
 fn live_run_delete_refusal(reasons: &str) -> String {
     format!("the run is live ({reasons})")
 }

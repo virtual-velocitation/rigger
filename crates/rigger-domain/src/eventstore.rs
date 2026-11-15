@@ -852,6 +852,24 @@ pub fn record_id_of(data: &[u8]) -> Option<String> {
     }
 }
 
+/// [`EventStore::read_by_record_id`] answered from the type read alone
+/// ([`EventStore::read_stream_typed`]): every event of `types` on `stream`, less each whose data
+/// holds another record id or none ([`record_id_of`]). The read of a backend that keeps no index
+/// of the record id, or whose index is absent.
+pub fn record_read_by_types(
+    store: &(impl EventStore + ?Sized),
+    stream: &str,
+    types: &[&str],
+    id: &str,
+) -> Result<Vec<Event>, Error> {
+    if types.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut events = store.read_stream_typed(stream, 0, TypeSelection::Only(types))?;
+    events.retain(|e| record_id_of(&e.data).as_deref() == Some(id));
+    Ok(events)
+}
+
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.
 ///
 /// Every seam that appends exactly one event reads its report through `Appended::one`, so

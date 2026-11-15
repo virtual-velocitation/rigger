@@ -234,7 +234,8 @@ fn discipline_body(ctx: &DocsContext) -> String {
          them, and `rigger reset --derived` DELETES THEM: in one transaction it deletes every \
          derived event of the project's run stream, so no derived event is left behind and \
          events.db shrinks on disk. `rigger setup` runs the same delete itself once the graph it \
-         rebuilds stands in place of the old one. Every other event survives byte-for-byte - \
+         rebuilds stands in place of the old one, and gives a log recorded before the record \
+         index that index; with a run live it does neither and says so. Every other event survives byte-for-byte - \
          lessons, decisions, findings, gate verdicts, and the whole run history `rigger stats` \
          and replay read. It writes nothing to graph.db, so the live graph is unchanged. It \
          reports how many derived events it deleted. Run again on a cleared log it says there is \
