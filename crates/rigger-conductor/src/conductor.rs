@@ -19852,6 +19852,100 @@ mod tests {
         stages
     }
 
+    /// Spec 126, criterion 2 (THE CONDUCTOR RECORDS ITS DAG): `harvest_proposed` records the
+    /// units its DAG holds whenever that set changes, and only then. Over a two-criterion
+    /// fan-out whose planner proposes one unit per criterion, the record names the static stages
+    /// and both proposals and no superseded baseline; a second harvest, live or in a resumed
+    /// process, appends nothing; a later episode's proposal superseding an unstarted unit
+    /// appends a record without it.
+    #[test]
+    fn harvest_records_the_dag_it_holds_each_time_the_set_changes() {
+        let crit_a = "criterion A: the alpha module is implemented";
+        let crit_b = "criterion B: the beta module is implemented";
+        let (cid_a, cid_b) = (
+            criterion_stable_id(1, crit_a),
+            criterion_stable_id(2, crit_b),
+        );
+        let st = Store::open(":memory:").unwrap();
+        let first = "plan/implementer#0";
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[
+                proposal_event(proposal_data("u-a", crit_a, &cid_a), Some(first)),
+                proposal_event(proposal_data("u-b", crit_b, &cid_b), Some(first)),
+            ],
+        )
+        .unwrap();
+        let recorded = |st: &Store| -> Vec<Vec<String>> {
+            st.read_stream(STREAM, 0, Direction::Forward)
+                .unwrap()
+                .into_iter()
+                .filter(|e| e.type_ == "DagRecorded")
+                .map(|e| {
+                    let body: Value = serde_json::from_slice(&e.data).unwrap();
+                    serde_json::from_value(body["units"].clone()).unwrap()
+                })
+                .collect()
+        };
+        let set = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        let planned = set(&["plan", "plan-critique", "u-a", "u-b"]);
+        let replanned = set(&["plan", "plan-critique", "u-a", "u-b2"]);
+
+        let cfg = supersede_cfg();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, vec![crit_a.to_string(), crit_b.to_string()]);
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let mut stages = seed_refine_dag(&deps.criteria);
+        let (mut proposed, mut integrated, mut terminal) =
+            (HashSet::new(), HashSet::new(), HashSet::new());
+
+        enum Step {
+            /// The live process harvests again over its own DAG.
+            Live,
+            /// A fresh process seeds the DAG and harvests the whole log, as a resume does.
+            Resumed,
+            /// A later planner episode proposes `id` for criterion B, then the live process
+            /// harvests.
+            LaterProposal(&'static str),
+        }
+        // (the step, every record the log holds after it)
+        let steps = [
+            (Step::Live, vec![planned.clone()]),
+            (Step::Live, vec![planned.clone()]),
+            (Step::Resumed, vec![planned.clone()]),
+            (
+                Step::LaterProposal("u-b2"),
+                vec![planned.clone(), replanned.clone()],
+            ),
+            (Step::Resumed, vec![planned, replanned]),
+        ];
+        for (n, (step, want)) in steps.into_iter().enumerate() {
+            match step {
+                Step::Live => {}
+                Step::Resumed => {
+                    harvest_seeded(&st, &[crit_a, crit_b]);
+                    assert_eq!(recorded(&st), want, "step {n}: a resumed harvest");
+                    continue;
+                }
+                Step::LaterProposal(id) => st
+                    .append(
+                        STREAM,
+                        ExpectedRevision::Any,
+                        &[proposal_event(
+                            proposal_data(id, crit_b, &cid_b),
+                            Some("plan/replan#1"),
+                        )],
+                    )
+                    .map(|_| ())
+                    .unwrap(),
+            }
+            ctx.harvest_proposed(&mut stages, &mut proposed, &mut integrated, &mut terminal)
+                .unwrap();
+            assert_eq!(recorded(&st), want, "step {n}: a live harvest");
+        }
+    }
+
     /// The spec both runs of a landed-criterion row run under, unless the row moves run 1.
     const LANDED_SPEC: &str = "specs/7-landed-criteria.md";
 
