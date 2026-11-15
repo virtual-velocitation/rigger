@@ -38,8 +38,9 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   desktop session repeatedly (spec 78).
 
 Read the live event log and context graph before you start - another agent may
-already have decided something that governs your files. Commit when the gates
-pass. Emit each non-obvious decision the moment you make it via the DecisionMade
+already have decided something that governs your files. Commit when the checks
+your change needs pass; the gates run on your commit. Emit each non-obvious
+decision the moment you make it via the DecisionMade
 protocol (the rigger_emit tool), so the next stage and any concurrent agent
 inherit your reasoning.
 

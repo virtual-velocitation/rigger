@@ -208,8 +208,8 @@ isolation: worktree          # run in an isolated git worktree
 recurse: false               # no Agent tool => cannot fan out (runaway-proof)
 ---
 You implement ONE fully-specified finding inside your worktree. Write the failing
-test first, confirm RED, implement minimally, confirm GREEN, run the named gates,
-commit, push.
+test first, confirm RED, implement minimally, confirm GREEN, run the checks your
+change needs, commit. The workflow's gates run the full battery on the commit.
 ```
 
 The agent file is a **pure capability + persona declaration**, with no flow logic. The flow

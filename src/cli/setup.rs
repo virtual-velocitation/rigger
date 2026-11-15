@@ -2027,8 +2027,9 @@ isolation: worktree\n\
 recurse: true\n\
 ---\n\
 You implement ONE fully-specified unit inside your worktree.\n\
-Write the failing test first, confirm RED, implement minimally, confirm GREEN, run\n\
-the named gates, commit.\n",
+Write the failing test first, confirm RED, implement minimally, confirm GREEN, run the\n\
+checks your change needs, commit.\n\
+The workflow's gates run the full battery on the commit.\n",
     ),
     (
         "architecture-reviewer.md",
