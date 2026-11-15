@@ -1034,6 +1034,50 @@ mod tests {
         assert!(detect(&inputs).is_empty());
     }
 
+    /// Spec 126 (D01): a quiet run between one unit's landing and the next unit's start is
+    /// not done while its recorded DAG owes a unit not yet started, so the dead-driver signal
+    /// still fires there; once every owed unit has landed the run is done and it stays quiet.
+    #[test]
+    fn a_dead_driver_is_reported_while_the_recorded_dag_owes_an_unstarted_unit() {
+        let landed_a = [
+            ev("DagRecorded", r#"{"units":["a","b"]}"#),
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"a"}"#),
+            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"a","commit":"c"}"#),
+        ];
+        let landed_b = [
+            ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"b"}"#),
+            ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"b","commit":"d"}"#),
+        ];
+        // (case, the events, the signals detected)
+        let rows: [(&str, Vec<Event>, Vec<Signal>); 2] = [
+            (
+                "an owed unit not yet started",
+                landed_a.to_vec(),
+                vec![Signal::DeadDriver],
+            ),
+            (
+                "every owed unit landed",
+                [&landed_a[..], &landed_b[..]].concat(),
+                vec![],
+            ),
+        ];
+        let ages = BTreeMap::new();
+        for (case, events, signals) in rows {
+            let events = positioned(events);
+            let now = SystemTime::now();
+            let inputs = WatchInputs {
+                last_event_at: Some(now - Duration::from_secs(999_999)),
+                now,
+                ..empty_inputs(&events, &ages)
+            };
+            assert_eq!(
+                detect(&inputs).iter().map(|a| a.signal).collect::<Vec<_>>(),
+                signals,
+                "{case}"
+            );
+        }
+    }
+
     /// Round-4 reject (adv-u69c1r4-dash-anomaly-permanent-false-positive): `.rigger/
     /// dash.url` and `.rigger/dash.marker` are project-level singleton files never
     /// removed once a dash exits, so a done run's stale breadcrumb must not read as

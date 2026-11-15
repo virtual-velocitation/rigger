@@ -321,3 +321,55 @@ fn status_and_watch_before_the_first_run_say_no_run_is_recorded() {
         }
     }
 }
+
+/// Spec 126 (D01): between one unit's landing and the next unit's start, a run whose recorded
+/// DAG still owes a unit is not done - `rigger status --line` counts landed of owed and says
+/// working, and `rigger status` prints no release-ready commands - and once every owed unit has
+/// landed both say done and the commands appear.
+#[test]
+fn status_counts_landed_of_owed_and_says_done_only_when_every_owed_unit_landed() {
+    let half: &[(&str, &str)] = &[
+        ("RunStarted", r#"{"run":"r1"}"#),
+        ("DagRecorded", r#"{"units":["u-a","u-b"]}"#),
+        ("UnitStarted", r#"{"id":"u-a"}"#),
+        ("UnitIntegrated", r#"{"id":"u-a","commit":"c1"}"#),
+    ];
+    let rest: &[(&str, &str)] = &[
+        ("UnitStarted", r#"{"id":"u-b"}"#),
+        ("UnitIntegrated", r#"{"id":"u-b","commit":"c2"}"#),
+    ];
+    // (case, the events, the statusline, whether `rigger status` prints the release commands)
+    let rows: [(&str, Vec<(&str, &str)>, &str, bool); 2] = [
+        (
+            "one owed unit landed, the other not started",
+            half.to_vec(),
+            "- . 1/2 units . working",
+            false,
+        ),
+        (
+            "every owed unit landed",
+            [half, rest].concat(),
+            "- . 2/2 units . done",
+            true,
+        ),
+    ];
+    for (case, events, line, release) in rows {
+        let proj = temp_store_project();
+        let root = proj.path();
+        seed_run_events(root, &events);
+        let (out, err, ok) = run_rigger(root, &["status", "--line"]);
+        assert!(ok, "{case}: rigger status --line must succeed: {err}");
+        assert_eq!(out.trim_end_matches('\n'), line, "{case}: the statusline");
+        let (out, err, ok) = run_rigger(root, &["status"]);
+        assert!(ok, "{case}: rigger status must succeed: {err}");
+        assert!(
+            out.lines().any(|l| l == line),
+            "{case}: rigger status prints the same statusline:\n{out}"
+        );
+        assert_eq!(
+            out.contains("release-ready:"),
+            release,
+            "{case}: whether rigger status prints the release commands:\n{out}"
+        );
+    }
+}
