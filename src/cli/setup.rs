@@ -459,12 +459,13 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
     Ok(true)
 }
 
-/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml. Returns an
-/// empty set when the file is genuinely ABSENT (the legitimate empty-repo signal
-/// `init_project` seeds the full default fleet on) or parses but names no agent (its stages
-/// and `defaults.review` are optional); a PRESENT-but-unparseable file - most
-/// importantly one carrying an unrecognized key - is a real `Err`, never folded into that
-/// same empty set. Routed through [`config_store::load_workflow`], the one canonical
+/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml: its
+/// `defaults.review` panel's, its stages' and its declared test author
+/// (`defaults.test_author`). Returns an empty set when the file is genuinely ABSENT (the
+/// legitimate empty-repo signal `init_project` seeds the full default fleet on) or parses but
+/// names no agent (its stages, `defaults.review` and `defaults.test_author` are optional); a
+/// PRESENT-but-unparseable file - most importantly one carrying an unrecognized key - is a
+/// real `Err`, never folded into that same empty set. Routed through [`config_store::load_workflow`], the one canonical
 /// `deny_unknown_fields`-honoring parser, rather than a second ad hoc
 /// `serde_yaml::from_str::<Workflow>` that would silently accept what that parser rejects.
 fn get_referenced_agent_ids(
@@ -492,6 +493,9 @@ fn get_referenced_agent_ids(
             ids.insert(agent_id);
         }
     }
+
+    // Add the declared test author, the agent the build seam spawns
+    ids.extend(workflow.defaults.declared_test_author().map(str::to_string));
 
     Ok(ids)
 }
@@ -1888,6 +1892,8 @@ max_parallel_units: 2\n  \
 grep_guard: true\n  \
 # The unit size cap in added lines that the planner and plan critique state; 0 = none.\n  \
 max_unit_added_lines: 3000\n  \
+# The agent that writes each unit's periphery tests after its own tests pass.\n  \
+test_author: sdet-author\n  \
 # The three-tier review panel applied to EVERY implement unit. Declared once\n  \
 # here, inherited by the implement stage and every planner-proposed unit.\n  \
 review:\n    \
@@ -2156,7 +2162,8 @@ fn scaffold_workflow(set: Option<&SetSpec>) -> String {
 /// template set: a matched set's workflow names the set's own `implementer` persona, which
 /// `rigger init` writes as `<id>.md` beside the role seeds, and with no set matched it names
 /// the language-neutral `implementer` seed here. Every other referenced id is a role seed here
-/// (planner, architecture-reviewer, sdet, adversary, adjudicator), and `rigger init` writes
+/// (planner, architecture-reviewer, sdet, sdet-author, adversary, adjudicator), the
+/// sdet-author referenced as the workflow's `defaults.test_author`, and `rigger init` writes
 /// only the referenced candidates, so a fresh project holds no stray, unreferenced agent; a
 /// set's implementer reusing an id seeded here is refused by [`parse_template_set`]. The three
 /// generic placeholder personas (devils-advocate, reviewer.architecture, reviewer.technical)
@@ -2240,6 +2247,24 @@ reproduce only a specific suspicion (one named test, a reversion probe), in your
 scratch worktree, never the whole battery.\n\
 Mark a finding that records your sign-off (the review complete, no defect raised)\n\
 with `\"sign_off\": true`, so peers rank it with the verdicts; never mark one about the code.\n",
+    ),
+    (
+        "sdet-author.md",
+        "---\n\
+id: sdet-author\n\
+model: opus\n\
+tools: [Read, Edit, Write, Grep, Glob, Bash, Agent]\n\
+isolation: worktree\n\
+recurse: true\n\
+---\n\
+You author the periphery tests of ONE unit inside its worktree, after the implementer's\n\
+tests pass and before the gates run: contract, API and integration tests that drive the\n\
+unit from outside. You never author or change a unit test. Find the unit's boundary\n\
+surface from its diff, write one test per behaviour at that surface.\n\
+\n\
+## A documentation-only round\n\
+\n\
+Extend the existing owner test's needle for the changed sentence, or add no pin; never a new test.\n",
     ),
     (
         "adversary.md",
