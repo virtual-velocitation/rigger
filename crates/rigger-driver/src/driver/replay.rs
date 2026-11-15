@@ -144,19 +144,17 @@ pub fn reclaim_finished_spawn_scratch(opts: &SpawnOpts) {
 /// The variable that names the user cache home ([`cache_home_from`]'s `xdg`).
 pub const CACHE_HOME_ENV: &str = "XDG_CACHE_HOME";
 
-/// The variable that names the user's home, [`cache_home_from`]'s `home`.
-pub use rigger_store_sqlite::registry::HOME_ENV;
-
-/// The user cache home: `$XDG_CACHE_HOME` when set and non-empty, else `$HOME/.cache`, else
-/// `None` in a homeless environment. Mirrors `registry::state_home_from`'s XDG-then-HOME
-/// shape. Takes the two candidate env values as plain arguments (never reading `std::env`
-/// itself) so it is a pure function a unit test can drive without depending on - or
-/// mutating - the real process environment.
+/// The user cache home: `$XDG_CACHE_HOME` when set and non-empty, else `.cache` under the home
+/// directory, else `None` in a homeless environment. Mirrors `registry::state_home_from`'s
+/// XDG-then-home shape. Takes the `XDG_CACHE_HOME` value and the home directory
+/// ([`rigger_process::home_dir`]) as plain arguments (never reading `std::env` itself) so it is a
+/// pure function a unit test can drive without depending on - or mutating - the real process
+/// environment.
 pub fn cache_home_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    if let Some(dir) = xdg.filter(|v| !v.is_empty()) {
+    if let Some(dir) = rigger_process::home::non_empty(xdg) {
         return Some(PathBuf::from(dir));
     }
-    let home = home.filter(|v| !v.is_empty())?;
+    let home = rigger_process::home::non_empty(home)?;
     Some(PathBuf::from(home).join(".cache"))
 }
 

@@ -4,18 +4,23 @@
 
 use std::ffi::OsString;
 
+/// The variable that names the user's home on unix, the one [`home_dir`] reads there.
+pub const HOME_ENV: &str = "HOME";
+
 /// The user's home directory, or `None` when no home directory is known. On unix it is the
 /// `HOME` variable, an empty value counting as unset, with no password-database fallback;
 /// elsewhere it is [`std::env::home_dir`].
 pub fn home_dir() -> Option<OsString> {
-    None
+    std::cfg_select! {
+        unix => { non_empty(std::env::var_os(HOME_ENV)) }
+        _ => { std::env::home_dir().map(std::path::PathBuf::into_os_string) }
+    }
 }
 
 /// `value`, an environment variable's, as rigger reads it: `None` when it is unset or empty, so an
 /// empty value counts as unset.
 pub fn non_empty(value: Option<OsString>) -> Option<OsString> {
-    let _ = value;
-    None
+    value.filter(|v| !v.is_empty())
 }
 
 #[cfg(test)]

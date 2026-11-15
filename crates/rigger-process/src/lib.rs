@@ -4,9 +4,10 @@
 //! holding a directory, the machine-wide
 //! build-slot budget, the ordered parallel map, the whole-line writer for a stream other processes share, the
 //! keep-awake adapter behind the domain's
-//! `SleepHold` port, the detached start of a process that outlives its starter, and the trigger an
-//! interactive interrupt fires. They know `std::process`, the filesystem, threads and the host's OS
-//! facilities; the root `rigger` crate re-exports every module under its historical path.
+//! `SleepHold` port, the detached start of a process that outlives its starter, the trigger an
+//! interactive interrupt fires, and the one read of the user's home directory. They know
+//! `std::process`, the filesystem, threads and the host's OS facilities; the root `rigger` crate
+//! re-exports every module but `file_trust`, `os_process` and `home` under its historical path.
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod budget;
