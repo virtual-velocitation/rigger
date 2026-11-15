@@ -1000,7 +1000,14 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     };
     // The decorator records the errors it hands the conductor on the folding store the host
     // records results on, so the graph folds them as it folds the host's.
+    // An adopting driver parks on an operator hold, so the hold stops it rather than keeping it
+    // waiting with the step lock held.
     let held = HeldDriver::new(&driver, &folding, &pause_a_hold_poll);
+    let held = if parsed.adopt.is_some() {
+        held.parking_on_an_operator_hold()
+    } else {
+        held
+    };
     // The run refuses a linked worktree, so `repo` is the operator checkout the store is rooted at,
     // and its site the one the run's reads find their repository from, anew for each open.
     let site = Site::of(Path::new(&repo));
@@ -1073,6 +1080,13 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             })
         },
     )?;
+    if held.parked_on_an_operator_hold() {
+        step_record.leave_for_release();
+        stderr_line(&format!(
+            "{command}: run {run} is held by the operator, so this driver parked its next launch \
+             and ended; `rigger release` relaunches it"
+        ));
+    }
     // A done run releases its open hold, an operator hold included (spec 105); any other exit
     // leaves it to the next supervisor's probes. A failed release never fails a run that already
     // succeeded: the hold stays open for `rigger release` or the next mint.

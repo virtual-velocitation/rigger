@@ -3,7 +3,9 @@
 //!
 //! The run's hold is a fold of its log ([`ledger::project`]), read here before every launch, so a
 //! session already running is left alone and a gate already running finishes: only the next
-//! launch waits. A wait ends on the run's `RunReleased`. An error of a hold or wait class, or any error but a store fault while the run is held,
+//! launch waits. A wait ends on the run's `RunReleased`; an adopting driver's decorator
+//! ([`HeldDriver::parking_on_an_operator_hold`]) parks the spawn on an operator hold instead, so
+//! that driver ends. An error of a hold or wait class, or any error but a store fault while the run is held,
 //! waits the same way and launches the same spawn id again, its next ordinal coming from the host's own read of
 //! the spawn stream, so the conductor sees no failure and writes no infra mark. The hold is read
 //! after the host returns, because the host appends a third-fault hold before it returns its
@@ -29,10 +31,12 @@
 //! over one supervisor's life, so a restarted supervisor starts it again.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use rigger_domain::agent::{
-    failure_class, store_fault, AgentDriver, AgentResult, Error, SpawnOpts, EMIT_REFUSED_MARKER,
+    failure_class, parked_spawn, store_fault, AgentDriver, AgentResult, Error, SpawnOpts,
+    EMIT_REFUSED_MARKER,
 };
 use serde_json::Value;
 
@@ -41,7 +45,7 @@ use crate::config::AgentDef;
 use crate::eventstore::{Event, EventStore};
 use crate::ledger;
 use crate::run::{
-    read::{hold_stands, read_current_run},
+    read::{read_current_hold, read_current_run},
     STREAM,
 };
 use crate::spawn;
@@ -59,6 +63,10 @@ pub struct HeldDriver<'a> {
     pause: &'a (dyn Fn() + Sync),
     /// Each spawn id's relaunches since its last non-error outcome.
     relaunch_counts: Mutex<HashMap<String, u32>>,
+    /// Whether an operator hold parks a spawn ([`Self::parking_on_an_operator_hold`]), and
+    /// whether one did.
+    parks_on_an_operator_hold: bool,
+    parked: AtomicBool,
 }
 
 impl<'a> HeldDriver<'a> {
@@ -77,17 +85,24 @@ impl<'a> HeldDriver<'a> {
             store,
             pause,
             relaunch_counts: Mutex::new(HashMap::new()),
+            parks_on_an_operator_hold: false,
+            parked: AtomicBool::new(false),
         }
     }
 
-    /// This decorator, parking a spawn on an operator hold instead of waiting it out.
+    /// This decorator, parking a spawn on an operator hold ([`parked_spawn`]) instead of waiting it
+    /// out, as an adopting driver does, so an operator hold ends it; a hold of any other writer is
+    /// still waited out.
     pub fn parking_on_an_operator_hold(self) -> Self {
-        self
+        HeldDriver {
+            parks_on_an_operator_hold: true,
+            ..self
+        }
     }
 
     /// Whether this decorator parked a spawn on an operator hold.
     pub fn parked_on_an_operator_hold(&self) -> bool {
-        false
+        self.parked.load(Ordering::SeqCst)
     }
 
     /// The current run's slice of the log.
@@ -96,21 +111,26 @@ impl<'a> HeldDriver<'a> {
         Ok(slice)
     }
 
-    /// Return once the run is not held. A failed read of the run ends the wait with
-    /// `relaunched`, the error of the spawn this wait relaunches, or with the read's own error
+    /// Return once the run is not held, for spawn `id`. A failed read of the run ends the wait
+    /// with `relaunched`, the error of the spawn this wait relaunches, or with the read's own error
     /// marked a store fault ([`store_fault`]) before a first launch, since a run not proved
-    /// unheld launches nothing.
-    fn wait_out_the_hold(&self, mut relaunched: Option<Error>) -> Result<(), Error> {
+    /// unheld launches nothing. An operator hold ends it with `id` parked when this decorator
+    /// parks on one.
+    fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
         loop {
-            let held = hold_stands(self.store, STREAM);
-            if !held.map_err(|read| {
+            let hold = read_current_hold(self.store, STREAM).map_err(|read| {
                 relaunched
                     .take()
                     .unwrap_or_else(|| store_fault(Error::from(read)))
-            })? {
-                return Ok(());
+            })?;
+            match hold {
+                None => return Ok(()),
+                Some(hold) if hold.operator && self.parks_on_an_operator_hold => {
+                    self.parked.store(true, Ordering::SeqCst);
+                    return Err(parked_spawn(id));
+                }
+                Some(_) => (self.pause)(),
             }
-            (self.pause)();
         }
     }
 
@@ -198,7 +218,7 @@ impl AgentDriver for HeldDriver<'_> {
     ) -> Result<AgentResult, Error> {
         let mut relaunched = None;
         loop {
-            self.wait_out_the_hold(relaunched.take())?;
+            self.wait_out_the_hold(&opts.id, relaunched.take())?;
             match self.inner.spawn(agent, prompt, opts, emit) {
                 Ok(result) => {
                     self.relaunch_counts

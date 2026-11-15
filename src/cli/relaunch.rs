@@ -8,9 +8,12 @@
 //! took the step lock (done, escalated with nothing left, a halt, a refusal, an error), a panic
 //! that unwinds it, and the operator's interactive interrupt (Ctrl-C), which the driver answers by
 //! emptying its record ([`rigger::interrupt`]); a driver started ignoring interrupts is not ended
-//! by one. Each empties the record, so nothing relaunches the run. A held
-//! run is relaunched and waits in its hold, so `rigger hold` is how an operator keeps a run from
-//! spending whatever ends its driver.
+//! by one. Each empties the record, so nothing relaunches the run.
+//!
+//! AN OPERATOR HOLD IS THE STOP: no check relaunches a run an operator hold (`rigger hold`) stands
+//! on, and a driver started to adopt one parks the run's next launch and ends, leaving its record,
+//! so a held run stops for good however its driver then ends, until `rigger release` relaunches
+//! it. A hold of any other writer, an outage's, is waited out by the driver and released by itself.
 //!
 //! The record's one reaper is the driver that wrote it, as it ends; a record whose driver ended
 //! without reaping it is reaped by the check that relaunches it, by the driver that relaunch
@@ -69,6 +72,8 @@ pub(super) struct KeptRecord {
     lock: HeldLock,
     /// The record a driver before this one left in the lock, when it parses.
     prior: Option<DriverRecord>,
+    /// Whether the record is left for `rigger release` ([`KeptRecord::leave_for_release`]).
+    left: std::cell::Cell<bool>,
 }
 
 impl KeptRecord {
@@ -82,6 +87,31 @@ impl KeptRecord {
             _interrupt: empty_on_interrupt(lock.file()),
             lock,
             prior,
+            left: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Leave this driver's record in the lock as it ends, for `rigger release` to relaunch: the
+    /// driver parked on an operator hold, a stop on purpose, so the record carries no relaunch it
+    /// was started by.
+    pub(super) fn leave_for_release(&self) {
+        let parked = self
+            .lock
+            .contents()
+            .ok()
+            .and_then(|text| serde_json::from_str::<DriverRecord>(&text).ok());
+        let Some(record) = parked else {
+            return;
+        };
+        let record = DriverRecord {
+            revived_at: None,
+            ..record
+        };
+        let written = serde_json::to_string(&record)
+            .map_err(std::io::Error::other)
+            .and_then(|text| self.lock.replace(&text));
+        if written.is_ok() {
+            self.left.set(true);
         }
     }
 
@@ -116,7 +146,9 @@ impl KeptRecord {
 
 impl Drop for KeptRecord {
     fn drop(&mut self) {
-        let _ = self.lock.replace("");
+        if !self.left.get() {
+            let _ = self.lock.replace("");
+        }
     }
 }
 
@@ -219,16 +251,48 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, verb: &str) {
         return;
     };
     let dir = root.join(RIGGER_DIR);
-    let said = launcher().map_or_else(Some, |launcher| revive(&dir, now_secs(), launcher.as_ref()));
+    let check = Check {
+        now: now_secs(),
+        released: verb == "release",
+        operator_holds: &|run| operator_holds(site, run),
+    };
+    let said = launcher().map_or_else(Some, |launcher| revive(&dir, &check, launcher.as_ref()));
     if let Some(line) = said {
         stderr_line(&line);
     }
 }
 
+/// Whether an operator hold stands on `run`, the current run of the project at `site`. A store
+/// that cannot be read answers no hold: the relaunched driver reads the hold again as it adopts
+/// the run and parks on an operator hold it finds.
+fn operator_holds(site: &Site, run: &str) -> bool {
+    require_store_dir_in(site)
+        .and_then(|(loc, selection)| {
+            over_the_run_store_at(&loc, &selection, |store| {
+                let current = runscope::read::read_current_run_id(store, conductor::STREAM)?;
+                let hold = runscope::read::read_current_hold(store, conductor::STREAM)?;
+                Ok(current.as_deref() == Some(run) && hold.is_some_and(|hold| hold.operator))
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// What one check reads beside the step lock: the time it runs at, whether it follows the
+/// operator's `rigger release`, and whether an operator hold stands on a run.
+struct Check<'a> {
+    now: u64,
+    released: bool,
+    operator_holds: &'a dyn Fn(&str) -> bool,
+}
+
 /// Relaunch the driver whose record the step lock under `dir` holds when no driver holds that
-/// lock, at `now`, through `launcher`: the line to say, `None` when there is nothing to say. Every
-/// failure to read the lock is read as nothing to do.
-fn revive(dir: &Path, now: u64, launcher: &dyn Launcher) -> Option<String> {
+/// lock, as `check` reads it, through `launcher`: the line to say, `None` when there is nothing to
+/// say. Every failure to read the lock is read as nothing to do. A run an operator hold stands on
+/// is left as it is, its record untouched, since the hold is its stop. A check that follows the
+/// operator's release relaunches a driver that died soon after its own relaunch too, since the
+/// operator asked for it.
+fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> {
+    let now = check.now;
     let path = dir.join("step.lock");
     // An absent or empty record is the common case, answered with no lock taken and no file made.
     if std::fs::metadata(&path).map_or(true, |m| m.len() == 0) {
@@ -247,6 +311,13 @@ fn revive(dir: &Path, now: u64, launcher: &dyn Launcher) -> Option<String> {
             return None;
         }
     };
+    if (check.operator_holds)(&record.run) {
+        return Some(format!(
+            "rigger: run {} is held by the operator and no driver is alive for it; `rigger \
+             release` relaunches it",
+            record.run
+        ));
+    }
     let since = |at: u64| Duration::from_secs(now.saturating_sub(at));
     if let Some(at) = record.relaunched_at {
         if since(at) < GRACE {
@@ -261,7 +332,10 @@ fn revive(dir: &Path, now: u64, launcher: &dyn Launcher) -> Option<String> {
             record.by_hand()
         ));
     }
-    if let Some(at) = record.revived_at.filter(|at| since(*at) < BACKOFF) {
+    let backoff = record
+        .revived_at
+        .filter(|at| !check.released && since(*at) < BACKOFF);
+    if let Some(at) = backoff {
         let _ = lock.replace("");
         return Some(format!(
             "rigger: run {} lost its driver again {}s after rigger relaunched it, so rigger left \
