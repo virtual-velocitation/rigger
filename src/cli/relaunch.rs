@@ -58,12 +58,15 @@ const ROOTS_ENV: [&str; 6] = [
     rigger_worktree_git::discover::ACROSS_DEVICES,
 ];
 
+/// A credential's variable, and the reader that tells whether this process's environment sets it.
+type Credential = (&'static str, fn() -> bool);
+
 /// The credentials a driver can run on, each by the variable it is read from and the reader that
 /// tells it set: the login token its agents get, and the server event store's connection string.
 /// A driver records which it had set, never a value, and only a check whose environment sets each
 /// of them relaunches it, since a relaunch without one runs its agents on another login or drives
 /// another store.
-const CREDENTIALS_ENV: [(&str, fn() -> bool); 2] = [
+const CREDENTIALS_ENV: [Credential; 2] = [
     (
         rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
         rigger::claude_auth::agent_token_set,
