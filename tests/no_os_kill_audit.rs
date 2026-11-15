@@ -224,7 +224,8 @@ fn has_marker_shape(line: &str, (marker, tail): MarkerShape) -> bool {
 }
 
 /// The two files spec 78 sanctions to call the signal API directly (`crates/rigger-process/src/reap.rs`'s
-/// `send_signal`, `tests/common/mod.rs`'s `terminate_pid`/`is_alive`) - this audit's own
+/// `send_signal`, `tests/common/mod.rs`'s `delivered`, behind `terminate_pid`, `stop_pid` and
+/// `interrupt_pid`, and `is_alive`) - this audit's own
 /// record of the boundary, checked against each scanned file's REPO-RELATIVE, forward-slash
 /// path, independent of `.rigger/gates/content.sh`'s copy.
 const SANCTIONED_FILES: [&str; 2] = ["crates/rigger-process/src/reap.rs", "tests/common/mod.rs"];
