@@ -387,10 +387,54 @@ pub fn ask(_path: &Path, _request: &GateRequest) -> io::Result<Option<GateReply>
     Err(unsupported())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    /// THE PIPE IS NAMED BY THE ROOT'S DIGEST ON EVERY HOST: `pipe_name` over a root's bytes is
+    /// `\\.\pipe\rigger-gate-` followed by the first 16 hex digits of their SHA-256, the digits
+    /// the unix socket name carries for those bytes; two roots give two names.
+    #[test]
+    fn the_pipe_name_is_the_pipe_prefix_and_the_roots_sixteen_digits_and_two_roots_give_two() {
+        // Each row's digits are the first 16 of the hex SHA-256 `sha256sum` prints for the bytes.
+        let rows: [(&[u8], &str); 2] = [
+            (b"/home/dev/project", "1afbf223bb0b58ba"),
+            (br"\\?\C:\Users\dev\project", "e7671d9d51a2dc60"),
+        ];
+        let names: Vec<String> = rows.iter().map(|(root, _)| pipe_name(root)).collect();
+        for ((root, digits), name) in rows.iter().zip(&names) {
+            assert_eq!(
+                *name,
+                format!(r"\\.\pipe\rigger-gate-{digits}"),
+                "{}",
+                String::from_utf8_lossy(root)
+            );
+        }
+        assert_ne!(names[0], names[1], "two roots give two names");
+    }
+
+    /// THE PIPE CARRIES THE SOCKET'S DIGITS: GIVEN a repo on a unix host, THEN the pipe name over
+    /// its canonical root's bytes ends in the digits its socket file is named by.
+    #[cfg(unix)]
+    #[test]
+    fn the_pipe_name_carries_the_digits_the_unix_socket_name_carries_for_the_same_root() {
+        use std::os::unix::ffi::OsStrExt;
+        let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = repo.path().canonicalize().unwrap();
+        let socket = socket_path_under(runtime.path(), repo.path()).unwrap();
+        assert_eq!(
+            pipe_name(root.as_os_str().as_bytes())
+                .strip_prefix(r"\\.\pipe\rigger-gate-")
+                .map(|digits| format!("{digits}.sock")),
+            socket
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned),
+            "the pipe's digits and the socket's name for {}",
+            root.display()
+        );
+    }
 
     fn request() -> GateRequest {
         GateRequest {
