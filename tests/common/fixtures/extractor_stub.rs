@@ -4,8 +4,9 @@
 //! each time its input ended, so a test pins what the code store asked and how many sessions it
 //! started and closed. It lives in its own directory, outside the project it serves, so no walk
 //! of the project reads it. It runs under `sh`, so only a unix test starts it. Beside it lie the
-//! request line it reads for a file, the one-function answer line a test writes for it and the
-//! identity facts a declared file holds when it holds no symbols.
+//! request line it reads for a file, the one-function answer line a test writes for it, the
+//! physical root it records as its start and the identity facts a declared file holds when it
+//! holds no symbols.
 
 use std::path::{Path, PathBuf};
 
@@ -104,9 +105,23 @@ pub fn request_for(path: &str, text: &str) -> String {
 
 /// The answer line giving the file `path` one file-level function `leaf` on its first line.
 pub fn answer_defining(path: &str, leaf: &str) -> String {
+    answer_defining_at(path, leaf, 1, 1)
+}
+
+/// The answer line giving the file `path` one file-level function `leaf` over the lines
+/// `line..=end_line`.
+pub fn answer_defining_at(path: &str, leaf: &str, line: u32, end_line: u32) -> String {
     format!(
-        r#"{{"path":"{path}","defs":[{{"kind":"Function","name":"{leaf}","line":1,"end_line":1,"path":"{leaf}"}}],"refs":[]}}"#
+        r#"{{"path":"{path}","defs":[{{"kind":"Function","name":"{leaf}","line":{line},"end_line":{end_line},"path":"{leaf}"}}],"refs":[]}}"#
     )
+}
+
+/// The physical directory of the project at `root`, as the stub records where it started.
+pub fn root_dir_of(root: &Path) -> String {
+    root.canonicalize()
+        .expect("the root exists")
+        .display()
+        .to_string()
 }
 
 /// The facts a declared extraction gives a file it holds no symbols for: its identity, the

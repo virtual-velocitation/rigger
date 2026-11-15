@@ -318,8 +318,11 @@ fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
 /// query that names only tests the filter hid answers with their count alone.
 fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
     let located = graph.locate(entity)?;
-    // A body is read from the caller's own tree ([`Site::tree`]), as every lookup answers.
+    // A body is read from the caller's own tree ([`Site::tree`]), as every lookup answers, and
+    // bounded through the extractors the project root's workflow declares
+    // ([`Site::project_root`]), the root the code store extracts over.
     let tree = site.tree();
+    let root = site.project_root();
     let hidden = contextgraph::show_tests_hidden(graph, entity, &located)?;
     // The label heads the answer (6.1), counting what the locate withheld.
     println!("{}", graph.stamp_label());
@@ -327,7 +330,7 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
     match located {
         Located::None => match logged_site(site, entity)? {
             Some(site) => {
-                print_entity_site(&tree, &site);
+                print_entity_site(&tree, &root, &site);
                 println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
             }
             None if hidden > 0 => {}
@@ -344,7 +347,7 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
                 println!("  {}   ({})", c.id, c.file);
             }
         }
-        Located::One(site) => print_entity_site(&tree, &site),
+        Located::One(site) => print_entity_site(&tree, &root, &site),
     }
     Ok(())
 }
@@ -367,7 +370,11 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
 /// "no production definition named" note with its id in place of the name, here, ahead of the
 /// feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line 0
 /// keeps [`definition_body`]'s `source unavailable`.
-fn print_entity_site(tree: &Result<PathBuf, String>, site: &contextgraph::EntitySite) {
+fn print_entity_site(
+    tree: &Result<PathBuf, String>,
+    root: &Result<PathBuf, String>,
+    site: &contextgraph::EntitySite,
+) {
     println!("show {}", site.id);
     let Some(file) = site.file.as_deref() else {
         println!("  kind {}   degree {}", site.kind, site.degree);
@@ -387,6 +394,7 @@ fn print_entity_site(tree: &Result<PathBuf, String>, site: &contextgraph::Entity
         // reads a name.
         name => definition_body(
             tree,
+            root,
             file,
             site.line,
             name.unwrap_or_default(),
@@ -523,6 +531,7 @@ enum ShowBody {
 /// next-definition bound.
 fn definition_body(
     tree: &Result<PathBuf, String>,
+    root: &Result<PathBuf, String>,
     file: &str,
     start: u32,
     name: &str,
@@ -536,9 +545,11 @@ fn definition_body(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    let path = match tree {
-        Ok(root) => root.join(file),
-        Err(why) => return ShowBody::Note(format!("source unavailable at {file}:{start}: {why}")),
+    let (path, root) = match (tree, root) {
+        (Ok(tree), Ok(root)) => (tree.join(file), root),
+        (Err(why), _) | (Ok(_), Err(why)) => {
+            return ShowBody::Note(format!("source unavailable at {file}:{start}: {why}"))
+        }
     };
     let Ok(text) = std::fs::read_to_string(&path) else {
         return ShowBody::Note(format!(
@@ -555,7 +566,7 @@ fn definition_body(
     }
     // The extent's end through the ONE multi-grammar authority. A miss (no such definition at
     // the line, or a light-lane build with no grammar) is an explicit note, never a guessed body.
-    let extent_end = match locate_definition_extent(file, &text, start, name, id_path, kind) {
+    let extent_end = match locate_definition_extent(root, file, &text, start, name, id_path, kind) {
         Ok(end) => end.min(total),
         Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
     };
@@ -586,6 +597,7 @@ fn definition_body(
 /// lookup, so it holds no entity there, and the miss is no production definition.
 #[cfg(feature = "symbols")]
 fn locate_definition_extent(
+    _root: &Path,
     file: &str,
     source: &str,
     start: u32,
@@ -618,6 +630,7 @@ fn locate_definition_extent(
 /// grammars the graph ingests.
 #[cfg(not(feature = "symbols"))]
 fn locate_definition_extent(
+    _root: &Path,
     _file: &str,
     _source: &str,
     _start: u32,
@@ -923,4 +936,121 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
         );
         Ok(())
     })
+}
+
+#[cfg(all(test, unix, feature = "symbols"))]
+mod tests {
+    use super::*;
+    use crate::test_support::{
+        answer_defining_at, request_for, root_dir_of, workflow_declaring_extractors, write_file,
+        StubExtractor,
+    };
+    use rigger::contextgraph::CODE_KIND_FUNCTION;
+
+    /// A Rust function over two lines, which the bundled grammar bounds at its second.
+    const RUST_MAIN: &str = "fn main() {\n}\n";
+
+    /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE on the show surface (spec 125, criterion 8): with
+    /// the project root's workflow declaring the stub extractor, `locate_definition_extent` bounds
+    /// the function `main` of a file whose extension the declaration lists by the `end_line` of the
+    /// stub's answer - for an extension no grammar covers, and for `rs` under a declaration named
+    /// `rust`, which replaces the bundled grammar - asking it once, through one session started in
+    /// the root and closed after; an answer that fails bounds nothing, never falling back to the
+    /// grammar; and a file no declaration lists is bounded by its bundled grammar, the stub never
+    /// started though it holds an answer for it.
+    #[test]
+    fn a_declared_extension_bounds_its_body_by_its_extractors_end_line() {
+        // (the extractor's name, its extensions, the file, its text, the stub's answer for it,
+        // the function's line, its extent or the note in its place, whether the stub was asked)
+        let rows = [
+            (
+                "zig",
+                "[zig]",
+                "a.zig",
+                "const a = 1;\npub fn main() void {\n    a;\n}\n",
+                answer_defining_at("a.zig", "main", 2, 4),
+                2,
+                Ok(4),
+                true,
+            ),
+            (
+                "rust",
+                "[rs]",
+                "a.rs",
+                RUST_MAIN,
+                answer_defining_at("a.rs", "main", 1, 3),
+                1,
+                Ok(3),
+                true,
+            ),
+            (
+                "rust",
+                "[rs]",
+                "a.rs",
+                RUST_MAIN,
+                r#"{"path":"a.rs","error":"no parser"}"#.to_string(),
+                1,
+                Err(
+                    r#"no production definition named "main" at path "main" of kind function at line 1 of a.rs"#
+                        .to_string(),
+                ),
+                true,
+            ),
+            (
+                "zig",
+                "[zig]",
+                "a.rs",
+                RUST_MAIN,
+                answer_defining_at("a.rs", "main", 1, 3),
+                1,
+                Ok(2),
+                false,
+            ),
+        ];
+        for (name, extensions, file, text, answer, line, extent, asked) in rows {
+            let stub_dir = tempfile::tempdir().expect("tempdir");
+            let project = tempfile::tempdir().expect("tempdir");
+            let stub = StubExtractor::new(stub_dir.path());
+            stub.answers(file, &answer);
+            write_file(
+                &project.path().join(RIGGER_DIR).join(WORKFLOW_FILE),
+                workflow_declaring_extractors(&stub.declaring(name, extensions)).as_bytes(),
+            );
+            let row = format!("{file} under {name} over {extensions}");
+            assert_eq!(
+                locate_definition_extent(
+                    project.path(),
+                    file,
+                    text,
+                    line,
+                    "main",
+                    Some("main"),
+                    CODE_KIND_FUNCTION
+                )
+                .map_err(|why| why.note(
+                    "main",
+                    Some("main"),
+                    CODE_KIND_FUNCTION,
+                    file,
+                    line
+                )),
+                extent,
+                "{row}: the extent"
+            );
+            let session = if asked {
+                (
+                    vec![root_dir_of(project.path())],
+                    vec![request_for(file, text)],
+                    vec!["ended".to_string()],
+                )
+            } else {
+                (Vec::new(), Vec::new(), Vec::new())
+            };
+            assert_eq!(
+                (stub.starts(), stub.requests(), stub.ends()),
+                session,
+                "{row}: one session in the root, asked once and closed, or none"
+            );
+        }
+    }
 }

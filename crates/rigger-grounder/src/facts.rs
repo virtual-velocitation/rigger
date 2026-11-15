@@ -694,7 +694,9 @@ fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
-    use crate::extractor_stub::{answer_defining, declared_identity, request_for, StubExtractor};
+    use crate::extractor_stub::{
+        answer_defining, declared_identity, request_for, root_dir_of, StubExtractor,
+    };
     use crate::extractors_fixtures::{workflow_declaring_extractors, EXTRACTOR_REFUSALS};
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::content_hash;
@@ -2056,14 +2058,6 @@ mod tests {
             std::fs::write(file, text).expect("write the file");
         }
         project
-    }
-
-    /// The physical directory of the project at `root`, as the stub records where it started.
-    fn root_dir_of(root: &Path) -> String {
-        root.canonicalize()
-            .expect("the root exists")
-            .display()
-            .to_string()
     }
 
     /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE: over a project declaring the stub for `zig` and
