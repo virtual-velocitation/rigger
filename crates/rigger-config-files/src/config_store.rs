@@ -373,8 +373,8 @@ pub fn read_scratch_defaults(rigger_dir: &Path) -> Result<Defaults, Error> {
 }
 
 impl Config {
-    /// Validate checks that every agent id and review step sequence is well formed, every
-    /// reference resolves and the stage graph is acyclic, then, last, resolves every declared
+    /// Validate checks that every agent id, review step sequence and declared extractor is well
+    /// formed, every reference resolves and the stage graph is acyclic, then, last, resolves every declared
     /// gate's `requires` on `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
@@ -460,6 +460,8 @@ impl Config {
         // output_regex) at load rather than at the first classification, through the
         // SAME conversion the conductor uses.
         wf.failure_taxonomy()?;
+        // The declared extractors (spec 125), through the one check the code store reads them by.
+        crate::config::check_extractors(&wf.extractors).map_err(err)?;
         // Last, after every other refusal (spec 113): every declared gate's `requires`,
         // whether or not a stage lists the gate - a declared gate is a gate the operator
         // wired, so its missing tool refuses here rather than failing the gate mid-run.
@@ -2202,6 +2204,25 @@ agent: worker\n";
             cfg_for(&["a", "w@k"]).validate().expect_err("w@k").0,
             separator_refusal("agents", "w@k")
         );
+    }
+
+    /// `Config::validate` runs THE EXTRACTORS KEY's check: it accepts each well-formed
+    /// `extractors:` declaration and refuses each malformed one with its exact message, naming
+    /// `extractors.<name>`.
+    #[test]
+    fn validate_accepts_each_well_formed_extractors_declaration_and_refuses_each_malformed_one() {
+        use crate::test_support::{
+            workflow_declaring_extractors, ACCEPTED_EXTRACTORS, EXTRACTOR_REFUSALS,
+        };
+        for mapping in ACCEPTED_EXTRACTORS {
+            if let Err(e) = config_of(&workflow_declaring_extractors(mapping)).validate() {
+                panic!("validate must accept {mapping}: {e}");
+            }
+        }
+        for (mapping, refusal) in EXTRACTOR_REFUSALS {
+            let validated = config_of(&workflow_declaring_extractors(mapping)).validate();
+            assert_eq!(validated.expect_err(refusal).0, refusal, "{mapping}");
+        }
     }
 
     /// `tiers.light` takes either form under a full panel of either form.

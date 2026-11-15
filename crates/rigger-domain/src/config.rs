@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::failure;
 use crate::spawn::{ReviewKind, STEP_TOKEN_SEPARATOR};
@@ -286,6 +286,60 @@ pub struct RegenerateRule {
     pub paths: Vec<String>,
     #[serde(default)]
     pub run: String,
+}
+
+/// One extractor a project declares under `extractors:` (spec 125, THE EXTRACTORS KEY): the
+/// file extensions it reads, each without its leading dot, and the command that runs it. An
+/// absent key is its empty value, which [`check_extractors`] refuses.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractorDecl {
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub run: String,
+}
+
+/// The one check of a workflow's `extractors:` (spec 125, THE EXTRACTORS KEY). It walks the
+/// declarations in name order and refuses the first malformed one, naming `extractors.<name>`: a
+/// name outside `[a-z0-9_-]+`, a `run` naming no command, an empty `extensions`, an extension
+/// that is empty or holds `.` or `/`, and an extension an earlier extractor in name order also
+/// lists. One extractor listing an extension twice is accepted.
+pub fn check_extractors(declared: &BTreeMap<String, ExtractorDecl>) -> Result<(), String> {
+    let mut owners: HashMap<&str, &str> = HashMap::new();
+    for (name, decl) in declared {
+        let well_named = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'));
+        if !well_named {
+            return Err(format!(
+                "extractors.{name}: a name is one or more of a-z, 0-9, '_' and '-'"
+            ));
+        }
+        if decl.run.trim().is_empty() {
+            return Err(format!("extractors.{name}: run names no command"));
+        }
+        if decl.extensions.is_empty() {
+            return Err(format!("extractors.{name}: extensions lists no extension"));
+        }
+        for extension in &decl.extensions {
+            if extension.is_empty() || extension.contains(['.', '/']) {
+                return Err(format!(
+                    "extractors.{name}: extension {extension:?} is empty or holds '.' or '/'"
+                ));
+            }
+            match owners.insert(extension, name) {
+                Some(owner) if owner != name => {
+                    return Err(format!(
+                        "extractors.{name}: extension {extension:?} is also listed by extractors.{owner}"
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One declarative failure rule (spec 10, unit 2), authored under
@@ -1232,6 +1286,11 @@ pub struct Workflow {
     /// so every conflict re-parks the implementer exactly as it would otherwise.
     #[serde(default)]
     pub regenerate: Vec<RegenerateRule>,
+    /// The extractors the project declares by name (spec 125, THE EXTRACTORS KEY), checked by
+    /// [`check_extractors`]; absent (every workflow.yml committed before this key existed) is the
+    /// empty map, under which the bundled grammars extract every file alone.
+    #[serde(default)]
+    pub extractors: BTreeMap<String, ExtractorDecl>,
 }
 
 impl Workflow {
@@ -1861,6 +1920,52 @@ mod tests {
             let defaults: Defaults = parse_yaml_naming_unknown_keys(yaml)
                 .unwrap_or_else(|e| panic!("parse {yaml}: {e}"));
             assert_eq!(defaults.declared_test_author(), declared, "{yaml}");
+        }
+    }
+
+    /// THE EXTRACTORS KEY parses into the workflow's declared map: absent is the empty map, a
+    /// declaration is its name, extensions and run as written, and a field an extractor does not
+    /// take is refused at its dotted path.
+    #[test]
+    fn the_extractors_key_parses_into_the_declared_map_refusing_an_unknown_field() {
+        let lua = ExtractorDecl {
+            extensions: vec!["lua".to_string(), "luau".to_string()],
+            run: "lua facts.lua".to_string(),
+        };
+        for (workflow, declared) in [
+            ("{}", Ok(BTreeMap::new())),
+            (
+                "extractors: { lua_5-4: { extensions: [lua, luau], run: lua facts.lua } }",
+                Ok(BTreeMap::from([("lua_5-4".to_string(), lua)])),
+            ),
+            (
+                "extractors: { zig: { extensions: [zig], run: zig-tags, args: [] } }",
+                Err("extractors.zig.args: unknown key".to_string()),
+            ),
+        ] {
+            let parsed = parse_yaml_naming_unknown_keys::<Workflow>(workflow);
+            assert_eq!(parsed.map(|wf| wf.extractors), declared, "{workflow}");
+        }
+    }
+
+    /// `check_extractors` accepts each well-formed `extractors:` declaration and refuses each
+    /// malformed one THE EXTRACTORS KEY lists with its exact message, naming `extractors.<name>`.
+    #[test]
+    fn check_extractors_accepts_each_well_formed_declaration_and_refuses_each_malformed_one() {
+        use crate::test_support::{
+            workflow_declaring_extractors, ACCEPTED_EXTRACTORS, EXTRACTOR_REFUSALS,
+        };
+        let checked = |mapping: &str| {
+            let workflow = workflow_declaring_extractors(mapping);
+            let wf: Workflow = parse_yaml_naming_unknown_keys(&workflow)
+                .unwrap_or_else(|e| panic!("parse {workflow}: {e}"));
+            check_extractors(&wf.extractors)
+        };
+        for mapping in ACCEPTED_EXTRACTORS {
+            assert_eq!(checked(mapping), Ok(()), "{mapping}");
+        }
+        for (mapping, refusal) in EXTRACTOR_REFUSALS {
+            assert_eq!(checked(mapping), Err(refusal.to_string()), "{mapping}");
         }
     }
 

@@ -1752,6 +1752,25 @@ pub fn open_graph_with_its_log(root: &Path) -> Projector {
     })
 }
 
+/// The source file every [`source_repository`] starts with.
+pub const SOURCE: (&str, &str) = ("src/lib.rs", "pub fn product() {}\n");
+
+/// A repository holding [`SOURCE`] in a commit, its root canonical.
+pub fn source_repository() -> (tempfile::TempDir, PathBuf) {
+    use super::fixtures::{git_commit_all, init_repo, write_files};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    init_repo(&root);
+    write_files(&root, &[(SOURCE.0, SOURCE.1)]);
+    git_commit_all(&root, "source");
+    (dir, root)
+}
+
+/// The commit the checkout at `root` has checked out.
+pub fn head_of(root: &Path) -> String {
+    super::fixtures::git_out(root, &["rev-parse", "HEAD"])
+}
+
 /// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
 /// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
 /// code store to.

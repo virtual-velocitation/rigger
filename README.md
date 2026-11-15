@@ -55,8 +55,10 @@ The loop's discipline, in one breath: take a spec, break it into a dependency gr
 cargo install --git https://github.com/virtual-velocitation/rigger
 
 cd your-project
-rigger setup                   # scaffold config, hooks and skills
+rigger setup --template <dir>  # scaffold config, hooks and skills
 ```
+
+`<dir>` is a template root: its `scaffold/` holds the gate template sets `rigger init` and `rigger setup` scaffold from, and a checkout of this repository holds the `rust` set. A project naming no root gets a workflow that declares no gates - declare your own under `gates:`.
 
 Then drive the loop from a terminal:
 
@@ -69,7 +71,7 @@ rigger graph --around path/to/file
 
 Need a fleet to start from? [agency-agents](https://github.com/msitarzewski/agency-agents) (MIT) offers 200+ ready-made agent definitions in the same Markdown-with-frontmatter shape - see [the handbook's authoring-agents chapter](docs/handbook/authoring-agents.md) for how to adapt one into `.rigger/agents/`.
 
-`rigger run <spec> --base <ref>` is the one driver. It decomposes the spec into a unit DAG and, per unit, implements -> runs the gates -> runs its review panel -> integrates, with bounded remediation. The conductor runs in-process and hosts each agent as its own headless `claude` process, so no interactive session is needed: launch it in the background and follow it with `rigger status`, `rigger watch` and the dashboard. Its agents ground themselves and read and write the shared context graph through their spawn-bound `rigger mcp --spawn` server, so no agent works blind.
+`rigger run <spec> --base <ref>` is the one driver. It decomposes the spec into a unit DAG and, per unit, implements -> runs the declared gates -> runs its review panel -> integrates, with bounded remediation. The conductor runs in-process and hosts each agent as its own headless `claude` process, so no interactive session is needed: launch it in the background and follow it with `rigger status`, `rigger watch` and the dashboard. Its agents ground themselves and read and write the shared context graph through their spawn-bound `rigger mcp --spawn` server, so no agent works blind.
 
 `rigger init` does config-only setup; `rigger setup` is init plus the hooks, the skills and the `rigger mcp` lookup server for your own session.
 
