@@ -124,3 +124,49 @@ std::cfg_select! {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// The disposition of `SIGINT` in this process, read without changing it.
+    fn disposition() -> libc::sighandler_t {
+        // SAFETY: a query: a null new action changes nothing, and `old` is a valid out-pointer.
+        unsafe {
+            let mut old: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(libc::SIGINT, std::ptr::null(), &mut old);
+            old.sa_sigaction
+        }
+    }
+
+    /// An interrupt the process was started ignoring (a background start by a shell without job
+    /// control) stays ignored, so the driver it would not have ended keeps running and its record;
+    /// any other is answered while the trigger lives, and the disposition the trigger replaced
+    /// comes back when it drops.
+    #[test]
+    fn an_ignored_interrupt_stays_ignored_and_any_other_is_answered_until_the_trigger_drops() {
+        let file = tempfile::tempfile().unwrap();
+        let rows = [
+            ("started ignoring interrupts", libc::SIG_IGN, false),
+            ("started with the default", libc::SIG_DFL, true),
+        ];
+        for (case, inherited, answered) in rows {
+            // SAFETY: setting `SIGINT` to a standard disposition; no other test here touches it.
+            unsafe {
+                libc::signal(libc::SIGINT, inherited);
+            }
+            let trigger = empty_on_interrupt(&file);
+            let armed = disposition();
+            drop(trigger);
+            assert_eq!(
+                (armed != inherited, disposition()),
+                (answered, inherited),
+                "{case}: whether the trigger answers the interrupt, and what its drop leaves"
+            );
+        }
+        // SAFETY: restoring the default disposition.
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_DFL);
+        }
+    }
+}
