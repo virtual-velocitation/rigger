@@ -24,11 +24,12 @@ pub const MAX_PARALLEL_UNITS_DECLARED: &str =
      worst case to two live per-unit build caches at a time.\n  max_parallel_units: 2\n";
 
 /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
-pub const ROLE_SEED_FILES: [&str; 5] = [
+pub const ROLE_SEED_FILES: [&str; 6] = [
     "adjudicator.md",
     "adversary.md",
     "architecture-reviewer.md",
     "planner.md",
+    "sdet-author.md",
     "sdet.md",
 ];
 
