@@ -83,6 +83,10 @@ fn kill_process_open() -> String {
 fn module_kill_open(module: &str) -> String {
     join(module, &suffixed_kill("("))
 }
+/// An opened call of the Windows process-termination function (Terminate-Process).
+fn windows_termination_open() -> String {
+    join("Terminate", "Process(")
+}
 
 /// The exact set of words the Command::new shell-out shape and the bare shell
 /// kill/killall-plus-signal shape both key off (see `.rigger/gates/content.sh` for the literal
@@ -433,6 +437,19 @@ mod tests {
             &format!("let arg = format!(\"{}\", pgid);\n", join("-", "{}")),
             "negative-pid",
         );
+        windows_termination_call_is_caught_outside_reap_rs: caught_as(
+            "crates/somewhere/src/lib.rs",
+            &format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open()),
+            "Windows process-termination call",
+        );
+        taskkill_shell_out_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere.rs",
+            &format!(
+                "let _ = std::process::Command::new(\"{}\");\n",
+                prefixed_kill("task")
+            ),
+            "Command::new",
+        );
     }
 
     #[test]
@@ -485,6 +502,40 @@ mod tests {
         a_negative_pid_format_inside_a_sanctioned_file_is_still_caught: caught_in(
             "crates/rigger-process/src/reap.rs",
             &format!("let arg = format!(\"{}\", pgid);\n", join("-", "{}")),
+        );
+        /// The reaper's send_signal is the one Windows process-termination site.
+        a_windows_termination_call_in_reap_rs_is_never_flagged: never_flagged(
+            &[(
+                "crates/rigger-process/src/reap.rs",
+                &format!("            {}handle, 1);\n", windows_termination_open()),
+            )],
+            "reap.rs's own Windows process-termination call must never be flagged",
+        );
+        /// The test helper is sanctioned for the unix signal call only, never the Windows call.
+        a_windows_termination_call_in_the_test_helper_is_caught: caught_as(
+            "tests/common/mod.rs",
+            &format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open()),
+            "Windows process-termination call",
+        );
+        /// Naming the Windows function without calling it (an import, a doc) is never a call.
+        a_windows_termination_name_without_a_call_is_never_flagged: never_flagged(
+            &[(
+                "src/somewhere.rs",
+                &format!(
+                    "use windows_sys::Win32::System::Threading::{{{}}};\n",
+                    join("Terminate", "Process")
+                ),
+            )],
+            "only an opened call of the Windows process-termination function is the shape",
+        );
+        /// A shell-out to the Windows termination utility is banned even inside reap.rs.
+        a_taskkill_shell_out_inside_a_sanctioned_file_is_still_caught: caught_as(
+            "crates/rigger-process/src/reap.rs",
+            &format!(
+                "let _ = std::process::Command::new(\"{}\");\n",
+                prefixed_kill("task")
+            ),
+            "Command::new",
         );
         /// The same violation, rooted outside src/, crates/ and tests/ entirely, must be invisible.
         a_shape_outside_src_and_tests_is_never_scanned: never_flagged(
