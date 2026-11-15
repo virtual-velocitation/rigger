@@ -854,9 +854,11 @@ impl GreenDigests {
 }
 
 /// The build environment every gate of `cfg` builds under (spec 65): the configured wrapper and
-/// cache layer resolved into the [`gate::BuildEnv`] a gate and an agent's spawn both carry. The one
-/// resolution [`RunCtx::build_env`] and [`gate_once`] share; its `Err` is the config's own.
-fn build_env_of(cfg: &Config) -> Result<gate::BuildEnv, Error> {
+/// cache layer resolved into the [`gate::BuildEnv`] a gate and an agent's spawn both carry, with
+/// `run_base` as [`crate::spawn::RUN_BASE_ENV`] (empty adds nothing). The one resolution
+/// [`RunCtx::build_env`] and [`GateInputs::resolve`] share, so every gate and every spawn of a
+/// run carries the same run base; its `Err` is the config's own.
+fn build_env_of(cfg: &Config, run_base: &str) -> Result<gate::BuildEnv, Error> {
     let wrapper =
         gate::resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir)
             .map_err(|e| Error(e.to_string()))?;
@@ -864,7 +866,8 @@ fn build_env_of(cfg: &Config) -> Result<gate::BuildEnv, Error> {
         wrapper.as_deref().unwrap_or(""),
         &cfg.workflow.build.cache_dir,
         cfg.workflow.build.jobs,
-    ))
+    )
+    .with_var(crate::spawn::RUN_BASE_ENV, run_base))
 }
 
 /// The machine-wide build budget of `cfg` (spec 65): `build.max_concurrent` slots in the OS-wide
@@ -1007,10 +1010,10 @@ impl GateInputs {
             build_cache_dir,
             build_cache_guard,
             store_fence,
-            // The ONE build-environment authority (spec 65), layered with `$RIGGER_RUN_BASE`
-            // (spec 91, THE GATE ENVIRONMENT): the SAME bag every gate command already receives
-            // unconditionally (`gate::ExecRunner::run`'s `build_env.apply`).
-            build_env: build_env_of(cfg)?.with_var("RIGGER_RUN_BASE", run_base),
+            // The ONE build-environment authority (spec 65), carrying `$RIGGER_RUN_BASE`: the
+            // SAME bag every gate command receives unconditionally (`gate::ExecRunner::run`'s
+            // `build_env.apply`) and every spawn's environment is built from.
+            build_env: build_env_of(cfg, run_base)?,
             // The machine-wide build budget (spec 65), threaded to every gate this resolves for.
             budget: build_budget_of(cfg),
             // The content address of the gate's inputs (spec 12, unit 1): the HEAD commit of the
@@ -9441,12 +9444,12 @@ impl RunCtx<'_> {
 
     /// The resolved build environment for this run (spec 65's ONE build-environment
     /// authority): re-derived from the committed `build.wrapper` / `build.cache_dir`
-    /// / `build.jobs` config each call rather than cached, since
-    /// [`gate::BuildEnv::resolve`] is a pure, cheap operation - a single resolver,
-    /// called from every site that needs it, so a gate build ([`run_gates`]
+    /// / `build.jobs` config and the run's recorded base ([`run_base_env`](Self::run_base_env),
+    /// read from the store) each call rather than cached - a single resolver, called from
+    /// every site that needs it, so a gate build ([`run_gates`]
     /// (Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)) and an
     /// agent-spawn build (every `SpawnOpts.env`) can never derive two disagreeing
-    /// copies, including the jobs cap (spec 65 unit 4).
+    /// copies, including the jobs cap (spec 65 unit 4) and `$RIGGER_RUN_BASE`.
     ///
     /// Extends that authority with spec 65 unit 2 (NO SILENT DEGRADE): `build.wrapper` /
     /// `build.cache_dir` are resolved through [`gate::resolve_build_layer`] FIRST, so
@@ -9466,13 +9469,12 @@ impl RunCtx<'_> {
     /// so a library caller gets the identical loud failure a CLI caller already does -
     /// whichever entry point resolves this first.
     fn build_env(&self) -> Result<gate::BuildEnv, Error> {
-        build_env_of(self.cfg)
+        build_env_of(self.cfg, &self.run_base_env())
     }
 
-    /// The run's own `$RIGGER_RUN_BASE`: the SINGLE
-    /// resolution both gate call sites ([`run_gates`](Self::run_gates) and
-    /// [`run_deferred_gates`](Self::run_deferred_gates)) layer onto their own `build_env` -
-    /// never a second, independently re-derived copy. Reads the run's own `RunStarted` off
+    /// The run's own `$RIGGER_RUN_BASE`: the SINGLE resolution the one build environment
+    /// ([`build_env`](Self::build_env), and through [`GateInputs::resolve`] every gate) carries
+    /// to every gate and every spawn - never a second, independently re-derived copy. Reads the run's own `RunStarted` off
     /// the live event stream and folds [`crate::run::current_run_base_tip`] over it: the run
     /// branch's tip commit sha AT THE MOMENT this run started, persisted once at mint
     /// (`RunStarted::base_tip`) and never re-resolved live - so a unit that lands mid-run
@@ -9507,12 +9509,15 @@ impl RunCtx<'_> {
     /// build cache variable is inherited untouched, matching `gate::Runner`'s existing
     /// "target_dir always wins, else inherit" precedence.
     ///
-    /// The SINGLE place every `SpawnOpts.env` is assembled from `build_env`: the four spawn
-    /// call sites ([`reviewer_spawn_opts`](Self::reviewer_spawn_opts) - and through it
+    /// The SINGLE place every `SpawnOpts.env` is assembled from `build_env`, so every spawn
+    /// carries `$RIGGER_RUN_BASE` beside every gate: the five spawn call sites
+    /// ([`reviewer_spawn_opts`](Self::reviewer_spawn_opts) - and through it
     /// [`spawn_sdet_author`](Self::spawn_sdet_author) - the single-lane implementer in
     /// [`run_single_stage`](Self::run_single_stage), each lane in
-    /// [`run_speculation`](Self::run_speculation), and [`re_plan`](Self::re_plan)) each pass
-    /// their own `dir` through this ONE fn so none can ever derive a disagreeing copy.
+    /// [`run_speculation`](Self::run_speculation), [`re_plan`](Self::re_plan) and
+    /// [`spawn_conflict_resolution_implementer`](Self::spawn_conflict_resolution_implementer))
+    /// each pass their own `dir` through this ONE fn so none can ever derive a disagreeing
+    /// copy.
     ///
     /// `cache` names WHICH of the unit's caches the spawn builds into: the unit's own
     /// [`worktree::UNIT_CACHE_PREFIX`] sibling for every spawn that builds the unit's tree (the
@@ -10087,12 +10092,9 @@ impl RunCtx<'_> {
             // build-environment authority's resolved wrapper/cache/incremental vars
             // (spec 65), same as every other gate this run's config resolves - and
             // the same machine-wide build budget, so this phase-boundary gate waits
-            // for a slot exactly like every inline gate does. Layered with
-            // `$RIGGER_RUN_BASE` too (spec 91), the SAME `run_base_env` resolution
-            // `run_gates` layers onto its own `build_env` - never a second copy.
-            let build_env = self
-                .build_env()?
-                .with_var("RIGGER_RUN_BASE", &self.run_base_env());
+            // for a slot exactly like every inline gate does. It carries
+            // `$RIGGER_RUN_BASE` through that same `build_env`, never a second copy.
+            let build_env = self.build_env()?;
             // The deferred gate measures the ONE integrated tree with no worktree
             // dir (empty `target_dir`, matching `run_gates`'s own "empty target"
             // shared-cache case) - so it holds the SAME shared build-cache guard

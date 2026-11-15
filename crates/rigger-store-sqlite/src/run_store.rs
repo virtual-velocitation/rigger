@@ -112,7 +112,7 @@ pub fn ensure_started(store: &dyn EventStore, criteria: &[String]) -> Result<Str
 /// `base_tip` is the run branch's tip commit sha AT THE MOMENT this run started: it
 /// flows through to [`start_fresh`] and is persisted in the RunStarted BODY as
 /// `RunStarted::base_tip`, read back by `current_run_base_tip` and exported as
-/// `$RIGGER_RUN_BASE` to every gate command. Unlike `base` (an operator-chosen REF such as
+/// `$RIGGER_RUN_BASE` to every gate command and every spawn. Unlike `base` (an operator-chosen REF such as
 /// `origin/main`, meaningful only at anchor time), this is the resolved commit the run branch
 /// actually anchored the run branch's tip at - what the check-in stage's gates diff the whole
 /// spec's work against, never a `git merge-base` with the run branch (already HEAD there,
@@ -194,7 +194,7 @@ pub fn ensure_started_pinned(
 ///
 /// `base_tip` is the run branch's tip commit sha AT THE MOMENT this run started,
 /// persisted in the new RunStarted's BODY as `RunStarted::base_tip` - read back by
-/// `current_run_base_tip` and exported to every gate command as `$RIGGER_RUN_BASE`, the
+/// `current_run_base_tip` and exported to every gate command and every spawn as `$RIGGER_RUN_BASE`, the
 /// coordinate the check-in stage's gates diff the whole spec's work against. Pass `""` from
 /// a path with no real run branch (an offline replay, the conductor's unpinned adopt-or-mint);
 /// an empty tip decodes back as `None` and a gate script's own `test -n "$RIGGER_RUN_BASE"` guard
