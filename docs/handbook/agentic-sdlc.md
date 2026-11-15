@@ -49,7 +49,7 @@ The planner reads code before planning. Most "new" work extends prior art; a pla
 
 ### Implementation: one unit, one worktree, one writer
 
-The **implementer** owns exactly one fully-specified unit inside an isolated git worktree. Its lifecycle is fixed: write the failing test, confirm RED, implement minimally, confirm GREEN, run the unit's named gates, commit. It cannot recurse (spawn sub-agents) and it cannot see or touch another unit's worktree - isolation is what makes fan-out safe.
+The **implementer** owns exactly one fully-specified unit inside an isolated git worktree. Its lifecycle is fixed: write the failing test, confirm RED, implement minimally, confirm GREEN, run the checks its change needs, commit; the workflow's gates run the full battery on the commit. It cannot recurse (spawn sub-agents) and it cannot see or touch another unit's worktree - isolation is what makes fan-out safe.
 
 What it *can* see is the shared memory: before writing code it grounds itself (`rigger ground`, `rigger graph --around <file>`), and while working it reads peers' live decisions (`rigger peers`) and records its own (`rigger emit DecisionMade ...`). File isolation with decision awareness is the core split: agents never touch each other's work, and never work blind to each other's reasoning.
 

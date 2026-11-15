@@ -207,3 +207,31 @@ jobs:
       # so the adapter's threads fit under it.
       - name: contract test (KurrentDB via testcontainers)
         run: cargo test -p rigger-store-sqlite --no-default-features eventstore::kurrentdb
+
+  # The cross-OS check (spec 125): the workspace compiles on Windows and on macOS, one leg per OS.
+  # No job runs a test there: this check is the compile of the macOS and Windows adapters. The check
+  # step runs under bash on every runner and exports an empty RUSTC_WRAPPER in its own shell, so
+  # cargo and any cargo it starts run no wrapper: .cargo/config.toml names a Unix shell script as
+  # its wrapper, and an empty environment value overrides it. The build script's version
+  # derivation degrades to `+unversioned` without go-gitsemver, so the job installs nothing else.
+  cross-os-check:
+    strategy:
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, as build-test checks out: the build script's provenance (`git describe`)
+          # names the nearest reachable tag, which a shallow checkout lacks.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Spec 93 criterion 3: `cargo check` runs crates/rigger-dash's build script, which
+          # cross-compiles crates/console-core for this target.
+          targets: wasm32-unknown-unknown
+      - name: check the workspace
+        shell: bash
+        run: |
+          export RUSTC_WRAPPER=
+          cargo check --workspace

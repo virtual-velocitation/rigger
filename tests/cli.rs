@@ -29784,6 +29784,28 @@ fn instructions_prints_a_built_in_layer_that_names_no_language() {
     );
 }
 
+/// Spec 125's THE IMPLEMENTER LEAVES THE GATES TO THE GATES, operator-facing: given a fresh
+/// project, when the operator runs `rigger instructions`, then the built-in layer it prints,
+/// whitespace-normalized, carries the working discipline's table-driven-tests check once and never
+/// the clause that sent an author to run the duplication gate itself.
+#[test]
+fn instructions_prints_a_table_check_that_asks_no_gate_run() {
+    use common::fixtures::{
+        assert_carries_each, printed_built_in_layer, DUPLICATION_GATE_CHECK, TABLE_CHECK,
+    };
+    let proj = temp_project();
+    let out = run_rigger_ok(proj.path(), &["instructions"]);
+    let built_in = rigger::wave::normalize_ws(printed_built_in_layer(&out));
+    for (sentence, times) in [(TABLE_CHECK, 1), (DUPLICATION_GATE_CHECK, 0)] {
+        assert_carries_each(
+            "the built-in layer `rigger instructions` prints",
+            &built_in,
+            &[sentence],
+            times,
+        );
+    }
+}
+
 /// Spec 120's THE COMMUNICATION DISCIPLINE IS A SHADOWABLE BUILT-IN, operator-facing: given a
 /// fresh project, when the operator runs `rigger instructions`, then the built-in layer it prints
 /// closes with the `communication` section carrying its checked-in source's text, the section
