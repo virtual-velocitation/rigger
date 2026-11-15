@@ -7,7 +7,8 @@
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
 //! bundled extraction under the extractors the project's workflow declares, whose fingerprint
-//! changes with the declaration.
+//! changes with the declaration; the show surface asks it for a declared file's definitions
+//! ([`ProjectExtractor::declared_defs`]), so a shown body is bounded as the store extracts it.
 
 use std::collections::{btree_map, BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -94,7 +95,7 @@ pub fn read_head(
 }
 
 /// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
-/// the code store's one read of the map. A workflow that cannot be read or fails its check
+/// the one read of the map, the code store's and the show surface's. A workflow that cannot be read or fails its check
 /// declares none, said on stderr as `rigger: extractors: {error}` in one write ([`whole_line`]),
 /// so the bundled grammars proceed alone.
 pub fn declared_extractors(root: &Path) -> BTreeMap<String, ExtractorDecl> {
