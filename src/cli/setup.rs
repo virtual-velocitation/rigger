@@ -5308,6 +5308,48 @@ mod tests {
         );
     }
 
+    /// Spec 125's THE IMPLEMENTER LEAVES THE GATES TO THE GATES: whitespace-normalized, each text
+    /// that tells an author how to hand over - the language-neutral `implementer.md` seed, this
+    /// repository's `rust-engineer.md` and the built-in working discipline's table-driven-tests
+    /// check - holds its sentence leaving the full battery to the workflow's gates once, and never
+    /// the sentence that sent the author to run a gate itself.
+    #[test]
+    fn the_implementer_leaves_the_gates_to_the_gates() {
+        let seed = SCAFFOLD_AGENTS
+            .iter()
+            .find(|(file, _)| *file == "implementer.md")
+            .map(|(_, text)| (*text).to_string())
+            .expect("SCAFFOLD_AGENTS seeds implementer.md");
+        for (at, text, holds, lacks) in [
+            (
+                "SCAFFOLD_AGENTS implementer.md",
+                seed,
+                "confirm GREEN, run the checks your change needs, commit. The workflow's gates \
+                 run the full battery on the commit.",
+                "run the named gates",
+            ),
+            (
+                ".rigger/agents/rust-engineer.md",
+                committed_persona("rust-engineer.md"),
+                "Commit when the checks your change needs pass; the gates run on your commit.",
+                "Commit when the gates pass.",
+            ),
+            (
+                "BUILTIN working-discipline",
+                shipped_builtin("working-discipline"),
+                crate::test_support::TABLE_CHECK,
+                "the project's duplication gate is green",
+            ),
+        ] {
+            let words = rigger::wave::normalize_ws(&text);
+            assert_eq!(
+                (words.matches(holds).count(), words.matches(lacks).count()),
+                (1, 0),
+                "{at} holds {holds:?} once and never {lacks:?}; it reads:\n{words}"
+            );
+        }
+    }
+
     /// rigger's core is agnostic to the gates a project wires: no built-in instruction entry,
     /// persona, helper or review-tier discipline it ships, and no production line of its own
     /// source, names mutation testing, its mutants, its sweep, its gate or its tool's

@@ -1,7 +1,7 @@
 //! Built-in instruction fixtures, shared by the instruction layer's unit tests, the conductor's
 //! prompt tests, the binary's shipped-text tests and the integration suites: the working-discipline
 //! body's section headings, the grounding method its one-pass section holds, the bounded-audit
-//! bullet and the gate-verb sentence its hand-over section holds, the lookup method its fan-out section holds and the review
+//! bullet, the gate-verb sentence and the table-driven-tests check its hand-over section holds, the lookup method its fan-out section holds and the review
 //! method its `## When you review` section holds; the
 //! communication body's sentences that state the cadence the task prompts leave to it; the
 //! critique method the adversary and adjudicator personas
@@ -48,6 +48,11 @@ pub const BOUNDED_AUDIT: [&str; 3] = [
 pub const GATE_VERB_REUSE: &str = "An author who wants a gate's verdict runs `rigger gate <id>` \
      after committing, and the driver reuses that verdict for the same commit instead of running \
      the gate again.";
+
+/// The Check sentence of the hand-over section's table-driven-tests bullet: an author checks its
+/// own added shapes and tables, and no gate run is asked of it.
+pub const TABLE_CHECK: &str = "Check: each shape you add was looked up where the project's test \
+     helpers live, and each behaviour your tests check over several values reads as one table.";
 
 /// The working-discipline body's review section heading.
 pub const WHEN_YOU_REVIEW_HEADING: &str = "## When you review";
