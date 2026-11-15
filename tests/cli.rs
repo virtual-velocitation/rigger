@@ -14525,21 +14525,20 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let tmp = scratch.to_str().unwrap();
     let mut child = common::fixtures::sleeper_in(&probe);
 
-    // Wait until the kernel reports the child rooted under the scratch root, so the scan
-    // validate runs is guaranteed to see it before we assert.
-    let appeared = (0..200).any(|_| {
-        if rigger::reap::processes_rooted_under(&scratch)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())
-        {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-        false
+    // Wait until the scan validate runs names the child rooted under the scratch root with its
+    // whole command. `spawn` returns while the child's exec may still be laying out its
+    // arguments: the OS already reports its working directory but no arguments yet. A scan that
+    // never names the whole command is left to the advisory assertion below, which shows what
+    // validate printed.
+    let whole = (child.id(), "sleep 300".to_string());
+    let mut rooted = Vec::new();
+    common::fixtures::wait_until(|| {
+        rooted = rigger::reap::processes_rooted_under(&scratch);
+        rooted.contains(&whole)
     });
     assert!(
-        appeared,
-        "precondition: the probe child is rooted under the scratch root"
+        rooted.iter().any(|(pid, _)| *pid == child.id()),
+        "precondition: the probe child is rooted under the scratch root; the scan names {rooted:?}"
     );
 
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
