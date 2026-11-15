@@ -33,6 +33,7 @@ use crate::config::{split_frontmatter, AgentDef, Config, ReviewPanel, ReviewStep
 use crate::contextgraph::query::referenced_id;
 use crate::contextgraph::TYPE_REVIEW_FINDING;
 use crate::eventstore::{Event, EventStore, ExpectedRevision};
+use crate::gate;
 use crate::instructions::Instruction;
 use crate::ledger::TYPE_UNIT_STATUS;
 use crate::prompt_surface::{
@@ -538,8 +539,8 @@ fn score_item(
 /// token and collect the findings it emits. The reviewer receives the item's code under review plus the SAME
 /// [`review_protocol`] the live loop appends, so it attributes each finding by its role
 /// token - its build cache flag read through the live loop's [`reviewer_carries_build_cache`]
-/// from the [`canary_opts`] dir, which owns no worktree, so the protocol carries no build cache
-/// sentence; the emit callback captures every `ReviewFinding` it emits (the cli driver
+/// over the empty build environment its [`canary_opts`] spawn carries, at that spawn's dir, which
+/// owns no worktree, so the protocol carries no build cache sentence; the emit callback captures every `ReviewFinding` it emits (the cli driver
 /// bridges a subprocess reviewer's stdout findings through the same callback). The second
 /// element of the returned pair is the spawn's ACTUALLY-resolved model id (MODEL PINNING
 /// criterion), sourced from `AgentResult::resolved_model`.
@@ -556,7 +557,10 @@ fn run_review_tier(
     let prompt = format!(
         "{}\n\n{}",
         review_header(item),
-        review_protocol(role, reviewer_carries_build_cache(&opts.dir))
+        review_protocol(
+            role,
+            reviewer_carries_build_cache(&gate::BuildEnv::default(), &opts.dir)
+        )
     );
     let (result, findings) = spawn_collecting(driver, agent, &prompt, &opts)?;
     Ok((findings, result.resolved_model))
@@ -621,8 +625,8 @@ fn canary_opts(
         title: String::new(),
         // A canary reviewer runs no build of its own (it judges a corpus snippet already
         // in the prompt, isolation: false, no worktree) - the shared build environment
-        // (spec 65) has nothing to reach here, so this stays empty rather than resolving
-        // config this spawn never uses.
+        // has nothing to reach here, so this stays empty, with no build cache, rather than
+        // resolving config this spawn never uses.
         env: Vec::new(),
         // A canary reviewer judges one synthetic corpus item alone, not a real unit's
         // multi-tier panel, so it carries no routed review roster (spec 67, criterion 4).
@@ -799,6 +803,7 @@ mod tests {
         assert!(opts.run_id.is_empty());
         assert!(opts.title.is_empty());
         assert!(opts.env.is_empty());
+        assert_eq!(opts.build_cache, "");
         assert!(opts.reviews.is_empty());
     }
 

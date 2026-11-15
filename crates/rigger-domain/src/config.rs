@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::failure;
 use crate::spawn::{ReviewKind, STEP_TOKEN_SEPARATOR};
@@ -286,6 +286,60 @@ pub struct RegenerateRule {
     pub paths: Vec<String>,
     #[serde(default)]
     pub run: String,
+}
+
+/// One extractor a project declares under `extractors:` (spec 125, THE EXTRACTORS KEY): the
+/// file extensions it reads, each without its leading dot, and the command that runs it. An
+/// absent key is its empty value, which [`check_extractors`] refuses.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ExtractorDecl {
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub run: String,
+}
+
+/// The one check of a workflow's `extractors:` (spec 125, THE EXTRACTORS KEY). It walks the
+/// declarations in name order and refuses the first malformed one, naming `extractors.<name>`: a
+/// name outside `[a-z0-9_-]+`, a `run` naming no command, an empty `extensions`, an extension
+/// that is empty or holds `.` or `/`, and an extension an earlier extractor in name order also
+/// lists. One extractor listing an extension twice is accepted.
+pub fn check_extractors(declared: &BTreeMap<String, ExtractorDecl>) -> Result<(), String> {
+    let mut owners: HashMap<&str, &str> = HashMap::new();
+    for (name, decl) in declared {
+        let well_named = !name.is_empty()
+            && name
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'_' | b'-'));
+        if !well_named {
+            return Err(format!(
+                "extractors.{name}: a name is one or more of a-z, 0-9, '_' and '-'"
+            ));
+        }
+        if decl.run.trim().is_empty() {
+            return Err(format!("extractors.{name}: run names no command"));
+        }
+        if decl.extensions.is_empty() {
+            return Err(format!("extractors.{name}: extensions lists no extension"));
+        }
+        for extension in &decl.extensions {
+            if extension.is_empty() || extension.contains(['.', '/']) {
+                return Err(format!(
+                    "extractors.{name}: extension {extension:?} is empty or holds '.' or '/'"
+                ));
+            }
+            match owners.insert(extension, name) {
+                Some(owner) if owner != name => {
+                    return Err(format!(
+                        "extractors.{name}: extension {extension:?} is also listed by extractors.{owner}"
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
 }
 
 /// One declarative failure rule (spec 10, unit 2), authored under
@@ -1119,40 +1173,38 @@ pub struct StoreConfig {
     pub url: String,
 }
 
-/// BuildConfig is the committed `build:` config the shared build-environment resolver
-/// reads (spec 65 - one build-environment authority): a single resolver
-/// ([`crate::gate::BuildEnv::resolve`]) derives the actual env vars from these three
-/// fields (`wrapper`/`cache_dir` as one facet, `jobs` as an independent one - see
-/// below) and applies them to gate builds (run via [`crate::gate::Runner::run`] by
-/// [`crate::gate::ExecRunner`]) and the process hosts' agent launches - the
-/// two sites wired so far (see [`crate::gate::BuildEnv`] for the disclosed gap on
-/// the remaining agent-spawn paths). Plain config-shape data only - the resolution
-/// logic itself (verbatim wrapper passthrough today; `auto` PATH-probing and the
-/// named-but-absent hard error are spec 65 unit 2's job) lives in `gate.rs`, not
-/// here, so this stays a pure value type like its siblings.
+/// BuildConfig is the committed `build:` config: the build environment rigger exports to every
+/// gate and every spawn ([`env`](Self::env), held and resolved by the one check
+/// `gate::BuildEnv::declared` in the gate adapter), the jobs count its `{jobs}` placeholder
+/// names, and the machine-wide build budget. Plain config-shape data only - the check and the
+/// resolution live in `gate.rs`, not here, so this stays a pure value type like its siblings.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BuildConfig {
-    /// The `RUSTC_WRAPPER` binary name, `auto` to probe PATH, or `off`/empty (the
-    /// default) to disable the shared-cache layer entirely.
+    /// RETIRED: a compilation-cache wrapper's binary name. rigger exports only what
+    /// [`env`](Self::env) declares, so no run reads it; kept as a field so a workflow still
+    /// carrying the key parses.
     #[serde(default)]
     pub wrapper: String,
-    /// The shared compilation-cache directory. Empty (the default) resolves to
-    /// `<state home>/rigger/build-cache` (the resolver's own default), so every
-    /// project and worktree on the machine shares one cache absent explicit
-    /// configuration.
+    /// RETIRED: a compilation-cache directory. rigger exports only what [`env`](Self::env)
+    /// declares, so no run reads it; kept as a field so a workflow still carrying the key
+    /// parses.
     #[serde(default)]
     pub cache_dir: String,
-    /// The `CARGO_BUILD_JOBS` cap on each build's OWN internal parallelism (spec
-    /// 65, JOBS CAP - unit 4). `0` (the default) means unset, matching this
-    /// config's existing zero-as-unset convention (see
-    /// [`Defaults::budget`]/[`Defaults::max_retries`]/[`Defaults::speculation_width`]):
-    /// the ambient/cargo default jobs count is left untouched, byte-for-byte
-    /// back-compatible with every workflow committed before this field existed. A
-    /// positive value reaches every build via the ONE resolver
-    /// ([`crate::gate::BuildEnv::resolve`]), independent of `wrapper`, so
-    /// `build.max_concurrent` (unit 3's slot budget) times `jobs` can be sized to
-    /// the machine.
+    /// The variables rigger exports to every gate and every spawn, by name, and nothing else of
+    /// its build environment. Empty (the default) exports none. A name is a letter or
+    /// underscore followed by letters, digits and underscores, and never one rigger sets itself
+    /// on a gate or a spawn. A value is a template: literal text, `{build_cache}` (the site's
+    /// build cache), `{jobs}` ([`jobs`](Self::jobs) in decimal when above 0), and `{{` and `}}`
+    /// for a literal brace. At a site a variable is exported only when every placeholder in it
+    /// resolves non-empty there.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// The jobs count a declared variable's `{jobs}` placeholder resolves to. `0` (the
+    /// default) means unset, matching this config's existing zero-as-unset convention (see
+    /// [`Defaults::budget`]/[`Defaults::max_retries`]/[`Defaults::speculation_width`]): a
+    /// variable using `{jobs}` is then exported nowhere, so a build's own default parallelism
+    /// stays untouched. `build.max_concurrent` times `jobs` can be sized to the machine.
     #[serde(default)]
     pub jobs: u32,
     /// The machine-wide build concurrency budget (spec 65): how many actual compiler
@@ -1215,15 +1267,12 @@ pub struct Workflow {
     /// deserializer treats `off` as a plain scalar, not a boolean).
     #[serde(default)]
     pub dash: String,
-    /// The shared build-environment config (spec 65): `wrapper` / `cache_dir`, read
-    /// by the ONE resolver ([`crate::gate::BuildEnv::resolve`]) that derives the env
-    /// applied to gate builds and the process hosts' agent launches - the two
-    /// sites wired so far, not yet every agent-spawn path in the crate (see
-    /// [`crate::gate::BuildEnv`]). Absent (the common case) resolves to no wrapper -
-    /// today's ambient-environment behavior, unchanged - but `max_concurrent` still
-    /// resolves to its documented default of 4 (`default_build_config`, not the plain
-    /// derived `BuildConfig::default()`, which a whole-section-absent `build:` would
-    /// otherwise silently fall back to).
+    /// The build config ([`BuildConfig`]): the declared build environment every gate and spawn
+    /// carries, the jobs count and the build budget. Absent (the common case) declares no
+    /// variable, so a gate or spawn inherits rigger's environment unchanged, but
+    /// `max_concurrent` still resolves to its documented default of 4 (`default_build_config`,
+    /// not the plain derived `BuildConfig::default()`, which a whole-section-absent `build:`
+    /// would otherwise silently fall back to).
     #[serde(default = "default_build_config")]
     pub build: BuildConfig,
     #[serde(default)]
@@ -1237,6 +1286,11 @@ pub struct Workflow {
     /// so every conflict re-parks the implementer exactly as it would otherwise.
     #[serde(default)]
     pub regenerate: Vec<RegenerateRule>,
+    /// The extractors the project declares by name (spec 125, THE EXTRACTORS KEY), checked by
+    /// [`check_extractors`]; absent (every workflow.yml committed before this key existed) is the
+    /// empty map, under which the bundled grammars extract every file alone.
+    #[serde(default)]
+    pub extractors: BTreeMap<String, ExtractorDecl>,
 }
 
 impl Workflow {
@@ -1866,6 +1920,52 @@ mod tests {
             let defaults: Defaults = parse_yaml_naming_unknown_keys(yaml)
                 .unwrap_or_else(|e| panic!("parse {yaml}: {e}"));
             assert_eq!(defaults.declared_test_author(), declared, "{yaml}");
+        }
+    }
+
+    /// THE EXTRACTORS KEY parses into the workflow's declared map: absent is the empty map, a
+    /// declaration is its name, extensions and run as written, and a field an extractor does not
+    /// take is refused at its dotted path.
+    #[test]
+    fn the_extractors_key_parses_into_the_declared_map_refusing_an_unknown_field() {
+        let lua = ExtractorDecl {
+            extensions: vec!["lua".to_string(), "luau".to_string()],
+            run: "lua facts.lua".to_string(),
+        };
+        for (workflow, declared) in [
+            ("{}", Ok(BTreeMap::new())),
+            (
+                "extractors: { lua_5-4: { extensions: [lua, luau], run: lua facts.lua } }",
+                Ok(BTreeMap::from([("lua_5-4".to_string(), lua)])),
+            ),
+            (
+                "extractors: { zig: { extensions: [zig], run: zig-tags, args: [] } }",
+                Err("extractors.zig.args: unknown key".to_string()),
+            ),
+        ] {
+            let parsed = parse_yaml_naming_unknown_keys::<Workflow>(workflow);
+            assert_eq!(parsed.map(|wf| wf.extractors), declared, "{workflow}");
+        }
+    }
+
+    /// `check_extractors` accepts each well-formed `extractors:` declaration and refuses each
+    /// malformed one THE EXTRACTORS KEY lists with its exact message, naming `extractors.<name>`.
+    #[test]
+    fn check_extractors_accepts_each_well_formed_declaration_and_refuses_each_malformed_one() {
+        use crate::test_support::{
+            workflow_declaring_extractors, ACCEPTED_EXTRACTORS, EXTRACTOR_REFUSALS,
+        };
+        let checked = |mapping: &str| {
+            let workflow = workflow_declaring_extractors(mapping);
+            let wf: Workflow = parse_yaml_naming_unknown_keys(&workflow)
+                .unwrap_or_else(|e| panic!("parse {workflow}: {e}"));
+            check_extractors(&wf.extractors)
+        };
+        for mapping in ACCEPTED_EXTRACTORS {
+            assert_eq!(checked(mapping), Ok(()), "{mapping}");
+        }
+        for (mapping, refusal) in EXTRACTOR_REFUSALS {
+            assert_eq!(checked(mapping), Err(refusal.to_string()), "{mapping}");
         }
     }
 

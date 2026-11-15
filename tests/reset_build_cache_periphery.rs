@@ -42,6 +42,7 @@ use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
 use common::cli::WorkflowFixture;
 use common::cli::ISOLATED_WORKER;
+use common::fixtures::build_declaring;
 use common::fixtures::count_of_type;
 use common::fixtures::gate_outcomes;
 use common::fixtures::write_file;
@@ -480,7 +481,9 @@ fn a_gate_whose_guard_parent_cannot_be_created_faults_runs_nothing_and_writes_no
     // (`gate::ExecRunner::run`) against a real project's shared cache, holding a pre-existing
     // build: the guard's parent lies under a regular file, so the probe cannot create it, and
     // the run must return the `ProbeFault` naming the guard path and the OS error the create
-    // met, never run the gate command, and leave the shared cache exactly as it was.
+    // met, never run the gate command, and leave the shared cache exactly as it was. The build
+    // environment declares `CARGO_TARGET_DIR` over the gate's build cache, so a gate command that
+    // did run would write into the shared cache.
     let project = temp_store_project();
     let root = project.path();
     let cache = scratch_entry(root, SHARED_CACHE);
@@ -511,7 +514,11 @@ fn a_gate_whose_guard_parent_cannot_be_created_faults_runs_nothing_and_writes_no
         cache.to_str().unwrap(),
         bad_guard.to_str().unwrap(),
         "",
-        &BuildEnv::default(),
+        &BuildEnv::declared(&build_declaring(
+            &[("CARGO_TARGET_DIR", "{build_cache}")],
+            0,
+        ))
+        .unwrap(),
         &BuildBudget::default(),
     );
 

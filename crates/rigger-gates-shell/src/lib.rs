@@ -26,9 +26,14 @@ use rigger_process::{holders, reap};
 extern crate self as rigger;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/build_env.rs"]
+mod build_env_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/host.rs"]
 mod host_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
+    pub use crate::build_env_fixtures::*;
     pub use crate::host_fixtures::*;
 }

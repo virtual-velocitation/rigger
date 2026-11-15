@@ -82,10 +82,10 @@ impl Driver {
         for (k, v) in harness_env(&opts.id) {
             cmd.env(k, v);
         }
-        // The ONE build-environment authority's second injection site (spec 65): every
-        // var the resolver derived (empty when no wrapper is configured, applying
-        // nothing) so this agent's OWN `cargo test`/`cargo build` invocations hit the
-        // same compilation cache under the same settings a gate build gets.
+        // The ONE build-environment authority's second injection site: every variable the
+        // workflow's `build.env` exports at this spawn's site (empty when it declares none,
+        // applying nothing), so this agent's OWN `cargo test`/`cargo build` invocations see
+        // what a gate build sees.
         for (k, v) in &opts.env {
             cmd.env(k, v);
         }
@@ -494,13 +494,13 @@ thinking out loud, not json\n\
     #[cfg(unix)]
     #[test]
     fn spawn_applies_opts_env_to_the_subprocess() {
-        // The ONE build-environment authority's second injection site (spec 65): the
-        // conductor resolves the shared wrapper/cache/incremental vars into
-        // `SpawnOpts.env`, and this driver must apply EVERY one of them to the spawned
-        // agent process - the same as `gate::ExecRunner::run` does for a gate build - so
-        // an agent's own `cargo test` invocation hits the same compilation cache. A
-        // fixture "agent" echoes what it actually sees; empty `env` (the default,
-        // wrapper off) must not inject anything either.
+        // The ONE build-environment authority's second injection site (spec 125): the
+        // conductor resolves the workflow's declared build environment into
+        // `SpawnOpts.env`, and this driver must apply EVERY pair to the spawned agent
+        // process - the same as `gate::ExecRunner::run` does for a gate build - so an
+        // agent's own `cargo test` invocation builds under the same settings. A fixture
+        // "agent" echoes what it actually sees; an empty `env` (nothing declared) must not
+        // inject anything either.
         let bin = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../tests/fixtures/env-echo-agent.sh")
             .to_string_lossy()

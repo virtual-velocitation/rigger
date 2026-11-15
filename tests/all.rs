@@ -266,6 +266,7 @@ mod validate_advisories;
 mod validate_behind_the_tree_periphery;
 mod validate_footprint_default_scratch_root_periphery;
 mod watchdog_cli_periphery;
+mod workflow_declares_extractors_periphery;
 mod workflow_definition_and_js_constants_periphery;
 mod working_directory_audit;
 mod worktree_create_heal_lock_boundary_periphery;

@@ -1,17 +1,19 @@
 //! Periphery (contract / API / integration) tests for spec 77 criterion 1: ONE BUILD
-//! LOCATION - the per-unit `CARGO_TARGET_DIR` `RunCtx::spawn_env` (src/conductor.rs)
-//! adds to every spawned agent's own process environment, and its real-world
-//! consequence: a real `cargo build` run BY that agent, inside its worktree, must land
-//! in the per-unit cache instead of embedding a `target/` dir in the worktree itself.
+//! LOCATION - the per-unit `CARGO_TARGET_DIR` a workflow declaring
+//! `build.env: {CARGO_TARGET_DIR: "{build_cache}"}` has `RunCtx::spawn_env`
+//! (crates/rigger-conductor/src/conductor.rs) export into a spawned agent's own process
+//! environment, and its real-world consequence: a real `cargo build` run BY that agent,
+//! inside its worktree, must land in the per-unit cache instead of embedding a `target/`
+//! dir in the worktree itself.
 //!
 //! WHAT THE INSIDE-OUT TESTS ARE STRUCTURALLY BLIND TO.
 //!
-//! `src/conductor.rs`'s own tests
-//! (`spawn_env_adds_the_per_unit_cargo_target_dir_only_for_a_real_unit_worktree`,
+//! The conductor's own tests
+//! (`spawn_env_answers_the_declared_variables_over_the_spawns_unit_sibling`,
 //! `one_build_environment_authority_reaches_both_a_gate_build_and_an_agent_spawn`) prove
-//! the Rust-level `(name, value)` pair `spawn_env` derives, and that it reaches a
+//! the Rust-level `(name, value)` pairs `spawn_env` derives, and that they reach a
 //! `SpawnOpts.env` a fake/recording driver captured - they never observe a REAL OS
-//! process actually receiving it, and never observe what a real `cargo build` DOES with
+//! process actually receiving one, and never observe what a real `cargo build` DOES with
 //! it. A bug in `Command::env`'s ordering, `driver::cli::Driver` silently dropping the
 //! var before `Command::output()`, or `CARGO_TARGET_DIR` reaching the subprocess with the
 //! wrong VALUE would pass every one of those tests unnoticed while still leaking a
@@ -26,7 +28,7 @@
 //!    (`tests/fixtures/cargo-build-agent.sh`) with its cwd set to a REAL git worktree
 //!    (`worktree::Worktree::create`, the same entry point `rigger run` uses) and
 //!    `SpawnOpts.env` carrying the SAME `CARGO_TARGET_DIR` value production code derives
-//!    for that worktree (`worktree::unit_cache_sibling`). The agent runs a genuine `cargo
+//!    for that worktree under that declaration (`worktree::unit_cache_sibling`). The agent runs a genuine `cargo
 //!    build` against a minimal crate seeded into the worktree; the test reads the REAL
 //!    filesystem back afterward: the worktree holds no `target/` dir, and the per-unit
 //!    cache dir DOES hold the build's actual output - never a vacuous pass where the
@@ -34,9 +36,9 @@
 //! 2. `a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
 //!    subprocess`: the mirror-image negative case, at the same real-subprocess
 //!    granularity - a spawn whose `dir` derives no per-unit cache (empty, the
-//!    `isolation: none` / repo-less shape) must leave `CARGO_TARGET_DIR` untouched in a
-//!    real subprocess's environment, exactly mirroring `gate::Runner`'s existing
-//!    "target_dir always wins, else inherit" contract at the gate boundary.
+//!    `isolation: none` / repo-less shape) gets no `{build_cache}` variable, so it must
+//!    leave `CARGO_TARGET_DIR` untouched in a real subprocess's environment, the variable
+//!    a declaration names left to inherit wherever its placeholder does not resolve.
 
 mod common;
 
@@ -65,8 +67,8 @@ fn seed_minimal_crate(dir: &str) {
 }
 
 // `env_test_lock()` serializes the two tests in this file against the same POSIX getenv/setenv hazard
-// `env_test_lock` (`tests/build_env_authority_periphery.rs:213-219`) and `TMPDIR_LOCK`
-// (`tests/build_budget_slots_periphery.rs:247`) already guard elsewhere: `cargo test`
+// `env_test_lock` (`tests/common/mod.rs`) and `TMPDIR_LOCK`
+// (`tests/build_budget_slots_periphery.rs`) already guard elsewhere: `cargo test`
 // runs every test in this binary as concurrent threads by default, and
 // `a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_
 // subprocess` calls `std::env::remove_var("CARGO_TARGET_DIR")` while its sibling
@@ -93,9 +95,9 @@ fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktre
     .expect("create a real unit worktree");
     seed_minimal_crate(&worktree.dir);
 
-    // The exact per-unit cache `RunCtx::spawn_env` derives for this worktree - the SAME
-    // single-source `unit_cache_sibling` production code uses, so this test can never
-    // silently drift from the real derivation.
+    // The exact per-unit cache `RunCtx::spawn_env` resolves `{build_cache}` to for this
+    // worktree - the SAME single-source `unit_cache_sibling` production code uses, so this
+    // test can never silently drift from the real derivation.
     let target_dir =
         unit_cache_sibling(&worktree.dir).expect("a unit worktree dir must derive a cache sibling");
     assert!(
@@ -124,8 +126,8 @@ fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktre
         stage: "probe".into(),
         dir: worktree.dir.clone(),
         isolation: true,
-        // The exact env `RunCtx::spawn_env` would produce for this worktree with no
-        // wrapper configured: only its own per-unit CARGO_TARGET_DIR.
+        // The exact env `RunCtx::spawn_env` produces for this worktree under a workflow
+        // declaring only `CARGO_TARGET_DIR: "{build_cache}"`: its own per-unit cache.
         env: vec![("CARGO_TARGET_DIR".to_string(), target_dir.clone())],
         ..SpawnOpts::new(test_spawn_host())
     };
@@ -158,8 +160,8 @@ fn a_real_cargo_build_the_agent_runs_lands_in_the_per_unit_cache_not_the_worktre
 fn a_dir_with_no_per_unit_cache_never_forces_cargo_target_dir_onto_a_real_agent_subprocess() {
     // The negative mirror, at the same real-subprocess granularity as the positive test
     // above: a spawn whose `dir` is not a unit worktree (empty here - the `isolation:
-    // none` / repo-less shape `unit_cache_sibling` also returns None for) gets an empty
-    // `env` from `RunCtx::spawn_env` in production, so this test drives the real driver
+    // none` / repo-less shape `unit_cache_sibling` also returns None for) gets no
+    // `{build_cache}` variable from `RunCtx::spawn_env` in production, so this test drives the real driver
     // with that same empty env and asserts the real subprocess sees NO CARGO_TARGET_DIR -
     // neither a stale value forced in by the driver itself nor one leftover from this test
     // process's own ambient environment.
