@@ -76,6 +76,8 @@ pub use shown::*;
 pub use spawn::*;
 
 #[cfg(any(feature = "store", not(feature = "core")))]
+mod build_cache_guard;
+#[cfg(any(feature = "store", not(feature = "core")))]
 mod canary;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod conductor;
@@ -101,6 +103,8 @@ mod sqlite;
 mod store;
 #[cfg(any(feature = "store", not(feature = "core")))]
 mod write_lock;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use build_cache_guard::*;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use canary::*;
 #[cfg(any(feature = "store", not(feature = "core")))]

@@ -16,7 +16,7 @@ use crate::common;
 
 use std::path::Path;
 
-use common::cli::{committed_project, emit_refused, run_rigger_envs, with_run_store};
+use common::cli::{committed_project, emit_refused, rigger_in, run_rigger_envs, with_run_store};
 use rigger::eventstore::{Direction, Event};
 use rigger::run::STREAM;
 
@@ -24,17 +24,6 @@ use rigger::run::STREAM;
 /// no slot from a machine-wide pool.
 const GATE_G: &str =
     "build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"true\"\n    kind: core\n";
-
-/// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
-/// (stdout, stderr, success).
-fn rigger_in(root: &Path, scratch: &Path, args: &[&str]) -> (String, String, bool) {
-    let scratch = scratch.to_str().unwrap();
-    run_rigger_envs(
-        root,
-        args,
-        &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
-    )
-}
 
 /// Every GateVerdict in `root`'s store.
 fn gate_verdicts(root: &Path) -> Vec<Event> {

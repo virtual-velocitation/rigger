@@ -98,6 +98,17 @@ pub fn committed_project(workflow: &str) -> (tempfile::TempDir, tempfile::TempDi
     (root, short_scratch())
 }
 
+/// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
+/// (stdout, stderr, success).
+pub fn rigger_in(root: &Path, scratch: &Path, args: &[&str]) -> (String, String, bool) {
+    let scratch = scratch.to_str().unwrap();
+    run_rigger_envs(
+        root,
+        args,
+        &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
+    )
+}
+
 /// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
 /// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
 /// only about a hundred bytes, which a long `TMPDIR` would exceed.

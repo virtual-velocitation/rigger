@@ -668,7 +668,7 @@ mod tests {
     use super::*;
     use crate::subprocess::is_executable_file;
     use crate::test_support::{
-        build_declaring, wait_until_for, DECLARED_BJL, REFUSED_DECLARATIONS,
+        build_declaring, try_exclusive_lock, wait_until_for, DECLARED_BJL, REFUSED_DECLARATIONS,
     };
 
     fn gate(autonomy: Autonomy, passes: usize) -> Gate {
@@ -1268,14 +1268,6 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    /// An exclusive try-lock on the guard at `path` through a second open of it, as
-    /// `rigger reset --build-cache` takes one: `Ok` when no process holds the guard, else the
-    /// refusal's OS error code. The lock, when taken, is released as the open closes.
-    fn try_exclusive_lock(path: &std::path::Path) -> Result<(), Option<i32>> {
-        let guard = open_build_cache_guard(path).expect("a second open of the guard");
-        fs2::FileExt::try_lock_exclusive(&guard).map_err(|e| e.raw_os_error())
-    }
-
     /// Spec 125 criterion 10 (THE SHELL AND THE LOCK ARE PORTABLE): the shared lock a guarded
     /// gate takes belongs to every process its command starts, not to the gate's run alone. A
     /// command that backgrounds a child with its stdout and stderr sent away from the gate's
@@ -1291,11 +1283,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         std::fs::write(&hold, b"").expect("write the hold marker");
         let res = ExecRunner
             .run(
-                &gate_cmd(&format!(
-                    "(i=0; while [ -e '{}' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); \
-                     done) >/dev/null 2>&1 &",
-                    hold.display()
-                )),
+                &gate_cmd(&crate::test_support::background_hold_command(&hold)),
                 "",
                 "",
                 "",
