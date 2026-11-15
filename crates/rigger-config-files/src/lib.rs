@@ -1,8 +1,8 @@
 //! Rigger's operator-tree adapter, ring 3 of the workspace: the loaded harness configuration and
 //! the readers of the operator's `.rigger/` tree (agent definitions, the workflow, the instruction
 //! layer and the lightweight workflow probes). It knows the filesystem, `PATH` (through the gate
-//! adapter's build-environment probes) and the domain; the root `rigger` crate re-exports every
-//! module under its historical path.
+//! adapter's requirement resolver) and the domain; the root `rigger` crate re-exports every module
+//! under its historical path.
 
 pub mod config;
 /// The write half of [`config`] (spec 93, criterion 1): see that module's own doc.

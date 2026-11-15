@@ -1119,40 +1119,38 @@ pub struct StoreConfig {
     pub url: String,
 }
 
-/// BuildConfig is the committed `build:` config the shared build-environment resolver
-/// reads (spec 65 - one build-environment authority): a single resolver
-/// ([`crate::gate::BuildEnv::resolve`]) derives the actual env vars from these three
-/// fields (`wrapper`/`cache_dir` as one facet, `jobs` as an independent one - see
-/// below) and applies them to gate builds (run via [`crate::gate::Runner::run`] by
-/// [`crate::gate::ExecRunner`]) and the process hosts' agent launches - the
-/// two sites wired so far (see [`crate::gate::BuildEnv`] for the disclosed gap on
-/// the remaining agent-spawn paths). Plain config-shape data only - the resolution
-/// logic itself (verbatim wrapper passthrough today; `auto` PATH-probing and the
-/// named-but-absent hard error are spec 65 unit 2's job) lives in `gate.rs`, not
-/// here, so this stays a pure value type like its siblings.
+/// BuildConfig is the committed `build:` config: the build environment rigger exports to every
+/// gate and every spawn ([`env`](Self::env), held and resolved by the one check
+/// `gate::BuildEnv::declared` in the gate adapter), the jobs count its `{jobs}` placeholder
+/// names, and the machine-wide build budget. Plain config-shape data only - the check and the
+/// resolution live in `gate.rs`, not here, so this stays a pure value type like its siblings.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct BuildConfig {
-    /// The `RUSTC_WRAPPER` binary name, `auto` to probe PATH, or `off`/empty (the
-    /// default) to disable the shared-cache layer entirely.
+    /// RETIRED: a compilation-cache wrapper's binary name. rigger exports only what
+    /// [`env`](Self::env) declares, so no run reads it; kept as a field so a workflow still
+    /// carrying the key parses.
     #[serde(default)]
     pub wrapper: String,
-    /// The shared compilation-cache directory. Empty (the default) resolves to
-    /// `<state home>/rigger/build-cache` (the resolver's own default), so every
-    /// project and worktree on the machine shares one cache absent explicit
-    /// configuration.
+    /// RETIRED: a compilation-cache directory. rigger exports only what [`env`](Self::env)
+    /// declares, so no run reads it; kept as a field so a workflow still carrying the key
+    /// parses.
     #[serde(default)]
     pub cache_dir: String,
-    /// The `CARGO_BUILD_JOBS` cap on each build's OWN internal parallelism (spec
-    /// 65, JOBS CAP - unit 4). `0` (the default) means unset, matching this
-    /// config's existing zero-as-unset convention (see
-    /// [`Defaults::budget`]/[`Defaults::max_retries`]/[`Defaults::speculation_width`]):
-    /// the ambient/cargo default jobs count is left untouched, byte-for-byte
-    /// back-compatible with every workflow committed before this field existed. A
-    /// positive value reaches every build via the ONE resolver
-    /// ([`crate::gate::BuildEnv::resolve`]), independent of `wrapper`, so
-    /// `build.max_concurrent` (unit 3's slot budget) times `jobs` can be sized to
-    /// the machine.
+    /// The variables rigger exports to every gate and every spawn, by name, and nothing else of
+    /// its build environment. Empty (the default) exports none. A name is a letter or
+    /// underscore followed by letters, digits and underscores, and never one rigger sets itself
+    /// on a gate or a spawn. A value is a template: literal text, `{build_cache}` (the site's
+    /// build cache), `{jobs}` ([`jobs`](Self::jobs) in decimal when above 0), and `{{` and `}}`
+    /// for a literal brace. At a site a variable is exported only when every placeholder in it
+    /// resolves non-empty there.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    /// The jobs count a declared variable's `{jobs}` placeholder resolves to. `0` (the
+    /// default) means unset, matching this config's existing zero-as-unset convention (see
+    /// [`Defaults::budget`]/[`Defaults::max_retries`]/[`Defaults::speculation_width`]): a
+    /// variable using `{jobs}` is then exported nowhere, so a build's own default parallelism
+    /// stays untouched. `build.max_concurrent` times `jobs` can be sized to the machine.
     #[serde(default)]
     pub jobs: u32,
     /// The machine-wide build concurrency budget (spec 65): how many actual compiler
@@ -1215,15 +1213,12 @@ pub struct Workflow {
     /// deserializer treats `off` as a plain scalar, not a boolean).
     #[serde(default)]
     pub dash: String,
-    /// The shared build-environment config (spec 65): `wrapper` / `cache_dir`, read
-    /// by the ONE resolver ([`crate::gate::BuildEnv::resolve`]) that derives the env
-    /// applied to gate builds and the process hosts' agent launches - the two
-    /// sites wired so far, not yet every agent-spawn path in the crate (see
-    /// [`crate::gate::BuildEnv`]). Absent (the common case) resolves to no wrapper -
-    /// today's ambient-environment behavior, unchanged - but `max_concurrent` still
-    /// resolves to its documented default of 4 (`default_build_config`, not the plain
-    /// derived `BuildConfig::default()`, which a whole-section-absent `build:` would
-    /// otherwise silently fall back to).
+    /// The build config ([`BuildConfig`]): the declared build environment every gate and spawn
+    /// carries, the jobs count and the build budget. Absent (the common case) declares no
+    /// variable, so a gate or spawn inherits rigger's environment unchanged, but
+    /// `max_concurrent` still resolves to its documented default of 4 (`default_build_config`,
+    /// not the plain derived `BuildConfig::default()`, which a whole-section-absent `build:`
+    /// would otherwise silently fall back to).
     #[serde(default = "default_build_config")]
     pub build: BuildConfig,
     #[serde(default)]

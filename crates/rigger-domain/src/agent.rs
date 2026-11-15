@@ -155,20 +155,21 @@ pub struct SpawnOpts {
     /// Empty for a stage with no criterion (a plan/canary spawn), which then serializes
     /// exactly as before - a purely additive field the blocking drivers ignore.
     pub title: String,
-    /// The resolved build environment - `(name, value)` env vars this spawn's agent
-    /// process must carry, assembled by the SINGLE `RunCtx::spawn_env` fn from two
-    /// independent facets: spec 65's ONE build-environment authority
-    /// ([`gate::BuildEnv::vars`], empty when no wrapper is configured - today's
-    /// ambient-environment behavior, unchanged), so its OWN `cargo test`/`cargo build`
-    /// invocations hit the same wrapper cache under the same settings a gate build
-    /// gets; PLUS, unconditionally, spec 77 criterion 1's per-unit
-    /// [`BUILD_CACHE_ENV`](crate::spawn::BUILD_CACHE_ENV) (absent when this spawn's `dir`
-    /// has no unit sibling, so a standalone review spawn, `re_plan`'s planner or a canary spawn
-    /// carries none), so those SAME invocations land in the one per-unit cache a gate build
-    /// for that `dir` gets, never an embedded `target/` dir inside the worktree. The blocking cli driver
-    /// applies every pair to its spawned `Command`; a driver with no subprocess of its
-    /// own (a test double) may ignore it.
+    /// The spawn's build environment - the `(name, value)` env vars this spawn's agent
+    /// process must carry, assembled by the SINGLE `RunCtx::spawn_env` fn: the workflow's
+    /// declared `build.env` resolved over the spawn's site cache
+    /// ([`build_cache`](Self::build_cache)), then the run base and the gate socket when the
+    /// run has them. With nothing declared it carries no build variable, so the agent's own
+    /// builds inherit rigger's environment unchanged. The blocking cli driver applies every
+    /// pair to its spawned `Command`; a driver with no subprocess of its own (a test double)
+    /// may ignore it.
     pub env: Vec<(String, String)>,
+    /// The build cache [`env`](Self::env) resolves `{build_cache}` over: the spawn's unit
+    /// sibling cache when an exported variable uses `{build_cache}`, else empty (nothing
+    /// declared uses it, or this spawn's `dir` has no unit sibling, so a standalone review
+    /// spawn, `re_plan`'s planner or a canary spawn carries none). A parking driver records it
+    /// as the request's `cargo_target_dir`.
+    pub build_cache: String,
     /// The routed review roster (spec 67, criterion 4): the role tokens of the spawns of
     /// every review step before this spawn's ([`step_roster`](crate::review::step_roster)),
     /// so a later adversary step's carries the lens and adversary tokens before it and the
@@ -221,6 +222,7 @@ impl SpawnOpts {
             run_id: String::new(),
             title: String::new(),
             env: Vec::new(),
+            build_cache: String::new(),
             reviews: Vec::new(),
             settings_json: String::new(),
             host,
@@ -260,14 +262,9 @@ pub fn spawn_request(agent: &AgentDef, prompt: &str, opts: &SpawnOpts) -> SpawnR
         // adversary/adjudicator roster onto the parked request, the same additive seam
         // `title` establishes, so the persisted request carries it for a reader to render.
         reviews: opts.reviews.clone(),
-        // The build location the conductor chose (`spawn_env`), recorded so a driver that
-        // cannot set the worker's environment names the same directory.
-        cargo_target_dir: opts
-            .env
-            .iter()
-            .find(|(name, _)| name == crate::spawn::BUILD_CACHE_ENV)
-            .map(|(_, dir)| dir.clone())
-            .unwrap_or_default(),
+        // The build cache the conductor chose (`spawn_env`), recorded so every reader of the
+        // spawn names the same directory.
+        cargo_target_dir: opts.build_cache.clone(),
     }
 }
 

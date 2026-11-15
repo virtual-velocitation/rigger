@@ -853,21 +853,15 @@ impl GreenDigests {
     }
 }
 
-/// The build environment every gate of `cfg` builds under (spec 65): the configured wrapper and
-/// cache layer resolved into the [`gate::BuildEnv`] a gate and an agent's spawn both carry, with
-/// `run_base` as [`crate::spawn::RUN_BASE_ENV`] (empty adds nothing). The one resolution
-/// [`RunCtx::build_env`] and [`GateInputs::resolve`] share, so every gate and every spawn of a
-/// run carries the same run base; its `Err` is the config's own.
-fn build_env_of(cfg: &Config, run_base: &str) -> Result<gate::BuildEnv, Error> {
-    let wrapper =
-        gate::resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir)
-            .map_err(|e| Error(e.to_string()))?;
-    Ok(gate::BuildEnv::resolve(
-        wrapper.as_deref().unwrap_or(""),
-        &cfg.workflow.build.cache_dir,
-        cfg.workflow.build.jobs,
-    )
-    .with_var(crate::spawn::RUN_BASE_ENV, run_base))
+/// The build environment every gate and spawn of `cfg` carries: the workflow's declared
+/// `build.env`, checked by [`gate::BuildEnv::declared`], with `run_base` as
+/// [`crate::spawn::RUN_BASE_ENV`] (empty adds nothing). The one resolution [`RunCtx::build_env`],
+/// [`GateInputs::resolve`] and the canary's review prompt share, so every gate and every spawn
+/// of a run carries the same declaration and run base; its `Err` is the declaration's refusal.
+pub(crate) fn build_env_of(cfg: &Config, run_base: &str) -> Result<gate::BuildEnv, Error> {
+    Ok(gate::BuildEnv::declared(&cfg.workflow.build)
+        .map_err(Error)?
+        .with_var(crate::spawn::RUN_BASE_ENV, run_base))
 }
 
 /// The machine-wide build budget of `cfg` (spec 65): `build.max_concurrent` slots in the OS-wide
@@ -880,22 +874,24 @@ fn build_budget_of(cfg: &Config) -> BuildBudget {
     )
 }
 
-/// The build cache variable a spawn at `dir` carries: [`crate::spawn::BUILD_CACHE_ENV`] paired
-/// with `dir`'s `cache` sibling ([`worktree::unit_sibling`]), or `None` when `dir` has no unit
-/// sibling - a review-only worktree, `re_plan`'s planner's empty dir, a canary's. The ONE
-/// derivation both [`RunCtx::spawn_env`] and [`reviewer_carries_build_cache`] read, so a
-/// reviewer's prompt names a build cache exactly when its environment carries one.
-fn build_cache_var(dir: &str, cache: &str) -> Option<(String, String)> {
-    crate::worktree::unit_sibling(dir, cache)
-        .map(|target| (crate::spawn::BUILD_CACHE_ENV.to_string(), target))
+/// The build environment a spawn at `dir` carries: `build_env` resolved at `dir`'s `cache`
+/// sibling ([`worktree::unit_sibling`]), or at no cache when `dir` has none - a review-only
+/// worktree, `re_plan`'s planner's empty dir, a canary's. The ONE derivation both
+/// [`RunCtx::spawn_env`] and [`reviewer_carries_build_cache`] read, so a reviewer's prompt names
+/// a build cache exactly when its environment carries one.
+fn spawn_site(build_env: &gate::BuildEnv, dir: &str, cache: &str) -> gate::SiteEnv {
+    build_env.at(&crate::worktree::unit_sibling(dir, cache).unwrap_or_default())
 }
 
-/// Whether a reviewer spawned at `dir` carries the unit's review cache in its environment
-/// ([`build_cache_var`] over [`worktree::UNIT_REVIEW_CACHE_PREFIX`]), the condition under which
-/// its prompt carries [`REVIEWER_BUILD_CACHE`] ([`reviewer_discipline`]): the one predicate every
-/// review prompt's flag is read from, the live loop's and the canary's.
-pub(crate) fn reviewer_carries_build_cache(dir: &str) -> bool {
-    build_cache_var(dir, crate::worktree::UNIT_REVIEW_CACHE_PREFIX).is_some()
+/// Whether a reviewer spawned at `dir` under `build_env` carries the unit's review cache in its
+/// environment ([`spawn_site`] over [`worktree::UNIT_REVIEW_CACHE_PREFIX`] answers a site
+/// cache), the condition under which its prompt carries [`REVIEWER_BUILD_CACHE`]
+/// ([`reviewer_discipline`]): the one predicate every review prompt's flag is read from, the
+/// live loop's and the canary's.
+pub(crate) fn reviewer_carries_build_cache(build_env: &gate::BuildEnv, dir: &str) -> bool {
+    !spawn_site(build_env, dir, crate::worktree::UNIT_REVIEW_CACHE_PREFIX)
+        .cache
+        .is_empty()
 }
 
 /// The shared gate build cache's DIR and guard-lock PATH for the project at `repo` (spec 77
@@ -941,8 +937,8 @@ impl GateInputs {
         postmerge_unit_dir: Option<&str>,
         run_base: &str,
     ) -> Result<Self, Error> {
-        // Per-unit build cache (Gap 19): a gate running INSIDE a unit's worktree builds into
-        // a unit-keyed CARGO_TARGET_DIR that is the SIBLING of that worktree, so concurrent
+        // Per-unit build cache (Gap 19): a gate running INSIDE a unit's worktree builds over
+        // a unit-keyed build cache that is the SIBLING of that worktree, so concurrent
         // units' divergent trees never poison one shared incremental cache - a compile error a
         // gate surfaces is then always this unit's own. Derived as the sibling of the ACTUAL
         // worktree `dir` the gate runs in (the single source it shares with the reclamation in
@@ -950,7 +946,7 @@ impl GateInputs {
         // reclaimed): a `rigger-wt-<slug>` unit worktree -> `cargo-target-<slug>`.
         // A `rigger-review-*` review worktree or the worktree-less path (`dir` "", e.g. an
         // `isolation: none` agent or a repo-less run) has no per-unit tree to isolate, so
-        // `unit_cache_sibling` returns None and the gate inherits the ambient/shared target.
+        // `unit_cache_sibling` returns None and the gate builds over the shared gate cache.
         //
         // EXCEPT the POST-MERGE re-gate (spec 12, unit 5 / spec 103, criterion 7): it runs in
         // its OWN throwaway `rigger-postmerge-<slug>-<attempt>` worktree (never the repo, and
@@ -985,9 +981,9 @@ impl GateInputs {
         // `rigger reset --build-cache` (which only ever touches the bare shared cache), so
         // it takes no lock at all - mirroring `target_dir`'s own "empty means off"
         // convention exactly. An empty `target` (a unit-less run, or a review worktree)
-        // means this gate inherits the ambient/shared cache, so it must hold the SAME guard
-        // every OTHER shared-cache build holds AND build into the SAME dir that guard
-        // protects (see `shared_build_cache_paths_of`).
+        // means this gate builds over the shared cache, so it must hold the SAME guard
+        // every OTHER shared-cache build holds AND resolve `{build_cache}` to the SAME dir that
+        // guard protects (see `shared_build_cache_paths_of`).
         let (build_cache_dir, build_cache_guard) = if target.is_empty() {
             shared_build_cache_paths_of(cfg, repo)
         } else {
@@ -1010,9 +1006,9 @@ impl GateInputs {
             build_cache_dir,
             build_cache_guard,
             store_fence,
-            // The ONE build-environment authority (spec 65), carrying `$RIGGER_RUN_BASE`: the
-            // SAME bag every gate command receives unconditionally (`gate::ExecRunner::run`'s
-            // `build_env.apply`) and every spawn's environment is built from.
+            // The ONE build-environment authority, carrying `$RIGGER_RUN_BASE`: the SAME
+            // declaration every gate command receives resolved at its site cache
+            // (`gate::ExecRunner::run`) and every spawn's environment is built from.
             build_env: build_env_of(cfg, run_base)?,
             // The machine-wide build budget (spec 65), threaded to every gate this resolves for.
             budget: build_budget_of(cfg),
@@ -5792,7 +5788,7 @@ impl RunCtx<'_> {
             crate::worktree::UNIT_REVIEW_CACHE_PREFIX
         };
         let agent_def = self.stage_agent(st, role, agent_id)?;
-        let build_env = self.build_env()?;
+        let site = self.spawn_env(&self.build_env()?, dir, cache);
         Ok(SpawnOpts {
             system_prompt: self.build_system_prompt(agent_def),
             dir: dir.to_string(),
@@ -5817,13 +5813,12 @@ impl RunCtx<'_> {
             // construction if a reviewer ever were given a ladder.
             attempt,
             run_id: self.run_id.clone(),
-            // The ONE build-environment authority (spec 65) PLUS this spawn's own per-unit
-            // build cache variable (spec 77 c1, ONE BUILD LOCATION): the same wrapper/cache/
-            // incremental vars a gate build and the implementer got, and the `cache` sibling
-            // of this `dir` its role picks above - the unit's own for the sdet-author, the unit's
-            // review cache for a review tier - so a reviewer's reproduction never builds into
-            // the cache the unit's gates use.
-            env: self.spawn_env(&build_env, dir, cache),
+            // The ONE build-environment authority resolved at the `cache` sibling of this `dir`
+            // its role picks above - the unit's own for the sdet-author, the unit's review cache
+            // for a review tier - so a reviewer's reproduction never builds into the cache the
+            // unit's gates use.
+            env: site.vars,
+            build_cache: site.cache,
             reviews: reviews.to_vec(),
             // The headless host and the cli driver read `settings_json`; the other drivers
             // ignore it.
@@ -7220,6 +7215,11 @@ impl RunCtx<'_> {
                 // session its earlier attempt ran as, sent the prior-failure block alone - the
                 // session already holds the criterion and the slice. A rerun after a missed
                 // handover resumes the session that missed instead.
+                // The ONE build-environment authority resolved at this spawn's own per-unit
+                // cache: the implementer's own `cargo build`/`cargo test` invocations see
+                // what a gate build for this `dir` sees, over the same per-unit cache,
+                // instead of embedding a `target/` dir inside the worktree itself.
+                let site = self.spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX);
                 let fresh = SpawnOpts {
                     system_prompt: self.build_system_prompt(agent_def),
                     dir: dir.to_string(),
@@ -7236,14 +7236,8 @@ impl RunCtx<'_> {
                     // unit 4) - the same `attempts` the alias stamp above uses.
                     attempt: attempts,
                     run_id: self.run_id.clone(),
-                    // The ONE build-environment authority (spec 65) PLUS this
-                    // spawn's own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE
-                    // BUILD LOCATION): the implementer's own `cargo build`/`cargo
-                    // test` invocations get the same wrapper/cache/incremental
-                    // vars a gate build gets, AND land in the same per-unit
-                    // cache a gate build for this `dir` gets, instead of
-                    // embedding a `target/` dir inside the worktree itself.
-                    env: self.spawn_env(&build_env, dir, crate::worktree::UNIT_CACHE_PREFIX),
+                    env: site.vars,
+                    build_cache: site.cache,
                     // An implementer is never a review tier: no roster to render
                     // (spec 67, criterion 4).
                     reviews: Vec::new(),
@@ -7961,6 +7955,10 @@ impl RunCtx<'_> {
                 self.emit_agent(t, v, &[(contextgraph::META_ACTOR, st.agent.as_str())])
             };
             let isolation_check = self.assert_isolated_cwd("implementer", &st.agent, &dir);
+            // The ONE build-environment authority resolved at this lane's own per-unit cache:
+            // every speculation candidate's own `cargo` invocations land in its own lane's
+            // per-unit cache, never a `target/` dir embedded in its own lane worktree.
+            let site = self.spawn_env(&build_env, &dir, crate::worktree::UNIT_CACHE_PREFIX);
             match isolation_check
                 .and_then(|()| {
                     self.deps.driver.spawn(
@@ -7980,16 +7978,8 @@ impl RunCtx<'_> {
                             title: st.coverage.trim().to_string(),
                             attempt,
                             run_id: self.run_id.clone(),
-                            // The ONE build-environment authority (spec 65) PLUS this lane's
-                            // own per-unit CARGO_TARGET_DIR (spec 77 c1, ONE BUILD LOCATION):
-                            // every speculation candidate's own `cargo` invocations share the
-                            // same wrapper cache AND land in its own lane's per-unit cache,
-                            // never a `target/` dir embedded in its own lane worktree.
-                            env: self.spawn_env(
-                                &build_env,
-                                &dir,
-                                crate::worktree::UNIT_CACHE_PREFIX,
-                            ),
+                            env: site.vars,
+                            build_cache: site.cache,
                             // A speculation candidate is an implementer lane, never a review
                             // tier: no roster to render (spec 67, criterion 4).
                             reviews: Vec::new(),
@@ -9470,7 +9460,7 @@ impl RunCtx<'_> {
         let prompt = format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            adjudicator_contract(reviewer_carries_build_cache(dir)),
+            adjudicator_contract(reviewer_carries_build_cache(&self.build_env()?, dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round
@@ -9606,6 +9596,11 @@ impl RunCtx<'_> {
             // spawn in `run_single_stage` - it runs in the project cwd; only an ISOLATED agent
             // must carry a worktree dir (asserted there, not here). An isolated planner would
             // be a misconfiguration the first-wave spawn already rejects.
+            //
+            // The ONE build-environment authority, routed through `spawn_env` like every other
+            // spawn: the planner's own `dir` is always empty (no worktree, `isolation: none`),
+            // so it has no unit sibling and a `{build_cache}` variable is left out.
+            let site = self.spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX);
             self.deps
                 .driver
                 .spawn(
@@ -9629,14 +9624,8 @@ impl RunCtx<'_> {
                         // attempt drives the planner's ladder rung exactly as a unit's
                         // remediation attempt drives its implementer's (spec 10 unit 4).
                         attempt: critique_attempt,
-                        // The ONE build-environment authority (spec 65): a planner is not
-                        // guaranteed to build, but carries the same resolved env uniformly
-                        // like every other spawn, so a planner that does explore via cargo
-                        // shares the cache too. Routed through `spawn_env` for uniformity with
-                        // every other call site (spec 77 c1); the planner's own `dir` is
-                        // always empty (no worktree, `isolation: none`), so `unit_cache_sibling`
-                        // yields `None` and no `CARGO_TARGET_DIR` is added here.
-                        env: self.spawn_env(&build_env, "", crate::worktree::UNIT_CACHE_PREFIX),
+                        env: site.vars,
+                        build_cache: site.cache,
                         // The planner/re-planner is never a review tier: no roster to render
                         // (spec 67, criterion 4).
                         reviews: Vec::new(),
@@ -9867,7 +9856,10 @@ impl RunCtx<'_> {
                     false,
                     &format!(
                         "{prompt}{}",
-                        review_protocol(ROLE_ADVERSARY, reviewer_carries_build_cache(dir))
+                        review_protocol(
+                            ROLE_ADVERSARY,
+                            reviewer_carries_build_cache(&self.build_env()?, dir)
+                        )
                     ),
                     None,
                     None,
@@ -9999,32 +9991,19 @@ impl RunCtx<'_> {
         Ok(true)
     }
 
-    /// The resolved build environment for this run (spec 65's ONE build-environment
-    /// authority): re-derived from the committed `build.wrapper` / `build.cache_dir`
-    /// / `build.jobs` config and the run's recorded base ([`run_base_env`](Self::run_base_env),
-    /// read from the store) each call rather than cached - a single resolver, called from
-    /// every site that needs it, so a gate build ([`run_gates`]
-    /// (Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)) and an
-    /// agent-spawn build (every `SpawnOpts.env`) can never derive two disagreeing
-    /// copies, including the jobs cap (spec 65 unit 4) and `$RIGGER_RUN_BASE`.
+    /// The build environment for this run (the ONE build-environment authority): the
+    /// workflow's declared `build.env` and `build.jobs` with the run's recorded base
+    /// ([`run_base_env`](Self::run_base_env), read from the store), re-derived each call rather
+    /// than cached - a single resolver, called from every site that needs it, so a gate build
+    /// ([`run_gates`](Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)) and an
+    /// agent-spawn build (every `SpawnOpts.env`) can never derive two disagreeing copies.
     ///
-    /// Extends that authority with spec 65 unit 2 (NO SILENT DEGRADE): `build.wrapper` /
-    /// `build.cache_dir` are resolved through [`gate::resolve_build_layer`] FIRST, so
-    /// `auto` (probe PATH for a known wrapper, then probe its cache dir), a named
-    /// wrapper, and a named wrapper's cache dir are all turned into an actual binary name
-    /// (or `None`) before ever reaching [`gate::BuildEnv::resolve`], which - true to unit
-    /// 1's foundational shape - still takes its `wrapper` argument VERBATIM and has no
-    /// notion of `auto` or of resolution failure.
-    ///
-    /// A CONFIGURED (named) wrapper's `Err` is caught by `Config::validate` at run start
-    /// for the ordinary CLI entry points (`config::load` calls it before `self.cfg` can
-    /// exist), but [`run`] is a `pub` library entry point too (§11: "library use ... imports
-    /// the same modules from the `rigger` crate directly") - a caller that builds/mutates a
-    /// `Config` by hand and passes it straight to [`run`] never goes through `config::load`
-    /// at all. This function therefore PROPAGATES the `Err` (never silently degrading to
-    /// `None`, the exact defect spec 65 unit 2 exists to close) rather than swallowing it,
-    /// so a library caller gets the identical loud failure a CLI caller already does -
-    /// whichever entry point resolves this first.
+    /// A refused declaration is caught by `Config::validate` at run start for the ordinary CLI
+    /// entry points (`config::load` calls it before `self.cfg` can exist), but [`run`] is a
+    /// `pub` library entry point too: a caller that builds a `Config` by hand and passes it
+    /// straight to [`run`] never goes through `config::load`. This function therefore
+    /// PROPAGATES the refusal, so a library caller gets the identical loud failure a CLI caller
+    /// does.
     fn build_env(&self) -> Result<gate::BuildEnv, Error> {
         build_env_of(self.cfg, &self.run_base_env())
     }
@@ -10048,23 +10027,16 @@ impl RunCtx<'_> {
             .unwrap_or_default()
     }
 
-    /// The env vars a spawn's OWN process must carry (spec 77 criterion 1, ONE BUILD
-    /// LOCATION): `build_env`'s wrapper/cache/incremental/jobs vars (spec 65), PLUS - the
-    /// biggest leak spec 77 exists to close - a per-unit [`crate::spawn::BUILD_CACHE_ENV`]
-    /// ([`build_cache_var`]) naming the
-    /// SAME `cargo-target-<slug>` cache sibling [`run_gates`](Self::run_gates) already
-    /// points a gate's OWN build at for this exact `dir` (Gap 19,
-    /// [`worktree::unit_cache_sibling`]). Without this, an agent that runs its own `cargo
-    /// build`/`cargo test` - every implementer and reviewer does, un-gated - embeds a
-    /// full multi-gigabyte `target/` tree INSIDE its throwaway worktree instead of the one
-    /// per-unit cache teardown already reclaims when the worktree is removed.
-    ///
-    /// Unconditional, independent of whether a wrapper is configured: a `dir` that owns
-    /// no per-unit cache (empty, or not a `rigger-wt-*` unit worktree - a review/plan spawn
-    /// with no worktree of its own, e.g. `re_plan`'s planner) yields no override, exactly
-    /// mirroring `unit_cache_sibling`'s own `None` case - the ambient/shared
-    /// build cache variable is inherited untouched, matching `gate::Runner`'s existing
-    /// "target_dir always wins, else inherit" precedence.
+    /// What a spawn's OWN process carries: `build_env` resolved at the spawn's site
+    /// ([`spawn_site`]) - the vars the workflow's `build.env` exports there, and the site cache a
+    /// `{build_cache}` variable rests on, which the spawn's request builds into - PLUS the gate
+    /// socket pair of a run serving a gate channel. The site is `dir`'s `cache` sibling
+    /// ([`worktree::unit_sibling`]), the SAME per-unit cache [`run_gates`](Self::run_gates)
+    /// points a gate's own build at for this `dir` when `cache` is the unit's own, so an agent's
+    /// own `cargo build` builds where the unit's gates do rather than inside its throwaway
+    /// worktree. A `dir` with no unit sibling (empty, or not a `rigger-wt-*` unit worktree - a
+    /// review-only worktree, `re_plan`'s planner) has no site cache, so a `{build_cache}`
+    /// variable is left out and every other declared variable is still exported.
     ///
     /// The SINGLE place every `SpawnOpts.env` is assembled from `build_env`, so every spawn
     /// carries `$RIGGER_RUN_BASE` beside every gate: the five spawn call sites
@@ -10086,20 +10058,14 @@ impl RunCtx<'_> {
     /// A run serving a gate channel adds its address as [`GATE_SOCKET_ENV`], the
     /// `SSH_AUTH_SOCK` convention, so `rigger gate` in the spawn asks this driver at the path it
     /// bound, whatever temp directory the spawn's host hands its tools.
-    fn spawn_env(
-        &self,
-        build_env: &gate::BuildEnv,
-        dir: &str,
-        cache: &str,
-    ) -> Vec<(String, String)> {
-        let mut vars = build_env.vars().to_vec();
-        vars.extend(build_cache_var(dir, cache));
-        vars.extend(
+    fn spawn_env(&self, build_env: &gate::BuildEnv, dir: &str, cache: &str) -> gate::SiteEnv {
+        let mut site = spawn_site(build_env, dir, cache);
+        site.vars.extend(
             self.gate_address
                 .clone()
                 .map(|address| (GATE_SOCKET_ENV.to_string(), address)),
         );
-        vars
+        site
     }
 
     /// The resolved machine-wide build budget for this run (spec 65): re-derived from the
@@ -10129,15 +10095,10 @@ impl RunCtx<'_> {
     /// Threaded to every gate call whose OWN `target_dir` is empty (the shared/ambient-cache
     /// case); a per-unit build's own `cargo-target-<slug>` cache is never at risk from that
     /// command and passes an empty pair instead (mirroring `target_dir`'s own "empty means
-    /// off" convention). The DIR half is what lets `gate::ExecRunner` pin the real cargo
-    /// invocation's `CARGO_TARGET_DIR` onto the exact path the guard protects (superseding,
-    /// for this guarded case specifically, `d-u3-gap19-per-unit-cargo-target`'s
-    /// blind-ambient-inheritance framing - see `d-u77c5-force-cargo-target-dir-on-ambient-guard-branch`):
-    /// this criterion's own prior review history (arch/sdet/adv round 8-9, under this
-    /// criterion's earlier, since-abandoned numbering) found that leaving CARGO_TARGET_DIR on
-    /// blind ambient inheritance lets it silently diverge from this config-aware path the
-    /// moment RIGGER_TMPDIR/defaults.workdir is configured away from any hardcoded literal -
-    /// the guard would then protect a directory nothing builds into.
+    /// off" convention). The DIR half is that gate's site cache ([`gate::gate_site_cache`]):
+    /// `gate::ExecRunner` resolves a declared variable's `{build_cache}` to it, so a workflow
+    /// declaring its build tool's target directory over `{build_cache}` builds into exactly the
+    /// path the guard protects, wherever RIGGER_TMPDIR or `defaults.workdir` puts it.
     fn shared_build_cache_paths(&self) -> (String, String) {
         shared_build_cache_paths_of(self.cfg, &self.deps.repo)
     }
@@ -11796,9 +11757,9 @@ impl RunCtx<'_> {
     /// ([`Self::run_gates`], [`Self::run_deferred_gates`]). The SAME per-unit `target`/
     /// `build_cache_dir`/`build_cache_guard`/`store_fence` signals [`Self::run_gates`]
     /// derives for a gate running in this exact worktree `dir` (Gap 19, spec 70 criterion 3)
-    /// give this command the identical `CARGO_TARGET_DIR` isolation and store fence, so a
-    /// regenerate build never races a concurrent unit's build cache or walks into the live
-    /// event store. A failed guard probe is returned as the [`probe_fault_halt`] `Err`, not
+    /// give this command the identical site cache, which a declared `{build_cache}` resolves
+    /// to, and store fence, so a regenerate build shares its unit's gate cache and never walks
+    /// into the live event store. A failed guard probe is returned as the [`probe_fault_halt`] `Err`, not
     /// as this command's own failure, so it ends the step as a halt (spec 121 criterion 19).
     fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
@@ -12295,7 +12256,11 @@ impl RunCtx<'_> {
         if self.agent_isolated(&st.agent) {
             self.assert_isolated_cwd("implementer", &st.agent, &wt.dir)?;
         }
-        let build_env = self.build_env()?;
+        let site = self.spawn_env(
+            &self.build_env()?,
+            &wt.dir,
+            crate::worktree::UNIT_CACHE_PREFIX,
+        );
         let prompt = conflict_resolution_prompt(&st.name, source);
         let prompt = refused.task(&prompt);
         let emit = |t: &str, v: Value| {
@@ -12323,7 +12288,8 @@ impl RunCtx<'_> {
                 title: format!("resolve integrate conflict: {}", st.name),
                 attempt,
                 run_id: self.run_id.clone(),
-                env: self.spawn_env(&build_env, &wt.dir, crate::worktree::UNIT_CACHE_PREFIX),
+                env: site.vars,
+                build_cache: site.cache,
                 reviews: Vec::new(),
                 settings_json: String::new(),
                 resumed_from: String::new(),
@@ -12632,7 +12598,7 @@ impl RunCtx<'_> {
         Ok(format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            review_protocol(actor, reviewer_carries_build_cache(dir)),
+            review_protocol(actor, reviewer_carries_build_cache(&self.build_env()?, dir)),
             round.map(ReviewRound::block).unwrap_or_default()
         ))
     }
@@ -14350,10 +14316,10 @@ pub fn review_protocol(actor: &str, carries_cache: bool) -> String {
 /// sentences spell out in prose what [`RunCtx::guard_review_round_tree`] enforces at runtime - a
 /// reviewer that behaves like an implementer and edits the unit's own worktree leaves exactly the
 /// residue that guard exists to catch, name in a lesson, and restore. The cache the harness
-/// provides, [`REVIEWER_BUILD_CACHE`], which [`RunCtx::spawn_env`] sets in the reviewer's
+/// provides, [`REVIEWER_BUILD_CACHE`], which [`RunCtx::spawn_env`] resolves in the reviewer's
 /// environment, is held apart because a reviewer whose tree has no unit sibling (a standalone
-/// review stage, a plan critique) carries no such cache, and a sentence naming one would be false
-/// there. The review method - never re-running the battery or a gate its [`gate_evidence_block`]
+/// review stage, a plan critique), or whose workflow's `build.env` declares no variable over
+/// `{build_cache}`, carries no such cache, and a sentence naming one would be false there. The review method - never re-running the battery or a gate its [`gate_evidence_block`]
 /// shows green, the one targeted reproduction in a scratch worktree, and never running a gate's
 /// command as the gate runs it - is guidance, so it sits under the working-discipline body's
 /// `## When you review` section, which reaches a reviewer through [`crate::instructions::compose`].

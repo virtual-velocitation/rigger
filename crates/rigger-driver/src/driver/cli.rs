@@ -82,10 +82,10 @@ impl Driver {
         for (k, v) in harness_env(&opts.id) {
             cmd.env(k, v);
         }
-        // The ONE build-environment authority's second injection site (spec 65): every
-        // var the resolver derived (empty when no wrapper is configured, applying
-        // nothing) so this agent's OWN `cargo test`/`cargo build` invocations hit the
-        // same compilation cache under the same settings a gate build gets.
+        // The ONE build-environment authority's second injection site: every variable the
+        // workflow's `build.env` exports at this spawn's site (empty when it declares none,
+        // applying nothing), so this agent's OWN `cargo test`/`cargo build` invocations see
+        // what a gate build sees.
         for (k, v) in &opts.env {
             cmd.env(k, v);
         }

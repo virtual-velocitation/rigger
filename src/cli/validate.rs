@@ -206,27 +206,17 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
              is unintended"
         );
     }
-    // Build-environment SURFACES report (spec 65 units 2 and 5, NO SILENT DEGRADE /
-    // HONEST SURFACES): a named-but-absent `build.wrapper`, or a named wrapper whose cache
-    // dir cannot be created, already failed above (`config::load`'s `Config::validate`
-    // rejects both at run start, before `cfg` could exist), so by this point resolution
-    // can only succeed - this SURFACES what it resolved to (wrapper, cache dir, budget) so
-    // an `auto` probe that quietly found nothing (or found a wrapper whose cache dir turned
-    // out unusable) is SEEN as "none" here rather than silently doing nothing invisibly.
-    // Reads through the SAME `resolve_build_layer` authority `Config::validate` and the
-    // conductor's build-environment authority use - never a second, independently
-    // re-derived report; the formatting itself lives in the pure, unit-tested
-    // `build_environment_report` below so this edge stays a thin resolve-then-print.
-    let wrapper =
-        match resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir) {
-            Ok(w) => w,
-            Err(e) => return Err(e.to_string().into()),
-        };
+    // Build-environment SURFACE: the declared `build.env`, each variable with its template, and
+    // the build budget. A declaration the one check refuses already failed above
+    // (`config::load`'s `Config::validate` refuses it before `cfg` could exist), so every line
+    // names a variable a run exports; the formatting lives in the pure, unit-tested
+    // `build_environment_report` below.
+    //
     // Gate requirement SURFACE (spec 113): one line per declared gate, in gate-id order,
     // rendered from the resolution the load itself made - a missing requirement already
     // refused the load above, before any output, so every line names a resolved path and no
     // second lookup runs here.
-    for line in build_environment_report(wrapper.as_deref(), &cfg.workflow.build)
+    for line in build_environment_report(&cfg.workflow.build)
         .into_iter()
         .chain(gate_requirement_lines(&gate_requirements))
     {
@@ -352,35 +342,23 @@ fn store_advisories(
     Ok(())
 }
 
-/// The build-environment lines `rigger validate` prints (spec 65 unit 5, HONEST SURFACES):
-/// given the wrapper ALREADY resolved by [`resolve_build_layer`] (the same authority
-/// `Config::validate`'s run-start check and the conductor's build-environment authority
-/// read - this never re-derives it), render:
-/// - the wrapper name, or `none` when the layer is inactive;
-/// - the cache dir it resolved to (via [`resolved_cache_dir`], the SAME ternary
-///   [`BuildEnv::resolve`] and the cache-dir probe use) - ONLY when a wrapper is actually
-///   active, since an inactive layer touches no cache dir and claiming one would fabricate
-///   a surface nothing backs;
-/// - the machine-wide build budget, ALWAYS: `build.max_concurrent` gates every compiler
-///   invocation this loop runs (spec 65 unit 3) regardless of whether a wrapper is
-///   configured, so an operator sees it even with the wrapper off. `0` is the documented
-///   unlimited convention (mirrors `defaults.budget`), reported in words rather than a
-///   bare, easily-misread `0`.
+/// The build-environment lines `rigger validate` prints: one `build env: NAME=template` line
+/// per variable the workflow's `build.env` declares, in name order, or `build env: none
+/// declared` when it declares none; then the machine-wide build budget, ALWAYS:
+/// `build.max_concurrent` gates every compiler invocation this loop runs (spec 65 unit 3). `0`
+/// is the documented unlimited convention (mirrors `defaults.budget`), reported in words rather
+/// than a bare, easily-misread `0`.
 ///
-/// Pure formatting over already-resolved values, so it is unit-tested without touching
-/// PATH or the filesystem; the effectful wrapper resolution stays at the `cmd_validate`
-/// edge that calls this.
-fn build_environment_report(wrapper: Option<&str>, build: &config::BuildConfig) -> Vec<String> {
-    let mut lines = Vec::new();
-    match wrapper {
-        Some(w) => {
-            lines.push(format!("build wrapper: {w}"));
-            lines.push(format!(
-                "build cache dir: {}",
-                resolved_cache_dir(&build.cache_dir)
-            ));
-        }
-        None => lines.push("build wrapper: none".to_string()),
+/// Pure formatting over the declaration `Config::validate` already accepted, so it is
+/// unit-tested without touching PATH or the filesystem.
+fn build_environment_report(build: &config::BuildConfig) -> Vec<String> {
+    let mut lines: Vec<String> = build
+        .env
+        .iter()
+        .map(|(name, template)| format!("build env: {name}={template}"))
+        .collect();
+    if lines.is_empty() {
+        lines.push("build env: none declared".to_string());
     }
     lines.push(format!(
         "build budget: {}",

@@ -10,16 +10,16 @@ use crate::budget::BuildBudget;
 
 pub use rigger_domain::gate::*;
 
-/// Runner runs a gate command in a working directory (`dir`, "" = current dir) under an
-/// optional `CARGO_TARGET_DIR` override (`target_dir`, "" = inherit the ambient env) and
-/// the resolved shared [`BuildEnv`] (spec 65's ONE build-environment authority - the
-/// default/empty `BuildEnv` applies nothing, leaving today's behavior unchanged).
+/// Runner runs a gate command in a working directory (`dir`, "" = current dir) with the
+/// declared [`BuildEnv`] resolved at the gate's site build cache ([`gate_site_cache`]): its
+/// unit's `target_dir` when set, else the shared gate cache `build_cache_dir`, "" for none.
+/// The default/empty `BuildEnv` sets nothing, so the gate inherits the runner's environment.
 ///
 /// A gate that runs INSIDE a unit's worktree is handed a unit-keyed `target_dir` (Gap 19)
-/// so divergent unit trees never share one build cache - a compile error a gate sees is
-/// then always that unit's own, never a concurrent neighbour poisoning a shared target. A
-/// gate on the single integrated tree (the deferred phase-boundary gate) is handed "" and
-/// keeps inheriting the shared cache.
+/// so a declaration over `{build_cache}` never has divergent unit trees share one build
+/// cache: a compile error a gate sees is then always that unit's own, never a concurrent
+/// neighbour poisoning a shared target. A gate on the single integrated tree (the deferred
+/// phase-boundary gate) is handed "" and builds over the shared gate cache.
 ///
 /// The SAME non-empty `target_dir` signal also fences the gate's own store resolution
 /// (spec 70 criterion 3, "the gate store fence"): [`ExecRunner::run`] pins
@@ -99,33 +99,108 @@ pub struct ProbeFault {
     pub error: String,
 }
 
-/// BuildEnv is the ONE build-environment authority (spec 65): a single resolver
-/// derives the env vars from committed config and applies them everywhere a caller
-/// threads it through. Wired so far: inline/deferred gate builds ([`ExecRunner::run`])
-/// and the process hosts' spawned agent process (via
-/// `conductor::SpawnOpts`), so a gate build and that agent's own `cargo test`
-/// invocation hit the same compilation cache under the same settings, at the same
-/// jobs cap. `driver::replay`'s wire contract does not carry these vars. One resolver,
-/// two wired injection sites; neither derives its own competing copy.
+/// BuildEnv is the ONE build-environment authority: the workflow's declared `build.env`,
+/// checked once by [`declared`](Self::declared), plus the pairs a caller layers on with
+/// [`with_var`](Self::with_var). [`at`](Self::at) resolves it at one site's build cache into the
+/// [`SiteEnv`] that site's process carries: a gate build ([`ExecRunner::run`], over
+/// [`gate_site_cache`]) and an agent spawn (the conductor's `spawn_env`, over the spawn's unit
+/// sibling), so a gate build and an agent's own build see the same declared variables, each
+/// over its own cache. rigger exports nothing else of a build environment: a variable no
+/// declaration names reaches a gate or a spawn as rigger's own process holds it.
+/// `driver::replay`'s wire contract does not carry these vars.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildEnv {
-    vars: Vec<(String, String)>,
+    /// The declared variables in name order, each its template's pieces.
+    declared: Vec<(String, Vec<Piece>)>,
+    /// The `build.jobs` a `{jobs}` placeholder resolves to; 0 resolves it nowhere.
+    jobs: u32,
+    /// The [`with_var`](Self::with_var) pairs, in the order they were layered on.
+    with: Vec<(String, String)>,
+}
+
+/// One piece of a declared variable's template: literal text, or a placeholder resolved at a
+/// site.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Piece {
+    Text(String),
+    BuildCache,
+    Jobs,
+}
+
+/// The names rigger sets itself on a gate or a spawn, which a `build.env` declaration may not
+/// take: the gate store fence, the gate scratch root, the run base, the spawn marker, the gate
+/// socket, the event store connection and the two agent credential names.
+const RESERVED_ENV: [&str; 8] = [
+    STORE_FENCE_ENV,
+    GATE_SCRATCH_ENV,
+    rigger_domain::spawn::RUN_BASE_ENV,
+    rigger_domain::spawn::SPAWN_ENV,
+    rigger_domain::gate_channel::GATE_SOCKET_ENV,
+    rigger_domain::spawn::CONN_ENV,
+    rigger_domain::spawn::AGENT_TOKEN_VAR,
+    rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR,
+];
+
+/// The build environment one site's process carries: the declared variables that resolved
+/// there and the [`BuildEnv::with_var`] pairs after them, and the site's build cache when an
+/// exported variable uses `{build_cache}`, else empty.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SiteEnv {
+    pub vars: Vec<(String, String)>,
+    pub cache: String,
+}
+
+impl SiteEnv {
+    /// Set every pair on `cmd`, whether it is a gate's own `Command` ([`ExecRunner::run`]) or
+    /// an agent driver's.
+    pub fn apply(&self, cmd: &mut Command) {
+        for (k, v) in &self.vars {
+            cmd.env(k, v);
+        }
+    }
 }
 
 impl BuildEnv {
-    /// Resolve the build environment from the workflow's `build.wrapper` /
-    /// `build.cache_dir` / `build.jobs` config (§65). An empty or
-    /// (case/whitespace-insensitive) `off` wrapper resolves NO wrapper vars at all -
-    /// a build this loop runs then inherits the ambient environment untouched,
-    /// exactly as before this authority existed; no silent injection of anything
-    /// unasked for.
+    /// The one check of the workflow's `build.env`, holding the declaration it accepts with
+    /// `build.jobs`. Each variable in name order: a name that is not a letter or underscore
+    /// followed by letters, digits and underscores, a name rigger sets itself, a placeholder
+    /// other than `{build_cache}` and `{jobs}`, and a brace that is neither doubled nor part of
+    /// a placeholder are each refused with a message naming the variable.
+    pub fn declared(build: &rigger_domain::config::BuildConfig) -> Result<BuildEnv, String> {
+        let declared = build
+            .env
+            .iter()
+            .map(|(name, value)| {
+                if !is_variable_name(name) {
+                    return Err(format!(
+                        "build.env: {name:?} is not a variable name; a name is a letter or \
+                         underscore followed by letters, digits and underscores"
+                    ));
+                }
+                if RESERVED_ENV.contains(&name.as_str()) {
+                    return Err(format!(
+                        "build.env: {name} is set by rigger itself; declare another name"
+                    ));
+                }
+                Ok((name.clone(), template_pieces(name, value)?))
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(BuildEnv {
+            declared,
+            jobs: build.jobs,
+            with: Vec::new(),
+        })
+    }
+
+    /// The build environment the retired `build.wrapper` / `build.cache_dir` keys and
+    /// `build.jobs` once resolved to, each variable literal text exported at every site. No run
+    /// calls it: rigger exports only what `build.env` declares ([`declared`](Self::declared)).
+    /// An empty or (case/whitespace-insensitive) `off` wrapper resolves NO wrapper vars at all.
     ///
     /// A configured wrapper (any other value, taken VERBATIM) resolves to exactly
     /// three vars:
-    /// - `RUSTC_WRAPPER` - the wrapper binary. Deciding `auto` (probe PATH for a
-    ///   known wrapper) or erroring loudly on a named-but-absent binary is spec 65
-    ///   unit 2's job (NO SILENT DEGRADE), layered on top of this foundational
-    ///   shape; this resolver passes whatever string it is given straight through.
+    /// - `RUSTC_WRAPPER` - the wrapper binary, whatever string it is given, straight
+    ///   through.
     /// - `<WRAPPER>_DIR` (the wrapper's binary name, uppercased, suffixed `_DIR` -
     ///   the generic cache-directory convention ccache/sccache/buildcache all
     ///   share, so rigger hardcodes no specific tool) - set to `cache_dir`, or the
@@ -135,12 +210,9 @@ impl BuildEnv {
     ///   per-unit warm target dirs (Gap 19 / spec 64) carry the incremental win
     ///   instead.
     ///
-    /// `jobs` (spec 65 unit 4 - JOBS CAP) is its OWN facet, independent of the
-    /// wrapper: `0` (the config default) means unset and injects nothing, leaving
-    /// cargo's own ambient default parallelism untouched; a positive value resolves
-    /// to `CARGO_BUILD_JOBS`, added whether or not a wrapper is configured, so
-    /// `build.max_concurrent` (unit 3's slot budget) x `build.jobs` can be sized to
-    /// the machine regardless of the compilation-cache layer.
+    /// `jobs` is its OWN facet, independent of the wrapper: `0` means unset and adds
+    /// nothing; a positive value resolves to `CARGO_BUILD_JOBS`, added whether or not a
+    /// wrapper is configured.
     pub fn resolve(wrapper: &str, cache_dir: &str, jobs: u32) -> BuildEnv {
         let wrapper = wrapper.trim();
         let mut vars = Vec::new();
@@ -154,41 +226,144 @@ impl BuildEnv {
         if jobs > 0 {
             vars.push(("CARGO_BUILD_JOBS".to_string(), jobs.to_string()));
         }
-        BuildEnv { vars }
+        BuildEnv {
+            declared: vars
+                .into_iter()
+                .map(|(name, value)| (name, vec![Piece::Text(value)]))
+                .collect(),
+            jobs,
+            with: Vec::new(),
+        }
     }
 
-    /// The resolved vars as `(name, value)` pairs, for a caller (the agent driver's
-    /// `SpawnOpts`) that carries them onward rather than applying them to a
-    /// `Command` directly.
-    pub fn vars(&self) -> &[(String, String)] {
-        &self.vars
-    }
-
-    /// Layer one more `(name, value)` pair onto this environment, appended after whatever
-    /// [`resolve`](Self::resolve) already produced - for a caller that must add a value
-    /// `resolve`'s pure `build.*` config resolution cannot see (`$RIGGER_RUN_BASE`, the run's
-    /// own recorded state, which the check-in stage's gates diff the whole spec's work against,
-    /// never anything `build.wrapper`/`build.cache_dir`/`build.jobs` carries). A no-op
-    /// for an empty `value` - "empty means off", the same convention every other optional var
-    /// in this environment already follows - so an unconfigured caller's `apply` sets nothing
-    /// extra. No new [`Runner::run`] parameter and no new call site to update: every existing
-    /// caller already threads `build_env` through unconditionally, so a value layered on here
-    /// reaches every gate command this environment is passed to and every agent spawn whose
-    /// environment is built from it.
+    /// Layer one more `(name, value)` pair onto this environment, exported after the declared
+    /// variables at every site - for a caller that must add a value the workflow's `build`
+    /// block cannot carry (`$RIGGER_RUN_BASE`, the run's own recorded state, which the check-in
+    /// stage's gates diff the whole spec's work against). A no-op for an empty `value` -
+    /// "empty means off", the same convention every other optional var in this environment
+    /// already follows. No new [`Runner::run`] parameter and no new call site to update: every
+    /// existing caller already threads `build_env` through unconditionally, so a value layered
+    /// on here reaches every gate command this environment is passed to and every agent spawn
+    /// whose environment is built from it.
     pub fn with_var(mut self, name: &str, value: &str) -> BuildEnv {
         if !value.is_empty() {
-            self.vars.push((name.to_string(), value.to_string()));
+            self.with.push((name.to_string(), value.to_string()));
         }
         self
     }
 
-    /// Apply every resolved var to `cmd`, so this environment reaches the process
-    /// unchanged whether the caller is a gate's own `Command` ([`ExecRunner::run`])
-    /// or an agent driver's.
-    pub fn apply(&self, cmd: &mut Command) {
-        for (k, v) in &self.vars {
-            cmd.env(k, v);
+    /// This environment at the site whose build cache is `cache` (empty for a site with none):
+    /// each declared variable, in name order, whose placeholders all resolve non-empty there -
+    /// `{build_cache}` to `cache`, `{jobs}` to `build.jobs` when above 0 - so a template with no
+    /// placeholder is exported as written at every site; then the
+    /// [`with_var`](Self::with_var) pairs. The site's cache is `cache` exactly when an exported
+    /// variable uses `{build_cache}`.
+    pub fn at(&self, cache: &str) -> SiteEnv {
+        let mut site = SiteEnv {
+            vars: Vec::new(),
+            cache: String::new(),
+        };
+        for (name, pieces) in &self.declared {
+            let Some(value) = self.resolved(pieces, cache) else {
+                continue;
+            };
+            if pieces.contains(&Piece::BuildCache) {
+                site.cache = cache.to_string();
+            }
+            site.vars.push((name.clone(), value));
         }
+        site.vars.extend(self.with.iter().cloned());
+        site
+    }
+
+    /// The value `pieces` resolve to at the site whose build cache is `cache`, or `None` when
+    /// a placeholder resolves empty there.
+    fn resolved(&self, pieces: &[Piece], cache: &str) -> Option<String> {
+        let mut value = String::new();
+        for piece in pieces {
+            match piece {
+                Piece::Text(text) => value.push_str(text),
+                Piece::BuildCache if !cache.is_empty() => value.push_str(cache),
+                Piece::Jobs if self.jobs > 0 => value.push_str(&self.jobs.to_string()),
+                Piece::BuildCache | Piece::Jobs => return None,
+            }
+        }
+        Some(value)
+    }
+}
+
+/// Whether `name` is a variable name: a letter or underscore followed by letters, digits and
+/// underscores, ASCII only.
+fn is_variable_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// The pieces of the template `value` declared for the variable `name`: `{{` and `}}` are
+/// literal braces, `{build_cache}` and `{jobs}` placeholders, and anything else between braces
+/// an unknown placeholder; a `{` that closes on no `}` before another `{` or the end, and a `}`
+/// that closes nothing, is a stray brace. Either refusal names the variable and the value.
+fn template_pieces(name: &str, value: &str) -> Result<Vec<Piece>, String> {
+    let stray = || {
+        format!(
+            "build.env: {name}: a stray brace in {value:?}; write {{{{ or }}}} for a literal brace"
+        )
+    };
+    let mut pieces = Vec::new();
+    let mut text = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' | '}' if chars.peek() == Some(&c) => {
+                chars.next();
+                text.push(c);
+            }
+            '}' => return Err(stray()),
+            '{' => {
+                let mut inner = String::new();
+                loop {
+                    match chars.next() {
+                        Some('}') => break,
+                        Some('{') | None => return Err(stray()),
+                        Some(ch) => inner.push(ch),
+                    }
+                }
+                let placeholder = match inner.as_str() {
+                    "build_cache" => Piece::BuildCache,
+                    "jobs" => Piece::Jobs,
+                    _ => {
+                        return Err(format!(
+                            "build.env: {name}: unknown placeholder {{{inner}}} in {value:?}; a \
+                             value knows {{build_cache}} and {{jobs}}, and {{{{ and }}}} for a \
+                             literal brace"
+                        ))
+                    }
+                };
+                if !text.is_empty() {
+                    pieces.push(Piece::Text(std::mem::take(&mut text)));
+                }
+                pieces.push(placeholder);
+            }
+            c => text.push(c),
+        }
+    }
+    if !text.is_empty() {
+        pieces.push(Piece::Text(text));
+    }
+    Ok(pieces)
+}
+
+/// The build cache a gate's site resolves `{build_cache}` to: the unit's `target_dir` when the
+/// gate runs for a unit, else the shared gate cache `build_cache_dir`, empty when neither is
+/// set.
+pub fn gate_site_cache(target_dir: &str, build_cache_dir: &str) -> String {
+    if target_dir.is_empty() {
+        build_cache_dir.to_string()
+    } else {
+        target_dir.to_string()
     }
 }
 
@@ -215,13 +390,10 @@ fn default_cache_dir() -> String {
     .unwrap_or_else(|| "rigger-build-cache".to_string())
 }
 
-/// The cache-directory value [`BuildEnv::resolve`] (what the `_DIR` env var carries), the
-/// build-layer cache-dir probe (spec 65 unit 2, below), AND `rigger validate`'s SURFACES
-/// report (spec 65 unit 5 - reads this directly rather than re-deriving the same ternary a
-/// third time) all need: the configured `cache_dir` verbatim when set, or
-/// [`default_cache_dir`] when it is empty/whitespace-only. `pub` so it is the one place
-/// every caller across the crate reads, never a second independent copy that could
-/// silently drift from this one.
+/// The cache-directory value [`BuildEnv::resolve`] (what the `_DIR` env var carries) and the
+/// build-layer cache-dir probe (spec 65 unit 2, below) both need: the configured `cache_dir`
+/// verbatim when set, or [`default_cache_dir`] when it is empty/whitespace-only. No run reads
+/// it: rigger exports only what `build.env` declares.
 pub fn resolved_cache_dir(cache_dir: &str) -> String {
     if cache_dir.trim().is_empty() {
         default_cache_dir()
@@ -240,8 +412,8 @@ const KNOWN_WRAPPERS: &[&str] = &["sccache", "ccache"];
 
 /// A CONFIGURED `build.wrapper` binary that is not on PATH (spec 65 unit 2, NO SILENT
 /// DEGRADE). The operator named it explicitly, so its absence is a configured-explicit
-/// failure - surfaced loudly at run start (via [`crate::config::Config::validate`]) -
-/// never silently skipped the way an `auto` probe finding nothing degrades.
+/// failure, never silently skipped the way an `auto` probe finding nothing degrades. No run
+/// raises it: rigger exports only what `build.env` declares.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("build.wrapper {binary:?} is not on PATH (config key: build.wrapper)")]
 pub struct WrapperUnavailable {
@@ -288,7 +460,7 @@ fn is_executable_file(path: &std::path::Path) -> bool {
 /// `None` when the layer is disabled - the pure core, taking PATH as a value (`path_var`)
 /// rather than reading the environment itself, so it is unit-testable against a synthetic
 /// PATH without mutating (or racing on) the real process environment; see
-/// [`resolve_build_layer`] for the ambient-reading edge production callers use. Spec 65
+/// [`resolve_build_layer`] for the ambient-reading edge. Spec 65
 /// unit 2, NO SILENT DEGRADE, layered on top of [`BuildEnv::resolve`]'s own foundational
 /// (verbatim, wrapper-agnostic) shape:
 /// - empty / (case- and whitespace-insensitive) `off`: unchanged from `BuildEnv::resolve`'s
@@ -420,11 +592,8 @@ fn is_named_wrapper(wrapper: &str) -> bool {
 /// production entry point that folds BOTH no-silent-degrade axes - the wrapper binary
 /// ([`resolve_wrapper_name_from`]) and the cache directory ([`usable_with_cache_dir`]) -
 /// into the single decision every caller needs, since the Design decides both in the SAME
-/// sentence (specs/65:26-28). [`crate::config::Config::validate`] (the run-start loud-failure
-/// check), the conductor's build-environment authority, and `rigger validate`'s reporting
-/// surface all call this - never re-deriving the wrapper-vs-cache-dir, named-vs-auto
-/// distinction independently. Pure core; see [`resolve_build_layer`] for the ambient-PATH
-/// edge production callers use.
+/// sentence (specs/65:26-28). No run calls it: rigger exports only what `build.env` declares.
+/// Pure core; see [`resolve_build_layer`] for the ambient-PATH edge.
 pub fn resolve_build_layer_from(
     wrapper: &str,
     cache_dir: &str,
@@ -434,9 +603,9 @@ pub fn resolve_build_layer_from(
     usable_with_cache_dir(name, is_named_wrapper(wrapper), cache_dir)
 }
 
-/// The ambient-PATH-reading edge [`resolve_build_layer_from`]'s production callers use -
-/// reads the real `PATH` once, right here, and composes the wrapper axis with the cache-dir
-/// axis. See [`resolve_build_layer_from`] for the full contract.
+/// The ambient-PATH-reading edge of [`resolve_build_layer_from`] - reads the real `PATH` once,
+/// right here, and composes the wrapper axis with the cache-dir axis. See
+/// [`resolve_build_layer_from`] for the full contract.
 pub fn resolve_build_layer(
     wrapper: &str,
     cache_dir: &str,
@@ -615,13 +784,8 @@ impl Runner for ExecRunner {
             crate::subprocess::command_in("sh", dir)
         };
         cmd.arg("-c").arg(&g.run);
-        // Per-unit build cache (Gap 19): a non-empty target_dir points cargo at a
-        // unit-keyed CARGO_TARGET_DIR so this gate's incremental state is never shared
-        // with a concurrent unit's divergent tree. The empty/ambient case (below) is the
-        // shared-cache one `build_cache_dir` now pins explicitly (spec 77 criterion 5).
         if !target_dir.is_empty() {
-            cmd.env(rigger_domain::spawn::BUILD_CACHE_ENV, target_dir);
-            // The gate store fence (spec 70 criterion 3), on the SAME signal: a non-empty
+            // The gate store fence (spec 70 criterion 3): a non-empty
             // target_dir means this gate runs inside a unit worktree, so a store-opening
             // courier the gate's spawned process runs must never walk up into the repo's
             // LIVE run stream. Pin a sibling scratch dir (never inside target_dir itself,
@@ -630,31 +794,6 @@ impl Runner for ExecRunner {
             // `store_fence` below - a unit worktree derives its own fence from target_dir.
             cmd.env(STORE_FENCE_ENV, format!("{target_dir}{STORE_FENCE_SUFFIX}"));
         } else {
-            // The shared gate build cache's CONSUMER half (spec 77 criterion 5, BOUNDED
-            // SHARED CACHE - the round 8/9 lesson from this same criterion's own prior
-            // review history): a non-empty `build_cache_dir` FORCES this ambient-cache
-            // gate build onto the exact directory `build_cache_guard` protects, rather
-            // than trusting whatever CARGO_TARGET_DIR the ambient/inherited process env
-            // happens to carry. Without this, the guard and the real cargo invocation
-            // could name two different directories the moment an external launcher's
-            // hardcoded courier env diverges from the RIGGER_TMPDIR/defaults.workdir-
-            // aware path the guard is derived from - `rigger reset --build-cache` would
-            // then reclaim an empty decoy while the real, growing cache goes both
-            // unprotected and unreclaimed. Both `build_cache_dir` and `build_cache_guard`
-            // are derived from the identical scratch-root authority by the caller
-            // (`conductor::shared_build_cache_paths`), so this can never disagree with
-            // the lock it is paired with.
-            //
-            // A requested guard whose probe failed never reaches this force: the run
-            // returned its [`ProbeFault`] above (spec 121 criterion 19), so no lock-free
-            // cargo invocation is ever pointed at the directory `reclaim_shared_build_cache`
-            // (both `rigger reset --build-cache` and the automatic run-teardown sweep) can
-            // reap the instant it finds the guard uncontended - the corruption class spec 77
-            // Global Constraint 3 forbids. An empty guard (the "off" convention every other
-            // branch in this file uses) forces it too: there is no lock to have failed.
-            if !build_cache_dir.is_empty() {
-                cmd.env(rigger_domain::spawn::BUILD_CACHE_ENV, build_cache_dir);
-            }
             // Widened (spec 70, u4 round 2 fix for
             // adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced, then
             // u4 round 3 fix for arch-u4c70r2-fence-signal-not-injected-into-runner-review-case):
@@ -682,11 +821,16 @@ impl Runner for ExecRunner {
         } else {
             cmd.env(GATE_SCRATCH_ENV, gate_scratch);
         }
-        // The ONE build-environment authority's first injection site (spec 65): the
-        // resolved wrapper/cache-dir/incremental-off vars (empty when no wrapper is
-        // configured, applying nothing) so this gate build and an agent's own
-        // `cargo test` hit the same compilation cache under the same settings.
-        build_env.apply(&mut cmd);
+        // The ONE build-environment authority's gate site: the declared variables resolved
+        // over this gate's build cache - the unit's `target_dir`, else the shared
+        // `build_cache_dir` the guard protects (spec 77 criterion 5) - so a declaration
+        // pointing a build at `{build_cache}` builds into the directory the guard names. With
+        // nothing declared it sets nothing, and a variable rigger's environment holds reaches
+        // the gate unchanged; a guarded gate holds the shared lock whatever it builds into,
+        // since an inherited variable may point its build at the shared cache too.
+        build_env
+            .at(&gate_site_cache(target_dir, build_cache_dir))
+            .apply(&mut cmd);
         // The machine-wide build budget's ONE gating point (spec 65): held for exactly
         // this command's duration, so a concurrent gate build elsewhere on the machine
         // waits for a free slot rather than stacking another compiler fleet into

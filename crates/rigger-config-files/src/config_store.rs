@@ -1,7 +1,7 @@
 //! The disk-touching half of [`crate::config`] (spec 93, criterion 1): loading agent
 //! definitions and the workflow from `.rigger/`, and [`Config::validate`] (which also
-//! probes the build-wrapper binary and resolves every declared gate's `requires` on `PATH`
-//! via [`crate::gate`]). See
+//! checks the declared build environment and resolves every declared gate's `requires` on
+//! `PATH` via [`crate::gate`]). See
 //! `config.rs`'s own doc for the split rationale (mirrors [`crate::spawn`]/
 //! [`crate::spawn_store`]) - the plain value types and the pure parsing/lint functions
 //! stay there, always compiled, because [`Config`] and friends are part of the declared
@@ -378,18 +378,12 @@ impl Config {
     /// gate's `requires` on `PATH` and answers that resolution.
     pub fn validate(&self) -> Result<Vec<GateRequirements>, Error> {
         let wf = &self.workflow;
-        // Build-environment resolution (spec 65 unit 2, NO SILENT DEGRADE): a CONFIGURED
-        // (non-auto, non-off) `build.wrapper` absent from PATH, OR whose cache dir cannot
-        // be created, is a run-start config error naming what failed and the relevant key -
-        // the operator asked for it explicitly, so proceeding would fake a cache that never
-        // actually runs. `auto` (either axis comes up empty -> injects nothing) and
-        // `off`/empty never fail here - a discovered-implicit degrade, not a
-        // configured-explicit one. This is the ONE resolution `crate::conductor`'s
-        // build-environment authority and `rigger validate`'s reporting surface both read
-        // too - never a second, independently re-derived check.
-        if let Err(e) = crate::gate::resolve_build_layer(&wf.build.wrapper, &wf.build.cache_dir) {
-            return Err(err(e.to_string()));
-        }
+        // The declared build environment: a `build.env` entry the one check refuses (a bad
+        // name, a name rigger sets itself, an unknown placeholder, a stray brace) is a
+        // run-start config error naming the variable. This is the ONE check
+        // `crate::conductor`'s build-environment authority runs too - never a second,
+        // independently re-derived one.
+        crate::gate::BuildEnv::declared(&wf.build).map_err(err)?;
         // The top-level workflow `name` key is retired: nothing ever read it, so a workflow that
         // still sets it fails loudly at the exact line to delete rather than carrying a setting
         // the operator believes does something.
@@ -1538,11 +1532,10 @@ mod tests {
                 "an absent defaults.max_retries must default to 0 (the fall-back-to-3 sentinel)",
             );
         };
-        /// Spec 65: `build.wrapper` / `build.cache_dir` are the config plumbing the shared
-        /// build-environment resolver reads. An omitted `build:` section (the common case)
-        /// resolves to the defaults - empty wrapper, empty cache_dir - so the workflow's ONE
-        /// resolver ([`crate::gate::BuildEnv::resolve`]) treats it exactly like an explicit
-        /// `wrapper: off`.
+        /// `build.wrapper` / `build.cache_dir` are retired keys no run reads, kept as fields so a
+        /// workflow still carrying them parses. An omitted `build:` section (the common case)
+        /// parses to the defaults - empty wrapper, empty cache_dir - and an explicit value parses
+        /// through.
         build_config_parses_wrapper_and_cache_dir_and_defaults_when_omitted: {
             let wrapper_and_cache =
                 |w: &Workflow| (w.build.wrapper.clone(), w.build.cache_dir.clone());
@@ -1559,8 +1552,9 @@ mod tests {
                 "an explicit wrapper and cache_dir parse through",
             );
         };
-        /// Spec 65 unit 4 (JOBS CAP): `build.jobs` is the config plumbing
-        /// [`crate::gate::BuildEnv::resolve`]'s jobs facet reads. Omitted (the common case)
+        /// Spec 65 unit 4 (JOBS CAP): `build.jobs` is the config plumbing the `{jobs}`
+        /// placeholder of a declared `build.env` reads ([`crate::gate::BuildEnv::declared`]).
+        /// Omitted (the common case)
         /// parses to `0` - unset, matching this config's own zero-as-unset convention
         /// (`budget`, `max_retries`, `speculation_width`) - so a pre-existing workflow with no
         /// opinion on `build.jobs` is byte-for-byte back-compatible. An explicit positive value
