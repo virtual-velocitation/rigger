@@ -1,7 +1,8 @@
 //! Spec 125's Linux keep-awake adapter in a graphical session, reached through the crate's public
 //! keep-awake API with a fake bus behind every address it reads: the host's acquire takes logind's
 //! inhibitor on the bus `DBUS_SYSTEM_BUS_ADDRESS` names and, when `WAYLAND_DISPLAY` or `DISPLAY`
-//! names a display, the desktop portal's on the bus `DBUS_SESSION_BUS_ADDRESS` names.
+//! names a display, asks the desktop portal for its inhibitor on the bus
+//! `DBUS_SESSION_BUS_ADDRESS` names.
 //!
 //! It is the only test in its binary because it sets those four variables in the process
 //! environment, which the tests of one binary share.
@@ -38,9 +39,10 @@ fn waiting(listener: &UnixListener) -> String {
 /// The host's acquire asks the desktop portal for its inhibitor exactly when the environment
 /// names a display, and whatever the portal answers it stands granted: with `WAYLAND_DISPLAY` or
 /// `DISPLAY` non-empty, it makes one `Inhibit` of suspend and idle (flags 12) giving the reason on
-/// the session bus, a granting portal's connection open while the guard stands and closed once it
-/// dropped, a refusing one's closed before the acquire returned; with both unset, or both empty,
-/// no connection waits on the session bus. Logind is asked once on the system bus in every row.
+/// the session bus, the connection of a portal that grants (its request responds 0) open while the
+/// guard stands and closed once it dropped, that of one that refuses closed before the acquire
+/// returned; with both unset, or both empty, no connection waits on the session bus. Logind is
+/// asked once on the system bus in every row.
 #[test]
 fn the_acquire_asks_the_desktop_portal_exactly_when_the_environment_names_a_display() {
     // What, `WAYLAND_DISPLAY` and `DISPLAY` (none: unset), how the fake portal answers (none: no
