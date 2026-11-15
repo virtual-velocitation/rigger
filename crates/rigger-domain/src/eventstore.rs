@@ -842,13 +842,78 @@ pub trait EventStore: Send + Sync {
 
 /// The RECORD ID an event's data holds: the string under the top-level `"id"` key of a data that
 /// is a JSON object, the id a decision, lesson or finding is shown by; `None` for a data that is
-/// not such an object or whose `"id"` is not a string.
+/// not such an object or whose `"id"` is not a string. A repeated `"id"` key holds its first
+/// value, as SQLite's JSON path reads it. Every other value is skipped unread.
 pub fn record_id_of(data: &[u8]) -> Option<String> {
-    // A map, not a struct: serde reads a struct from an array too, by position.
-    let object: serde_json::Map<String, serde_json::Value> = serde_json::from_slice(data).ok()?;
-    match object.get("id")? {
-        serde_json::Value::String(id) => Some(id.clone()),
-        _ => None,
+    serde_json::from_slice::<ObjectId>(data).ok()?.0
+}
+
+/// The record id of a JSON object ([`record_id_of`]), read by a visitor of objects alone: serde
+/// reads a derived struct from an array too, by position.
+struct ObjectId(Option<String>);
+
+impl<'de> serde::Deserialize<'de> for ObjectId {
+    fn deserialize<D: serde::Deserializer<'de>>(reader: D) -> Result<Self, D::Error> {
+        reader.deserialize_map(ObjectIdVisitor)
+    }
+}
+
+/// Visits a JSON object's keys, reading the value of the first `"id"` alone.
+struct ObjectIdVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ObjectIdVisitor {
+    type Value = ObjectId;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<ObjectId, A::Error> {
+        let mut first: Option<Option<String>> = None;
+        while let Some(key) = map.next_key::<IdKey>()? {
+            match (key, &first) {
+                (IdKey::Id, None) => {
+                    first = Some(match map.next_value::<serde_json::Value>()? {
+                        serde_json::Value::String(id) => Some(id),
+                        _ => None,
+                    });
+                }
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(ObjectId(first.flatten()))
+    }
+}
+
+/// A key of a data's object: `"id"`, or another.
+enum IdKey {
+    Id,
+    Other,
+}
+
+impl<'de> serde::Deserialize<'de> for IdKey {
+    fn deserialize<D: serde::Deserializer<'de>>(reader: D) -> Result<Self, D::Error> {
+        reader.deserialize_identifier(IdKeyVisitor)
+    }
+}
+
+/// Tells `"id"` from every other key, borrowed or unescaped alike.
+struct IdKeyVisitor;
+
+impl serde::de::Visitor<'_> for IdKeyVisitor {
+    type Value = IdKey;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("an object key")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<IdKey, E> {
+        Ok(match key {
+            "id" => IdKey::Id,
+            _ => IdKey::Other,
+        })
     }
 }
 
