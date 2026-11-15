@@ -29604,6 +29604,38 @@ mod tests {
             );
     }
 
+    /// A lane lost to an outage is no feedback for the author, exactly as the single lane
+    /// charges an infra cause no `UnitFailed`: a group whose every lane's review blamed
+    /// infrastructure escalates with no group-loss failure recorded.
+    #[test]
+    fn a_group_whose_lanes_lost_to_infrastructure_records_no_failure_for_the_author() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            output: format!(
+                r#"{{"verdict":"reject","cause":"{}","issues":["the build host was down"]}}"#,
+                spawn::CAUSE_INFRA_FAULT
+            ),
+            ..approving_speculation_stub()
+        };
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        assert_eq!(
+            rs.units["s"].status,
+            ledger::Status::Escalated,
+            "premise: a group whose lanes all lose escalates"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+            "an outage records no failure for the author; events: {events:?}"
+        );
+    }
+
     #[test]
     fn assert_isolated_cwd_refuses_empty_or_repo_root_with_a_repo() {
         // The guard that makes "run in the main repo" structurally impossible: with a
