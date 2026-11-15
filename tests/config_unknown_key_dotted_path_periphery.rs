@@ -440,8 +440,8 @@ fn rigger_validate_still_ignores_an_unrecognized_agent_frontmatter_key() {
          stderr:\n{cli_err}"
     );
     assert!(
-        out.contains("7 agents"),
-        "rigger validate must count the foreign-keyed agent among the loaded fleet (the 6 \
+        out.contains("8 agents"),
+        "rigger validate must count the foreign-keyed agent among the loaded fleet (the 7 \
          scaffolded defaults plus this one): {out}"
     );
 }
