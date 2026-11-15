@@ -2999,6 +2999,7 @@ mod blob_batch_tests {
         git_hash_object, git_init_quiet, git_ok_with_identity, git_out, loose_object,
         temp_git_project_with_commit, write_file,
     };
+    use rigger_process::os_process;
     use std::path::Path;
 
     /// The batch process over the repository holding `root`, run as the plain git there.
@@ -3163,13 +3164,9 @@ mod blob_batch_tests {
     /// The ids of the live processes whose command line names `dir`.
     fn processes_naming(dir: &Path) -> Vec<u32> {
         let needle = dir.to_str().unwrap();
-        std::fs::read_dir("/proc")
-            .unwrap()
-            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
-            .filter(|pid| {
-                std::fs::read(format!("/proc/{pid}/cmdline"))
-                    .is_ok_and(|cmdline| String::from_utf8_lossy(&cmdline).contains(needle))
-            })
+        os_process::pids()
+            .into_iter()
+            .filter(|&pid| os_process::command(pid).contains(needle))
             .collect()
     }
 
@@ -3191,7 +3188,7 @@ mod blob_batch_tests {
 
         drop(batch);
         assert!(
-            !Path::new(&format!("/proc/{}", running[0])).exists(),
+            !os_process::pids().contains(&running[0]),
             "the process is gone and reaped once the batch is dropped"
         );
     }

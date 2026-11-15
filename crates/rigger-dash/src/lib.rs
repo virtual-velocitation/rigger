@@ -30,7 +30,7 @@ use rigger_driver::{driver, sidecar};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_grounder::grounder;
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_process::reap;
+use rigger_process::os_process;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::{progress_store, registry};
 #[cfg(any(feature = "store", not(feature = "core")))]

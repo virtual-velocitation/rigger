@@ -5278,6 +5278,7 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
 /// `/run/systemd/inhibit/`: a process holding a logind inhibitor holds one per inhibitor.
 fn inhibitor_links(pid: u32) -> usize {
     rigger::holders::open_files(pid)
+        .into_iter()
         .filter(|named| named.starts_with("/run/systemd/inhibit/"))
         .count()
 }

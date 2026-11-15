@@ -82,7 +82,7 @@ std::cfg_select! {
             if exe.is_file() {
                 exe.to_path_buf()
             } else {
-                crate::reap::strip_deleted_suffix(exe)
+                crate::os_process::strip_deleted_suffix(exe)
             }
         }
     }

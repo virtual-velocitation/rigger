@@ -1,19 +1,24 @@
 //! The process interface (spec 125, criterion 9): the one place rigger reads a fact about a
 //! running process - which processes exist, a process's parent, start time, working directory,
-//! command line, run state and open files, and which process listens on a TCP port. Each fact is
-//! a function here, answered by the native adapter of the OS the binary is built for; the reaper
-//! ([`crate::reap`]), the holder check ([`crate::holders`]) and the dash read processes through
-//! these functions alone. Read-only: nothing here signals a process.
+//! command line, run state and open files, which process listens on a TCP port, and which
+//! processes hold a directory. Each fact is a function here, answered by the native adapter of
+//! the OS the binary is built for; the reaper ([`crate::reap`]), the holder check
+//! ([`crate::holders`]) and the dash read processes through these functions alone. Read-only:
+//! nothing here signals a process.
 //!
 //! Every reader is best-effort: a process that is gone, or one this process may not read,
 //! answers absent (`None`, an empty list, an empty command), never an error, and on an OS with
 //! no native adapter every reader answers absent.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // The one spelling of the OS set: each OS with a native adapter declares its module and binds it
 // as `native`, and every other OS binds the inline `unsupported` module in the `_` arm.
 std::cfg_select! {
+    target_os = "linux" => {
+        pub(crate) mod linux;
+        use linux as native;
+    }
     _ => {
         /// The OSes with no native adapter, the `_` arm of the dispatch above: every process
         /// answers absent.
@@ -135,10 +140,47 @@ pub fn is_unexeced_fork_of(pid: u32, parent: u32) -> bool {
     native::is_unexeced_fork_of(pid, parent)
 }
 
-/// The pid of a process listening for TCP connections on `port`, over IPv4 or IPv6; `None` when
-/// nothing listens there or the listener's process cannot be read.
+/// The pid of a process listening for TCP connections on `port` over IPv4; `None` when nothing
+/// listens there or the listener's process cannot be read.
 pub fn listening_pid(port: u16) -> Option<u32> {
     native::listening_pid(port)
+}
+
+/// Every process other than this one whose working directory or any open file lies in `dir`
+/// (absolute and resolved) or inside it, as pids. This process never counts, and neither does a
+/// child of it that has forked but not yet exec'd ([`is_unexeced_fork_of`]): until its exec
+/// completes it is still this process's own image over copies of this process's descriptors, and
+/// the close-on-exec ones (every descriptor the standard library opens) close at that exec;
+/// whatever the child still holds once it has exec'd counts from then on. The check a reclaim
+/// runs before it deletes a directory it counts as dead.
+pub fn holders(dir: &Path) -> Vec<u32> {
+    let me = std::process::id();
+    pids()
+        .into_iter()
+        .filter(|&pid| pid != me && !is_unexeced_fork_of(pid, me) && holds(pid, dir))
+        .collect()
+}
+
+/// Whether process `pid`'s working directory or one of its open files lies in `dir` or inside
+/// it, matched on path components.
+fn holds(pid: u32, dir: &Path) -> bool {
+    cwd(pid).is_some_and(|cwd| cwd.starts_with(dir))
+        || open_files(pid).iter().any(|file| file.starts_with(dir))
+}
+
+/// `path` without the `" (deleted)"` marker linux and android add to the path of a directory or
+/// a file that was removed while a process still holds it - a working directory removed under a
+/// process, or a running binary an upgrade replaced ([`crate::detached::standing_path`]). The
+/// marker is stripped as text, never by touching the filesystem, since the path is already gone:
+/// a lossy UTF-8 round-trip, and rigger's own scratch and worktree paths are always valid UTF-8.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) fn strip_deleted_suffix(path: &Path) -> PathBuf {
+    const DELETED_SUFFIX: &str = " (deleted)";
+    let text = path.to_string_lossy();
+    match text.strip_suffix(DELETED_SUFFIX) {
+        Some(stripped) => PathBuf::from(stripped),
+        None => path.to_path_buf(),
+    }
 }
 
 #[cfg(test)]
@@ -336,5 +378,55 @@ mod tests {
         let child_cwd = cwd(child.id());
         cleanup(&mut child);
         assert_eq!(child_cwd, Some(removed));
+    }
+
+    /// A fork of this process that has not exec'd holds the descriptors it copied from this
+    /// process, and is never counted a holder for them.
+    #[cfg(unix)]
+    #[test]
+    fn a_fork_of_this_process_that_has_not_execd_never_counts() {
+        use std::io::{Read, Write};
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f");
+        std::fs::write(&file, b"x").unwrap();
+        let _own = std::fs::File::open(&file).unwrap();
+        let (mut pid_rx, pid_tx) = std::io::pipe().unwrap();
+        let (go_rx, mut go_tx) = std::io::pipe().unwrap();
+        let go_tx_fd = go_tx.as_raw_fd();
+        let mut cmd = crate::subprocess::command("true");
+        // SAFETY: the closure runs in the forked child before exec and only makes raw
+        // read/write/close calls on descriptors it inherited.
+        unsafe {
+            cmd.pre_exec(move || {
+                // Close the child's copy of the go pipe's write end, so this test dropping
+                // its own copy (on success or on a panic) always releases the child.
+                drop(OwnedFd::from_raw_fd(go_tx_fd));
+                (&pid_tx).write_all(&std::process::id().to_ne_bytes())?;
+                let _ = (&go_rx).read(&mut [0]);
+                Ok(())
+            });
+        }
+        // `spawn` returns only once the child has exec'd, so it runs off this thread.
+        let spawner = std::thread::spawn(move || cmd.spawn().unwrap().wait().unwrap());
+        let mut pid = [0; 4];
+        pid_rx.read_exact(&mut pid).unwrap();
+        let pid = u32::from_ne_bytes(pid);
+        let base = dir.path().canonicalize().unwrap();
+        assert!(
+            holds(pid, &base),
+            "the paused fork holds the inherited descriptor"
+        );
+        assert!(is_unexeced_fork_of(pid, std::process::id()));
+        assert!(!holders(&base).contains(&pid));
+        assert_eq!(
+            crate::test_support::files_open_by(pid, &base.join("f")),
+            0,
+            "the host fixture counts no open by a fork whose descriptors are this process's own"
+        );
+        go_tx.write_all(b"g").unwrap();
+        assert!(spawner.join().unwrap().success());
     }
 }

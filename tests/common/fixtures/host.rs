@@ -196,6 +196,7 @@ pub fn thread_ids() -> std::collections::BTreeSet<u32> {
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn files_open_by(pid: u32, path: &Path) -> usize {
     rigger::holders::own_open_files(pid)
+        .into_iter()
         .filter(|named| named == path)
         .count()
 }
