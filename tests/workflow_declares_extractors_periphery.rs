@@ -224,6 +224,7 @@ fn a_graph_read_builds_its_store_under_the_declaration_in_force() {
             Some(&format!("show {query}")),
             "{workflow:?}: the read answers the definition"
         );
+        let head = head_of(&root);
         let read = repository_code_store(&root)
             .in_force()
             .expect("the store reads")
@@ -232,16 +233,17 @@ fn a_graph_read_builds_its_store_under_the_declaration_in_force() {
             read,
             Some((
                 fingerprint(&ProjectExtractor::of(&root), &ProductionGroupings),
-                Some(head_of(&root))
+                Some(head.clone())
             )),
             "{workflow:?}: the store the read built is in force and describes the head"
         );
+        let stored = Store::new(&root)
+            .current(bundled)
+            .expect("the store reads")
+            .map(|view| (view.stamp().fingerprint, view.stamp().tip.commit.clone()));
         assert_eq!(
-            Store::new(&root)
-                .current(bundled)
-                .expect("the store reads")
-                .is_some(),
-            bundled_stored,
+            stored,
+            bundled_stored.then_some((bundled, Some(head))),
             "{workflow:?}: the read stored the bundled grammars' store only with no declaration"
         );
     }
