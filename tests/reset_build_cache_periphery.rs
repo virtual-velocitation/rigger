@@ -826,7 +826,7 @@ fn reset_build_cache_keeps_a_live_critiques_scratch_and_reclaims_an_ended_ones()
             kept: false,
         },
         CritiqueScratch {
-            what: "a critique whose critic died before its marker",
+            what: "a critique whose host died before launch",
             hash: "dddddddddddddddd",
             ended: &[],
             latest: (1, false),
