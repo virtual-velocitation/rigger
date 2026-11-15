@@ -6,9 +6,11 @@
 //! has a workflow, and on a rerun - the gates and the implementer persona the implement and
 //! checkin stages run among it - that `rigger validate` accepts both fresh scaffolds, that a fresh
 //! scaffold bounds every spawn's wall clock so `rigger validate` prints no wall-clock warning over
-//! it, that a command naming no template root scaffolds no gate and keeps what an earlier root
-//! scaffolded, and that every argument and template root a command refuses is refused before any
-//! write.
+//! it, that a fresh scaffold seeds the `sdet-author` test author its workflow declares and keeps a
+//! project's own, and that a rerun writes that seed back only for the test author the workflow
+//! declares, that a command naming no template root scaffolds no gate and keeps what an earlier
+//! root scaffolded, and that every argument and template root a command refuses is refused before
+//! any write.
 
 use crate::common;
 use common::cli::{
@@ -16,7 +18,7 @@ use common::cli::{
     temp_project, wall_clock_advisory_lines,
 };
 use common::fixtures::{
-    agents_beside, dir_snapshot, sorted_dir_names, stage_agents, write_files,
+    agents_beside, dir_snapshot, sdet_author_seed, sorted_dir_names, stage_agents, write_files,
     LANGUAGE_NEUTRAL_IMPLEMENTER,
 };
 use common::repo::{collect_files, repo_root};
@@ -316,6 +318,59 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
     );
 }
 
+/// A command writing a fresh scaffold: its label, the project it runs in, the command, the agents
+/// line it prints and the number of gates the workflow it writes declares.
+type FreshScaffold = (
+    &'static str,
+    fn() -> tempfile::TempDir,
+    Command,
+    &'static str,
+    usize,
+);
+
+/// `rigger setup` naming no template root in a fresh project, `rigger init` naming this
+/// repository's root in one matching no set and in one matching the Rust set beside a root
+/// `Cargo.toml`, and `rigger setup` naming that root beside a root `Cargo.toml`.
+fn fresh_scaffolds() -> [FreshScaffold; 4] {
+    [
+        (
+            "setup, no template root",
+            temp_project,
+            setup_with_no_root,
+            NO_SET_AGENTS_LINE,
+            0,
+        ),
+        (
+            "init, this repository's root, matching no set",
+            temp_project,
+            init,
+            NO_SET_AGENTS_LINE,
+            0,
+        ),
+        (
+            "init, this repository's root, matching the Rust set",
+            cargo_project,
+            init,
+            RUST_AGENTS_LINE,
+            5,
+        ),
+        (
+            "setup, this repository's root, matching the Rust set",
+            cargo_project,
+            setup,
+            RUST_AGENTS_LINE,
+            5,
+        ),
+    ]
+}
+
+/// The `config valid:` lines of `rigger validate`'s stdout `out`.
+fn config_valid_lines(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|l| l.starts_with("config valid:"))
+        .collect()
+}
+
 /// Given a fresh project, when the operator runs `rigger setup` naming no template root, `rigger
 /// init` naming this repository's root - matching no set, or the Rust set beside a root
 /// `Cargo.toml` - or `rigger setup` naming that root beside a root `Cargo.toml`, then the written
@@ -325,26 +380,7 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
 /// `validate_warns_when_an_unbounded_default_leaves_a_gating_role_unswept`.
 #[test]
 fn a_fresh_scaffold_bounds_every_spawn_so_validate_prints_no_wall_clock_warning() {
-    type Row = (&'static str, fn() -> tempfile::TempDir, Command);
-    let rows: [Row; 4] = [
-        ("setup, no template root", temp_project, setup_with_no_root),
-        (
-            "init, this repository's root, matching no set",
-            temp_project,
-            init,
-        ),
-        (
-            "init, this repository's root, matching the Rust set",
-            cargo_project,
-            init,
-        ),
-        (
-            "setup, this repository's root, matching the Rust set",
-            cargo_project,
-            setup,
-        ),
-    ];
-    for (label, project, verb) in rows {
+    for (label, project, verb, ..) in fresh_scaffolds() {
         let dir = project();
         verb(dir.path());
         let (_out, err, ok) = run_rigger(dir.path(), &["validate"]);
@@ -357,6 +393,126 @@ fn a_fresh_scaffold_bounds_every_spawn_so_validate_prints_no_wall_clock_warning(
             (true, vec![], 3600),
             "{label}: validate accepts the scaffold, warns of no unbounded wall clock, and the \
              workflow bounds every spawn; stderr:\n{err}"
+        );
+    }
+}
+
+/// Given a fresh project - empty, or holding its own `.rigger/agents/sdet-author.md` - when the
+/// operator runs `rigger init` naming no template root or any command of [`fresh_scaffolds`], then
+/// the workflow declares `sdet-author` its test author and `rigger validate` accepts the seven
+/// agents: an empty project gets the seed byte for byte, named on the agents line and loaded, and
+/// a project's own persona is kept byte for byte, loaded in the seed's place, and left off the
+/// agents line.
+#[test]
+fn a_fresh_scaffold_seeds_the_test_author_it_declares_and_keeps_a_projects_own() {
+    const OWN: &str = "---\nid: sdet-author\nmodel: sonnet\n---\nThe project's own test author.\n";
+    let no_root: FreshScaffold = (
+        "init, no template root",
+        temp_project,
+        init_with_no_root,
+        NO_SET_AGENTS_LINE,
+        0,
+    );
+    for (label, project, verb, agents_line, gates) in fresh_scaffolds().into_iter().chain([no_root])
+    {
+        // (the persona the project holds before the command, the one it holds after, the agents
+        // line the command prints, the loaded test author's model).
+        let arms = [
+            (None, sdet_author_seed(), agents_line.to_string(), "opus"),
+            (
+                Some(OWN),
+                OWN.to_string(),
+                agents_line.replacen(" sdet-author.md,", "", 1),
+                "sonnet",
+            ),
+        ];
+        for (own, persona, printed, model) in arms {
+            let dir = project();
+            let author = dir.path().join(".rigger/agents/sdet-author.md");
+            if let Some(own) = own {
+                write_files(dir.path(), &[(".rigger/agents/sdet-author.md", own)]);
+            }
+            let out = verb(dir.path());
+            let (validated, err, ok) = run_rigger(dir.path(), &["validate"]);
+            let cfg = loaded_config(dir.path());
+            assert_eq!(
+                (
+                    agents_lines(&out),
+                    std::fs::read_to_string(&author).ok(),
+                    cfg.workflow.defaults.declared_test_author(),
+                    cfg.agents.get("sdet-author").map(|a| a.model.as_str()),
+                    ok,
+                    config_valid_lines(&validated),
+                ),
+                (
+                    vec![printed.as_str()],
+                    Some(persona),
+                    Some("sdet-author"),
+                    Some(model),
+                    true,
+                    vec![format!("config valid: 7 agents, 4 stages, {gates} gates").as_str()],
+                ),
+                "{label}, the project's own sdet-author.md {own:?}: stdout:\n{out}\nstderr:\n{err}"
+            );
+        }
+    }
+}
+
+/// Given a project `rigger init` scaffolded with no template root, which since holds a persona of
+/// its own, `my-author`, and no longer holds `sdet-author.md`, when the operator reruns `rigger
+/// init`, then the seed is written back only for the test author the workflow declares: still
+/// declaring `sdet-author`, the rerun writes the seed byte for byte and reports it, and `rigger
+/// validate` accepts eight agents; declaring `my-author`, it writes nothing, prints only the
+/// already-initialized line, and `rigger validate` accepts seven. `my-author.md` is kept either
+/// way.
+#[test]
+fn a_rerun_writes_back_the_seed_only_for_the_test_author_the_workflow_declares() {
+    const MINE: &str = "---\nid: my-author\n---\nThe project's own test author.\n";
+    // (the test author the workflow declares, the rerun's stdout but its starter-fleet pointer,
+    // the sdet-author.md the project holds after it, the agents `rigger validate` counts).
+    let rows = [
+        (
+            "sdet-author",
+            vec!["scaffolded .rigger/agents/{sdet-author.md}"],
+            Some(sdet_author_seed()),
+            8,
+        ),
+        ("my-author", vec![ALREADY_INITIALIZED.trim_end()], None, 7),
+    ];
+    for (declared, printed, persona, agents) in rows {
+        let dir = temp_project();
+        let root = dir.path();
+        init_with_no_root(root);
+        let workflow = root.join(".rigger/workflow.yml");
+        let declaring = std::fs::read_to_string(&workflow).unwrap().replace(
+            "test_author: sdet-author",
+            &format!("test_author: {declared}"),
+        );
+        std::fs::write(&workflow, declaring).unwrap();
+        let agents_dir = root.join(".rigger/agents");
+        std::fs::remove_file(agents_dir.join("sdet-author.md")).unwrap();
+        write_files(&agents_dir, &[("my-author.md", MINE)]);
+
+        let out = init_with_no_root(root);
+        let (validated, err, ok) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            (
+                out.lines()
+                    .filter(|l| !l.starts_with("next: "))
+                    .collect::<Vec<_>>(),
+                std::fs::read_to_string(agents_dir.join("sdet-author.md")).ok(),
+                std::fs::read_to_string(agents_dir.join("my-author.md")).unwrap(),
+                ok,
+                config_valid_lines(&validated),
+            ),
+            (
+                printed,
+                persona,
+                MINE.to_string(),
+                true,
+                vec![format!("config valid: {agents} agents, 4 stages, 0 gates").as_str()],
+            ),
+            "the workflow declaring {declared}: stdout:\n{out}\nstderr:\n{err}"
         );
     }
 }
