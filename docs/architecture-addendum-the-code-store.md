@@ -176,7 +176,8 @@ Any design that holds test code fully has to keep product views the size they ar
 3. **Pure.** A snapshot is a pure function of (tree, fingerprint), and the fingerprint names
    everything that computes it: the extractors and the grouping algorithm. Advancing from A to B
    gives the same bytes as advancing from empty to B.
-4. **Local facts.** A file's facts depend only on that file's path and bytes. Nothing is resolved
+4. **Local facts.** A file's facts depend only on that file's path and bytes, a declared extractor
+   being trusted, as a grammar is, to answer the same request the same way. Nothing is resolved
    across files at write time.
 5. **One resolver.** Every cross-file rule exists once, in `rigger-domain`, and runs at read.
 6. **Records stay.** Facts that cannot be re-derived from the tree (decisions, findings, lessons,
@@ -237,7 +238,8 @@ Any design that holds test code fully has to keep product views the size they ar
 
 A file's facts come from its path and bytes alone. Each file is in one *half*:
 
-- code, from the per-language symbol extractors;
+- code, from the per-language symbol extractors and the extractors the project's workflow
+  declares;
 - design, from the design-document extractor;
 - workflow, from the workflow-definition extractor.
 
@@ -245,11 +247,12 @@ A file's facts come from its path and bytes alone. Each file is in one *half*:
 FileFacts
   path        "crates/x/src/a.rs"          (repo-relative, '/'-separated)
   blob        git blob id, or FNV content hash when there is no git
-  lang        "rust" | "python" | ...      (from the extractor registry)
+  lang        "rust" | "python" | ...      (the extractor registry's name, or the declared
+                                            extractor's for the file's extension)
   half        Code | Design | Workflow
   scope       Product | Test               (path rule, see section 8)
-  partial     true when the parse held an error, so defs and mentions cover only as far as
-              the parse reached
+  partial     true when the parse held an error or the declared extractor said so, so defs
+              and mentions cover only as far as the extraction reached
   defs        [Def]                        (in the extractor's order)
   mentions    [Mention]                    (in the extractor's order)
   modules     [ModuleDecl]
@@ -429,8 +432,9 @@ What is *not* done, and why:
 - **No worktree bytes.** The shared store only ever describes a commit, so uncommitted edits in
   the operator checkout cannot leak into what a spawn reads. The overlay shows uncommitted edits
   to the one caller who has them. The extractors the root's working workflow declares are
-  configuration, not content: they choose the fingerprint and the command a declared file's
-  committed bytes are sent to, and the files they read still come from the commit alone.
+  configuration, not content: they choose the fingerprint and the command a declared file is
+  read by, and that command reads the commit's bytes for the shared store and a caller's
+  uncommitted bytes only for that caller's overlay.
 - **No history.** A fingerprint's previous snapshot is reaped once its pointer names the new one.
   Git holds every earlier tree, and advancing to any commit rebuilds its snapshot.
 - **No more than two fingerprints.** Two binaries sharing one store (an MCP server still on the
