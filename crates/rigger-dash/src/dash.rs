@@ -589,8 +589,8 @@ fn format_held_port(addr: SocketAddr, holder: Option<(u32, Option<char>)>) -> St
 /// to attribute it. Built on [`describe_held_port_if_confirmed`], whose `None` this arm is the
 /// ONE place allowed to promote to that wording, precisely because this caller's precondition
 /// licenses it and no other caller's does. Best-effort throughout: an OS the process interface
-/// cannot read, or a holder that exits mid-scan, degrades to the "holding process not found" report - never a
-/// panic and never a bare, unexplained exit (spec 62 Notes).
+/// cannot read, or a holder that exits mid-scan, degrades to the "holding process not found"
+/// report - never a panic and never a bare, unexplained exit (spec 62 Notes).
 pub fn describe_held_port(addr: SocketAddr) -> String {
     describe_held_port_if_confirmed(addr).unwrap_or_else(|| format_held_port(addr, None))
 }
@@ -11321,7 +11321,7 @@ mod tests {
         assert_eq!(
             pid_holding_port(port),
             Some(std::process::id()),
-            "the /proc scan must find THIS process as the holder of its own listener"
+            "the process interface must find THIS process as the holder of its own listener"
         );
         drop(listener);
     }
@@ -11373,10 +11373,11 @@ mod tests {
         /// [`describe_held_port`] (whose one production caller, `cmd_dash`, only ever reaches it
         /// AFTER the OS has already confirmed `AddrInUse`, so a `None` holder there still means a
         /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] is defined in
-        /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
-        /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
-        /// never promote an unconfirmed holder to a claim regardless of who calls it, so a caller
-        /// whose bind attempt runs in a detached child with no observable `io::Error` at all (no
+        /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy through
+        /// the process interface before naming a holder rather than trusting any caller's
+        /// precondition - it must never promote an unconfirmed holder to a claim regardless of who
+        /// calls it, so a caller whose bind attempt runs in a detached child with no observable
+        /// `io::Error` at all (no
         /// upstream confirmation of its own to lean on) can use [`held_port_holder`] directly
         /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming
         /// this test process's own pid.

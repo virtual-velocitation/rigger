@@ -586,10 +586,10 @@ pub fn reap_processes_rooted_under(base_dir: &Path, authorized_root: &Path) {
 /// used to build `dir` - never re-derived here - so this reap is safe on any relocated
 /// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered scratch root under a cache
 /// home, and still never touches a process outside `authorized_root`. On an OS the process
-/// interface cannot read the reap is a graceful no-op and only the removal runs. The shared teardown for
-/// every scratch area rigger removes - the binary's sweeps and the per-spawn reclaim the
-/// driver crate owns (`driver::replay::reclaim_spawn_registered_scratch`) - so both crates
-/// reach the ONE reap-then-remove; the worktree-removal reap point is
+/// interface cannot read the reap is a graceful no-op and only the removal runs. The shared
+/// teardown for every scratch area rigger removes - the binary's sweeps and the per-spawn
+/// reclaim the driver crate owns (`driver::replay::reclaim_spawn_registered_scratch`) - so
+/// both crates reach the ONE reap-then-remove; the worktree-removal reap point is
 /// [`crate::worktree::Worktree::remove`], which authorizes its own reap differently (git
 /// identity, not containment - see its own doc comment).
 pub fn reap_then_remove_dir(dir: &Path, authorized_root: &Path) {

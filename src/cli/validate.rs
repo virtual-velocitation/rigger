@@ -751,8 +751,8 @@ fn residue_advisories(
 /// failure and never a kill (the teardown reaps, such as `Worktree::remove`'s, are the only
 /// kill). Empty when nothing is rooted there; and because the shared scan authority
 /// ([`rigger::reap::processes_rooted_under`] - the SAME one the teardown reap consumes) returns
-/// empty where the dir or `/proc` is absent, this is a graceful no-op (empty, never an error)
-/// on a platform without `/proc` too.
+/// empty where the dir is absent or the process interface cannot read the OS, this is a
+/// graceful no-op (empty, never an error) on such an OS too.
 fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
     rigger::reap::processes_rooted_under(scratch_root)
         .into_iter()
@@ -1546,9 +1546,9 @@ mod tests {
 
     #[test]
     fn leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent() {
-        // Platform tolerance: an absent scratch root - the stand-in for an absent `/proc`,
-        // since the shared scanner short-circuits to empty in both cases - yields an empty
-        // list and NEVER an error, so validate keeps working on any platform.
+        // Platform tolerance: an absent scratch root - the stand-in for an OS the process
+        // interface cannot read, since the shared scanner answers empty in both cases - yields an
+        // empty list and NEVER an error, so validate keeps working on any platform.
         let dir = tempfile::tempdir().unwrap();
         let absent = dir.path().join("never-created");
         assert!(leaked_process_advisories(&absent).is_empty());
