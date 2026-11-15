@@ -144,11 +144,22 @@ pub fn read_current_hold(store: &dyn EventStore, stream: &str) -> Result<Option<
     Ok(state.hold)
 }
 
-/// The current run's [`HOLD_TYPES`] events, read from its boundary (`read_from_boundary`) and
-/// sliced to the newest run by [`crate::run::current_run`]: what the hold read folds and what the
-/// hold controller finds the open hold and its run in.
+/// The current run's [`HOLD_TYPES`] events ([`read_current_run_typed`]): what the hold read folds
+/// and what the hold controller finds the open hold and its run in.
 fn read_current_hold_events(store: &dyn EventStore, stream: &str) -> Result<Vec<Event>, Error> {
-    let events = read_from_boundary(store, stream, &HOLD_TYPES)?;
+    read_current_run_typed(store, stream, &HOLD_TYPES)
+}
+
+/// The current run's events of `types` alone, read from its boundary (`read_from_boundary`) and
+/// sliced to the newest run by [`crate::run::current_run`]: the read a step takes when it looks up
+/// a few types of the run and never its other events. `types` names [`TYPE_RUN_STARTED`], so a
+/// run started between the read's two store calls still slices it to the newest run.
+pub fn read_current_run_typed(
+    store: &dyn EventStore,
+    stream: &str,
+    types: &[&str],
+) -> Result<Vec<Event>, Error> {
+    let events = read_from_boundary(store, stream, types)?;
     Ok(super::current_run(&events).to_vec())
 }
 
