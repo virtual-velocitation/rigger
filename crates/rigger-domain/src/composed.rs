@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::{Mutex, OnceLock};
 
-use crate::code_facts::Tip;
+use crate::code_facts::{Recorded, Tip};
 use crate::code_graph::{CodeGraph, DOC_ATTR};
 use crate::code_view::{CodeView, Compared, Groupings, Tests, ViewFilter};
 use crate::community::DEFAULT_RESOLUTION;
@@ -426,6 +426,12 @@ pub trait CodeHalf: Neighbors {
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
     fn summarised_files(&self, id: &str) -> Vec<String>;
+    /// The last line the facts of the code file `file` bound the `recorded` definition to
+    /// ([`Recorded::widest_end`]); `None` when no such definition is there or the half keeps no
+    /// facts of `file`, as a half resolved whole keeps none.
+    fn definition_end(&self, _file: &str, _recorded: Recorded) -> Option<u32> {
+        None
+    }
     /// The groupings of the view the half resolves.
     fn groupings(&self) -> &Groupings;
     /// The half's whole graph ([`Neighbors::whole`]), moved out of the half where it is held
@@ -1220,6 +1226,20 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
     }
     fn locate(&self, entity: &str) -> Result<Located, Error> {
         locate(self, entity)
+    }
+    fn definition_end(&self, site: &EntitySite) -> Result<Option<u32>, Error> {
+        let name = site.attrs.get("name").filter(|name| !name.is_empty());
+        let (Some(name), false) = (name, self.label.compared.withholds_code()) else {
+            return Ok(None);
+        };
+        let (file, path) = split_id(&site.id);
+        let recorded = Recorded {
+            name,
+            path,
+            kind: &site.kind,
+            line: site.line,
+        };
+        Ok(self.code.definition_end(file, recorded))
     }
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
         self.of_kind(kind)
@@ -2523,6 +2543,73 @@ mod tests {
                 let got = format!("{:#?}", (read.graph, read.label));
                 assert_eq!(got, want, "{case} (near {near})");
             }
+        }
+    }
+
+    /// A located definition's end is read from the facts the graph was read from: GIVEN the facts
+    /// of `src/a.rs` bounding `run` from line 1 to line 2, WHEN the near read is asked the end of
+    /// a site at each worktree comparison, THEN a read describing the worktree answers the facts'
+    /// bound for the definition at its name, kind and line, and none for a site no definition
+    /// sits at, while a read withholding its code facts answers none.
+    #[test]
+    fn a_located_definition_s_end_is_read_from_the_facts() {
+        // (case, the comparison, the site's id, kind and line, the end)
+        let cases = [
+            (
+                "the facts' bound",
+                Compared::Overlaid(0),
+                "src/a.rs::run",
+                "function",
+                1,
+                Some(2),
+            ),
+            (
+                "another line",
+                Compared::Overlaid(0),
+                "src/a.rs::run",
+                "function",
+                2,
+                None,
+            ),
+            (
+                "another kind",
+                Compared::Overlaid(0),
+                "src/a.rs::run",
+                "struct",
+                1,
+                None,
+            ),
+            (
+                "another path",
+                Compared::Overlaid(0),
+                "src/a.rs::x::run",
+                "function",
+                1,
+                None,
+            ),
+            (
+                "no comparison",
+                Compared::Uncomparable,
+                "src/a.rs::run",
+                "function",
+                1,
+                None,
+            ),
+        ];
+        let (records, view) = (records(), view(Some("c1")));
+        for (case, compared, id, kind, line, want) in cases {
+            let near = Composed::near(&records, &view, ViewFilter::default(), honest(compared));
+            let site = EntitySite {
+                id: id.into(),
+                kind: kind.into(),
+                file: Some("src/a.rs".into()),
+                line,
+                degree: 0,
+                attrs: BTreeMap::from([("name".to_string(), "run".to_string())]),
+                unresolved: Vec::new(),
+            };
+            let got = near.unwrap().definition_end(&site).unwrap();
+            assert_eq!(got, want, "{case}");
         }
     }
 

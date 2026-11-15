@@ -327,7 +327,7 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
     match located {
         Located::None => match logged_site(site, entity)? {
             Some(site) => {
-                print_entity_site(&tree, &site);
+                print_entity_site(&tree, &site, None);
                 println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
             }
             None if hidden > 0 => {}
@@ -344,7 +344,10 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
                 println!("  {}   ({})", c.id, c.file);
             }
         }
-        Located::One(site) => print_entity_site(&tree, &site),
+        Located::One(site) => {
+            let stored_end = graph.definition_end(&site)?;
+            print_entity_site(&tree, &site, stored_end);
+        }
     }
     Ok(())
 }
@@ -367,7 +370,11 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
 /// "no production definition named" note with its id in place of the name, here, ahead of the
 /// feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line 0
 /// keeps [`definition_body`]'s `source unavailable`.
-fn print_entity_site(tree: &Result<PathBuf, String>, site: &contextgraph::EntitySite) {
+fn print_entity_site(
+    tree: &Result<PathBuf, String>,
+    site: &contextgraph::EntitySite,
+    stored_end: Option<u32>,
+) {
     println!("show {}", site.id);
     let Some(file) = site.file.as_deref() else {
         println!("  kind {}   degree {}", site.kind, site.degree);
@@ -392,6 +399,7 @@ fn print_entity_site(tree: &Result<PathBuf, String>, site: &contextgraph::Entity
             name.unwrap_or_default(),
             contextgraph::query::split_id(&site.id).1,
             &site.kind,
+            stored_end,
         ),
     };
     match body {
@@ -528,6 +536,7 @@ fn definition_body(
     name: &str,
     id_path: Option<&str>,
     kind: &str,
+    _stored_end: Option<u32>,
 ) -> ShowBody {
     // A line of 0 never named a real source line: degrade before any read. (Also covers a
     // reference-only graph entity with no definition site of its own.)
@@ -555,6 +564,8 @@ fn definition_body(
     }
     // The extent's end through the ONE multi-grammar authority. A miss (no such definition at
     // the line, or a light-lane build with no grammar) is an explicit note, never a guessed body.
+    #[cfg(test)]
+    tests::EXTENT_LOCATES.with(|n| n.set(n.get() + 1));
     let extent_end = match locate_definition_extent(file, &text, start, name, id_path, kind) {
         Ok(end) => end.min(total),
         Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
@@ -924,4 +935,57 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
         );
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        /// How many times this thread's [`definition_body`] bounded an extent through the grammar.
+        pub(super) static EXTENT_LOCATES: Cell<u32> = const { Cell::new(0) };
+    }
+
+    /// A body the graph's facts bound is read without bounding it again: GIVEN a file defining
+    /// `alpha` over its first three lines, WHEN its body is read with the end the facts stored and
+    /// with none, THEN the stored end bounds the body with no extent located, and with none the
+    /// grammar locates it once (a light-lane build notes its missing grammar instead of a body).
+    #[test]
+    fn a_stored_end_bounds_the_body_without_locating_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "fn alpha() {\n    1\n}\nfn beta() {}\n";
+        std::fs::write(dir.path().join("a.rs"), source).unwrap();
+        let tree = Ok(dir.path().to_path_buf());
+        // (case, the stored end, the extents located, whether the body prints)
+        let cases = [
+            ("a stored end", Some(3), 0, true),
+            ("no stored end", None, 1, cfg!(feature = "symbols")),
+        ];
+        for (case, stored_end, locates, body) in cases {
+            EXTENT_LOCATES.with(|n| n.set(0));
+            let read = definition_body(
+                &tree,
+                "a.rs",
+                1,
+                "alpha",
+                Some("alpha"),
+                "function",
+                stored_end,
+            );
+            let printed = match read {
+                ShowBody::Lines {
+                    lines,
+                    omitted: 0,
+                    extent_end: 3,
+                } => Some(lines.into_iter().map(|(n, _)| n).collect::<Vec<_>>()),
+                _ => None,
+            };
+            assert_eq!(
+                (EXTENT_LOCATES.with(Cell::get), printed),
+                (locates, body.then(|| vec![1, 2, 3])),
+                "{case}"
+            );
+        }
+    }
 }
