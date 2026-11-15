@@ -128,18 +128,19 @@ fn main() {
         usage();
         std::process::exit(2);
     }
+    if let Some(code) = answer_help(&args[1], &args[2..]) {
+        std::process::exit(code);
+    }
     // A RUN SURVIVES ITS DRIVER: the few checking verbs relaunch the project's run whose driver
     // died, before the verb, since a verb may end the process itself, or after the verbs whose
-    // effect the relaunch must see; every other verb checks nothing.
+    // effect the relaunch must see; every other verb checks nothing, and a verb asked for its
+    // help (answered above) runs no verb, so it checks nothing either.
     let verb = args[1].as_str();
     let check = check_point(&args[1..]);
     if check == CheckPoint::Before {
         let site = Site::here();
         relaunch_a_dead_driver(&site, false);
         site.lend_discovery();
-    }
-    if let Some(code) = answer_help(&args[1], &args[2..]) {
-        std::process::exit(code);
     }
     let result = match args[1].as_str() {
         "run" => cmd_run(&args[2..]),

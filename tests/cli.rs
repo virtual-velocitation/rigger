@@ -15499,6 +15499,11 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
         (&["release"], Over::Dead, true, None),
         (&["resume-unit", "no-such-unit"], Over::Dead, true, None),
         (&["status"], Over::LaneBinary, true, None),
+        (&["prime", "--help"], Over::Dead, false, None),
+        (&["status", "--help"], Over::Dead, false, None),
+        (&["status", "-h"], Over::Dead, false, None),
+        (&["release", "--help"], Over::Dead, false, None),
+        (&["resume-unit", "--help"], Over::Dead, false, None),
         (&["status", "--line"], Over::Dead, false, None),
         (&["status", "--json"], Over::Dead, false, None),
         (
