@@ -3,22 +3,26 @@
 //! `rigger setup --template <dir>` print, and what each leaves on disk, with this repository's
 //! root or a template root the operator owns - named by an absolute path or a relative one - as
 //! the template root, in a project matching a set, a project matching none, a project that already
-//! has a workflow, and on a rerun - the gates and the implementer persona the implement and
-//! checkin stages run among it - that `rigger validate` accepts both fresh scaffolds, that a fresh
+//! has a workflow, and on a rerun - the gates, the build environment the workflow declares under
+//! `build.env` and the implementer persona the implement and checkin stages run among it - that
+//! `rigger validate` accepts both fresh scaffolds and reports that environment, that a fresh
 //! scaffold bounds every spawn's wall clock so `rigger validate` prints no wall-clock warning over
 //! it, that a command naming no template root scaffolds no gate and keeps what an earlier root
 //! scaffolded, and that every argument and template root a command refuses is refused before any
 //! write.
 
 use crate::common;
+use common::cli::{build_report_lines, UNDECLARED_BUILD_REPORT};
 use common::cli::{
     cargo_project, failure_line, loaded_config, refusal_line, run_rigger, run_rigger_ok,
     temp_project, wall_clock_advisory_lines,
 };
+use common::fixtures::REFUSED_DECLARATIONS;
 use common::fixtures::{
     agents_beside, dir_snapshot, sorted_dir_names, stage_agents, write_files,
     LANGUAGE_NEUTRAL_IMPLEMENTER,
 };
+use common::fixtures::{RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
 use common::repo::{collect_files, repo_root};
 use std::path::Path;
 
@@ -434,14 +438,33 @@ fn a_template_root_holding_no_scaffold_dir_is_refused_before_any_write() {
 
 /// Given a command line `rigger init` or `rigger setup` refuses - `--template` with no directory,
 /// `--agents` given to `init`, or a template root whose one set brings an implementer reusing a
-/// scaffold seed's id - when the operator runs it, then the command fails on the refusal naming
-/// what is wrong before any write: nothing is reported scaffolded and the project is left as it
-/// was, with no directory made.
+/// scaffold seed's id, or declares under `env` an entry the build environment's check refuses -
+/// when the operator runs it, then the command fails on the refusal naming what is wrong - for a
+/// set, the set's key, and for a refused `env` entry, the check's own refusal naming the variable
+/// after it - before any write: nothing is reported scaffolded and the project is left as it was,
+/// with no directory made.
 #[test]
 fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
     let seeded = operator_template_root("implementer");
     let seeded = seeded.path().to_str().unwrap();
     let seed_id = "gate template set demo: implementer id implementer is a scaffold seed's id";
+    // Each refused `env` entry's template root, kept alive for the rows below, and its refusal.
+    let declaring: Vec<(tempfile::TempDir, String)> = REFUSED_DECLARATIONS
+        .iter()
+        .map(|refused| {
+            (
+                operator_template_root_declaring(&refused.set_env_line()),
+                format!("gate template set demo: env: {}", refused.message),
+            )
+        })
+        .collect();
+    let env_rows: Vec<([&str; 3], &str)> = declaring
+        .iter()
+        .flat_map(|(template, refusal)| {
+            let template = template.path().to_str().unwrap();
+            ["init", "setup"].map(|command| ([command, "--template", template], refusal.as_str()))
+        })
+        .collect();
     let rows: [(&[&str], &str); 5] = [
         (
             &["init", "--template"],
@@ -458,7 +481,10 @@ fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
         (&["init", "--template", seeded], seed_id),
         (&["setup", "--template", seeded], seed_id),
     ];
-    for (args, refusal) in rows {
+    let env_rows = env_rows
+        .iter()
+        .map(|(args, refusal)| (args.as_slice(), *refusal));
+    for (args, refusal) in rows.into_iter().chain(env_rows) {
         assert_refused_before_any_write(args, refusal);
     }
 }
@@ -798,6 +824,15 @@ fn operator_template_root(id: &str) -> tempfile::TempDir {
     dir
 }
 
+/// A fresh template root of the operator's own ([`operator_template_root`], its implementer
+/// [`DEMO_IMPLEMENTER_ID`]) whose one set's `set.yml` ends with `env_line`, its `env:` line.
+fn operator_template_root_declaring(env_line: &str) -> tempfile::TempDir {
+    let dir = operator_template_root(DEMO_IMPLEMENTER_ID);
+    let set = format!("{}{env_line}", demo_set(DEMO_IMPLEMENTER_ID));
+    write_files(dir.path(), &[("scaffold/demo/set.yml", set.as_str())]);
+    dir
+}
+
 /// Given a project holding the operator's own set's marker and no `Cargo.toml`, when the operator
 /// runs `rigger init` or `rigger setup` naming a template root of their own - by an absolute path,
 /// or by a path relative to the directory the command runs in, that directory below the git root
@@ -973,6 +1008,193 @@ fn a_later_command_keeps_what_an_earlier_root_scaffolded() {
             dir_snapshot(&root.join(".rigger/gates"), ""),
             expected,
             "{label}: the scripts .rigger/gates/ holds"
+        );
+    }
+}
+
+/// What `rigger validate` reports of a workflow declaring the Rust set's `env`, in name order,
+/// then the default budget.
+const RUST_SET_BUILD_REPORT: [&str; 3] = [
+    "build env: CARGO_BUILD_JOBS={jobs}",
+    "build env: CARGO_TARGET_DIR={build_cache}",
+    "build budget: 4",
+];
+
+/// The `env:` line of an operator's set declaring three variables out of name order: one over
+/// `{jobs}`, one below the build cache, and one whose name YAML reads as a boolean and whose value
+/// holds a double quote.
+const DEMO_ENV_LINE: &str =
+    "env: {MY_JOBS: \"{jobs}\", A_CACHE: \"{build_cache}/demo\", \"TRUE\": \"say \\\"hi\\\"\"}\n";
+
+/// [`DEMO_ENV_LINE`]'s variables, in name order.
+const DEMO_ENV: [(&str, &str); 3] = [
+    ("A_CACHE", "{build_cache}/demo"),
+    ("MY_JOBS", "{jobs}"),
+    ("TRUE", "say \"hi\""),
+];
+
+/// The `build.env` value a scaffold from the set declaring [`DEMO_ENV_LINE`] writes, byte for
+/// byte: its name the boolean spelling double-quoted, its double quote escaped.
+const DEMO_ENV_WRITTEN: &str =
+    "{A_CACHE: \"{build_cache}/demo\", MY_JOBS: \"{jobs}\", \"TRUE\": \"say \\u0022hi\\u0022\"}";
+
+/// What `rigger validate` reports of a workflow declaring [`DEMO_ENV`], then the default budget.
+const DEMO_BUILD_REPORT: [&str; 4] = [
+    "build env: A_CACHE={build_cache}/demo",
+    "build env: MY_JOBS={jobs}",
+    "build env: TRUE=say \"hi\"",
+    "build budget: 4",
+];
+
+/// Where a scaffold's gate template sets come from.
+enum Sets {
+    /// This repository's root, its Rust set among them.
+    Repository,
+    /// No template root.
+    NoRoot,
+    /// A template root of the operator's own whose one set ends with the `env:` line given, or
+    /// declares no `env` at all.
+    Operator(Option<&'static str>),
+}
+
+/// A fresh project holding the operator's own set's marker and no `Cargo.toml`.
+fn demo_project() -> tempfile::TempDir {
+    let dir = temp_project();
+    write_files(dir.path(), &[("demo.marker", "")]);
+    dir
+}
+
+/// Given a fresh project, when the operator runs `rigger init` or `rigger setup` naming this
+/// repository's root beside a root `Cargo.toml`, then the workflow it writes declares the Rust
+/// set's `env` under `build:` - `CARGO_BUILD_JOBS` over `{jobs}` and `CARGO_TARGET_DIR` over
+/// `{build_cache}` - and loads declaring exactly those two variables; matching no set, naming no
+/// template root beside a root `Cargo.toml`, or applying an operator's set that declares no `env`,
+/// it writes `env: {}` and declares none; applying an operator's set that declares its own `env`,
+/// it writes that `env` in name order and loads declaring exactly it. `rigger validate` accepts
+/// each scaffold and reports one `build env:` line per declared variable in name order, or none
+/// declared, then the build budget.
+#[test]
+fn a_fresh_scaffold_declares_its_template_sets_build_environment() {
+    // (label, the project, the command, where its sets come from, the `build.env` value written,
+    // the variables the workflow loads declaring, validate's build lines).
+    type Row = (
+        &'static str,
+        fn() -> tempfile::TempDir,
+        &'static str,
+        Sets,
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        &'static [&'static str],
+    );
+    let rows: [Row; 7] = [
+        (
+            "init, this repository's root, the Rust set",
+            cargo_project,
+            "init",
+            Sets::Repository,
+            RUST_SET_ENV_WRITTEN,
+            &RUST_SET_ENV,
+            &RUST_SET_BUILD_REPORT,
+        ),
+        (
+            "setup, this repository's root, the Rust set",
+            cargo_project,
+            "setup",
+            Sets::Repository,
+            RUST_SET_ENV_WRITTEN,
+            &RUST_SET_ENV,
+            &RUST_SET_BUILD_REPORT,
+        ),
+        (
+            "init, this repository's root, matching no set",
+            temp_project,
+            "init",
+            Sets::Repository,
+            "{}",
+            &[],
+            UNDECLARED_BUILD_REPORT,
+        ),
+        (
+            "init, no template root, beside a root Cargo.toml",
+            cargo_project,
+            "init",
+            Sets::NoRoot,
+            "{}",
+            &[],
+            UNDECLARED_BUILD_REPORT,
+        ),
+        (
+            "setup, no template root, beside a root Cargo.toml",
+            cargo_project,
+            "setup",
+            Sets::NoRoot,
+            "{}",
+            &[],
+            UNDECLARED_BUILD_REPORT,
+        ),
+        (
+            "init, an operator's set declaring no env",
+            demo_project,
+            "init",
+            Sets::Operator(None),
+            "{}",
+            &[],
+            UNDECLARED_BUILD_REPORT,
+        ),
+        (
+            "setup, an operator's set declaring its own env",
+            demo_project,
+            "setup",
+            Sets::Operator(Some(DEMO_ENV_LINE)),
+            DEMO_ENV_WRITTEN,
+            &DEMO_ENV,
+            &DEMO_BUILD_REPORT,
+        ),
+    ];
+    for (label, project, command, sets, written, declared, report) in rows {
+        let dir = project();
+        let root = dir.path();
+        // The operator's template root is kept alive until the row ends.
+        let (_operator, template) = match sets {
+            Sets::Repository => (None, Some(template_root())),
+            Sets::NoRoot => (None, None),
+            Sets::Operator(env_line) => {
+                let dir = env_line.map_or_else(
+                    || operator_template_root(DEMO_IMPLEMENTER_ID),
+                    operator_template_root_declaring,
+                );
+                let path = dir.path().to_str().unwrap().to_string();
+                (Some(dir), Some(path))
+            }
+        };
+        let mut args = vec![command];
+        if let Some(template) = &template {
+            args.extend(["--template", template.as_str()]);
+        }
+        run_rigger_ok(root, &args);
+
+        let workflow = std::fs::read_to_string(root.join(".rigger/workflow.yml")).unwrap();
+        let (out, err, ok) = run_rigger(root, &["validate"]);
+        assert_eq!(
+            (
+                workflow
+                    .matches(&format!("\nbuild:\n  env: {written}\n"))
+                    .count(),
+                loaded_config(root).workflow.build.env,
+                ok,
+                build_report_lines(&out),
+            ),
+            (
+                1,
+                declared
+                    .iter()
+                    .map(|(name, value)| (name.to_string(), value.to_string()))
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                true,
+                report.to_vec(),
+            ),
+            "{label}: the written `build.env`, the variables it loads declaring, and validate's \
+             build lines; workflow:\n{workflow}\nstdout:\n{out}\nstderr:\n{err}"
         );
     }
 }
