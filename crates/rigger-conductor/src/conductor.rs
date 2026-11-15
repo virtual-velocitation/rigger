@@ -7903,7 +7903,7 @@ impl RunCtx<'_> {
 
         // The ONE build-environment authority (spec 65): resolved once for the whole
         // fan-out, not once per lane - every speculation candidate shares the SAME
-        // resolved wrapper/cache/incremental vars, since none of them depend on `lane`.
+        // declared build environment, since none of its variables depend on `lane`.
         let build_env = self.build_env()?;
 
         // Gap 61: a group re-entered in a LATER process than the one that saw its failure (an
@@ -10607,8 +10607,8 @@ impl RunCtx<'_> {
             // It measures the ONE integrated tree, so it keeps inheriting the
             // shared build cache (empty target_dir) - a per-unit cache would be
             // wrong here (Gap 19). It still carries the ONE
-            // build-environment authority's resolved wrapper/cache/incremental vars
-            // (spec 65), same as every other gate this run's config resolves - and
+            // build-environment authority's declared build environment (spec 65),
+            // same as every other gate this run's config resolves - and
             // the same machine-wide build budget, so this phase-boundary gate waits
             // for a slot exactly like every inline gate does. It carries
             // `$RIGGER_RUN_BASE` through that same `build_env`, never a second copy.
@@ -10616,8 +10616,8 @@ impl RunCtx<'_> {
             // The deferred gate measures the ONE integrated tree with no worktree
             // dir (empty `target_dir`, matching `run_gates`'s own "empty target"
             // shared-cache case) - so it holds the SAME shared build-cache guard
-            // every other ambient-cache gate build holds AND builds into the SAME
-            // dir that guard protects (spec 77 criterion 5). It runs for no unit, so
+            // every other ambient-cache gate build holds AND resolves `{build_cache}`
+            // to the SAME dir that guard protects (spec 77 criterion 5). It runs for no unit, so
             // its gate scratch is empty too and the runner removes
             // `RIGGER_GATE_SCRATCH` (spec 113).
             let (cache_dir, guard) = self.shared_build_cache_paths();

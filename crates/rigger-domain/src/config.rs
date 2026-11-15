@@ -1183,12 +1183,13 @@ pub struct StoreConfig {
 pub struct BuildConfig {
     /// RETIRED: a compilation-cache wrapper's binary name. rigger exports only what
     /// [`env`](Self::env) declares, so no run reads it; kept as a field so a workflow still
-    /// carrying the key parses.
+    /// carrying the key parses, and validation refuses a non-empty value, naming the line to
+    /// delete.
     #[serde(default)]
     pub wrapper: String,
     /// RETIRED: a compilation-cache directory. rigger exports only what [`env`](Self::env)
     /// declares, so no run reads it; kept as a field so a workflow still carrying the key
-    /// parses.
+    /// parses, and validation refuses a non-empty value, naming the line to delete.
     #[serde(default)]
     pub cache_dir: String,
     /// The variables rigger exports to every gate and every spawn, by name, and nothing else of

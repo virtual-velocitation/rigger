@@ -53,7 +53,9 @@ use common::fixtures::{
     api_retry_lines, headless_progress_frame, recorded_argv, recorded_task, stand_in_launches,
     ERROR_RESULT, GHOST_TEST_AUTHOR_REFUSAL, RECORD_EACH_LAUNCH,
 };
-use common::fixtures::{build_block_declaring, DECLARED_BJL, REFUSED_DECLARATIONS};
+use common::fixtures::{
+    build_block_declaring, DECLARED_BJL, REFUSED_DECLARATIONS, RETIRED_BUILD_KEYS,
+};
 use common::git::git_answer;
 use common::git::temp_git_project_with_commit;
 use common::mcp::McpSession;
@@ -5279,6 +5281,7 @@ fn a_run_driver_holds_the_machine_awake_while_it_drives_and_releases_it_as_it_ex
 /// `/run/systemd/inhibit/`: a process holding a logind inhibitor holds one per inhibitor.
 fn inhibitor_links(pid: u32) -> usize {
     rigger::holders::open_files(pid)
+        .into_iter()
         .filter(|named| named.starts_with("/run/systemd/inhibit/"))
         .count()
 }
@@ -12843,10 +12846,9 @@ fn validate_flags_tracked_rigger_files_with_uncommitted_modifications() {
 // ---------------------------------------------------------------------------
 
 /// Set a test's `build:` block on a scaffolded project's `.rigger/workflow.yml`, REPLACING
-/// any `build:` the scaffold already wrote rather than blindly appending a second one:
-/// `rigger init` scaffolds a `build:` block on every fresh project, so a bare append would
-/// leave two top-level `build:` keys - a YAML parse error ("duplicate field `build`"), not the
-/// single block each test below means to exercise.
+/// any `build:` block the file already holds (one an earlier call set, say) rather than
+/// blindly appending a second one: two top-level `build:` keys are a YAML parse
+/// error ("duplicate field `build`"), not the single block each test below means to exercise.
 fn append_build_block(root: &Path, block: &str) {
     let path = root.join(".rigger").join("workflow.yml");
     let existing = std::fs::read_to_string(&path).unwrap();
@@ -12859,7 +12861,7 @@ fn append_build_block(root: &Path, block: &str) {
         }
         if in_build {
             if line.trim().is_empty() || line.starts_with(' ') || line.starts_with('\t') {
-                continue; // still inside the scaffolded build: block (or its trailing blank)
+                continue; // still inside the existing build: block (or its trailing blank)
             }
             in_build = false;
         }
@@ -12932,28 +12934,36 @@ rigger::test_cases! {
         );
 }
 
-/// A REFUSED DECLARATION FAILS VALIDATE: GIVEN an initialized project whose workflow's
-/// `build.env` declares an entry the one check refuses - a name that is not a variable name, a
-/// name rigger sets itself, an unknown placeholder or a stray brace - WHEN the operator runs
-/// `rigger validate`, THEN it refuses before any output, naming the variable in the one refusal
-/// line.
+/// A REFUSED BUILD BLOCK FAILS VALIDATE: GIVEN an initialized project whose workflow's `build:`
+/// block declares a `build.env` entry the one check refuses - a name that is not a variable name,
+/// a name rigger sets itself, an unknown placeholder or a stray brace - or still carries a value
+/// for a retired key, `build.wrapper` or `build.cache_dir`, WHEN the operator runs
+/// `rigger validate`, THEN it refuses before any output, in the one refusal line naming the
+/// variable, or the retired key and the line to delete.
 #[test]
-fn validate_refuses_each_refused_build_env_declaration_before_any_output() {
+fn validate_refuses_each_refused_build_block_before_any_output() {
     let dir = initialized_project();
     let root = dir.path();
-    for refused in REFUSED_DECLARATIONS {
-        let why = format!("{:?}: {:?}", refused.name, refused.value);
-        append_build_block(
-            root,
-            &build_block_declaring(&[(refused.name, refused.value)], 3),
-        );
+    let declarations = REFUSED_DECLARATIONS.iter().map(|refused| {
+        (
+            format!("{:?}: {:?}", refused.name, refused.value),
+            build_block_declaring(&[(refused.name, refused.value)], 3),
+            refused.message,
+        )
+    });
+    let retired = RETIRED_BUILD_KEYS.iter().filter_map(|row| {
+        row.refusal
+            .map(|refusal| (row.why.to_string(), row.block.to_string(), refusal))
+    });
+    for (why, block, message) in declarations.chain(retired) {
+        append_build_block(root, &block);
         let (out, err, ok) = run_rigger(root, &["validate"]);
         assert!(
             !ok,
             "{why}: validate refuses; stdout:\n{out}\nstderr:\n{err}"
         );
         assert_eq!(out, "", "{why}: the refusal comes before any output");
-        let line = format!("rigger: config: {}", refused.message);
+        let line = format!("rigger: config: {message}");
         assert_eq!(
             err.lines().filter(|l| *l == line).count(),
             1,
@@ -12962,18 +12972,19 @@ fn validate_refuses_each_refused_build_env_declaration_before_any_output() {
     }
 }
 
-/// THE VALIDATE REPORT NAMES THE DECLARATION: GIVEN an initialized project whose `build:` block
-/// is the fresh scaffold's, untouched, or declares `B`, `J` and `L`, WHEN the operator runs
-/// `rigger validate`, THEN its build lines are one `build env: NAME=template` line per declared
-/// variable in name order, or `build env: none declared`, followed by the build budget.
+/// THE VALIDATE REPORT NAMES THE DECLARATION: GIVEN an initialized project whose workflow is the
+/// fresh scaffold's, untouched, with no `build:` block, or whose `build:` block declares `B`, `J`
+/// and `L`, or carries a retired `build.wrapper` or `build.cache_dir` key with an empty or
+/// whitespace-only value, WHEN the operator runs `rigger validate`, THEN it passes, and its build
+/// lines are one `build env: NAME=template` line per declared variable in name order, or
+/// `build env: none declared`, followed by the build budget.
 #[test]
 fn validate_reports_each_declared_build_variable_then_the_budget() {
+    // Nothing declared and no budget key: a workflow with no `build:` block and a `build:` block
+    // without `max_concurrent` both resolve the budget to 4.
+    const NONE_DECLARED: &[&str] = &["build env: none declared", "build budget: 4"];
     let cases: [(&str, Option<String>, &[&str]); 2] = [
-        (
-            "the fresh scaffold, untouched",
-            None,
-            &["build env: none declared", "build budget: 4"],
-        ),
+        ("the fresh scaffold, untouched", None, NONE_DECLARED),
         (
             "B, J and L with jobs 3 and no budget",
             Some(build_block_declaring(&DECLARED_BJL, 3)),
@@ -12985,7 +12996,11 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
             ],
         ),
     ];
-    for (why, block, want) in cases {
+    let retired_but_empty = RETIRED_BUILD_KEYS
+        .iter()
+        .filter(|row| row.refusal.is_none())
+        .map(|row| (row.why, Some(row.block.to_string()), NONE_DECLARED));
+    for (why, block, want) in cases.into_iter().chain(retired_but_empty) {
         let dir = initialized_project();
         let root = dir.path();
         if let Some(block) = block {
@@ -14221,11 +14236,13 @@ fn reset_build_cache_reclaims_a_dead_units_gate_scratch_root_and_spares_a_live_u
 }
 
 /// Spec 23 (unit 2), done-when line 60: `rigger validate` reports, as a warning-only advisory
-/// that NEVER fails validation, any process whose cwd is under the scratch root - naming its
-/// pid - and reports none once nothing is rooted there. Driving the real binary proves the
-/// config -> residue-scan -> `/proc`-scan -> stderr wiring end to end; the pure formatter is
-/// unit-tested in `src/main.rs`. On a platform without `/proc` the scan is a graceful no-op
-/// (the shared scanner returns empty), so this behaves like the no-process case, never an error.
+/// that NEVER fails validation, any process whose cwd is under the scratch root - one line
+/// naming its pid, its command and the scratch root - and reports none once nothing is rooted
+/// there. Driving the real binary proves the config -> residue-scan -> process-interface scan
+/// (`os_process`'s process list, working directory and command line) -> stderr wiring end to
+/// end; `leaked_process_advisories` is unit-tested in `src/cli/validate.rs`. On an OS the process
+/// interface cannot read the scan is a graceful no-op (the shared scanner returns empty), so
+/// this behaves like the no-process case, never an error.
 #[test]
 fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let dir = temp_project();
@@ -14238,27 +14255,22 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let probe = scratch.join("probe");
     std::fs::create_dir_all(&probe).unwrap();
     let tmp = scratch.to_str().unwrap();
-    let mut child = Command::new("sleep")
-        .arg("300")
-        .current_dir(&probe)
-        .spawn()
-        .expect("spawn probe child");
+    let mut child = common::fixtures::sleeper_in(&probe);
 
-    // Wait until the kernel reports the child rooted under the scratch root, so the scan
-    // validate runs is guaranteed to see it before we assert.
-    let appeared = (0..200).any(|_| {
-        if rigger::reap::processes_rooted_under(&scratch)
-            .iter()
-            .any(|(pid, _)| *pid == child.id())
-        {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-        false
+    // Wait until the scan validate runs names the child rooted under the scratch root with its
+    // whole command. `spawn` returns while the child's exec may still be laying out its
+    // arguments: the OS already reports its working directory but no arguments yet. A scan that
+    // never names the whole command is left to the advisory assertion below, which shows what
+    // validate printed.
+    let whole = (child.id(), "sleep 300".to_string());
+    let mut rooted = Vec::new();
+    common::fixtures::wait_until(|| {
+        rooted = rigger::reap::processes_rooted_under(&scratch);
+        rooted.contains(&whole)
     });
     assert!(
-        appeared,
-        "precondition: the probe child is rooted under the scratch root"
+        rooted.iter().any(|(pid, _)| *pid == child.id()),
+        "precondition: the probe child is rooted under the scratch root; the scan names {rooted:?}"
     );
 
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
@@ -14277,16 +14289,31 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
         out.contains("config valid"),
         "validate still prints its config summary; stdout:\n{out}"
     );
-    assert!(
-        err.contains(&format!("pid {}", child.id())) && err.contains("scratch root"),
-        "validate warns, naming the process rooted under the scratch root; stderr:\n{err}"
+    /// The leaked-process advisory lines among validate's `stderr`, in order.
+    fn advisories(stderr: &str) -> Vec<&str> {
+        common::cli::lines_where(stderr, |line| {
+            line.starts_with("warning: process rooted under the scratch root")
+        })
+    }
+    let expected = format!(
+        "warning: process rooted under the scratch root (surfaced only - validate never reaps \
+         it): pid {} (sleep 300) - its cwd is under {tmp}; it outlives a dir rigger owns until \
+         the next teardown or run start reaps it.",
+        child.id()
+    );
+    assert_eq!(
+        advisories(&err),
+        vec![expected.as_str()],
+        "validate warns once, naming the rooted process's pid, its command and the scratch root; \
+         stderr:\n{err}"
     );
     assert!(
         ok2,
         "validate still succeeds once nothing is rooted under the scratch root; stderr:\n{err2}"
     );
-    assert!(
-        !err2.contains(&format!("pid {}", child.id())),
+    assert_eq!(
+        advisories(&err2),
+        Vec::<&str>::new(),
         "validate emits no leaked-process advisory once the process is gone; stderr:\n{err2}"
     );
 }
@@ -26947,26 +26974,23 @@ fn stopped_dash_holder(root: &Path) -> WatchedDash {
     holder
 }
 
-/// A failed bind against a STOPPED holder's `port` gets the explicit resume-or-kill diagnosis:
-/// it names the holder's pid and the held address, and names the STOPPED state explicitly.
+/// A failed bind against a STOPPED holder's `port` ends on the explicit resume-or-kill
+/// diagnosis, the whole line: the held address, the holder's pid as the process interface finds
+/// it listening (`os_process::listening_pid`), and the STOPPED state it reads for that pid
+/// (`os_process::state`). The pid is compared inside its `by pid {N}` and `kill pid {N}`
+/// phrases, never as a bare substring: under the pid-namespace test sandbox the holder's pid is
+/// a small number, often already a substring of the address 127.0.0.1 or of the port.
 fn assert_the_stopped_holder_diagnosis(err: &str, holder_pid: u32, port: u16) {
-    let pid_str = holder_pid.to_string();
-    assert!(
-        err.contains(&pid_str),
-        "the diagnosis must name the stopped holder's pid ({pid_str}); stderr:\n{err}"
+    let expected = format!(
+        "rigger: address 127.0.0.1:{port} is already in use by pid {holder_pid}, which is \
+         STOPPED - a stopped listener keeps the port bound but its process never accepts a \
+         connection; resume or kill pid {holder_pid} to free the port"
     );
-    assert!(
-        err.contains(&port.to_string()),
-        "the diagnosis must always name the held address; stderr:\n{err}"
-    );
-    let lower = err.to_lowercase();
-    assert!(
-        lower.contains("resume") && lower.contains("kill"),
-        "a STOPPED holder must get the explicit resume-or-kill diagnosis; stderr:\n{err}"
-    );
-    assert!(
-        lower.contains("stop"),
-        "the diagnosis should name the STOPPED state explicitly; stderr:\n{err}"
+    assert_eq!(
+        common::cli::lines_where(err, |line| line.starts_with("rigger: ")),
+        vec![expected.as_str()],
+        "the diagnosis names the held address, the stopped holder's pid, its STOPPED state and \
+         the resume-or-kill remedy; stderr:\n{err}"
     );
 }
 
@@ -26974,9 +26998,9 @@ fn assert_the_stopped_holder_diagnosis(err: &str, holder_pid: u32, port: u16) {
 /// job-control-STOPPED predecessor keeps its listening socket bound - the kernel completed the
 /// TCP handshake into the backlog - but its process never calls `accept()` again, so a plain
 /// port probe just hangs. A real `rigger dash` is spawned, confirmed genuinely serving, then
-/// stopped with `SIGSTOP` (mirroring `crate::reap`'s own `kill(1)`-based signalling, never
-/// `libc`); a second `rigger dash` against the SAME port must fail naming the first one's pid,
-/// its STOPPED state, and the resume-or-kill remedy - never a bare `Address already in use`.
+/// stopped with `SIGSTOP` through `common::stop_pid`, the test side's one signal call; a second
+/// `rigger dash` against the SAME port must fail naming the first one's pid, its STOPPED state,
+/// and the resume-or-kill remedy - never a bare `Address already in use`.
 #[test]
 fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
     if !Path::new("/proc").is_dir() {

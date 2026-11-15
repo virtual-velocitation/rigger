@@ -43,9 +43,9 @@
 # the first failure, a hung test dies at the per-test bound. `env -u CARGO_TARGET_DIR` gives
 # each mutant copy its own build dir (one shared target serialized every copy on cargo's lock
 # and left the cache holding mutated artifacts); `--cargo-arg=--target-dir=target` pins it
-# INSIDE the copy, because the scratch root's own .cargo/config.toml would otherwise send all
-# copies to one `cargo-target-shared` dir. `CARGO_BUILD_JOBS=8` lifts .cargo/config.toml's
-# 4-job cap for the sweep alone. Line-table debug info (`CARGO_PROFILE_*_DEBUG=1`) keeps each
+# INSIDE the copy, so a .cargo/config.toml in a parent directory (a scratch root an older
+# rigger seeded with a shared `target-dir`) cannot send all copies to one dir.
+# `CARGO_BUILD_JOBS=8` lifts .cargo/config.toml's 4-job cap for the sweep alone. Line-table debug info (`CARGO_PROFILE_*_DEBUG=1`) keeps each
 # relink small: full debug info made 200-290 MB test binaries and 81 s relinks.
 #
 # THE WHOLE WORKSPACE IS MUTATED, ONLY THE TOUCHED PACKAGES ARE TESTED (2026-09-28). The

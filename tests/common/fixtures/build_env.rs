@@ -1,8 +1,9 @@
 //! The declared build environment's shared rows (spec 125 criterion 4): the declaration the
 //! criterion names, the `build` block that declares a set of variables, in its typed and its
-//! workflow-file form, and every `build.env` entry the one check refuses with the exact refusal
-//! it names. It names only the domain crate, so the gate adapter's, the config adapter's, the
-//! conductor's and the root crate's tests read one copy.
+//! workflow-file form, every `build.env` entry the one check refuses with the exact refusal it
+//! names, and every `build` block carrying a retired key with what validation answers for it. It
+//! names only the domain crate, so the gate adapter's, the config adapter's, the conductor's and
+//! the root crate's tests read one copy.
 
 /// The criterion's declaration: `B` over the site's build cache, `J` the jobs cap, `L` a literal.
 pub const DECLARED_BJL: [(&str, &str); 3] =
@@ -156,5 +157,75 @@ pub const REFUSED_DECLARATIONS: &[RefusedDeclaration] = &[
         "B",
         "}}}",
         "build.env: B: a stray brace in \"}}}\"; write {{ or }} for a literal brace",
+    ),
+];
+
+/// The refusal of a workflow still carrying a `build.wrapper` value.
+const WRAPPER_RETIRED: &str = "the workflow key `build.wrapper` is retired (rigger exports only what `build.env` declares; declare there each variable your builds need (your build cache over `{build_cache}`, your job count over `{jobs}`)): delete the `wrapper:` line under `build:` from your workflow.yml (config key: build.wrapper)";
+
+/// The refusal of a workflow still carrying a `build.cache_dir` value.
+const CACHE_DIR_RETIRED: &str = "the workflow key `build.cache_dir` is retired (rigger exports only what `build.env` declares; declare there each variable your builds need (your build cache over `{build_cache}`, your job count over `{jobs}`)): delete the `cache_dir:` line under `build:` from your workflow.yml (config key: build.cache_dir)";
+
+/// One workflow-file `build` block carrying a retired key, and what validation answers for it:
+/// the refusal naming the key and the line to delete, or `None` when the value is empty or
+/// whitespace-only and validation passes.
+pub struct RetiredKeyRow {
+    pub why: &'static str,
+    pub block: &'static str,
+    pub refusal: Option<&'static str>,
+}
+
+const fn retired(
+    why: &'static str,
+    block: &'static str,
+    refusal: Option<&'static str>,
+) -> RetiredKeyRow {
+    RetiredKeyRow {
+        why,
+        block,
+        refusal,
+    }
+}
+
+/// Every retired `build` key's value class: `auto`, `off` and a named wrapper are refused, a
+/// cache directory is refused, an empty or whitespace-only value of either passes, and a block
+/// carrying both keys is refused for `build.wrapper`, whichever line the file writes first.
+pub const RETIRED_BUILD_KEYS: &[RetiredKeyRow] = &[
+    retired(
+        "wrapper auto",
+        "build:\n  wrapper: auto\n",
+        Some(WRAPPER_RETIRED),
+    ),
+    retired(
+        "wrapper off",
+        "build:\n  wrapper: off\n",
+        Some(WRAPPER_RETIRED),
+    ),
+    retired(
+        "a named wrapper",
+        "build:\n  wrapper: sccache\n",
+        Some(WRAPPER_RETIRED),
+    ),
+    retired("an empty wrapper", "build:\n  wrapper: \"\"\n", None),
+    retired(
+        "a whitespace-only wrapper",
+        "build:\n  wrapper: \"  \"\n",
+        None,
+    ),
+    retired(
+        "a cache dir",
+        "build:\n  cache_dir: /shared/cache\n",
+        Some(CACHE_DIR_RETIRED),
+    ),
+    retired("an empty cache dir", "build:\n  cache_dir: \"\"\n", None),
+    retired(
+        "a whitespace-only cache dir",
+        "build:\n  cache_dir: \"  \"\n",
+        None,
+    ),
+    retired(
+        "both keys, the cache dir written first",
+        "build:\n  cache_dir: /shared/cache\n  wrapper: auto\n",
+        Some(WRAPPER_RETIRED),
     ),
 ];

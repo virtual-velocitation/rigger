@@ -645,9 +645,10 @@ fn a_run_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_ne
 /// Gap 96, ONE ACCOUNTING, ONE REAPER: `rigger reset --build-cache` reclaims every class of dead
 /// bytes `rigger validate`'s footprint names with this verb - a dead unit's per-unit cache, a
 /// dead spawn's registered agent scratch, and unowned agent scratch - through the same accounting,
-/// and leaves alone a dead dir a live
-/// process still holds (here: an open file descriptor in this test process) and everything
-/// that is not dead footprint (the sweep's mutation anchor).
+/// and leaves alone each dead dir a live process still holds, by either arm of the holder check
+/// (here: an open file descriptor in this test process, and a child process whose working
+/// directory is inside the dir), naming both in one line, and everything that is not dead
+/// footprint (the sweep's mutation anchor).
 #[test]
 fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_held_dir() {
     let project = temp_store_project();
@@ -658,6 +659,11 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     write_file(&dead_unit_cache.join("debug").join("a.rlib"), &[0u8; 1_000]);
     let held_unit_cache = scratch.join("cargo-target-held-unit");
     write_file(&held_unit_cache.join("debug").join("b.rlib"), &[0u8; 300]);
+    let cwd_held_unit_cache = scratch.join("cargo-target-cwd-unit");
+    write_file(
+        &cwd_held_unit_cache.join("debug").join("d.rlib"),
+        &[0u8; 400],
+    );
     let dead_spawn_leaf = scratch
         .join("agent-scratch")
         .join("run-gone")
@@ -668,12 +674,15 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     let anchor = scratch.join("mutation-anchor").join("tip");
     write_file(&anchor, b"0123abcd\n");
 
-    // The live holder: this process keeps a file inside the held cache open.
+    // The live holders, one per arm of the holder check: this process keeps a file inside the
+    // held cache open, and a child process works inside the cwd-held cache.
     let holder = std::fs::File::open(held_unit_cache.join("debug").join("b.rlib"))
         .expect("open the held cache's file");
+    let mut cwd_holder = common::fixtures::sleeper_in(&cwd_held_unit_cache.join("debug"));
 
     let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
     drop(holder);
+    common::fixtures::cleanup(&mut cwd_holder);
     assert!(
         ok,
         "reset --build-cache must succeed; stdout {out:?} stderr {err:?}"
@@ -692,13 +701,30 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
         out.contains("1000 byte(s)") && out.contains("per-unit caches"),
         "the report names each class and its measured bytes: {out:?}"
     );
-    assert!(
-        held_unit_cache.join("debug").join("b.rlib").exists(),
-        "a dead dir a live process holds is never removed: {out:?}"
-    );
-    assert!(
-        out.contains("cargo-target-held-unit") && out.contains("live process"),
-        "the report names the held dir and why it stayed: {out:?}"
+    for (what, file) in [
+        (
+            "held by an open file",
+            held_unit_cache.join("debug").join("b.rlib"),
+        ),
+        (
+            "held by a working directory",
+            cwd_held_unit_cache.join("debug").join("d.rlib"),
+        ),
+    ] {
+        assert!(
+            file.exists(),
+            "a dead dir {what} is never removed: {file:?}; stdout {out:?}"
+        );
+    }
+    assert_eq!(
+        common::cli::lines_where(&out, |line| line.starts_with("--build-cache: left ")),
+        vec![format!(
+            "--build-cache: left 2 dead entries of per-unit caches in place - a live process \
+             still holds each: {}, {}",
+            cwd_held_unit_cache.display(),
+            held_unit_cache.display()
+        )],
+        "the report names each held dir, in name order, and why it stayed: {out:?}"
     );
     assert!(
         anchor.exists(),

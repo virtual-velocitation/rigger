@@ -307,7 +307,7 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
                 // conflict (a real rigger dash already on this address resolves to
                 // `AlreadyServing` above instead), so an `AddrInUse` here always means SOME
                 // other process holds the port - name it, and its process state when the
-                // `/proc` surface can discover it, instead of the bare `io::Error` a plain `?`
+                // process interface can discover it, instead of the bare `io::Error` a plain `?`
                 // used to propagate. Any OTHER bind error (e.g. a privileged port with no
                 // permission) is unrelated to a held port and passes through unchanged.
                 Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {

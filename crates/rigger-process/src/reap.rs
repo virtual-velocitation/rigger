@@ -26,10 +26,10 @@
 //!   git-identity-based authorization reuses the ONE implementation rather than a second,
 //!   parallel one. [`reap_processes_rooted_under`] is exactly `is_reapable_base` then this.
 //!
-//! Best-effort and platform-tolerant. Detection is Linux-first via `/proc/<pid>/cwd`
-//! (read with `std::fs::read_link`, std-only - no `libc`); on a platform without `/proc`
-//! it is a graceful no-op returning empty, NEVER a hard error, so teardown and validate
-//! keep working on any platform.
+//! Best-effort and platform-tolerant. Every fact the reaper reads about a process - the process
+//! list, a process's cwd, command, parent and start time - comes through the process interface
+//! ([`crate::os_process`]); on an OS that interface cannot read, detection is a graceful no-op
+//! returning empty, NEVER a hard error, so teardown and validate keep working on any platform.
 //!
 //! SAFETY BOUNDARY (load-bearing, spec 23 + spec 78): the scan matches ONLY a process whose
 //! canonicalized cwd equals the base dir or lies strictly under it (`<base>/...`), by path
@@ -61,16 +61,17 @@
 //! longer exists is ALREADY RECLAIMED - authorized exactly like a live one, never a logged
 //! refusal (a spawn's own scratch dir that was never created would otherwise fail
 //! `base_dir.canonicalize()` and log a false "not strictly under" refusal on every single
-//! `rigger result`). And a process can hold a now-DELETED dir as its cwd - the kernel
-//! appends the literal `" (deleted)"` to its `/proc/<pid>/cwd` readlink - so [`is_inside`]
-//! strips that suffix before matching: a test binary that loops after the tool that built
-//! its scratch tree removed that tree out from under it holds exactly such a cwd, and a
-//! cwd-rooted reaper that never matched the deleted path would never even try to signal it. A
-//! genuinely OUTSIDE `base_dir` is still refused, whether or not it exists.
+//! `rigger result`). And a process can hold a now-DELETED dir as its cwd, which the process
+//! interface names by that dir's path ([`crate::os_process::cwd`]), so [`is_inside`] matches it
+//! against the base: a test binary that loops after the tool that built its scratch tree
+//! removed that tree out from under it holds exactly such a cwd, and a cwd-rooted reaper that
+//! never matched the deleted path would never even try to signal it. A genuinely OUTSIDE
+//! `base_dir` is still refused, whether or not it exists.
 //!
 //! SIGNAL API (spec 78): every signal rigger issues to a process it does not hold a
-//! [`std::process::Child`] handle to goes through `rustix::process::kill_process` - never a
-//! shell-out to `kill(1)`, never `libc::kill`, never a process-group (negative pid) target.
+//! [`std::process::Child`] handle to goes through [`send_signal`], whose unix arm is
+//! `rustix::process::kill_process` - never a shell-out to `kill(1)`, never `libc::kill`, never
+//! a process-group (negative pid) target - and whose arm for any other OS sends nothing.
 //! `rustix::process::Pid::from_raw` accepts negative raw values (it rejects only zero), so
 //! [`send_signal`] and [`is_signal_eligible`] each carry their OWN explicit `pid > 1` guard
 //! rather than leaning on the type to refuse one. `default-features = false` + `std` +
@@ -79,15 +80,15 @@
 //!
 //! TOCTOU (spec 78): the scan and the signal are not atomic - a pid can exit and be
 //! recycled by the kernel onto an unrelated process in the gap between them. Every
-//! candidate's start time (`/proc/<pid>/stat` field 22, kernel-immutable for a pid's
-//! lifetime) is captured at scan time and re-read, alongside its cwd, IMMEDIATELY before it
+//! candidate's start time ([`crate::os_process::start_time`], the same for a pid's whole life)
+//! is captured at scan time and re-read, alongside its cwd, IMMEDIATELY before it
 //! is actually signalled; either differing skips the signal (spec 78, [`signal_if_unchanged`]).
 //! [`reap_processes_rooted_under`] also never signals pid 0 or 1, its own pid, or any
-//! ancestor of its own process (the reaper's launching shell/session, walked via
-//! `/proc/<pid>/status`'s `PPid:` chain, [`ancestor_pids`]) - so a coincidence or a
+//! ancestor of its own process (the reaper's launching shell/session, walked up the parent
+//! chain [`crate::os_process::parent`] reads, [`ancestor_pids`]) - so a coincidence or a
 //! recycled pid can never reach upward into the process tree running rigger itself.
 
-use rustix::process::{Pid, Signal};
+use crate::os_process;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -104,91 +105,50 @@ const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 /// reap, this pure detection primitive is not scoped by [`is_reapable_base`], so a caller
 /// (like the validate advisory) may point it at `.rigger/tmp` itself for full visibility.
 ///
-/// Best-effort and Linux-first via `/proc/<pid>/cwd`. `base_dir` is resolved LEXICALLY
-/// ([`resolve_lexically`], spec 89 criterion 3) rather than required to exist - a live
-/// process can hold a now-deleted dir as its cwd, and this scan must still find it. Returns
-/// EMPTY - a graceful no-op, never an error - only when no ancestor of `base_dir` at all can
-/// be resolved (practically unreachable) or `/proc` is absent or unreadable (a non-Linux
-/// platform), so teardown and validate work anywhere.
+/// Best-effort, over the process interface ([`crate::os_process`]). `base_dir` is resolved
+/// LEXICALLY ([`resolve_lexically`], spec 89 criterion 3) rather than required to exist - a
+/// live process can hold a now-deleted dir as its cwd, and this scan must still find it.
+/// Returns EMPTY - a graceful no-op, never an error - when no ancestor of `base_dir` at all can
+/// be resolved (practically unreachable) or the interface lists no process (an OS it cannot
+/// read), so teardown and validate work anywhere.
 ///
 /// Containment is RESOLVED-PATH STRICT-INSIDE, matched on path components: a process is
-/// returned iff its resolved cwd (the kernel's own readlink, with any trailing `"
-/// (deleted)"` marker stripped - [`is_inside`]) equals the resolved `base_dir` or starts
-/// with it as a path prefix. Component matching (not string prefix) is the load-bearing
-/// safety boundary - `<base>-sibling` shares a string prefix with `<base>` but is a
+/// returned iff its cwd as the interface names it ([`crate::os_process::cwd`]: absolute,
+/// resolved, and named by its path even once removed - [`is_inside`]) equals the resolved
+/// `base_dir` or starts with it as a path prefix. Component matching (not string prefix) is the
+/// load-bearing safety boundary - `<base>-sibling` shares a string prefix with `<base>` but is a
 /// different component and is never matched, so a process outside the exact dir is never
-/// reaped. The scanning process itself is excluded (rigger never reaps its own pid).
+/// reaped. The scanning process itself is excluded (rigger never reaps its own pid). Each
+/// match's command ([`crate::os_process::command`]) is purely descriptive: it names the leak in
+/// the `rigger validate` advisory and never affects which processes are reaped.
 pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
     // Resolve the base LEXICALLY (spec 89 criterion 3), not by requiring it to exist: a
     // process can hold a now-DELETED dir as its cwd (a test binary still looping after the
     // tool that built its scratch tree removed that tree out from under it), and such a
     // process is exactly what this scan must still find. `resolve_lexically` follows
-    // symlinks in whatever portion of `base_dir` still exists (so the kernel-resolved cwd of
-    // a LIVE process still matches a symlinked component), then lexically resolves any
-    // missing suffix - it fails only in the practically-unreachable case where no ancestor
-    // at all can be resolved.
+    // symlinks in whatever portion of `base_dir` still exists (so the resolved cwd of a LIVE
+    // process still matches a symlinked component), then lexically resolves any missing
+    // suffix - it fails only in the practically-unreachable case where no ancestor at all can
+    // be resolved.
     let Some(base) = resolve_lexically(base_dir) else {
         return Vec::new();
     };
-    let proc = Path::new("/proc");
-    // No `/proc` (a non-Linux platform, or one where it cannot be read): a graceful no-op.
-    let Ok(entries) = std::fs::read_dir(proc) else {
-        return Vec::new();
-    };
     let self_pid = std::process::id();
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        // `/proc/<pid>` entries are the numeric dirs; skip `/proc/self`, `/proc/meminfo`, etc.
-        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            continue;
-        };
-        // Never reap the scanning process itself.
-        if pid == self_pid {
-            continue;
-        }
-        // `/proc/<pid>/cwd` is a symlink the kernel resolves to the process's absolute,
-        // canonical working directory. `read_link` is std-only (no `libc`). A read that fails
-        // (the process exited between the readdir and here, or it belongs to another user and
-        // its cwd is unreadable) is simply skipped - best-effort.
-        let Ok(cwd) = std::fs::read_link(proc.join(&name).join("cwd")) else {
-            continue;
-        };
-        if is_inside(&cwd, &base) {
-            out.push((pid, read_command(proc, &name)));
-        }
-    }
-    out
-}
-
-/// The process's command for the advisory, from `/proc/<pid>/cmdline` (NUL-separated argv)
-/// with a fallback to `/proc/<pid>/comm` (the short name) and finally an empty string. Purely
-/// descriptive - it names the leak in the `rigger validate` advisory and never affects which
-/// processes are reaped.
-fn read_command(proc: &Path, pid_name: &std::ffi::OsStr) -> String {
-    let dir = proc.join(pid_name);
-    if let Ok(bytes) = std::fs::read(dir.join("cmdline")) {
-        let joined = bytes
-            .split(|b| *b == 0)
-            .filter(|part| !part.is_empty())
-            .map(|part| String::from_utf8_lossy(part).into_owned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !joined.is_empty() {
-            return joined;
-        }
-    }
-    std::fs::read_to_string(dir.join("comm"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    // Never reap the scanning process itself. A cwd that cannot be read (the process exited
+    // since the listing, or it belongs to another user) is simply skipped - best-effort.
+    os_process::pids()
+        .into_iter()
+        .filter(|&pid| pid != self_pid)
+        .filter(|&pid| os_process::cwd(pid).is_some_and(|cwd| is_inside(&cwd, &base)))
+        .map(|pid| (pid, os_process::command(pid)))
+        .collect()
 }
 
 /// One candidate captured at scan time: the pid and its start time
-/// (`/proc/<pid>/stat` field 22, in clock ticks since boot). The kernel guarantees this is
-/// IMMUTABLE for the life of a pid and can only repeat if the pid itself is reused, so
-/// comparing it again right before the signal is the TOCTOU witness that the pid still
-/// names the SAME process the scan found, not one the kernel recycled onto that number in
-/// the meantime (spec 78).
+/// ([`crate::os_process::start_time`]), the same for the life of a pid and repeated only if the
+/// pid itself is reused, so comparing it again right before the signal is the TOCTOU witness
+/// that the pid still names the SAME process the scan found, not one the kernel recycled onto
+/// that number in the meantime (spec 78).
 struct ScanEntry {
     pid: u32,
     starttime: u64,
@@ -205,28 +165,18 @@ fn scan_with_starttime(base: &Path) -> Vec<ScanEntry> {
         .collect()
 }
 
-/// The ONE `/proc/<pid>/stat` parser: the `index`-th (0-based) whitespace-separated field
-/// AFTER `comm` - `0` is the state, `19` the start time (see `proc(5)`). Fields are located
-/// from the LAST `)` in the line rather than by naive whitespace-splitting, because field 2
-/// (`comm`, the process name in parens) may itself contain spaces or parens. `None` when the
-/// process has already exited, `/proc` is unavailable, or the line has no such field. Public so
-/// the test fixtures read a process's state or group through this same parser.
-pub fn stat_field_after_comm(pid: u32, index: usize) -> Option<String> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after_comm = stat.rsplit_once(')')?.1;
-    after_comm.split_whitespace().nth(index).map(String::from)
-}
+/// The Linux process-stat field parser, re-exported for the Linux test fixtures that read a
+/// process's state or group through it.
+#[cfg(target_os = "linux")]
+pub use crate::os_process::linux::stat_field_after_comm;
 
-/// The process start time from `/proc/<pid>/stat` field 22 (`starttime`, clock ticks since
-/// boot) - the TOCTOU witness [`scan_with_starttime`] records and [`signal_if_unchanged`]
-/// re-reads immediately before signalling. `None` when the process has already exited or
-/// `/proc` is unavailable. Public so a test that owns a process it did not spawn reads the
-/// witness it later checks through [`still_started`].
+/// The process start time ([`crate::os_process::start_time`]) - the TOCTOU witness
+/// [`scan_with_starttime`] records and [`signal_if_unchanged`] re-reads immediately before
+/// signalling. `None` when the process has already exited or its start time cannot be read.
+/// Public so a test that owns a process it did not spawn reads the witness it later checks
+/// through [`still_started`].
 pub fn pid_starttime(pid: u32) -> Option<u64> {
-    // Fields after `comm`, 1-indexed: state, ppid, pgrp, session, tty_nr, tpgid, flags,
-    // minflt, cminflt, majflt, cmajflt, utime, stime, cutime, cstime, priority, nice,
-    // num_threads, itrealvalue, starttime - the 20th, so index 19 (0-based).
-    stat_field_after_comm(pid, 19)?.parse().ok()
+    os_process::start_time(pid)
 }
 
 /// Whether `pid` still carries the start time `started` it was read with ([`pid_starttime`]):
@@ -237,27 +187,17 @@ pub fn still_started(pid: u32, started: u64) -> bool {
     pid_starttime(pid) == Some(started)
 }
 
-/// `pid`'s parent pid from `/proc/<pid>/status`'s `PPid:` field. `None` when the process is
-/// gone or the field cannot be read/parsed.
-fn read_ppid(pid: u32) -> Option<u32> {
-    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("PPid:"))
-        .and_then(|value| value.trim().parse().ok())
-}
-
-/// Every ancestor pid of `pid`, walking `/proc/<pid>/status`'s `PPid:` chain upward (spec
-/// 78): the reaper's own launching shell, terminal, session leader, and so on up to (but
+/// Every ancestor pid of `pid`, walking the parent chain ([`crate::os_process::parent`]) upward
+/// (spec 78): the reaper's own launching shell, terminal, session leader, and so on up to (but
 /// excluding, since it is refused unconditionally elsewhere) init. Used to refuse ever
 /// signalling anything on the REAPER's own lineage, however a computed or recycled pid
 /// might coincide with one. Best-effort: the walk stops at a pid <= 1, an unreadable
-/// `PPid:` field, or a repeat (a cycle, which `/proc` should never produce, but the walk
-/// must terminate regardless).
+/// parent, or a repeat (a cycle, which the OS should never report, but the walk must
+/// terminate regardless).
 fn ancestor_pids(pid: u32) -> HashSet<u32> {
     let mut out = HashSet::new();
     let mut current = pid;
-    while let Some(parent) = read_ppid(current) {
+    while let Some(parent) = os_process::parent(current) {
         if parent <= 1 || !out.insert(parent) {
             break;
         }
@@ -275,10 +215,10 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// even though [`end_child`] only ever held a [`std::process::Child`] handle to its direct
 /// parent.
 ///
-/// `/proc` gives every process its OWN parent (`PPid:`, via [`read_ppid`]), never a parent's
-/// list of children, so finding descendants means reading every `/proc/<pid>/status` ONCE
-/// up front, grouping by `PPid:` into a children-of map, then breadth-first walking that map
-/// from `root_pid` - never a second, per-level directory listing. Matched by PID-TREE
+/// The process interface gives every process its OWN parent ([`crate::os_process::parent`]),
+/// never a parent's list of children, so finding descendants means reading every listed
+/// process's parent ONCE up front, grouping by parent into a children-of map, then walking that
+/// map from `root_pid` - never a second, per-level process listing. Matched by PID-TREE
 /// membership alone, deliberately NEVER by working directory: a live sibling spawn's own
 /// process can share this same worktree as its cwd without being anywhere in this child's
 /// process tree (`op-104-stop-no-sweep-at-wall-clock-stop`'s sibling-safety guarantee, which
@@ -294,25 +234,15 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// kernel has since recycled onto an unrelated process, is dropped here or refused again by
 /// that recheck immediately before either signal.
 ///
-/// Best-effort and platform-tolerant like every other `/proc` scan in this module: an
-/// unreadable `/proc`, or a race that removes a pid between the listing and the read,
-/// contributes nothing, never a hard error. `seen` guards the walk against a cycle (which
-/// `/proc`'s own parent/child relationship should never produce, but the walk must still
+/// Best-effort and platform-tolerant like every other scan in this module: an OS the process
+/// interface cannot read, or a race that removes a pid between the listing and the read,
+/// contributes nothing, never a hard error. `seen` guards the walk against a cycle (which the
+/// OS's own parent/child relationship should never produce, but the walk must still
 /// terminate regardless - the same defensive shape [`ancestor_pids`] already uses upward).
 fn descendants_of(root_pid: u32) -> Vec<ScanEntry> {
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
     let mut children_of: HashMap<u32, Vec<u32>> = HashMap::new();
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|n| n.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        if let Some(ppid) = read_ppid(pid) {
+    for pid in os_process::pids() {
+        if let Some(ppid) = os_process::parent(pid) {
             children_of.entry(ppid).or_default().push(pid);
         }
     }
@@ -365,11 +295,12 @@ fn toctou_still_same_process(
         && still_started(target.pid, target.starttime)
 }
 
-/// Re-read `target`'s cwd IMMEDIATELY before signalling it, and signal only if it is still
-/// [`is_inside`] `base` AND [`toctou_still_same_process`]. This is the cwd half of the
-/// TOCTOU guard (spec 78): a pid that exited and was recycled onto an unrelated process
-/// (even one that happens to also be rooted under `base`) between the scan and this call is
-/// silently skipped, never signalled.
+/// Re-read `target`'s cwd ([`crate::os_process::cwd`]) IMMEDIATELY before signalling it, and
+/// signal only if it is still [`is_inside`] `base` AND [`toctou_still_same_process`]. This is
+/// the cwd half of the TOCTOU guard (spec 78): a pid that exited and was recycled onto an
+/// unrelated process (even one that happens to also be rooted under `base`) between the scan
+/// and this call is silently skipped, never signalled, and so is a pid whose cwd cannot be
+/// read.
 fn signal_if_unchanged(
     target: &ScanEntry,
     base: &Path,
@@ -377,7 +308,7 @@ fn signal_if_unchanged(
     self_ancestors: &HashSet<u32>,
     signal: Signal,
 ) {
-    let Ok(cwd) = std::fs::read_link(format!("/proc/{}/cwd", target.pid)) else {
+    let Some(cwd) = os_process::cwd(target.pid) else {
         return;
     };
     if !is_inside(&cwd, base) {
@@ -406,26 +337,48 @@ fn signal_descendant_if_unchanged(
     }
 }
 
-/// Send `signal` to `pid` via the internal rustix syscall - the reaper's ONE sanctioned
-/// signalling call (the `no-os-kill` gate, spec 78, excludes only this function and
-/// `tests/common/mod.rs::terminate_pid` from its ban on shelling out to `kill`/`pkill`/
-/// `killall` or calling a signal API directly). `pid > 1` is an EXPLICIT guard here too
-/// (belt-and-braces alongside [`is_signal_eligible`]'s own check, since the pinned rustix's
-/// `Pid::from_raw` accepts negative raw values and rejects only zero). Best-effort: ESRCH
-/// (the process already exited) or any other failure (permission, ...) is silently ignored,
-/// since the reap is teardown cleanup, never a hard error that could fail a worktree
+/// The two ways the reaper ends a process: [`Signal::Term`] asks it to exit, and
+/// [`Signal::Hard`] ends it without asking.
+#[derive(Clone, Copy)]
+enum Signal {
+    /// Ask the process to exit (`SIGTERM` on unix).
+    Term,
+    /// End the process without asking (`SIGKILL` on unix).
+    Hard,
+}
+
+/// Send `signal` to `pid` - the reaper's ONE sanctioned signalling call (the `no-os-kill`
+/// gate, spec 78, excludes only this function and `tests/common/mod.rs::terminate_pid` from
+/// its ban on shelling out to `kill`/`pkill`/`killall` or calling a signal API directly): on
+/// unix the internal rustix syscall, on any other OS nothing. `pid > 1` is an EXPLICIT guard
+/// here too (belt-and-braces alongside [`is_signal_eligible`]'s own check, since the pinned
+/// rustix's `Pid::from_raw` accepts negative raw values and rejects only zero). Best-effort:
+/// ESRCH (the process already exited) or any other failure (permission, ...) is silently
+/// ignored, since the reap is teardown cleanup, never a hard error that could fail a worktree
 /// removal or a step.
 fn send_signal(signal: Signal, pid: u32) {
     if pid <= 1 {
         return;
     }
-    let Ok(raw) = i32::try_from(pid) else {
-        return;
-    };
-    let Some(rpid) = Pid::from_raw(raw) else {
-        return;
-    };
-    let _ = rustix::process::kill_process(rpid, signal);
+    std::cfg_select! {
+        unix => {
+            use rustix::process::Pid;
+            let Ok(raw) = i32::try_from(pid) else {
+                return;
+            };
+            let Some(rpid) = Pid::from_raw(raw) else {
+                return;
+            };
+            let signal = match signal {
+                Signal::Term => rustix::process::Signal::TERM,
+                Signal::Hard => rustix::process::Signal::KILL,
+            };
+            let _ = rustix::process::kill_process(rpid, signal);
+        }
+        _ => {
+            let _ = signal;
+        }
+    }
 }
 
 /// An OPAQUE snapshot of a process's descendants, taken by [`snapshot_descendants`] and
@@ -463,7 +416,7 @@ pub fn snapshot_descendants(pid: u32) -> DescendantSnapshot {
 /// [`reap_authorized`] already runs for a cwd-SCANNED base (via [`signal_if_unchanged`]), but
 /// keyed on a HELD HANDLE instead: the `pid` [`send_signal`] receives for the child is read
 /// directly off the live `child` the caller still owns (`child.id()`), never a marker, a
-/// pidfile, or a `/proc` scan (never a COMPUTED pid) - so this stays the handle-bound
+/// pidfile, or a process scan (never a COMPUTED pid) - so this stays the handle-bound
 /// counterpart to [`send_signal`]'s cwd-scanned production callers, and the escalation
 /// deliberately does NOT call the standard library's own `Child::kill`, which would be a
 /// second, `no-os-kill`-gate-invisible signalling path (see decision
@@ -489,7 +442,7 @@ pub fn snapshot_descendants(pid: u32) -> DescendantSnapshot {
 pub fn end_child(child: &mut std::process::Child, descendants: DescendantSnapshot) {
     let descendants = descendants.0;
     if !matches!(child.try_wait(), Ok(Some(_))) {
-        send_signal(Signal::TERM, child.id());
+        send_signal(Signal::Term, child.id());
         let deadline = std::time::Instant::now() + GRACE;
         loop {
             if matches!(child.try_wait(), Ok(Some(_))) {
@@ -505,7 +458,7 @@ pub fn end_child(child: &mut std::process::Child, descendants: DescendantSnapsho
         // already uses two functions above via signal_if_unchanged - then collect it so no
         // zombie survives this function.
         if !matches!(child.try_wait(), Ok(Some(_))) {
-            send_signal(Signal::KILL, child.id());
+            send_signal(Signal::Hard, child.id());
         }
         let _ = child.wait();
     }
@@ -519,11 +472,11 @@ pub fn end_child(child: &mut std::process::Child, descendants: DescendantSnapsho
         let self_pid = std::process::id();
         let self_ancestors = ancestor_pids(self_pid);
         for d in &descendants {
-            signal_descendant_if_unchanged(d, self_pid, &self_ancestors, Signal::TERM);
+            signal_descendant_if_unchanged(d, self_pid, &self_ancestors, Signal::Term);
         }
         std::thread::sleep(GRACE);
         for d in &descendants {
-            signal_descendant_if_unchanged(d, self_pid, &self_ancestors, Signal::KILL);
+            signal_descendant_if_unchanged(d, self_pid, &self_ancestors, Signal::Hard);
         }
     }
 }
@@ -617,8 +570,8 @@ fn resolve_lexically(path: &Path) -> Option<PathBuf> {
 /// implementation this and [`crate::worktree::Worktree::remove`]'s own, independently
 /// (git-identity) authorized reap both run.
 ///
-/// Best-effort and platform-tolerant: where `/proc` is absent the scan finds nothing and
-/// this is a graceful no-op.
+/// Best-effort and platform-tolerant: on an OS the process interface cannot read the scan
+/// finds nothing and this is a graceful no-op.
 pub fn reap_processes_rooted_under(base_dir: &Path, authorized_root: &Path) {
     let Some(base) = is_reapable_base(base_dir, authorized_root) else {
         return;
@@ -632,11 +585,11 @@ pub fn reap_processes_rooted_under(base_dir: &Path, authorized_root: &Path) {
 /// `u78c2r2-authorized-root-caller-supplied`) is the SAME resolved root the caller already
 /// used to build `dir` - never re-derived here - so this reap is safe on any relocated
 /// scratch root (`RIGGER_TMPDIR`/`defaults.workdir`) or registered scratch root under a cache
-/// home, and still never touches a process outside `authorized_root`. Off a platform without
-/// `/proc` the reap is a graceful no-op and only the removal runs. The shared teardown for
-/// every scratch area rigger removes - the binary's sweeps and the per-spawn reclaim the
-/// driver crate owns (`driver::replay::reclaim_spawn_registered_scratch`) - so both crates
-/// reach the ONE reap-then-remove; the worktree-removal reap point is
+/// home, and still never touches a process outside `authorized_root`. On an OS the process
+/// interface cannot read the reap is a graceful no-op and only the removal runs. The shared
+/// teardown for every scratch area rigger removes - the binary's sweeps and the per-spawn
+/// reclaim the driver crate owns (`driver::replay::reclaim_spawn_registered_scratch`) - so
+/// both crates reach the ONE reap-then-remove; the worktree-removal reap point is
 /// [`crate::worktree::Worktree::remove`], which authorizes its own reap differently (git
 /// identity, not containment - see its own doc comment).
 pub fn reap_then_remove_dir(dir: &Path, authorized_root: &Path) {
@@ -673,8 +626,8 @@ pub fn reap_then_remove_dir(dir: &Path, authorized_root: &Path) {
 /// [`is_reapable_base`]'s [`resolve_lexically`], the other via `Worktree::remove`'s own
 /// `canonicalize`); it need not currently exist (spec 89 criterion 3 - a base already
 /// removed out from under a still-running process is exactly the case this reaps).
-/// Best-effort and platform-tolerant throughout - where `/proc` is absent the scan finds
-/// nothing and this is a graceful no-op.
+/// Best-effort and platform-tolerant throughout - on an OS the process interface cannot read
+/// the scan finds nothing and this is a graceful no-op.
 pub fn reap_authorized(base: PathBuf) {
     let self_pid = std::process::id();
     let self_ancestors = ancestor_pids(self_pid);
@@ -684,46 +637,28 @@ pub fn reap_authorized(base: PathBuf) {
         return;
     }
     for target in &term_targets {
-        signal_if_unchanged(target, &base, self_pid, &self_ancestors, Signal::TERM);
+        signal_if_unchanged(target, &base, self_pid, &self_ancestors, Signal::Term);
     }
     std::thread::sleep(GRACE);
     // Re-scan so only processes STILL rooted inside are force-killed - each gets its own
     // fresh start-time baseline here, then is rechecked again immediately below.
     for target in scan_with_starttime(&base) {
-        signal_if_unchanged(&target, &base, self_pid, &self_ancestors, Signal::KILL);
+        signal_if_unchanged(&target, &base, self_pid, &self_ancestors, Signal::Hard);
     }
 }
 
 /// Whether `cwd` is `base` itself or strictly under it, matched on path COMPONENTS. Both are
-/// absolute (the `/proc` cwd link resolves to an absolute path; `base` is resolved by the
-/// caller, via [`resolve_lexically`]). `Path::starts_with` is component-wise, so `/a/bc`
+/// absolute (the interface names a cwd by its absolute, resolved path; `base` is resolved by
+/// the caller, via [`resolve_lexically`]). `Path::starts_with` is component-wise, so `/a/bc`
 /// never matches `/a/b` - the safety boundary against a raw string-prefix false match.
 ///
-/// `cwd` is stripped of the kernel's own `" (deleted)"` suffix first (spec 89 criterion 3).
-/// `readlink("/proc/<pid>/cwd")` appends that literal text once, to the end of the whole
-/// resolved path, when the directory a live process still holds as its cwd has been removed;
-/// left unstripped, that text becomes an unmatched extra path component and a runaway whose
-/// scratch WAS removed out from under it silently survives every future scan, a looping test
-/// binary among them, for as long as it runs. Stripping the literal
-/// suffix text, never touching the filesystem since the path is already gone, mirrors
-/// [`resolve_lexically`]'s own "compare paths, not existence" rule for `base`.
+/// A cwd removed under a live process still matches (spec 89 criterion 3): the interface names
+/// it by the removed dir's path ([`crate::os_process::cwd`]), so a runaway whose scratch WAS
+/// removed out from under it, a looping test binary among them, is found by every later scan
+/// for as long as it runs - the same "compare paths, not existence" rule
+/// [`resolve_lexically`] applies to `base`.
 fn is_inside(cwd: &Path, base: &Path) -> bool {
-    strip_deleted_suffix(cwd).starts_with(base)
-}
-
-/// Strip the kernel's own `" (deleted)"` suffix from a `/proc/<pid>/cwd` readlink result, if
-/// present - see [`is_inside`]'s doc comment for why - or from a running binary's own path,
-/// which the kernel marks the same way once an upgrade replaced it ([`crate::detached::standing_path`]). A lossy UTF-8 round-trip: rigger's own
-/// scratch/worktree paths are always valid UTF-8 (git branch names and this crate's own path
-/// construction never emit otherwise), so this never mismatches a real path in practice, and
-/// the whole reap is best-effort throughout regardless.
-pub(crate) fn strip_deleted_suffix(cwd: &Path) -> PathBuf {
-    const DELETED_SUFFIX: &str = " (deleted)";
-    let text = cwd.to_string_lossy();
-    match text.strip_suffix(DELETED_SUFFIX) {
-        Some(stripped) => PathBuf::from(stripped),
-        None => cwd.to_path_buf(),
-    }
+    cwd.starts_with(base)
 }
 
 #[cfg(test)]
@@ -881,8 +816,8 @@ mod tests {
     #[test]
     fn processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent() {
         // Platform tolerance / read-only safety: an absent base (nothing to scan, and the
-        // stand-in for an absent `/proc`) yields EMPTY, never an error - so teardown and
-        // validate keep working where the dir or `/proc` is not there.
+        // stand-in for an OS the process interface cannot read) yields EMPTY, never an error -
+        // so teardown and validate keep working where the dir or the process list is not there.
         let root = tempfile::tempdir().unwrap();
         let absent = root.path().join("never-created");
         assert!(processes_rooted_under(&absent).is_empty());
@@ -890,14 +825,14 @@ mod tests {
 
     #[test]
     fn processes_rooted_under_matches_a_process_whose_cwd_was_deleted_out_from_under_it() {
-        // spec 89 criterion 3, second half: the kernel appends the literal " (deleted)" to a
-        // `/proc/<pid>/cwd` readlink once the directory a live process still holds as its
-        // cwd has been removed. Reproduces the spec-80 incident verbatim (a mutant test
-        // binary looped for eight days at ~17 cores because the reaper's cwd match never
-        // saw through that suffix once the mutation tool removed its tree). Both halves of
-        // this fix are exercised here: `processes_rooted_under` must still be ABLE to scan
-        // for a base dir that no longer exists (not short-circuit to empty), and `is_inside`
-        // must match the deleted-suffixed cwd text against it.
+        // spec 89 criterion 3, second half: the kernel marks a live process's cwd " (deleted)"
+        // once the directory it still holds has been removed. Reproduces the spec-80 incident
+        // verbatim (a mutant test binary looped for eight days at ~17 cores because the
+        // reaper's cwd match never saw through that marker once the mutation tool removed its
+        // tree). Both halves of this fix are exercised here: `processes_rooted_under` must
+        // still be ABLE to scan for a base dir that no longer exists (not short-circuit to
+        // empty), and the interface's cwd must name the removed dir by its path so `is_inside`
+        // matches it.
         let root = tempfile::tempdir().unwrap();
         let base = root.path().join("scratch");
         std::fs::create_dir_all(&base).unwrap();
@@ -1215,25 +1150,13 @@ mod tests {
     }
 
     #[test]
-    fn read_ppid_finds_the_spawning_process() {
-        let mut child = sleeper_in(Path::new("/"));
-        let ppid = read_ppid(child.id());
-        cleanup(&mut child);
-        assert_eq!(
-            ppid,
-            Some(std::process::id()),
-            "the child's parent is this process"
-        );
-    }
-
-    #[test]
     fn ancestor_pids_walks_through_an_intermediate_process() {
         // The test binary itself runs as pid 1 of its own namespace (`.cargo/pidns-runner.sh`),
         // so `ancestor_pids` on a DIRECT child would trivially stop at that pid (already
         // refused unconditionally elsewhere, so never separately recorded - see
         // `is_signal_eligible`). Spawn a GRANDCHILD instead (a shell that backgrounds a
         // `sleep` and prints its pid) so the walk must pass THROUGH a real intermediate
-        // pid (the shell) to prove it is a multi-hop walk, not a single `read_ppid` call.
+        // pid (the shell) to prove it is a multi-hop walk, not a single parent read.
         let mut shell = StdCommand::new("sh")
             .arg("-c")
             .arg("sleep 300 & echo $!; wait")
@@ -1286,7 +1209,7 @@ mod tests {
             &base,
             std::process::id(),
             &HashSet::new(),
-            Signal::KILL,
+            Signal::Hard,
         );
         let died = wait_for_exit(&mut child);
         if !died {
@@ -1316,7 +1239,7 @@ mod tests {
             &signal_base,
             std::process::id(),
             &HashSet::new(),
-            Signal::KILL,
+            Signal::Hard,
         );
         let still_alive = matches!(child.try_wait(), Ok(None));
         cleanup(&mut child);
@@ -1354,14 +1277,14 @@ mod tests {
             starttime: pid_starttime(child.id()).unwrap(),
         };
         // Pretend the child IS "self" - it must never be signalled.
-        signal_if_unchanged(&target, &base, child.id(), &HashSet::new(), Signal::KILL);
+        signal_if_unchanged(&target, &base, child.id(), &HashSet::new(), Signal::Hard);
         let alive_as_self = matches!(child.try_wait(), Ok(None));
         assert!(alive_as_self, "a pid equal to self_pid must be skipped");
 
         // Pretend the child is a recorded ancestor - it must never be signalled.
         let mut ancestors = HashSet::new();
         ancestors.insert(child.id());
-        signal_if_unchanged(&target, &base, std::process::id(), &ancestors, Signal::KILL);
+        signal_if_unchanged(&target, &base, std::process::id(), &ancestors, Signal::Hard);
         let alive_as_ancestor = matches!(child.try_wait(), Ok(None));
         cleanup(&mut child);
         assert!(
