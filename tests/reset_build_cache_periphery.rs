@@ -443,16 +443,13 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
 #[cfg(unix)]
 #[test]
 fn a_guarded_gates_background_child_keeps_reset_build_cache_refused_until_it_exits() {
-    use common::cli::{committed_project, rigger_in};
+    use common::cli::{committed_project, one_gate_workflow, rigger_in};
     use common::fixtures::{background_hold_command, git_out, try_exclusive_lock, wait_until_for};
 
     let markers = tempfile::tempdir().expect("tempdir for the hold marker");
     let hold = markers.path().join("hold");
     std::fs::write(&hold, b"").expect("write the hold marker");
-    let (project, scratch) = committed_project(&format!(
-        "build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"{}\"\n    kind: core\n",
-        background_hold_command(&hold)
-    ));
+    let (project, scratch) = committed_project(&one_gate_workflow(&background_hold_command(&hold)));
     let (root, scratch) = (project.path(), scratch.path());
     let cache = scratch.join(SHARED_CACHE);
     write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);

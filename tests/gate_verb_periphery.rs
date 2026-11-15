@@ -16,14 +16,11 @@ use crate::common;
 
 use std::path::Path;
 
-use common::cli::{committed_project, emit_refused, rigger_in, run_rigger_envs, with_run_store};
+use common::cli::{
+    committed_project, emit_refused, one_gate_workflow, rigger_in, run_rigger_envs, with_run_store,
+};
 use rigger::eventstore::{Direction, Event};
 use rigger::run::STREAM;
-
-/// The workflow block declaring the one gate `g`, under no build budget, so the verb's run takes
-/// no slot from a machine-wide pool.
-const GATE_G: &str =
-    "build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"true\"\n    kind: core\n";
 
 /// Every GateVerdict in `root`'s store.
 fn gate_verdicts(root: &Path) -> Vec<Event> {
@@ -43,7 +40,7 @@ fn gate_verdicts(root: &Path) -> Vec<Event> {
 #[test]
 fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_nothing() {
     for stale in [false, true] {
-        let (root, scratch) = committed_project(GATE_G);
+        let (root, scratch) = committed_project(&one_gate_workflow("true"));
         #[cfg(unix)]
         if stale {
             // A listener dropped without unlinking leaves a socket file nothing answers, at the
@@ -84,7 +81,7 @@ fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_n
 #[test]
 fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
     use rigger::gate_channel::{GateChannel, GateReply, GateRequest};
-    let (root, scratch) = committed_project(GATE_G);
+    let (root, scratch) = committed_project(&one_gate_workflow("true"));
     let path = rigger::gate_socket::socket_path_under(scratch.path(), root.path()).unwrap();
     let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
     let answer = |request: GateRequest| GateReply::Refused {
@@ -112,7 +109,7 @@ fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
 #[test]
 fn the_gate_verb_asks_the_socket_its_driver_addresses_and_refuses_a_relative_address() {
     use rigger::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
-    let (root, scratch) = committed_project(GATE_G);
+    let (root, scratch) = committed_project(&one_gate_workflow("true"));
     let path = scratch.path().join("addressed").join("gate.sock");
     let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
     let answer = |request: GateRequest| GateReply::Refused {
@@ -158,7 +155,7 @@ fn the_gate_verb_asks_the_socket_its_driver_addresses_and_refuses_a_relative_add
 #[cfg(unix)]
 #[test]
 fn a_runtime_directory_too_long_for_a_socket_is_named_and_the_verb_runs_for_information_only() {
-    let (root, scratch) = committed_project(GATE_G);
+    let (root, scratch) = committed_project(&one_gate_workflow("true"));
     let long = scratch.path().join("r".repeat(120));
     std::fs::create_dir_all(&long).unwrap();
     let (out, err, ok) = run_rigger_envs(
@@ -208,7 +205,7 @@ fn the_gate_verb_refuses_an_uncommitted_tree_and_an_undeclared_gate_recording_no
     ];
     for case in cases {
         let why = case.why;
-        let (root, scratch) = committed_project(GATE_G);
+        let (root, scratch) = committed_project(&one_gate_workflow("true"));
         if case.dirty {
             std::fs::write(root.path().join("loose.rs"), "loose\n").unwrap();
         }
@@ -228,7 +225,7 @@ fn the_gate_verb_refuses_an_uncommitted_tree_and_an_undeclared_gate_recording_no
 
 #[test]
 fn rigger_emit_refuses_a_gate_verdict_so_no_worker_can_forge_one() {
-    let (root, scratch) = committed_project(GATE_G);
+    let (root, scratch) = committed_project(&one_gate_workflow("true"));
     let body = r#"{"gate":"g","pass":true,"flaky":false,"evidence":"PASS"}"#;
     let (_out, err, ok) = rigger_in(root.path(), scratch.path(), &["emit", "GateVerdict", body]);
     assert!(!ok, "rigger emit GateVerdict exits non-zero");
