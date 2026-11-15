@@ -1855,6 +1855,9 @@ budget: 60\n  \
 # escalating prematurely. It loosens the depth limit, never the review bar. Absent\n  \
 # falls back to 3 (the historical default); bounded by `budget` above.\n  \
 max_retries: 3\n  \
+# The per-spawn wall-clock bound in seconds: a spawn silent past it with no result is stopped and\n  \
+# recorded as an infrastructure fault, charging no attempt. 0 = unbounded.\n  \
+max_wall_clock: 3600\n  \
 # How many implement units build at once (spec 102, per-unit pipelining). Each\n  \
 # live unit owns its own build cache, and unbounded parallelism can fill disk on\n  \
 # a wide fan-out. 0 (the default) is unbounded, unchanged until you set this; 2\n  \
