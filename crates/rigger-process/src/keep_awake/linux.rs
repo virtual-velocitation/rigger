@@ -1,7 +1,13 @@
-//! The Linux keep-awake adapter (spec 105): a logind inhibitor lock, taken over the system bus.
+//! The Linux keep-awake adapter (spec 105): a logind inhibitor lock, taken over the system bus,
+//! and in a graphical session the desktop portal's inhibitor besides (spec 125), taken over the
+//! session bus, so the desktop holds the session awake too.
 
 use rigger_domain::sleep_hold::{SleepGuard, Unavailable};
+use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::os::fd::OwnedFd;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use zbus::connection::Builder;
 use zbus::Connection;
@@ -19,16 +25,47 @@ const LOGIND_MANAGER: &str = "org.freedesktop.login1.Manager";
 /// logind never answered.
 pub const BUS_DRIVER: &str = "org.freedesktop.DBus";
 
+/// The bus name the desktop portal owns on the session bus.
+const PORTAL: &str = "org.freedesktop.portal.Desktop";
+
+/// The object path of the desktop portal.
+const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+
+/// The portal's interface that `Inhibit` belongs to.
+const PORTAL_INHIBIT: &str = "org.freedesktop.portal.Inhibit";
+
+/// The portal's `Inhibit` flag that inhibits suspending the session.
+const SUSPEND: u32 = 4;
+
+/// The portal's `Inhibit` flag that inhibits the session going idle.
+const IDLE: u32 = 8;
+
 /// The one bound on an acquire, over connecting to the system bus, its authentication handshake
-/// and logind's answer to `Inhibit` together: the D-Bus default method-call timeout.
+/// and logind's answer to `Inhibit` together, and, in a graphical session, connecting to the
+/// session bus and the portal's answer after them: the D-Bus default method-call timeout.
 const DEADLINE: Duration = Duration::from_secs(25);
 
 /// Take a logind `block` inhibitor of sleep and idle by `rigger` for `reason`, over a system-bus
-/// connection of its own, within [`DEADLINE`]. The guard holds the descriptor logind answers
-/// with, and logind ends the inhibitor when the guard drops it.
+/// connection of its own, and in a graphical session the desktop portal's inhibitor besides, over
+/// a session-bus connection of its own, within [`DEADLINE`]. The guard holds the descriptor
+/// logind answers with, and logind ends the inhibitor when the guard drops it; the guard closes
+/// the portal's connection as it drops, and the portal ends its inhibitor with that connection.
 pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
     let bus = Builder::system().map_err(no_system_bus)?;
-    acquire_on(bus, reason, DEADLINE)
+    let graphical = graphical_session(
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("DISPLAY").as_deref(),
+    );
+    acquire_on(bus, graphical, Builder::session, reason, DEADLINE)
+}
+
+/// Whether the process runs in a graphical session: a Wayland or an X display named, by the
+/// value `wayland_display` of `WAYLAND_DISPLAY` or `display` of `DISPLAY` being non-empty.
+fn graphical_session(wayland_display: Option<&OsStr>, display: Option<&OsStr>) -> bool {
+    [wayland_display, display]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.is_empty())
 }
 
 /// Take the inhibitor over the connection `bus` builds, answering unavailable, timed out, once
@@ -39,8 +76,17 @@ pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
 /// keeps. The shutdown joins every thread the runtime started, waiting no longer than what
 /// remains of `deadline`: past it, a thread still running, one blocked in a connect the deadline
 /// cut short among them, is left to end on its own rather than hold the acquire past its bound.
+///
+/// Once logind grants, and only when `graphical`, the acquire also asks the desktop portal for its
+/// inhibitor over the session-bus connection `session` builds, within what remains of `deadline`
+/// (see [`PortalInhibitor::take`]). The portal thread is the one thread a granted acquire leaves
+/// standing while its guard lives: dropping the guard closes the session-bus connection and joins
+/// that thread before logind's descriptor drops. A portal that is absent, refuses or does not
+/// answer in time leaves logind's inhibitor alone in force, and nothing is printed.
 fn acquire_on(
     bus: Builder<'_>,
+    graphical: bool,
+    session: impl FnOnce() -> zbus::Result<Builder<'static>>,
     reason: &str,
     deadline: Duration,
 ) -> Result<SleepGuard, Unavailable> {
@@ -64,7 +110,111 @@ fn acquire_on(
     });
     runtime.shutdown_timeout(deadline.saturating_sub(started.elapsed()));
     let descriptor = taken?;
-    Ok(SleepGuard::new(move || drop(descriptor)))
+    let portal = graphical
+        .then(session)
+        .and_then(Result::ok)
+        .and_then(|session| {
+            PortalInhibitor::take(session, reason, deadline.saturating_sub(started.elapsed()))
+        });
+    Ok(SleepGuard::new(move || {
+        if let Some(portal) = portal {
+            portal.release();
+        }
+        drop(descriptor);
+    }))
+}
+
+/// The desktop portal's inhibitor: the thread holding the session-bus connection it lives on, and
+/// the sender whose drop tells that thread to close the connection.
+struct PortalInhibitor {
+    release: mpsc::Sender<()>,
+    thread: JoinHandle<()>,
+}
+
+impl PortalInhibitor {
+    /// Ask the portal for its inhibitor over the connection `session` builds, on a thread of its
+    /// own, answering within `within`: the inhibitor when the portal grants it, none when no thread
+    /// starts, no connection opens, or the portal refuses or does not answer in time. The thread
+    /// drives that connection on a current-thread runtime of its own that keeps no idle thread, so
+    /// the blocking thread connecting runs on ends with its connect. When the portal grants, the
+    /// thread keeps the connection, and the runtime with it, until [`PortalInhibitor::release`];
+    /// otherwise it drops both before this returns, so a refusal leaves no connection standing.
+    fn take(session: Builder<'static>, reason: &str, within: Duration) -> Option<Self> {
+        let (granted, answer) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let reason = reason.to_string();
+        let thread = std::thread::Builder::new()
+            .name("rigger-keep-awake-portal".to_string())
+            .spawn(move || hold_portal_inhibitor(session, &reason, within, &granted, &released))
+            .ok()?;
+        if answer.recv() == Ok(true) {
+            Some(Self { release, thread })
+        } else {
+            let _ = thread.join();
+            None
+        }
+    }
+
+    /// Close the portal's connection, ending its inhibitor, and join the thread that held it.
+    fn release(self) {
+        drop(self.release);
+        let _ = self.thread.join();
+    }
+}
+
+/// The portal thread: connect through `session` and ask the portal for its inhibitor, within
+/// `within`, telling `granted` whether it granted it; once it did, hold the connection until
+/// `released` reports its sender dropped. The connection drops inside the runtime, and the runtime
+/// shuts down, waiting for the threads it started no longer than `within`, before the thread ends.
+fn hold_portal_inhibitor(
+    session: Builder<'static>,
+    reason: &str,
+    within: Duration,
+    granted: &mpsc::Sender<bool>,
+    released: &mpsc::Receiver<()>,
+) {
+    let started = Instant::now();
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .thread_keep_alive(Duration::ZERO)
+        .build()
+    else {
+        return;
+    };
+    let held = runtime.block_on(async {
+        let inhibitor = async {
+            let bus = session.build().await?;
+            portal_inhibit(&bus, reason).await?;
+            Ok::<_, zbus::Error>(bus)
+        };
+        tokio::time::timeout(within, inhibitor).await.ok()?.ok()
+    });
+    let _ = granted.send(held.is_some());
+    let bound = match held {
+        Some(bus) => {
+            let _ = released.recv();
+            runtime.block_on(async move { drop(bus) });
+            within
+        }
+        None => within.saturating_sub(started.elapsed()),
+    };
+    runtime.shutdown_timeout(bound);
+}
+
+/// Ask the desktop portal to inhibit suspending the session and its going idle, for `reason`,
+/// with no parent window. The portal's method return grants the inhibitor, which then stands until
+/// this connection closes; an error reply refuses it.
+async fn portal_inhibit(bus: &Connection, reason: &str) -> zbus::Result<()> {
+    let options = HashMap::from([("reason", zbus::zvariant::Value::from(reason))]);
+    bus.call_method(
+        Some(PORTAL),
+        PORTAL_PATH,
+        Some(PORTAL_INHIBIT),
+        "Inhibit",
+        &("", SUSPEND | IDLE, options),
+    )
+    .await?;
+    Ok(())
 }
 
 /// Ask logind for the inhibitor, without the interactive-authorization flag, so no
