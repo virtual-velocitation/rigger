@@ -15,6 +15,9 @@
 //! entry per call), and - the headline claim - a single courier call revives an entry the
 //! registry's own idle-window judgment (`is_stale`) already considers aged out, with no driver
 //! and no heartbeat thread involved at all.
+//!
+//! For spec 125's one home read (THE HOME), it also proves which state home a courier's entry
+//! lands under: `XDG_STATE_HOME` when set, the home read's `$HOME/.local/state` when not.
 
 use std::time::Duration;
 
