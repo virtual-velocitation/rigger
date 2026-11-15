@@ -1696,13 +1696,41 @@ struct SpecCandidate {
 /// evidence and each review's rejection, with the first loss's cause. A group with no winner
 /// records it as the unit's failure (spec 126, criterion 14). A loss to infrastructure
 /// ([`is_infra_cause`]) is left out, as the single lane charges an outage no `UnitFailed`.
+///
+/// A group writes its lanes' failures only once its outcome is known, so one loss is one
+/// failure: a lane whose merge broke post-merge is held in `breaks`, written as its own
+/// `UnitFailed` when a later lane wins, and carried in the group's one record when none does.
 #[derive(Default)]
 struct LostLanes {
     cause: Option<String>,
     failure: PriorFailure,
+    breaks: Vec<LaneBreak>,
+}
+
+/// A speculation lane whose merge broke post-merge: its attempt, the re-gate's evidence and the
+/// lane worktree's sha, read after that worktree was re-asserted.
+struct LaneBreak {
+    attempt: u32,
+    evidence: Vec<String>,
+    sha: String,
 }
 
 impl LostLanes {
+    /// A lane at `attempt` whose merge broke post-merge with `evidence`, its worktree at `sha`.
+    fn post_merge(&mut self, attempt: u32, evidence: Vec<String>, sha: String) {
+        self.gates(CAUSE_INTEGRATE_CONFLICT.to_string(), evidence.clone());
+        self.breaks.push(LaneBreak {
+            attempt,
+            evidence,
+            sha,
+        });
+    }
+
+    /// The worktree sha of the first lane whose merge broke post-merge, if one did.
+    fn break_sha(&self) -> Option<String> {
+        self.breaks.first().map(|b| b.sha.clone())
+    }
+
     /// A lane lost on red gates (narrowed, exhaustive or post-merge) with `evidence`.
     fn gates(&mut self, cause: String, evidence: Vec<String>) {
         if is_infra_cause(&cause) {
@@ -8024,6 +8052,7 @@ impl RunCtx<'_> {
                 // winner, but no code lands. Record the winner's deferred green/verified/reviewed
                 // (the verified-but-unmerged checkpoint - the group is terminal here, so no later
                 // lane is in flight), cancel the other candidates, and stop.
+                self.record_lane_breaks(st, &lost)?;
                 self.emit_speculation_winner_status(
                     st,
                     attempt,
@@ -8043,14 +8072,13 @@ impl RunCtx<'_> {
             )?;
             if let Some(evidence) = integration.blocked {
                 // The post-merge re-gate went RED (spec 12, unit 5): the merge was rolled back,
-                // so this candidate cannot land this step. CAPTURE the merge-break evidence as
-                // UnitFailed (mirroring the single-lane path) so the signal is not lost and the
-                // escalation lesson stays accurate, then treat it as a loser and try the next.
-                // The winner's green/verified/reviewed are DEFERRED PAST this check, so a blocked
-                // candidate followed by a later parking lane leaves the unit folded `Failed` (not
-                // `Reviewed`/`Verified`), so a resume RE-ENTERS `run_speculation` instead of
+                // so this candidate cannot land this step. CAPTURE the merge-break evidence so the
+                // signal is not lost and the escalation lesson stays accurate, then treat it as a
+                // loser and try the next. The winner's green/verified/reviewed are DEFERRED PAST
+                // this check, so a blocked candidate followed by a later parking lane leaves the
+                // unit folded below `green`, so a resume RE-ENTERS `run_speculation` instead of
                 // mis-routing to the review-skipping single-lane `Reviewed` path on the canonical
-                // lane.
+                // lane, where this candidate meets its integrate door again.
                 //
                 // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
                 // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the exhaustive
@@ -8061,26 +8089,17 @@ impl RunCtx<'_> {
                 // the identical guard `emit_speculation_winner_status` already uses on this
                 // same candidate below.
                 candidates[i].wt.ensure_present()?;
-                let failed_sha = worktree::head_sha_of(&dir);
-                lost.gates(CAUSE_INTEGRATE_CONFLICT.to_string(), evidence.clone());
-                let failure = PriorFailure {
-                    gate_evidence: evidence,
-                    ..Default::default()
-                };
-                self.emit_meta(
-                    ledger::TYPE_UNIT_FAILED,
-                    // spec 69, criterion 3: this site fires ONLY on a post-merge block
-                    // (a pre-merge gate/review loss is a silent `continue` two lines
-                    // above, never a UnitFailed) - always a merge conflict. The
-                    // merge-break evidence rides along (gap 61).
-                    failure.failed_body(&st.name, attempt + 1, CAUSE_INTEGRATE_CONFLICT),
-                    &[(META_WORKTREE_SHA, &failed_sha)],
-                )?;
+                // Held until the group's outcome is known ([`LostLanes`]): written as this
+                // lane's own failure when a later lane wins, or carried in the group's one
+                // record when none does, so one loss is never counted twice.
+                lost.post_merge(attempt, evidence, worktree::head_sha_of(&dir));
                 continue;
             }
             // The winner integrated (integration.blocked is None): NOW record its DEFERRED
             // green/verified/reviewed lifecycle, then the group / winner / losers on the existing
-            // UnitIntegrated (no new event type), then cancel every displaced candidate.
+            // UnitIntegrated (no new event type), then cancel every displaced candidate. An
+            // earlier lane whose merge broke post-merge records its failure first.
+            self.record_lane_breaks(st, &lost)?;
             self.emit_speculation_winner_status(
                 st,
                 attempt,
@@ -8110,7 +8129,7 @@ impl RunCtx<'_> {
         }
 
         // NO candidate won: every candidate was gate-red, review-rejected, crashed, or its
-        // winning merge broke post-merge (a UnitFailed captured that above). The K candidates
+        // winning merge broke post-merge (its evidence held in `lost` above). The K candidates
         // were the unit's parallel attempts, so it ESCALATES rather than re-fanning out forever
         // on the fresh re-entry. Clean up the losing candidates' worktrees.
         for c in &candidates {
@@ -8122,12 +8141,19 @@ impl RunCtx<'_> {
         // re-entering after its own failure is told. Keyed by the entry's lane base, so a
         // relaunch replaying this entry records it once. A group whose every lane crashed
         // records none: a crash is no feedback for the author.
+        // A lane whose merge broke post-merge is part of this one record, which names that
+        // lane's worktree sha.
+        let break_sha = lost.break_sha();
         if let Some((cause, failure)) = lost.failure() {
+            let mut meta = vec![(META_SPEC_GROUP, group.as_str())];
+            if let Some(sha) = &break_sha {
+                meta.push((META_WORKTREE_SHA, sha));
+            }
             self.emit_keyed_meta(
                 &format!("{}/speculation-lost#{base}", st.name),
                 ledger::TYPE_UNIT_FAILED,
                 failure.failed_body(&st.name, base + width, &cause),
-                &[(META_SPEC_GROUP, &group)],
+                &meta,
             )?;
         }
         let _ = self.emit_lesson(
@@ -8146,6 +8172,25 @@ impl RunCtx<'_> {
             &[(META_SPEC_GROUP, &group)],
         )?;
         Ok(false)
+    }
+
+    /// Record, once a later lane of `st`'s speculation group won, each earlier lane whose merge
+    /// broke post-merge as its own `UnitFailed`: the merge-break evidence (gap 61) at the
+    /// lane's attempt, cause `integrate-conflict` (spec 69, criterion 3), and the lane
+    /// worktree's sha. A group with no winner carries these in its one record instead.
+    fn record_lane_breaks(&self, st: &Stage, lost: &LostLanes) -> Result<(), Error> {
+        for lane in &lost.breaks {
+            let failure = PriorFailure {
+                gate_evidence: lane.evidence.clone(),
+                ..Default::default()
+            };
+            self.emit_meta(
+                ledger::TYPE_UNIT_FAILED,
+                failure.failed_body(&st.name, lane.attempt + 1, CAUSE_INTEGRATE_CONFLICT),
+                &[(META_WORKTREE_SHA, &lane.sha)],
+            )?;
+        }
+        Ok(())
     }
 
     /// Record a confirmed speculation WINNER's DEFERRED lifecycle statuses (spec 13, unit 3):
