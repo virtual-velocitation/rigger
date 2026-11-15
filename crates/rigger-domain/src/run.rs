@@ -116,7 +116,8 @@ pub struct RunStarted {
     /// never enters the criteria/definition resume fingerprint): this field never affects run
     /// identity either (a resume compares only `criteria`), so body persistence is simply the
     /// plain decode convenience `spec` below already established, read back via
-    /// [`current_run_base_tip`] and exported to every gate command as `$RIGGER_RUN_BASE`. The
+    /// [`current_run_base_tip`] and exported to every gate command and every spawn as
+    /// `$RIGGER_RUN_BASE`. The
     /// check-in stage's gates diff the whole spec's work against THIS commit (a whole-spec
     /// diff gate is the example), never a `git merge-base` with the run branch: that stage's
     /// own worktree branches off the run branch AFTER every implement unit has already
@@ -289,8 +290,8 @@ pub fn current_run_base(events: &[Event]) -> Option<String> {
 /// when no run has started, or when the latest run predates this field (a legacy start
 /// decodes an empty `base_tip`) or ran without a real repo (an empty tip is never stamped).
 ///
-/// This is the SINGLE authority this value is exported to the check-in stage's gate commands
-/// through, as `$RIGGER_RUN_BASE` (see [`crate::conductor`]'s gate-env assembly): the run
+/// This is the SINGLE authority this value is exported to every gate command and every agent
+/// spawn through, as `$RIGGER_RUN_BASE` (see [`crate::conductor`]'s build environment): the run
 /// branch's tip AT THE MOMENT the run started, never a live re-resolution and never a `git
 /// merge-base` with the run branch (which has already moved past this point by the time the
 /// checkin stage's own worktree exists). `None` here is exactly the "this run has nothing to

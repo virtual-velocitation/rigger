@@ -87,10 +87,10 @@ reuses that verdict for the same commit instead of running the gate again.
 - **A probe that edits your tree is over before your turn is.** A reversion probe, or any check
   that edits your worktree, runs to completion and restores the tree before your turn ends,
   never as a detached or background job: the attempt checkpoint commits whatever the worktree
-  holds when your session ends. It is the sharpest case of the rule that your turn's end is
-  your session's end, since the job the exit cuts short leaves your tree half-edited. Check:
-  no job you started is still running and `git status --porcelain` is empty when you end your
-  turn.
+  holds when your session ends handing its work over. It is the sharpest case of the rule that
+  your turn's end is your session's end, since the job the exit cuts short leaves your tree
+  half-edited. Check: no job you started is still running and `git status --porcelain` is empty
+  when you end your turn.
 
 ## When you review
 

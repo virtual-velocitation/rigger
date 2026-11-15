@@ -12,8 +12,7 @@ pub const LANGUAGE_NEUTRAL_IMPLEMENTER: &str =
     "---\nid: implementer\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
      Agent]\nisolation: worktree\nrecurse: true\n---\nYou implement ONE \
      fully-specified unit inside your worktree.\nWrite the failing test first, confirm \
-     RED, implement minimally, confirm GREEN, run\nthe named gates, commit. Report the \
-     final line as JSON: {\"id\",\"pass\",\"evidence\"}.\n";
+     RED, implement minimally, confirm GREEN, run\nthe named gates, commit.\n";
 
 /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
 pub const ROLE_SEED_FILES: [&str; 5] = [

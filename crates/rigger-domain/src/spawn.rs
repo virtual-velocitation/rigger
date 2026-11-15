@@ -689,6 +689,10 @@ pub const META_RESOLVED_MODEL: &str = "resolved_model";
 /// result carries the session back to the conductor, which records it as the spawn's session.
 pub const META_SESSION_ID: &str = "session_id";
 
+/// The [`SpawnResult::meta`] key a session host records the count of tool calls the session was
+/// denied under: a permission refusal or a hook's block.
+pub const META_PERMISSION_DENIALS: &str = "permission_denials";
+
 /// The [`SpawnResult::meta`] key the driver stamps on a spawn it recorded as a LIVENESS
 /// fault (spec 10, unit 3): its value is the failure CLASS the taxonomy assigned the hung
 /// agent (e.g. `"infra"`). Its presence marks the result as a driver-synthesized liveness
@@ -831,6 +835,11 @@ impl SpawnEventBody for SpawnResult {
 /// environment, the shell gate runner in a gate's, the agent driver reads it back from a
 /// spawn's, and the managed pre-commit hook reads it to find the build it checks the docs with.
 pub const BUILD_CACHE_ENV: &str = "CARGO_TARGET_DIR";
+
+/// The environment variable that names the run's base: the run branch's tip when the run
+/// started ([`crate::run::current_run_base_tip`]). The conductor's one build environment sets
+/// it, so every gate and every spawn of a run that recorded a base carries it.
+pub const RUN_BASE_ENV: &str = "RIGGER_RUN_BASE";
 
 /// One entry of the pending frontier: the identity of a parked spawn that still awaits its
 /// result - which spawn, of which unit, at which stage. The dash, `rigger status`, `rigger watch`

@@ -3530,6 +3530,119 @@ fn resume_unit_refuses_when_the_durable_branch_is_gone() {
     );
 }
 
+/// Spec 126 criterion 14 at the real binary boundary: a speculation group whose every lane fails
+/// escalates, and the no-winner tail deletes every lane branch, the canonical unit branch among
+/// them. `rigger resume-unit` still grants it, since the group re-enters on fresh lane worktrees,
+/// and the relaunched run requests its lanes one past the attempts the first entry recorded, so the
+/// host runs them as fresh sessions instead of answering the first entry's ids from the log, and
+/// each lane's prompt carries the failure the log recorded.
+///
+/// The gate passes on its first run and fails on every later one: lane 0 passes its pre-merge
+/// gate, is approved and merges, and its post-merge re-gate breaks the merged tree (the logged
+/// `UnitFailed`); lane 1 fails its gate. Lane 1's implementer advances the base with a commit of
+/// its own, so lane 0's merge is no fast-forward whose tree the pre-merge verdict would answer.
+#[test]
+fn resume_unit_re_enters_an_escalated_speculation_group_on_fresh_lanes_told_the_prior_failure() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    let rigger = root.join(".rigger");
+    std::fs::create_dir_all(rigger.join("agents")).unwrap();
+    write_agent(root, "worker", "Read, Edit", "Do the unit.");
+    write_agent(root, "judge", "Read", "Adjudicate it.");
+    let flag = root.join("gate-ran-once");
+    std::fs::write(
+        rigger.join("workflow.yml"),
+        format!(
+            r#"defaults:
+  grounder: nop
+  budget: 60
+gates:
+  ok:
+    run: 'if [ -f "{flag}" ]; then exit 1; else touch "{flag}"; fi'
+stages:
+  solo:
+    agent: worker
+    gates: [ok]
+    on_pass: merge
+    speculation_width: 2
+    review:
+      adjudicator: judge
+"#,
+            flag = flag.display()
+        ),
+    )
+    .unwrap();
+    let lane_0_ran = root.join("lane-0-ran");
+    let arms = format!(
+        r#"  *"Do the unit."*)
+    echo "pub fn work() {{}}" > work.rs
+    if [ -f "{lane_0_ran}" ]; then
+      echo "$$" >> "{root}/base-advanced.txt"
+      git -C "{root}" add base-advanced.txt
+      git -C "{root}" commit -q -m "advance the base"
+    else
+      touch "{lane_0_ran}"
+    fi
+    ;;
+  *"Adjudicate it."*)
+    echo '{{"verdict":"approve"}}'
+    ;;
+"#,
+        lane_0_ran = lane_0_ran.display(),
+        root = root.display(),
+    );
+    let scratch = common::default_scratch_root(root);
+
+    let (out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, &arms);
+    assert!(ok, "an escalated group still exits 0; stderr: {err}");
+    let events = read_run_events(root);
+    assert!(
+        events.iter().any(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_ESCALATED
+                && e.meta.contains_key(rigger::conductor::META_SPEC_GROUP)
+        }) && events
+            .iter()
+            .any(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED),
+        "premise: lane 0's merge broke post-merge and the group escalated; got: {out}"
+    );
+    let first = requested_spawns(root);
+    assert!(
+        ["solo/implementer#0", "solo/implementer#1"]
+            .iter()
+            .all(|id| first.iter().any(|s| s == id))
+            && !first.iter().any(|s| s == "solo/implementer#2"),
+        "premise: the first entry requests lanes 0 and 1; got: {first:?}"
+    );
+
+    let (out, err, ok) = run_rigger(root, &["resume-unit", "solo", "--attempts", "1"]);
+    assert!(
+        ok,
+        "resume-unit grants an escalated group whose lane branches the no-winner tail deleted; \
+         stdout: {out:?}, stderr: {err}"
+    );
+
+    let (_out, err, ok, _fake) = run_on_arms(root, &["run"], &scratch, &arms);
+    assert!(ok, "the re-entered group still exits 0; stderr: {err}");
+    let launched = rigger::spawn::recorded(&read_run_events(root)).unwrap();
+    let preamble =
+        "Your previous attempt failed the checks below. Fix exactly these - do not start over:\n";
+    for id in ["solo/implementer#2", "solo/implementer#3"] {
+        let prompt = &launched
+            .get(id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the re-entered group requests {id} afresh; requested: {:?}",
+                    launched.keys().collect::<Vec<_>>()
+                )
+            })
+            .prompt;
+        assert!(
+            prompt.starts_with(preamble) && prompt.contains("failed these gates"),
+            "{id}'s prompt opens with the failure the log recorded; got:\n{prompt}"
+        );
+    }
+}
+
 /// `event`'s stamped `worktree_sha` is a real 40-hex sha (`real_why` says why an empty or
 /// short one is wrong) equal to `expected`, the tree actually judged (`equal_why`).
 fn assert_a_real_worktree_sha(
@@ -4419,7 +4532,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         });
         let again = (
             case.again.0.to_string(),
-            String::new(),
+            common::cli::handed_over(""),
             String::new(),
             false,
         );
@@ -6403,7 +6516,12 @@ fn a_session_dying_with_no_result_relaunches_only_on_a_held_run() {
             ],
             "{name}: the closes; stderr: {err}"
         );
-        results.push((again.to_string(), String::new(), String::new(), false));
+        results.push((
+            again.to_string(),
+            common::cli::handed_over(""),
+            String::new(),
+            false,
+        ));
         assert_eq!(
             common::fixtures::spawn_result_rows(&read_run_events(root)),
             results,
@@ -7654,7 +7772,7 @@ fn a_hosted_spawns_result_lands_on_the_run_stream_once() {
         results,
         vec![SpawnResult {
             id: "a/implementer#0".to_string(),
-            output: "the unit is built".to_string(),
+            output: common::cli::handed_over("the unit is built"),
             error: String::new(),
             meta: serde_json::json!({
                 "resolved_model": "",
@@ -7769,8 +7887,13 @@ fn a_re_attempt_resumes_the_recorded_session_framed_and_the_progress_log_holds_e
     assert_eq!(flag_value(&argv, "--resume"), session);
     assert_eq!(
         recorded_task(&fake.path().join("bin/first-message")),
-        format!("{RED_GATE_RETRY_TASK}{}", headless_progress_frame()),
-        "the resumed launch's first message is the retry task, framed once"
+        format!(
+            "{RED_GATE_RETRY_TASK}{}{}",
+            common::cli::handover_contract(),
+            headless_progress_frame()
+        ),
+        "the resumed launch's first message is the retry task and the handover contract, framed \
+         once"
     );
 }
 
@@ -7847,7 +7970,7 @@ fn a_resume_with_no_session_lands_a_fresh_launch_in_the_same_attempt(ending: &st
         common::fixtures::spawn_result_rows(&read_run_events(root)),
         ["solo/implementer#0", "solo/implementer#1"].map(|id| (
             id.to_string(),
-            "the unit is built".to_string(),
+            common::cli::handed_over("the unit is built"),
             String::new(),
             false,
         )),
@@ -8160,7 +8283,14 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
                 .collect::<Vec<_>>(),
             "{name}: the re-attempt's records; stderr: {err}"
         );
-        let built = |id: &str| (id.to_string(), BUILT.to_string(), String::new(), false);
+        let built = |id: &str| {
+            (
+                id.to_string(),
+                common::cli::handed_over(BUILT),
+                String::new(),
+                false,
+            )
+        };
         let stopped = case
             .fault
             .map(|error| (RESUMED.to_string(), String::new(), error.to_string(), true));
@@ -8260,7 +8390,8 @@ fn the_attempt_after_a_fallback_resumes_the_fresh_session() {
              {{\"id\":\"<short-id>\",\"summary\":\"<one line>\",\"governs\":[\"<file>\"],\
              \"supersedes\":\"<prior-id-or-empty>\"}}\n\
              This writes it to the shared event log live, so other agents see it immediately.\
-             {}",
+             {}{}",
+            common::cli::handover_contract(),
             headless_progress_frame()
         ),
         "the fallback's launch carries the whole prompt, not the resumed session's short task"
@@ -8334,6 +8465,11 @@ fn every_resuming_role_falls_back_and_the_fresh_launch_answers_for_its_spawn() {
     let answer_of = |spawn: &str| match spawn {
         "solo/adjudicator#0" => REQUIRED_REJECT.to_string(),
         "solo/adjudicator#1" => r#"{"verdict":"approve"}"#.to_string(),
+        author
+            if author.starts_with("solo/implementer") || author.starts_with("solo/sdet-author") =>
+        {
+            common::cli::handed_over(&format!("{author} answered"))
+        }
         other => format!("{other} answered"),
     };
     let mut spawns = Vec::new();
@@ -8523,21 +8659,27 @@ fn a_documentation_only_round_tells_the_sdet_author_only_that_fact() {
                     format!(
                         "LATER ATTEMPT: the implementer has revised this unit since review sent \
                          this unit back at {base} - `git diff {base}..HEAD` since changed \
-                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{}",
+                         {changed}. {LATER_ATTEMPT_CLOSE}\n{fact}{}{}",
+                        common::cli::handover_contract(),
                         headless_progress_frame()
                     ),
                     "{at}: the resumed session's whole task"
                 );
             } else {
-                let last = format!("\n\n{DOC_ONLY_ROUND_FACT}{}", headless_progress_frame());
+                let last = format!(
+                    "\n\n{DOC_ONLY_ROUND_FACT}{}{}",
+                    common::cli::handover_contract(),
+                    headless_progress_frame()
+                );
                 assert_eq!(
                     (
                         closing.matches(DOC_ONLY_ROUND_FACT).count(),
                         closing.ends_with(&last)
                     ),
                     (usize::from(stated), stated),
-                    "{at}: the fresh launch's whole prompt states the fact once and last exactly \
-                     when the round changed documentation only:\n{closing}"
+                    "{at}: the fresh launch's whole prompt states the fact once, last before the \
+                     handover contract, exactly when the round changed documentation only:\n\
+                     {closing}"
                 );
             }
             for (attempt, task) in [(0, &opening), (1, &closing)] {
@@ -9677,10 +9819,14 @@ stages:
     // own if it also reached the same door) carries a real 40-hex worktree sha - stamped
     // AFTER a re-assert restores what the post-merge re-gate's own spawn just deleted, never
     // a snapshot taken during the deletion window. At least candidate 0's own (attempts:1)
-    // must be present.
+    // must be present. The group's own loss record, tagged with its group, names no single
+    // worktree and is not a post-merge block.
     let failed: Vec<_> = events
         .iter()
-        .filter(|e| e.type_ == rigger::ledger::TYPE_UNIT_FAILED)
+        .filter(|e| {
+            e.type_ == rigger::ledger::TYPE_UNIT_FAILED
+                && !e.meta.contains_key(rigger::conductor::META_SPEC_GROUP)
+        })
         .collect();
     assert!(
         !failed.is_empty(),
@@ -11538,10 +11684,11 @@ fn a_fresh_run_launches_each_spawn_only_a_prior_run_ended() {
     ;;
 {APPROVING_REVIEWER_ARMS}"#
     );
+    let implemented = common::cli::handed_over("");
     let answers = [
         ("solo/adjudicator#0", r#"{"verdict":"approve"}"#),
         ("solo/adversary#0", "tried and failed"),
-        ("solo/implementer#0", ""),
+        ("solo/implementer#0", implemented.as_str()),
         ("solo/lens:lens#0", "reviewed: no blocker"),
     ];
     let launched: Vec<_> = answers
@@ -11690,11 +11837,12 @@ fn a_resolver_round_ending_on_an_error_is_spent_and_a_restart_answers_it_from_th
         .unwrap_or_else(|| panic!("a first resolution round closed; stderr: {err}"));
     let unit = &errored[..errored.find('/').unwrap()];
     let resolving = format!("{unit}/implementer#0~retry2");
+    let implemented = common::cli::handed_over("");
     let approved: Vec<_> = ["a", "b"]
         .into_iter()
         .flat_map(|unit| {
             [
-                (format!("{unit}/implementer#0"), ""),
+                (format!("{unit}/implementer#0"), implemented.as_str()),
                 (format!("{unit}/lens:lens#0"), "reviewed: no blocker"),
                 (format!("{unit}/adjudicator#0"), r#"{"verdict":"approve"}"#),
             ]
