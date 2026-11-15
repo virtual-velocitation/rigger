@@ -921,6 +921,27 @@ mod appended_one_tests {
 }
 
 #[cfg(test)]
+mod record_id_tests {
+    use super::record_id_of;
+
+    #[test]
+    fn a_record_id_is_the_id_string_of_an_object_and_nothing_else() {
+        let rows: [(&str, Option<&str>); 7] = [
+            (r#"{"id":"r-1","n":0}"#, Some("r-1")),
+            (r#"{"n":6,"id":"r-1"}"#, Some("r-1")),
+            (r#"["r-1"]"#, None),
+            (r#"{"id":1}"#, None),
+            (r#"{"n":1}"#, None),
+            ("not json", None),
+            (r#""r-1""#, None),
+        ];
+        for (data, id) in rows {
+            assert_eq!(record_id_of(data.as_bytes()).as_deref(), id, "{data}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod expected_revision_tests {
     use super::{ExpectedRevision, NO_STREAM};
 
