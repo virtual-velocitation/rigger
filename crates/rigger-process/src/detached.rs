@@ -13,7 +13,7 @@
 use std::ffi::OsStr;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// The environment knob that selects how a rigger invocation relaunches a run whose driver died:
@@ -71,6 +71,30 @@ std::cfg_select! {
     }
 }
 
+// The one spelling of how an OS names a running binary that was replaced: linux and android name
+// it by its old path with the kernel's `" (deleted)"` marker added, which is how an upgrade by
+// rename leaves a running one named, and every other OS names it by its path as it stands.
+std::cfg_select! {
+    any(target_os = "linux", target_os = "android") => {
+        /// The path a running binary named as `exe` stands at, the path a later start of it
+        /// runs: `exe` itself when it is a file, else `exe` without the kernel's marker.
+        pub fn standing_path(exe: &Path) -> PathBuf {
+            if exe.is_file() {
+                exe.to_path_buf()
+            } else {
+                crate::reap::strip_deleted_suffix(exe)
+            }
+        }
+    }
+    _ => {
+        /// The path a running binary named as `exe` stands at, the path a later start of it
+        /// runs: `exe` itself.
+        pub fn standing_path(exe: &Path) -> PathBuf {
+            exe.to_path_buf()
+        }
+    }
+}
+
 /// The output file at `path`, made or emptied, readable by its owner alone where the OS says so
 /// ([`owner_only`]).
 fn output_file(path: &Path) -> io::Result<File> {
@@ -81,15 +105,22 @@ fn output_file(path: &Path) -> io::Result<File> {
 }
 
 /// Start `program` with `args` in `dir`, detached from this process ([`detach`]), with this
-/// process's environment, null stdin and its stdout and stderr both written to the file at
-/// `output`, emptied first: the child's pid. The child's handle is waited on by a thread of this
-/// process, so a long-lived starter never keeps an ended child as a zombie.
-pub fn start<S: AsRef<OsStr>>(
+/// process's environment but for `env`, each variable of which is set to its value or, given
+/// none, removed, null stdin and its stdout and stderr both written to the file at `output`,
+/// emptied first: the child's pid. The child's handle is waited on by a thread of this process,
+/// so a long-lived starter never keeps an ended child as a zombie.
+pub fn start<S, K, V>(
     program: &Path,
     args: &[S],
+    env: impl IntoIterator<Item = (K, Option<V>)>,
     dir: &Path,
     output: &Path,
-) -> io::Result<u32> {
+) -> io::Result<u32>
+where
+    S: AsRef<OsStr>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
     let out = output_file(output)?;
     let err = out.try_clone()?;
     let mut cmd = crate::subprocess::command(program);
@@ -98,6 +129,12 @@ pub fn start<S: AsRef<OsStr>>(
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
+    for (var, value) in env {
+        match value {
+            Some(value) => cmd.env(var, value),
+            None => cmd.env_remove(var),
+        };
+    }
     detach(&mut cmd)?;
     let mut child = cmd.spawn()?;
     let pid = child.id();
@@ -105,9 +142,92 @@ pub fn start<S: AsRef<OsStr>>(
     Ok(pid)
 }
 
+#[cfg(test)]
+mod standing_path_tests {
+    use super::*;
+
+    /// A binary replaced by rename while it runs stands at its path without the OS's marker;
+    /// any other path, one that is a file under the marker's spelling among them, stands as it is.
+    #[test]
+    fn a_binary_replaced_while_it_runs_stands_at_its_path_without_the_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join("rigger");
+        std::fs::write(&installed, "the new build").unwrap();
+        let named_so = dir.path().join("tool (deleted)");
+        std::fs::write(&named_so, "a binary with that name").unwrap();
+        let marked = PathBuf::from(format!("{} (deleted)", installed.display()));
+        let marks_a_replaced_binary = cfg!(any(target_os = "linux", target_os = "android"));
+        let cases = [
+            (
+                "a replaced binary",
+                marked.clone(),
+                if marks_a_replaced_binary {
+                    installed.clone()
+                } else {
+                    marked.clone()
+                },
+            ),
+            ("a running binary", installed.clone(), installed.clone()),
+            (
+                "a file under the marker's spelling",
+                named_so.clone(),
+                named_so.clone(),
+            ),
+        ];
+        for (case, exe, stands) in cases {
+            assert_eq!(standing_path(&exe), stands, "{case}");
+        }
+    }
+}
+
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    /// No variable set or removed on the child.
+    const NO_ENV: [(&str, Option<&str>); 0] = [];
+
+    /// A started child's environment is the starter's but for the variables it was given: each
+    /// given a value is set to it, and each given none is removed, even one the starter has.
+    #[test]
+    fn a_started_child_has_the_variables_it_was_given_set_or_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let seen = dir.path().join("seen");
+        let output = dir.path().join("out");
+        // A variable this process has that the shell neither needs nor sets itself.
+        let had = std::env::vars_os()
+            .filter_map(|(var, _)| var.into_string().ok())
+            .find(|var| {
+                !matches!(
+                    var.as_str(),
+                    "PATH" | "PWD" | "IFS" | "PS1" | "PS2" | "PS4" | "OLDPWD"
+                ) && var.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .expect("this process has a variable");
+        let script = r#"eval "removed=\${$2-unset}"; printf '%s|%s\n' "${RIGGER_DETACHED_GIVEN-unset}" "$removed" > "$1""#;
+        start(
+            Path::new("/bin/sh"),
+            &["-c", script, "sh", seen.to_str().unwrap(), &had],
+            [
+                ("RIGGER_DETACHED_GIVEN", Some("a value")),
+                (had.as_str(), None),
+            ],
+            dir.path(),
+            &output,
+        )
+        .unwrap();
+        assert!(
+            crate::host_fixtures::wait_until_for(400, || {
+                std::fs::read_to_string(&seen).is_ok_and(|s| s.ends_with('\n'))
+            }),
+            "the child ran"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&seen).unwrap(),
+            "a value|unset\n",
+            "a variable given a value is set on the child, one given none ({had}) is removed"
+        );
+    }
 
     /// A started child runs in the directory it was given and leads a process group of its own,
     /// so the starter's terminal never reaches it, and its stdout and stderr both land in the
@@ -123,6 +243,7 @@ mod tests {
         let pid = start(
             Path::new("sh"),
             &["-c", script, "sh", go.to_str().unwrap()],
+            NO_ENV,
             dir.path(),
             &output,
         )
@@ -160,6 +281,7 @@ mod tests {
         start(
             Path::new("sh"),
             &["-c", "touch \"$1\"", "sh", again.to_str().unwrap()],
+            NO_ENV,
             dir.path(),
             &output,
         )

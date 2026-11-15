@@ -206,10 +206,13 @@ impl BuildEnv {
 /// instead of hiding the read behind an opaque wrapper a caller cannot reason
 /// about.
 fn default_cache_dir() -> String {
-    crate::registry::state_home_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
-        .map(|h| h.join("rigger").join("build-cache"))
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "rigger-build-cache".to_string())
+    crate::registry::state_home_from(
+        std::env::var_os(crate::registry::STATE_HOME_ENV),
+        std::env::var_os(crate::registry::HOME_ENV),
+    )
+    .map(|h| h.join("rigger").join("build-cache"))
+    .map(|p| p.to_string_lossy().into_owned())
+    .unwrap_or_else(|| "rigger-build-cache".to_string())
 }
 
 /// The cache-directory value [`BuildEnv::resolve`] (what the `_DIR` env var carries), the

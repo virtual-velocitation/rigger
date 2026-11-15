@@ -141,6 +141,12 @@ pub fn reclaim_finished_spawn_scratch(opts: &SpawnOpts) {
     }
 }
 
+/// The variable that names the user cache home ([`cache_home_from`]'s `xdg`).
+pub const CACHE_HOME_ENV: &str = "XDG_CACHE_HOME";
+
+/// The variable that names the user's home, [`cache_home_from`]'s `home`.
+pub use rigger_store_sqlite::registry::HOME_ENV;
+
 /// The user cache home: `$XDG_CACHE_HOME` when set and non-empty, else `$HOME/.cache`, else
 /// `None` in a homeless environment. Mirrors `registry::state_home_from`'s XDG-then-HOME
 /// shape. Takes the two candidate env values as plain arguments (never reading `std::env`

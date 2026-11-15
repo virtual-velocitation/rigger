@@ -100,9 +100,10 @@ impl<'a> HeldDriver<'a> {
         }
     }
 
-    /// Whether this decorator parked a spawn on an operator hold.
-    pub fn parked_on_an_operator_hold(&self) -> bool {
-        self.parked.load(Ordering::SeqCst)
+    /// Whether this decorator parked a spawn on an operator hold since the last take, which
+    /// clears it, so a driver that drives again after the hold's release parks anew.
+    pub fn take_parked_on_an_operator_hold(&self) -> bool {
+        self.parked.swap(false, Ordering::SeqCst)
     }
 
     /// The current run's slice of the log.
@@ -556,9 +557,12 @@ mod tests {
             );
             assert_eq!(*paused_at.lock().unwrap(), row.paused_at, "{name}: pauses");
             assert_eq!(
-                held.parked_on_an_operator_hold(),
-                row.parked,
-                "{name}: whether it parked on an operator hold"
+                (
+                    held.take_parked_on_an_operator_hold(),
+                    held.take_parked_on_an_operator_hold()
+                ),
+                (row.parked, false),
+                "{name}: whether it parked on an operator hold, and that the take cleared it"
             );
             let authored = authored.into_inner().unwrap();
             let recorded: Vec<Event> = store

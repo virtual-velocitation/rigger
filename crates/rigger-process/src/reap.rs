@@ -712,11 +712,12 @@ fn is_inside(cwd: &Path, base: &Path) -> bool {
 }
 
 /// Strip the kernel's own `" (deleted)"` suffix from a `/proc/<pid>/cwd` readlink result, if
-/// present - see [`is_inside`]'s doc comment for why. A lossy UTF-8 round-trip: rigger's own
+/// present - see [`is_inside`]'s doc comment for why - or from a running binary's own path,
+/// which the kernel marks the same way once an upgrade replaced it ([`crate::detached::standing_path`]). A lossy UTF-8 round-trip: rigger's own
 /// scratch/worktree paths are always valid UTF-8 (git branch names and this crate's own path
 /// construction never emit otherwise), so this never mismatches a real path in practice, and
 /// the whole reap is best-effort throughout regardless.
-fn strip_deleted_suffix(cwd: &Path) -> PathBuf {
+pub(crate) fn strip_deleted_suffix(cwd: &Path) -> PathBuf {
     const DELETED_SUFFIX: &str = " (deleted)";
     let text = cwd.to_string_lossy();
     match text.strip_suffix(DELETED_SUFFIX) {

@@ -20,10 +20,10 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 /// The directories git's walk up from a directory never enters.
-const CEILINGS: &str = "GIT_CEILING_DIRECTORIES";
+pub const CEILINGS: &str = "GIT_CEILING_DIRECTORIES";
 
 /// Whether git's walk up from a directory crosses devices.
-const ACROSS_DEVICES: &str = "GIT_DISCOVERY_ACROSS_FILESYSTEM";
+pub const ACROSS_DEVICES: &str = "GIT_DISCOVERY_ACROSS_FILESYSTEM";
 
 /// The repository a directory lies in.
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -378,8 +378,8 @@ fn reset_modes(args: &[String]) -> Result<ResetModes, Box<dyn std::error::Error>
 /// different directories.
 fn reset_scratch_orphans() -> Res {
     let Some(cache_home) = rigger::driver::replay::cache_home_from(
-        std::env::var_os("XDG_CACHE_HOME"),
-        std::env::var_os("HOME"),
+        std::env::var_os(rigger::driver::replay::CACHE_HOME_ENV),
+        std::env::var_os(rigger::registry::HOME_ENV),
     ) else {
         return Err(
             "reset --scratch-orphans: neither XDG_CACHE_HOME nor HOME is set, so \

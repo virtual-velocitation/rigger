@@ -18,7 +18,7 @@ const AGENT_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
 
 /// The variable an operator sets in rigger's environment to give the long-lived token to spawned
 /// agents only: the agent CLI ignores it, so the operator's own sessions keep their login.
-const RIGGER_AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
+pub const RIGGER_AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
 
 /// The ONE credential rule every launch of the agent binary applies (unit spawns of both hosts,
 /// the hold probe's canary and the login reads `claude auth status` that the probe and `rigger
@@ -27,10 +27,22 @@ const RIGGER_AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
 /// untouched, an ambient [`AGENT_TOKEN_VAR`] included. The value is set on the command and held
 /// nowhere else: no field, no record, no message.
 pub(crate) fn apply_agent_credential(cmd: &mut std::process::Command) {
-    if let Some(token) = std::env::var_os(RIGGER_AGENT_TOKEN_VAR).filter(|v| !v.is_empty()) {
+    if let Some(token) = agent_token() {
         cmd.env(AGENT_TOKEN_VAR, token);
         cmd.env_remove(RIGGER_AGENT_TOKEN_VAR);
     }
+}
+
+/// The token [`apply_agent_credential`] gives spawned agents: [`RIGGER_AGENT_TOKEN_VAR`]'s value,
+/// when it is set and not empty.
+fn agent_token() -> Option<std::ffi::OsString> {
+    std::env::var_os(RIGGER_AGENT_TOKEN_VAR).filter(|v| !v.is_empty())
+}
+
+/// Whether this process gives spawned agents a login token ([`apply_agent_credential`]), the one
+/// fact about the credential a caller may keep: never its value.
+pub fn agent_token_set() -> bool {
+    agent_token().is_some()
 }
 
 /// The agent binary a driver launches from `PATH` when it is given none, and so the one whose

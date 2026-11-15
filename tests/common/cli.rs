@@ -2685,10 +2685,11 @@ pub fn run_on_arms_beside_with(
     (out, err, ok, fakebin)
 }
 
-/// The `Do the unit.` implementer arm that keeps a run mid-unit: it marks `started` beside the
-/// fake, waits for a `release` there ([`release_the_unit`]), then writes the change a merging
-/// stage lands.
+/// The `Do the unit.` implementer arm that keeps a run mid-unit: it records its working directory
+/// in `cwd` beside the fake, marks `started` there, waits for a `release` there
+/// ([`release_the_unit`]), then writes the change a merging stage lands.
 pub const HOLDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
+    pwd -P > "$here/cwd"
     : > "$here/started"
     while [ ! -e "$here/release" ]; do sleep 0.05; done
     echo "pub fn work() {}" > work.rs
@@ -2734,16 +2735,33 @@ pub fn a_run_ended_mid_unit(
     envs: &[(&str, &str)],
     end: impl FnOnce(&mut Child),
 ) -> EndedRun {
-    let (fakebin, path_env) = install_fake_claude(HOLDING_WORKER_ARM);
+    a_run_ended_mid_units(cwd, scratch, envs, HOLDING_WORKER_ARM, &["started"], end)
+}
+
+/// [`a_run_ended_mid_unit`] over the fake host answering from `arms`, driven until each of
+/// `started`, a file its arms mark beside the fake, exists.
+pub fn a_run_ended_mid_units(
+    cwd: &Path,
+    scratch: &Path,
+    envs: &[(&str, &str)],
+    arms: &str,
+    started: &[&str],
+    end: impl FnOnce(&mut Child),
+) -> EndedRun {
+    let (fakebin, path_env) = install_fake_claude(arms);
     let mut all = fake_claude_env(&path_env, scratch).to_vec();
     all.extend_from_slice(envs);
-    let (_state, child) = spawn_rigger(cwd, &["run"], &all);
+    let (state, child) = spawn_rigger(cwd, &["run"], &all);
     let mut owned = OwnedChild::new(child);
-    let started = unit_started(fakebin.path());
+    let marks: Vec<PathBuf> = started
+        .iter()
+        .map(|name| fakebin.path().join("bin").join(name))
+        .collect();
+    let all_started = || marks.iter().all(|mark| mark.exists());
     let ended = super::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
-        started.exists() || !matches!(owned.child().try_wait(), Ok(None))
+        all_started() || !matches!(owned.child().try_wait(), Ok(None))
     });
-    if !started.exists() {
+    if !all_started() {
         let outcome = ended.then(|| rigger_outcome(owned.into_child()));
         panic!("the run must reach its implementer; it ended with {outcome:?}");
     }
@@ -2753,15 +2771,18 @@ pub fn a_run_ended_mid_unit(
         record,
         fake: fakebin,
         path_env,
+        _state: state,
     }
 }
 
 /// A run [`a_run_ended_mid_unit`] ended: the record its live driver kept, the directory of its
-/// fake host, which keeps the fake alive, and the `PATH` value that finds that fake first.
+/// fake host, which keeps the fake alive, the `PATH` value that finds that fake first, and the
+/// state home the driver was started with, kept for the driver a relaunch starts with it.
 pub struct EndedRun {
     pub record: String,
     pub fake: tempfile::TempDir,
     pub path_env: String,
+    _state: tempfile::TempDir,
 }
 
 /// Plant a stale agent stream under `scratch`, for a run that must leave it: its path.

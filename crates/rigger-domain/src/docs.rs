@@ -1028,15 +1028,21 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              wall clock and names it.\n",
             &format!(
                 "A `rigger run` driver that died needs no hand relaunch. {stop} The relaunch \
-                 adopts the run in the background and says so in one line on stderr, naming its \
+                 adopts the run in the background, resolving the store, scratch and state roots \
+                 the dead driver resolved, and says so in one line on stderr, naming its \
                  pid and the file its output goes to (`.rigger/driver.out`, which `rigger status` \
-                 names while it holds what a relaunched driver said before it ended). `rigger \
+                 names while it holds what a relaunched driver said before it ended, and a driver \
+                 started by hand removes). `rigger \
                  watch` relaunches nothing: it names the dead driver and `rigger status` as what \
-                 brings it back. A driver that returned is never relaunched, save one that parked on an \
+                 brings it back, and under an operator hold it reports the run held and names \
+                 `rigger release`. A driver that returned is never relaunched, save one that parked on an \
                  operator hold, which `rigger release` relaunches. A \
                  driver that dies again within ten minutes of its relaunch, a relaunch that never \
                  started, or one whose recorded binary no longer exists is left stopped, and the \
-                 line names the command that relaunches it by hand.\n",
+                 line names the command that relaunches it by hand. A driver that gave its agents \
+                 the login token in `RIGGER_CLAUDE_CODE_OAUTH_TOKEN` is relaunched only from an \
+                 environment that sets it too; from any other, the line names that command and \
+                 nothing is relaunched.\n",
                 stop = DRIVER_STOP_RULE
             ),
             "When that line says the run was left stopped, or a driver was stopped on purpose, \
