@@ -794,7 +794,7 @@ enum Marker {
     Missing,
 }
 
-/// Spec 126 criterion 12: `rigger reset --build-cache` keeps the scratch of a critique whose
+/// `rigger reset --build-cache` keeps the scratch of a critique whose
 /// critic is live (a spawn with no result and a marker inside its bound, on any attempt) and
 /// reclaims the whole container of an ended or crashed one, whatever its shape, beside a dead run's
 /// spawn leaf; the live containers' bytes are never counted among the reclaimed.

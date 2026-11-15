@@ -918,7 +918,7 @@ mod tests {
         );
     }
 
-    /// Spec 126, criterion 1 (THE STATUS COUNTS WHAT THE RUN OWES): a run is done only when
+    /// A run is done only when
     /// every unit its latest recorded DAG owes has landed. Between one unit's landing and the
     /// next unit's start the run reads not done, counts landed of owed and offers no release;
     /// a later record replaces the owed set; a slice with no record reads as it always has.

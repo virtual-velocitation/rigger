@@ -1102,7 +1102,7 @@ mod tests {
         assert!(detect(&inputs).is_empty());
     }
 
-    /// Spec 126 (D01): a quiet run between one unit's landing and the next unit's start is
+    /// A quiet run between one unit's landing and the next unit's start is
     /// not done while its recorded DAG owes a unit not yet started, so the dead-driver signal
     /// still fires there; once every owed unit has landed the run is done and it stays quiet.
     #[test]

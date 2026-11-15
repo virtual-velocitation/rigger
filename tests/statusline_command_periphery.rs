@@ -241,7 +241,7 @@ fn setup_reports_a_drifted_statusline_command_as_refreshed() {
     );
 }
 
-/// Spec 126 (N2): `rigger status`, `rigger status --json` and `rigger watch --once` on a project
+/// `rigger status`, `rigger status --json` and `rigger watch --once` on a project
 /// `rigger setup` set up, before its first run, from its root and from a subdirectory, say that no
 /// run is recorded and exit 0 - the same answer `rigger status --line` gives there - while in a
 /// directory with no store at all they keep the wrong-directory refusal.
@@ -322,7 +322,7 @@ fn status_and_watch_before_the_first_run_say_no_run_is_recorded() {
     }
 }
 
-/// Spec 126 (D01): between one unit's landing and the next unit's start, a run whose recorded
+/// Between one unit's landing and the next unit's start, a run whose recorded
 /// DAG still owes a unit is not done - `rigger status --line` counts landed of owed and says
 /// working, and `rigger status` prints no release-ready commands - and once every owed unit has
 /// landed both say done and the commands appear.

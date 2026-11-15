@@ -183,7 +183,7 @@ fn release_ready_is_absent_from_the_wire_for_an_unfinished_run() {
     );
 }
 
-/// Spec 126 (D01): a run whose recorded DAG still owes a unit not yet started ships no
+/// A run whose recorded DAG still owes a unit not yet started ships no
 /// `release_ready` over the wire, though every unit it has started has landed; once the owed
 /// unit lands too the handoff crosses with both units counted.
 #[test]

@@ -3563,7 +3563,7 @@ fn resume_unit_refuses_when_the_durable_branch_is_gone() {
     );
 }
 
-/// Spec 126 criterion 14 at the real binary boundary: a speculation group whose every lane fails
+/// At the real binary boundary: a speculation group whose every lane fails
 /// escalates, and the no-winner tail deletes every lane branch, the canonical unit branch among
 /// them. `rigger resume-unit` still grants it, since the group re-enters on fresh lane worktrees,
 /// and the relaunched run requests its lanes one past the attempts the first entry recorded, so the

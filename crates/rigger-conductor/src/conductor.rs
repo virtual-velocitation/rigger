@@ -1694,7 +1694,7 @@ struct SpecCandidate {
 
 /// What a speculation group's losing lanes failed with, gathered in lane order: each red gate's
 /// evidence and each review's rejection, with the first loss's cause. A group with no winner
-/// records it as the unit's failure (spec 126, criterion 14). A loss to infrastructure
+/// records it as the unit's failure. A loss to infrastructure
 /// ([`is_infra_cause`]) is left out, as the single lane charges an outage no `UnitFailed`.
 #[derive(Default)]
 struct LostLanes {
@@ -1733,7 +1733,7 @@ impl LostLanes {
 }
 
 /// The attempt a speculation group of `unit` numbers its lane 0 at, read from the run slice
-/// `events` at the group's start (spec 126, criterion 14). The group's RE-ENTRY BOUNDARY is the
+/// `events` at the group's start. The group's RE-ENTRY BOUNDARY is the
 /// later in log order of the unit's latest `UnitResumed` (an operator's grant after its
 /// escalation) and its latest compensating `UnitFailed` ([`META_COMPENSATED`]). With no boundary
 /// the base is 0; past one it is one past the highest attempt over the spawn ids of the unit the
@@ -1765,7 +1765,7 @@ fn speculation_lane_base(events: &[Event], unit: &str) -> u32 {
 /// Whether `unit`'s latest `UnitEscalated` in the run slice `events` escalated a speculation
 /// group ([`META_SPEC_GROUP`]): a group with no winner deletes every lane branch, the canonical
 /// unit branch among them, and re-enters on fresh lane worktrees, so a resume of it needs no
-/// branch to re-park on (spec 126, criterion 14).
+/// branch to re-park on.
 pub fn escalated_as_speculation_group(events: &[Event], unit: &str) -> bool {
     events
         .iter()
@@ -7884,7 +7884,7 @@ impl RunCtx<'_> {
         // group's counted attempts, so a compensation re-entry, which advanced past that
         // failure, is never handed it.
         let logged = self.re_entry_failure(&st.name, self.counted_attempts(&st.name));
-        // Spec 126 criterion 14: a re-entered group numbers its lanes past every attempt its
+        // A re-entered group numbers its lanes past every attempt its
         // run recorded before the re-entry, so a grant or a compensation re-drives the lanes
         // instead of answering the first entry's ids from the log. Lane `n` runs at attempt
         // `base + n`; its worktree and branch stay keyed by `n`.
@@ -8235,7 +8235,7 @@ impl RunCtx<'_> {
             let _ = c.wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
         }
-        // Spec 126 criterion 14: record why the group lost as the unit's failure, one past its
+        // Record why the group lost as the unit's failure, one past its
         // last lane, so an operator's grant re-drives every lane told it, as a single lane
         // re-entering after its own failure is told. Keyed by the entry's lane base, so a
         // relaunch replaying this entry records it once. A group whose every lane crashed
@@ -13835,7 +13835,7 @@ impl RunCtx<'_> {
                 terminal.insert(id);
             }
         }
-        // THE DAG IS RECORDED (spec 126, criterion 2): this is the one place the DAG's membership
+        // THE DAG IS RECORDED: this is the one place the DAG's membership
         // changes once the run built it (the template's removal and the baselines come before the
         // first call; the supersede removal and every added proposal happen above), so the units
         // it now holds are recorded here whenever they differ from the latest record in the slice
@@ -20547,7 +20547,7 @@ mod tests {
         stages
     }
 
-    /// Spec 126, criterion 2 (THE CONDUCTOR RECORDS ITS DAG): `harvest_proposed` records the
+    /// `harvest_proposed` records the
     /// units its DAG holds whenever that set changes, and only then. Over a two-criterion
     /// fan-out whose planner proposes one unit per criterion, the record names the static stages
     /// and both proposals and no superseded baseline; a second harvest, live or in a resumed
@@ -28956,7 +28956,7 @@ mod tests {
                 ]),
                 "a crashed lane",
             );
-        /// Spec 126 criterion 13: lane 0's implementer session ends without the handover line,
+        /// Lane 0's implementer session ends without the handover line,
         /// so it stopped mid-work and the lane is lost as a crashed lane is, never rerun.
         speculation_lane_without_the_handover_line_is_absent_and_a_sibling_still_wins:
             assert_lost_lane_is_absent_and_a_sibling_still_wins(
@@ -28969,7 +28969,7 @@ mod tests {
             );
     }
 
-    /// Spec 126 criterion 13: a speculation lane whose request the run recorded before the
+    /// A speculation lane whose request the run recorded before the
     /// handover contract existed, answered with a result that names no line, keeps its candidate:
     /// it races in the group (the winner or a recorded loser), never lost and torn down.
     #[test]
@@ -29717,7 +29717,7 @@ mod tests {
         contradiction
     }
 
-    /// Spec 126 criterion 14: a speculating unit re-entered past a boundary (an operator's grant
+    /// A speculating unit re-entered past a boundary (an operator's grant
     /// after its escalation, or a drained compensation) runs its lanes one past the highest
     /// attempt its run recorded before that boundary, so a host runs them as fresh sessions
     /// rather than answering the first entry's ids from the log; a relaunch adding no boundary
@@ -29816,7 +29816,7 @@ mod tests {
         EVERY_LANE_GATE_RED
     }
 
-    /// Spec 126 criterion 14: a group whose every lane loses before any merge (`lose` sets up
+    /// A group whose every lane loses before any merge (`lose` sets up
     /// how) escalates with the loss recorded, so an operator's grant re-drives its lanes as
     /// fresh sessions told why the group lost, exactly as a single lane re-entering after its
     /// own failure is told.
@@ -50105,7 +50105,7 @@ mod tests {
             .collect()
     }
 
-    /// Spec 126's AN AUTHOR HANDS OVER, over one merging, gated unit `s` (its test author
+    /// The author hand-over, over one merging, gated unit `s` (its test author
     /// declared when `with_sdet`) under a driver that runs its spawns as sessions when
     /// `sessions`, the first run of the `withheld` role's session ending without the handover
     /// line. Every author prompt carries the handover contract. A session that ends without the
@@ -50232,7 +50232,7 @@ mod tests {
         }
     }
 
-    /// Spec 126 criterion 13's predicate: a result hands over when its driver ran no session, when
+    /// The hand-over predicate: a result hands over when its driver ran no session, when
     /// the request the run recorded for its spawn carries no handover line (a session never told
     /// the contract), or when its output's last non-blank line, trimmed, is the handover line.
     #[test]
@@ -50317,7 +50317,7 @@ mod tests {
         }
     }
 
-    /// Spec 126 criterion 13 over a log that recorded the `withheld` author's request before the
+    /// The hand-over contract over a log that recorded the `withheld` author's request before the
     /// run re-entered: a request recorded before the handover contract existed (`told` false: its
     /// prompt carries no handover line) answers a result that names no line, and that result
     /// still counts as handed over, so nothing reruns; a request that told the contract and a
@@ -50368,7 +50368,7 @@ mod tests {
     }
 
     crate::test_cases! {
-        /// Spec 126 criterion 13: an implementer result answered from a log whose request was
+        /// An implementer result answered from a log whose request was
         /// recorded before the contract existed is not rerun.
         a_pre_contract_implementer_result_is_not_rerun:
             assert_recorded_request_decides_the_handover(
@@ -50376,7 +50376,7 @@ mod tests {
                 false,
                 "a pre-contract implementer",
             );
-        /// Spec 126 criterion 13: a test-author result answered from a log whose request was
+        /// A test-author result answered from a log whose request was
         /// recorded before the contract existed is not rerun.
         a_pre_contract_test_author_result_is_not_rerun:
             assert_recorded_request_decides_the_handover(
@@ -50384,7 +50384,7 @@ mod tests {
                 false,
                 "a pre-contract test author",
             );
-        /// Spec 126 criterion 13's positive control: a recorded request that told the contract
+        /// The positive control: a recorded request that told the contract
         /// still reruns a result without the line.
         a_told_implementer_result_without_the_line_is_rerun:
             assert_recorded_request_decides_the_handover(
@@ -50394,7 +50394,7 @@ mod tests {
             );
     }
 
-    /// Spec 126's miss path over one merging, gated unit `s` with a declared test author, whose
+    /// The hand-over miss path over one merging, gated unit `s` with a declared test author, whose
     /// `withheld` author's first session ends without the handover line, the last line of its
     /// output `last`, and, when `denials` is some, the session host's recorded result for it
     /// carrying that permission-denial count. The rerun continues the session that missed, sent
@@ -50497,7 +50497,7 @@ mod tests {
     }
 
     crate::test_cases! {
-        /// Spec 126's miss path: an implementer's miss with no recorded result.
+        /// A hand-over miss: an implementer's miss with no recorded result.
         an_implementer_miss_continues_its_session_and_records_its_last_line:
             assert_a_handover_miss_continues_the_session_that_missed(
                 ROLE_IMPLEMENTER,
@@ -50505,7 +50505,7 @@ mod tests {
                 None,
                 "an implementer, no recorded result",
             );
-        /// Spec 126's miss path: an implementer's miss whose recorded result names two denials
+        /// A hand-over miss: an implementer's miss whose recorded result names two denials
         /// and whose last line runs past the bound in multibyte characters.
         an_implementer_miss_records_a_bounded_last_line_and_its_denials:
             assert_a_handover_miss_continues_the_session_that_missed(
@@ -50514,7 +50514,7 @@ mod tests {
                 Some(2),
                 "an implementer, a long last line and two denials",
             );
-        /// Spec 126's miss path: a test author's miss whose recorded result names no denial.
+        /// A hand-over miss: a test author's miss whose recorded result names no denial.
         a_test_author_miss_continues_its_session_and_records_its_last_line:
             assert_a_handover_miss_continues_the_session_that_missed(
                 ROLE_SDET_AUTHOR,
@@ -50524,7 +50524,7 @@ mod tests {
             );
     }
 
-    /// Spec 126's miss path: an implementer whose every session ends without the handover line
+    /// An implementer whose every session ends without the handover line
     /// halts at the infra limit naming the hand-over, how many times it was missed and what to
     /// check, never an outage to fix.
     #[test]
@@ -50560,7 +50560,7 @@ mod tests {
     }
 
     crate::test_cases! {
-        /// Spec 126 criterion 13: an implementer session that ends without the handover line
+        /// An implementer session that ends without the handover line
         /// stopped mid-work, so its attempt is no finished attempt: no `green`, no checkpoint,
         /// and an uncharged rerun under the next infra ordinal over the tree it left.
         an_implementer_session_without_the_handover_line_records_no_green_and_reruns_uncharged:
@@ -50570,7 +50570,7 @@ mod tests {
                 Some(ROLE_IMPLEMENTER),
                 "an implementer that did not hand over reruns uncharged",
             );
-        /// Spec 126 criterion 13: a test author session that ends without the handover line
+        /// A test author session that ends without the handover line
         /// takes the seam's crash disposition: no checkpoint commit and no gate before its seam
         /// reruns uncharged.
         a_test_author_session_without_the_handover_line_reruns_its_seam_before_any_checkpoint_or_gate:
@@ -50580,7 +50580,7 @@ mod tests {
                 Some(ROLE_SDET_AUTHOR),
                 "a test author that did not hand over reruns its seam uncharged",
             );
-        /// Spec 126 criterion 13: author sessions that end with the handover line, trailing
+        /// Author sessions that end with the handover line, trailing
         /// spaces and blank lines after it, proceed as today.
         author_sessions_ending_with_the_handover_line_proceed_as_today:
             assert_author_handover(
@@ -50589,7 +50589,7 @@ mod tests {
                 None,
                 "authors that handed over proceed as today",
             );
-        /// Spec 126 criterion 13: a driver that runs no session (an empty `session_id`) has
+        /// A driver that runs no session (an empty `session_id`) has
         /// nothing to hand over, so its results proceed as today.
         a_driver_that_runs_no_session_proceeds_as_today:
             assert_author_handover(
@@ -51095,7 +51095,7 @@ mod tests {
         );
     }
 
-    /// Spec 126 (D01 through D02): over a whole run through the real conductor - a clean
+    /// Over a whole run through the real conductor - a clean
     /// approve, a reject that feeds a re-plan, and a planner unit superseding a baseline - the
     /// log the run writes reads not done after every landing but the last and done after the
     /// last, so no reader of the log claims done between one unit's landing and the next

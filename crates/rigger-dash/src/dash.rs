@@ -2769,7 +2769,7 @@ pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> 
 /// "no new event type - the spec-13 global constraint"), so it is already covered by
 /// `TYPE_DECISION_MADE` below and this literal entry is a forward-compatible no-op. Spec 105's
 /// `RunHeld` and `RunReleased` are on the list, so the page's fold sees the run's hold, and
-/// `DagRecorded`, `SpecDefect` and `DeferredGateFailed` (spec 126), so it folds the units the run
+/// `DagRecorded`, `SpecDefect` and `DeferredGateFailed`, so it folds the units the run
 /// owes, its spec-defect stop and a failed deferred gate as `rigger status` does.
 const CONSOLE_EVENT_TYPES: &[&str] = &[
     run::TYPE_RUN_STARTED,
@@ -7145,7 +7145,7 @@ mod tests {
 
     /// Spec 94, criterion 2 (THE SNAPSHOT AND THE STREAM): the console-event allow-list
     /// admits exactly the run-lifecycle types the addendum §2 names, spec 105's `RunHeld`
-    /// and `RunReleased` and spec 126's `DagRecorded`, `SpecDefect` and `DeferredGateFailed`,
+    /// and `RunReleased`, and `DagRecorded`, `SpecDefect` and `DeferredGateFailed`,
     /// and excludes the graph-extraction types that share the same stream
     /// plus this project's own `AgentProgress` (a separate store regardless).
     #[test]

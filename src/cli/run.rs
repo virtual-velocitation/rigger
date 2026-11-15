@@ -374,7 +374,7 @@ pub(crate) fn cmd_run(args: &[String]) -> Res {
 /// resume with no branch to re-park the implementer on would strand the implementer on
 /// a fresh, empty checkout instead of the unit's actual prior work. A unit that escalated
 /// as a speculation group is granted without its branch: the group re-enters on fresh lane
-/// worktrees (spec 126, criterion 14).
+/// worktrees.
 pub(crate) fn cmd_resume_unit(args: &[String]) -> Res {
     let mut unit_id: Option<&str> = None;
     let mut attempts_granted: u32 = 1;

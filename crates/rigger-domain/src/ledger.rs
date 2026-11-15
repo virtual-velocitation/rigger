@@ -607,7 +607,7 @@ pub const TYPE_TASK_ABORTED: &str = "TaskAborted";
 /// at the run's phase boundary. A deferred failure is surfaced truthfully - it gates
 /// `done` so the run never reports finished with a red phase-boundary gate.
 pub const TYPE_DEFERRED_GATE_FAILED: &str = "DeferredGateFailed";
-/// The conductor's DagRecorded event (spec 126, criterion 1): the units the conductor's DAG
+/// The conductor's DagRecorded event: the units the conductor's DAG
 /// holds, recorded once the plan is accepted and again whenever that set changes (a re-plan, a
 /// split, a unit added mid-run). Body: [`DagRecorded`]. Folded into [`RunState::owed`], so a run
 /// is done only when every unit it owes has landed, never merely every unit it started.
