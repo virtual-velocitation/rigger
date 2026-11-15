@@ -164,7 +164,7 @@ fn main() {
         "reset" => cmd_reset(&args[2..]),
         "critique" => cmd_critique(&args[2..]),
         "validate" => cmd_validate(&args[2..]),
-        "init" => cmd_init(),
+        "init" => cmd_init(&args[2..]),
         "setup" => cmd_setup(&args[2..]),
         "docs" => cmd_docs(&args[2..]),
         "prime" => cmd_prime(&args[2..]),
@@ -363,10 +363,15 @@ the ceiling with a pass recorded, is answered from\n                            
 the record with no spawn; takes --eventstore/--conn\n                              \
 as run does\n  \
 rigger validate             load and validate the workflow + agents\n  \
-rigger init                 set up a project: scaffold .rigger/ (workflow.yml +\n                              \
+rigger init [--template <dir>]\n                              \
+set up a project: scaffold .rigger/ (workflow.yml +\n                              \
 an agents/ folder) and install the Claude Code\n                              \
-SessionStart hook (it runs `rigger prime`)\n  \
-rigger setup                full setup: everything `init` does, PLUS install the\n                              \
+SessionStart hook (it runs `rigger prime`). The\n                              \
+workflow's gates come from the gate template set in\n                              \
+<dir>/scaffold/ whose marker sits at the project root;\n                              \
+with no --template it declares no gates\n  \
+rigger setup [--template <dir>] [--agents <dir>]\n                              \
+full setup: everything `init` does, PLUS install the\n                              \
 registry skills, the MCP server entry and the session\n                              \
 settings. After it: `rigger run <spec> --base <ref>`\n  \
 rigger docs                 render the code-derived docs (every registry skill and\n                              \

@@ -1503,15 +1503,20 @@ fn a_stage_of_no_steps_inherits_the_default_list_and_a_stage_list_replaces_it() 
     }
 }
 
-/// Given a project `rigger init` rendered, with no gate template set and with one, when the
-/// operator validates it, it passes and its review is the canonical sequence.
+/// Given a project `rigger init --template <this repository's root>` rendered, matching no gate
+/// template set and matching the Rust one, when the operator validates it, it passes and its
+/// review is the canonical sequence.
 #[test]
 fn a_workflow_rigger_init_renders_validates_as_the_canonical_sequence_with_or_without_gates() {
+    let template = repo_root();
     for (project, summary) in [
         (temp_project(), "config valid: 6 agents, 4 stages, 0 gates"),
         (cargo_project(), "config valid: 6 agents, 4 stages, 5 gates"),
     ] {
-        run_rigger_ok(project.path(), &["init"]);
+        run_rigger_ok(
+            project.path(),
+            &["init", "--template", template.to_str().unwrap()],
+        );
         let out = run_rigger_ok(project.path(), &["validate"]);
         assert_eq!(out.lines().nth(1), Some(summary));
         assert_eq!(

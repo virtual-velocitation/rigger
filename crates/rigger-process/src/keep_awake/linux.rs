@@ -1,10 +1,19 @@
-//! The Linux keep-awake adapter (spec 105): a logind inhibitor lock, taken over the system bus.
+//! The Linux keep-awake adapter (spec 105): a logind inhibitor lock, taken over the system bus,
+//! and in a graphical session the desktop portal's inhibitor besides (spec 125), taken over the
+//! session bus, so the desktop holds the session awake too.
 
 use rigger_domain::sleep_hold::{SleepGuard, Unavailable};
+use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::os::fd::OwnedFd;
+use std::pin::Pin;
+use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use zbus::connection::Builder;
-use zbus::Connection;
+use zbus::export::futures_core::Stream;
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
+use zbus::{Connection, MatchRule, MessageStream};
 
 /// The bus name logind owns on the system bus.
 const LOGIND: &str = "org.freedesktop.login1";
@@ -19,16 +28,57 @@ const LOGIND_MANAGER: &str = "org.freedesktop.login1.Manager";
 /// logind never answered.
 pub const BUS_DRIVER: &str = "org.freedesktop.DBus";
 
+/// The bus name the desktop portal owns on the session bus.
+const PORTAL: &str = "org.freedesktop.portal.Desktop";
+
+/// The object path of the desktop portal.
+const PORTAL_PATH: &str = "/org/freedesktop/portal/desktop";
+
+/// The portal's interface that `Inhibit` belongs to.
+const PORTAL_INHIBIT: &str = "org.freedesktop.portal.Inhibit";
+
+/// The portal's `Inhibit` flag that inhibits suspending the session.
+const SUSPEND: u32 = 4;
+
+/// The portal's `Inhibit` flag that inhibits the session going idle.
+const IDLE: u32 = 8;
+
+/// The interface of the portal's request objects, whose `Response` signal says how the request a
+/// call made ended.
+const PORTAL_REQUEST: &str = "org.freedesktop.portal.Request";
+
+/// The `Response` code of a request the portal carried out: for `Inhibit`, its inhibitor stands.
+const RESPONSE_SUCCESS: u32 = 0;
+
 /// The one bound on an acquire, over connecting to the system bus, its authentication handshake
-/// and logind's answer to `Inhibit` together: the D-Bus default method-call timeout.
+/// and logind's answer to `Inhibit` together, and, in a graphical session, connecting to the
+/// session bus, the portal's answer and its request's `Response` after them: the D-Bus default
+/// method-call timeout.
 const DEADLINE: Duration = Duration::from_secs(25);
 
 /// Take a logind `block` inhibitor of sleep and idle by `rigger` for `reason`, over a system-bus
-/// connection of its own, within [`DEADLINE`]. The guard holds the descriptor logind answers
-/// with, and logind ends the inhibitor when the guard drops it.
+/// connection of its own, and in a graphical session the desktop portal's inhibitor besides, over
+/// a session-bus connection of its own, within [`DEADLINE`]. The guard holds the descriptor
+/// logind answers with, and logind ends the inhibitor when the guard drops it. The portal's
+/// inhibitor is held only once the request its `Inhibit` makes responds that the inhibitor
+/// stands, so the portal has it to end: the guard closes the portal's connection as it drops,
+/// and the portal ends its inhibitor with that connection.
 pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
     let bus = Builder::system().map_err(no_system_bus)?;
-    acquire_on(bus, reason, DEADLINE)
+    let graphical = graphical_session(
+        std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+        std::env::var_os("DISPLAY").as_deref(),
+    );
+    acquire_on(bus, graphical, Builder::session, reason, DEADLINE)
+}
+
+/// Whether the process runs in a graphical session: a Wayland or an X display named, by the
+/// value `wayland_display` of `WAYLAND_DISPLAY` or `display` of `DISPLAY` being non-empty.
+fn graphical_session(wayland_display: Option<&OsStr>, display: Option<&OsStr>) -> bool {
+    [wayland_display, display]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.is_empty())
 }
 
 /// Take the inhibitor over the connection `bus` builds, answering unavailable, timed out, once
@@ -39,8 +89,18 @@ pub(super) fn acquire(reason: &str) -> Result<SleepGuard, Unavailable> {
 /// keeps. The shutdown joins every thread the runtime started, waiting no longer than what
 /// remains of `deadline`: past it, a thread still running, one blocked in a connect the deadline
 /// cut short among them, is left to end on its own rather than hold the acquire past its bound.
+///
+/// Once logind grants, and only when `graphical`, the acquire also asks the desktop portal for its
+/// inhibitor over the session-bus connection `session` builds, within what remains of `deadline`
+/// (see [`PortalInhibitor::take`]). The portal thread is the one thread a granted acquire leaves
+/// standing while its guard lives: dropping the guard closes the session-bus connection and joins
+/// that thread before logind's descriptor drops. A portal that is absent, refuses (an error
+/// reply, or a request that responds other than [`RESPONSE_SUCCESS`]) or does not answer in time
+/// leaves logind's inhibitor alone in force, and nothing is printed.
 fn acquire_on(
     bus: Builder<'_>,
+    graphical: bool,
+    session: impl FnOnce() -> zbus::Result<Builder<'static>>,
     reason: &str,
     deadline: Duration,
 ) -> Result<SleepGuard, Unavailable> {
@@ -64,7 +124,141 @@ fn acquire_on(
     });
     runtime.shutdown_timeout(deadline.saturating_sub(started.elapsed()));
     let descriptor = taken?;
-    Ok(SleepGuard::new(move || drop(descriptor)))
+    let portal = graphical
+        .then(session)
+        .and_then(Result::ok)
+        .and_then(|session| {
+            PortalInhibitor::take(session, reason, deadline.saturating_sub(started.elapsed()))
+        });
+    Ok(SleepGuard::new(move || {
+        if let Some(portal) = portal {
+            portal.release();
+        }
+        drop(descriptor);
+    }))
+}
+
+/// The desktop portal's inhibitor: the thread holding the session-bus connection it lives on, and
+/// the sender whose drop tells that thread to close the connection.
+struct PortalInhibitor {
+    release: mpsc::Sender<()>,
+    thread: JoinHandle<()>,
+}
+
+impl PortalInhibitor {
+    /// Ask the portal for its inhibitor over the connection `session` builds, on a thread of its
+    /// own, answering within `within`: the inhibitor when the portal grants it (see
+    /// [`portal_inhibit`]), none when no thread starts, no connection opens, or the portal refuses
+    /// or does not answer in time. The thread drives that connection on a current-thread runtime
+    /// of its own that keeps no idle thread, so the blocking thread connecting runs on ends with
+    /// its connect. When the portal grants, the thread keeps the connection, and the runtime with
+    /// it, until [`PortalInhibitor::release`]; otherwise it drops both before this returns, so a
+    /// refusal, a request that responds no grant or none in time leaves no connection standing.
+    fn take(session: Builder<'static>, reason: &str, within: Duration) -> Option<Self> {
+        let (granted, answer) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let reason = reason.to_string();
+        let thread = std::thread::Builder::new()
+            .name("rigger-keep-awake-portal".to_string())
+            .spawn(move || hold_portal_inhibitor(session, &reason, within, &granted, &released))
+            .ok()?;
+        if answer.recv() == Ok(true) {
+            Some(Self { release, thread })
+        } else {
+            let _ = thread.join();
+            None
+        }
+    }
+
+    /// Close the portal's connection, ending its inhibitor, and join the thread that held it.
+    fn release(self) {
+        drop(self.release);
+        let _ = self.thread.join();
+    }
+}
+
+/// The portal thread: connect through `session` and ask the portal for its inhibitor, within
+/// `within`, telling `granted` whether it granted it; once it did, hold the connection until
+/// `released` reports its sender dropped. The connection drops inside the runtime, and the runtime
+/// shuts down, waiting for the threads it started no longer than `within`, before the thread ends.
+fn hold_portal_inhibitor(
+    session: Builder<'static>,
+    reason: &str,
+    within: Duration,
+    granted: &mpsc::Sender<bool>,
+    released: &mpsc::Receiver<()>,
+) {
+    let started = Instant::now();
+    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .thread_keep_alive(Duration::ZERO)
+        .build()
+    else {
+        return;
+    };
+    let held = runtime.block_on(async {
+        let inhibitor = async {
+            let bus = session.build().await?;
+            let granted = portal_inhibit(&bus, reason).await?;
+            Ok::<_, zbus::Error>(granted.then_some(bus))
+        };
+        tokio::time::timeout(within, inhibitor)
+            .await
+            .ok()?
+            .ok()
+            .flatten()
+    });
+    let _ = granted.send(held.is_some());
+    let bound = match held {
+        Some(bus) => {
+            let _ = released.recv();
+            runtime.block_on(async move { drop(bus) });
+            within
+        }
+        None => within.saturating_sub(started.elapsed()),
+    };
+    runtime.shutdown_timeout(bound);
+}
+
+/// Ask the desktop portal to inhibit suspending the session and its going idle, for `reason`,
+/// with no parent window, answering whether it granted the inhibitor. The portal's method return
+/// carries only the handle of the request it makes of the call: its backend takes the inhibitor
+/// after that, and the request's `Response` signal says how the request ended, the inhibitor
+/// standing, until this connection closes, only when it responds [`RESPONSE_SUCCESS`]. The
+/// subscription to the portal's responses is made before the call, so a response sent before
+/// the handle is read is not missed. An error reply refuses the inhibitor, as does any other
+/// response; a connection that closes before the response is no grant either.
+async fn portal_inhibit(bus: &Connection, reason: &str) -> zbus::Result<bool> {
+    let rule = MatchRule::builder()
+        .msg_type(zbus::message::Type::Signal)
+        .sender(PORTAL)?
+        .interface(PORTAL_REQUEST)?
+        .member("Response")?
+        .build();
+    let mut responses = MessageStream::for_match_rule(rule, bus, None).await?;
+    let options = HashMap::from([("reason", zbus::zvariant::Value::from(reason))]);
+    let handle: OwnedObjectPath = bus
+        .call_method(
+            Some(PORTAL),
+            PORTAL_PATH,
+            Some(PORTAL_INHIBIT),
+            "Inhibit",
+            &("", SUSPEND | IDLE, options),
+        )
+        .await?
+        .body()
+        .deserialize()?;
+    while let Some(response) =
+        std::future::poll_fn(|cx| Pin::new(&mut responses).poll_next(cx)).await
+    {
+        let response = response?;
+        if response.header().path().is_some_and(|path| *path == *handle) {
+            let (code, _results): (u32, HashMap<String, OwnedValue>) =
+                response.body().deserialize()?;
+            return Ok(code == RESPONSE_SUCCESS);
+        }
+    }
+    Ok(false)
 }
 
 /// Ask logind for the inhibitor, without the interactive-authorization flag, so no
@@ -118,13 +312,16 @@ fn unavailable(error: zbus::Error) -> Unavailable {
 
 #[cfg(test)]
 mod tests {
-    use super::{acquire_on, no_system_bus, unavailable};
+    use super::{acquire_on, graphical_session, no_system_bus, unavailable};
+    use crate::test_support::{
+        client_end, fake_bus, logind_inhibit, pending, portal_inhibit, private_bus, Answer, Call,
+        FakeBus, LogindInhibit, PortalInhibit,
+    };
     use rigger_domain::sleep_hold::Unavailable;
-    use std::os::linux::net::SocketAddrExt;
-    use std::os::unix::net::{SocketAddr, UnixListener};
-    use std::pin::Pin;
+    use std::ffi::OsStr;
+    use std::io::ErrorKind;
     use std::time::Duration;
-    use zbus::export::futures_core::Stream;
+    use zbus::connection::Builder;
 
     /// An error reply named `name` to an `Inhibit` call, sent by `sender` and carrying `detail`
     /// where each is given, as zbus hands it to the caller.
@@ -144,111 +341,191 @@ mod tests {
         zbus::Error::from(reply.unwrap())
     }
 
-    /// One call as a bus delivers it: destination, path, interface and member, and the inhibitor
-    /// its body asks for, by what, who, why and mode.
-    type Call = (
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        (String, String, String, String),
-    );
-
-    /// A fake logind on the private bus `listener` listens on, serving the one connection it
-    /// accepts as the bus itself: it answers the connection's `Hello` and answers no other call,
-    /// handing back each one it received once the connection closes.
-    fn silent_logind(listener: UnixListener) -> std::thread::JoinHandle<Vec<Call>> {
-        std::thread::spawn(move || {
-            let (stream, _) = listener
-                .accept()
-                .expect("the adapter connects to the private bus");
-            stream
-                .set_nonblocking(true)
-                .expect("the accepted stream turns non-blocking");
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("the fake bus's runtime");
-            runtime.block_on(async {
-                let stream = tokio::net::UnixStream::from_std(stream).expect("the accepted stream");
-                let mut messages = zbus::connection::Builder::unix_stream(stream)
-                    .server(zbus::Guid::generate())
-                    .expect("a bus-side connection")
-                    .p2p()
-                    .build_message_stream()
-                    .await
-                    .expect("the adapter completes the handshake");
-                let bus = zbus::Connection::from(&messages);
-                let mut calls = Vec::new();
-                while let Some(Ok(message)) =
-                    std::future::poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await
-                {
-                    let header = message.header();
-                    if header.member().is_some_and(|member| member == "Hello") {
-                        bus.reply(&header, &":1.1")
-                            .await
-                            .expect("the fake bus answers Hello");
-                        continue;
-                    }
-                    calls.push((
-                        header.destination().map(|name| name.to_string()),
-                        header.path().map(|path| path.to_string()),
-                        header.interface().map(|name| name.to_string()),
-                        header.member().map(|name| name.to_string()),
-                        message
-                            .body()
-                            .deserialize()
-                            .expect("the call asks for an inhibitor"),
-                    ));
-                }
-                calls
-            })
-        })
-    }
-
     /// Where logind takes the adapter's `Inhibit` and never answers it, the acquire answers
     /// unavailable, timed out, once its deadline passes: over a private bus whose fake logind
     /// answers the bus `Hello` and nothing more, `Inhibit` reaches the fake with the adapter's
-    /// arguments and the answer is the timed-out failure.
+    /// arguments and the answer is the timed-out failure. The portal is asked only once logind
+    /// grants, so the acquire makes no connection to it, a graphical session's though it is.
     #[test]
     fn an_inhibit_logind_never_answers_is_answered_unavailable_at_the_deadline() {
-        let name = format!(
-            "rigger-keep-awake-silent-logind-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        );
-        let address = SocketAddr::from_abstract_name(name.as_bytes()).expect("an abstract name");
-        let logind =
-            silent_logind(UnixListener::bind_addr(&address).expect("the private bus listens"));
-        let bus = zbus::connection::Builder::address(format!("unix:abstract={name}").as_str())
-            .expect("the private bus's address");
+        let (listener, address) = private_bus("silent-logind");
+        let logind = fake_bus::<LogindInhibit>(listener, Answer::Nothing);
+        let bus = Builder::address(address.as_str()).expect("the private bus's address");
+        let (portal, portal_address) = private_bus("unasked-portal");
         assert_eq!(
-            acquire_on(bus, "a reason", Duration::from_secs(5)).err(),
+            acquire_on(
+                bus,
+                true,
+                || Builder::address(portal_address.as_str()),
+                "a reason",
+                Duration::from_secs(5)
+            )
+            .err(),
             Some(Unavailable(
                 "cannot take a logind inhibitor: I/O error: timed out".to_string()
             )),
             "logind never answers Inhibit: the adapter's answer at its deadline"
         );
-        let inhibit: Call = (
-            Some("org.freedesktop.login1".to_string()),
-            Some("/org/freedesktop/login1".to_string()),
-            Some("org.freedesktop.login1.Manager".to_string()),
-            Some("Inhibit".to_string()),
-            (
-                "sleep:idle".to_string(),
-                "rigger".to_string(),
-                "a reason".to_string(),
-                "block".to_string(),
-            ),
-        );
         assert_eq!(
-            logind.join().expect("the fake logind ends"),
-            vec![inhibit],
+            logind.calls.join().expect("the fake logind ends"),
+            vec![logind_inhibit("a reason")],
             "the calls the fake logind received, none of them answered"
         );
+        assert_eq!(
+            pending(&portal),
+            Err(ErrorKind::WouldBlock),
+            "the connections to the portal of an acquire logind never granted"
+        );
+    }
+
+    /// In a graphical session, once logind grants, the acquire asks the desktop portal for its
+    /// inhibitor over a session-bus connection of its own, with one `Inhibit` of suspend and idle
+    /// (flags 12) giving the reason, and whatever the portal does the acquire stands granted. The
+    /// portal grants only when the request its `Inhibit` returns responds 0: that connection is
+    /// open while the guard stands and closed once it drops. One whose request responds anything
+    /// else, or does not respond by the deadline, one the portal refuses, and one it never answers
+    /// by the deadline, is closed before the acquire returns; and with no portal listening there
+    /// is no connection to make. Logind is asked once in every row.
+    #[test]
+    fn a_graphical_session_asks_the_portal_and_any_answer_leaves_the_acquire_granted() {
+        // What, how the portal answers (none: no portal listens), its connection while the guard
+        // stands and once it dropped, and the calls the portal received.
+        type Row<'a> = (
+            &'a str,
+            Option<Answer>,
+            Option<(&'a str, &'a str)>,
+            Option<Vec<Call<PortalInhibit>>>,
+        );
+        let rows: Vec<Row> = vec![
+            (
+                "the portal grants: its request responds 0",
+                Some(Answer::Handle(Some(0))),
+                Some(("open", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            (
+                "the portal's request responds 1",
+                Some(Answer::Handle(Some(1))),
+                Some(("closed", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            (
+                "the portal's request does not respond by the deadline",
+                Some(Answer::Handle(None)),
+                Some(("closed", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            (
+                "the portal refuses",
+                Some(Answer::Refusal),
+                Some(("closed", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            (
+                "the portal never answers by the deadline",
+                Some(Answer::Nothing),
+                Some(("closed", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            ("no portal listens", None, None, None),
+        ];
+        for (what, answer, connection, portal_calls) in rows {
+            let (listener, address) = private_bus("granting-logind");
+            let logind = fake_bus::<LogindInhibit>(listener, Answer::Descriptor);
+            let (listener, portal_address) = private_bus("portal");
+            let portal = answer.map(|answer| fake_bus::<PortalInhibit>(listener, answer));
+            let held = acquire_on(
+                Builder::address(address.as_str()).expect("the private logind's address"),
+                true,
+                || Builder::address(portal_address.as_str()),
+                "a reason",
+                Duration::from_secs(5),
+            );
+            let answered = held.as_ref().err().cloned();
+            let (end, calls) = match portal {
+                Some(FakeBus { end, calls }) => (
+                    Some(end.recv().expect("the adapter connects to the portal")),
+                    Some(calls),
+                ),
+                None => (None, None),
+            };
+            let while_held = end.as_ref().map(client_end);
+            drop(held);
+            let dropped = end.as_ref().map(client_end);
+            assert_eq!(
+                (answered, while_held.zip(dropped)),
+                (
+                    None,
+                    connection.map(|(held, dropped)| (held.to_string(), dropped.to_string()))
+                ),
+                "{what}: the acquire's answer, and the portal's connection while its guard stood \
+                 and once it dropped"
+            );
+            assert_eq!(
+                calls.map(|calls| calls.join().expect("the fake portal ends")),
+                portal_calls,
+                "{what}: the calls the fake portal received"
+            );
+            assert_eq!(
+                logind.calls.join().expect("the fake logind ends"),
+                vec![logind_inhibit("a reason")],
+                "{what}: the calls the fake logind received"
+            );
+        }
+    }
+
+    /// With no graphical session, the acquire takes logind's inhibitor alone and makes no
+    /// connection to the session bus: the portal's private bus has no connection waiting, while
+    /// the guard stands or once it dropped.
+    #[test]
+    fn with_no_graphical_session_the_acquire_makes_no_portal_connection() {
+        let (listener, address) = private_bus("granting-logind");
+        let logind = fake_bus::<LogindInhibit>(listener, Answer::Descriptor);
+        let (portal, portal_address) = private_bus("unasked-portal");
+        let held = acquire_on(
+            Builder::address(address.as_str()).expect("the private logind's address"),
+            false,
+            || Builder::address(portal_address.as_str()),
+            "a reason",
+            Duration::from_secs(5),
+        );
+        let while_held = (held.as_ref().err().cloned(), pending(&portal));
+        drop(held);
+        assert_eq!(
+            (while_held, pending(&portal)),
+            ((None, Err(ErrorKind::WouldBlock)), Err(ErrorKind::WouldBlock)),
+            "the acquire's answer and the connections waiting on the portal while its guard stood, \
+             and those waiting once it dropped"
+        );
+        assert_eq!(
+            logind.calls.join().expect("the fake logind ends"),
+            vec![logind_inhibit("a reason")],
+            "the calls the fake logind received"
+        );
+    }
+
+    /// A graphical session is one with a Wayland or an X display named: `WAYLAND_DISPLAY` or
+    /// `DISPLAY` non-empty, each of them alone or both; neither set, or each set empty, is none.
+    #[test]
+    fn a_graphical_session_is_a_display_named_non_empty() {
+        let rows: [(Option<&str>, Option<&str>, bool); 9] = [
+            (None, None, false),
+            (Some(""), None, false),
+            (None, Some(""), false),
+            (Some(""), Some(""), false),
+            (Some("wayland-0"), None, true),
+            (None, Some(":1"), true),
+            (Some("wayland-0"), Some(""), true),
+            (Some(""), Some(":1"), true),
+            (Some("wayland-0"), Some(":1"), true),
+        ];
+        for (wayland_display, display, expected) in rows {
+            assert_eq!(
+                graphical_session(wayland_display.map(OsStr::new), display.map(OsStr::new)),
+                expected,
+                "WAYLAND_DISPLAY {wayland_display:?}, DISPLAY {display:?}"
+            );
+        }
     }
 
     /// Each way taking the inhibitor fails is answered unavailable with the spelling that names

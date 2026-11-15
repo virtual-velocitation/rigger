@@ -59,8 +59,9 @@ std::cfg_select! {
 }
 
 /// The keep-awake facility of the operating system this binary runs on: on Linux a logind
-/// inhibitor lock, on macOS an IOKit power assertion, on Windows a power request; on an OS with
-/// no native adapter, every acquire answers unavailable naming the OS.
+/// inhibitor lock, with the desktop portal's inhibitor besides in a graphical session, on macOS
+/// an IOKit power assertion, on Windows a power request; on an OS with no native adapter, every
+/// acquire answers unavailable naming the OS.
 pub struct OsSleepHold;
 
 impl SleepHold for OsSleepHold {

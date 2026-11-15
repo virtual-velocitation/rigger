@@ -256,7 +256,6 @@ mod subject_lens_reprojection_periphery;
 mod subject_view_memory_rail_client;
 mod subject_view_memory_rail_contract;
 mod symbol_ref_caller_attribution;
-mod template_sets_build;
 mod test_cache_home_reclaimed_periphery;
 mod test_files_are_declared;
 mod turbovec_retired;
