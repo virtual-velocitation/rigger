@@ -240,7 +240,21 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
     cmd.env("XDG_CACHE_HOME", test_cache_home());
     let record = test_cache_home().join("keep-awake");
     cmd.env(KEEP_AWAKE_ENV, format!("record:{}", record.display()));
+    cmd.env(
+        RELAUNCH_ENV,
+        format!("record:{}", relaunch_record().display()),
+    );
     cmd
+}
+
+/// The variable that selects how a rigger invocation relaunches a run whose driver died: its
+/// `record:<path>` value appends a `relaunch <argv>` line to `<path>` in place of starting one.
+pub const RELAUNCH_ENV: &str = "RIGGER_RELAUNCH";
+
+/// The file the relaunches of this test's rigger invocations are recorded in ([`unfenced`]), so
+/// no rigger a test runs starts a detached driver unasked.
+pub fn relaunch_record() -> PathBuf {
+    test_cache_home().join("relaunch")
 }
 
 /// Clears this test process's own ambient `STORE_FENCE_ENV` (the fence a gate pins on its
@@ -430,14 +444,28 @@ pub fn terminate_pid(pid: u32) {
 /// gave the two fixtures this replaces. Both the guard-panic paths and this false-return path
 /// are pinned by dedicated tests in `tests/no_os_kill_test_helper_periphery.rs`.
 pub fn stop_pid(pid: u32) -> bool {
-    validated_target_pid(pid, "SIGSTOP");
+    delivered(pid, "SIGSTOP", rustix::process::Signal::STOP)
+}
+
+/// SIGINT a process this test holds a [`std::process::Child`] handle to, as an operator's Ctrl-C
+/// interrupts a driver in the foreground: std's handle ends a child only by SIGKILL, so the
+/// interrupt goes through this file, beside [`stop_pid`], under the same guard and the same
+/// delivered-or-not answer.
+pub fn interrupt_pid(pid: u32) -> bool {
+    delivered(pid, "SIGINT", rustix::process::Signal::INT)
+}
+
+/// Whether `signal` reached `pid`, under [`validated_target_pid`]'s guard with `verb` naming the
+/// signal: the one delivery [`stop_pid`] and [`interrupt_pid`] share.
+fn delivered(pid: u32, verb: &str, signal: rustix::process::Signal) -> bool {
+    validated_target_pid(pid, verb);
     let Ok(raw) = i32::try_from(pid) else {
         return false;
     };
     let Some(rpid) = rustix::process::Pid::from_raw(raw) else {
         return false;
     };
-    rustix::process::kill_process(rpid, rustix::process::Signal::STOP).is_ok()
+    rustix::process::kill_process(rpid, signal).is_ok()
 }
 
 /// A process this test did not spawn and holds no [`std::process::Child`] handle to, owned from

@@ -2669,6 +2669,85 @@ pub fn run_on_arms_beside_with(
     (out, err, ok, fakebin)
 }
 
+/// The `Do the unit.` implementer arm that keeps a run mid-unit: it marks `started` beside the
+/// fake, waits for a `release` there ([`release_the_unit`]), then writes the change a merging
+/// stage lands.
+pub const HOLDING_WORKER_ARM: &str = r#"  *"Do the unit."*)
+    : > "$here/started"
+    while [ ! -e "$here/release" ]; do sleep 0.05; done
+    echo "pub fn work() {}" > work.rs
+    ;;
+"#;
+
+/// Where a [`HOLDING_WORKER_ARM`] implementer of the fake installed at `fakebin` marks that it
+/// started: the directory its arms run in.
+pub fn unit_started(fakebin: &Path) -> PathBuf {
+    fakebin.join("bin").join("started")
+}
+
+/// Let every [`HOLDING_WORKER_ARM`] implementer of the fake installed at `fakebin` go on.
+pub fn release_the_unit(fakebin: &Path) {
+    std::fs::write(fakebin.join("bin").join("release"), "").unwrap();
+}
+
+/// What `.rigger/step.lock` under `root` holds: the record a run's driver keeps of itself.
+pub fn driver_record(root: &Path) -> String {
+    std::fs::read_to_string(rigger_file(root, "step.lock")).unwrap_or_default()
+}
+
+/// Whether no process holds the step lock under `root` now.
+pub fn step_lock_free(root: &Path) -> bool {
+    use fs2::FileExt;
+    let Ok(file) = std::fs::OpenOptions::new()
+        .write(true)
+        .open(rigger_file(root, "step.lock"))
+    else {
+        return true;
+    };
+    file.try_lock_exclusive().is_ok()
+}
+
+/// `rigger run` in `cwd` under the scratch root `scratch`, with [`HOLDING_WORKER_ARM`]'s fake
+/// first on PATH and the extra environment `envs`, driven until its implementer is mid-unit; then
+/// `end` is handed the driver's handle and ends it. The caller releases the stranded implementer
+/// ([`release_the_unit`]). A run that ends before it reaches its
+/// implementer panics with its output.
+pub fn a_run_ended_mid_unit(
+    cwd: &Path,
+    scratch: &Path,
+    envs: &[(&str, &str)],
+    end: impl FnOnce(&mut Child),
+) -> EndedRun {
+    let (fakebin, path_env) = install_fake_claude(HOLDING_WORKER_ARM);
+    let mut all = fake_claude_env(&path_env, scratch).to_vec();
+    all.extend_from_slice(envs);
+    let (_state, child) = spawn_rigger(cwd, &["run"], &all);
+    let mut owned = OwnedChild::new(child);
+    let started = unit_started(fakebin.path());
+    let ended = super::fixtures::wait_until_for(POLLS_BESIDE_A_RUN, || {
+        started.exists() || !matches!(owned.child().try_wait(), Ok(None))
+    });
+    if !started.exists() {
+        let outcome = ended.then(|| rigger_outcome(owned.into_child()));
+        panic!("the run must reach its implementer; it ended with {outcome:?}");
+    }
+    let record = driver_record(cwd);
+    end(owned.child());
+    EndedRun {
+        record,
+        fake: fakebin,
+        path_env,
+    }
+}
+
+/// A run [`a_run_ended_mid_unit`] ended: the record its live driver kept, the directory of its
+/// fake host, which keeps the fake alive, and the `PATH` value that finds that fake first.
+pub struct EndedRun {
+    pub record: String,
+    pub fake: tempfile::TempDir,
+    pub path_env: String,
+}
+
 /// Plant a stale agent stream under `scratch`, for a run that must leave it: its path.
 pub fn plant_stale_stream(scratch: &Path) -> std::path::PathBuf {
     let stale = scratch.join("agent-stream/old-run/old-spawn.0.jsonl");
