@@ -30265,6 +30265,9 @@ mod tests {
         );
     }
 
+    /// The records a test spawn emits, each its event type and its payload.
+    type Emits = Vec<(String, Value)>;
+
     /// A [`ReviewFinding`](contextgraph::TYPE_REVIEW_FINDING) a test reviewer records: `id`
     /// with `summary`, about `about`.
     fn finding(id: &str, summary: &str, about: &str) -> (String, Value) {
@@ -30279,11 +30282,7 @@ mod tests {
     /// round `attempt` records `findings` and then parks (its driver died after it recorded
     /// them); the second, a relaunch by adoption under `relaunched`, re-drives that spawn.
     /// Returns the second process's run state.
-    fn relaunch_after_recording(
-        attempt: u32,
-        findings: Vec<(String, Value)>,
-        relaunched: &Stub,
-    ) -> RunState {
+    fn relaunch_after_recording(attempt: u32, findings: Emits, relaunched: &Stub) -> RunState {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let lens = spawn_id("implement", &lens_role("lens"), attempt);
@@ -30345,7 +30344,7 @@ mod tests {
                 .insert(spawn_id("implement", &lens_role("lens"), 0), String::new());
             driver
         };
-        let rows: [(&str, u32, Vec<(String, Value)>, Stub, &[&str]); 4] = [
+        let rows: [(&str, u32, Emits, Stub, &[&str]); 4] = [
             (
                 "a first round's re-driven lens",
                 0,
