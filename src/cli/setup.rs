@@ -3148,8 +3148,7 @@ mod tests {
                  fully-specified unit inside your worktree, in idiomatic Rust.\nWrite the failing \
                  test first, confirm RED, implement minimally, confirm GREEN, run the\nchecks your \
                  change needs (cargo fmt --all --check, cargo clippy, the tests you touched), \
-                 commit.\nThe workflow's gates run the full battery on the commit. Report the \
-                 final line as JSON:\n{\"id\",\"pass\",\"evidence\"}.\n",
+                 commit.\nThe workflow's gates run the full battery on the commit.\n",
             );
         /// With no set matched, the language-neutral `implementer`: the base seed's text with
         /// its language cut.
