@@ -458,6 +458,46 @@ fn sections_that_score_alike_rank_in_the_order_their_sources_were_read() {
     }
 }
 
+/// A held index ranks ties as a fresh one does, whatever it held before: GIVEN one index
+/// refreshed over a log, WHEN it is refreshed again over the log with a source added or changed,
+/// THEN its ranking equals a fresh index's over that second log, the tie order hanging on each
+/// source's place in the log it was last given and never on when the index first read it.
+#[test]
+fn a_held_index_ranks_ties_as_a_fresh_index_over_the_same_sources() {
+    let dir = tree(&[("docs/a.md", "# A\n")]);
+    let tie = "keep the gizmo in memory";
+    let log = |first: &[(&str, &str)]| -> Vec<Node> {
+        let rest = (0..3 * PROSE_TOP).rev().map(|i| format!("d{i:02}"));
+        (first.iter())
+            .map(|(id, text)| decision(id, text))
+            .chain(rest.map(|id| decision(&id, tie)))
+            .collect()
+    };
+    // (row, the log first read, the log read after it)
+    let rows: [(&str, Vec<Node>, Vec<Node>); 3] = [
+        ("the same log again", log(&[]), log(&[])),
+        (
+            "a source added before every tie held",
+            log(&[]),
+            log(&[("added", tie)]),
+        ),
+        (
+            "a source changed to tie",
+            log(&[("changed", "nothing to find")]),
+            log(&[("changed", tie)]),
+        ),
+    ];
+    for (row, first, then) in rows {
+        let mut held = ProseIndex::default();
+        held.rank(dir.path(), &["gizmo"], Ok(first)).unwrap();
+        let held = held.rank(dir.path(), &["gizmo"], Ok(then.clone())).unwrap();
+        let fresh = ProseIndex::default()
+            .rank(dir.path(), &["gizmo"], Ok(then))
+            .unwrap();
+        assert_eq!(ranked_places(&held), ranked_places(&fresh), "{row}");
+    }
+}
+
 // --- the whole lookup ----------------------------------------------------------------------
 
 /// A tree whose `kept.rs` is unchanged since the graph's tree, `edited.rs` was edited since and
