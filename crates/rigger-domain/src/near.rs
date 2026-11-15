@@ -1054,17 +1054,19 @@ impl CodeHalf for Near<'_> {
             None => self.state().holds(id),
         }
     }
-    fn concepts_of(&self, member: &str) -> Vec<String> {
+    fn concepts_of_within(&self, member: &str, within: Option<&BTreeSet<String>>) -> Vec<String> {
         let mut state = self.state();
-        if !state.holds(member) {
-            return Vec::new();
-        }
         let clusters = state.clusters();
         let memberships = clusters.membership.get(member).into_iter().flatten();
-        memberships
+        let concepts: Vec<String> = memberships
             .filter(|(arm, _)| *arm == CONCEPTS)
             .map(|&c| clusters.cluster(c).id.clone())
-            .collect()
+            .filter(|c| within.is_none_or(|ids| ids.contains(c)))
+            .collect();
+        match concepts.is_empty() || !state.holds(member) {
+            true => Vec::new(),
+            false => concepts,
+        }
     }
     fn concept_members(&self, concept: &str) -> Vec<String> {
         let mut state = self.state();

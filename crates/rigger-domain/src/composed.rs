@@ -395,7 +395,13 @@ pub trait CodeHalf: Neighbors {
     /// Whether the half holds a node `id`.
     fn holds(&self, id: &str) -> bool;
     /// The concepts the view groups `member` into, in grouping order, when the half holds it.
-    fn concepts_of(&self, member: &str) -> Vec<String>;
+    fn concepts_of(&self, member: &str) -> Vec<String> {
+        self.concepts_of_within(member, None)
+    }
+    /// [`Self::concepts_of`], less any concept outside `within` when it is given: a concept a
+    /// reader would drop is never read, nor is `member` asked whether the half holds it unless
+    /// a concept is left.
+    fn concepts_of_within(&self, member: &str, within: Option<&BTreeSet<String>>) -> Vec<String>;
     /// The members of `concept` the half holds, in grouping order.
     fn concept_members(&self, concept: &str) -> Vec<String>;
     /// The test entities the filter hides, in id order.
@@ -604,8 +610,11 @@ impl CodeHalf for Whole {
     fn holds(&self, id: &str) -> bool {
         self.code.holds(id)
     }
-    fn concepts_of(&self, member: &str) -> Vec<String> {
-        self.concepts_of.get(member).cloned().unwrap_or_default()
+    fn concepts_of_within(&self, member: &str, within: Option<&BTreeSet<String>>) -> Vec<String> {
+        let concepts = self.concepts_of.get(member).into_iter().flatten();
+        (concepts.filter(|c| within.is_none_or(|ids| ids.contains(*c))))
+            .cloned()
+            .collect()
     }
     fn concept_members(&self, concept: &str) -> Vec<String> {
         self.concept_members
@@ -1072,7 +1081,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         match way {
             Way::Out => {
                 for e in found.iter().filter(|e| e.rel == REL_GOVERNS) {
-                    for c in self.code.concepts_of(&e.to) {
+                    for c in self.code.concepts_of_within(&e.to, within) {
                         attached.push(attachment(e, &c));
                     }
                 }
