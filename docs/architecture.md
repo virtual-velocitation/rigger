@@ -1096,7 +1096,7 @@ github.com/virtual-velocitation/rigger
 |   |-- grounder/                symbols (structural; the default) + grep + nop (opt-out)
 |   |-- gate.rs safety.rs ledger.rs config.rs spec.rs worktree.rs sidecar.rs mcpserver.rs
 |-- examples/demo/               a worked example: a fictional project's .rigger config
-|-- .github/workflows/rust.yml   CI: build-test, install-nolock, kurrentdb jobs
+|-- .github/workflows/rust.yml   CI: build-test, install-nolock, kurrentdb, cross-os-check jobs
 ```
 
 ```bash

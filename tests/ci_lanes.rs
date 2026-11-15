@@ -45,18 +45,29 @@ fn workflow_yaml() -> serde_yaml::Value {
         .unwrap_or_else(|e| panic!("CI workflow .github/workflows/rust.yml is not valid YAML: {e}"))
 }
 
-/// Every `run:` script across the steps of the named job, concatenated. A step's
-/// `run` may be a single command or a multi-line block; both flatten to text we can
-/// substring-match the gate commands against.
-fn job_run_scripts(workflow: &serde_yaml::Value, job: &str) -> String {
-    let steps = workflow
+/// The steps of the named job, in order; a workflow without a `jobs.<job>.steps` sequence fails
+/// the test that asked, naming the job.
+fn job_steps<'a>(workflow: &'a serde_yaml::Value, job: &str) -> &'a [serde_yaml::Value] {
+    workflow
         .get("jobs")
         .and_then(|j| j.get(job))
         .and_then(|j| j.get("steps"))
         .and_then(|s| s.as_sequence())
-        .unwrap_or_else(|| panic!("workflow has no `jobs.{job}.steps` sequence"));
+        .unwrap_or_else(|| panic!("workflow has no `jobs.{job}.steps` sequence"))
+}
 
-    steps
+/// Does `step` run the action `action` (its `uses` names it, at any version)?
+fn step_uses(step: &serde_yaml::Value, action: &str) -> bool {
+    step.get("uses")
+        .and_then(|u| u.as_str())
+        .is_some_and(|u| u.starts_with(action))
+}
+
+/// Every `run:` script across the steps of the named job, concatenated. A step's
+/// `run` may be a single command or a multi-line block; both flatten to text we can
+/// substring-match the gate commands against.
+fn job_run_scripts(workflow: &serde_yaml::Value, job: &str) -> String {
+    job_steps(workflow, job)
         .iter()
         .filter_map(|step| step.get("run").and_then(|r| r.as_str()))
         .collect::<Vec<_>>()
@@ -68,20 +79,9 @@ fn job_run_scripts(workflow: &serde_yaml::Value, job: &str) -> String {
 /// targets are a step INPUT, not a `run:` script, so this reads `uses`/`with` rather than
 /// `job_run_scripts`'s `run:` text.
 fn job_toolchain_targets(workflow: &serde_yaml::Value, job: &str) -> String {
-    let steps = workflow
-        .get("jobs")
-        .and_then(|j| j.get(job))
-        .and_then(|j| j.get("steps"))
-        .and_then(|s| s.as_sequence())
-        .unwrap_or_else(|| panic!("workflow has no `jobs.{job}.steps` sequence"));
-
-    steps
+    job_steps(workflow, job)
         .iter()
-        .find(|step| {
-            step.get("uses")
-                .and_then(|u| u.as_str())
-                .is_some_and(|u| u.starts_with("dtolnay/rust-toolchain"))
-        })
+        .find(|step| step_uses(step, "dtolnay/rust-toolchain"))
         .and_then(|step| step.get("with"))
         .and_then(|w| w.get("targets"))
         .and_then(|t| t.as_str())
@@ -604,25 +604,82 @@ fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_tes
 }
 
 /// Spec 93 criterion 3, THE BUILD EMBEDS IT: "a workflow-level install in
-/// `.github/workflows/rust.yml`; no unit installs it". `build.rs`'s nested cross-compile of
-/// `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer build compiles
-/// `crates/rigger-dash/src/dash.rs` - which is every cargo invocation in THIS workflow (none of them build the
-/// pure `--features core` lane exclusively): `build-test`'s default AND
-/// `--no-default-features` lanes and `install-nolock`'s default-feature install. Each of
-/// those two jobs' own `dtolnay/rust-toolchain@*` step must therefore declare the target - a
-/// job whose toolchain step lacks it would fail on a runner with no target preinstalled. The
-/// `kurrentdb` job builds `rigger-store-sqlite` alone, which never compiles dash.rs.
+/// `.github/workflows/rust.yml`; no unit installs it". `crates/rigger-dash/build.rs`'s nested
+/// cross-compile of `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer
+/// build compiles `crates/rigger-dash/src/dash.rs`, and three jobs' cargo invocations do:
+/// `build-test`'s default AND `--no-default-features` lanes, `install-nolock`'s default-feature
+/// install and `cross-os-check`'s `cargo check --workspace`, which runs the build script of every
+/// package it checks. Each of those three jobs' own `dtolnay/rust-toolchain@*` step must
+/// therefore declare the target - a job whose toolchain step lacks it would fail on a runner with
+/// no target preinstalled. The `kurrentdb` job builds `rigger-store-sqlite` alone, which never
+/// compiles dash.rs, and neither does `build-test`'s pure `--features core` lane.
 #[test]
 fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
     let wf = workflow_yaml();
-    for job in ["build-test", "install-nolock"] {
+    for job in ["build-test", "install-nolock", "cross-os-check"] {
         let targets = job_toolchain_targets(&wf, job);
         assert!(
             targets.contains("wasm32-unknown-unknown"),
             "job `{job}`'s rust-toolchain step must declare `targets: wasm32-unknown-unknown` \
              (spec 93 criterion 3: build.rs's nested cross-compile of crates/console-core \
-             needs it whenever this job's cargo invocations compile crates/rigger-dash/src/dash.rs, which none \
-             of `{job}`'s commands avoid). Found targets: {targets:?}"
+             needs it whenever a cargo invocation compiles crates/rigger-dash/src/dash.rs, and \
+             `{job}`'s cargo invocations do). Found targets: {targets:?}"
         );
     }
+}
+
+/// THE CROSS-OS CHECK (spec 125 criterion 12): CI compiles the workspace on Windows and on macOS.
+/// The `cross-os-check` job's `strategy.matrix` is exactly `os: [windows-latest, macos-latest]`,
+/// with no `include` or `exclude` to add or drop a leg, and its `runs-on` is that matrix value, so
+/// each leg runs on its own OS. Its checkout fetches full history. Its one `run:` step runs under
+/// `bash` on every runner and, in that step's own shell, exports an empty `RUSTC_WRAPPER` and then
+/// runs `cargo check --workspace`: the empty value overrides `.cargo/config.toml`'s Unix wrapper
+/// script for cargo and every nested cargo it starts. The job's wasm target is pinned once, by
+/// `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
+#[test]
+fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
+    const JOB: &str = "cross-os-check";
+    let wf = workflow_yaml();
+    let job = &wf["jobs"][JOB];
+    let matrix: serde_yaml::Value = serde_yaml::from_str("os: [windows-latest, macos-latest]")
+        .expect("the expected matrix is valid YAML");
+    assert_eq!(
+        job["strategy"]["matrix"], matrix,
+        "job `{JOB}`'s matrix must be exactly `os: [windows-latest, macos-latest]`"
+    );
+    assert_eq!(
+        job["runs-on"].as_str(),
+        Some("${{ matrix.os }}"),
+        "job `{JOB}` must run on its matrix value, one leg per OS"
+    );
+    let steps = job_steps(&wf, JOB);
+    let checkout_depths: Vec<Option<u64>> = steps
+        .iter()
+        .filter(|step| step_uses(step, "actions/checkout"))
+        .map(|step| step["with"]["fetch-depth"].as_u64())
+        .collect();
+    assert_eq!(
+        checkout_depths,
+        [Some(0)],
+        "job `{JOB}` must check out once, with `fetch-depth: 0` (full history)"
+    );
+    let run_steps: Vec<(Option<&str>, Vec<&str>)> = steps
+        .iter()
+        .filter_map(|step| {
+            let lines = step.get("run")?.as_str()?.lines().map(str::trim);
+            Some((
+                step["shell"].as_str(),
+                lines.filter(|line| !line.is_empty()).collect(),
+            ))
+        })
+        .collect();
+    assert_eq!(
+        run_steps,
+        [(
+            Some("bash"),
+            vec!["export RUSTC_WRAPPER=", "cargo check --workspace"]
+        )],
+        "job `{JOB}` must have one `run:` step, under `shell: bash`, exporting an empty \
+         `RUSTC_WRAPPER` and then running `cargo check --workspace` (shell, lines)"
+    );
 }
