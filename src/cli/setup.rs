@@ -73,7 +73,7 @@ fn mint_project_id(root: &Path) -> String {
     }
 }
 
-/// What [`init_project`] did, PER ARTIFACT, so `rigger setup` / `rigger init` can
+/// What [`scaffold_project`] did, PER ARTIFACT, so `rigger setup` / `rigger init` can
 /// narrate exactly what changed and stay a silent no-op on a rerun that changed nothing
 /// (spec 05, criterion 4: setup is re-runnable with no surprising output). The summary
 /// is built from these fields ([`scaffold_summary_lines`]) so it can never claim a
@@ -126,25 +126,40 @@ impl ScaffoldReport {
     }
 }
 
-/// Scaffold a project idempotently, returning a [`ScaffoldReport`] of what actually
-/// changed. Every step is a no-op when its artifact already exists and matches, so a
-/// rerun on an initialized project changes nothing and reports `changed: false`.
-///
-/// The workflow's gates and its implementer come from the first of `sets` (handed in key order:
-/// in production, what [`load_template_sets`] read from the template root `--template <dir>`
-/// names, and none when no root was given) any of whose `detect` markers is a file at `root`,
-/// whose `implementer` persona is seeded beside the role seeds; with none, the workflow declares
-/// no gates and names the language-neutral `implementer` seed. An existing workflow or agent file
-/// is kept. Every set is parsed before the first write, so a set that fails
-/// [`parse_template_set`] refuses naming its key and writes nothing.
+/// Scaffold the project at `root` from `sets` (handed in key order: in production, what
+/// [`load_template_sets`] read from the template root `--template <dir>` names, and none when no
+/// root was given): every set is parsed ([`parse_template_sets`]) before [`scaffold_project`]'s
+/// first write, so a set that fails [`parse_template_set`] refuses naming its key and writes
+/// nothing.
 fn init_project(
     root: &Path,
     sets: &[TemplateSet],
 ) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
-    let parsed = sets
-        .iter()
+    scaffold_project(root, &parse_template_sets(sets)?)
+}
+
+/// Each of `sets` beside the [`SetSpec`] [`parse_template_set`] reads from it, in the order
+/// handed; the first set that fails refuses naming its key. It writes nothing, so a command
+/// parses its sets before its first write.
+fn parse_template_sets(sets: &[TemplateSet]) -> Result<Vec<(&TemplateSet, SetSpec)>, String> {
+    sets.iter()
         .map(|set| parse_template_set(set).map(|spec| (set, spec)))
-        .collect::<Result<Vec<_>, String>>()?;
+        .collect()
+}
+
+/// Scaffold a project idempotently from `parsed` sets ([`parse_template_sets`]), returning a
+/// [`ScaffoldReport`] of what actually changed. Every step is a no-op when its artifact already
+/// exists and matches, so a rerun on an initialized project changes nothing and reports
+/// `changed: false`.
+///
+/// The workflow's gates and its implementer come from the first of `parsed` any of whose
+/// `detect` markers is a file at `root`, whose `implementer` persona is seeded beside the role
+/// seeds; with none, the workflow declares no gates and names the language-neutral `implementer`
+/// seed. An existing workflow or agent file is kept.
+fn scaffold_project(
+    root: &Path,
+    parsed: &[(&TemplateSet, SetSpec)],
+) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
     let set_catalogue = parsed
         .iter()
         .map(|(set, spec)| (set.key.clone(), spec.detect.clone()))
@@ -542,8 +557,9 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
 
 /// `rigger init [--template <dir>]`: scaffold the project at the working directory from the gate
 /// template sets the template root `<dir>` holds - with no root, a workflow declaring no gates -
-/// and print what it wrote. The sets are loaded before anything is written, so a root
-/// [`load_template_sets`] refuses leaves the project untouched.
+/// and print what it wrote. The sets are loaded and parsed before anything is written, so a root
+/// [`load_template_sets`] refuses, or a set [`parse_template_set`] refuses, leaves the project
+/// untouched.
 pub(crate) fn cmd_init(args: &[String]) -> Res {
     let sets = parse_setup_args("init", args)?.template_sets()?;
     let site = Site::here();
@@ -829,10 +845,13 @@ pub(crate) fn open_project_code_store(
 /// earlier setup installed for an in-session workflow driver rigger does not ship. After it runs
 /// the user drives the loop with `rigger run <spec> --base <ref>` with zero manual setup. Like
 /// `rigger init`, it scaffolds from the gate template sets of the root `--template <dir>` names,
-/// loaded before anything is written.
+/// loaded and parsed before anything is written.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let opts = parse_setup_args("setup", args)?;
     let sets = opts.template_sets()?;
+    // Parsed before the store is resolved, which makes the root's `.rigger/` when absent, so a
+    // set `parse_template_set` refuses leaves the project untouched.
+    let parsed = parse_template_sets(&sets)?;
     let site = Site::here();
     // The directory setup scaffolds: the one it runs in, as the resolver read it.
     let root = site.located()?;
@@ -845,8 +864,8 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // safely re-runnable: it refreshes a drifted install and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
-    let scaffold = init_project(root, &sets)?;
-    // The workflow `init_project` left in place declares whether the lookup hook is installed
+    let scaffold = scaffold_project(root, &parsed)?;
+    // The workflow `scaffold_project` left in place declares whether the lookup hook is installed
     // or removed below; a workflow that does not parse fails setup here, loudly.
     let grep_guard = config_store::load_workflow(&root.join(RIGGER_DIR).join(WORKFLOW_FILE))?
         .defaults
