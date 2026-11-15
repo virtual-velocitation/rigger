@@ -2739,9 +2739,18 @@ pub fn unit_seeds(events: &[Event], unit: &str) -> Vec<String> {
 /// - When that yields nothing (a genuinely unknown seed, no unit content in the graph), fall back to
 ///   the seed itself so the neighborhood degrades to the graceful empty the panel already handles.
 pub fn repoint_seed(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> {
-    if graph.nodes.iter().any(|n| n.id == seed) {
-        return vec![seed.to_string()];
-    }
+    seed_node(graph, seed).unwrap_or_else(|| unit_content_seeds(events, graph, seed))
+}
+
+/// The seed itself when it is a node of `graph`: [`repoint_seed`]'s first case, which reads no
+/// event.
+fn seed_node(graph: &Graph, seed: &str) -> Option<Vec<String>> {
+    (graph.nodes.iter().any(|n| n.id == seed)).then(|| vec![seed.to_string()])
+}
+
+/// The content nodes of the unit `seed` that are nodes of `graph`, or the seed itself when there
+/// are none: [`repoint_seed`] for a seed that is no node.
+fn unit_content_seeds(events: &[Event], graph: &Graph, seed: &str) -> Vec<String> {
     let repointed: Vec<String> = unit_seeds(events, seed)
         .into_iter()
         .filter(|id| graph.nodes.iter().any(|n| &n.id == id))
@@ -3432,140 +3441,164 @@ fn route_hiding(
         // tags, per d30-tier-param-ownership); `from=`/`to=` (spec 30 c6) select two nodes whose
         // shortest QUERY-PATH rides the body when BOTH are present; and the body carries the seed's
         // EXPLAIN provenance (spec 30 c7), all built by `graph_json` over the neighborhood.
-        "/api/graph" => {
-            // The RATIONALE OVERLAY batch (spec 55): `explain=<id>[,<id>...]` returns the decisions,
-            // findings, and lessons attached to each requested node (content only, deterministically
-            // ordered), for the visible nodes that carry any - the overlay's data path, in ONE
-            // request. A distinct response shape from the neighborhood / overview / drill below,
-            // served over the SAME lazy whole-graph provider this arm already reads (never the state
-            // poll). The ids are comma-separated, each `encodeURIComponent`d by the client (an id
-            // carries `#` / `::` / `/`), so the list is split on `,` FIRST and each piece is
-            // percent-decoded. Checked before the lens/seed dispatch, and taken ONLY when `explain=`
-            // is present, so every existing `/api/graph` view stays byte-identical.
-            //
-            // Each view states the read's label with its own answer's withheld count: a walk (the
-            // seeded neighborhood, a card's one hop) the withheld nodes it reaches without stepping
-            // from one, as the store's walk counts them; a fold (a drill, a re-projection, the
-            // rationale batch) the withheld nodes it would have held had nothing been withheld; the
-            // overview, a fold of the whole read, the read's own count.
-            let labelled = |response: Response, withheld_hits: Option<usize>| {
-                response.labelled(graph_label.map(|label| match (label, withheld_hits) {
-                    (GraphLabel::Read(l), Some(withheld)) => GraphLabel::Read(Label {
-                        withheld,
-                        ..l.clone()
-                    }),
-                    _ => label.clone(),
-                }))
-            };
-            // A fold's count: the withheld nodes among `held`, the ids the fold computed over the
-            // whole graph would have held.
-            let unwithheld = || unwithheld(graph, withheld);
-            if let Some(raw_explain) = query_param(target, "explain") {
-                let ids: Vec<String> = raw_explain
-                    .split(',')
-                    .filter(|s| !s.is_empty())
-                    .map(percent_decode)
-                    .collect();
-                let batch = RationaleBatch {
-                    nodes: rationale_batch(graph, &ids),
-                };
-                let hits = count_withheld(withheld, || {
-                    (rationale_batch(&unwithheld(), &ids).into_iter())
-                        .map(|r| r.node)
-                        .collect()
-                });
-                let response = match serde_json::to_string(&batch) {
-                    Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
-                    Err(e) => {
-                        Response::text(500, &format!("dash: rationale projection failed: {e}"))
-                    }
-                };
-                return labelled(response, Some(hits));
-            }
-            // The METADATA CARD (spec 63 c2): `card=<id>` returns ONE subject's card - content
-            // only, on demand, mirroring `explain=`'s per-node shape (never riding every other
-            // view's body). The id is `encodeURIComponent`d by the client like every other node
-            // id param, so it is percent-decoded the same way. An id absent from the graph serves
-            // `{"card":null}` at 200 (the graceful-empty contract every `/api/graph` read keeps),
-            // never a 404/500. Checked alongside `explain=`, before the lens/seed dispatch, so
-            // every existing `/api/graph` view stays byte-identical.
-            if let Some(raw_card) = query_param(target, "card") {
-                let subject = percent_decode(raw_card);
-                let body = CardResponse {
-                    card: card(graph, &subject),
-                };
-                let hits = withheld_reached(graph, withheld, &[subject], 1);
-                let response = match view_json(&body, &graph.nodes) {
-                    Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
-                    Err(e) => Response::text(500, &format!("dash: card projection failed: {e}")),
-                };
-                return labelled(response, Some(hits));
-            }
-            // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
-            // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
-            // untouched. The seeded neighborhood below is lens-independent and ignores it.
-            let lens = request_lens(target);
-            let (body, hits) = if let Some(raw_cluster) = query_param(target, "cluster") {
-                let key = percent_decode(raw_cluster);
-                let hits = count_withheld(withheld, || {
-                    (cluster_detail(&unwithheld(), &key, &lens).nodes.into_iter())
-                        .map(|n| n.id)
-                        .collect()
-                });
-                (
-                    view_json(&cluster_detail(graph, &key, &lens), &graph.nodes),
-                    Some(hits),
-                )
-            } else {
-                let seed = query_param(target, "seed")
-                    .map(percent_decode)
-                    .unwrap_or_default();
-                if seed.is_empty() {
-                    let mut overview = clustered_overview(graph, &lens);
-                    overview.tests_hidden = tests_hidden;
-                    (serde_json::to_string(&overview), None)
-                } else if query_param(target, "lens").is_some() {
-                    // SUBJECT x LENS re-projection (spec 55 c1): a non-empty seed WITH an explicit
-                    // `lens=` re-grains THAT subject's member set at the chosen altitude, in place -
-                    // NOT a whole-graph overview and NOT the seeded neighborhood. The composition
-                    // fires only when a lens is explicitly present, so a lens-ABSENT seed request
-                    // stays the byte-identical spec-30 seeded neighborhood below (spec 55 c4's
-                    // composition-absent back-compat).
-                    let hits = count_withheld(withheld, || {
-                        (member_set(&unwithheld(), &seed).into_iter())
-                            .map(|n| n.id.clone())
-                            .collect()
-                    });
-                    (
-                        view_json(&reproject(graph, &seed, &lens), &graph.nodes),
-                        Some(hits),
-                    )
-                } else {
-                    let depth = query_param(target, "depth")
-                        .and_then(|v| v.parse::<i64>().ok())
-                        .unwrap_or(DEFAULT_GRAPH_DEPTH)
-                        .clamp(0, MAX_GRAPH_DEPTH);
-                    let from = query_param(target, "from").map(percent_decode);
-                    let to = query_param(target, "to").map(percent_decode);
-                    // De-noise (spec 43): a run-tree unit click passes a unit id, which is no longer
-                    // a graph node. Re-point it onto that unit's content nodes so the click lands on
-                    // a real neighborhood; a seed that already resolves to a node is unchanged.
-                    let seeds = repoint_seed(events, graph, &seed);
-                    let hits = withheld_reached(graph, withheld, &seeds, depth);
-                    (
-                        graph_json(graph, &seed, &seeds, depth, from.as_deref(), to.as_deref()),
-                        Some(hits),
-                    )
-                }
-            };
-            let response = match body {
-                Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
-                Err(e) => Response::text(500, &format!("dash: graph projection failed: {e}")),
-            };
-            labelled(response, hits)
-        }
+        "/api/graph" => graph_route(target, graph, withheld, tests_hidden, graph_label, || {
+            Ok::<_, String>(events)
+        }),
         _ => Response::text(404, "not found"),
     }
+}
+
+/// The `/api/graph` answer to `target` over the whole-graph read `graph`, its `withheld` nodes,
+/// `tests_hidden` count and `graph_label`. The run's events are read by `run_events` only for a
+/// seed that is no node of `graph`, re-pointed onto a unit's content ([`repoint_seed`]); every
+/// other view answers from the graph alone, and a failed read of the run answers `500`.
+fn graph_route<E: std::ops::Deref<Target = [Event]>>(
+    target: &str,
+    graph: &Graph,
+    withheld: &Graph,
+    tests_hidden: usize,
+    graph_label: Option<&GraphLabel>,
+    run_events: impl FnOnce() -> Result<E, String>,
+) -> Response {
+    // The RATIONALE OVERLAY batch (spec 55): `explain=<id>[,<id>...]` returns the decisions,
+    // findings, and lessons attached to each requested node (content only, deterministically
+    // ordered), for the visible nodes that carry any - the overlay's data path, in ONE
+    // request. A distinct response shape from the neighborhood / overview / drill below,
+    // served over the SAME lazy whole-graph provider this arm already reads (never the state
+    // poll). The ids are comma-separated, each `encodeURIComponent`d by the client (an id
+    // carries `#` / `::` / `/`), so the list is split on `,` FIRST and each piece is
+    // percent-decoded. Checked before the lens/seed dispatch, and taken ONLY when `explain=`
+    // is present, so every existing `/api/graph` view stays byte-identical.
+    //
+    // Each view states the read's label with its own answer's withheld count: a walk (the
+    // seeded neighborhood, a card's one hop) the withheld nodes it reaches without stepping
+    // from one, as the store's walk counts them; a fold (a drill, a re-projection, the
+    // rationale batch) the withheld nodes it would have held had nothing been withheld; the
+    // overview, a fold of the whole read, the read's own count.
+    let labelled = |response: Response, withheld_hits: Option<usize>| {
+        response.labelled(graph_label.map(|label| match (label, withheld_hits) {
+            (GraphLabel::Read(l), Some(withheld)) => GraphLabel::Read(Label {
+                withheld,
+                ..l.clone()
+            }),
+            _ => label.clone(),
+        }))
+    };
+    // A fold's count: the withheld nodes among `held`, the ids the fold computed over the
+    // whole graph would have held.
+    let unwithheld = || unwithheld(graph, withheld);
+    if let Some(raw_explain) = query_param(target, "explain") {
+        let ids: Vec<String> = raw_explain
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(percent_decode)
+            .collect();
+        let batch = RationaleBatch {
+            nodes: rationale_batch(graph, &ids),
+        };
+        let hits = count_withheld(withheld, || {
+            (rationale_batch(&unwithheld(), &ids).into_iter())
+                .map(|r| r.node)
+                .collect()
+        });
+        let response = match serde_json::to_string(&batch) {
+            Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
+            Err(e) => Response::text(500, &format!("dash: rationale projection failed: {e}")),
+        };
+        return labelled(response, Some(hits));
+    }
+    // The METADATA CARD (spec 63 c2): `card=<id>` returns ONE subject's card - content
+    // only, on demand, mirroring `explain=`'s per-node shape (never riding every other
+    // view's body). The id is `encodeURIComponent`d by the client like every other node
+    // id param, so it is percent-decoded the same way. An id absent from the graph serves
+    // `{"card":null}` at 200 (the graceful-empty contract every `/api/graph` read keeps),
+    // never a 404/500. Checked alongside `explain=`, before the lens/seed dispatch, so
+    // every existing `/api/graph` view stays byte-identical.
+    if let Some(raw_card) = query_param(target, "card") {
+        let subject = percent_decode(raw_card);
+        let body = CardResponse {
+            card: card(graph, &subject),
+        };
+        let hits = withheld_reached(graph, withheld, &[subject], 1);
+        let response = match view_json(&body, &graph.nodes) {
+            Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
+            Err(e) => Response::text(500, &format!("dash: card projection failed: {e}")),
+        };
+        return labelled(response, Some(hits));
+    }
+    // The overview/drill bucket lens (spec 53 c4), resolved from `lens=` + `resolution=`.
+    // Absent / unknown `lens` -> `Lens::Files` (byte-identical), so a spec-30/42 request is
+    // untouched. The seeded neighborhood below is lens-independent and ignores it.
+    let lens = request_lens(target);
+    let (body, hits) = if let Some(raw_cluster) = query_param(target, "cluster") {
+        let key = percent_decode(raw_cluster);
+        let hits = count_withheld(withheld, || {
+            (cluster_detail(&unwithheld(), &key, &lens).nodes.into_iter())
+                .map(|n| n.id)
+                .collect()
+        });
+        (
+            view_json(&cluster_detail(graph, &key, &lens), &graph.nodes),
+            Some(hits),
+        )
+    } else {
+        let seed = query_param(target, "seed")
+            .map(percent_decode)
+            .unwrap_or_default();
+        if seed.is_empty() {
+            let mut overview = clustered_overview(graph, &lens);
+            overview.tests_hidden = tests_hidden;
+            (serde_json::to_string(&overview), None)
+        } else if query_param(target, "lens").is_some() {
+            // SUBJECT x LENS re-projection (spec 55 c1): a non-empty seed WITH an explicit
+            // `lens=` re-grains THAT subject's member set at the chosen altitude, in place -
+            // NOT a whole-graph overview and NOT the seeded neighborhood. The composition
+            // fires only when a lens is explicitly present, so a lens-ABSENT seed request
+            // stays the byte-identical spec-30 seeded neighborhood below (spec 55 c4's
+            // composition-absent back-compat).
+            let hits = count_withheld(withheld, || {
+                (member_set(&unwithheld(), &seed).into_iter())
+                    .map(|n| n.id.clone())
+                    .collect()
+            });
+            (
+                view_json(&reproject(graph, &seed, &lens), &graph.nodes),
+                Some(hits),
+            )
+        } else {
+            let depth = query_param(target, "depth")
+                .and_then(|v| v.parse::<i64>().ok())
+                .unwrap_or(DEFAULT_GRAPH_DEPTH)
+                .clamp(0, MAX_GRAPH_DEPTH);
+            let from = query_param(target, "from").map(percent_decode);
+            let to = query_param(target, "to").map(percent_decode);
+            // De-noise (spec 43): a run-tree unit click passes a unit id, which is no longer
+            // a graph node. Re-point it onto that unit's content nodes so the click lands on
+            // a real neighborhood; a seed that already resolves to a node is unchanged.
+            let seeds = match seed_node(graph, &seed) {
+                Some(seeds) => seeds,
+                None => match run_events() {
+                    Ok(events) => unit_content_seeds(&events, graph, &seed),
+                    Err(e) => {
+                        return Response::text(
+                            500,
+                            &format!("dash: reading the store failed: {e}"),
+                        );
+                    }
+                },
+            };
+            let hits = withheld_reached(graph, withheld, &seeds, depth);
+            (
+                graph_json(graph, &seed, &seeds, depth, from.as_deref(), to.as_deref()),
+                Some(hits),
+            )
+        }
+    };
+    let response = match body {
+        Ok(body) => Response::rendered(200, JSON_CONTENT_TYPE, body),
+        Err(e) => Response::text(500, &format!("dash: graph projection failed: {e}")),
+    };
+    labelled(response, hits)
 }
 
 /// The `tests` filter a request names: `exclude` when it carries none, else the one
@@ -3744,10 +3777,10 @@ where
 /// pure [`route`] so a `provider` failure degrades only the `/api/*` paths (to `500`),
 /// never the static page.
 ///
-/// The graph is sourced by cadence (spec 45, criterion 1): every `/api/*` path reads the
-/// cheap run-scoped inputs from `provider`, but a `/api/graph` request additionally opens
-/// the whole-graph projection through `graph_provider` (consulted HERE and nowhere else),
-/// so the state poll never rides a whole-graph read.
+/// The graph is sourced by cadence (spec 45, criterion 1): every other `/api/*` path reads the
+/// run-scoped inputs from `provider`, but a `/api/graph` request opens the whole-graph
+/// projection through `graph_provider` (consulted HERE and nowhere else), so the state poll
+/// never rides a whole-graph read, and reads `provider` only for a unit seed it re-points.
 ///
 /// Which STORE the run/graph providers read is chosen HERE from the request's `?instance=<id>`
 /// selector (spec 50, criterion 3): present, they open that registered instance's stores;
@@ -3896,24 +3929,36 @@ where
                     .flatten()
                 {
                     resp
+                } else if path == "/api/graph" {
+                    // The whole-graph views read the projection through the SEPARATE lazy
+                    // provider, opened HERE and never on the state poll (spec 45, criterion 1),
+                    // from the SELECTED instance's store (spec 50, criterion 3). The polled run
+                    // inputs are read only when the answer needs the run's events: a unit seed
+                    // re-pointed onto its content ([`graph_route`]).
+                    let read: GraphRead = graph_provider(
+                        instance,
+                        tests.unwrap_or_default(),
+                        request_resolution(&target),
+                    )
+                    .into();
+                    let answer = graph_route(
+                        &target,
+                        &read.graph,
+                        &read.withheld,
+                        read.tests_hidden,
+                        read.label.as_ref(),
+                        || provider(instance).map(|(events, ..)| events),
+                    );
+                    // A graph view states what its read describes in its headers (the route
+                    // counts its own answer's withheld hits).
+                    drawn = read.graph;
+                    answer
                 } else {
                     match provider(instance) {
-                        Ok((events, polled_graph, progress, liveness)) => {
-                            // The whole-graph views (only `/api/graph`) read the projection through
-                            // the SEPARATE lazy provider, opened HERE and never on the state poll;
-                            // every other `/api/*` path keeps the cheap run-seeded graph the polled
-                            // provider yields (spec 45, criterion 1). Both open the SELECTED
-                            // instance's store (spec 50, criterion 3).
-                            let read: GraphRead = if path == "/api/graph" {
-                                graph_provider(
-                                    instance,
-                                    tests.unwrap_or_default(),
-                                    request_resolution(&target),
-                                )
-                                .into()
-                            } else {
-                                polled_graph
-                            };
+                        Ok((events, read, progress, liveness)) => {
+                            // Every other `/api/*` path keeps the cheap run-seeded graph the
+                            // polled provider yields; the run snapshot states what that read
+                            // describes in its body, beside the decisions it draws.
                             let answer = route_hiding(
                                 &method,
                                 &target,
@@ -3929,9 +3974,6 @@ where
                                 base,
                                 &[],
                             );
-                            // A graph view states what its read describes in its headers (the route
-                            // counts its own answer's withheld hits); the run snapshot states it in
-                            // its body, beside the decisions it draws.
                             drawn = read.graph;
                             answer
                         }
