@@ -34,8 +34,9 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 rigger-config-files = { path = "../rigger-config-files", default-features = false }
 # The code store the symbols grounder reads and the scoped project walk.
 rigger-store = { path = "../rigger-store", default-features = false }
-# The whole-line writer the code store's read of the declared extractors says its refusal through,
-# on a stderr a run shares with its dash (a same-ring edge).
+# The host shell command a declared extractor's session starts through, and the whole-line writer
+# the code store's read of the declared extractors and their sessions say a refusal through, on a
+# stderr a run shares with its dash (a same-ring edge).
 rigger-process = { path = "../rigger-process", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

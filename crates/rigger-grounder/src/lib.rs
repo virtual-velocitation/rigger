@@ -5,7 +5,7 @@
 //! re-exports them under their historical `rigger::grounder` and `rigger::ingest` paths.
 
 /// Extraction to facts: a file's path and bytes read into the facts the code store holds, over the
-/// symbol, design and workflow extractors.
+/// symbol, design and workflow extractors and the extractors a project's workflow declares.
 #[cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 pub mod facts;
 #[cfg(any(feature = "store", not(feature = "core")))]

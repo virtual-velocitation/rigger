@@ -1,30 +1,39 @@
-//! Extraction to facts: the [`Extract`] implementation that reads one file's path and bytes into
-//! its [`FileFacts`]. It re-shapes what the per-language symbol extractors, the design-document
-//! extractor and the workflow-definition extractor already find; it is no extractor of its own,
-//! and holds no language knowledge. Every name is kept as written and nothing is resolved across
-//! files, so a file's facts are a pure function of its path and bytes. The store's openers compose
-//! [`ProjectExtractor`], the bundled extraction under the extractors the project's workflow
-//! declares, whose fingerprint changes with the declaration.
+//! Extraction to facts: the [`Extract`] implementations that read one file's path and bytes into
+//! its [`FileFacts`]. They re-shape what the per-language symbol extractors, the design-document
+//! extractor and the workflow-definition extractor already find, and what an extractor the
+//! project's workflow declares answers over THE EXTRACTOR PROTOCOL (spec 125); this module is no
+//! extractor of its own, and holds no language knowledge. Every name is kept as written and
+//! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
+//! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
+//! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
+//! bundled extraction under the extractors the project's workflow declares, whose fingerprint
+//! changes with the declaration.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{btree_map, BTreeMap, HashMap};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, ChildStdout, Stdio};
+use std::sync::{Mutex, PoisonError};
 
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
     WfRelation,
 };
 use rigger_domain::code_view::{Entry, Extract, Head, OpenCodeView, TreeSource};
-use rigger_domain::contextgraph::definition_precedence;
+use rigger_domain::contextgraph::{
+    definition_precedence, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE,
+};
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
-use rigger_process::whole_line;
+use rigger_process::{subprocess, whole_line};
 use rigger_store::code::{fingerprint, open_current, open_head, DirTreeSource, Memo, Mode, Opened};
+use serde::{Deserialize, Serialize};
 
 use crate::config::{check_extractors, ExtractorDecl, RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
 use crate::grounder::design::extract::{extract_concepts, extract_links};
 use crate::grounder::symbols::extract::{kind_str, lang_str};
-use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
+use crate::grounder::symbols::model::{self, SymRef, GRAMMAR_TAGS_VERSION};
 use crate::grounder::symbols::paths::{is_dev_only, module_candidates};
 use crate::grounder::symbols::{content_hash, extracted, registry};
 use crate::grounder::workflowdef;
@@ -112,17 +121,82 @@ fn read_declared_extractors(root: &Path) -> Result<BTreeMap<String, ExtractorDec
 }
 
 /// The extractor of one project: the bundled grammars ([`FactsExtractor`]) and the extractors its
-/// workflow declares ([`declared_extractors`]).
-#[derive(Clone, Debug, Default)]
+/// workflow declares ([`declared_extractors`]), each declared one asked through a session of its
+/// own (THE EXTRACTOR PROTOCOL, spec 125).
+#[derive(Debug)]
 pub struct ProjectExtractor {
+    root: PathBuf,
     declared: BTreeMap<String, ExtractorDecl>,
+    /// The open session of each declared extractor, by its name, behind one lock: the store reads
+    /// files on several threads, and a session serves one file at a time.
+    sessions: Mutex<BTreeMap<String, Session>>,
 }
 
 impl ProjectExtractor {
-    /// The extractor of the project at `root`, holding the extractors its workflow declares.
+    /// The extractor of the project at `root`, holding the extractors its workflow declares and no
+    /// session yet: a declared extractor starts, in `root`, at the first file of its extensions.
     pub fn of(root: &Path) -> Self {
         Self {
+            root: root.to_path_buf(),
             declared: declared_extractors(root),
+            sessions: Mutex::default(),
+        }
+    }
+
+    /// The name and declaration of the extractor whose extensions list the extension of the file
+    /// at `path`, as written; the check lets no two extractors list one extension.
+    fn declaration_of(&self, path: &str) -> Option<(&str, &ExtractorDecl)> {
+        let extension = registry::extension(path)?;
+        self.declared
+            .iter()
+            .find(|(_, decl)| decl.extensions.iter().any(|listed| listed == extension))
+            .map(|(name, decl)| (name.as_str(), decl))
+    }
+
+    /// The symbols the declared extractor `name`, run as `run`, answers for the file at `path`
+    /// holding `text`, asked through its session, started first when it has none. A failure -
+    /// the session cannot start, the request cannot be written, the answer cannot be read or is
+    /// refused ([`symbols_answered`]) - says `rigger: extractor {name}: {path}: {why}` on stderr in
+    /// one write ([`whole_line`]), closes the session, so the next file of its extensions starts a
+    /// new one, and gives none.
+    fn declared_symbols(
+        &self,
+        name: &str,
+        run: &str,
+        path: &str,
+        text: &str,
+    ) -> Option<CodeSymbols> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let answered = match sessions.entry(name.to_string()) {
+            btree_map::Entry::Occupied(open) => Ok(open.into_mut()),
+            btree_map::Entry::Vacant(none) => {
+                Session::start(run, &self.root).map(|session| none.insert(session))
+            }
+        }
+        .and_then(|session| session.ask(&request_line(path, text)))
+        .and_then(|line| symbols_answered(path, text, &line));
+        match answered {
+            Ok(symbols) => Some(symbols),
+            Err(why) => {
+                whole_line::say(format_args!("rigger: extractor {name}: {path}: {why}"));
+                if let Some(session) = sessions.remove(name) {
+                    session.close();
+                }
+                None
+            }
+        }
+    }
+}
+
+impl Drop for ProjectExtractor {
+    /// Closes every session the extractor still holds.
+    fn drop(&mut self) {
+        let sessions = self
+            .sessions
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        for session in std::mem::take(sessions).into_values() {
+            session.close();
         }
     }
 }
@@ -144,10 +218,224 @@ impl Extract for ProjectExtractor {
         )
     }
 
-    /// The bundled grammars' facts ([`FactsExtractor`]).
+    /// A file whose extension a declaration lists is code in the declared extractor's name, its
+    /// symbols the extractor's answer ([`ProjectExtractor::declared_symbols`]) - none for bytes
+    /// that are not UTF-8 or a failed answer - and the workflow definition and every other file
+    /// read as [`FactsExtractor`] reads them; a declaration named as a bundled language
+    /// (`rust`) replaces its grammar for the extensions it lists.
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
-        FactsExtractor.extract(entry, bytes)
+        file_facts(entry, bytes, |path, text| match self.declaration_of(path) {
+            Some((name, decl)) => Some(CodeFile {
+                lang: name.to_string(),
+                symbols: text.and_then(|text| self.declared_symbols(name, &decl.run, path, text)),
+            }),
+            None => bundled_code(path, text),
+        })
     }
+}
+
+/// One running declared extractor: the child and the ends of its input and output rigger holds.
+#[derive(Debug)]
+struct Session {
+    child: Child,
+    requests: ChildStdin,
+    answers: BufReader<ChildStdout>,
+}
+
+impl Session {
+    /// The extractor `run` started in `dir` through the host's shell
+    /// ([`subprocess::shell_command`]), its input and output piped to rigger and its stderr
+    /// rigger's own; why not when it cannot start.
+    fn start(run: &str, dir: &Path) -> Result<Self, String> {
+        let mut child = subprocess::shell_command(run, dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("start: {e}"))?;
+        let requests = child.stdin.take().expect("the extractor's input is piped");
+        let answers = child
+            .stdout
+            .take()
+            .expect("the extractor's output is piped");
+        Ok(Self {
+            child,
+            requests,
+            answers: BufReader::new(answers),
+        })
+    }
+
+    /// The extractor's answer to the request line `request`, written and flushed: the next line
+    /// of its output, its line ending dropped; why not when the request cannot be written, its
+    /// output ends first or the answer is not text.
+    fn ask(&mut self, request: &str) -> Result<String, String> {
+        self.requests
+            .write_all(format!("{request}\n").as_bytes())
+            .and_then(|()| self.requests.flush())
+            .map_err(|e| format!("write the request: {e}"))?;
+        let mut answer = String::new();
+        match self.answers.read_line(&mut answer) {
+            Ok(0) => Err("end of output".to_string()),
+            Ok(_) => Ok(answer.trim_end_matches(['\n', '\r']).to_string()),
+            Err(e) => Err(format!("read the answer: {e}")),
+        }
+    }
+
+    /// Ends the session: closes the extractor's input, so one reading it sees its input end, and
+    /// its output, so one still writing fails its next write, then waits for it to exit. Its exit
+    /// status is no part of the protocol, so a wait that fails leaves nothing more to do.
+    fn close(self) {
+        let Self {
+            mut child,
+            requests,
+            answers,
+        } = self;
+        drop(requests);
+        drop(answers);
+        let _ = child.wait();
+    }
+}
+
+/// One request of THE EXTRACTOR PROTOCOL: the file's root-relative path, `/`-separated, and its
+/// text.
+#[derive(Serialize)]
+struct Request<'a> {
+    path: &'a str,
+    text: &'a str,
+}
+
+/// The request line for the file at `path` holding `text`: one line of JSON, every line break of
+/// the text escaped.
+fn request_line(path: &str, text: &str) -> String {
+    serde_json::to_string(&Request { path, text }).expect("two strings serialize")
+}
+
+/// One answer of THE EXTRACTOR PROTOCOL as it parses: the path it is for, and the error the
+/// extractor met or the file's definitions and references in the bundled extraction's own forms,
+/// with whether they cover only part of the file.
+#[derive(Deserialize)]
+struct Answer {
+    path: String,
+    error: Option<String>,
+    defs: Option<Vec<model::Def>>,
+    refs: Option<Vec<SymRef>>,
+    #[serde(default)]
+    partial: bool,
+}
+
+/// The symbols the answer line `line` gives the request for the file at `path` holding `text`,
+/// or why THE EXTRACTOR PROTOCOL refuses it. Checked in order: the line parses as an answer; it is
+/// for `path`; it holds no error; it holds both lists; each def has a name and a path, a line from
+/// 1 to the text's last - one more than the `\n` the text holds - and an end line from its line to
+/// the last, and none of the out-of-line module fields only the bundled Rust grammar sets; each
+/// ref has a name, a line from 1 to the last and, when it has a kind, one of `const`, `type` and
+/// `use`; and no def path leads back to itself through the parents ([`parent_cycle`]).
+fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, String> {
+    let answer: Answer =
+        serde_json::from_str(line).map_err(|e| format!("the answer does not parse: {e}"))?;
+    if answer.path != path {
+        return Err(format!("the answer is for {:?}", answer.path));
+    }
+    if let Some(error) = answer.error {
+        return Err(format!("the answer is an error: {error}"));
+    }
+    let (Some(defs), Some(refs)) = (answer.defs, answer.refs) else {
+        return Err("the answer holds no error and lacks defs or refs".to_string());
+    };
+    let last = text.matches('\n').count() as u32 + 1;
+    for (i, def) in defs.iter().enumerate() {
+        if def.name.is_empty() {
+            return Err(format!("defs[{i}]: the name is empty"));
+        }
+        if def.path.is_empty() {
+            return Err(format!("defs[{i}]: the path is empty"));
+        }
+        if !(1..=last).contains(&def.line) {
+            return Err(format!(
+                "defs[{i}]: line {} is outside 1..={last}",
+                def.line
+            ));
+        }
+        if !(def.line..=last).contains(&def.end_line) {
+            return Err(format!(
+                "defs[{i}]: end_line {} is outside {}..={last}",
+                def.end_line, def.line
+            ));
+        }
+        if def.is_out_of_line_module
+            || def.path_override.is_some()
+            || def.enclosing_inline_module_path.is_some()
+        {
+            return Err(format!(
+                "defs[{i}]: an out-of-line module is not in the protocol"
+            ));
+        }
+    }
+    for (i, r) in refs.iter().enumerate() {
+        if r.name.is_empty() {
+            return Err(format!("refs[{i}]: the name is empty"));
+        }
+        if !(1..=last).contains(&r.line) {
+            return Err(format!("refs[{i}]: line {} is outside 1..={last}", r.line));
+        }
+        if let Some(kind) = &r.ref_kind {
+            if ![REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE].contains(&kind.as_str()) {
+                return Err(format!(
+                    "refs[{i}]: ref_kind {kind:?} is not {REF_KIND_CONST}, {REF_KIND_TYPE} or \
+                     {REF_KIND_USE}"
+                ));
+            }
+        }
+    }
+    if let Some(through) = parent_cycle(&defs) {
+        return Err(format!(
+            "the defs' parents form a cycle through {through:?}"
+        ));
+    }
+    Ok(CodeSymbols {
+        defs,
+        refs,
+        partial: answer.partial,
+    })
+}
+
+/// The def path a walk of `defs` from def path to parent returns to, when one does: the paths are
+/// walked in the order the defs give them, each path stepping to the parent each def of that path
+/// names, and a parent no def is at ends that step. None when the parents form no cycle.
+fn parent_cycle(defs: &[model::Def]) -> Option<&str> {
+    let mut parents: HashMap<&str, Vec<&str>> = HashMap::new();
+    for def in defs {
+        let named = parents.entry(def.path.as_str()).or_default();
+        named.extend(def.parent.as_deref());
+    }
+    // A path is `false` while the walk is inside it and `true` once every step from it is done.
+    let mut walked: HashMap<&str, bool> = HashMap::new();
+    for start in defs.iter().map(|def| def.path.as_str()) {
+        if walked.contains_key(start) {
+            continue;
+        }
+        walked.insert(start, false);
+        let mut walk = vec![(start, 0)];
+        while let Some(step) = walk.last_mut() {
+            let (at, next) = *step;
+            let Some(&parent) = parents[at].get(next) else {
+                walked.insert(at, true);
+                walk.pop();
+                continue;
+            };
+            step.1 += 1;
+            match walked.get(parent) {
+                Some(false) => return Some(parent),
+                Some(true) => {}
+                None if parents.contains_key(parent) => {
+                    walked.insert(parent, false);
+                    walk.push((parent, 0));
+                }
+                None => {}
+            }
+        }
+    }
+    None
 }
 
 /// The code store of a project with no git, read from the directory at its root.
@@ -178,53 +466,113 @@ impl Extract for FactsExtractor {
         fingerprint_of(GRAMMAR_TAGS_VERSION, FACTS_GENERATION)
     }
 
-    /// Total over its input: bytes that are not UTF-8, a failed extraction and a workflow
-    /// definition that does not parse give a file's identity and no lists, as a file that
-    /// extracts to nothing.
+    /// The bundled grammars' read of the file ([`bundled_code`]) through the one skeleton
+    /// ([`file_facts`]).
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
-        let path = entry.path.as_str();
-        let mut facts = FileFacts {
-            path: entry.path.clone(),
-            blob: entry.blob.clone(),
-            scope: if is_dev_only(path) {
-                Scope::Test
-            } else {
-                Scope::Product
-            },
-            ..FileFacts::default()
-        };
-        let text = text_of(Some(bytes));
-        if path == workflow_doc() {
-            facts.half = Half::Workflow;
-            if let Some(text) = text {
-                workflow_facts(text, &mut facts);
-            }
-            return facts;
-        }
-        if let Some(grammar) = registry::for_path(path, None) {
-            facts.half = Half::Code;
-            facts.lang = lang_str(grammar.lang).to_string();
-            if let Some((_, symbols)) = extracted(path, || text, None).flatten() {
-                code_facts(path, &symbols, &mut facts);
-            }
-        } else {
-            facts.half = Half::Design;
-        }
-        if let Some(text) = text {
-            design_facts(path, text, &mut facts);
-        }
-        facts
+        file_facts(entry, bytes, bundled_code)
     }
 }
 
-/// Fills the definitions, mentions, module declarations and parse-error marker of `facts` from the symbols the
-/// extractor found in the file at `path`.
-fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
-    facts.partial = symbols.partial;
-    let by_path = def_indices_by_path(symbols);
+/// The symbols an extraction gives one code file, the bundled grammars' and a declared
+/// extractor's alike: its definitions, its references and whether they cover only part of it.
+#[derive(Debug, PartialEq, Eq)]
+struct CodeSymbols {
+    defs: Vec<model::Def>,
+    refs: Vec<SymRef>,
+    partial: bool,
+}
+
+/// A code file as an extraction reads it: the language it is read as and its symbols, none when
+/// the extraction failed.
+struct CodeFile {
+    lang: String,
+    symbols: Option<CodeSymbols>,
+}
+
+/// One file's facts, the one skeleton every extraction reads a file through: its identity and its
+/// scope by the dev-only rule; for the workflow definition, the workflow half and its nodes and
+/// relations, before `code` is asked of it; for any other file, the code half, the language and
+/// the symbols `code` reads it as when it reads it at all, else the design half, then the design
+/// facts of its text. Total over its input: bytes that are not UTF-8, a failed extraction and a
+/// workflow definition that does not parse give a file's identity and no lists, as a file that
+/// extracts to nothing.
+fn file_facts(
+    entry: &Entry,
+    bytes: &[u8],
+    code: impl FnOnce(&str, Option<&str>) -> Option<CodeFile>,
+) -> FileFacts {
+    let path = entry.path.as_str();
+    let mut facts = FileFacts {
+        path: entry.path.clone(),
+        blob: entry.blob.clone(),
+        scope: if is_dev_only(path) {
+            Scope::Test
+        } else {
+            Scope::Product
+        },
+        ..FileFacts::default()
+    };
+    let text = text_of(Some(bytes));
+    if path == workflow_doc() {
+        facts.half = Half::Workflow;
+        if let Some(text) = text {
+            workflow_facts(text, &mut facts);
+        }
+        return facts;
+    }
+    match code(path, text) {
+        Some(file) => {
+            facts.half = Half::Code;
+            facts.lang = file.lang;
+            if let Some(symbols) = file.symbols {
+                code_facts(
+                    path,
+                    &symbols.defs,
+                    &symbols.refs,
+                    symbols.partial,
+                    &mut facts,
+                );
+            }
+        }
+        None => facts.half = Half::Design,
+    }
+    if let Some(text) = text {
+        design_facts(path, text, &mut facts);
+    }
+    facts
+}
+
+/// The bundled grammars' read of the file at `path` holding `text`: the language of the grammar
+/// its extension names and the symbols it extracts, none when there is no text or the extraction
+/// fails; none at all when no grammar names the extension.
+fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
+    let grammar = registry::for_path(path, None)?;
+    Some(CodeFile {
+        lang: lang_str(grammar.lang).to_string(),
+        symbols: extracted(path, || text, None)
+            .flatten()
+            .map(|(_, symbols)| CodeSymbols {
+                defs: symbols.defs,
+                refs: symbols.refs,
+                partial: symbols.partial,
+            }),
+    })
+}
+
+/// Fills the definitions, mentions, module declarations and parse-error marker of `facts` from
+/// the definitions `defs`, the references `refs` and the `partial` flag an extraction gave the
+/// file at `path`.
+fn code_facts(
+    path: &str,
+    defs: &[model::Def],
+    refs: &[SymRef],
+    partial: bool,
+    facts: &mut FileFacts,
+) {
+    facts.partial = partial;
+    let by_path = def_indices_by_path(defs);
     let index_of = |def_path: &str| by_path.get(def_path).copied();
-    facts.defs = symbols
-        .defs
+    facts.defs = defs
         .iter()
         .map(|d| Def {
             local: d.path.clone(),
@@ -236,8 +584,7 @@ fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
             test: d.is_test,
         })
         .collect();
-    facts.mentions = symbols
-        .refs
+    facts.mentions = refs
         .iter()
         .map(|r| Mention {
             enclosing: r.enclosing.as_deref().and_then(index_of),
@@ -253,8 +600,7 @@ fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
             test: r.is_test,
         })
         .collect();
-    facts.modules = symbols
-        .defs
+    facts.modules = defs
         .iter()
         .filter(|d| d.is_out_of_line_module)
         .map(|d| ModuleDecl {
@@ -266,13 +612,13 @@ fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
         .collect();
 }
 
-/// The index in `symbols.defs` of the definition a path names, for the paths the extractor gives
-/// a parent or a caller by. Definitions can share a path (cfg twins, a type and a function of
-/// one name); the one the path names is the one that becomes the entity, the first by
+/// The index in `defs` of the definition a path names, for the paths an extraction gives a parent
+/// or a caller by. Definitions can share a path (cfg twins, a type and a function of one name);
+/// the one the path names is the one that becomes the entity, the first by
 /// [`definition_precedence`], the earlier in the file's order on a tie.
-fn def_indices_by_path(symbols: &FileSymbols) -> HashMap<&str, u32> {
+fn def_indices_by_path(defs: &[model::Def]) -> HashMap<&str, u32> {
     let mut held: HashMap<&str, (u32, (usize, u32))> = HashMap::new();
-    for (i, d) in symbols.defs.iter().enumerate() {
+    for (i, d) in defs.iter().enumerate() {
         let rank = definition_precedence(kind_str(d.kind), d.line);
         held.entry(d.path.as_str())
             .and_modify(|best| {

@@ -1,12 +1,13 @@
 //! THE PROCESS-SPAWN PORT: the one place production code constructs a [`Command`].
 //!
-//! Every process this crate starts - git, the gate shell, the agent CLI, the dash child - is built
-//! here and handed back for the caller to add its own arguments and run. One seam means one place
-//! owning how a child is launched: the working-directory rule every caller shares ([`command_in`])
-//! and the `git -C <dir>` shape nearly every git call takes, its repository found from `dir` alone
-//! ([`git_in`]). Beyond that repository rule it adds no policy of its own: the caller still picks
-//! the arguments, the environment, the stdio and how the child is waited on, and a child is only
-//! ever ended through its own spawning handle.
+//! Every process this crate starts - git, the gate shell, the agent CLI, the dash child, a declared
+//! extractor - is built here and handed back for the caller to add its own arguments and run. One
+//! seam means one place owning how a child is launched: the working-directory rule every caller
+//! shares ([`command_in`]), the host's shell given a project's command line whole
+//! ([`shell_command`]) and the `git -C <dir>` shape nearly every git call takes, its repository
+//! found from `dir` alone ([`git_in`]). Beyond those rules it adds no policy of its own: the
+//! caller still picks the arguments, the environment, the stdio and how the child is waited on,
+//! and a child is only ever ended through its own spawning handle.
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -28,6 +29,42 @@ pub fn session_dir(dir: &str) -> &Path {
 pub fn command_in(program: impl AsRef<OsStr>, dir: &str) -> Command {
     let mut cmd = command(program);
     cmd.current_dir(session_dir(dir));
+    cmd
+}
+
+/// The one argument `cmd` reads `run` from on Windows: its switches - `/D`, no AutoRun command;
+/// `/S`, the outer quotes stripped and the rest kept as written; `/C`, run it, then end - and
+/// `run` in one pair of quotes. A plain string, so every host builds and tests it.
+pub fn cmd_argument(run: &str) -> String {
+    format!("/D /S /C \"{run}\"")
+}
+
+// The one spelling of the host's shell: on Windows `cmd`, handed [`cmd_argument`] as one raw
+// argument so no quoting of the host's own reaches the run; on every other OS `sh -c <run>`.
+std::cfg_select! {
+    windows => {
+        fn host_shell(run: &str) -> Command {
+            use std::os::windows::process::CommandExt;
+            let mut cmd = command("cmd");
+            cmd.raw_arg(cmd_argument(run));
+            cmd
+        }
+    }
+    _ => {
+        fn host_shell(run: &str) -> Command {
+            let mut cmd = command("sh");
+            cmd.arg("-c").arg(run);
+            cmd
+        }
+    }
+}
+
+/// The host's shell given the command line `run` whole, as a project writes one (a declared
+/// extractor's `run`, say), running in `dir`: `cmd` and [`cmd_argument`] on Windows, `sh -c
+/// <run>` elsewhere. The caller adds the stdio and the environment.
+pub fn shell_command(run: &str, dir: &Path) -> Command {
+    let mut cmd = host_shell(run);
+    cmd.current_dir(dir);
     cmd
 }
 

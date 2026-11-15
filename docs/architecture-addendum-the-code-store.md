@@ -428,7 +428,9 @@ What is *not* done, and why:
   This is what removes staging, tier upgrades and the proof table.
 - **No worktree bytes.** The shared store only ever describes a commit, so uncommitted edits in
   the operator checkout cannot leak into what a spawn reads. The overlay shows uncommitted edits
-  to the one caller who has them.
+  to the one caller who has them. The extractors the root's working workflow declares are
+  configuration, not content: they choose the fingerprint and the command a declared file's
+  committed bytes are sent to, and the files they read still come from the commit alone.
 - **No history.** A fingerprint's previous snapshot is reaped once its pointer names the new one.
   Git holds every earlier tree, and advancing to any commit rebuilds its snapshot.
 - **No more than two fingerprints.** Two binaries sharing one store (an MCP server still on the
@@ -924,7 +926,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
 | `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --raw` over a copy of the worktree's index (6.1), whose modes class each path as a regular file or not, so a symlink or submodule, which a tree's listing never holds, is no difference; `ls-files --others --exclude-standard -- :/`, the whole worktree's untracked files from any directory of it; `cat-file --batch` through the existing `BlobBatch`; a worktree file's bytes read as a regular file, never through a symlink); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
-| `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors); `ProjectExtractor` (beside it, the one the store's openers compose: `FactsExtractor` under the extractors the project's workflow declares, its fingerprint `FactsExtractor`'s with none and carrying the declaration's digest with any) |
+| `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors); `ProjectExtractor` (beside it, the one the store's openers compose: `FactsExtractor` under the extractors the project's workflow declares, its fingerprint `FactsExtractor`'s with none and carrying the declaration's digest with any; each declared extractor's command runs as one session, started at the project's root on the first file it reads and closed when a file's answer fails, the next file starting a new one, or when the `ProjectExtractor` is dropped) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 
 The store crate depends only on `rigger-domain`, std and the `ignore` gitignore engine.

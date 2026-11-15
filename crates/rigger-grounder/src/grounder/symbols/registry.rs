@@ -417,14 +417,21 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     })
 }
 
+/// The extension a file's language is told by: the text after the last `.` of its name, as
+/// written and without the dot, and none for a name with no `.` past its first character
+/// (`.zig`). [`for_path`] finds a bundled grammar by it, and the code store a declared extractor.
+pub(crate) fn extension(path: &str) -> Option<&str> {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+}
+
 /// Resolve a file's grammar, honoring an explicit `--language` override; else auto-detect by
 /// extension. An override forces the language for the file regardless of its extension (so a
 /// `.txt` can be indexed as Rust); with no override, a file whose extension is unregistered
 /// resolves to `None` and is skipped.
 pub fn for_path(path: &str, override_lang: Option<Lang>) -> Option<LanguageEntry> {
-    let file_ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str());
+    let file_ext = extension(path);
     if let Some(l) = override_lang {
         // When the file's OWN extension already resolves to the forced language, honor it so a
         // `.tsx` under `--language ts` keeps the JSX-aware grammar rather than collapsing to the
