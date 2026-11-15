@@ -361,8 +361,8 @@ fn print_orientation() {
 /// - `.rigger/*.db`, `.rigger/*.db-wal`, `.rigger/*.db-shm`: a store (the event log, the graph,
 ///   the progress store) and its write-ahead log and shared memory.
 /// - `.rigger/*.lock`: a lock file a process holds (a run's step lock, the graph's rebuild lock).
-/// - `.rigger/dash.url`, `.rigger/dash.marker`, `.rigger/dash.attempt`: the dash's breadcrumbs,
-///   which `rigger status` and `rigger watch` read and each dash start rewrites.
+/// - `.rigger/dash.url`, `.rigger/dash.marker`, `.rigger/dash.attempt`: the always-on dash's
+///   breadcrumbs, which a run rewrites as it starts its dash.
 /// - `.rigger/driver.out`: the output of the driver a check last relaunched, which each relaunch
 ///   rewrites.
 /// - `.rigger/store.conn`: the store resolver's secret file, which carries the connection
@@ -370,7 +370,8 @@ fn print_orientation() {
 /// - `.rigger/store`: the code store's snapshots and facts memo, a projection of the tree each
 ///   graph read rewrites.
 /// - `.rigger/*.bak-*`: a store file's backup, named `<store file>.bak-<suffix>`.
-/// - `.rigger/tmp/`: the run's scratch root, its unit and review worktrees and their builds.
+/// - `.rigger/tmp/`: the run's scratch (unit and review worktrees, liveness markers, the shared
+///   build cache) when it falls back to the repository, with no cache home to key it on.
 /// - `.rigger/playbooks/`: the playbook pool, a projection of the log
 ///   `rigger playbooks --rebuild` remakes.
 const RUNTIME_IGNORES: [&str; 14] = [
@@ -3707,7 +3708,7 @@ mod tests {
     fn scaffold_summary_reports_only_the_gitignore_change_on_a_gitignore_only_repair() {
         let dir = tempfile::tempdir().unwrap();
 
-        // First init scaffolds everything AND appends the machine-local .gitignore
+        // First init scaffolds everything AND appends the `RUNTIME_IGNORES` .gitignore
         // entries (a non-git temp dir is untracked, so the entries are written).
         let first =
             init_project(dir.path(), &repo_sets()).expect("first init scaffolds the project");
@@ -3717,7 +3718,7 @@ mod tests {
         );
         assert!(
             !first.gitignore_added.is_empty(),
-            "the first init appends the machine-local .gitignore entries"
+            "the first init appends the RUNTIME_IGNORES .gitignore entries"
         );
 
         // Simulate the Gap-9 upgrade path: only `.gitignore` needs repair; every other
