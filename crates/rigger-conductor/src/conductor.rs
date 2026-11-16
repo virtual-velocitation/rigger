@@ -15287,27 +15287,30 @@ fn files_reachable(g: &Graph, seed: &[String], allowed: &[&str]) -> BTreeSet<Str
         }
     };
     let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
-    let mut reached: BTreeSet<String> = seed.iter().cloned().collect();
-    let mut frontier: Vec<String> = seed.to_vec();
+    // Each node's neighbours either way across the edges the walk may cross, indexed once, so the
+    // walk reads each edge once to index it and once from each end.
+    let mut adjacent: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for e in &g.edges {
+        read_radius_edge();
+        let declaration =
+            contextgraph::declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
+        if declaration || !allowed.contains(e.tier.as_str()) {
+            continue;
+        }
+        for (near, far) in [(&e.from, &e.to), (&e.to, &e.from)] {
+            adjacent
+                .entry(near.as_str())
+                .or_default()
+                .push(far.as_str());
+        }
+    }
+    let mut reached: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
+    let mut frontier: Vec<&str> = reached.iter().copied().collect();
     while let Some(cur) = frontier.pop() {
-        for e in &g.edges {
+        for &next in adjacent.get(cur).into_iter().flatten() {
             read_radius_edge();
-            let declaration =
-                contextgraph::declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
-            if declaration || !allowed.contains(e.tier.as_str()) {
-                continue;
-            }
-            let next = if e.from == cur {
-                Some(&e.to)
-            } else if e.to == cur {
-                Some(&e.from)
-            } else {
-                None
-            };
-            if let Some(n) = next {
-                if reached.insert(n.clone()) {
-                    frontier.push(n.clone());
-                }
+            if reached.insert(next) {
+                frontier.push(next);
             }
         }
     }
