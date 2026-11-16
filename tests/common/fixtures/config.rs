@@ -19,9 +19,10 @@ pub const LANGUAGE_NEUTRAL_IMPLEMENTER: &str =
 /// sizing comment that explains the bound, byte for byte.
 pub const MAX_PARALLEL_UNITS_DECLARED: &str =
     "  # How many implement units build at once (spec 102, per-unit pipelining). Each\n  # live \
-     unit owns its own build cache, and unbounded parallelism can fill disk on\n  # a wide \
-     fan-out. 0 (the default) is unbounded, unchanged until you set this; 2\n  # bounds the \
-     worst case to two live per-unit build caches at a time.\n  max_parallel_units: 2\n";
+     unit builds in its own worktree, into its own build cache when build.env\n  # points one \
+     at {build_cache}, and unbounded parallelism can fill disk on a wide\n  # fan-out. 0 (the \
+     default) is unbounded, unchanged until you set this; 2 bounds\n  # the worst case to two \
+     live units' builds at a time.\n  max_parallel_units: 2\n";
 
 /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
 pub const ROLE_SEED_FILES: [&str; 6] = [

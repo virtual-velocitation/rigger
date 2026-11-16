@@ -4774,7 +4774,7 @@ mod tests {
                 ),
                 (1, 1),
                 "{label}: the scaffold must carry a sizing comment (explaining the per-unit \
-                 build-cache cost) right above max_parallel_units, not a bare number:\n{workflow}"
+                 build cost) right above max_parallel_units, not a bare number:\n{workflow}"
             );
         }
     }
