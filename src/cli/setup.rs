@@ -128,14 +128,34 @@ impl ScaffoldReport {
 
 /// Scaffold the project at `root` from `sets` (handed in key order: in production, what
 /// [`load_template_sets`] read from the template root `--template <dir>` names, and none when no
-/// root was given): every set is parsed ([`parse_template_sets`]) before [`scaffold_project`]'s
-/// first write, so a set that fails [`parse_template_set`] refuses naming its key and writes
-/// nothing.
+/// root was given): every set is parsed ([`parse_template_sets`]) and the project's agents are
+/// read ([`defined_agent_ids`]) before [`scaffold_project`]'s first write, so a set that fails
+/// [`parse_template_set`] refuses naming its key, an agent file that does not parse refuses
+/// naming that file, and either refusal writes nothing.
 fn init_project(
     root: &Path,
     sets: &[TemplateSet],
 ) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
-    scaffold_project(root, &parse_template_sets(sets)?)
+    let parsed = parse_template_sets(sets)?;
+    scaffold_project(root, &parsed, &defined_agent_ids(root)?)
+}
+
+/// The ids the agent files in `root`'s `.rigger/agents/` define, whatever their file names, read
+/// through the loader's one directory read ([`config_store::read_agents_dir`]); none when that
+/// directory is absent. It fails naming an agent file there that does not parse, and it writes
+/// nothing, so a command reads it before its first write and that refusal leaves the project
+/// untouched.
+fn defined_agent_ids(
+    root: &Path,
+) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
+    let agents_dir = project_agents_dir(root);
+    if !agents_dir.exists() {
+        return Ok(std::collections::HashSet::new());
+    }
+    Ok(config_store::read_agents_dir(&agents_dir)?
+        .into_iter()
+        .map(|(_, agent)| agent.id)
+        .collect())
 }
 
 /// Each of `sets` beside the [`SetSpec`] [`parse_template_set`] reads from it, in the order
@@ -156,10 +176,12 @@ fn parse_template_sets(sets: &[TemplateSet]) -> Result<Vec<(&TemplateSet, SetSpe
 /// of whose `detect` markers is a file at `root`, whose `implementer` persona is seeded beside
 /// the role seeds; with none, the workflow declares no gates and no build variable and names the
 /// language-neutral `implementer` seed. An existing workflow or agent file is kept, and no seed
-/// is written whose id an existing agent defines ([`write_seed_agents`]).
+/// is written whose id is among `defined`, the ids the project's agents define
+/// ([`defined_agent_ids`], read before this first write; [`write_seed_agents`]).
 fn scaffold_project(
     root: &Path,
     parsed: &[(&TemplateSet, SetSpec)],
+    defined: &std::collections::HashSet<String>,
 ) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
     let set_catalogue = parsed
         .iter()
@@ -201,7 +223,7 @@ fn scaffold_project(
 
     // 2. Seed the agents the workflow references, the matched set's implementer among the
     // candidates.
-    let new_agents = write_seed_agents(root, matched.map(|(_, spec)| spec))?;
+    let new_agents = write_seed_agents(root, matched.map(|(_, spec)| spec), defined)?;
 
     // 3. Install the SessionStart hook, merging into any existing settings. Write ONLY
     // when the merge actually changes settings.json, so a rerun (the hook already
@@ -268,14 +290,15 @@ fn scaffold_project(
 
 /// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
 /// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
-/// references (every candidate when the workflow at `root` is absent or names no agent) and no
-/// agent already in `.rigger/agents/` defines under any file name, returning the file names it
-/// newly wrote. It creates `.rigger/agents/` when absent, and fails naming an agent file there
-/// that does not parse. An existing file is kept silently ([`write_if_absent`]), so a rerun
-/// writes nothing new and an operator's curated agent stays.
+/// references (every candidate when the workflow at `root` is absent or names no agent) and
+/// whose id is not among `defined`, the ids the agents already in `.rigger/agents/` define under
+/// any file name ([`defined_agent_ids`]), returning the file names it newly wrote. It creates
+/// `.rigger/agents/` when absent. An existing file is kept silently ([`write_if_absent`]), so a
+/// rerun writes nothing new and an operator's curated agent stays.
 fn write_seed_agents(
     root: &Path,
     set: Option<&SetSpec>,
+    defined: &std::collections::HashSet<String>,
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // Load the workflow to determine which agents are referenced, then only scaffold those
     // agents. This allows setup to skip scaffolding when the workflow's referenced agents
@@ -305,17 +328,13 @@ fn write_seed_agents(
     // ABSENT or names no agent, never because a present one failed to parse.
     let agents_dir = project_agents_dir(root);
     std::fs::create_dir_all(&agents_dir)?;
-    // The ids the agents already on disk define, whatever their file names: a candidate carrying
-    // one would be a second agent of that id, which every later load refuses.
-    let defined: std::collections::HashSet<String> = config_store::read_agents_dir(&agents_dir)?
-        .into_iter()
-        .map(|(_, agent)| agent.id)
-        .collect();
     let mut new_agents = Vec::new();
     for (file, content) in candidates {
         let id = seed_id(content);
         let referenced = referenced_agents.is_empty()
             || id.as_ref().is_some_and(|id| referenced_agents.contains(id));
+        // A candidate carrying an id an agent on disk defines would be a second agent of that
+        // id, which every later load refuses.
         let undefined = !id.is_some_and(|id| defined.contains(&id));
         // Report only NEWLY-written agents; an existing agent is kept silently, so a
         // rerun scaffolds nothing new (the skip-scaffolding hygiene of spec 05). A genuine
@@ -867,6 +886,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let site = Site::here();
     // The directory setup scaffolds: the one it runs in, as the resolver read it.
     let root = site.located()?;
+    // Read before the store is resolved too, so an agent file that does not parse leaves the
+    // project untouched.
+    let defined = defined_agent_ids(root)?;
     // The store setup pays the owed rebuild into ([`store_to_write_in`]): the root's, made there
     // when absent, or from a subdirectory or a linked worktree the one at the project root. It is
     // resolved before setup writes anything, so where that root holds none setup is refused
@@ -876,7 +898,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // safely re-runnable: it refreshes a drifted install and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
-    let scaffold = scaffold_project(root, &parsed)?;
+    let scaffold = scaffold_project(root, &parsed, &defined)?;
     // The workflow `scaffold_project` left in place declares whether the lookup hook is installed
     // or removed below; a workflow that does not parse fails setup here, loudly.
     let grep_guard = config_store::load_workflow(&root.join(RIGGER_DIR).join(WORKFLOW_FILE))?
@@ -2876,7 +2898,7 @@ mod tests {
         let rigger = dir.path().join(RIGGER_DIR);
         std::fs::create_dir_all(&rigger).unwrap();
         std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
-        write_seed_agents(dir.path(), set).unwrap();
+        write_seed_agents(dir.path(), set, &std::collections::HashSet::new()).unwrap();
         config_store::load(dir.path().to_str().unwrap()).unwrap_or_else(|e| {
             panic!("the scaffolded config must load and validate: {e}\n{workflow}")
         })
