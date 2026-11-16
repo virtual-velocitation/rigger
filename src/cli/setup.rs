@@ -370,6 +370,9 @@ fn print_orientation() {
 /// - `.claude`: the machine-local Claude Code install.
 /// - `.rigger/*.db`, `.rigger/*.db-wal`, `.rigger/*.db-shm`: a store (the event log, the graph,
 ///   the progress store) and its write-ahead log and shared memory.
+/// - `.rigger/*.db.*`: a store file's sidecar, named `<store file>.<role>` (the graph's rebuild
+///   shadow `graph.db.rebuild` and swap copy `graph.db.pruned`), and the sidecar's own
+///   write-ahead log and shared memory.
 /// - `.rigger/*.lock`: a lock file a process holds (a run's step lock, the graph's rebuild lock).
 /// - `.rigger/dash.url`, `.rigger/dash.marker`, `.rigger/dash.attempt`: the always-on dash's
 ///   breadcrumbs, which a run rewrites as it starts its dash.
@@ -384,11 +387,12 @@ fn print_orientation() {
 ///   build cache) when it falls back to the repository, with no cache home to key it on.
 /// - `.rigger/playbooks`: the playbook pool, a projection of the log
 ///   `rigger playbooks --rebuild` remakes.
-const RUNTIME_IGNORES: [&str; 14] = [
+const RUNTIME_IGNORES: [&str; 15] = [
     ".claude",
     ".rigger/*.db",
     ".rigger/*.db-wal",
     ".rigger/*.db-shm",
+    ".rigger/*.db.*",
     ".rigger/*.lock",
     ".rigger/dash.url",
     ".rigger/dash.marker",
