@@ -126,6 +126,11 @@ const ALLOW_LIST: &[Allowed] = &[
         ],
     ),
     (
+        "crates/rigger-conductor/src/held.rs",
+        OperatorMessage,
+        &["the API refused spawn {} of unit {} (a prompt of {} characte"],
+    ),
+    (
         "crates/rigger-dash/src/mcpserver.rs",
         OperatorMessage,
         &[
