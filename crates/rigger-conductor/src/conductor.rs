@@ -857,7 +857,8 @@ impl GreenDigests {
 /// `build.env`, checked by [`gate::BuildEnv::declared`], with `run_base` as
 /// [`crate::spawn::RUN_BASE_ENV`] (empty adds nothing). The one resolution [`RunCtx::build_env`]
 /// and [`GateInputs::resolve`] share, so every gate and every spawn of a run carries the same
-/// declaration and run base; its `Err` is the declaration's refusal.
+/// declaration and run base, and [`RunCtx::reviewer_has_build_cache`] reads with no run base;
+/// its `Err` is the declaration's refusal.
 fn build_env_of(cfg: &Config, run_base: &str) -> Result<gate::BuildEnv, Error> {
     Ok(gate::BuildEnv::declared(&cfg.workflow.build)
         .map_err(Error)?
@@ -9460,7 +9461,7 @@ impl RunCtx<'_> {
         let prompt = format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            adjudicator_contract(reviewer_carries_build_cache(&self.build_env()?, dir)),
+            adjudicator_contract(self.reviewer_has_build_cache(dir)?),
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round
@@ -9856,10 +9857,7 @@ impl RunCtx<'_> {
                     false,
                     &format!(
                         "{prompt}{}",
-                        review_protocol(
-                            ROLE_ADVERSARY,
-                            reviewer_carries_build_cache(&self.build_env()?, dir)
-                        )
+                        review_protocol(ROLE_ADVERSARY, self.reviewer_has_build_cache(dir)?)
                     ),
                     None,
                     None,
@@ -10006,6 +10004,18 @@ impl RunCtx<'_> {
     /// does.
     fn build_env(&self) -> Result<gate::BuildEnv, Error> {
         build_env_of(self.cfg, &self.run_base_env())
+    }
+
+    /// Whether a reviewer spawned at `dir` carries the unit's review cache
+    /// ([`reviewer_carries_build_cache`]), read over the workflow's declaration with no run base:
+    /// a site's cache rests on a declared `{build_cache}` variable alone, never on the run base
+    /// [`build_env`](Self::build_env) layers on, so the flag reads no event stream and still
+    /// agrees with the cache the reviewer's spawn carries.
+    fn reviewer_has_build_cache(&self, dir: &str) -> Result<bool, Error> {
+        Ok(reviewer_carries_build_cache(
+            &build_env_of(self.cfg, "")?,
+            dir,
+        ))
     }
 
     /// The run's own `$RIGGER_RUN_BASE`: the SINGLE resolution the one build environment
@@ -12598,7 +12608,7 @@ impl RunCtx<'_> {
         Ok(format!(
             "{}{}{}",
             self.review_base_prompt(st, dir)?,
-            review_protocol(actor, reviewer_carries_build_cache(&self.build_env()?, dir)),
+            review_protocol(actor, self.reviewer_has_build_cache(dir)?),
             round.map(ReviewRound::block).unwrap_or_default()
         ))
     }
