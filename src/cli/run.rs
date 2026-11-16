@@ -4,7 +4,7 @@ use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::held::HeldDriver;
 use rigger::keep_awake::{OsSleepHold, KEEP_AWAKE_ENV};
-use rigger::login_start::{LoginStart, OsLoginStart, LOGIN_START_ENV};
+use rigger::login_start::{Entry, LoginStart, OsLoginStart, LOGIN_START_ENV};
 use rigger::review;
 use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
@@ -816,6 +816,10 @@ impl LoginStart for RecordingLoginStart {
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
         record_line(&self.0, &format!("unregister {key}"))
     }
+
+    fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
+        Ok(Vec::new())
+    }
 }
 
 /// The login-start fake whose every call answers unavailable with its reason: what
@@ -828,6 +832,10 @@ impl LoginStart for UnavailableLoginStart {
     }
 
     fn unregister(&self, _key: &str) -> Result<(), Unavailable> {
+        Err(Unavailable(self.0.clone()))
+    }
+
+    fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
         Err(Unavailable(self.0.clone()))
     }
 }

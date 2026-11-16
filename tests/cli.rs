@@ -15672,6 +15672,114 @@ fn only_a_flagged_launch_holding_the_lock_registers_a_login_entry_and_its_return
     }
 }
 
+/// A LOGIN ENTRY WHOSE PROGRAM IS GONE IS SWEPT, BY SETUP AND BY A FLAGGED LAUNCH: GIVEN login
+/// entries standing for a program since removed, for one that stands, and under a key in a form
+/// rigger does not write, WHEN `rigger setup` reruns over a set-up project or a launch with
+/// `--relaunch-at-login` registers its own entry, THEN the entry whose program is gone is removed
+/// with one line naming its key and program, the standing one is kept, and the foreign one is
+/// named in one line and left; setup names the foreign one before it decides it changed nothing,
+/// so a further setup says that line alone.
+#[test]
+fn setup_and_a_flagged_launch_sweep_the_login_entries_whose_program_is_gone() {
+    let set_up = temp_project();
+    setup_ok(set_up.path(), &[]);
+    let launched = temp_git_project_with_commit();
+    write_workflow_fixture(launched.path(), &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let canonical = launched.path().canonicalize().unwrap();
+    let canonical = canonical.to_str().unwrap();
+    let key = rigger::login_start::run_key(canonical);
+    let scratch = tempfile::tempdir().unwrap();
+    let gone = scratch.path().join("gone").join("rigger");
+    let gone = gone.to_str().unwrap();
+    let standing = common::rigger_bin();
+    let stale = "rigger-run-5a5a5a5a5a5a5a5a";
+    let foreign = "rigger-run-ffffffffffffffff";
+    let seeded = [
+        format!("register {stale} {gone} run --at-login /gone-project"),
+        format!(
+            "register rigger-run-1f2e3d4c5b6a7980 {} run --at-login /kept-project",
+            standing.display()
+        ),
+        format!("register {foreign}"),
+    ];
+    let seed = |extra: &[String]| {
+        let mut lines = seeded.to_vec();
+        lines.extend_from_slice(extra);
+        std::fs::write(common::login_start_record(), lines.join("\n") + "\n").unwrap();
+    };
+    let removed =
+        format!("removed the login entry {stale}: the program it starts, {gone}, does not exist");
+    let left = format!("left the login entry {foreign} alone: it is not in the form rigger writes");
+    let swept = format!("unregister {stale}");
+    let own = |line: &str| {
+        if line.starts_with(&format!("register {key} "))
+            && line.ends_with(&format!(" run --at-login {canonical}"))
+        {
+            "register <own>".to_string()
+        } else {
+            line.to_string()
+        }
+    };
+    /// The case, the project it runs in, its arguments, the login-start calls it records after the
+    /// seeded entries, its lines naming a login entry, and its success.
+    type Row<'a> = (
+        &'a str,
+        &'a Path,
+        &'a [&'a str],
+        Vec<String>,
+        Vec<String>,
+        bool,
+    );
+    let rows: [Row; 2] = [
+        (
+            "a setup rerun over the set-up project",
+            set_up.path(),
+            &["setup"],
+            vec![swept.clone()],
+            vec![left.clone(), removed.clone()],
+            true,
+        ),
+        (
+            "a flagged launch refused its adoption",
+            launched.path(),
+            &["run", "--relaunch-at-login", "--adopt", "no-such-run"],
+            vec![
+                "register <own>".to_string(),
+                swept.clone(),
+                format!("unregister {key}"),
+            ],
+            vec![
+                format!("rigger run: {removed}"),
+                format!("rigger run: {left}"),
+            ],
+            false,
+        ),
+    ];
+    for (case, root, args, recorded, said, ok) in rows {
+        seed(&[]);
+        let (out, err, got_ok) = run_rigger_envs(root, args, &[]);
+        let expected: Vec<String> = seeded.iter().cloned().chain(recorded).collect();
+        let got: Vec<String> = recorded_login_starts().iter().map(|l| own(l)).collect();
+        let got_said: Vec<String> = out
+            .lines()
+            .chain(err.lines())
+            .filter(|line| line.contains("login entry"))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            (got, got_said, got_ok),
+            (expected, said, ok),
+            "{case}; stdout: {out}; stderr: {err}"
+        );
+    }
+    seed(&[swept]);
+    assert_eq!(
+        setup_ok(set_up.path(), &[]),
+        format!("{left}\n"),
+        "a further setup, with nothing left to sweep, says the foreign entry alone"
+    );
+}
+
 /// What a row of [`only_the_checking_verbs_relaunch_a_run_whose_driver_died`] invokes over: the
 /// dead driver's record as it stands, or that record with the run held, with another binary
 /// recorded, with a recorded binary since removed, or invoked from a linked worktree, the run

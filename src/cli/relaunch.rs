@@ -986,6 +986,10 @@ mod tests {
             self.calls.borrow_mut().push(format!("unregister {key}"));
             Ok(())
         }
+
+        fn entries(&self) -> Result<Vec<rigger::login_start::Entry>, Unavailable> {
+            Ok(Vec::new())
+        }
     }
 
     /// How a driver that took the step lock ends, for

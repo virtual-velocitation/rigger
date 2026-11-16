@@ -12,7 +12,9 @@
 //! writer of the OS the binary is built for, under the directory that OS reads; any other OS
 //! answers unavailable. Every writer's `register` replaces the entry standing under its key, and
 //! its `unregister` removes every file and link `register` wrote under the key, leaving the
-//! directories, and is `Ok` when none stands.
+//! directories, and is `Ok` when none stands. Every writer lists the entries standing under a key
+//! [`run_key`] makes, each with the program read back from the file its `register` wrote, so
+//! [`sweep`] removes an entry whose program was since uninstalled or moved.
 
 use std::ffi::OsString;
 use std::fs;
@@ -33,6 +35,80 @@ pub trait LoginStart {
     /// Start nothing under `key` at login any more, removing every file and link
     /// [`LoginStart::register`] wrote under it; `Ok` when no entry stands under it.
     fn unregister(&self, key: &str) -> Result<(), Unavailable>;
+
+    /// Every entry standing under a key [`run_key`] makes, by key, each with the program it
+    /// starts read back from the file [`LoginStart::register`] wrote, or with none when that file
+    /// is not in the form this facility's register writes; empty when none stands.
+    fn entries(&self) -> Result<Vec<Entry>, Unavailable>;
+}
+
+/// One login entry a facility lists ([`LoginStart::entries`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// The key it stands under.
+    pub key: String,
+    /// The program it starts, read back from its file; `None` when that file is not in the form
+    /// the facility's register writes, so it may be the user's own.
+    pub program: Option<String>,
+}
+
+/// What [`sweep`] did with one entry it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Swept {
+    /// Removed, since the program it starts does not exist.
+    Removed {
+        /// The key it stood under.
+        key: String,
+        /// The program it started.
+        program: String,
+    },
+    /// Its program does not exist, and its removal failed.
+    NotRemoved {
+        /// The key it stands under.
+        key: String,
+        /// The program it starts.
+        program: String,
+        /// Why the removal failed.
+        why: String,
+    },
+    /// Left alone: its file is not in the form rigger writes, so it may be the user's.
+    Foreign {
+        /// The key it stands under.
+        key: String,
+    },
+}
+
+impl Swept {
+    /// The one line that says what the sweep did with the entry.
+    pub fn line(&self) -> String {
+        match self {
+            Swept::Removed { key, program } => format!(
+                "removed the login entry {key}: the program it starts, {program}, does not exist"
+            ),
+            Swept::NotRemoved { key, program, why } => format!(
+                "the login entry {key} starts {program}, which does not exist, and was not \
+                 removed: {why}"
+            ),
+            Swept::Foreign { key } => {
+                format!("left the login entry {key} alone: it is not in the form rigger writes")
+            }
+        }
+    }
+
+    /// Whether the sweep changed the entry: removed it.
+    pub fn is_change(&self) -> bool {
+        matches!(self, Swept::Removed { .. })
+    }
+}
+
+/// THE STALE-ENTRY SWEEP, the reaper of an entry whose program was uninstalled or moved after
+/// its register, which would fail at every login: each entry `start` lists whose program does not
+/// exist is unregistered; an entry whose program stands, or is not known to be absent, stands;
+/// and one not in the facility's own form is left alone. Answers what it did with each entry it
+/// names, in the listing's key order; or why `start` could not list its entries.
+pub fn sweep(start: &dyn LoginStart) -> Result<Vec<Swept>, Unavailable> {
+    let _ = start;
+    Ok(Vec::new())
 }
 
 /// The knob selecting the login-start adapter a run registers its relaunch with, read by the
@@ -49,11 +125,14 @@ pub const CONFIG_HOME_ENV: &str = "XDG_CONFIG_HOME";
 /// The variable the Windows writer's directory, the user's Startup folder, is read from.
 pub const APPDATA_ENV: &str = "APPDATA";
 
-/// The key a project's entry is registered under: `rigger-run-` and the sixteen hex digits of the
+/// The text every key [`run_key`] makes starts with, by which a writer lists its own entries.
+pub const KEY_PREFIX: &str = "rigger-run-";
+
+/// The key a project's entry is registered under: [`KEY_PREFIX`] and the sixteen hex digits of the
 /// FNV-1a hash of its canonical root's text, so every launch in one checkout replaces one entry
 /// and two checkouts hold two.
 pub fn run_key(root: &str) -> String {
-    format!("rigger-run-{:016x}", fnv1a_64(root.as_bytes()))
+    format!("{KEY_PREFIX}{:016x}", fnv1a_64(root.as_bytes()))
 }
 
 /// The Linux writer: under `dir`, the user unit `<key>.service` ([`systemd_unit`]) and the link
@@ -97,6 +176,10 @@ impl LoginStart for SystemdUserUnits {
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
         remove_entry(&self.link(key))?;
         remove_entry(&self.unit(key))
+    }
+
+    fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
+        Ok(Vec::new())
     }
 }
 
@@ -157,6 +240,10 @@ impl LoginStart for LaunchAgents {
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
         remove_entry(&self.plist(key))
     }
+
+    fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
+        Ok(Vec::new())
+    }
 }
 
 /// The agent labelled `label` that runs `program` with `args` once as it loads, each an
@@ -215,6 +302,10 @@ impl LoginStart for StartupFolder {
 
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
         remove_entry(&self.command(key))
+    }
+
+    fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
+        Ok(Vec::new())
     }
 }
 
@@ -376,6 +467,10 @@ impl LoginStart for OsLoginStart {
 
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
         native()?.unregister(key)
+    }
+
+    fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
+        native()?.entries()
     }
 }
 
@@ -594,6 +689,244 @@ mod tests {
                 ),
             )],
         );
+    }
+
+    /// The key of an entry whose program a sweep row removes, ordered between [`KEY`] and
+    /// [`FOREIGN`].
+    const STALE: &str = "rigger-run-5a5a5a5a5a5a5a5a";
+
+    /// The key of an entry a row writes in a form no writer writes.
+    const FOREIGN: &str = "rigger-run-ffffffffffffffff";
+
+    /// The arguments every listing row registers with.
+    fn at_login_args() -> [String; 3] {
+        ["run", "--at-login", "/home/dev/project"].map(str::to_string)
+    }
+
+    /// A read-back row: GIVEN the writer `writer` makes over a directory, WHEN `program` is
+    /// registered under [`KEY`], `foreign` is written as the file `<FOREIGN>.<extension>`, and the
+    /// registered entry is copied to a file of a name no key makes, THEN the writer lists the
+    /// registered entry with `program` read back exactly and the foreign one with none, by key,
+    /// and not the copy; over a directory not yet made it lists none.
+    fn reads_back(
+        writer: fn(PathBuf) -> Box<dyn LoginStart>,
+        extension: &str,
+        program: &str,
+        foreign: &str,
+    ) {
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("entries");
+        let writer = writer(dir.clone());
+        assert_eq!(writer.entries(), Ok(Vec::new()), "a directory not yet made");
+        assert_eq!(writer.register(KEY, program, &at_login_args()), Ok(()));
+        fs::write(dir.join(format!("{FOREIGN}.{extension}")), foreign).unwrap();
+        fs::copy(
+            dir.join(format!("{KEY}.{extension}")),
+            dir.join(format!("users-own.{extension}")),
+        )
+        .unwrap();
+        assert_eq!(
+            writer.entries(),
+            Ok(vec![
+                Entry {
+                    key: KEY.to_string(),
+                    program: Some(program.to_string()),
+                },
+                Entry {
+                    key: FOREIGN.to_string(),
+                    program: None,
+                },
+            ]),
+            "the entries under {}",
+            dir.display()
+        );
+    }
+
+    // GIVEN each OS's writer, WHEN a program holding every character its writer escapes is
+    // registered beside a file under a key that is not in its form, THEN the writer reads the
+    // program back exactly and the foreign file as none; the Linux writer's row runs on unix, for
+    // its link, and the others on every host.
+    rigger_domain::test_cases! {
+        /// Linux: the first word of `ExecStart`, past a doubled `%` and `$`, an escaped backslash
+        /// and double quote, and a C-escaped control character; an unquoted `ExecStart` is none.
+        #[cfg(unix)]
+        a_systemd_unit_reads_back_the_first_word_of_its_exec_start: reads_back(
+            |dir| Box::new(SystemdUserUnits { dir }),
+            "service",
+            "/home/dev/a\\b 50% $HOME & \"co\"\u{7}",
+            "[Unit]\nDescription=mine\n\n[Service]\nExecStart=/usr/bin/true\n",
+        );
+        /// macOS: the first string of `ProgramArguments`, not the label before it, past the five
+        /// XML entities; a property list naming a `Program` alone is none.
+        a_launchd_agent_reads_back_the_first_of_its_program_arguments: reads_back(
+            |dir| Box::new(LaunchAgents { dir }),
+            "plist",
+            r#"/Users/dev/50% $HOME & <"co's">"#,
+            "<plist version=\"1.0\">\n<dict>\n\t<key>Program</key>\n\t<string>/bin/true</string>\n\
+             </dict>\n</plist>\n",
+        );
+        /// Windows: the first word of the line, past a doubled `%` and a doubled trailing
+        /// backslash; a command file of commands of its own is none.
+        a_startup_folder_command_file_reads_back_its_first_word: reads_back(
+            |dir| Box::new(StartupFolder { dir }),
+            "cmd",
+            r"C:\Users\dev 50% $HOME & co\",
+            "@echo off\r\nstart notepad\r\n",
+        );
+        /// Windows: two trailing backslashes, each doubled.
+        a_startup_folder_command_file_reads_back_two_trailing_backslashes: reads_back(
+            |dir| Box::new(StartupFolder { dir }),
+            "cmd",
+            r"C:\Users\dev\\",
+            "\"C:\\Windows\\notepad.exe\"\r\n",
+        );
+    }
+
+    /// A sweep row: GIVEN the writer `writer` makes over a directory holding an entry under
+    /// [`KEY`] for a program that stands, an entry under [`STALE`] for a program since removed,
+    /// `foreign` as the file `<FOREIGN>.<extension>`, and a file of a name no key makes, WHEN the
+    /// entries are swept, THEN the stale entry is removed, every file and link its register wrote
+    /// with it, and named with its program; the foreign one is named and left; and every other file
+    /// stands. A second sweep names the foreign one alone.
+    fn sweeps(writer: fn(PathBuf) -> Box<dyn LoginStart>, extension: &str, foreign: &str) {
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("entries");
+        let writer = writer(dir.clone());
+        // A program path holding characters each writer escapes, every one valid in a file name
+        // on every host.
+        let standing = scratch.path().join("bin 50% $HOME & co's").join("rigger");
+        fs::create_dir_all(standing.parent().unwrap()).unwrap();
+        fs::write(&standing, "").unwrap();
+        let standing = standing.to_str().unwrap();
+        let gone = scratch.path().join("gone").join("rigger");
+        let gone = gone.to_str().unwrap();
+        assert_eq!(writer.register(KEY, standing, &at_login_args()), Ok(()));
+        fs::write(dir.join(format!("{FOREIGN}.{extension}")), foreign).unwrap();
+        fs::write(dir.join(format!("users-own.{extension}")), foreign).unwrap();
+        let before = entries(&dir);
+        assert_eq!(writer.register(STALE, gone, &at_login_args()), Ok(()));
+        let foreign = Swept::Foreign {
+            key: FOREIGN.to_string(),
+        };
+        assert_eq!(
+            sweep(&*writer),
+            Ok(vec![
+                Swept::Removed {
+                    key: STALE.to_string(),
+                    program: gone.to_string(),
+                },
+                foreign.clone(),
+            ]),
+            "the first sweep"
+        );
+        assert_eq!(entries(&dir), before, "what the sweep left");
+        assert_eq!(sweep(&*writer), Ok(vec![foreign]), "a second sweep");
+    }
+
+    // GIVEN each OS's writer over entries for a program that stands, for one since removed and
+    // under a key in a form no writer writes, WHEN they are swept, THEN the writer removes the one
+    // whose program is gone, keeps the one whose program stands, and names the foreign one and
+    // leaves it; the Linux writer's row runs on unix, for its link, and the others on every host.
+    rigger_domain::test_cases! {
+        /// Linux: the unit and its enabling link, both removed.
+        #[cfg(unix)]
+        a_sweep_removes_a_systemd_unit_whose_program_is_gone: sweeps(
+            |dir| Box::new(SystemdUserUnits { dir }),
+            "service",
+            "[Service]\nExecStart=/usr/bin/true\n",
+        );
+        /// macOS: the agent's property list.
+        a_sweep_removes_a_launchd_agent_whose_program_is_gone: sweeps(
+            |dir| Box::new(LaunchAgents { dir }),
+            "plist",
+            "<plist version=\"1.0\">\n<dict>\n</dict>\n</plist>\n",
+        );
+        /// Windows: the command file.
+        a_sweep_removes_a_startup_folder_command_file_whose_program_is_gone: sweeps(
+            |dir| Box::new(StartupFolder { dir }),
+            "cmd",
+            "@echo off\r\n",
+        );
+    }
+
+    /// A facility listing one entry, under [`STALE`] for the program `gone`, whose every
+    /// unregister answers `why`.
+    struct Unremovable {
+        gone: String,
+        why: &'static str,
+    }
+
+    impl LoginStart for Unremovable {
+        fn register(&self, _: &str, _: &str, _: &[String]) -> Result<(), Unavailable> {
+            Ok(())
+        }
+
+        fn unregister(&self, _: &str) -> Result<(), Unavailable> {
+            Err(Unavailable(self.why.to_string()))
+        }
+
+        fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
+            Ok(vec![Entry {
+                key: STALE.to_string(),
+                program: Some(self.gone.clone()),
+            }])
+        }
+    }
+
+    /// A SWEEP SAYS WHAT IT COULD NOT REMOVE: GIVEN an entry whose program is gone and whose
+    /// facility refuses its removal, WHEN it is swept, THEN the sweep names it, its program and why,
+    /// and every line a sweep says names the entry's key and, for a stale one, its program.
+    #[test]
+    fn a_sweep_names_an_entry_it_could_not_remove_and_each_line_names_the_key() {
+        let scratch = tempfile::tempdir().unwrap();
+        let gone = scratch.path().join("gone").to_str().unwrap().to_string();
+        let start = Unremovable {
+            gone: gone.clone(),
+            why: "permission denied",
+        };
+        let not_removed = Swept::NotRemoved {
+            key: STALE.to_string(),
+            program: gone.clone(),
+            why: "permission denied".to_string(),
+        };
+        assert_eq!(sweep(&start), Ok(vec![not_removed.clone()]));
+        let rows = [
+            (
+                Swept::Removed {
+                    key: STALE.to_string(),
+                    program: gone.clone(),
+                },
+                format!(
+                    "removed the login entry {STALE}: the program it starts, {gone}, does not \
+                     exist"
+                ),
+                true,
+            ),
+            (
+                not_removed,
+                format!(
+                    "the login entry {STALE} starts {gone}, which does not exist, and was not \
+                     removed: permission denied"
+                ),
+                false,
+            ),
+            (
+                Swept::Foreign {
+                    key: FOREIGN.to_string(),
+                },
+                format!(
+                    "left the login entry {FOREIGN} alone: it is not in the form rigger writes"
+                ),
+                false,
+            ),
+        ];
+        for (swept, line, change) in rows {
+            assert_eq!(
+                (swept.line(), swept.is_change()),
+                (line, change),
+                "{swept:?}"
+            );
+        }
     }
 
     /// NO COMMAND FILE ENDS ITS QUOTING EARLY: GIVEN a root holding a double quote or a line
