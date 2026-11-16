@@ -1,6 +1,6 @@
 use super::*;
 use rigger::contextgraph::sqlite::CatchUp;
-use rigger::login_start::{sweep, Swept};
+use rigger::login_start::{sweep, Swept, Unlisted};
 use rigger_domain::code_view::AdvanceCodeStore;
 
 /// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
@@ -1008,10 +1008,18 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // Sweep the login entries whose program is gone ([`sweep`]), the reaper of an entry a run
     // registered with `--relaunch-at-login` whose binary was since uninstalled or moved. An entry
     // the sweep leaves, not in rigger's form or not removable, is said on EVERY setup, before the
-    // silent-no-op check, like a stray; one it removed is a change, reported below. A facility
-    // setup cannot list is passed over in silence, so a setup on a host without one stays a silent
-    // no-op: there a run's register is refused, so no entry stands.
-    let swept = sweep(&*login_start()).unwrap_or_default();
+    // silent-no-op check, like a stray; one it removed is a change, reported below. A host with
+    // no login-start facility is passed over in silence, so a setup there stays a silent no-op:
+    // there a run's register is refused, so no entry stands. Entries setup cannot read are said
+    // in one line on stderr, naming the path and the error, and fail nothing.
+    let swept = match sweep(&*login_start()) {
+        Ok(swept) => swept,
+        Err(Unlisted::NoFacility(_)) => Vec::new(),
+        Err(unlisted) => {
+            eprintln!("warning: {}", unlisted.line());
+            Vec::new()
+        }
+    };
     for left in swept.iter().filter(|swept| !swept.is_change()) {
         println!("{}", left.line());
     }

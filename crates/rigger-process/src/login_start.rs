@@ -489,13 +489,15 @@ fn entry_file(dir: &Path, key: &str, extension: &str) -> PathBuf {
 
 /// Every entry under `dir` whose file is named `<key>.<extension>` ([`entry_file`]), `<key>` starting
 /// [`KEY_PREFIX`], by key, each with the program `program` reads from its text; none when `dir`
-/// is not yet made. A file that is not UTF-8 text is in no writer's form.
+/// is not yet made. A file that is not UTF-8 text is in no writer's form. Unreadable, naming the
+/// path and the error, when `dir` cannot be listed or an entry's file cannot be read, as when it
+/// is a directory or a link to nothing.
 fn list_entries(
     dir: &Path,
     extension: &str,
     program: fn(&str) -> Option<String>,
 ) -> Result<Vec<Entry>, Unlisted> {
-    let unlisted = |doing, path: &Path, e| Unlisted::NoFacility(failed(doing, path, e));
+    let unlisted = |doing, path: &Path, e| Unlisted::Unreadable(failed(doing, path, e));
     let listing = match fs::read_dir(dir) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         listing => listing.map_err(|e| unlisted("list", dir, e))?,
@@ -509,7 +511,7 @@ fn list_entries(
             .and_then(|name| name.to_str())
             .and_then(|name| name.strip_suffix(suffix.as_str()))
             .filter(|key| key.starts_with(KEY_PREFIX));
-        let Some(key) = key.filter(|_| path.is_file()) else {
+        let Some(key) = key else {
             continue;
         };
         let text = fs::read(&path).map_err(|e| unlisted("read", &path, e))?;

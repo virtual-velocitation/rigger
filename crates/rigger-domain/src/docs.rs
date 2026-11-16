@@ -1063,7 +1063,9 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  its entry again. Each launch with the flag and `rigger setup` remove an entry \
                  whose program was since uninstalled or moved, one line naming its key and \
                  program, and name in one line, leaving it, an entry under rigger's key that is \
-                 not in the form rigger writes.\n",
+                 not in the form rigger writes; entries they cannot read are named in one line \
+                 with the error, which fails neither, and a host with no login-start facility \
+                 leaves `rigger setup` silent.\n",
                 stop = DRIVER_STOP_RULE
             ),
             "When that line says the run was left stopped, or a driver was stopped on purpose, \

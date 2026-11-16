@@ -819,12 +819,13 @@ impl LoginStart for RecordingLoginStart {
 
     /// Each key a `register` line names until an `unregister` line names it, by key, its program
     /// the text between the key and ` run --at-login `, which a program path holding a space
-    /// keeps whole, and none for a line without that text; empty when no record is made.
+    /// keeps whole, and none for a line without that text; empty when no record is made, and
+    /// unreadable, naming the record and the error, when it cannot be read.
     fn entries(&self) -> Result<Vec<Entry>, Unlisted> {
         let text = match std::fs::read_to_string(&self.0) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             text => text.map_err(|e| {
-                Unlisted::NoFacility(Unavailable(format!(
+                Unlisted::Unreadable(Unavailable(format!(
                     "cannot read {}: {e}",
                     self.0.display()
                 )))
