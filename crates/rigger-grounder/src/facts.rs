@@ -348,7 +348,10 @@ struct Answer {
 /// 1 to the text's last - one more than the `\n` the text holds - and an end line from its line to
 /// the last, and none of the out-of-line module fields only the bundled Rust grammar sets; each
 /// ref has a name, a line from 1 to the last and, when it has a kind, one of `const`, `type` and
-/// `use`; and no def path leads back to itself through the parents ([`parent_cycle`]).
+/// `use`; and no def path leads back to itself through the parents ([`parent_cycle`]). The why
+/// quotes each text the extractor wrote into it - the answer's path, its error, a ref's kind, the
+/// def path a cycle runs through - so
+/// a line break or terminal escape there is escaped and the line saying the why stays one line.
 fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, String> {
     let answer: Answer =
         serde_json::from_str(line).map_err(|e| format!("the answer does not parse: {e}"))?;
@@ -356,7 +359,7 @@ fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, S
         return Err(format!("the answer is for {:?}", answer.path));
     }
     if let Some(error) = answer.error {
-        return Err(format!("the answer is an error: {error}"));
+        return Err(format!("the answer is an error: {error:?}"));
     }
     let (Some(defs), Some(refs)) = (answer.defs, answer.refs) else {
         return Err("the answer holds no error and lacks defs or refs".to_string());
