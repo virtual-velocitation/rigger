@@ -4,7 +4,7 @@ use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::held::HeldDriver;
 use rigger::keep_awake::{OsSleepHold, KEEP_AWAKE_ENV};
-use rigger::login_start::{Entry, LoginStart, OsLoginStart, Unlisted, LOGIN_START_ENV};
+use rigger::login_start::{Entry, LoginStart, OsLoginStart, Program, Unlisted, LOGIN_START_ENV};
 use rigger::review;
 use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
@@ -802,7 +802,9 @@ impl SleepHold for UnavailableSleepHold {
 /// The login-start fake [`LOGIN_START_ENV`]'s `record:<path>` selects: a registration appends the
 /// line `register <key> <program> <args>` to the file at `<path>` and a removal `unregister
 /// <key>`, so a test reads what a run registered with the host's login facility, and its listing
-/// is the entries those lines leave standing. A call it cannot record answers unavailable.
+/// is the entries those lines leave standing. A line `unreadable <key> <why>`, which a test writes
+/// and no call does, stands an entry under `<key>` whose file could not be read for `<why>`. A
+/// call it cannot record answers unavailable.
 struct RecordingLoginStart(PathBuf);
 
 impl LoginStart for RecordingLoginStart {
@@ -817,10 +819,11 @@ impl LoginStart for RecordingLoginStart {
         record_line(&self.0, &format!("unregister {key}"))
     }
 
-    /// Each key a `register` line names until an `unregister` line names it, by key, its program
-    /// the text between the key and ` run --at-login `, which a program path holding a space
-    /// keeps whole, and none for a line without that text; empty when no record is made, and
-    /// unreadable, naming the record and the error, when it cannot be read.
+    /// Each key a `register` or `unreadable` line names until an `unregister` line names it, by
+    /// key: a `register` line's program the text between the key and ` run --at-login `, which a
+    /// program path holding a space keeps whole, and foreign for a line without that text; an
+    /// `unreadable` line's entry unreadable for the rest of its line. Empty when no record is
+    /// made, and unreadable, naming the record and the error, when it cannot be read.
     fn entries(&self) -> Result<Vec<Entry>, Unlisted> {
         let text = match std::fs::read_to_string(&self.0) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -840,8 +843,13 @@ impl LoginStart for RecordingLoginStart {
                 let (key, command) = entry.split_once(' ').unwrap_or((entry, ""));
                 let program = command
                     .split_once(separator.as_str())
-                    .map(|(program, _)| program.to_string());
+                    .map_or(Program::Foreign, |(program, _)| {
+                        Program::Read(program.to_string())
+                    });
                 standing.insert(key.to_string(), program);
+            } else if let Some(entry) = line.strip_prefix("unreadable ") {
+                let (key, why) = entry.split_once(' ').unwrap_or((entry, ""));
+                standing.insert(key.to_string(), Program::Unreadable(why.to_string()));
             }
         }
         Ok(standing

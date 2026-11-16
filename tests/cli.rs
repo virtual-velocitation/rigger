@@ -15788,52 +15788,110 @@ fn setup_and_a_flagged_launch_sweep_the_login_entries_whose_program_is_gone() {
     );
 }
 
-/// A SETUP SAYS THE LOGIN ENTRIES IT COULD NOT LIST, SAVE ON A HOST WITHOUT THE FACILITY: GIVEN
-/// a set-up project, WHEN `rigger setup` reruns where the login-start facility is unavailable or
-/// where its entries cannot be read, THEN setup succeeds and prints nothing on stdout either way;
-/// on stderr it says nothing where the facility is unavailable, and where the entries cannot be
-/// read one line that they were not swept, naming the path and the error.
+/// A SETUP NAMES EACH LOGIN ENTRY IT CANNOT READ AND SWEEPS THE REST, SAVE ON A HOST WITHOUT THE
+/// FACILITY: GIVEN a set-up project, WHEN `rigger setup` reruns where the login-start facility is
+/// unavailable, where one entry cannot be read beside one whose program is gone, or where the
+/// entries cannot be listed at all, THEN setup succeeds each time; it says nothing where the
+/// facility is unavailable; it names the entry it cannot read in one line on stderr, with the path
+/// and the error, and still removes the stale one; and where the entries cannot be listed it says
+/// in one line on stderr that they were not swept, naming the path and the error, and sweeps none.
 #[test]
-fn setup_names_the_login_entries_it_could_not_list_save_on_a_host_without_the_facility() {
+fn setup_names_each_login_entry_it_cannot_read_and_sweeps_the_rest_save_without_the_facility() {
     let set_up = temp_project();
     setup_ok(set_up.path(), &[]);
     let scratch = tempfile::tempdir().unwrap();
     // A record that is a directory, which no user on any host reads as a file.
-    let unreadable = scratch.path().join("login-start");
-    std::fs::create_dir(&unreadable).unwrap();
-    let error = std::fs::read_to_string(&unreadable).unwrap_err();
-    let unreadable_record = format!("record:{}", unreadable.display());
-    let rows: [(&str, &str, Vec<String>); 2] = [
+    let unlistable = scratch.path().join("login-start");
+    std::fs::create_dir(&unlistable).unwrap();
+    let error = std::fs::read_to_string(&unlistable).unwrap_err();
+    let unlistable_record = format!("record:{}", unlistable.display());
+    let record = format!("record:{}", common::login_start_record().display());
+    let stale = "rigger-run-5a5a5a5a5a5a5a5a";
+    let unread = "rigger-run-1f2e3d4c5b6a7980";
+    let gone = scratch.path().join("gone").join("rigger");
+    let gone = gone.to_str().unwrap();
+    let why = format!(
+        "cannot read {}: Permission denied (os error 13)",
+        scratch.path().join(format!("{unread}.service")).display()
+    );
+    let seeded = vec![
+        format!("register {stale} {gone} run --at-login /gone-project"),
+        format!("unreadable {unread} {why}"),
+    ];
+    /// The case, the login-start knob, the entries seeded in the test's record, setup's lines
+    /// naming a login entry on stdout and on stderr, the calls it records after the seeded
+    /// entries, and whether its stdout is empty.
+    type Row<'a> = (
+        &'a str,
+        &'a str,
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        bool,
+    );
+    let rows: [Row; 3] = [
         (
             "a host without the facility",
             "unavailable:no login session here",
             Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            true,
         ),
         (
-            "entries setup cannot read",
-            &unreadable_record,
+            "an entry setup cannot read beside one whose program is gone",
+            &record,
+            seeded.clone(),
+            vec![format!(
+                "removed the login entry {stale}: the program it starts, {gone}, does not exist"
+            )],
+            vec![format!(
+                "warning: the login entry {unread} was not swept: {why}"
+            )],
+            vec![format!("unregister {stale}")],
+            false,
+        ),
+        (
+            "entries setup cannot list",
+            &unlistable_record,
+            Vec::new(),
+            Vec::new(),
             vec![format!(
                 "warning: the login entries whose program is gone were not swept: cannot read \
                  {}: {error}",
-                unreadable.display()
+                unlistable.display()
             )],
+            Vec::new(),
+            true,
         ),
     ];
-    for (case, knob, said) in rows {
+    for (case, knob, seed, out_said, err_said, recorded, quiet) in rows {
+        let seed_text: String = seed.iter().map(|line| format!("{line}\n")).collect();
+        std::fs::write(common::login_start_record(), seed_text).unwrap();
         let (out, err, ok) = run_rigger_envs(
             set_up.path(),
             &["setup"],
             &[(common::LOGIN_START_ENV, knob)],
         );
-        let got_said: Vec<String> = err
-            .lines()
-            .filter(|line| line.contains("login entr"))
-            .map(str::to_owned)
-            .collect();
+        let said = |text: &str| -> Vec<String> {
+            text.lines()
+                .filter(|line| line.contains("login entr"))
+                .map(str::to_owned)
+                .collect()
+        };
+        let expected: Vec<String> = seed.into_iter().chain(recorded).collect();
         assert_eq!(
-            (out.as_str(), got_said, ok),
-            ("", said, true),
-            "{case}; stderr: {err}"
+            (
+                said(&out),
+                said(&err),
+                recorded_login_starts(),
+                out.is_empty(),
+                ok
+            ),
+            (out_said, err_said, expected, quiet, true),
+            "{case}; stdout: {out}; stderr: {err}"
         );
     }
 }

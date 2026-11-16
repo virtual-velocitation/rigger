@@ -36,10 +36,8 @@ pub trait LoginStart {
     /// [`LoginStart::register`] wrote under it; `Ok` when no entry stands under it.
     fn unregister(&self, key: &str) -> Result<(), Unavailable>;
 
-    /// Every entry standing under a key [`run_key`] makes, by key, each with the program it
-    /// starts read back from the file [`LoginStart::register`] wrote, or with none when that file
-    /// is not in the form this facility's register writes; empty when none stands; or why they
-    /// could not be listed.
+    /// Every entry standing under a key [`run_key`] makes, by key, each with what its file says it
+    /// starts ([`Program`]); empty when none stands; or why they could not be listed.
     fn entries(&self) -> Result<Vec<Entry>, Unlisted>;
 }
 
@@ -48,9 +46,19 @@ pub trait LoginStart {
 pub struct Entry {
     /// The key it stands under.
     pub key: String,
-    /// The program it starts, read back from its file; `None` when that file is not in the form
-    /// the facility's register writes, so it may be the user's own.
-    pub program: Option<String>,
+    /// What its file says it starts.
+    pub program: Program,
+}
+
+/// What a facility reads back from the file of an entry it lists ([`Entry`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Program {
+    /// The program it starts, read back from the file [`LoginStart::register`] wrote.
+    Read(String),
+    /// None: the file is not in the form the facility's register writes, so it may be the user's.
+    Foreign,
+    /// None: the file could not be read; why, naming the path and the error.
+    Unreadable(String),
 }
 
 /// What [`sweep`] did with one entry it names.
@@ -77,6 +85,13 @@ pub enum Swept {
         /// The key it stands under.
         key: String,
     },
+    /// Left alone: its file could not be read.
+    Unreadable {
+        /// The key it stands under.
+        key: String,
+        /// Why its file could not be read, naming the path and the error.
+        why: String,
+    },
 }
 
 impl Swept {
@@ -93,6 +108,7 @@ impl Swept {
             Swept::Foreign { key } => {
                 format!("left the login entry {key} alone: it is not in the form rigger writes")
             }
+            Swept::Unreadable { key, why } => format!("the login entry {key} was not swept: {why}"),
         }
     }
 
@@ -107,8 +123,8 @@ impl Swept {
 pub enum Unlisted {
     /// The host has no login-start facility, so no entry of it stands.
     NoFacility(Unavailable),
-    /// The facility stands, and its directory or an entry's file could not be read: why, naming
-    /// the path and the error.
+    /// The facility stands, and the directory its entries are listed from could not be read: why,
+    /// naming the path and the error.
     Unreadable(Unavailable),
 }
 
@@ -124,14 +140,22 @@ impl Unlisted {
 /// THE STALE-ENTRY SWEEP, the reaper of an entry whose program was uninstalled or moved after
 /// its register, which would fail at every login: each entry `start` lists whose program does not
 /// exist is unregistered; an entry whose program stands, or is not known to be absent, stands;
-/// and one not in the facility's own form is left alone. Answers what it did with each entry it
-/// names, in the listing's key order; or why `start` could not list its entries.
+/// and one not in the facility's own form, or whose file could not be read, is left alone, so no
+/// one entry keeps the sweep from the rest. Answers what it did with each entry it names, in the
+/// listing's key order; or why `start` could not list its entries.
 pub fn sweep(start: &dyn LoginStart) -> Result<Vec<Swept>, Unlisted> {
     let mut swept = Vec::new();
     for Entry { key, program } in start.entries()? {
-        let Some(program) = program else {
-            swept.push(Swept::Foreign { key });
-            continue;
+        let program = match program {
+            Program::Read(program) => program,
+            Program::Foreign => {
+                swept.push(Swept::Foreign { key });
+                continue;
+            }
+            Program::Unreadable(why) => {
+                swept.push(Swept::Unreadable { key, why });
+                continue;
+            }
         };
         // A program whose existence cannot be read, as behind a directory the user cannot search,
         // is not known to be absent, so its entry stands.
@@ -517,7 +541,11 @@ fn list_entries(
         let text = fs::read(&path).map_err(|e| unlisted("read", &path, e))?;
         entries.push(Entry {
             key: key.to_string(),
-            program: String::from_utf8(text).ok().as_deref().and_then(program),
+            program: String::from_utf8(text)
+                .ok()
+                .as_deref()
+                .and_then(program)
+                .map_or(Program::Foreign, Program::Read),
         });
     }
     entries.sort_by(|a, b| a.key.cmp(&b.key));
@@ -891,11 +919,11 @@ mod tests {
             Ok(vec![
                 Entry {
                     key: KEY.to_string(),
-                    program: Some(program.to_string()),
+                    program: Program::Read(program.to_string()),
                 },
                 Entry {
                     key: FOREIGN.to_string(),
-                    program: None,
+                    program: Program::Foreign,
                 },
             ]),
             "the entries under {}",
@@ -1029,7 +1057,7 @@ mod tests {
         fn entries(&self) -> Result<Vec<Entry>, Unlisted> {
             Ok(vec![Entry {
                 key: STALE.to_string(),
-                program: Some(self.gone.clone()),
+                program: Program::Read(self.gone.clone()),
             }])
         }
     }
@@ -1080,6 +1108,17 @@ mod tests {
                 ),
                 false,
             ),
+            (
+                Swept::Unreadable {
+                    key: KEY.to_string(),
+                    why: "cannot read /entries/x: permission denied".to_string(),
+                },
+                format!(
+                    "the login entry {KEY} was not swept: cannot read /entries/x: permission \
+                     denied"
+                ),
+                false,
+            ),
         ];
         for (swept, line, change) in rows {
             assert_eq!(
@@ -1090,45 +1129,19 @@ mod tests {
         }
     }
 
-    /// What a listing row leaves unreadable under the directory `dir` of a writer whose entries
-    /// end `extension`: why the listing fails, naming the path and the error reading it gave.
-    type Unreadable = fn(dir: &Path, extension: &str) -> String;
-
-    /// The directory made a file, which no user on any host can list.
-    fn a_file_for_the_directory(dir: &Path, _extension: &str) -> String {
-        fs::write(dir, "").unwrap();
-        format!(
-            "cannot list {}: {}",
-            dir.display(),
-            fs::read_dir(dir).unwrap_err()
-        )
-    }
-
-    /// An entry's file made a directory, which no user on any host can read as a file, beside an
-    /// entry that can be read.
-    fn a_directory_for_an_entry(dir: &Path, extension: &str) -> String {
-        let entry = entry_file(dir, STALE, extension);
-        fs::create_dir_all(&entry).unwrap();
-        fs::write(entry_file(dir, FOREIGN, extension), "").unwrap();
-        format!(
-            "cannot read {}: {}",
-            entry.display(),
-            fs::read(&entry).unwrap_err()
-        )
-    }
-
-    /// A listing row: GIVEN the writer `writer` makes over a directory `unreadable` leaves
-    /// unreadable, WHEN its entries are listed and swept, THEN each answers that the entries could
-    /// not be read, naming the path and the error, not that the host has no facility, and the
-    /// line it says is that the entries were not swept, and why.
-    fn names_what_it_cannot_read(
-        writer: fn(PathBuf) -> Box<dyn LoginStart>,
-        extension: &str,
-        unreadable: Unreadable,
-    ) {
+    /// A listing row: GIVEN the writer `writer` makes over a directory that is a file, which no
+    /// user on any host can list, WHEN its entries are listed and swept, THEN each answers that the
+    /// entries could not be read, naming the directory and the error listing it gave, not that the
+    /// host has no facility, and the line it says is that the entries were not swept, and why.
+    fn names_a_directory_it_cannot_list(writer: fn(PathBuf) -> Box<dyn LoginStart>) {
         let scratch = tempfile::tempdir().unwrap();
         let dir = scratch.path().join("entries");
-        let why = unreadable(&dir, extension);
+        fs::write(&dir, "").unwrap();
+        let why = format!(
+            "cannot list {}: {}",
+            dir.display(),
+            fs::read_dir(&dir).unwrap_err()
+        );
         let writer = writer(dir);
         let unlisted = Unlisted::Unreadable(Unavailable(why.clone()));
         assert_eq!(
@@ -1142,49 +1155,90 @@ mod tests {
         );
     }
 
-    // GIVEN each OS's writer over a directory that is a file, or holding an entry whose file is a
-    // directory, WHEN its entries are listed and swept, THEN both answer the entries unreadable,
-    // naming the path and the error; the Linux writer's rows run on unix, for its link, and the
-    // others on every host.
+    /// A sweep row past an entry it cannot read: GIVEN the writer `writer` makes over a directory
+    /// holding an entry under [`STALE`] for a program since removed and, under [`KEY`], an entry
+    /// whose file is a directory, which no user on any host reads as a file, WHEN the entries are
+    /// listed and swept, THEN the listing names the unreadable one with the path and the error
+    /// reading it gave, and the sweep names it and leaves it, and still removes the stale one,
+    /// every file and link its register wrote with it.
+    fn sweeps_past_an_entry_it_cannot_read(
+        writer: fn(PathBuf) -> Box<dyn LoginStart>,
+        extension: &str,
+    ) {
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("entries");
+        let writer = writer(dir.clone());
+        let unreadable = entry_file(&dir, KEY, extension);
+        fs::create_dir_all(&unreadable).unwrap();
+        let why = format!(
+            "cannot read {}: {}",
+            unreadable.display(),
+            fs::read(&unreadable).unwrap_err()
+        );
+        let before = entries(&dir);
+        let gone = scratch.path().join("gone").join("rigger");
+        let gone = gone.to_str().unwrap();
+        assert_eq!(writer.register(STALE, gone, &at_login_args()), Ok(()));
+        assert_eq!(
+            writer.entries(),
+            Ok(vec![
+                Entry {
+                    key: KEY.to_string(),
+                    program: Program::Unreadable(why.clone()),
+                },
+                Entry {
+                    key: STALE.to_string(),
+                    program: Program::Read(gone.to_string()),
+                },
+            ]),
+            "the listing"
+        );
+        assert_eq!(
+            sweep(&*writer),
+            Ok(vec![
+                Swept::Unreadable {
+                    key: KEY.to_string(),
+                    why,
+                },
+                Swept::Removed {
+                    key: STALE.to_string(),
+                    program: gone.to_string(),
+                },
+            ]),
+            "the sweep"
+        );
+        assert_eq!(entries(&dir), before, "what the sweep left");
+    }
+
+    // GIVEN each OS's writer over a directory that is a file, or over an entry whose file is a
+    // directory beside one whose program is gone, WHEN its entries are listed and swept, THEN the
+    // directory fails the listing and the sweep, naming the path and the error, while the
+    // unreadable entry is named with its path and error and the stale one is still removed; the
+    // Linux writer's rows run on unix, for its link, and the others on every host.
     rigger_domain::test_cases! {
         /// Linux: the unit directory a file.
         #[cfg(unix)]
-        a_systemd_listing_names_a_unit_directory_it_cannot_list: names_what_it_cannot_read(
+        a_systemd_listing_names_a_unit_directory_it_cannot_list: names_a_directory_it_cannot_list(
             |dir| Box::new(SystemdUserUnits { dir }),
-            "service",
-            a_file_for_the_directory,
         );
-        /// Linux: a unit a directory.
+        /// Linux: a unit a directory, beside a stale unit.
         #[cfg(unix)]
-        a_systemd_listing_names_a_unit_it_cannot_read: names_what_it_cannot_read(
-            |dir| Box::new(SystemdUserUnits { dir }),
-            "service",
-            a_directory_for_an_entry,
-        );
+        a_systemd_sweep_removes_a_stale_unit_past_one_it_cannot_read:
+            sweeps_past_an_entry_it_cannot_read(|dir| Box::new(SystemdUserUnits { dir }), "service");
         /// macOS: the agent directory a file.
-        a_launchd_listing_names_an_agent_directory_it_cannot_list: names_what_it_cannot_read(
+        a_launchd_listing_names_an_agent_directory_it_cannot_list: names_a_directory_it_cannot_list(
             |dir| Box::new(LaunchAgents { dir }),
-            "plist",
-            a_file_for_the_directory,
         );
-        /// macOS: a property list a directory.
-        a_launchd_listing_names_an_agent_it_cannot_read: names_what_it_cannot_read(
-            |dir| Box::new(LaunchAgents { dir }),
-            "plist",
-            a_directory_for_an_entry,
-        );
+        /// macOS: a property list a directory, beside a stale agent.
+        a_launchd_sweep_removes_a_stale_agent_past_one_it_cannot_read:
+            sweeps_past_an_entry_it_cannot_read(|dir| Box::new(LaunchAgents { dir }), "plist");
         /// Windows: the Startup folder a file.
-        a_startup_folder_listing_names_a_folder_it_cannot_list: names_what_it_cannot_read(
+        a_startup_folder_listing_names_a_folder_it_cannot_list: names_a_directory_it_cannot_list(
             |dir| Box::new(StartupFolder { dir }),
-            "cmd",
-            a_file_for_the_directory,
         );
-        /// Windows: a command file a directory.
-        a_startup_folder_listing_names_a_command_file_it_cannot_read: names_what_it_cannot_read(
-            |dir| Box::new(StartupFolder { dir }),
-            "cmd",
-            a_directory_for_an_entry,
-        );
+        /// Windows: a command file a directory, beside a stale command file.
+        a_startup_folder_sweep_removes_a_stale_command_file_past_one_it_cannot_read:
+            sweeps_past_an_entry_it_cannot_read(|dir| Box::new(StartupFolder { dir }), "cmd");
     }
 
     /// NO COMMAND FILE ENDS ITS QUOTING EARLY: GIVEN a root holding a double quote or a line
