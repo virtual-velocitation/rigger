@@ -886,8 +886,8 @@ pub const DRIVER_STOP_RULE: &str = "A hold (`rigger hold --reason <text>`) stops
      relaunched by `rigger release` alone, and an interrupted driver is never relaunched. Ending a \
      driver's process any other way is a death, and the next `rigger status` (not `--line` or \
      `--json`) or session start (`rigger prime`) brings it back by adoption, as `rigger release` \
-     and `rigger resume-unit` do, each invoked from the main checkout; no other command relaunches \
-     it.";
+     and `rigger resume-unit` do, each invoked from the main checkout, and as the next login does \
+     for a run started with `--relaunch-at-login`; no other command relaunches it.";
 
 /// Render the `rigger-reset-store` skill (spec 68, criterion 2): store hygiene for the
 /// three files under `.rigger/`. `ctx` is accepted only to match the registry's uniform
@@ -1043,7 +1043,16 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  the login token in `RIGGER_CLAUDE_CODE_OAUTH_TOKEN`, or drove the server store \
                  named in `KURRENTDB_CONN` or by `--conn`, is relaunched only from an environment \
                  that sets that variable too; from any other, the line names that command and \
-                 nothing is relaunched.\n",
+                 nothing is relaunched. A run started with `--relaunch-at-login` also registers \
+                 a login entry with the OS's login-start facility (a systemd user unit on Linux, a \
+                 LaunchAgent on macOS, a script in the Startup folder on Windows) while the run is \
+                 live, so a machine that reboots mid-run brings the run back at the next login, \
+                 with no session opened: the entry runs `rigger run --at-login <project root>`, \
+                 which relaunches a dead driver as `rigger status` would and removes the entry \
+                 once no relaunch is owed. A driver that ends on its own or is refused removes \
+                 its entry as it empties its record, save one parked on an operator hold, whose \
+                 entry stands with its record; a run started without the flag registers nothing, \
+                 and a login removes the entry an earlier launch of it left.\n",
                 stop = DRIVER_STOP_RULE
             ),
             "When that line says the run was left stopped, or a driver was stopped on purpose, \
