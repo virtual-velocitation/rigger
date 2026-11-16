@@ -1968,6 +1968,22 @@ struct TemplateSet {
     files: Vec<(String, String)>,
 }
 
+/// The directory of a template root that holds its gate template sets, one `<key>/` per set.
+const SETS_DIR: &str = "scaffold";
+
+/// A gate template set's own spec, in its `scaffold/<key>/` directory.
+const SET_SPEC_FILE: &str = "set.yml";
+
+/// A gate template set's list of the files `rigger init` copies, in its `scaffold/<key>/`
+/// directory.
+const SET_FILES_LIST: &str = "files";
+
+/// A refusal of the gate template set `key`, giving `why`: every loading and parsing refusal of a
+/// set opens with the set it names.
+fn set_refusal(key: &str, why: impl std::fmt::Display) -> String {
+    format!("gate template set {key}: {why}")
+}
+
 /// Read the gate template sets the template root `root` holds (the directory `--template <dir>`
 /// names): each directory `<root>/scaffold/<key>/`, in name order, holding a `set.yml` and a
 /// `files` list of root-relative paths, one per line (blank lines skipped), whose texts `rigger
@@ -1979,14 +1995,13 @@ struct TemplateSet {
 /// `.` or `..` segment, names no file under `root` or names the same components as an earlier
 /// listed path, and a file that is unreadable or not UTF-8 text.
 fn load_template_sets(root: &Path) -> Result<Vec<TemplateSet>, String> {
-    let shown = root.display();
-    let entries = std::fs::read_dir(root.join("scaffold")).map_err(|e| {
-        format!("{shown}/scaffold/: the gate template sets directory is unreadable: {e}")
-    })?;
+    let sets = format!("{}/{SETS_DIR}", root.display());
+    let entries = std::fs::read_dir(root.join(SETS_DIR))
+        .map_err(|e| format!("{sets}/: the gate template sets directory is unreadable: {e}"))?;
     let mut set_dirs = Vec::new();
     for entry in entries {
         let path = entry
-            .map_err(|e| format!("{shown}/scaffold/: an entry is unreadable: {e}"))?
+            .map_err(|e| format!("{sets}/: an entry is unreadable: {e}"))?
             .path();
         if path.is_dir() {
             set_dirs.push(path);
@@ -1994,42 +2009,36 @@ fn load_template_sets(root: &Path) -> Result<Vec<TemplateSet>, String> {
     }
     set_dirs.sort();
     if set_dirs.is_empty() {
-        return Err(format!(
-            "{shown}/scaffold/ holds no gate template set directory"
-        ));
+        return Err(format!("{sets}/ holds no gate template set directory"));
     }
     set_dirs
         .iter()
-        .map(|dir| load_template_set(root, dir))
+        .map(|dir| load_template_set(root, &sets, dir))
         .collect()
 }
 
-/// Read the one gate template set in `dir`, a directory of `root`'s `scaffold/`, refusing as
-/// [`load_template_sets`] says.
-fn load_template_set(root: &Path, dir: &Path) -> Result<TemplateSet, String> {
-    let shown = root.display();
+/// Read the one gate template set in `dir`, a directory of `root`'s `scaffold/` (shown as
+/// `sets`), refusing as [`load_template_sets`] says.
+fn load_template_set(root: &Path, sets: &str, dir: &Path) -> Result<TemplateSet, String> {
     let key = dir
         .file_name()
         .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            format!(
-                "{shown}/scaffold/: {} is not a UTF-8 set name",
-                dir.display()
-            )
-        })?
+        .ok_or_else(|| format!("{sets}/: {} is not a UTF-8 set name", dir.display()))?
         .to_string();
-    let refuse = |why: String| format!("gate template set {key}: {why}");
-    for required in ["set.yml", "files"] {
+    let refuse = |why: String| set_refusal(&key, why);
+    for required in [SET_SPEC_FILE, SET_FILES_LIST] {
         if !dir.join(required).is_file() {
-            return Err(refuse(format!("missing {shown}/scaffold/{key}/{required}")));
+            return Err(refuse(format!("missing {sets}/{key}/{required}")));
         }
     }
     let text = |path: &Path, rel: &str| {
         let bytes = std::fs::read(path).map_err(|e| refuse(format!("{rel} is unreadable: {e}")))?;
         String::from_utf8(bytes).map_err(|_| refuse(format!("{rel} is not UTF-8 text")))
     };
-    let set = text(&dir.join("set.yml"), &format!("scaffold/{key}/set.yml"))?;
-    let listed = text(&dir.join("files"), &format!("scaffold/{key}/files"))?;
+    let own = |name: &str| text(&dir.join(name), &format!("{SETS_DIR}/{key}/{name}"));
+    let set = own(SET_SPEC_FILE)?;
+    let listed = own(SET_FILES_LIST)?;
+    let shown = root.display();
     let mut files: Vec<(String, String)> = Vec::new();
     for rel in listed.lines().map(str::trim).filter(|l| !l.is_empty()) {
         let path = Path::new(rel);
@@ -2093,7 +2102,7 @@ struct SetSpec {
 /// [`scaffold_workflow`] rendering fails to load, so a set `init` would write a workflow from
 /// that no command can read is refused before the first write.
 fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
-    let refuse = |why: String| format!("gate template set {}: {why}", set.key);
+    let refuse = |why: String| set_refusal(&set.key, why);
     let mut spec: SetSpec = serde_yaml::from_str(&set.set).map_err(|e| refuse(e.to_string()))?;
     let declared: Option<std::collections::BTreeMap<String, config::Gate>> =
         serde_yaml::from_str(&spec.gates).map_err(|e| refuse(format!("gates: {e}")))?;
