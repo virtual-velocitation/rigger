@@ -82,7 +82,7 @@ const DECLARATIONS: [&str; 2] = [
 /// Given a committed repository, when the operator commits a workflow declaring no extractor, or
 /// one that fails the check, and builds the graph, the build advances the store under the bundled
 /// grammars' fingerprint to the new head - the store a build before any declaration made - and
-/// says on stderr why a declaration that fails is not in force.
+/// says on stderr, once, why a declaration that fails is not in force.
 #[cfg(feature = "symbols")]
 #[test]
 fn with_no_declaration_or_a_failing_one_graph_build_advances_the_bundled_grammars_store() {
@@ -110,15 +110,15 @@ fn with_no_declaration_or_a_failing_one_graph_build_advances_the_bundled_grammar
             ok,
             "{workflow:?}: graph build succeeds; stdout: {out}; stderr: {err}"
         );
-        // Each read of the declaration says why it fails, and graph build reads it for the store
-        // in force and again to open the store, so the lines it says are compared as a set.
+        // graph build opens the store once, so it reads the declaration once and says why a
+        // declaration fails once.
         assert_eq!(
-            err.lines().collect::<BTreeSet<_>>(),
+            err.lines().collect::<Vec<_>>(),
             why.map(|why| format!("rigger: extractors: {why}"))
                 .iter()
                 .map(String::as_str)
-                .collect::<BTreeSet<_>>(),
-            "{workflow:?}: every line graph build says on stderr"
+                .collect::<Vec<_>>(),
+            "{workflow:?}: every line graph build says on stderr, in order"
         );
         let head = head_of(&root);
         let advanced = Store::new(&root)
