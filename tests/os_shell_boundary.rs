@@ -1,5 +1,5 @@
 //! THE SHELL BOUNDARY SCAN (spec 125, criterion 10): a child process is built through the
-//! process-spawn port (`rigger_process::subprocess`), which owns the host's shell, so its file is
+//! process-spawn interface (`rigger_process::subprocess`), which owns the host's shell, so its file is
 //! the one production file that spawns `sh` by name, and no production code names the external
 //! lock command. In production code under `src/` or a crate's `src/`, outside that file, a
 //! `"flock"` string literal, or `"sh"` as the first argument of `command`, `command_in` or
@@ -13,38 +13,39 @@ use crate::source_audit;
 use source_audit::{Finding, RawKind, RawTok};
 use std::path::Path;
 
-/// The process-spawn port, the one production file that spawns `sh` by name.
-const SPAWN_PORT: &str = "crates/rigger-process/src/subprocess.rs";
+/// The process-spawn interface, the one production file that spawns `sh` by name.
+const SPAWN_INTERFACE: &str = "crates/rigger-process/src/subprocess.rs";
 
 /// The external lock command's name as a string literal.
 const LOCK_COMMAND: &str = "\"flock\"";
 
 /// The shape a hit of [`LOCK_COMMAND`] reports.
-const LOCK_COMMAND_SHAPE: &str = "the external lock command named outside the process-spawn port";
+const LOCK_COMMAND_SHAPE: &str =
+    "the external lock command named outside the process-spawn interface";
 
 /// The shape an `sh` spawn's hit reports.
-const SH_SPAWN_SHAPE: &str = "an sh spawn outside the process-spawn port";
+const SH_SPAWN_SHAPE: &str = "an sh spawn outside the process-spawn interface";
 
 /// Every hit in the production sources under `root`, in file and line order: each
 /// [`LOCK_COMMAND`] and each [`sh_spawns`] one.
 fn scan_tree(root: &Path) -> Vec<Finding> {
     let sources = common::repo::production_sources(root);
     let mut findings =
-        source_audit::literal_outside(&sources, SPAWN_PORT, LOCK_COMMAND, LOCK_COMMAND_SHAPE);
+        source_audit::literal_outside(&sources, SPAWN_INTERFACE, LOCK_COMMAND, LOCK_COMMAND_SHAPE);
     findings.extend(sh_spawns(&sources));
     findings.sort_by(|a, b| (&a.file, a.line_no).cmp(&(&b.file, b.line_no)));
     findings
 }
 
 /// Each `"sh"` that is the first argument of `command`, `command_in` or `Command::new` in a file
-/// of `sources` other than the spawn port, outside that file's `#[cfg(test)]` modules, named at
+/// of `sources` other than the spawn interface, outside that file's `#[cfg(test)]` modules, named at
 /// the line the `"sh"` is on. Each file is read through [`source_audit::tokenize`], which yields
 /// no token from a comment or from inside a string literal, and each call through
 /// [`source_audit::called_at`].
 fn sh_spawns(sources: &[(String, String)]) -> Vec<Finding> {
     sources
         .iter()
-        .filter(|(rel, _)| rel != SPAWN_PORT)
+        .filter(|(rel, _)| rel != SPAWN_INTERFACE)
         .flat_map(|(rel, content)| {
             let lines: Vec<&str> = content.lines().collect();
             let tests = source_audit::cfg_test_ranges(&lines);
@@ -78,11 +79,11 @@ fn spawns(name: &str, toks: &[RawTok], at: usize) -> bool {
 }
 
 #[test]
-fn the_real_tree_spawns_sh_and_names_no_lock_command_outside_the_spawn_port() {
+fn the_real_tree_spawns_sh_and_names_no_lock_command_outside_the_spawn_interface() {
     source_audit::assert_real_tree_clean(
         scan_tree,
         "the shell boundary scan",
-        "sh spawns or lock command names outside the process-spawn port",
+        "sh spawns or lock command names outside the process-spawn interface",
     );
 }
 
@@ -98,7 +99,7 @@ mod tests {
     }
 
     // GIVEN a source file, WHEN the scan reads it, THEN it names each line of production code
-    // outside the process-spawn port that spawns `sh` by name or names the lock command, and
+    // outside the process-spawn interface that spawns `sh` by name or names the lock command, and
     // nothing else.
     rigger::test_cases! {
         each_needle_in_the_bin_is_named_by_file_and_line: assert_eq!(
@@ -135,8 +136,8 @@ mod tests {
             flagged("crates/c/src/lib.rs", "fn f() -> std::process::Command {\n    std::process::Command::new(\"sh\")\n}\n"),
             [("crates/c/src/lib.rs".to_string(), 2)]
         );
-        a_needle_in_the_spawn_port_is_never_named: assert_eq!(
-            flagged(SPAWN_PORT, "fn f() -> Command {\n    command(\"sh\")\n}\n"),
+        a_needle_in_the_spawn_interface_is_never_named: assert_eq!(
+            flagged(SPAWN_INTERFACE, "fn f() -> Command {\n    command(\"sh\")\n}\n"),
             none()
         );
         a_needle_in_another_crates_subprocess_file_is_named: assert_eq!(

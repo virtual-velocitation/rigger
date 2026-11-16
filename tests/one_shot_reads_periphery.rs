@@ -1050,7 +1050,7 @@ fn stream_with_ledger_entries(run: Option<&str>) -> Vec<Event> {
     events
 }
 
-/// Each event as the port hands it back: its type, its payload, its revision in its stream and
+/// Each event as the interface hands it back: its type, its payload, its revision in its stream and
 /// its position in the log.
 fn answered(events: &[Event]) -> Vec<(&str, &str, i64, u64)> {
     events

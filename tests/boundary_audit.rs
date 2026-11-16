@@ -1,5 +1,5 @@
 //! THE BOUNDARY GATE: Clean Architecture made mechanical over the whole workspace. Every crate
-//! sits in one ring of the workspace plan (entities and ports innermost, the composition root
+//! sits in one ring of the workspace plan (entities and interfaces innermost, the composition root
 //! outermost) and four rules hold on the checked-out tree:
 //!
 //! 1. DEPENDENCY DIRECTION. A crate's `[dependencies]` / `[build-dependencies]` (including
@@ -8,7 +8,7 @@
 //!    may construct adapters below.
 //! 2. ADAPTERS ARE WIRED ONLY IN THE COMPOSITION ROOT. An adapter constructor (a store opener,
 //!    a graph opener, an agent driver) is named in production code only inside the composition
-//!    root or inside that adapter's own files. Anything else reaches past a port. Beside it,
+//!    root or inside that adapter's own files. Anything else reaches past an interface. Beside it,
 //!    THE APPENDER AUDIT lists, as `file:item`, every production call to an appender the audit
 //!    names whose arguments name the project stream's constant, and every production call to a
 //!    graph opener the audit names: a new site fails the suite until it is listed, and a listed
@@ -47,7 +47,7 @@ use source_audit::{
 // Rule 1: dependency direction
 // ---------------------------------------------------------------------------------------------
 
-/// The ring of every workspace crate, innermost first: 1 entities, use-case rules and ports;
+/// The ring of every workspace crate, innermost first: 1 entities, use-case rules and interfaces;
 /// 2 application; 3 adapters; 4 delivery; 5 the composition root. A crate may depend only on
 /// crates whose ring is less than or equal to its own.
 const RINGS: &[(&str, u8)] = &[
@@ -74,7 +74,7 @@ const RINGS: &[(&str, u8)] = &[
 /// Outward edges that exist today, `(from, to)`, each deleted by the extraction commit named
 /// beside it.
 const EDGE_ALLOWLIST: &[(&str, &str)] = &[
-    // The conductor still calls these adapters directly; each edge goes when the port its lesson
+    // The conductor still calls these adapters directly; each edge goes when the interface its lesson
     // names is introduced and the composition root injects the adapter.
     ("rigger-conductor", "rigger-store-sqlite"), // lesson-split-conductor-store-sqlite-edge
     ("rigger-conductor", "rigger-process"),      // lesson-split-conductor-process-edge
@@ -214,7 +214,7 @@ fn direction_violations(
             if to > from && !allowed.contains(&(member.name.as_str(), dep.as_str())) {
                 out.push(format!(
                     "`{}` (ring {from}) depends on `{dep}` (ring {to}): dependencies point inward \
-                     only; move the shared item inward or invert the dependency through a port",
+                     only; move the shared item inward or invert the dependency through an interface",
                     member.name
                 ));
             }
@@ -290,7 +290,7 @@ fn an_outward_edge_and_an_unknown_crate_are_reported() {
 
 /// Domain-responsibility items still in the root crate, `(file, item, lesson)`: each one's code,
 /// or a type it cannot be separated from, reaches for an adapter (the clock, a process, the
-/// filesystem, an adapter's type), so it waits for a port. The lesson records the port plus the
+/// filesystem, an adapter's type), so it waits for an interface. The lesson records the interface plus the
 /// adapter move that lets it join `rigger-domain`.
 const DEFERRED_DOMAIN_ITEMS: &[(&str, &str, &str)] = &[
     (
@@ -386,7 +386,7 @@ fn stale_deferred_items(
 // ---------------------------------------------------------------------------------------------
 
 /// Items placed in `rigger-domain` by their responsibility that still reach for something the
-/// domain must not know, `(file, item, what it reaches for, lesson)`. The lesson records the port
+/// domain must not know, `(file, item, what it reaches for, lesson)`. The lesson records the interface
 /// that removes the reach; the entry goes when the item stops declaring it at that location.
 const DOMAIN_VIOLATIONS: &[(&str, &str, &str, &str)] = &[(
     "crates/rigger-domain/src/eventstore.rs",
@@ -598,7 +598,7 @@ const ADAPTERS: &[Adapter] = &[
 
 /// Production adapter construction outside the composition root, `file:item` (`item` is the
 /// enclosing function, or `<top level>`) with the adapter family it reaches for. Each entry
-/// carries the LessonLearned that records the port-plus-adapter move that deletes it.
+/// carries the LessonLearned that records the interface-plus-adapter move that deletes it.
 const CONSTRUCTOR_ALLOWLIST: &[(&str, &str)] = &[];
 
 /// The pinned size of [`CONSTRUCTOR_ALLOWLIST`]: it may only fall.
@@ -695,7 +695,7 @@ fn adapters_are_constructed_only_in_the_composition_root() {
     assert!(
         new.is_empty(),
         "production code constructs an adapter outside the composition root ({}); take the \
-         port as a parameter and construct the adapter in the root:\n{}",
+         interface as a parameter and construct the adapter in the root:\n{}",
         COMPOSITION_ROOT.join(", "),
         new.join("\n")
     );
@@ -712,7 +712,7 @@ fn adapters_are_constructed_only_in_the_composition_root() {
     assert_eq!(
         CONSTRUCTOR_ALLOWLIST.len(),
         CONSTRUCTOR_ALLOWLIST_PIN,
-        "CONSTRUCTOR_ALLOWLIST only shrinks: a new offender is fixed with a port, never listed"
+        "CONSTRUCTOR_ALLOWLIST only shrinks: a new offender is fixed with an interface, never listed"
     );
 }
 

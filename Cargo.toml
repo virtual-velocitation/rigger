@@ -161,7 +161,7 @@ rigger-store-sqlite = { path = "crates/rigger-store-sqlite", default-features = 
 # The context-graph projector (workspace split, ring 3). Not optional for the same reason: its
 # `contextgraph` module compiles in every lane, the projector itself behind the store gate.
 rigger-graph-sqlite = { path = "crates/rigger-graph-sqlite", default-features = false }
-# The process adapters (workspace split, ring 3): the process-spawn port, the reaper, the build
+# The process adapters (workspace split, ring 3): the process-spawn interface, the reaper, the build
 # budget and the parallel map. Not optional, like the adapters above; its own `store`/`core`
 # features (forwarded above) gate every module exactly as the root gated them.
 rigger-process = { path = "crates/rigger-process", default-features = false }
@@ -250,7 +250,7 @@ fs2 = "0.4"
 # instances appending to one KurrentDB so agent context is shared across a team) is
 # reachable in the default binary with a runtime flag, never a recompile. `kurrentdb` is
 # the async gRPC client and `tokio` is the runtime that bridges its async API onto the
-# (sync) EventStore port - both unconditional on every native target. The sqlite backend
+# (sync) EventStore interface - both unconditional on every native target. The sqlite backend
 # stays the default; `--eventstore kurrentdb` is the runtime opt-in.
 kurrentdb = { version = "1.2" }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }

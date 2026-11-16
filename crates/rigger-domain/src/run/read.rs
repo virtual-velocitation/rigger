@@ -1,8 +1,8 @@
 //! THE ONE READ A ONE-SHOT COMMAND FOLDS (spec 101): the current run's own events and the
-//! knowledge a fold carries over from earlier runs, read through the [`EventStore`] port so the
+//! knowledge a fold carries over from earlier runs, read through the [`EventStore`] interface so the
 //! store - never the caller - refuses what a command must not materialize. [`crate::run`] folds
 //! the slice this hands back ([`crate::run::current_run`] and friends); this module decides which
-//! events reach it. A use case over the port only: it names no adapter and touches no file.
+//! events reach it. A use case over the interface only: it names no adapter and touches no file.
 
 use std::time::SystemTime;
 

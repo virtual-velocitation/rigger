@@ -9,7 +9,7 @@
 //! `write_code_neighborhood` / `write_design_intent` - all PRIVATE to `conductor`. The inside-out
 //! unit tests reach those private functions directly (a hand-built `RunCtx`), so nothing pins the
 //! behavior at the PUBLIC edge where it actually matters: an agent, during a real run, receives its
-//! prompt through the `AgentDriver` port, and that prompt must carry the code neighborhood AND the
+//! prompt through the `AgentDriver` interface, and that prompt must carry the code neighborhood AND the
 //! design intent the ONE unified-graph traversal surfaces - never the separate "Relevant locations"
 //! structural stitch the spec retires, and never a design-intent title fetched by vector similarity
 //! rather than by graph traversal.
@@ -597,7 +597,7 @@ fn the_producer_prompt_keeps_the_full_grounding_context_not_the_implement_trim()
 /// KEEPS the full decisions/findings bulk; this proves the SAME producer prompt now ALSO carries the
 /// pointer's one paragraph naming the three lookup verbs (structure/text/memory), and, by spec 121's
 /// THE LOOKUP POINTER NAMES ONLY THE TOOLS, neither lookup-method sentence the `working-discipline`
-/// built-in holds, at the exact bytes a real producer spawn receives through the `AgentDriver` port
+/// built-in holds, at the exact bytes a real producer spawn receives through the `AgentDriver` interface
 /// during a live `run`. The implementer's in-process
 /// `the_lookup_pointer_names_only_the_three_verbs_on_every_slice` pins `graph_context` at
 /// `GroundingSlice::Full`; this pins the wiring all the way to a REAL producer spawn - something an
@@ -884,7 +884,7 @@ fn the_review_prompt_keeps_the_full_findings_so_a_lens_finding_reaches_the_adver
 /// `the_lookup_pointer_names_only_the_three_verbs_on_every_slice` pins `graph_context` at
 /// `GroundingSlice::Full`; this periphery layer pins the pointer all the way to a REAL review spawn -
 /// the lens, the adversary, AND the adjudicator - the exact bytes each receives through the
-/// `AgentDriver` port during a live fan-out `run`. A wiring regression that assembled a review prompt
+/// `AgentDriver` interface during a live fan-out `run`. A wiring regression that assembled a review prompt
 /// without the Full-slice pointer would keep the in-process unit test green while shipping a
 /// verb-less prompt to the reviewer; only a test at this boundary catches it.
 ///
@@ -940,7 +940,7 @@ fn the_review_prompt_carries_the_three_verb_lookup_pointer() {
 /// cadence `EMIT_PROTOCOL` and `review_protocol` left, the peers check a peers refresh left, and
 /// the supersede rule the decisions header and the peers refresh left. Given a live fan-out `run`
 /// whose empty operator layer neither replaces nor switches off a built-in, when the lens, the
-/// adversary and the adjudicator each spawn through the `AgentDriver` port, then each one's system
+/// adversary and the adjudicator each spawn through the `AgentDriver` interface, then each one's system
 /// prompt carries each row's sentences exactly once and its task prompt carries none of those
 /// sentences.
 ///
@@ -998,7 +998,7 @@ fn every_review_spawn_receives_each_method_left_to_a_built_in_once_through_its_s
 }
 
 /// Spec 113 (THE CORE NAMES NO GATE), at the review boundary end to end: no line of the task
-/// prompt the lens, the adversary AND the adjudicator each receive through the `AgentDriver` port
+/// prompt the lens, the adversary AND the adjudicator each receive through the `AgentDriver` interface
 /// during a live fan-out `run` names the one gate the core once knew or its tool. Spec 120's THE
 /// REVIEWER PROMPT CARRIES ONLY THE CONTRACT at the same boundary: each tier's task prompt carries
 /// the reviewer discipline whole and once, and none of the review method `## When you review`
@@ -1120,7 +1120,7 @@ rigger::test_cases! {
     /// only decisions / lessons / findings and can never return a code entity; the honest recovery for
     /// an elided definition is `rigger graph --around <file>`, whose subgraph nodes include code
     /// entities. This pins that honest command AT THE PUBLIC PROMPT BOUNDARY - the exact bytes an agent
-    /// receives through the `AgentDriver` port during a real `run`. The inside-out unit test reaches the
+    /// receives through the `AgentDriver` interface during a real `run`. The inside-out unit test reaches the
     /// private render function directly; a wiring regression (the wrong section composed, the note
     /// transformed during prompt assembly, or a refactor reverting the command) could keep that private
     /// test green while shipping a false instruction to a real spawn - which only a test at this boundary
@@ -1206,7 +1206,7 @@ fn a_spawn_prompt_with_no_extracted_definitions_renders_no_code_neighborhood_hea
 /// rule that GOVERNS it, the RA / architecture section that SPECIFIES it, the load-bearing decision
 /// that CONSTRAINS it, and the local rationale that explains it (spec 29b's node / edge kinds). The
 /// inside-out unit test reaches the PRIVATE `build_prompt_with_failure` directly; this pins the SAME
-/// render at the PUBLIC boundary - the exact bytes a spawn receives through the `AgentDriver` port
+/// render at the PUBLIC boundary - the exact bytes a spawn receives through the `AgentDriver` interface
 /// during a real `run`, sourced from the ONE unified `subgraph` traversal the design half of the
 /// graph shares with the code neighborhood and the decisions / findings.
 ///
@@ -1365,7 +1365,7 @@ rigger::test_cases! {
     /// `rigger peers` prints only decisions / lessons / findings and can NEVER return a design-intent
     /// node; the honest recovery is `rigger graph --around <file>`, whose subgraph nodes INCLUDE the
     /// design-intent nodes. This pins that honest command AT THE PUBLIC PROMPT BOUNDARY - the exact bytes
-    /// an agent receives through the `AgentDriver` port during a real `run`.
+    /// an agent receives through the `AgentDriver` interface during a real `run`.
     ///
     /// The inside-out unit test never over-caps this section (it folds a handful of nodes, well under
     /// the verbatim cap), so nothing there exercises the elision note; a wiring regression, a refactor
@@ -1564,7 +1564,7 @@ impl Grounder for MultiSeedGrounder {
 /// The design-intent section honors a MULTI-FILE blast radius - the common shape of a real run, which
 /// almost always touches several files at once. Two boundary behaviors that the single-seed sibling
 /// tests structurally cannot reach are pinned here, both at the PUBLIC prompt boundary an agent
-/// receives through the `AgentDriver` port:
+/// receives through the `AgentDriver` interface:
 ///  (1) A single design-intent node that GOVERNS more than one of the touched files must name EVERY
 ///      touched file it binds on its rendered line (`write_design_intent` joins the distinct bound
 ///      seed files) - not just the first. A run whose rule governs two touched files but rendered
@@ -1648,7 +1648,7 @@ fn the_design_intent_section_renders_every_touched_file_a_node_binds_with_a_mult
 /// This pins that guarantee for EVERY code-binding relation the spec names - a handbook rule that
 /// GOVERNS a seed file, a design-doc that SPECIFIES it, a load-bearing decision that CONSTRAINS it,
 /// and a local rationale that explains it - at the PUBLIC prompt boundary an agent receives through
-/// the `AgentDriver` port during a real `run`.
+/// the `AgentDriver` interface during a real `run`.
 ///
 /// SURVIVES *THE TRIM*, not merely renders: the SAME seed also carries the capped dev-loop bulk (a
 /// decision, a lesson, and a finding about the touched file) that the trim DROPS, so the traversal

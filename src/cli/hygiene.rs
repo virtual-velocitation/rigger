@@ -85,7 +85,7 @@ pub(crate) fn cmd_reset(args: &[String]) -> Res {
     }
     if modes.derived {
         // Decided up front, before deleting: deleting rows and reclaiming the file are mechanics
-        // of the embedded log, not port operations, so `--derived` names the backend it needs
+        // of the embedded log, not interface operations, so `--derived` names the backend it needs
         // rather than quietly doing nothing on one the delete does not run on.
         // Checked HERE (inside this mode's own block), not as an early top-level return
         // before `--runs`/`--build-cache` even run - both those modes complete regardless
@@ -501,7 +501,7 @@ fn clear_code_facts_memo(root: &Path) -> Option<String> {
 ///
 /// The sqlite store is constructed through [`open_sqlite_store`], the one sqlite event-log
 /// constructor (§48), exactly as the local identity migration does when it needs the concrete
-/// store for a maintenance operation the port does not carry.
+/// store for a maintenance operation the interface does not carry.
 ///
 /// It refuses, in this order and before it changes anything: a rebuild lock another holds
 /// ([`Projector::lock_rebuild`]), which it takes first and holds until it returns; a rebuild

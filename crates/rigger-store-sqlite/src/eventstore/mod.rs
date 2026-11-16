@@ -1,12 +1,12 @@
 //! The append-only, bi-temporal event store: an immutable log of facts the ledger
-//! and context graph are projected from. `EventStore` is the port; `sqlite` is the
+//! and context graph are projected from. `EventStore` is the interface; `sqlite` is the
 //! default adapter. The trait mirrors KurrentDB's primitives - per-stream append
 //! with optimistic concurrency, a global $all order, per-stream revisions, and
 //! catch-up subscriptions - so a backend swaps without changing the rest of Rigger.
 
 pub mod namespace;
 // THE CORE LANE IS PURE (spec 93, criterion 1): `EventStore` (below) and `Event`/
-// `Position`/`Direction`/`ExpectedRevision`/`Error`/`Appended` are the PORT and stay
+// `Position`/`Direction`/`ExpectedRevision`/`Error`/`Appended` are the INTERFACE and stay
 // ungated - `contextgraph` and every other `core` module needs them. `sqlite` and
 // `kurrentdb` are the ADAPTERS (the concrete, I/O-touching implementations Design names
 // explicitly): gated behind `any(feature = "store", not(feature = "core"))`, same
@@ -17,7 +17,7 @@ pub mod sqlite;
 // The KurrentDB adapter is always compiled in on every NATIVE lane (spec 47): the
 // shared-store backend is a first-class product capability reachable in the default
 // build via a runtime flag, never a recompile. It is still excluded from the `core`
-// lane (an adapter, not the port) and from the `wasm32` target (its `tokio`/`kurrentdb`
+// lane (an adapter, not the interface) and from the `wasm32` target (its `tokio`/`kurrentdb`
 // dependencies are target-gated out in Cargo.toml regardless).
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod kurrentdb;

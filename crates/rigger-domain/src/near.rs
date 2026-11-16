@@ -16,7 +16,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use crate::code_facts::{FileFacts, Half, MentionKind};
+use crate::code_facts::{Bound, FileFacts, Half, MentionKind, Recorded};
 use crate::code_graph::{Asserts, Builder, CodeGraph};
 use crate::code_view::{Cluster, CodeView, FileRef, Groupings, Tests, ViewFilter};
 use crate::composed::{
@@ -29,7 +29,7 @@ use crate::contextgraph::{
     KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
     REL_TESTS, TIER_INFERRED,
 };
-use crate::resolve::{def_leaves, local_leaves, IntentLink, IntentNode, ProofCall, INTENT_KINDS};
+use crate::resolve::{def_leaves, local_leaves, IntentLink, IntentNode, INTENT_KINDS};
 use crate::test_view::TESTS_ATTR;
 
 /// The groupings' two arms, in the order they are joined: each cluster's node kind and the
@@ -333,8 +333,9 @@ struct State<'v> {
     resolved: FxHashMap<String, Reads>,
     /// Each (arm, test entity)'s cluster place, the plurality rule's winner.
     attach: FxHashMap<(usize, String), Option<usize>>,
-    /// Each code file's proof calls, by place.
-    proofs_in: FxHashMap<u32, Arc<Vec<ProofCall>>>,
+    /// Each code file's test entities with the distinct definitions their calls there prove, by
+    /// place.
+    proved_in: FxHashMap<u32, Arc<FxHashMap<String, BTreeSet<String>>>>,
     /// The test entities proving each id resolved so far, kept while the filter hides tests.
     provers: FxHashMap<String, Vec<String>>,
     /// Each (arm, cluster id)'s attached test entities, in id order.
@@ -342,6 +343,9 @@ struct State<'v> {
     /// Each (place, id) whose code assertions were read, in the order read.
     #[cfg(test)]
     read_code: Vec<(u32, String)>,
+    /// Each place whose proof calls were grouped by caller, in the order grouped.
+    #[cfg(test)]
+    proof_passes: Vec<u32>,
 }
 
 /// The code half of a view under one filter, resolved only near the ids it is asked about. Its
@@ -372,10 +376,12 @@ impl<'v> Near<'v> {
                 clusters: None,
                 resolved: FxHashMap::default(),
                 attach: FxHashMap::default(),
-                proofs_in: FxHashMap::default(),
+                proved_in: FxHashMap::default(),
                 provers: FxHashMap::default(),
                 #[cfg(test)]
                 read_code: Vec::new(),
+                #[cfg(test)]
+                proof_passes: Vec::new(),
                 attached: FxHashMap::default(),
             }),
             whole: OnceLock::new(),
@@ -717,16 +723,24 @@ impl<'v> State<'v> {
         Arc::clone(clusters)
     }
 
-    /// The proof calls of the code file at `place`: the calls each test entity there makes that
-    /// prove a definition.
-    fn proofs_in(&mut self, place: u32) -> Arc<Vec<ProofCall>> {
-        if let Some(held) = self.proofs_in.get(&place) {
+    /// The test entities of the code file at `place` with the distinct definitions their calls
+    /// there prove, its proof calls grouped by caller in one pass.
+    fn proved_in(&mut self, place: u32) -> Arc<FxHashMap<String, BTreeSet<String>>> {
+        if let Some(held) = self.proved_in.get(&place) {
             return Arc::clone(held);
         }
         let path = self.files[place as usize].path;
-        let calls = Arc::new(self.graph.resolver().proofs_in(path));
-        self.proofs_in.insert(place, Arc::clone(&calls));
-        calls
+        #[cfg(test)]
+        self.proof_passes.push(place);
+        let mut proved: FxHashMap<String, BTreeSet<String>> = FxHashMap::default();
+        for c in self.graph.resolver().proofs_in(path) {
+            if let Some(caller) = c.caller {
+                proved.entry(caller).or_default().insert(c.target);
+            }
+        }
+        let proved = Arc::new(proved);
+        self.proved_in.insert(place, Arc::clone(&proved));
+        proved
     }
 
     /// The place in `arm` of the cluster the test entity `test` is attached to: the plurality of
@@ -740,15 +754,16 @@ impl<'v> State<'v> {
         let (file, _) = split_id(test);
         let won = match self.code_place(file) {
             Some(place) => {
-                let calls = self.proofs_in(place);
-                let targets: BTreeSet<&str> = (calls.iter())
-                    .filter(|c| c.caller.as_deref() == Some(test))
-                    .map(|c| c.target.as_str())
-                    .collect();
+                let proved = self.proved_in(place);
                 let clusters = self.clusters();
                 let mut votes: std::collections::BTreeMap<usize, usize> = Default::default();
-                for target in targets {
-                    for &(a, at) in clusters.membership.get(target).into_iter().flatten() {
+                for target in proved.get(test).into_iter().flatten() {
+                    for &(a, at) in clusters
+                        .membership
+                        .get(target.as_str())
+                        .into_iter()
+                        .flatten()
+                    {
                         if a == arm {
                             *votes.entry(at).or_default() += 1;
                         }
@@ -1054,17 +1069,19 @@ impl CodeHalf for Near<'_> {
             None => self.state().holds(id),
         }
     }
-    fn concepts_of(&self, member: &str) -> Vec<String> {
+    fn concepts_of_within(&self, member: &str, within: Option<&BTreeSet<String>>) -> Vec<String> {
         let mut state = self.state();
-        if !state.holds(member) {
-            return Vec::new();
-        }
         let clusters = state.clusters();
         let memberships = clusters.membership.get(member).into_iter().flatten();
-        memberships
+        let concepts: Vec<String> = memberships
             .filter(|(arm, _)| *arm == CONCEPTS)
             .map(|&c| clusters.cluster(c).id.clone())
-            .collect()
+            .filter(|c| within.is_none_or(|ids| ids.contains(c)))
+            .collect();
+        match concepts.is_empty() || !state.holds(member) {
+            true => Vec::new(),
+            false => concepts,
+        }
     }
     fn concept_members(&self, concept: &str) -> Vec<String> {
         let mut state = self.state();
@@ -1092,6 +1109,13 @@ impl CodeHalf for Near<'_> {
     }
     fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
         self.state().graph.hidden_tests_named(name)
+    }
+    /// Read from the file's facts, the ones its nodes are resolved from.
+    fn definition_end(&self, file: &str, recorded: Recorded) -> Option<u32> {
+        let mut state = self.state();
+        let place = state.code_place(file)?;
+        let facts = state.facts(place)?;
+        recorded.widest_end(facts.defs.iter().map(Bound::from))
     }
     /// Read from the proofs read resolving `ids`, or, once the view is resolved whole, from the
     /// proof calls that read.
@@ -1153,6 +1177,7 @@ mod tests {
     use crate::contextgraph::query::node_name;
     use crate::contextgraph::{ContextGraph, Direction, TIER_AMBIGUOUS};
     use crate::resolve::tests::{fixture, stamp};
+    use crate::resolve::ProofCall;
     use crate::resolve::Resolver;
     use std::borrow::Cow;
 
@@ -1838,5 +1863,46 @@ mod tests {
             assert_eq!(files, Vec::<String>::new(), "{}", cluster.id);
         }
         assert!(counted > 0, "the fixture attaches tests to a cluster");
+    }
+
+    /// A cluster's node attaches each test from one pass over its file's proof calls, however
+    /// many of that file's tests prove a member: two tests of `tests/it.rs` call `run`, which
+    /// two communities hold, and each place's calls are passed over once, settled or not.
+    #[test]
+    fn a_cluster_s_tests_are_attached_from_one_pass_over_each_file_s_proofs() {
+        let base = view();
+        let mut files: Vec<FileFacts> = (base.files())
+            .map(|f| base.file(f.path).expect("listed").into_owned())
+            .collect();
+        let it = files.iter_mut().find(|f| f.path == "tests/it.rs").unwrap();
+        let second = it.defs.len() as u32;
+        let mut draws = it.defs[0].clone();
+        (draws.local, draws.leaf, draws.line, draws.end_line) =
+            ("it_draws".into(), "it_draws".into(), 10, 10);
+        it.defs.push(draws);
+        let mut calls_run = it.mentions[0].clone();
+        (calls_run.enclosing, calls_run.line) = (Some(second), 11);
+        it.mentions.push(calls_run);
+        let two_tests =
+            || FactsView::new(stamp(), files.clone()).with_groupings(base.groupings().clone());
+        for settled in [false, true] {
+            let view = Counting {
+                view: two_tests(),
+                reads: Mutex::new(Vec::new()),
+                settles: settled.then(|| Settles::of(two_tests())),
+            };
+            let near = Near::new(&view, ViewFilter::default());
+            let place = near.state().places["tests/it.rs"];
+            let groupings = view.groupings();
+            for cluster in groupings.communities.iter().chain(&groupings.concepts) {
+                near.node(&cluster.id).unwrap();
+            }
+            let passes = std::mem::take(&mut near.state().proof_passes);
+            let mut once = passes.clone();
+            once.sort_unstable();
+            once.dedup();
+            assert_eq!(passes.len(), once.len(), "settled {settled}: {passes:?}");
+            assert!(passes.contains(&place), "settled {settled}: {passes:?}");
+        }
     }
 }

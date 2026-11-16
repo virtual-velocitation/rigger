@@ -33,7 +33,7 @@
 //! and never a raw `database is locked` or bare `UNIQUE(stream, revision)` leak - is pinned
 //! here. `Store::open` and `Store::append` are the only surface this test touches; it never
 //! reaches into a private field or a raw connection, so it exercises exactly what an external
-//! consumer of the port can exercise.
+//! consumer of the interface can exercise.
 
 use crate::common;
 

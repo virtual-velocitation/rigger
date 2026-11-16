@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::budget::{self, REPLY_LIMIT, TEXT_TOTAL};
+use super::budget::{self, PROSE_TOP, REPLY_LIMIT, TEXT_TOTAL};
 use super::graph::{Answered, Entity, Site, TermGraph};
 #[cfg(feature = "symbols")]
 use super::normalise;
@@ -432,6 +432,70 @@ fn records_rank_as_prose_and_a_left_out_record_set_is_stated() {
         ranked.hits.is_empty(),
         "a record held is not ranked while its graph cannot be read"
     );
+}
+
+/// Sections that score alike rank in the order their sources were read, however the index
+/// spreads them over its segments: the ranking is a total order, the score and then the order
+/// read, so one tree and one log always rank to one list.
+#[test]
+fn sections_that_score_alike_rank_in_the_order_their_sources_were_read() {
+    let dir = tree(&[("docs/a.md", "# A\n")]);
+    let ids: Vec<String> = (0..4 * PROSE_TOP)
+        .rev()
+        .map(|i| format!("d{i:02}"))
+        .collect();
+    let records: Vec<Node> = (ids.iter())
+        .map(|id| decision(id, "keep the gizmo in memory"))
+        .collect();
+    let first_read: Vec<(String, String)> = (ids.iter().take(PROSE_TOP))
+        .map(|id| (KIND_DECISION.to_string(), id.clone()))
+        .collect();
+    for _ in 0..20 {
+        let ranked = ProseIndex::default()
+            .rank(dir.path(), &["gizmo"], Ok(records.clone()))
+            .unwrap();
+        assert_eq!(ranked_places(&ranked), first_read);
+    }
+}
+
+/// A held index ranks ties as a fresh one does, whatever it held before: GIVEN one index
+/// refreshed over a log, WHEN it is refreshed again over the log with a source added or changed,
+/// THEN its ranking equals a fresh index's over that second log, the tie order hanging on each
+/// source's place in the log it was last given and never on when the index first read it.
+#[test]
+fn a_held_index_ranks_ties_as_a_fresh_index_over_the_same_sources() {
+    let dir = tree(&[("docs/a.md", "# A\n")]);
+    let tie = "keep the gizmo in memory";
+    let log = |first: &[(&str, &str)]| -> Vec<Node> {
+        let rest = (0..3 * PROSE_TOP).rev().map(|i| format!("d{i:02}"));
+        (first.iter())
+            .map(|(id, text)| decision(id, text))
+            .chain(rest.map(|id| decision(&id, tie)))
+            .collect()
+    };
+    // (row, the log first read, the log read after it)
+    let rows: [(&str, Vec<Node>, Vec<Node>); 3] = [
+        ("the same log again", log(&[]), log(&[])),
+        (
+            "a source added before every tie held",
+            log(&[]),
+            log(&[("added", tie)]),
+        ),
+        (
+            "a source changed to tie",
+            log(&[("changed", "nothing to find")]),
+            log(&[("changed", tie)]),
+        ),
+    ];
+    for (row, first, then) in rows {
+        let mut held = ProseIndex::default();
+        held.rank(dir.path(), &["gizmo"], Ok(first)).unwrap();
+        let held = held.rank(dir.path(), &["gizmo"], Ok(then.clone())).unwrap();
+        let fresh = ProseIndex::default()
+            .rank(dir.path(), &["gizmo"], Ok(then))
+            .unwrap();
+        assert_eq!(ranked_places(&held), ranked_places(&fresh), "{row}");
+    }
 }
 
 // --- the whole lookup ----------------------------------------------------------------------

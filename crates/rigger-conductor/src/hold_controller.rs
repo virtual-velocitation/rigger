@@ -1,6 +1,6 @@
 //! THE HOLD CONTROLLER (spec 105 RELEASE): the poll that ends a host's hold once a probe finds the
 //! account answering again, beside the decorator ([`crate::held`]) that launches nothing while the
-//! run is held. The probe is a port ([`HoldProbe`]), so the policy here names no host: what a
+//! run is held. The probe is an interface ([`HoldProbe`]), so the policy here names no host: what a
 //! probe answers decides what the run stream is told, and the composition root only runs the
 //! poll on its thread.
 

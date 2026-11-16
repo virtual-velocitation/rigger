@@ -1255,7 +1255,7 @@ fn rebuild_owed_graph(
                 },
                 &refuse,
             )?;
-            for line in delete_derived_once_rebuilt(&store, &run_stream_of(&project), &|| {
+            let refuse_live = || {
                 refuse_if_live(
                     loc,
                     selection,
@@ -1263,14 +1263,19 @@ fn rebuild_owed_graph(
                     &log,
                     live_run_delete_refusal,
                 )
-            }) {
+            };
+            let stream = run_stream_of(&project);
+            let lines = delete_derived_once_rebuilt(&store, &stream, &refuse_live)
+                .into_iter()
+                .chain(index_record_ids_once_rebuilt(&store, &refuse_live));
+            for line in lines {
                 println!("{line}");
             }
             Ok(rebuilt)
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
         // its live selection is its run stream as it stands: its positions are read through the
-        // store port alone, and a rebuild reads each of its events once. Its store stamps are
+        // store interface alone, and a rebuild reads each of its events once. Its store stamps are
         // taken on the server's clock, not this host's, so the seeding is handed none: the
         // server's skew moves nothing, and every position the file misses counts old.
         selection => {
@@ -1323,8 +1328,40 @@ fn delete_derived_once_rebuilt(
     })
 }
 
-/// What the live-run refusal of setup's delete of the derived events says, `reasons` being what
-/// the live-writer probe names, joined: the run is live, so the delete waits for it to stop.
+/// The record index `rigger setup` gives an event log recorded before it once the graph it rebuilt
+/// stands ([`rigger::eventstore::sqlite::Store::index_record_ids`]), answering the lines to print.
+/// It reads no liveness and touches nothing when the log holds the index, so a new log - and a
+/// project with no `events.db` - is left as it stands; otherwise it asks `refuse_live` first and
+/// holds the step lock its probe took while it indexes. A live run, or a probe or index that
+/// fails, indexes nothing and fails nothing: a record read answers the same without the index,
+/// so setup carries on with a line naming why, and the next setup with no live run indexes it.
+fn index_record_ids_once_rebuilt(
+    store: &rigger::eventstore::sqlite::Store,
+    refuse_live: &dyn Fn() -> Result<Option<HeldLock>, Box<dyn std::error::Error>>,
+) -> Vec<String> {
+    let indexed = store
+        .has_record_index()
+        .map_err(Into::into)
+        .and_then(|held| match held {
+            true => Ok(Vec::new()),
+            false => refuse_live().and_then(|_step_lock| {
+                store.index_record_ids()?;
+                Ok(vec![
+                    "rigger setup: indexed the event log's record ids".to_string()
+                ])
+            }),
+        });
+    indexed.unwrap_or_else(|e| {
+        vec![format!(
+            "rigger setup: did not index the event log's record ids - {e}; a record read scans \
+             its types until a setup with no live run indexes them"
+        )]
+    })
+}
+
+/// What the live-run refusal of setup's delete of the derived events, and of its index of the
+/// log's record ids, says, `reasons` being what the live-writer probe names, joined: the run is
+/// live, so the step waits for it to stop.
 fn live_run_delete_refusal(reasons: &str) -> String {
     format!("the run is live ({reasons})")
 }
@@ -2597,6 +2634,70 @@ mod tests {
         env_written_named, overlong_name_refusal, set_env_line_named, LONGEST_PLAIN_KEY,
     };
     use crate::test_support::{production_boundary, production_files};
+
+    /// SETUP INDEXES AN OLDER LOG'S RECORD IDS: GIVEN an event log with or without the record
+    /// index, WHEN setup's step runs with the live-run probe passing or refusing, THEN a log with
+    /// the index is left alone and the probe never asked, a log without it is indexed under a
+    /// passing probe, saying so, and under a refusing one is left unindexed with a line naming
+    /// why, failing nothing.
+    #[test]
+    fn setup_indexes_an_older_log_s_record_ids_unless_the_run_is_live() {
+        // (case, whether the log holds the index, the probe's refusal, whether it holds the index
+        // after, the probes asked, the line said)
+        let rows = [
+            ("indexed", true, None, true, 0, None),
+            (
+                "an older log, no live run",
+                false,
+                None,
+                true,
+                1,
+                Some("rigger setup: indexed the event log's record ids"),
+            ),
+            (
+                "an older log, a live run",
+                false,
+                Some("the run is live (a driver)"),
+                false,
+                1,
+                Some(
+                    "rigger setup: did not index the event log's record ids - the run is live (a \
+                     driver); a record read scans its types until a setup with no live run \
+                     indexes them",
+                ),
+            ),
+        ];
+        for (case, indexed, refusal, after, asked, said) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("events.db");
+            let path = path.to_str().unwrap();
+            drop(rigger::eventstore::sqlite::Store::open(path).unwrap());
+            if !indexed {
+                (rusqlite::Connection::open(path).unwrap())
+                    .execute_batch("DROP INDEX idx_events_record")
+                    .unwrap();
+            }
+            let store = rigger::eventstore::sqlite::Store::open(path).unwrap();
+            let probes = std::cell::Cell::new(0);
+            let refuse_live = || -> Result<Option<HeldLock>, Box<dyn std::error::Error>> {
+                probes.set(probes.get() + 1);
+                match refusal {
+                    Some(why) => Err(why.into()),
+                    None => Ok(None),
+                }
+            };
+            let lines = index_record_ids_once_rebuilt(&store, &refuse_live);
+            assert_eq!(
+                (
+                    store.has_record_index().unwrap(),
+                    probes.get(),
+                    lines.first().map(String::as_str)
+                ),
+                (after, asked, said),
+                "{case}"
+            );
+        }
+    }
 
     rigger::test_cases! {
         /// `rigger setup` deletes what an earlier setup installed for an in-session driver rigger
@@ -6513,7 +6614,7 @@ mod tests {
         for wanted in [
             "Raise as a finding: an adapter imported by the domain, a use case reaching for a \
              concrete type, a new parallel abstraction where one already exists, a dependency \
-             that isn't injected, a trait port that leaks its implementation.",
+             that isn't injected, a trait interface that leaks its implementation.",
             "Cite file:line, and say whether it breaks something - wrong code, which blocks - or \
              bends a principle and breaks nothing, a note.",
             "A fact the unit's production delta spells a second time - a constant, list, closure \
