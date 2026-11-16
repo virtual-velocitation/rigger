@@ -20,7 +20,12 @@ pub(super) fn pids() -> Vec<u32> {
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|entry| entry.file_name().to_str().and_then(|name| name.parse().ok()))
+        .filter_map(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|name| name.parse().ok())
+        })
         .collect()
 }
 
@@ -145,9 +150,7 @@ fn tcp_listen_inode_for_port(port: u16) -> Option<u64> {
         let Some((_, local_port)) = local_address.split_once(':') else {
             continue;
         };
-        if !local_port.eq_ignore_ascii_case(&port_hex)
-            || fields.get(3) != Some(&TCP_LISTEN_STATE)
-        {
+        if !local_port.eq_ignore_ascii_case(&port_hex) || fields.get(3) != Some(&TCP_LISTEN_STATE) {
             continue;
         }
         if let Some(inode) = fields.get(9).and_then(|s| s.parse().ok()) {

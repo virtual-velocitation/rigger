@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest};
 
-use super::{canonical_root_bytes, root_digest};
 use super::serving::{answer_one, exchange, served_already, ACCEPT_POLL, REQUEST_READ_TIMEOUT};
+use super::{canonical_root_bytes, root_digest};
 
 /// The gate socket path for the project rooted at `repo_root`, the one rule the driver binds by
 /// and `rigger gate` asks by when no driver addressed it

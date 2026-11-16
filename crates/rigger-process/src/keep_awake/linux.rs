@@ -254,7 +254,11 @@ async fn portal_inhibit(bus: &Connection, reason: &str) -> zbus::Result<bool> {
     while let Some(Ok(response)) =
         std::future::poll_fn(|cx| Pin::new(&mut responses).poll_next(cx)).await
     {
-        if response.header().path().is_some_and(|path| *path == *handle) {
+        if response
+            .header()
+            .path()
+            .is_some_and(|path| *path == *handle)
+        {
             let (code, _results): (u32, HashMap<String, OwnedValue>) =
                 response.body().deserialize()?;
             return Ok(code == RESPONSE_SUCCESS);
@@ -469,8 +473,7 @@ mod tests {
         ];
         for (what, logind_grants_in, answer, connection, portal_calls) in rows {
             let (listener, address) = private_bus("granting-logind");
-            let logind =
-                fake_bus::<LogindInhibit>(listener, Answer::Descriptor(logind_grants_in));
+            let logind = fake_bus::<LogindInhibit>(listener, Answer::Descriptor(logind_grants_in));
             let (listener, portal_address) = private_bus("portal");
             let portal = answer.map(|answer| fake_bus::<PortalInhibit>(listener, answer));
             let started = Instant::now();
