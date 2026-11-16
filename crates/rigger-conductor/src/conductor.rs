@@ -51521,6 +51521,87 @@ mod tests {
         );
     }
 
+    /// A round's REVIEW PACKET is empty only with no worktree or no head to judge: a head that
+    /// shares no history with the checkout (so it has no fork point) and a round whose base git
+    /// does not hold each render the packet's header and the read that fetches the change,
+    /// over the round's base, else the run's recorded base, never an empty string.
+    #[test]
+    fn a_review_packet_names_a_range_it_cannot_read() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let run_base = git_head(&repo_path);
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u");
+        let wt = Worktree::create(&repo_path, &dir, &unit_branch("u"), &scratch).unwrap();
+        std::fs::write(Path::new(&wt.dir).join("work.rs"), "work\n").unwrap();
+        wt.commit_checkpoint("work").unwrap();
+        let head = worktree::head_sha_of(&wt.dir);
+        let orphan = git_out(&wt.dir, &["commit-tree", "HEAD^{tree}", "-m", "orphan"]);
+        let gone = "0".repeat(40);
+        let round = ReviewRound {
+            base: gone.clone(),
+            delta: Vec::new(),
+            required: Vec::new(),
+            audit: String::new(),
+        };
+        let st = Store::open(":memory:").unwrap();
+        st.append(
+            STREAM,
+            ExpectedRevision::Any,
+            &[Event::new(
+                crate::run::TYPE_RUN_STARTED,
+                serde_json::to_vec(&json!({
+                    "run": "run-packet",
+                    "criteria": [],
+                    "base_tip": run_base,
+                }))
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        let driver = Stub::new();
+        let cfg = Config::default();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let stage = Stage::default();
+        let unreadable = |base: &str, head: &str| {
+            let range = [("base", base), ("head", head)];
+            format!(
+                "{}{}",
+                fill(REVIEW_PACKET_HEADER, &range),
+                fill(PACKET_UNREADABLE, &range)
+            )
+        };
+        let cases = [
+            (
+                "no worktree",
+                ctx.review_packet(&stage, None, &head, None),
+                String::new(),
+            ),
+            (
+                "no head",
+                ctx.review_packet(&stage, Some(&wt), "", None),
+                String::new(),
+            ),
+            (
+                "a head with no fork point, over the run's recorded base",
+                ctx.review_packet(&stage, Some(&wt), &orphan, None),
+                unreadable(&run_base, &orphan),
+            ),
+            (
+                "a round whose base git does not hold",
+                ctx.review_packet(&stage, Some(&wt), &head, Some(&round)),
+                unreadable(&gone, &head),
+            ),
+        ];
+        for (case, got, expected) in cases {
+            assert_eq!(got, expected, "{case}");
+        }
+    }
+
     #[test]
     fn the_sdet_author_spawn_respects_the_budget_breaker_at_its_own_spawn_site() {
         // The regression guard for the reserve_spawn mitigation at the sdet-author spawn
