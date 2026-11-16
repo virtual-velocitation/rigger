@@ -501,8 +501,8 @@ mod tests {
         NO_LIGHT_ADJUDICATOR_STEP, PANEL_AGENTS, PANEL_SCOPES,
     };
     use crate::test_support::{
-        build_block_declaring, build_declaring, DECLARED_BJL, REFUSED_DECLARATIONS,
-        RETIRED_BUILD_KEYS,
+        build_block_declaring, build_declaring, wall_clock_advisory_naming, DECLARED_BJL,
+        REFUSED_DECLARATIONS, RETIRED_BUILD_KEYS,
     };
 
     // ---- instruction injection: the operator layer loader ----
@@ -1773,46 +1773,31 @@ mod tests {
 
     // ---- spec 19c, unit 3: `rigger validate` warns on an unbounded default ----
 
+    /// The advisory names the gating adjudicator exactly when its bound resolves to `0`: its own
+    /// `max_wall_clock`, or the workflow default when it sets none. Each row is the default, the
+    /// adjudicator's own bound and whether it is named.
     #[test]
-    fn unbounded_wall_clock_advisory_fires_when_default_unbounded_and_a_gating_role_is_unbounded() {
-        // `config_with_default_adjudicator` leaves `defaults.max_wall_clock` at its `0`
-        // (unbounded) default and inserts a gating adjudicator "adj" with no per-agent bound.
-        let cfg = config_with_default_adjudicator(RESULT_LINE);
-        let msg = unbounded_wall_clock_advisory(&cfg)
-            .expect("an unbounded default over an unbounded gating role must warn");
-        assert!(
-            msg.contains("\"adj\""),
-            "names the unbounded gating role: {msg}"
-        );
-        assert!(
-            msg.contains("defaults.max_wall_clock"),
-            "names the fix knob: {msg}"
-        );
-        assert!(
-            msg.to_lowercase().contains("swept"),
-            "explains a hung gating agent is never swept: {msg}"
-        );
-    }
-
-    #[test]
-    fn unbounded_wall_clock_advisory_is_silent_when_the_default_is_bounded() {
-        let mut cfg = config_with_default_adjudicator(RESULT_LINE);
-        cfg.workflow.defaults.max_wall_clock = 600;
-        assert!(
-            unbounded_wall_clock_advisory(&cfg).is_none(),
-            "a bounded default sweeps every inheriting gating role, so no warning"
-        );
-    }
-
-    #[test]
-    fn unbounded_wall_clock_advisory_is_silent_when_every_gating_role_sets_its_own_bound() {
-        let mut cfg = config_with_default_adjudicator(RESULT_LINE);
-        // Default stays unbounded, but the gating role carries its own per-agent bound.
-        cfg.agents.get_mut("adj").unwrap().max_wall_clock = Some(300);
-        assert!(
-            unbounded_wall_clock_advisory(&cfg).is_none(),
-            "a per-agent bound on every gating role covers the risk even under a 0 default"
-        );
+    fn unbounded_wall_clock_advisory_names_a_gating_role_whose_bound_resolves_to_zero() {
+        let rows: [(u64, Option<u64>, bool); 8] = [
+            (0, None, true),
+            (0, Some(0), true),
+            (3600, Some(0), true),
+            (1, None, false),
+            (600, None, false),
+            (0, Some(1), false),
+            (0, Some(300), false),
+            (3600, Some(1), false),
+        ];
+        for (default, own, named) in rows {
+            let mut cfg = config_with_default_adjudicator(RESULT_LINE);
+            cfg.workflow.defaults.max_wall_clock = default;
+            cfg.agents.get_mut("adj").unwrap().max_wall_clock = own;
+            assert_eq!(
+                unbounded_wall_clock_advisory(&cfg),
+                named.then(|| wall_clock_advisory_naming("\"adj\"")),
+                "default {default}, own bound {own:?}"
+            );
+        }
     }
 
     #[test]
@@ -1823,12 +1808,10 @@ mod tests {
         cfg.agents
             .insert("lens".into(), agent_with_prompt("lens", RESULT_LINE));
         cfg.workflow.defaults.review.lenses = vec!["lens".into()];
-        let msg = unbounded_wall_clock_advisory(&cfg)
-            .expect("the unbounded gating adjudicator still warns");
-        assert!(msg.contains("\"adj\""), "names the gating role: {msg}");
-        assert!(
-            !msg.contains("\"lens\""),
-            "an unbounded lens is not a gating role and must not be named: {msg}"
+        assert_eq!(
+            unbounded_wall_clock_advisory(&cfg),
+            Some(wall_clock_advisory_naming("\"adj\"")),
+            "an unbounded lens is not a gating role and must not be named"
         );
     }
 
