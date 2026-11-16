@@ -3171,6 +3171,7 @@ mod tests {
     use crate::test_support::assert_concurrent_creates_succeed;
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::commit_at_fixed_date;
+    use crate::test_support::git_commit_all;
     use crate::test_support::run_log;
 
     #[test]
@@ -4538,6 +4539,95 @@ mod tests {
             vec![first, second],
             "oldest-first, exactly the two commits beyond the run branch's HEAD"
         );
+        wt.remove().unwrap();
+    }
+
+    /// Writes `bytes` to `path` under `root`.
+    fn write_at(root: &std::path::Path, path: &str, bytes: &[u8]) {
+        std::fs::write(root.join(path), bytes).unwrap();
+    }
+
+    #[test]
+    fn diff_files_reads_each_changed_files_status_counts_and_patch_since_the_fork_point() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let moved = "a line long enough for git to find the file again\n".repeat(4);
+        write_at(repo.path(), "kept.txt", b"a\nb\nc\n");
+        write_at(repo.path(), "gone.txt", b"bye\n");
+        write_at(repo.path(), "before.txt", moved.as_bytes());
+        write_at(repo.path(), "blob.bin", b"\0\x01\x02");
+        git_commit_all(&repo_path, "base");
+        let fork = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+        let fork = fork.trim();
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/packet");
+        let dir = wt_path.to_str().unwrap();
+        write_at(&wt_path, "kept.txt", b"a\nB\nc\n");
+        write_at(&wt_path, "added.txt", b"one\ntwo\n");
+        std::fs::remove_file(wt_path.join("gone.txt")).unwrap();
+        git_commit_all(dir, "unit change one");
+        std::fs::rename(wt_path.join("before.txt"), wt_path.join("after.txt")).unwrap();
+        write_at(&wt_path, "blob.bin", b"\0\x03\x04");
+        git_commit_all(dir, "unit change two");
+        // Another unit lands on the run branch meanwhile: the fork point stays where this
+        // unit branched, and that unit's file is no part of this one's diff.
+        write_at(repo.path(), "other.txt", b"other\n");
+        git_commit_all(&repo_path, "another unit");
+
+        assert_eq!(wt.fork_point("HEAD").unwrap(), fork);
+        let files = wt.diff_files(fork, "HEAD").unwrap();
+        // (path, status, path before the change, lines added and removed, a line its patch holds)
+        let rows: [(&str, char, Option<&str>, Option<(u32, u32)>, &str); 5] = [
+            ("added.txt", 'A', None, Some((2, 0)), "\n+two\n"),
+            ("after.txt", 'R', Some("before.txt"), Some((0, 0)), "\nrename to after.txt\n"),
+            ("blob.bin", 'M', None, None, "\nBinary files "),
+            ("gone.txt", 'D', None, Some((0, 1)), "\n-bye\n"),
+            ("kept.txt", 'M', None, Some((1, 1)), "\n+B\n"),
+        ];
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, rows.map(|row| row.0));
+        for (file, (path, status, old_path, lines, holds)) in files.iter().zip(rows) {
+            let read = (file.status, file.old_path.as_deref(), file.lines);
+            assert_eq!(read, (status, old_path, lines), "{path}");
+            assert!(
+                file.patch.starts_with("diff --git ") && file.patch.contains(holds),
+                "{path}'s patch is its own section, holding {holds:?}: {}",
+                file.patch
+            );
+        }
+        assert_eq!(wt.diff_files(fork, fork).unwrap(), Vec::new(), "no change");
+        let subjects: Vec<String> = wt
+            .commits_between(fork, "HEAD")
+            .unwrap()
+            .into_iter()
+            .map(|c| c.subject)
+            .collect();
+        assert_eq!(subjects, ["unit change one", "unit change two"]);
+        wt.remove().unwrap();
+    }
+
+    /// git writes a change between a file and a symlink as a deletion and a creation, two
+    /// patch sections for its one changed path.
+    #[cfg(unix)]
+    #[test]
+    fn diff_files_reads_a_type_change_as_one_file_holding_both_its_sections() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        write_at(repo.path(), "link", b"was a file\n");
+        write_at(repo.path(), "next.txt", b"x\n");
+        git_commit_all(&repo_path, "base");
+        let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/typechange");
+        std::fs::remove_file(wt_path.join("link")).unwrap();
+        std::os::unix::fs::symlink("next.txt", wt_path.join("link")).unwrap();
+        write_at(&wt_path, "next.txt", b"y\n");
+        git_commit_all(wt_path.to_str().unwrap(), "type change");
+
+        let fork = wt.fork_point("HEAD").unwrap();
+        let files = wt.diff_files(&fork, "HEAD").unwrap();
+        let read: Vec<(&str, char, usize)> = files
+            .iter()
+            .map(|f| (f.path.as_str(), f.status, f.patch.matches("diff --git ").count()))
+            .collect();
+        assert_eq!(read, [("link", 'T', 2), ("next.txt", 'M', 1)]);
         wt.remove().unwrap();
     }
 
