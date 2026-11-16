@@ -284,6 +284,10 @@ pub const ROUND_FINDINGS_YOURS: &str =
 /// round recorded one.
 pub const ROUND_FINDINGS_ALL: &str = "\n\nEvery finding recorded this round, by id:\n";
 
+/// FRAMING: the adjudicator's row for each `{role}` of its roster that recorded no finding this
+/// round, after the findings the round recorded.
+pub const ROUND_NO_FINDING: &str = "- {role}: recorded no finding this round\n";
+
 /// FRAMING: the gate evidence block's header for the `{commit}` under review, printed only when a
 /// gate ran on it.
 pub const GATE_EVIDENCE_HEADER: &str = "\n\nGATE EVIDENCE for the commit under review (commit \
@@ -541,7 +545,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             ROUND_PATTERN,
             ROUND_OUTSIDE_DELTA,
         ],
-        "conductor::round_findings_block" => [ROUND_FINDINGS_YOURS, ROUND_FINDINGS_ALL],
+        "conductor::round_findings_block" => [ROUND_FINDINGS_YOURS, ROUND_FINDINGS_ALL, ROUND_NO_FINDING],
         "conductor::gate_evidence_block" => [GATE_EVIDENCE_HEADER, GATE_EVIDENCE_ROW],
         "conductor::ReviewPacket::block" => [
             REVIEW_PACKET_HEADER,
@@ -722,6 +726,7 @@ mod tests {
         ("ROUND_FINDINGS_ALL", "FRAMING"),
         ("ROUND_FINDINGS_YOURS", "FRAMING"),
         ("ROUND_LEAD_IN", "FRAMING"),
+        ("ROUND_NO_FINDING", "FRAMING"),
         ("ROUND_OUTSIDE_DELTA", "CONTRACT"),
         ("ROUND_PATTERN", "CONTRACT"),
         ("ROUND_REQUIRED_HEADER", "FRAMING"),

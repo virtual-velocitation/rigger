@@ -2616,15 +2616,29 @@ fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> 
 
 /// The block a review spawn's task closes on over its round's `findings`: for a unit's
 /// adjudicator (`all`) every one under [`ROUND_FINDINGS_ALL`], whatever file it names, which
-/// the graph slice of its prompt may leave out; for any other step's `role` the ones it recorded
-/// itself under [`ROUND_FINDINGS_YOURS`], so a reviewer re-driven within its round knows what it
-/// already recorded. Empty when there is none to list.
-fn round_findings_block(findings: &[RoundFinding], role: &str, all: bool) -> String {
-    let lines: String = findings
+/// the graph slice of its prompt may leave out, then a [`ROUND_NO_FINDING`] row for each role
+/// of its `roster` that recorded none, so a silent reviewer reads as one; for any other step's
+/// `role` the ones it recorded itself under [`ROUND_FINDINGS_YOURS`], so a reviewer re-driven
+/// within its round knows what it already recorded. Empty when there is none to list.
+fn round_findings_block(
+    findings: &[RoundFinding],
+    role: &str,
+    all: bool,
+    roster: &[String],
+) -> String {
+    let mut lines: String = findings
         .iter()
         .filter(|f| all || f.role == role)
         .map(|f| f.line.as_str())
         .collect();
+    if all {
+        for silent in roster
+            .iter()
+            .filter(|member| !findings.iter().any(|f| &f.role == *member))
+        {
+            lines.push_str(&fill(ROUND_NO_FINDING, &[("role", silent)]));
+        }
+    }
     if lines.is_empty() {
         String::new()
     } else if all {
@@ -9156,7 +9170,7 @@ impl RunCtx<'_> {
             // re-driven within its round (its driver died after it recorded, or its result was
             // degenerate or verdict-less) is told its own, and the adjudicator every one.
             let found = round_findings(&self.read_current_run()?, &st.name, attempt);
-            let block = round_findings_block(&found, role, whole_round);
+            let block = round_findings_block(&found, role, whole_round, reviews);
             let held = found.iter().any(|f| f.role == role);
             // A later round's first spawn of this role continues the session the role's last
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
@@ -34908,7 +34922,7 @@ mod tests {
     /// Assert the CANONICAL IDENTITY SURFACE of `review` (spec 120, criterion 6): the review
     /// spawns and the verdict [`review_identity`] reads equal `golden`, captured on the tree
     /// before the review panel ran as a sequence of steps, its prompt hashes re-taken over the
-    /// protocols spec 121 cut.
+    /// protocols spec 121 cut and the adjudicator's rows for its silent members.
     fn assert_review_identity(review: crate::config::ReviewPanel, golden: &[&str]) {
         let (lines, prompts) = review_identity(review);
         assert_eq!(lines, golden, "the review task prompts:\n{prompts}");
@@ -34930,16 +34944,17 @@ mod tests {
 
     // The golden lines [`review_identity`] read on the tree before the review panel ran as a
     // sequence of steps (spec 120, criterion 6), each review prompt's hash re-taken once spec 121
-    // cut the cadence and method clauses out of the decision and finding protocols: each review
-    // spawn, then each status stamp.
+    // cut the cadence and method clauses out of the decision and finding protocols, and each
+    // adjudicator's again once it was told each member of its roster that recorded no finding:
+    // each review spawn, then each status stamp.
     const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] b7e40a3070fb1689"#;
     const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] f30fefa68bbcc6e5"#;
     const ADVERSARY_SPAWN: &str =
         r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] a184517608c490fb"#;
-    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] 958da5b165e10309"#;
+    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] d3c6483d113965ba"#;
     const ADJUDICATOR_AFTER_LENSES_SPAWN: &str =
-        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] 958da5b165e10309"#;
-    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] 958da5b165e10309"#;
+        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] 33454cdac45ebef8"#;
+    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] 58afb1ef02074b7a"#;
     const GREEN_STAMP: &str = r#""green" {"green":"implemented by worker"} Some("worker-model")"#;
     const VERIFIED_STAMP: &str = r#""verified" {} Some("worker-model")"#;
     const LIGHT_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"","review-tier":"light","threshold":"5"} None"#;
