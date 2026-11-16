@@ -32283,6 +32283,267 @@ mod tests {
         }
     }
 
+    /// The verdict a [`ReuseRow`]'s round 0 approved with.
+    const REUSE_PRIOR: &str = r#"{"verdict":"approve"}"#;
+
+    /// The verdict a [`ReuseRow`]'s round 0, or a later review, rejected with.
+    const REUSE_REJECT: &str = r#"{"verdict":"reject","upheld":[],"required":[{"finding":"close it","path":"feature.rs","correctness":true}]}"#;
+
+    /// Round 0's verdict in a [`ReuseRow`]'s log, and what sent the unit back to attempt 1.
+    #[derive(Clone, Copy)]
+    enum RoundZero {
+        /// An approve recorded at the unit branch's tip, then a merge the post-merge gates
+        /// blocked.
+        ApprovedAtTip,
+        /// An approve recorded at another sha, then a blocked merge.
+        ApprovedElsewhere,
+        /// An approve recorded at the tip, then a later review's reject of the unit.
+        ApprovedThenRejected,
+        /// A reject requiring one fix.
+        Rejected,
+    }
+
+    /// One row of [`a_later_round_reuses_the_approve_of_an_unchanged_tree_and_fails_closed`]:
+    /// whether round 0 stamped its start mark, its verdict, the review tier it recorded, whether
+    /// attempt 1's implementer changes the tree, and whether attempt 1 reuses round 0's approve.
+    struct ReuseRow {
+        name: &'static str,
+        started: bool,
+        verdict: RoundZero,
+        tier: Option<&'static str>,
+        changes: bool,
+        reused: bool,
+    }
+
+    /// The log a [`ReuseRow`] seeds for unit `s`, whose branch's tip is `tip`: the unit started,
+    /// round 0's start mark when the row has one, the review tier it recorded, its verdict, and
+    /// the failure that sent the unit back to attempt 1.
+    fn reuse_row_log(row: &ReuseRow, tip: &str) -> Vec<Event> {
+        let status = |key: &str, payload: Value, metas: &[(&str, &str)]| {
+            let mut e = Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            e.meta.insert(META_REPLAY_KEY.into(), key.into());
+            for (k, v) in metas {
+                e.meta.insert((*k).into(), (*v).into());
+            }
+            e
+        };
+        let approved = |sha: &str| {
+            status(
+                "s/reviewed#0",
+                json!({"id": "s", "status": "reviewed", "evidence": {"review": REUSE_PRIOR}}),
+                &[
+                    (META_MODEL_ALIAS, "alias-0"),
+                    (META_MODEL_RESOLVED, "resolved-0"),
+                    (META_WORKTREE_SHA, sha),
+                ],
+            )
+        };
+        let failed = |cause: &str, review_reason: &str| {
+            let required = spawn::Adjudication::parse(review_reason)
+                .map(|a| a.required)
+                .unwrap_or_default();
+            Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({
+                    "id": "s",
+                    "attempts": 1,
+                    "cause": cause,
+                    "gate_evidence": ["the merged tree is red"],
+                    "review_reason": review_reason,
+                    "required": required,
+                }))
+                .unwrap(),
+            )
+        };
+        let mut log = vec![started_on_branch("s")];
+        if row.started {
+            log.push(status(
+                &review_round_start_key("s", 0),
+                json!({"id": "s", "status": STATUS_REVIEW_ROUND_START, "attempt": 0}),
+                &[(META_WORKTREE_SHA, tip)],
+            ));
+        }
+        if let Some(tier) = row.tier {
+            log.push(status(
+                "s/review-tier#0",
+                json!({"id": "s", "status": STATUS_REVIEW_TIER, "evidence": {"review-tier": tier}}),
+                &[],
+            ));
+        }
+        log.extend(match row.verdict {
+            RoundZero::ApprovedAtTip => vec![approved(tip), failed(CAUSE_INTEGRATE_CONFLICT, "")],
+            RoundZero::ApprovedElsewhere => vec![
+                approved("0123456789abcdef0123456789abcdef01234567"),
+                failed(CAUSE_INTEGRATE_CONFLICT, ""),
+            ],
+            RoundZero::ApprovedThenRejected => {
+                vec![approved(tip), failed(CAUSE_REJECT, REUSE_REJECT)]
+            }
+            RoundZero::Rejected => vec![failed(CAUSE_REJECT, REUSE_REJECT)],
+        });
+        log
+    }
+
+    /// AN UNCHANGED TREE KEEPS ITS APPROVE, AND ONLY IT: a prior window's unit `s` re-enters at
+    /// attempt 1 after round 0, and attempt 1's review reuses round 0's approve - no reviewer
+    /// spawned, its `reviewed` evidence naming the round it reuses above that round's verdict,
+    /// that round's adjudicator model and the sha it judged - only when round 0 approved the very
+    /// tree attempt 1 judges under the same review tier and nothing condemned that approve since.
+    /// Every other log runs the whole panel. The unit integrates either way.
+    #[test]
+    fn a_later_round_reuses_the_approve_of_an_unchanged_tree_and_fails_closed() {
+        let row = |name, started, verdict, tier, changes, reused| ReuseRow {
+            name,
+            started,
+            verdict,
+            tier,
+            changes,
+            reused,
+        };
+        let rows = [
+            row(
+                "an unchanged tree reuses the approve",
+                true,
+                RoundZero::ApprovedAtTip,
+                None,
+                false,
+                true,
+            ),
+            row(
+                "a changed tree runs the panel",
+                true,
+                RoundZero::ApprovedAtTip,
+                None,
+                true,
+                false,
+            ),
+            row(
+                "a rejected round runs the panel",
+                true,
+                RoundZero::Rejected,
+                None,
+                false,
+                false,
+            ),
+            row(
+                "an approve of another sha runs the panel",
+                true,
+                RoundZero::ApprovedElsewhere,
+                None,
+                false,
+                false,
+            ),
+            row(
+                "a changed review tier runs the panel",
+                true,
+                RoundZero::ApprovedAtTip,
+                Some("light"),
+                false,
+                false,
+            ),
+            row(
+                "no earlier round start runs the panel",
+                false,
+                RoundZero::ApprovedAtTip,
+                None,
+                false,
+                false,
+            ),
+            row(
+                "an approve a later reject condemned runs the panel",
+                true,
+                RoundZero::ApprovedThenRejected,
+                None,
+                false,
+                false,
+            ),
+        ];
+        let mut panel = vec![
+            spawn_id("s", &lens_role("lens"), 1),
+            spawn_id("s", ROLE_ADJUDICATOR, 1),
+        ];
+        panel.sort();
+        for row in rows {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+            let tip = trimmed_stdout(&run_git(&repo_path, &["rev-parse", &unit_branch("s")]));
+            let st = Store::open(":memory:").unwrap();
+            seed_events_in_run(&st, &[], &reuse_row_log(&row, &tip));
+            let mut driver = approving_panel_stub(&["lens"]);
+            if row.changes {
+                driver.write_files_by_spawn_id.insert(
+                    spawn_id("s", ROLE_IMPLEMENTER, 1),
+                    vec!["fix1.rs".to_string()],
+                );
+            }
+            let deps = Deps {
+                repo: repo_path,
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            let rs = run_isolated(&reviewed_merge_cfg(false), &deps).unwrap();
+            assert_eq!(
+                rs.units["s"].status,
+                ledger::Status::Integrated,
+                "{}",
+                row.name
+            );
+            let mut reviewers: Vec<String> = driver
+                .spawn_ids()
+                .into_iter()
+                .filter(|id| {
+                    spawn::attempt_of(id) == 1
+                        && spawn::review_step_of(spawn::spawn_role(id)).is_some()
+                })
+                .collect();
+            reviewers.sort();
+            let spawned = if row.reused {
+                Vec::new()
+            } else {
+                panel.clone()
+            };
+            assert_eq!(reviewers, spawned, "{}: attempt 1's reviewers", row.name);
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let reviewed = events
+                .iter()
+                .find(|e| {
+                    e.meta
+                        .get(META_REPLAY_KEY)
+                        .is_some_and(|k| k == "s/reviewed#1")
+                })
+                .unwrap_or_else(|| panic!("{}: attempt 1 records its approve", row.name));
+            let evidence = reviewed
+                .decode::<Value>()
+                .and_then(|v| v["evidence"]["review"].as_str().map(str::to_string));
+            let expected = if row.reused {
+                format!(
+                    "approve reused from s/reviewed#0: tree unchanged since {tip}\n{REUSE_PRIOR}"
+                )
+            } else {
+                REUSE_PRIOR.to_string()
+            };
+            assert_eq!(
+                evidence,
+                Some(expected),
+                "{}: attempt 1's evidence",
+                row.name
+            );
+            if row.reused {
+                let metas = [META_MODEL_ALIAS, META_MODEL_RESOLVED, META_WORKTREE_SHA]
+                    .map(|key| reviewed.meta.get(key).cloned().unwrap_or_default());
+                assert_eq!(
+                    metas,
+                    ["alias-0".to_string(), "resolved-0".to_string(), tip.clone()],
+                    "{}: the reused approve carries round 0's model and the sha it judged",
+                    row.name
+                );
+            }
+        }
+    }
+
     /// A list repeating the lens kind and the adversary kind, one agent in both adversary steps,
     /// the adjudicator step last: every shape a step token tells apart.
     fn repeated_kind_panel() -> config::ReviewPanel {
