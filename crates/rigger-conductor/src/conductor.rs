@@ -2587,7 +2587,7 @@ fn review_retry_window(ordinal: u32) -> std::ops::RangeInclusive<u32> {
 }
 
 /// One ReviewFinding a review round recorded: the step `role` whose spawn recorded it, its `id`
-/// and its rendered [`record_line`].
+/// and its rendered [`finding_line`].
 struct RoundFinding {
     role: String,
     id: String,
@@ -2618,13 +2618,7 @@ fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> 
         let body: Value = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
         let field = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("");
         let id = field("id");
-        let by = e
-            .meta
-            .get(contextgraph::META_ACTOR)
-            .map(String::as_str)
-            .filter(|a| !a.is_empty())
-            .unwrap_or_else(|| field("by"));
-        let line = record_line(id, by, field("summary"));
+        let line = finding_line(id, finding_author(e, &body), field("summary"));
         match found.iter_mut().find(|f| f.role == role && f.id == id) {
             Some(f) => f.line = line,
             None => found.push(RoundFinding {
@@ -2637,18 +2631,57 @@ fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> 
     found
 }
 
+/// Who recorded the ReviewFinding `e`, whose payload is `body`: the role token its
+/// [`contextgraph::META_ACTOR`] stamp names, else the `by` its payload names; empty when it
+/// names neither.
+fn finding_author<'a>(e: &'a Event, body: &'a Value) -> &'a str {
+    e.meta
+        .get(contextgraph::META_ACTOR)
+        .map(String::as_str)
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| body.get("by").and_then(Value::as_str).unwrap_or(""))
+}
+
+/// The members of `unit`'s review round `attempt` that recorded a ReviewFinding with no
+/// [`META_SPAWN`] stamp ([`finding_author`]), which [`round_findings`] cannot place in a round:
+/// each logged after the round's [`STATUS_REVIEW_ROUND_START`] mark, or anywhere in `run` when
+/// the round has none, as a review that is not a unit's has none. Not every emit path stamps
+/// its spawn (an out-of-process emit without its spawn id, an operator's own), so such a
+/// finding may be the round's, and [`round_findings_block`] never calls its author silent.
+fn unstamped_round_authors(run: &[Event], unit: &str, attempt: u32) -> BTreeSet<String> {
+    let start = run
+        .iter()
+        .position(|e| {
+            unit_status_marks(std::slice::from_ref(e), unit, &[STATUS_REVIEW_ROUND_START])
+                .any(|(_, at, _)| at == u64::from(attempt))
+        })
+        .unwrap_or(0);
+    run[start..]
+        .iter()
+        .filter(|e| {
+            e.type_ == contextgraph::TYPE_REVIEW_FINDING && !e.meta.contains_key(META_SPAWN)
+        })
+        .filter_map(|e| {
+            let body: Value = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
+            Some(finding_author(e, &body).to_string()).filter(|by| !by.is_empty())
+        })
+        .collect()
+}
+
 /// The block a review spawn's task closes on over its round's `findings`: for a unit's
 /// adjudicator (`all`) every one under [`ROUND_FINDINGS_ALL`], whatever file it names, which
 /// the graph slice of its prompt may leave out, then a [`ROUND_NO_FINDING`] row for each role
-/// of its `roster` that recorded none, so a silent reviewer reads as one; for any other step's
-/// `role` the ones it recorded itself under [`ROUND_FINDINGS_YOURS`], so a reviewer re-driven
-/// within its round knows what it already recorded. Empty when there is none to list.
+/// of its `roster` that recorded none, so a silent reviewer reads as one - never for a role
+/// `unstamped` names ([`unstamped_round_authors`]), whose finding may be the round's; for any
+/// other step's `role` the ones it recorded itself under [`ROUND_FINDINGS_YOURS`], so a
+/// reviewer re-driven within its round knows what it already recorded. Empty when there is
+/// none to list.
 fn round_findings_block(
     findings: &[RoundFinding],
     role: &str,
     all: bool,
     roster: &[String],
-    _unstamped: &BTreeSet<String>,
+    unstamped: &BTreeSet<String>,
 ) -> String {
     let mut lines: String = findings
         .iter()
@@ -2656,10 +2689,9 @@ fn round_findings_block(
         .map(|f| f.line.as_str())
         .collect();
     if all {
-        for silent in roster
-            .iter()
-            .filter(|member| !findings.iter().any(|f| &f.role == *member))
-        {
+        for silent in roster.iter().filter(|member| {
+            !findings.iter().any(|f| &f.role == *member) && !unstamped.contains(*member)
+        }) {
             lines.push_str(&fill(ROUND_NO_FINDING, &[("role", silent)]));
         }
     }
@@ -2670,11 +2702,6 @@ fn round_findings_block(
     } else {
         format!("{ROUND_FINDINGS_YOURS}{lines}")
     }
-}
-
-/// The members of `unit`'s review round `attempt` that recorded a finding with no spawn stamp.
-fn unstamped_round_authors(_run: &[Event], _unit: &str, _attempt: u32) -> BTreeSet<String> {
-    BTreeSet::new()
 }
 
 /// What a review-tier spawn's stdout carries, which decides when
@@ -15426,6 +15453,16 @@ fn record_line(id: &str, by: &str, summary: &str) -> String {
     }
 }
 
+/// A finding's [`record_line`], its `id`, its reviewer `by` and its `summary` each escaped
+/// ([`debug_escaped`]): a reviewer writes all three, so a newline in one cannot forge a row.
+fn finding_line(id: &str, by: &str, summary: &str) -> String {
+    record_line(
+        &debug_escaped(id),
+        &debug_escaped(by),
+        &debug_escaped(summary),
+    )
+}
+
 /// Render the "Code neighborhood" section (spec 29c criterion 1): the code-entity DEFINITIONS the
 /// unified `subgraph` traversal surfaces around the touched files - the code half of the one graph
 /// (spec 29a) the run extracted. It is rendered from the SAME `Graph` the decisions / lessons /
@@ -15783,7 +15820,7 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         false,
         |n| {
             let attr = |k: &str| n.attrs.get(k).map(String::as_str).unwrap_or("");
-            record_line(&n.id, attr("by"), attr("summary"))
+            finding_line(&n.id, attr("by"), attr("summary"))
         },
     );
 }
