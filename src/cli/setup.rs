@@ -131,13 +131,14 @@ impl ScaffoldReport {
 /// root was given): every set is parsed ([`parse_template_sets`]) and the project's agents are
 /// read ([`defined_agent_ids`]) before [`scaffold_project`]'s first write, so a set that fails
 /// [`parse_template_set`] refuses naming its key, an agent file that does not parse refuses
-/// naming that file, and either refusal writes nothing.
+/// naming that file, and either refusal writes nothing. It imports no agent collection, so every
+/// seed is weighed against the project's own agents alone.
 fn init_project(
     root: &Path,
     sets: &[TemplateSet],
 ) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
     let parsed = parse_template_sets(sets)?;
-    scaffold_project(root, &parsed, &defined_agent_ids(root)?)
+    scaffold_project(root, &parsed, &defined_agent_ids(root)?, &[])
 }
 
 /// The ids the agent files in `root`'s `.rigger/agents/` define, whatever their file names, read
@@ -177,11 +178,14 @@ fn parse_template_sets(sets: &[TemplateSet]) -> Result<Vec<(&TemplateSet, SetSpe
 /// the role seeds; with none, the workflow declares no gates and no build variable and names the
 /// language-neutral `implementer` seed. An existing workflow or agent file is kept, and no seed
 /// is written whose id is among `defined`, the ids the project's agents define
-/// ([`defined_agent_ids`], read before this first write; [`write_seed_agents`]).
+/// ([`defined_agent_ids`], read before this first write), or whose id `incoming`, the agent
+/// collection `rigger setup --agents` imports after this ([`stage_import`]), brings in its place
+/// ([`write_seed_agents`]).
 fn scaffold_project(
     root: &Path,
     parsed: &[(&TemplateSet, SetSpec)],
     defined: &std::collections::HashSet<String>,
+    incoming: &[IncomingAgent],
 ) -> Result<ScaffoldReport, Box<dyn std::error::Error>> {
     let set_catalogue = parsed
         .iter()
@@ -223,7 +227,7 @@ fn scaffold_project(
 
     // 2. Seed the agents the workflow references, the matched set's implementer among the
     // candidates.
-    let new_agents = write_seed_agents(root, matched.map(|(_, spec)| spec), defined)?;
+    let new_agents = write_seed_agents(root, matched.map(|(_, spec)| spec), defined, incoming)?;
 
     // 3. Install the SessionStart hook, merging into any existing settings. Write ONLY
     // when the merge actually changes settings.json, so a rerun (the hook already
@@ -290,15 +294,20 @@ fn scaffold_project(
 
 /// Write into `<root>/.rigger/agents/` each seed candidate - every [`SCAFFOLD_AGENTS`] entry,
 /// then `set`'s `implementer` persona as `<id>.md` - whose `id` the workflow at `root`
-/// references (every candidate when the workflow at `root` is absent or names no agent) and
-/// whose id is not among `defined`, the ids the agents already in `.rigger/agents/` define under
-/// any file name ([`defined_agent_ids`]), returning the file names it newly wrote. It creates
-/// `.rigger/agents/` when absent. An existing file is kept silently ([`write_if_absent`]), so a
-/// rerun writes nothing new and an operator's curated agent stays.
+/// references (every candidate when the workflow at `root` is absent or names no agent), whose
+/// id is not among `defined`, the ids the agents already in `.rigger/agents/` define under any
+/// file name ([`defined_agent_ids`]), and whose id no staged file of `incoming` defines under the
+/// candidate's own file name or under a name no candidate takes - the agent the import then
+/// writes in the seed's place ([`import_agents`]) - returning the file names it newly wrote. A
+/// staged file under another candidate's name displaces no seed: that candidate's seed, once
+/// written, keeps the file out of the import. It creates `.rigger/agents/` when absent. An
+/// existing file is kept silently ([`write_if_absent`]), so a rerun writes nothing new and an
+/// operator's curated agent stays.
 fn write_seed_agents(
     root: &Path,
     set: Option<&SetSpec>,
     defined: &std::collections::HashSet<String>,
+    incoming: &[IncomingAgent],
 ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // Load the workflow to determine which agents are referenced, then only scaffold those
     // agents. This allows setup to skip scaffolding when the workflow's referenced agents
@@ -328,19 +337,28 @@ fn write_seed_agents(
     // ABSENT or names no agent, never because a present one failed to parse.
     let agents_dir = project_agents_dir(root);
     std::fs::create_dir_all(&agents_dir)?;
+    let candidate_files: Vec<&str> = candidates.iter().map(|(file, _)| file.as_str()).collect();
+    // Whether a staged file of `incoming` defines `id` under `file` or under a name no candidate
+    // takes.
+    let brought = |id: &str, file: &str| {
+        incoming.iter().any(|agent| {
+            agent.staged.as_ref().is_some_and(|(_, def)| def.id == id)
+                && (agent.name == file || !candidate_files.contains(&agent.name.as_str()))
+        })
+    };
     let mut new_agents = Vec::new();
-    for (file, content) in candidates {
+    for (file, content) in &candidates {
         let id = seed_id(content);
         let referenced = referenced_agents.is_empty()
             || id.as_ref().is_some_and(|id| referenced_agents.contains(id));
-        // A candidate carrying an id an agent on disk defines would be a second agent of that
-        // id, which every later load refuses.
-        let undefined = !id.is_some_and(|id| defined.contains(&id));
+        // A candidate carrying an id an agent on disk defines, or one the import brings, would be
+        // a second agent of that id, which every later load refuses.
+        let undefined = !id.is_some_and(|id| defined.contains(&id) || brought(&id, file));
         // Report only NEWLY-written agents; an existing agent is kept silently, so a
         // rerun scaffolds nothing new (the skip-scaffolding hygiene of spec 05). A genuine
         // write failure escalates (naming the artifact), never a silent omission.
-        if referenced && undefined && write_if_absent(&agents_dir.join(&file), content)? {
-            new_agents.push(file);
+        if referenced && undefined && write_if_absent(&agents_dir.join(file), content)? {
+            new_agents.push(file.clone());
         }
     }
     Ok(new_agents)
@@ -889,6 +907,12 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // Read before the store is resolved too, so an agent file that does not parse leaves the
     // project untouched.
     let defined = defined_agent_ids(root)?;
+    // The --agents collection is read and checked here too, so a collection the import refuses
+    // on its own leaves the project untouched, and the scaffold writes no seed whose id it brings.
+    let incoming = match &opts.agents_dir {
+        Some(src) => stage_import(root, src)?,
+        None => Vec::new(),
+    };
     // The store setup pays the owed rebuild into ([`store_to_write_in`]): the root's, made there
     // when absent, or from a subdirectory or a linked worktree the one at the project root. It is
     // resolved before setup writes anything, so where that root holds none setup is refused
@@ -898,7 +922,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // safely re-runnable: it refreshes a drifted install and reports it, and a rerun
     // on an up-to-date repo changes nothing and prints nothing surprising (spec 05,
     // criterion 4).
-    let scaffold = scaffold_project(root, &parsed, &defined)?;
+    let scaffold = scaffold_project(root, &parsed, &defined, &incoming)?;
     // The workflow `scaffold_project` left in place declares whether the lookup hook is installed
     // or removed below; a workflow that does not parse fails setup here, loudly.
     let grep_guard = config_store::load_workflow(&root.join(RIGGER_DIR).join(WORKFLOW_FILE))?
@@ -951,7 +975,7 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // before the silent-no-op check and always reports its outcome, so an import onto
     // an otherwise up-to-date repo is never silently skipped.
     let imported = if let Some(src) = &opts.agents_dir {
-        let summary = import_agents(root, src)?;
+        let summary = import_agents(root, incoming)?;
         println!(
             "imported {} agent {} from {} into .rigger/agents/ ({} kept - already present)",
             summary.imported,
@@ -1683,19 +1707,28 @@ struct ImportSummary {
     skipped: usize,
 }
 
-/// Import a starting agent fleet from a local collection directory into
-/// `<root>/.rigger/agents/` (spec 05: offline - no network access in setup; the user
-/// clones the collection themselves). For each `.md` file in `src`, the identity
-/// frontmatter field is normalized to Rigger's `id:` and the file is copied under its
-/// own name into `.rigger/agents/`. A file whose name already exists is KEPT untouched
-/// (import never overwrites, so a re-run - or importing over the scaffolded fleet - is
-/// safe) and counted as skipped. The result is validated by the SAME `config::load`
-/// `rigger validate` runs, so a malformed agent fails the import loudly rather than
-/// being written and breaking a later load. Rooted at `root` so it is testable against
-/// a temp dir.
-fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::error::Error>> {
+/// One `.md` file of the agent collection `rigger setup --agents` imports ([`stage_import`]).
+struct IncomingAgent {
+    /// The file's name, which the import writes it under in `.rigger/agents/`.
+    name: String,
+    /// The file's content with its identity field normalized ([`normalize_identity`]) beside the
+    /// agent that content parses to, or `None` when `.rigger/agents/` already held a file of its
+    /// name when the collection was read, so the import keeps that file and reads none of this
+    /// one.
+    staged: Option<(String, config::AgentDef)>,
+}
+
+/// Read the starting agent fleet a local collection directory `src` holds, for [`import_agents`]
+/// to write into `<root>/.rigger/agents/` (spec 05: offline - no network access in setup; the
+/// user clones the collection themselves), writing nothing: each `.md` file in `src`, in name
+/// order, with its identity frontmatter field normalized to Rigger's `id:` and parsed by the
+/// loader's own parse, but for a file whose name `.rigger/agents/` already holds, which is read
+/// no further. It fails naming a file that cannot be read or does not parse, and on a staged
+/// agent with an empty id or two of one id ([`config::index_agents`], the rule `config::load`
+/// applies), so a command reads it before its first write and a collection refused on its own
+/// leaves the project untouched.
+fn stage_import(root: &Path, src: &Path) -> Result<Vec<IncomingAgent>, Box<dyn std::error::Error>> {
     let dest = project_agents_dir(root);
-    std::fs::create_dir_all(&dest)?;
 
     // Collect the source `.md` files, SURFACING (never silently dropping) any directory
     // entry that fails to stat - a collection with an unreadable file must fail the
@@ -1718,20 +1751,7 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
     }
     md_files.sort();
 
-    // The prospective fleet: the agents already on disk plus the ones this import would
-    // add. `rigger setup` scaffolds the default fleet before this runs, and a foreign
-    // collection can carry an id that collides with a scaffolded agent (or with another
-    // file in the same import) under a DIFFERENT filename - past the filename-only
-    // overwrite guard, but a duplicate id `config::load` rejects. We therefore validate
-    // the whole prospective fleet BEFORE writing anything (below), so a collision aborts
-    // the import atomically instead of leaving half the files on disk to brick every
-    // later load.
-    let mut fleet: Vec<(String, config::AgentDef)> = config_store::read_agents_dir(&dest)
-        .map_err(|e| format!("setup --agents: reading the existing fleet: {e}"))?;
-
-    // Pass 1: normalize, parse, and STAGE each file to write - writing nothing yet.
-    let mut summary = ImportSummary::default();
-    let mut to_write: Vec<(String, String, String)> = Vec::new(); // (name, content, id)
+    let mut incoming = Vec::new();
     for path in md_files {
         let name = path
             .file_name()
@@ -1744,8 +1764,7 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
             })?
             .to_string();
         if dest.join(&name).exists() {
-            println!("kept existing .rigger/agents/{name} (import never overwrites)");
-            summary.skipped += 1;
+            incoming.push(IncomingAgent { name, staged: None });
             continue;
         }
         let raw = std::fs::read_to_string(&path)
@@ -1753,26 +1772,76 @@ fn import_agents(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::
         let normalized =
             normalize_identity(&raw).map_err(|e| format!("setup --agents: {name}: {e}"))?;
         // Parse structurally as we stage, so a malformed file's error names it (the same
-        // parse the loader uses). The id invariant (non-blank, unique) is enforced once
-        // for the whole fleet by `config::index_agents` below - the SAME rule the loader
-        // applies, not a second copy of it.
+        // parse the loader uses).
         let parsed = config::parse_agent(normalized.as_bytes())
             .map_err(|e| format!("setup --agents: {name}: {e}"))?;
-        let id = parsed.id.clone();
-        fleet.push((name.clone(), parsed));
-        to_write.push((name, normalized, id));
+        incoming.push(IncomingAgent {
+            name,
+            staged: Some((normalized, parsed)),
+        });
+    }
+    // The staged agents alone by the SAME rule `config::load` enforces - a non-empty, unique
+    // id per agent - so two files of one id refuse before the scaffold weighs a seed against
+    // either.
+    config::index_agents(incoming.iter().filter_map(|agent| {
+        let (_, def) = agent.staged.as_ref()?;
+        Some((agent.name.clone(), def.clone()))
+    }))?;
+    Ok(incoming)
+}
+
+/// Write `incoming`, the collection [`stage_import`] read, into `<root>/.rigger/agents/`, each
+/// staged file under its own name. A file whose name `.rigger/agents/` holds by now - before the
+/// collection was read, or a seed [`scaffold_project`] wrote since - is KEPT untouched (import
+/// never overwrites, so a re-run - or importing over the scaffolded fleet - is safe) and counted
+/// as skipped. The result is validated by the SAME `config::load` `rigger validate` runs, so an
+/// import that breaks the project fails loudly. Rooted at `root` so it is testable against a
+/// temp dir.
+fn import_agents(
+    root: &Path,
+    incoming: Vec<IncomingAgent>,
+) -> Result<ImportSummary, Box<dyn std::error::Error>> {
+    let dest = project_agents_dir(root);
+    std::fs::create_dir_all(&dest)?;
+
+    // The prospective fleet: the agents already on disk plus the ones this import would
+    // add. An agent on disk - the operator's own, or a seed an earlier setup wrote - can
+    // share an id with a staged file under a DIFFERENT filename: past the filename-only
+    // overwrite guard, but a duplicate id `config::load` rejects. We therefore validate
+    // the whole prospective fleet BEFORE writing anything (below), so a collision aborts
+    // the import atomically instead of leaving half the files on disk to brick every
+    // later load.
+    let fleet: Vec<(String, config::AgentDef)> = config_store::read_agents_dir(&dest)
+        .map_err(|e| format!("setup --agents: reading the existing fleet: {e}"))?;
+
+    // Pass 1: keep each file whose name is taken, writing nothing yet.
+    let mut summary = ImportSummary::default();
+    let mut to_write: Vec<(String, String, config::AgentDef)> = Vec::new();
+    for IncomingAgent { name, staged } in incoming {
+        match staged {
+            Some((content, agent)) if !dest.join(&name).exists() => {
+                to_write.push((name, content, agent));
+            }
+            _ => {
+                println!("kept existing .rigger/agents/{name} (import never overwrites)");
+                summary.skipped += 1;
+            }
+        }
     }
 
     // Validate the prospective fleet by the SAME rule `config::load` enforces - a
-    // non-blank, unique id per agent - before a single byte is written, so a blank or
-    // colliding id fails the import loudly and leaves `.rigger/agents/` untouched.
-    config::index_agents(fleet)?;
+    // non-empty, unique id per agent - before a single byte is written, so a colliding id
+    // fails the import loudly and leaves `.rigger/agents/` untouched.
+    let staged = to_write
+        .iter()
+        .map(|(name, _, agent)| (name.clone(), agent.clone()));
+    config::index_agents(fleet.into_iter().chain(staged))?;
 
     // Pass 2: every staged file validated - commit the writes.
-    for (name, content, id) in &to_write {
+    for (name, content, agent) in &to_write {
         std::fs::write(dest.join(name), content)
             .map_err(|e| format!("setup --agents: write {name}: {e}"))?;
-        println!("imported .rigger/agents/{name} (id: {id})");
+        println!("imported .rigger/agents/{name} (id: {})", agent.id);
         summary.imported += 1;
     }
 
@@ -2898,7 +2967,7 @@ mod tests {
         let rigger = dir.path().join(RIGGER_DIR);
         std::fs::create_dir_all(&rigger).unwrap();
         std::fs::write(rigger.join("workflow.yml"), workflow).unwrap();
-        write_seed_agents(dir.path(), set, &std::collections::HashSet::new()).unwrap();
+        write_seed_agents(dir.path(), set, &std::collections::HashSet::new(), &[]).unwrap();
         config_store::load(dir.path().to_str().unwrap()).unwrap_or_else(|e| {
             panic!("the scaffolded config must load and validate: {e}\n{workflow}")
         })
@@ -4680,7 +4749,13 @@ mod tests {
         }
     }
 
-    /// `import_agents` copies each `.md` from a local collection directory into
+    /// [`stage_import`] then [`import_agents`] over the collection `src`, as `rigger setup
+    /// --agents` runs them around the scaffold, here on a project already scaffolded.
+    fn import(root: &Path, src: &Path) -> Result<ImportSummary, Box<dyn std::error::Error>> {
+        import_agents(root, stage_import(root, src)?)
+    }
+
+    /// The import copies each `.md` from a local collection directory into
     /// `.rigger/agents/`, normalizing the collection's identity field (`name:`) to
     /// Rigger's `id:` so a foreign agent loads under Rigger's schema. The imported file
     /// parses via the same `config::parse_agent` the loader uses.
@@ -4704,7 +4779,7 @@ mod tests {
         // A non-.md file must be ignored.
         std::fs::write(src.join("README.txt"), "not an agent").unwrap();
 
-        let summary = import_agents(root, &src).unwrap();
+        let summary = import(root, &src).unwrap();
         assert_eq!(
             summary,
             ImportSummary {
@@ -4758,7 +4833,7 @@ mod tests {
         )
         .unwrap();
 
-        let summary = import_agents(root, &src).unwrap();
+        let summary = import(root, &src).unwrap();
         assert_eq!(
             summary,
             ImportSummary {
@@ -4786,7 +4861,7 @@ mod tests {
         for (name, content) in files {
             std::fs::write(src.join(name), content).unwrap();
         }
-        assert!(import_agents(root, &src).is_err(), "{why}");
+        assert!(import(root, &src).is_err(), "{why}");
         for (name, _) in files {
             assert!(
                 !root.join(RIGGER_DIR).join("agents").join(name).exists(),
@@ -4863,7 +4938,7 @@ mod tests {
         .unwrap();
 
         assert!(
-            import_agents(root, &src).is_err(),
+            import(root, &src).is_err(),
             "import must run the same validation `rigger validate` applies and reject a \
              project whose workflow references a missing agent"
         );
