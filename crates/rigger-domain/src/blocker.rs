@@ -79,8 +79,8 @@ pub enum Kind {
     Building { attempt: u32 },
     /// Gates are green and the unit is under review (adjudication pending).
     Reviewing,
-    /// The unit failed and is remediating: this is failure `n` of the `max` bound
-    /// before escalation (`defaults.max_retries`). `cause` is the conductor's own
+    /// The unit failed and is remediating: this is failure `n` of the `max` bound it
+    /// escalates at ([`ledger::Unit::max_retries`], stamped on its failure). `cause` is the conductor's own
     /// closed-vocabulary tag for WHY (spec 69, criterion 3: the cause wire) - `reject`,
     /// `gate:<name>`, `integrate-conflict`, or `infra:<kind>` - defaulted to `"unknown"`
     /// when the folded [`ledger::Unit::cause`] is empty (a cause-less prior event).
@@ -167,9 +167,11 @@ impl Blocker {
 }
 
 /// Resolve the effective remediation bound of a configured `defaults.max_retries`: the key, or
-/// [`safety::MAX_RETRIES`] when unset (`0`) ([`defaults_max_retries`]). The conductor reads the
-/// same resolution through [`stage_max_retries`], so the `reject-recurrence #n/max` line's `max`
-/// matches the bound the run actually escalates at, on either surface.
+/// [`safety::MAX_RETRIES`] when unset (`0`) ([`defaults_max_retries`]). The
+/// `reject-recurrence #n/max` line reads it only for a failure with no stamped bound, one an
+/// older binary wrote: the conductor stamps every failure with the bound it escalates that unit
+/// at ([`ledger::Unit::max_retries`]), which a stage's own key or a resume grant can set apart
+/// from the defaults.
 pub fn effective_max_retries(configured: u32) -> u32 {
     defaults_max_retries(configured).0
 }
@@ -259,14 +261,17 @@ pub fn budget_halt(events: &[Event]) -> Option<Budget> {
 
 /// Classify the current blocker for each unfinished unit of a run, plus the run-level
 /// budget halt when present. PURE over the projected [`RunState`], the folded `budget`,
-/// and the already-resolved `max_retries` bound - no I/O, no clock.
+/// and the already-resolved run-wide `max_retries` bound - no I/O, no clock. A failed unit's
+/// line names the bound stamped on its latest failure ([`ledger::Unit::max_retries`], the one
+/// the conductor escalates it at), and the run-wide bound only when that failure carries none.
 ///
 /// One [`Blocker`] per unit that has NOT integrated (an integrated unit is done, not a
 /// blocker), keyed by its [`Status`]:
 /// - `Pending`/`Grounding`/`Red`/`Green` -> [`Kind::Building`] on attempt `attempts + 1`;
 /// - `Verified` -> [`Kind::Reviewing`];
 /// - `Reviewed` -> [`Kind::ApprovedNotIntegrated`];
-/// - `Failed` -> [`Kind::RejectRecurrence`] `#attempts/max` (mid-remediation);
+/// - `Failed` -> [`Kind::RejectRecurrence`] `#attempts/max` (mid-remediation), `max` the
+///   unit's stamped bound;
 /// - `Escalated` -> [`Kind::Escalated`].
 ///
 /// The run-level [`Kind::Budget`] blocker, when `budget` is `Some`, sorts FIRST; the
@@ -305,7 +310,7 @@ pub fn classify(run: &RunState, budget: Option<Budget>, max_retries: u32) -> Vec
             Status::Escalated => Kind::Escalated,
             Status::Failed => Kind::RejectRecurrence {
                 n: u.attempts,
-                max: max_retries,
+                max: set_key(u.max_retries).unwrap_or(max_retries),
                 cause: if u.cause.is_empty() {
                     ledger::CAUSE_UNKNOWN.to_string()
                 } else {
@@ -329,7 +334,8 @@ pub fn classify(run: &RunState, budget: Option<Budget>, max_retries: u32) -> Vec
 /// The convenience entry both operator surfaces call: project the run, fold the budget
 /// halt, and [`classify`] - so `rigger status` and the dashboard render the SAME lines
 /// from ONE call. `configured_max_retries` is `defaults.max_retries` (unresolved);
-/// [`effective_max_retries`] applies the `0 -> MAX_RETRIES` fallback.
+/// [`effective_max_retries`] applies the `0 -> MAX_RETRIES` fallback, and a failed unit's
+/// stamped bound takes precedence over it ([`classify`]).
 pub fn from_events(
     events: &[Event],
     configured_max_retries: u32,
@@ -545,6 +551,14 @@ mod tests {
             ],
             6,
             "u: reject-recurrence #2/6 (reject)",
+        );
+        // The bound stamped on the failure (its stage's own 2) is the unit's, over the
+        // run-wide 6 a surface passes; the rows above, whose failures carry none (an older
+        // binary's), read the run-wide bound.
+        reject_recurrence_line_names_the_units_stamped_bound: assert_reject_recurrence_line(
+            &[r#"{"id":"u","attempts":1,"cause":"gate:fmt","max_retries":2}"#],
+            6,
+            "u: reject-recurrence #1/2 (gate:fmt)",
         );
     }
 

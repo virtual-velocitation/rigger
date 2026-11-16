@@ -1313,9 +1313,10 @@ pub struct ConsoleSnapshotView {
 /// `include_events` inlines the event feed into the snapshot (for `--export`); the live
 /// endpoint passes `false` and serves the feed from [`events_json`] instead.
 ///
-/// `configured_max_retries` is `defaults.max_retries` (the caller's config, unresolved):
-/// it sets the `#n/max` bound on a `reject-recurrence` current-blocker line so it matches
-/// the depth the run escalates at. `run_branch`/`base` name the release target for the
+/// `configured_max_retries` is `defaults.max_retries` (the caller's config, unresolved): the
+/// `#n/max` bound a `reject-recurrence` current-blocker line names when the unit's failure
+/// carries no stamped bound (one an older binary wrote); every failure the conductor records
+/// carries the bound it escalates that unit at, which the line names. `run_branch`/`base` name the release target for the
 /// ready-to-release handoff (spec 38, criterion 3), threaded from the serving command.
 #[allow(clippy::too_many_arguments)]
 pub fn build_state(

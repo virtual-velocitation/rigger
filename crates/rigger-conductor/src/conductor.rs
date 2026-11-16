@@ -2220,13 +2220,17 @@ impl PriorFailure {
     }
 
     /// The `UnitFailed` body recording that `unit`'s attempt failed with `cause`, leaving
-    /// `attempts` used: this failure's gate evidence and review reason ride on it, so the
-    /// next attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
-    /// re-enters the unit. The one body every `UnitFailed` writes, whichever path failed.
-    fn failed_body(&self, unit: &str, attempts: u32, cause: &str) -> Value {
+    /// `attempts` used of the `max_retries` it escalates at ([`RunCtx::max_retries_for`] on its
+    /// own stage): this failure's gate evidence and review reason ride on it, so the next
+    /// attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
+    /// re-enters the unit, and the bound rides on it so an operator surface holding only the
+    /// log and the run's defaults shows the bound the unit escalates at. The one body every
+    /// `UnitFailed` writes, whichever path failed.
+    fn failed_body(&self, unit: &str, attempts: u32, max_retries: u32, cause: &str) -> Value {
         json!({
             "id": unit,
             "attempts": attempts,
+            "max_retries": max_retries,
             "cause": cause,
             "gate_evidence": self.gate_evidence,
             "review_reason": self.review_reason,
@@ -3597,7 +3601,7 @@ pub fn run_serving(
             // wave, but a resume whose units are all already terminal schedules no wave, so
             // without this the seeded rollback would never re-drive. On a fresh run (or a resume
             // with nothing pending) the queue is empty and this is a no-op.
-            ctx.drain_compensations(&mut integrated, &mut terminal)?;
+            ctx.drain_compensations(&stages, &mut integrated, &mut terminal)?;
             let frontier = Frontier {
                 critique_gate: gate.as_deref(),
                 fanout_criteria: &fanout_criteria,
@@ -3643,7 +3647,7 @@ pub fn run_serving(
                 // on the run branch and re-entering it into remediation - so the next
                 // `wave_ready` re-schedules it. The forward door stays untouched; this is its
                 // evented reverse gear.
-                ctx.drain_compensations(&mut integrated, &mut terminal)?;
+                ctx.drain_compensations(&stages, &mut integrated, &mut terminal)?;
             }
         }
 
@@ -4540,6 +4544,7 @@ impl RunCtx<'_> {
     /// is nothing to revert.
     fn drain_compensations(
         &self,
+        stages: &BTreeMap<String, Stage>,
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
     ) -> Result<(), Error> {
@@ -4597,13 +4602,24 @@ impl RunCtx<'_> {
                 .lock()
                 .unwrap()
                 .insert(comp.target.clone(), attempts);
+            // The bound the re-entered unit escalates at: its own stage's, as its next attempt
+            // reads it (an integrated unit is in the DAG; the run's defaults otherwise).
+            let max_retries = self.max_retries_for(
+                &comp.target,
+                stages.get(&comp.target).unwrap_or(&Stage::default()),
+            );
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3 (the cause wire): a compensation revert is a
                 // LATER unit's review proving this one wrong - a deferred reject. It
                 // carries no gate evidence or review reason of its own: the
                 // contradiction rides as metadata, which a resume recovers it from.
-                PriorFailure::default().failed_body(&comp.target, attempts, CAUSE_REJECT),
+                PriorFailure::default().failed_body(
+                    &comp.target,
+                    attempts,
+                    max_retries,
+                    CAUSE_REJECT,
+                ),
                 &[
                     (META_COMPENSATED, &compensated),
                     (META_CONTRADICTION, contradiction),
@@ -6965,7 +6981,12 @@ impl RunCtx<'_> {
                     // spec 69, criterion 3: the resumed exhaustive re-assert failing is a
                     // plain gate failure - name the gate. Its evidence rides along (gap 61),
                     // so the later process that re-enters the unit prompts it from the log.
-                    failure.failed_body(&st.name, attempts + 1, &cause),
+                    failure.failed_body(
+                        &st.name,
+                        attempts + 1,
+                        self.max_retries_for(&st.name, st),
+                        &cause,
+                    ),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -7010,7 +7031,12 @@ impl RunCtx<'_> {
                     // went red is a merge conflict, not a plain gate failure. The
                     // merge-break evidence rides along (gap 61), so the later process
                     // that re-enters the unit prompts it from the log.
-                    failure.failed_body(&st.name, attempts + 1, CAUSE_INTEGRATE_CONFLICT),
+                    failure.failed_body(
+                        &st.name,
+                        attempts + 1,
+                        self.max_retries_for(&st.name, st),
+                        CAUSE_INTEGRATE_CONFLICT,
+                    ),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -7741,7 +7767,8 @@ impl RunCtx<'_> {
                 any_parked.store(false, Ordering::SeqCst);
                 continue;
             }
-            let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
+            let max_retries = self.max_retries_for(&st.name, st);
+            let rem = safety::remediate(attempts, max_retries);
             attempts = rem.attempts;
             // The new attempt's infra reruns, from the log read at entry (none, unless an
             // earlier process already ran it).
@@ -7768,7 +7795,7 @@ impl RunCtx<'_> {
                 // review reject) - never inferred here from the shared evidence. The
                 // failure's specifics ride along (gap 61), so a later process re-entering
                 // the unit prompts it from the log.
-                next.failed_body(&st.name, attempts, &cause),
+                next.failed_body(&st.name, attempts, max_retries, &cause),
                 &[(META_WORKTREE_SHA, &failed_sha)],
             )?;
             if rem.decision == safety::Decision::Escalate {
@@ -8270,7 +8297,12 @@ impl RunCtx<'_> {
             self.emit_keyed_meta(
                 &format!("{}/speculation-lost#{base}", st.name),
                 ledger::TYPE_UNIT_FAILED,
-                failure.failed_body(&st.name, base + width, &cause),
+                failure.failed_body(
+                    &st.name,
+                    base + width,
+                    self.max_retries_for(&st.name, st),
+                    &cause,
+                ),
                 &meta,
             )?;
         }
@@ -8304,7 +8336,12 @@ impl RunCtx<'_> {
             };
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
-                failure.failed_body(&st.name, lane.attempt + 1, CAUSE_INTEGRATE_CONFLICT),
+                failure.failed_body(
+                    &st.name,
+                    lane.attempt + 1,
+                    self.max_retries_for(&st.name, st),
+                    CAUSE_INTEGRATE_CONFLICT,
+                ),
                 &[(META_WORKTREE_SHA, &lane.sha)],
             )?;
         }
@@ -8729,7 +8766,8 @@ impl RunCtx<'_> {
             // duplicate UnitFailed - the bound accumulates from the log, it is never
             // re-counted (finding rf-fanout-replay-dup-unitfailed).
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
+            let max_retries = self.max_retries_for(&st.name, st);
+            let rem = safety::remediate(attempts, max_retries);
             attempts = rem.attempts;
             // spec 69, criterion 3 (the cause wire): `approved` means the gates ran and
             // failed (`gate_result` is `Some`); otherwise the adjudicator itself rejected.
@@ -8754,7 +8792,7 @@ impl RunCtx<'_> {
             self.emit_keyed_meta(
                 &failed_key(&st.name, failed_attempt),
                 ledger::TYPE_UNIT_FAILED,
-                failure.failed_body(&st.name, attempts, &cause),
+                failure.failed_body(&st.name, attempts, max_retries, &cause),
                 // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
                 // pairs with a later approve on the SAME sha for the flip-flop fold.
                 &[(META_WORKTREE_SHA, &worktree::head_sha_of(dir))],
@@ -9928,7 +9966,8 @@ impl RunCtx<'_> {
             // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
             // replay re-reaching it appends no duplicate); the round head decides what follows.
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries_for(&gate_name, gate_st));
+            let max_retries = self.max_retries_for(&gate_name, gate_st);
+            let rem = safety::remediate(attempts, max_retries);
             attempts = rem.attempts;
             let failure = PriorFailure {
                 review_reason: reason.clone(),
@@ -9940,7 +9979,7 @@ impl RunCtx<'_> {
                 // spec 69, criterion 3: the plan-critique gate runs no gates of its
                 // own - every reject here is the adjudicator's, and its reasoning rides
                 // along (gap 61).
-                failure.failed_body(&gate_name, attempts, CAUSE_REJECT),
+                failure.failed_body(&gate_name, attempts, max_retries, CAUSE_REJECT),
             )?;
             rejected = Some(rem.decision);
             prior_reason = reason;
@@ -29818,16 +29857,15 @@ mod tests {
     const LANE_0_MERGE_BREAK: &str = "ok: FAIL - lane 0's merge broke the merged tree";
 
     /// The `UnitFailed` `run_speculation` records for that post-merge block on lane 0 of `s`,
-    /// written through the one body builder every failure path writes.
+    /// written through the one body builder every failure path writes, at the built-in bound
+    /// [`spec_cfg`]'s unit escalates at.
     fn lane_0_merge_break() -> Event {
         let blocked = PriorFailure {
             gate_evidence: vec![LANE_0_MERGE_BREAK.into()],
             ..Default::default()
         };
-        Event::new(
-            ledger::TYPE_UNIT_FAILED,
-            serde_json::to_vec(&blocked.failed_body("s", 1, CAUSE_INTEGRATE_CONFLICT)).unwrap(),
-        )
+        let body = blocked.failed_body("s", 1, safety::MAX_RETRIES, CAUSE_INTEGRATE_CONFLICT);
+        Event::new(ledger::TYPE_UNIT_FAILED, serde_json::to_vec(&body).unwrap())
     }
 
     /// A driver under which every speculation lane writes a file and every reviewer approves.
