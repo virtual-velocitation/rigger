@@ -1,5 +1,6 @@
-//! The process interface's Linux adapter: the one production file that reads `/proc`, the
-//! kernel's own view of every process (`proc(5)`). Each function answers the fact its namesake in
+//! The process interface's Linux adapter, bound on Linux and on Android, which runs the same
+//! kernel: the one production file that reads `/proc`, the kernel's own view of every process
+//! (`proc(5)`). Each function answers the fact its namesake in
 //! [`super`] documents, through `std` alone (no `libc`), so it reads identically on both feature
 //! lanes; a read that fails - the process exited, or belongs to another user - answers absent.
 

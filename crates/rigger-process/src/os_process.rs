@@ -9,7 +9,8 @@
 //! Every reader is best-effort: a process that is gone, or one this process may not read,
 //! answers absent (`None`, an empty list, an empty command), never an error, and on an OS with
 //! no native adapter every reader answers absent. The native adapters are Linux's (`/proc`),
-//! macOS's (libproc) and Windows's (the Win32 process, IP Helper and Restart Manager calls);
+//! which Android, running the same kernel, binds too, macOS's (libproc) and Windows's (the
+//! Win32 process, IP Helper and Restart Manager calls);
 //! Windows reports no other process's working directory, run state or open files, so there those
 //! three readers answer absent.
 
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 // The one spelling of the OS set: each OS with a native adapter declares its module and binds it
 // as `native`, and every other OS binds the inline `unsupported` module in the `_` arm.
 std::cfg_select! {
-    target_os = "linux" => {
+    any(target_os = "linux", target_os = "android") => {
         pub(crate) mod linux;
         use linux as native;
     }
