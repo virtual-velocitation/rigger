@@ -566,17 +566,28 @@ pub fn open_build_cache_guard(path: &std::path::Path) -> std::io::Result<std::fs
 /// descriptor ([`inherit_on_exec`]) keeps it. A refused create, open or lock is the
 /// [`ProbeFault`] naming `guard` and the OS error.
 pub fn hold_shared_lock(guard: &str) -> Result<std::fs::File, ProbeFault> {
-    let fault = |e: std::io::Error| ProbeFault {
-        guard: guard.to_string(),
-        error: e.to_string(),
-    };
-    let file = open_build_cache_guard(std::path::Path::new(guard)).map_err(fault)?;
     // Fully-qualified (not `file.lock_shared()`): this crate deliberately uses `fs2` for
     // every advisory lock ([`crate::budget`], `main.rs`'s step lock) rather than std's
     // more recently stabilized `File::lock_shared`, which shares this exact method name -
     // a plain method call would silently resolve to the std inherent method (inherent
     // methods always win over a trait's) and leave the `fs2` import genuinely unused.
-    fs2::FileExt::lock_shared(&file).map_err(fault)?;
+    lock_guard(guard, <std::fs::File as fs2::FileExt>::lock_shared)
+}
+
+/// Opens the guard at `guard` through [`open_build_cache_guard`], takes `lock` on it and
+/// answers the open guard; a refused create, open or lock is the [`ProbeFault`] naming `guard`
+/// and the OS error. [`hold_shared_lock`] passes the shared lock; a test passes a lock that
+/// refuses, the answer of a filesystem without advisory locks, which no test can mount.
+fn lock_guard(
+    guard: &str,
+    lock: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
+) -> Result<std::fs::File, ProbeFault> {
+    let fault = |e: std::io::Error| ProbeFault {
+        guard: guard.to_string(),
+        error: e.to_string(),
+    };
+    let file = open_build_cache_guard(std::path::Path::new(guard)).map_err(fault)?;
+    lock(&file).map_err(fault)?;
     Ok(file)
 }
 
@@ -1446,6 +1457,30 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                         .unwrap_err()
                 }),
             );
+    }
+
+    /// Spec 125 criterion 10: a guard that opens but whose lock is refused, as a filesystem
+    /// without advisory locks refuses it, is the probe fault naming the guard and the lock's
+    /// error, taken after the guard is opened, so a gate never builds unguarded.
+    #[test]
+    fn a_guard_whose_lock_is_refused_is_a_probe_fault() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let guard = root.path().join("cargo-target.lock");
+        let guard_str = guard.to_str().unwrap();
+        let got = lock_guard(guard_str, |_| {
+            Err(std::io::Error::other("no locks available"))
+        });
+        assert_eq!(
+            (got.map(drop), guard.is_file()),
+            (
+                Err(ProbeFault {
+                    guard: guard_str.to_string(),
+                    error: "no locks available".to_string(),
+                }),
+                true
+            ),
+            "a refused lock faults, naming the guard it opened and the lock's error"
+        );
     }
 
     #[test]
