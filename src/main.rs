@@ -1,6 +1,6 @@
 //! The harness CLI and the single composition root: it constructs the concrete
 //! adapters (event store, agent driver, grounder, projector) and injects them into
-//! the conductor, which depends only on ports. `rigger run` executes the configured
+//! the conductor, which depends only on interfaces. `rigger run` executes the configured
 //! workflow, spawning each agent as its own host CLI process - the event store
 //! (`--eventstore sqlite|kurrentdb`) is selected by flag; `rigger graph` inspects
 //! the context graph; `rigger init`/`setup` scaffold a project.

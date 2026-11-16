@@ -1270,7 +1270,7 @@ fn rebuild_owed_graph(
         }
         // A server-backed log has no compaction plan (`rigger reset --derived` is sqlite-only), so
         // its live selection is its run stream as it stands: its positions are read through the
-        // store port alone, and a rebuild reads each of its events once. Its store stamps are
+        // store interface alone, and a rebuild reads each of its events once. Its store stamps are
         // taken on the server's clock, not this host's, so the seeding is handed none: the
         // server's skew moves nothing, and every position the file misses counts old.
         selection => {
