@@ -1569,7 +1569,7 @@ mod falsifiability {
         }));
         assert!(
             caught.is_err(),
-            "a store reporting positions it did not issue must FAIL the port's honesty check - \
+            "a store reporting positions it did not issue must FAIL the interface's honesty check - \
              otherwise the promise is decoration and a caller can fold at a location the store \
              never gave"
         );

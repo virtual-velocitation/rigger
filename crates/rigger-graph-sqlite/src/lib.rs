@@ -1,5 +1,5 @@
 //! Rigger's context-graph persistence adapter, ring 3 of the workspace: the SQLite projector
-//! behind the `RecordFold` port. It knows rusqlite, the filesystem and the domain; the root
+//! behind the `RecordFold` interface. It knows rusqlite, the filesystem and the domain; the root
 //! `rigger` crate re-exports it under its historical `rigger::contextgraph::sqlite` path.
 
 #[cfg(test)]

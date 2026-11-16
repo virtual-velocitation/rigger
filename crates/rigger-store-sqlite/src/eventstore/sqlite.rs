@@ -445,7 +445,7 @@ impl Store {
 /// a caller collects them ([`EventStore::read_stream`]), batches them
 /// ([`EventStore::read_stream_batched`]) or polls past a revision a stream subscription has
 /// delivered ([`poll_stream`]) and never spells the read a second time. A failure of the read is
-/// spelled by `fail`: the port's error for a port read, the database's own for a subscription.
+/// spelled by `fail`: the interface's error for an interface read, the database's own for a subscription.
 fn read_forward<R, E>(
     conn: &Connection,
     stream: &str,
@@ -951,7 +951,7 @@ impl EventStore for Store {
         // under WAL with a concurrent writer cannot be resolved by the busy handler
         // (SQLITE_BUSY_SNAPSHOT) and surfaces as a hard `database is locked` backend error; taking
         // the write lock immediately makes concurrent appenders serialize cleanly, so a stale
-        // expectation surfaces as the port's `Error::Conflict` (which callers retry) and never as a
+        // expectation surfaces as the interface's `Error::Conflict` (which callers retry) and never as a
         // spurious lock error. This is what the module header promises ("concurrent appenders queue
         // instead of deadlocking on the SQLITE_BUSY class") and what the optimistic-concurrency
         // contract needs to hold across connections, not just within one in-process `Store`.

@@ -1,5 +1,5 @@
 //! The KurrentDB EventStore adapter: it maps the async KurrentDB gRPC client onto
-//! the (sync) eventstore port via a tokio runtime, so a project can swap the
+//! the (sync) eventstore interface via a tokio runtime, so a project can swap the
 //! embedded SQLite store for a shared KurrentDB server with no change to the rest
 //! of Rigger. It passes the same contract suite SQLite does (proxy fidelity).
 //!
@@ -9,7 +9,7 @@
 //!
 //! This backend implements NO content-identity suppression - it has no index over
 //! event metadata to seek - so it appends every event through, which is the fail-safe
-//! direction; it owns the port's HONESTY obligation in full, and reports positions the
+//! direction; it owns the interface's HONESTY obligation in full, and reports positions the
 //! server issued rather than any it could derive.
 //!
 //! ## Group streams
@@ -124,7 +124,7 @@ impl Store {
     }
 }
 
-/// The runtime a [`Store`] drives its client on: every port call blocks on it from the caller's
+/// The runtime a [`Store`] drives its client on: every interface call blocks on it from the caller's
 /// own thread, and the client's background tasks run on its one worker, which keeps them moving
 /// between calls - a subscription's thread reaches the server through them. One worker, never
 /// tokio's default of one per core: each thread costs a stack and an allocator arena of address
@@ -563,7 +563,7 @@ impl Store {
 
     /// THE FORWARD READ: the ONE forward read of a stream this adapter drives - `stream`'s
     /// records from revision `from` (inclusive) on, through the one puller ([`Store::pull`]), so a
-    /// consumer holds no more than it keeps: the events of the port's `read_stream`,
+    /// consumer holds no more than it keeps: the events of the interface's `read_stream`,
     /// `read_stream_batched` and the few the append's position read-back and a typed read's anchor
     /// need ([`Store::forward_events`]), and the positions of `read_stream_positions`. A stream the
     /// server does not know, at the open or mid-stream, reads as ending there; any other failure is
@@ -610,7 +610,7 @@ impl Store {
     }
 
     /// The first `limit` events of `stream` from revision `from` (inclusive), pulled no further
-    /// ([`Store::forward_events`]): the port's `read_stream` passes `usize::MAX` (no bound), and
+    /// ([`Store::forward_events`]): the interface's `read_stream` passes `usize::MAX` (no bound), and
     /// the append's position read-back and a typed read's anchor pass the few events they need,
     /// so neither ever walks a whole stream.
     fn read_forward(
@@ -753,7 +753,7 @@ impl Store {
         {
             // This backend recognises nothing as already recorded, so it APPENDS THROUGH: every handed event is written
             // and reported written, which is the fail-safe direction (it can only ever
-            // write more, never drop). Only the HONESTY half of the port is owed here,
+            // write more, never drop). Only the HONESTY half of the interface is owed here,
             // and it is owed in full: each reported position must be one the server
             // ISSUED for that event.
             //
