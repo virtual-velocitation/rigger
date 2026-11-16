@@ -668,7 +668,8 @@ mod tests {
     use super::*;
     use crate::subprocess::is_executable_file;
     use crate::test_support::{
-        build_declaring, try_exclusive_lock, wait_until_for, DECLARED_BJL, REFUSED_DECLARATIONS,
+        build_declaring, contended, try_exclusive_lock, wait_until_for, DECLARED_BJL,
+        REFUSED_DECLARATIONS,
     };
 
     fn gate(autonomy: Autonomy, passes: usize) -> Gate {
@@ -1255,15 +1256,17 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             wait_until_for(400, || started.exists()),
             "the gate command must start and touch its marker"
         );
-        assert!(
-            try_exclusive_lock(&guard_path).is_err(),
+        assert_eq!(
+            try_exclusive_lock(&guard_path),
+            contended(),
             "a running shared-cache gate build must hold the guard SHARED, blocking an \
              exclusive probe"
         );
         let res = handle.join().expect("gate thread must not panic").unwrap();
         assert!(res.pass, "the gate command must pass: {res:?}");
-        assert!(
-            try_exclusive_lock(&guard_path).is_ok(),
+        assert_eq!(
+            try_exclusive_lock(&guard_path),
+            Ok(()),
             "once the gate build exits its shared hold must be released"
         );
     }
@@ -1296,7 +1299,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             .expect("a usable guard runs the gate");
         assert_eq!(
             (res.pass, try_exclusive_lock(&guard)),
-            (true, Err(fs2::lock_contended_error().raw_os_error())),
+            (true, contended()),
             "the gate's run has returned and its background child still holds the guard"
         );
         std::fs::remove_file(&hold).expect("release the background child");

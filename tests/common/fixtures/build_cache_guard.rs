@@ -1,5 +1,6 @@
 //! Shared build-cache guard fixtures: a gate command whose background child outlives the gate's
-//! run, and the exclusive try-lock `rigger reset --build-cache` takes on the guard. Mounted only
+//! run, and the exclusive try-lock `rigger reset --build-cache` takes on the guard, with its
+//! answer while another open holds the guard. Mounted only
 //! where the library has `rigger::gate` - the gate crate and the root suites.
 
 use std::path::Path;
@@ -21,4 +22,10 @@ pub fn background_hold_command(hold: &Path) -> String {
 pub fn try_exclusive_lock(path: &Path) -> Result<(), Option<i32>> {
     let guard = rigger::gate::open_build_cache_guard(path).expect("a second open of the guard");
     fs2::FileExt::try_lock_exclusive(&guard).map_err(|e| e.raw_os_error())
+}
+
+/// What [`try_exclusive_lock`] answers while another open holds the guard: the OS's contended
+/// lock error.
+pub fn contended() -> Result<(), Option<i32>> {
+    Err(fs2::lock_contended_error().raw_os_error())
 }

@@ -50,8 +50,11 @@ use common::cli::write_workflow_fixture;
 use common::cli::WorkflowFixture;
 use common::cli::ISOLATED_WORKER;
 use common::fixtures::build_declaring;
+use common::fixtures::contended;
 use common::fixtures::count_of_type;
 use common::fixtures::gate_outcomes;
+use common::fixtures::try_exclusive_lock;
+use common::fixtures::wait_until;
 use common::fixtures::write_file;
 use common::git::temp_git_project_with_commit;
 use rigger::budget::BuildBudget;
@@ -268,24 +271,9 @@ fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
         .spawn()
         .expect("spawn an external flock holder for the fixture");
 
-    // Wait until the external holder has actually taken the shared lock (an exclusive probe
-    // must fail) before racing the real reset against it.
-    let mut held = false;
-    for _ in 0..200 {
-        let probed = Command::new("flock")
-            .arg("-n")
-            .arg("-x")
-            .arg(&guard)
-            .arg("true")
-            .status()
-            .map(|s| !s.success())
-            .unwrap_or(false);
-        if probed {
-            held = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
+    // Wait until the external holder has actually taken the shared lock (an exclusive try-lock
+    // is refused) before racing the real reset against it.
+    let held = wait_until(|| try_exclusive_lock(&guard) == contended());
     assert!(
         held,
         "the external fixture holder must take the guard shared before this test proceeds"
@@ -348,17 +336,6 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     let started_str = started.to_str().unwrap();
     let pidfile_str = pidfile.to_str().unwrap();
 
-    fn guard_is_busy(guard: &Path) -> bool {
-        Command::new("flock")
-            .arg("-n")
-            .arg("-x")
-            .arg(guard)
-            .arg("true")
-            .status()
-            .map(|s| !s.success())
-            .unwrap_or(false)
-    }
-
     // The simulated "orchestrator": backgrounds `flock -s -F <guard> sh -c '<script>'`, a gate
     // command holding the inherited shared lock, then blocks on `wait` for it - the same
     // spawn-then-block shape `Command::output()` gives the real orchestrator.
@@ -384,8 +361,9 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
         started_ok,
         "the backgrounded build must start and touch its marker"
     );
-    assert!(
-        guard_is_busy(&guard),
+    assert_eq!(
+        try_exclusive_lock(&guard),
+        contended(),
         "the simulated build must actually hold the guard before this test proceeds"
     );
 
@@ -406,8 +384,9 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
         common::is_alive(child_pid),
         "the build must survive its orchestrator's death as a live orphan: pid {child_pid}"
     );
-    assert!(
-        guard_is_busy(&guard),
+    assert_eq!(
+        try_exclusive_lock(&guard),
+        contended(),
         "the guard must STILL be held after the orchestrator alone died - the orphaned build \
          keeps it, the (now-dead) orchestrator never held it directly"
     );
@@ -444,7 +423,7 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
 #[test]
 fn a_guarded_gates_background_child_keeps_reset_build_cache_refused_until_it_exits() {
     use common::cli::{committed_project, one_gate_workflow, rigger_in};
-    use common::fixtures::{background_hold_command, git_out, try_exclusive_lock, wait_until_for};
+    use common::fixtures::{background_hold_command, git_out, wait_until_for};
 
     let markers = tempfile::tempdir().expect("tempdir for the hold marker");
     let hold = markers.path().join("hold");
@@ -471,7 +450,7 @@ fn a_guarded_gates_background_child_keeps_reset_build_cache_refused_until_it_exi
     );
     assert_eq!(
         held,
-        Err(fs2::lock_contended_error().raw_os_error()),
+        contended(),
         "the binary has exited and its gate's background child still holds the guard"
     );
     assert_eq!(
