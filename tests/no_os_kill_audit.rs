@@ -406,23 +406,21 @@ mod tests {
         format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open())
     }
 
-    /// A line shelling out to the Windows process-termination utility (task-kill).
-    fn task_kill_shell_out() -> String {
-        format!(
-            "let _ = std::process::Command::new(\"{}\");\n",
-            prefixed_kill("task")
-        )
+    /// A line shelling out to `program`.
+    fn shell_out_to(program: &str) -> String {
+        format!("let _ = std::process::Command::new(\"{program}\");\n")
+    }
+
+    /// The Windows process-termination utility's name (task-kill).
+    fn task_kill() -> String {
+        prefixed_kill("task")
     }
 
     #[test]
     fn command_new_shell_out_is_caught_outside_the_sanctioned_files() {
         // `killall`, not the p-kill utility - it does not ALSO satisfy the standalone-token
         // shape, so this fixture isolates the Command::new shape alone.
-        let line = format!(
-            "let _ = std::process::Command::new(\"{}\");\n",
-            suffixed_kill("all")
-        );
-        let finding = caught_in("src/somewhere.rs", &line);
+        let finding = caught_in("src/somewhere.rs", &shell_out_to(&suffixed_kill("all")));
         assert_eq!(finding.line_no, 1);
         assert!(finding.shape.contains("Command::new"), "{finding:?}");
     }
@@ -478,7 +476,17 @@ mod tests {
         );
         taskkill_shell_out_is_caught_outside_the_sanctioned_files: caught_as(
             "src/somewhere.rs",
-            &task_kill_shell_out(),
+            &shell_out_to(&task_kill()),
+            "Command::new",
+        );
+        task_kill_shell_out_in_another_case_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere.rs",
+            &shell_out_to(&join("Task", "Kill")),
+            "Command::new",
+        );
+        unix_utility_shell_out_in_another_case_is_caught_outside_the_sanctioned_files: caught_as(
+            "tests/somewhere_test.rs",
+            &shell_out_to(&join("KI", "LLALL")),
             "Command::new",
         );
     }
@@ -519,10 +527,13 @@ mod tests {
         /// A shell-out remains banned even inside a sanctioned file.
         a_shell_out_inside_a_sanctioned_file_is_still_caught: caught_in(
             "crates/rigger-process/src/reap.rs",
-            &format!(
-                "let _ = std::process::Command::new(\"{}\");\n",
-                suffixed_kill("all")
-            ),
+            &shell_out_to(&suffixed_kill("all")),
+        );
+        /// So does a shell-out naming its utility in another case.
+        a_shell_out_in_another_case_inside_a_sanctioned_file_is_still_caught: caught_as(
+            "crates/rigger-process/src/reap.rs",
+            &shell_out_to(&join("TASK", "KILL.EXE")),
+            "Command::new",
         );
         /// The -- separator remains banned even inside a sanctioned file.
         a_dashdash_separator_inside_a_sanctioned_file_is_still_caught: caught_in(
@@ -562,18 +573,12 @@ mod tests {
         /// A shell-out to the Windows termination utility is banned even inside reap.rs.
         a_taskkill_shell_out_inside_a_sanctioned_file_is_still_caught: caught_as(
             "crates/rigger-process/src/reap.rs",
-            &task_kill_shell_out(),
+            &shell_out_to(&task_kill()),
             "Command::new",
         );
         /// The same violation, rooted outside src/, crates/ and tests/ entirely, must be invisible.
         a_shape_outside_src_and_tests_is_never_scanned: never_flagged(
-            &[(
-                "scripts/somewhere.rs",
-                &format!(
-                    "let _ = std::process::Command::new(\"{}\");\n",
-                    prefixed_kill("p")
-                ),
-            )],
+            &[("scripts/somewhere.rs", &shell_out_to(&prefixed_kill("p")))],
             "a .rs file outside src/, crates/ and tests/ must never be scanned",
         );
     }
@@ -621,8 +626,9 @@ mod tests {
     // function fails it in every code root but the reaper, the test helper included, while the
     // function's name imported without a call, or a call named in prose outside the code roots,
     // passes; and a shell-out to the Windows termination utility fails it in every code root, the
-    // reaper and the test helper included. Each failure prints the message of the check that
-    // caught it.
+    // reaper and the test helper included, as does a shell-out naming any termination utility in
+    // another case, since Windows and macOS's default filesystem resolve a program name in any
+    // case. Each failure prints the message of the check that caught it.
     rigger::test_cases! {
         the_gate_fails_a_windows_termination_call_added_to_a_crate: gate_judges(
             "crates/somewhere/src/lib.rs",
@@ -664,27 +670,42 @@ mod tests {
         );
         the_gate_fails_a_task_kill_shell_out_added_to_a_crate: gate_judges(
             "crates/somewhere/src/lib.rs",
-            &task_kill_shell_out(),
+            &shell_out_to(&task_kill()),
             (false, OUTSIDE_THE_SANCTIONED_FILES),
         );
         the_gate_fails_a_task_kill_shell_out_added_to_the_bin: gate_judges(
             "src/somewhere.rs",
-            &task_kill_shell_out(),
+            &shell_out_to(&task_kill()),
             (false, OUTSIDE_THE_SANCTIONED_FILES),
         );
         the_gate_fails_a_task_kill_shell_out_added_to_a_test_suite: gate_judges(
             "tests/somewhere.rs",
-            &task_kill_shell_out(),
+            &shell_out_to(&task_kill()),
             (false, OUTSIDE_THE_SANCTIONED_FILES),
         );
         the_gate_fails_a_task_kill_shell_out_added_to_the_reaper: gate_judges(
             REAPER,
-            &task_kill_shell_out(),
+            &shell_out_to(&task_kill()),
             (false, SHELL_OUT_IN_A_SANCTIONED_FILE),
         );
         the_gate_fails_a_task_kill_shell_out_added_to_the_test_helper: gate_judges(
             "tests/common/mod.rs",
-            &task_kill_shell_out(),
+            &shell_out_to(&task_kill()),
+            (false, SHELL_OUT_IN_A_SANCTIONED_FILE),
+        );
+        the_gate_fails_a_task_kill_shell_out_in_another_case_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &shell_out_to(&join("Task", "Kill")),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_unix_utility_shell_out_in_another_case_added_to_the_bin: gate_judges(
+            "src/somewhere.rs",
+            &shell_out_to(&join("KI", "LLALL")),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_shell_out_in_another_case_added_to_the_reaper: gate_judges(
+            REAPER,
+            &shell_out_to(&join("TASK", "KILL.EXE")),
             (false, SHELL_OUT_IN_A_SANCTIONED_FILE),
         );
     }
