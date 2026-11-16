@@ -7,7 +7,7 @@
 //! `SleepHold` port, the detached start of a process that outlives its starter, the trigger an
 //! interactive interrupt fires, and the one read of the user's home directory. They know
 //! `std::process`, the filesystem, threads and the host's OS facilities; the root `rigger` crate
-//! re-exports every module but `file_trust`, `os_process` and `home` under its historical path.
+//! re-exports every module but `file_trust` and `home` under its own name.
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod budget;

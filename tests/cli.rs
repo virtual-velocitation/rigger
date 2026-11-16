@@ -26993,15 +26993,14 @@ fn cmd_dash_leaves_a_non_addrinuse_bind_error_unenriched() {
     );
 }
 
-/// Whether `pid` reaches the STOPPED state (`T` in `/proc/<pid>/stat`) within 2s - a little
-/// scheduling jitter after a stop signal is normal, not a defect.
+/// Whether `pid` reaches the STOPPED run state (`T`, read through the product's process
+/// interface) within 2s - a little scheduling jitter after a stop signal is normal, not a defect.
 fn pid_reaches_stopped_state(pid: u32) -> bool {
     use std::time::{Duration, Instant};
 
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        let state = rigger::reap::stat_field_after_comm(pid, 0);
-        if state.as_deref() == Some("T") {
+        if rigger::os_process::state(pid) == Some('T') {
             return true;
         }
         std::thread::sleep(Duration::from_millis(20));

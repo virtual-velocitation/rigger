@@ -167,8 +167,8 @@ fn scan_with_starttime(base: &Path) -> Vec<ScanEntry> {
         .collect()
 }
 
-/// The Linux process-stat field parser, re-exported for the Linux test fixtures that read a
-/// process's state or group through it.
+/// The Linux process-stat field parser, re-exported for the Linux keep-awake thread test, which
+/// reads a thread's `flags` field through it.
 #[cfg(target_os = "linux")]
 pub use crate::os_process::linux::stat_field_after_comm;
 
