@@ -205,6 +205,7 @@ enum StoreKind {
 
 /// The parsed flags of `run`: which event store, the connection string for the server backend, the
 /// positional spec path, and whether to force a fresh run.
+#[derive(Default)]
 struct RunArgs {
     store: Option<StoreKind>,
     conn: Option<String>,
@@ -228,6 +229,12 @@ struct RunArgs {
     /// run whose driver died ([`relaunch`]) passes it, so a relaunch whose run is gone, or would be
     /// minted anew, refuses before it appends anything instead of driving another run.
     adopt: Option<String>,
+    /// `--relaunch-at-login`: the user's opt-in to a login entry ([`rigger::login_start`]) that
+    /// relaunches this run when the machine went down while its driver held the step lock.
+    relaunch_at_login: bool,
+    /// `--at-login <root>`: what a login entry runs, alone: relaunch the run of the project at
+    /// `<root>` whose driver died, or remove the entry when no such run is owed there.
+    at_login: Option<String>,
 }
 
 /// The backend an `--eventstore` flag's `value` names, for `verb`'s flag parser: `rigger run`'s
@@ -326,6 +333,8 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         rebase_definition,
         base,
         adopt,
+        relaunch_at_login: false,
+        at_login: None,
     })
 }
 
@@ -9420,8 +9429,52 @@ mod tests {
                 &["a", "b"],
                 &["--adopt"],
                 &["--fresh", "--adopt", "r-1"],
+                &["--at-login"],
+                &["--at-login", "/home/dev/project", "spec.md"],
+                &["--relaunch-at-login", "--at-login", "/home/dev/project"],
             ],
         );
+    }
+
+    /// `rigger run --relaunch-at-login` opts the run into a login entry, beside a spec in either
+    /// order, and `--at-login <root>` names the project a login entry relaunches; with neither flag
+    /// the run opts in to nothing.
+    #[test]
+    fn parse_run_args_reads_the_login_start_flags() {
+        let r = |a: &[&str]| parse_run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let rows: [(&[&str], bool, Option<&str>, Option<&str>); 4] = [
+            (&[], false, None, None),
+            (
+                &["--relaunch-at-login", "spec.md"],
+                true,
+                None,
+                Some("spec.md"),
+            ),
+            (
+                &["spec.md", "--relaunch-at-login"],
+                true,
+                None,
+                Some("spec.md"),
+            ),
+            (
+                &["--at-login", "/home/dev/a project"],
+                false,
+                Some("/home/dev/a project"),
+                None,
+            ),
+        ];
+        for (args, relaunch_at_login, at_login, spec) in rows {
+            let a = r(args).unwrap();
+            assert_eq!(
+                (
+                    a.relaunch_at_login,
+                    a.at_login.as_deref(),
+                    a.spec.as_deref()
+                ),
+                (relaunch_at_login, at_login, spec),
+                "{args:?}"
+            );
+        }
     }
 
     /// `rigger run --adopt <run>` names the run the start must adopt, beside a spec in either

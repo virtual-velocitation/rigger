@@ -29,6 +29,8 @@
 
 use super::*;
 use rigger::interrupt::{empty_on_interrupt, InterruptTrigger};
+use rigger::login_start::{run_key, LoginStart};
+use rigger::sleep_hold::Unavailable;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -221,6 +223,15 @@ impl KeptRecord {
         if written.is_ok() {
             self.left.set(true);
         }
+    }
+
+    /// Register this driver's relaunch at login with `start` (a stub until the login wiring lands).
+    pub(super) fn register_at_login(
+        &self,
+        _start: Box<dyn LoginStart>,
+        _dir: &Path,
+    ) -> Result<(), String> {
+        Ok(())
     }
 
     /// Record this driver: started in `cwd` against the store at `dir` with `parsed`, driving
@@ -637,6 +648,12 @@ pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
     }
 }
 
+/// Whether a login owes the project whose store is at `dir` its relaunch (a stub until the login
+/// wiring lands).
+fn owed_at_login(_dir: &Path) -> bool {
+    false
+}
+
 /// This binary's path as it stands, the path a relaunch of it runs: an upgrade that replaced it
 /// while it runs leaves the new build there ([`rigger::detached::standing_path`]).
 fn standing_executable() -> PathBuf {
@@ -720,13 +737,9 @@ mod tests {
     fn a_kept_record_holds_each_roots_variable_as_the_driver_has_it() {
         let dir = tempfile::tempdir().unwrap();
         let parsed = RunArgs {
-            store: None,
-            conn: None,
             spec: Some("specs/a.md".into()),
-            fresh: false,
-            rebase_definition: false,
             base: Some("main".into()),
-            adopt: None,
+            ..RunArgs::default()
         };
         let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
         kept.keep(&parsed, dir.path(), dir.path(), "a-run");
@@ -753,13 +766,9 @@ mod tests {
         for (name, conn, flagged) in rows {
             let dir = tempfile::tempdir().unwrap();
             let parsed = RunArgs {
-                store: None,
                 conn: conn.map(str::to_string),
-                spec: None,
-                fresh: false,
-                rebase_definition: false,
-                base: None,
                 adopt: Some("a-run".into()),
+                ..RunArgs::default()
             };
             let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
             kept.keep(&parsed, dir.path(), dir.path(), "a-run");
@@ -797,13 +806,9 @@ mod tests {
     fn a_panic_that_unwinds_the_driver_empties_its_record() {
         let dir = tempfile::tempdir().unwrap();
         let parsed = RunArgs {
-            store: None,
-            conn: None,
             spec: Some("specs/a.md".into()),
-            fresh: false,
-            rebase_definition: false,
             base: Some("main".into()),
-            adopt: None,
+            ..RunArgs::default()
         };
         let unwound = std::panic::catch_unwind(|| {
             let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
@@ -821,5 +826,171 @@ mod tests {
             "",
             "a panic that unwinds the driver leaves no record to relaunch"
         );
+    }
+
+    /// What a login-start facility was asked, in order, kept in memory; given a reason, it refuses
+    /// every registration with it, recording nothing for it.
+    #[derive(Clone, Default)]
+    struct Asked {
+        calls: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        refuses: Option<&'static str>,
+    }
+
+    impl LoginStart for Asked {
+        fn register(&self, key: &str, program: &str, args: &[String]) -> Result<(), Unavailable> {
+            if let Some(why) = self.refuses {
+                return Err(Unavailable(why.to_string()));
+            }
+            self.calls
+                .borrow_mut()
+                .push(format!("register {key} {program} {}", args.join(" ")));
+            Ok(())
+        }
+
+        fn unregister(&self, key: &str) -> Result<(), Unavailable> {
+            self.calls.borrow_mut().push(format!("unregister {key}"));
+            Ok(())
+        }
+    }
+
+    /// How a driver that took the step lock ends, for
+    /// [`a_driver_removes_its_login_entry_as_its_record_is_emptied`].
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Ends {
+        Returns,
+        Panics,
+        ParksForRelease,
+    }
+
+    /// A driver started with `--relaunch-at-login` registers, once it holds the step lock, one
+    /// entry under its project's key ([`run_key`]) that runs this binary as `run --at-login
+    /// <root>`, and removes it as its record is emptied, by a return or a panic that unwinds it; a
+    /// driver parked for `rigger release` leaves the entry beside the record it leaves. A
+    /// registration the facility refuses refuses the launch, naming why, and leaves nothing for
+    /// the driver's end to remove.
+    #[test]
+    fn a_driver_removes_its_login_entry_as_its_record_is_emptied() {
+        let rows = [
+            ("a driver that returns", None, Ends::Returns, true),
+            ("a driver a panic unwinds", None, Ends::Panics, true),
+            (
+                "a driver parked for release",
+                None,
+                Ends::ParksForRelease,
+                false,
+            ),
+            (
+                "a driver whose facility refuses",
+                Some("no login session here"),
+                Ends::Returns,
+                false,
+            ),
+        ];
+        for (case, refuses, ends, removed) in rows {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().join(RIGGER_DIR);
+            std::fs::create_dir_all(&dir).unwrap();
+            let root = project.path().canonicalize().unwrap();
+            let root = root.to_str().unwrap();
+            let key = run_key(root);
+            let asked = Asked {
+                refuses,
+                ..Asked::default()
+            };
+            let parsed = RunArgs {
+                adopt: Some("a-run".into()),
+                relaunch_at_login: true,
+                ..RunArgs::default()
+            };
+            let refused = std::cell::RefCell::new(None);
+            let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let kept = KeptRecord::hold(acquire_step_lock(&dir).unwrap());
+                if let Err(why) = kept.register_at_login(Box::new(asked.clone()), &dir) {
+                    *refused.borrow_mut() = Some(why);
+                    return;
+                }
+                kept.keep(&parsed, &dir, &dir, "a-run");
+                match ends {
+                    Ends::Returns => {}
+                    Ends::Panics => panic!("the driver panicked mid-run"),
+                    Ends::ParksForRelease => kept.leave_for_release(),
+                }
+            }));
+            let mut expected = Vec::new();
+            if refuses.is_none() {
+                expected.push(format!(
+                    "register {key} {} run --at-login {root}",
+                    standing_executable().display()
+                ));
+            }
+            if removed {
+                expected.push(format!("unregister {key}"));
+            }
+            let refused = refused.into_inner();
+            assert_eq!(
+                (
+                    unwound.is_err(),
+                    asked.calls.borrow().clone(),
+                    refused
+                        .as_deref()
+                        .map(|why| refuses.is_some_and(|reason| why.contains(reason))),
+                ),
+                (ends == Ends::Panics, expected, refuses.map(|_| true)),
+                "{case}; refused: {refused:?}"
+            );
+        }
+    }
+
+    /// A login owes a project its relaunch while the step lock holds the record of a driver
+    /// started with `--relaunch-at-login`, and while a driver holds the lock at all; a store or lock
+    /// that is gone, and a free lock over an emptied, unreadable or unflagged record, owe nothing.
+    #[test]
+    fn a_login_owes_a_relaunch_only_over_a_flagged_record_or_a_held_lock() {
+        let record = |args: &[&str]| {
+            serde_json::to_string(&DriverRecord {
+                dir: PathBuf::from("/home/dev/project/.rigger"),
+                cwd: PathBuf::from("/home/dev/project"),
+                args: args.iter().map(|arg| arg.to_string()).collect(),
+                bin: None,
+                run: "a-run".into(),
+                env: BTreeMap::new(),
+                credentials: BTreeSet::new(),
+                relaunched_at: None,
+                revived_at: None,
+            })
+            .unwrap()
+        };
+        let flagged = record(&["run", "--relaunch-at-login", "--adopt", "a-run"]);
+        let unflagged = record(&["run", "--adopt", "a-run"]);
+        let rows: [(&str, Option<&str>, bool, bool); 7] = [
+            ("no store", None, false, false),
+            ("an emptied record", Some(""), false, false),
+            (
+                "a record that does not parse",
+                Some("not a record"),
+                false,
+                false,
+            ),
+            ("an unflagged record", Some(&unflagged), false, false),
+            ("a flagged record", Some(&flagged), false, true),
+            ("a held lock over an emptied record", Some(""), true, true),
+            (
+                "a held lock over an unflagged record",
+                Some(&unflagged),
+                true,
+                true,
+            ),
+        ];
+        for (case, text, held, owed) in rows {
+            let project = tempfile::tempdir().unwrap();
+            let dir = project.path().join(RIGGER_DIR);
+            if let Some(text) = text {
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("step.lock"), text).unwrap();
+            }
+            let _holder =
+                held.then(|| HeldLock::try_take(&dir.join("step.lock")).unwrap().unwrap());
+            assert_eq!(owed_at_login(&dir), owed, "{case}");
+        }
     }
 }

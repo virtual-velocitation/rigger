@@ -2827,13 +2827,22 @@ pub fn a_run_ended_mid_unit(
     envs: &[(&str, &str)],
     end: impl FnOnce(&mut Child),
 ) -> EndedRun {
-    a_run_ended_mid_units(cwd, scratch, envs, HOLDING_WORKER_ARM, &["started"], end)
+    a_run_ended_mid_units(
+        cwd,
+        &["run"],
+        scratch,
+        envs,
+        HOLDING_WORKER_ARM,
+        &["started"],
+        end,
+    )
 }
 
-/// [`a_run_ended_mid_unit`] over the fake host answering from `arms`, driven until each of
-/// `started`, a file its arms mark beside the fake, exists.
+/// [`a_run_ended_mid_unit`] started as `rigger <args>` over the fake host answering from `arms`,
+/// driven until each of `started`, a file its arms mark beside the fake, exists.
 pub fn a_run_ended_mid_units(
     cwd: &Path,
+    args: &[&str],
     scratch: &Path,
     envs: &[(&str, &str)],
     arms: &str,
@@ -2843,7 +2852,7 @@ pub fn a_run_ended_mid_units(
     let (fakebin, path_env) = install_fake_claude(arms);
     let mut all = fake_claude_env(&path_env, scratch).to_vec();
     all.extend_from_slice(envs);
-    let (state, child) = spawn_rigger(cwd, &["run"], &all);
+    let (state, child) = spawn_rigger(cwd, args, &all);
     let mut owned = OwnedChild::new(child);
     let marks: Vec<PathBuf> = started
         .iter()

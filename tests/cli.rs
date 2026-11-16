@@ -15417,6 +15417,241 @@ fn relaunch_line(record: &str) -> String {
     )
 }
 
+/// The `register` and `unregister` lines this test's rigger invocations recorded
+/// ([`common::login_start_record`]).
+fn recorded_login_starts() -> Vec<String> {
+    std::fs::read_to_string(common::login_start_record())
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One `rigger run --at-login <root>`, as the login entry of the project at `root` runs it, from a
+/// directory outside every project, after `record`, given one, is written to the step lock, with
+/// another process holding that lock when `held`: the relaunches and the login-start calls it
+/// recorded, its success, and its stderr.
+fn at_login(
+    root: &Path,
+    record: Option<&str>,
+    held: bool,
+) -> (Vec<String>, Vec<String>, bool, String) {
+    if let Some(record) = record {
+        std::fs::write(common::cli::rigger_file(root, "step.lock"), record).unwrap();
+    }
+    let _holder = held.then(|| common::cli::hold_step_lock(root));
+    let _ = std::fs::remove_file(common::relaunch_record());
+    let _ = std::fs::remove_file(common::login_start_record());
+    let away = tempfile::tempdir().unwrap();
+    let (_, err, ok) = run_rigger_envs(
+        away.path(),
+        &["run", "--at-login", root.to_str().unwrap()],
+        &[],
+    );
+    (recorded_relaunches(), recorded_login_starts(), ok, err)
+}
+
+/// A RUN OPTED IN COMES BACK AT LOGIN: a run started with `--relaunch-at-login` registers one login
+/// entry under its project's key once it holds the step lock, running the binary it runs as with
+/// `run --at-login <root>`, and its record carries the flag to every relaunch. After its driver
+/// died, what the entry runs relaunches the run through the one relaunch entry and keeps the
+/// entry; while a driver holds the lock it does neither; over an emptied, unreadable or unflagged
+/// record, a record whose binary is gone, and a project since removed, it relaunches nothing and
+/// removes the entry. Each answers success.
+#[test]
+fn a_run_opted_in_registers_a_login_entry_that_relaunches_it_or_removes_itself() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_units(
+        root,
+        &["run", "--relaunch-at-login"],
+        &scratch,
+        &[],
+        common::cli::HOLDING_WORKER_ARM,
+        &["started"],
+        common::fixtures::cleanup,
+    );
+    common::cli::release_the_unit(ended.fake.path());
+    let canonical = root.canonicalize().unwrap();
+    let key = rigger::login_start::run_key(canonical.to_str().unwrap());
+    let record: serde_json::Value =
+        serde_json::from_str(&ended.record).expect("a live run's driver keeps a record");
+    let bin = record["bin"].as_str().expect("the binary a record names");
+    let flagged = record["args"]
+        .as_array()
+        .is_some_and(|args| args.iter().any(|arg| arg == "--relaunch-at-login"));
+    assert_eq!(
+        (recorded_login_starts(), flagged),
+        (
+            vec![format!(
+                "register {key} {bin} run --at-login {}",
+                canonical.display()
+            )],
+            true
+        ),
+        "a run opted in registers one login entry once it holds the step lock, and its record \
+         carries the flag; record: {}",
+        ended.record
+    );
+    let removed = vec![format!("unregister {key}")];
+    let unflagged = ended.record.replace("\"--relaunch-at-login\",", "");
+    let mut gone_bin = record.clone();
+    gone_bin["bin"] = serde_json::Value::from(canonical.join("gone").join("rigger").to_str());
+    let gone_bin = gone_bin.to_string();
+    let gone = canonical.join("gone");
+    let gone_key = rigger::login_start::run_key(gone.to_str().unwrap());
+    let rows: [(&str, &Path, Option<&str>, bool, Vec<String>, Vec<String>); 7] = [
+        (
+            "a dead driver's record carrying the flag",
+            &canonical,
+            Some(&ended.record),
+            false,
+            vec![relaunch_line(&ended.record)],
+            vec![],
+        ),
+        (
+            "a driver holding the lock",
+            &canonical,
+            Some(&ended.record),
+            true,
+            vec![],
+            vec![],
+        ),
+        (
+            "an emptied record",
+            &canonical,
+            Some(""),
+            false,
+            vec![],
+            removed.clone(),
+        ),
+        (
+            "a record that does not parse",
+            &canonical,
+            Some("not a record"),
+            false,
+            vec![],
+            removed.clone(),
+        ),
+        (
+            "a record of a driver started without the flag",
+            &canonical,
+            Some(&unflagged),
+            false,
+            vec![],
+            removed.clone(),
+        ),
+        (
+            "a record whose binary is gone",
+            &canonical,
+            Some(&gone_bin),
+            false,
+            vec![],
+            removed.clone(),
+        ),
+        (
+            "a project since removed",
+            &gone,
+            None,
+            false,
+            vec![],
+            vec![format!("unregister {gone_key}")],
+        ),
+    ];
+    for (case, at, record, held, relaunches, logins) in rows {
+        let (got_relaunches, got_logins, ok, err) = at_login(at, record, held);
+        assert_eq!(
+            (got_relaunches, got_logins, ok),
+            (relaunches, logins, true),
+            "{case}; stderr: {err}"
+        );
+    }
+}
+
+/// A LOGIN ENTRY ONLY WHERE OPTED IN, AND ONLY UNDER THE LOCK: a launch with `--relaunch-at-login`
+/// registers its entry once it holds the step lock and removes it as it returns, here refused the
+/// run it was told to adopt; a launch without the flag registers nothing; one whose login-start
+/// facility is unavailable refuses, naming why, and one refused for a busy step lock registers
+/// nothing.
+#[test]
+fn only_a_flagged_launch_holding_the_lock_registers_a_login_entry_and_its_return_removes_it() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let canonical = root.canonicalize().unwrap();
+    let canonical = canonical.to_str().unwrap();
+    let key = rigger::login_start::run_key(canonical);
+    let label = |line: &str| {
+        if line.starts_with(&format!("register {key} "))
+            && line.ends_with(&format!(" run --at-login {canonical}"))
+        {
+            "register".to_string()
+        } else if line == format!("unregister {key}") {
+            "unregister".to_string()
+        } else {
+            line.to_string()
+        }
+    };
+    let why = "no login session here";
+    let unavailable = format!("unavailable:{why}");
+    let adopt = ["run", "--adopt", "no-such-run"];
+    let flagged = ["run", "--relaunch-at-login", "--adopt", "no-such-run"];
+    let rows: [(&str, &[&str], Option<&str>, bool, &[&str], &str); 4] = [
+        (
+            "a flagged launch refused its adoption",
+            &flagged,
+            None,
+            false,
+            &["register", "unregister"],
+            "--adopt no-such-run",
+        ),
+        (
+            "an unflagged launch refused its adoption",
+            &adopt,
+            None,
+            false,
+            &[],
+            "--adopt no-such-run",
+        ),
+        (
+            "a flagged launch whose login-start facility is unavailable",
+            &flagged,
+            Some(&unavailable),
+            false,
+            &[],
+            why,
+        ),
+        (
+            "a flagged launch refused for the busy step lock",
+            &flagged,
+            None,
+            true,
+            &[],
+            "Refusing to run concurrently",
+        ),
+    ];
+    for (case, args, knob, held, logins, says) in rows {
+        let _ = std::fs::remove_file(common::login_start_record());
+        let _holder = held.then(|| common::cli::hold_step_lock(root));
+        let envs: Vec<(&str, &str)> = knob
+            .map(|knob| (common::LOGIN_START_ENV, knob))
+            .into_iter()
+            .collect();
+        let (_, err, ok) = run_rigger_envs(root, args, &envs);
+        let got: Vec<String> = recorded_login_starts()
+            .iter()
+            .map(|line| label(line))
+            .collect();
+        assert_eq!(
+            (got, ok, err.contains(says)),
+            (logins.iter().map(|l| l.to_string()).collect(), false, true),
+            "{case}; stderr: {err}"
+        );
+    }
+}
+
 /// What a row of [`only_the_checking_verbs_relaunch_a_run_whose_driver_died`] invokes over: the
 /// dead driver's record as it stands, or that record with the run held, with another binary
 /// recorded, with a recorded binary since removed, or invoked from a linked worktree, the run
@@ -16176,6 +16411,7 @@ fn a_hold_released_while_a_parked_adopting_driver_runs_drives_the_run_to_its_end
     let scratch = common::default_scratch_root(root);
     let ended = common::cli::a_run_ended_mid_units(
         root,
+        &["run"],
         &scratch,
         &[],
         &chained_unit_arms(),
