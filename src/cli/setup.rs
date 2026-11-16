@@ -3212,6 +3212,45 @@ mod tests {
         );
     }
 
+    /// A set's own file or a listed file that cannot be read is refused naming the set, the path
+    /// and the error. Each row links one of them to this process's own memory file, a regular file
+    /// whose read from its start fails, since no memory is mapped at address 0.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn load_template_sets_refuses_a_file_it_cannot_read() {
+        const UNREADABLE: &str = "/proc/self/mem";
+        let io = std::fs::read(UNREADABLE).unwrap_err().to_string();
+        let rows = [
+            (
+                "scaffold/demo/set.yml",
+                "gate template set demo: scaffold/demo/set.yml is unreadable: <io>",
+            ),
+            (
+                "scaffold/demo/files",
+                "gate template set demo: scaffold/demo/files is unreadable: <io>",
+            ),
+            (
+                "gates/a.sh",
+                "gate template set demo: gates/a.sh is unreadable: <io>",
+            ),
+        ];
+        for (linked, refusal) in rows {
+            let root = root_with(&[
+                ("scaffold/demo/set.yml", b"detect: []\n"),
+                ("scaffold/demo/files", b"gates/a.sh\n"),
+                ("gates/a.sh", b"echo a\n"),
+            ]);
+            let link = root.path().join(linked);
+            std::fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink(UNREADABLE, &link).unwrap();
+            assert_eq!(
+                load_template_sets(root.path()),
+                Err(refusal.replace("<io>", &io)),
+                "{linked}"
+            );
+        }
+    }
+
     /// A file directly under `scaffold/` is skipped, the sets load in name order, blank lines of
     /// a set's `files` are skipped, and each set carries its key, its `set.yml` text and each
     /// listed path with the text of the file it names under the root.
