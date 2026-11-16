@@ -35,6 +35,9 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     }
 }
 
+/// The variable the directories a program name is looked up in are read from.
+pub const PATH_ENV: &str = "PATH";
+
 /// Where a program name is looked up: `dirs`, a `PATH`-style directory list joined by the
 /// platform's separator, and `pathext`, a `PATHEXT`-style list of `;`-separated extensions,
 /// which only a Windows lookup reads.
@@ -50,7 +53,7 @@ impl SearchPath {
     /// through.
     pub fn ambient() -> Self {
         Self {
-            dirs: std::env::var_os("PATH").unwrap_or_default(),
+            dirs: std::env::var_os(PATH_ENV).unwrap_or_default(),
             pathext: std::env::var("PATHEXT").unwrap_or_default(),
         }
     }

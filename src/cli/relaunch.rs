@@ -61,10 +61,14 @@ const BACKOFF: Duration = Duration::from_secs(600);
 /// home that roots the instance registry (`XDG_STATE_HOME`, then the home directory), and the walk
 /// that finds the project's repository and store (`GIT_CEILING_DIRECTORIES`,
 /// `GIT_DISCOVERY_ACROSS_FILESYSTEM`), and the home directory ([`rigger_process::home_dir`]) by
-/// the variable it is read from on this OS ([`rigger_process::home::HOME_ENV`]). A driver records
-/// each, set or not, and its relaunch sets or removes each on the child as the driver had it, so
-/// the relaunched driver resolves the roots the one that died did.
-const ROOTS_ENV: [&str; 6] = [
+/// the variable it is read from on this OS ([`rigger_process::home::HOME_ENV`]), with the search
+/// path the driver finds its tools on ([`rigger::subprocess::PATH_ENV`]): the agent host, git and
+/// the project's gate tools, which the short search path a login manager starts a login entry on
+/// does not reach. A driver records each, set or not, and its relaunch sets or removes each on the
+/// child as the driver had it, so the relaunched driver resolves the roots and finds the tools the
+/// one that died did.
+const ROOTS_ENV: [&str; 7] = [
+    rigger::subprocess::PATH_ENV,
     rigger::worktree::SCRATCH_ROOT_ENV,
     rigger::driver::replay::CACHE_HOME_ENV,
     rigger_process::home::HOME_ENV,
