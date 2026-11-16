@@ -78,11 +78,15 @@ pub const LOOKUP_METHOD: [&str; 2] = [
      in the log; filtering your own build or gate output is not a fallback.",
 ];
 
-/// The nine review sentences the working-discipline body's `## When you review` section holds,
-/// in its order: the review method a reviewer prompt's discipline no longer carries, then the
-/// review rule - the three classes a blocking finding falls in, every other finding a note, where
-/// the run's notes go, how a note is checked and what it owes, and what a blocking finding names.
-pub const WHEN_YOU_REVIEW: [&str; 9] = [
+/// The ten review sentences the working-discipline body's `## When you review` section holds,
+/// in its order: where a reviewer reads the change under review, the review method a reviewer
+/// prompt's discipline no longer carries, then the review rule - the three classes a blocking
+/// finding falls in, every other finding a note, where the run's notes go, how a note is checked
+/// and what it owes, and what a blocking finding names.
+pub const WHEN_YOU_REVIEW: [&str; 10] = [
+    "When your prompt carries a REVIEW PACKET, read the change under review from it - its \
+     commits, its changed files and their hunks - and read each file it lists as elided before \
+     you judge that file.",
     "Never re-run the gate battery, or any gate the gate evidence shows green on the tree under \
      review: the gates are the instrument that grades the work, and a review judges what they \
      cannot see.",

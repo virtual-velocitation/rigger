@@ -5497,10 +5497,12 @@ mod tests {
     // bounces a bare source grep.
     // =======================================================================================
 
-    /// The reviewing personas, committed and seeded, and only they, tell their reviewer to mark a
-    /// sign-off finding with `"sign_off": true`, the mark the peers ranking reads.
+    /// No agent text rigger ships, the reviewing personas committed and seeded among them, asks
+    /// its reviewer to mark a finding `"sign_off": true`: the round's findings block names each
+    /// member that recorded no finding, so no member owes a sign-off record. The readers of the
+    /// mark stay, so a store whose findings carry it still loads.
     #[test]
-    fn the_reviewing_personas_and_only_they_mark_a_sign_off() {
+    fn no_shipped_persona_asks_for_a_sign_off_mark() {
         let reviewing = ["architecture-reviewer.md", "sdet.md", "adversary.md"];
         let shipped = every_shipped_persona();
         for name in reviewing {
@@ -5510,13 +5512,16 @@ mod tests {
                 "{name} is committed and seeded"
             );
         }
-        for (at, text) in shipped {
-            assert_eq!(
-                text.contains(r#"`"sign_off": true`"#),
-                reviewing.iter().any(|name| at.ends_with(name)),
-                "{at}"
-            );
-        }
+        let marking: Vec<&str> = shipped
+            .iter()
+            .filter(|(_, text)| text.contains(r#""sign_off""#))
+            .map(|(at, _)| at.as_str())
+            .collect();
+        assert_eq!(
+            marking,
+            Vec::<&str>::new(),
+            "no shipped persona asks for a sign-off mark"
+        );
     }
 
     /// `install_operator_mcp` is drift-aware and re-runnable, the same three-state contract
@@ -6031,12 +6036,12 @@ mod tests {
     }
 
     /// Spec 120's THE REVIEWER PROMPT CARRIES ONLY THE CONTRACT, with the review rule: the
-    /// working-discipline body, read through the shipped-text helper, holds the three review
-    /// sentences the reviewer discipline no longer carries and the six sentences of the review
-    /// rule, the two the run notes no longer carry among them, in order, as the whole of its
-    /// `## When you review` section, which sits after the
-    /// hand-over section and before the fan-out one, and the fan-out section's `verify` bullet no
-    /// longer restates the battery rule.
+    /// working-discipline body, read through the shipped-text helper, holds the sentence sending a
+    /// reviewer to the REVIEW PACKET, the three review sentences the reviewer discipline no longer
+    /// carries and the six sentences of the review rule, the two the run notes no longer carry
+    /// among them, in order, as the whole of its `## When you review` section, which sits after
+    /// the hand-over section and before the fan-out one, and the fan-out section's `verify`
+    /// bullet no longer restates the battery rule.
     #[test]
     fn the_working_discipline_body_holds_the_review_method_under_when_you_review() {
         let body = shipped_builtin("working-discipline");
@@ -6561,9 +6566,8 @@ mod tests {
         assert_section_belongs_to(HEADING, &["sdet.md"]);
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
         for wanted in [
-            "Read the unit's test hunks over its whole range, `git diff $(git merge-base \
-             rigger-run HEAD)..HEAD -- tests crates src`, beside the Done-when criteria the unit \
-             owns.",
+            "Read the unit's test hunks in the REVIEW PACKET beside the Done-when criteria the \
+             unit owns, and read each file it lists under ELIDED before you judge that file.",
             "A behaviour a criterion names that no test of the unit drives, or that a test drives \
              without an assertion a wrong change would break, is the missing test the review \
              rule blocks on: name the criterion, the behaviour and the test that would prove it.",
@@ -6596,6 +6600,8 @@ mod tests {
             "mutant-probes",
             "test-shape-audit",
             "ENVIRON[\"b\"]",
+            "git merge-base rigger-run HEAD",
+            "(red before green)",
         ] {
             assert!(
                 !flat.contains(retired),
@@ -6620,8 +6626,8 @@ mod tests {
              bends a principle and breaks nothing, a note.",
             "A fact the unit's production delta spells a second time - a constant, list, closure \
              or predicate the tree already states - is a DRY finding raised as a note, citing \
-             both spellings' `file:line`: you read the unit's production hunks for it yourself, \
-             and no author record of it is owed or read.",
+             both spellings' `file:line`: you read the unit's production hunks for it from the \
+             REVIEW PACKET, and no author record of it is owed or read.",
         ] {
             assert!(
                 flat.contains(wanted),
@@ -6641,6 +6647,35 @@ mod tests {
                 !flat.contains(retired),
                 "architecture-reviewer.md requires no record and blocks on no one-home line: \
                  {retired:?}"
+            );
+        }
+    }
+
+    /// The adjudicator's Constraints Recheck walks each of the spec's constraints over the REVIEW
+    /// PACKET its prompt carries, and leaves to their gates the mechanical checks the recheck once
+    /// ran by hand: no em dash is the `style` gate's and no new event type the
+    /// `no-new-event-type` gate's, so the recheck runs no standing item of its own.
+    #[test]
+    fn the_adjudicator_rechecks_the_spec_constraints_over_the_packet_and_leaves_the_rest_to_gates()
+    {
+        let flat = rigger::wave::normalize_ws(&committed_persona("adjudicator.md"));
+        for wanted in [
+            "do not re-run what the gates already prove (fmt, clippy, build, test, style, \
+             no-new-event-type).",
+            "For each listed constraint, walk the REVIEW PACKET, and each file it lists under \
+             ELIDED, and record an explicit pass or fail",
+        ] {
+            assert!(flat.contains(wanted), "adjudicator.md must say {wanted:?}");
+        }
+        for retired in [
+            "standing items",
+            "walk the unit's actual diff",
+            "no em dashes (U+2014) anywhere the diff adds text",
+            "no new event types - metadata is stamped",
+        ] {
+            assert!(
+                !flat.contains(retired),
+                "adjudicator.md still says {retired:?}"
             );
         }
     }

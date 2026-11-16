@@ -51,7 +51,7 @@ fn a_scaffolded_rust_project_carries_the_rust_sets_gates_and_every_checklist_lin
         ["fmt", "build", "test", "lint", "red-before-green"]
     );
     assert_eq!(wf.stages["checkin"].gates, ["fmt", "build", "test", "lint"]);
-    let missing = missing_checklist_lines(dir.path());
+    let missing = missing_checklist_lines(dir.path(), PERSONA_CHECKLIST);
     assert!(
         missing.is_empty(),
         "the scaffolded .rigger/agents: {missing:#?}"
@@ -320,14 +320,17 @@ const PERSONA_CHECKLIST: &[(&str, &str)] = &[
         "adjudicator.md",
         "A red gate is non-negotiable: never weaken, skip or re-wire a gate to get green.",
     ),
-    (
-        "sdet.md",
-        "Confirm the unit's first source commit follows a test commit (red before green).",
-    ),
+    ("sdet.md", RED_BEFORE_GREEN_LINE),
     ("architecture-reviewer.md", GATES_GRADE),
     ("sdet.md", GATES_GRADE),
     ("adversary.md", GATES_GRADE),
 ];
+
+/// The test lens's red-before-green checklist line. The seeded `sdet` carries it, since a project
+/// may wire no `red-before-green` gate; this repository's `sdet` does not, since its implement
+/// stage runs that gate on every unit.
+const RED_BEFORE_GREEN_LINE: &str =
+    "Confirm the unit's first source commit follows a test commit (red before green).";
 
 /// The line every reviewer persona carries for the gates' proof: deterministic instruments grade
 /// the work, reviewers judge the residue, so no reviewer re-runs a gate already green on the tree.
@@ -358,9 +361,9 @@ fn the_sdet_author_runs_its_own_tests_alone_then_the_hand_over_checks_and_shares
     }
 }
 
-/// Every checklist line missing from the persona files under `root/.rigger/agents`.
-fn missing_checklist_lines(root: &Path) -> Vec<String> {
-    PERSONA_CHECKLIST
+/// Every line of `checklist` missing from the persona files under `root/.rigger/agents`.
+fn missing_checklist_lines(root: &Path, checklist: &[(&str, &str)]) -> Vec<String> {
+    checklist
         .iter()
         .filter(|(file, line)| {
             let text =
@@ -371,10 +374,23 @@ fn missing_checklist_lines(root: &Path) -> Vec<String> {
         .collect()
 }
 
+/// This repository's personas carry every checklist line but the test lens's red-before-green
+/// one, which the `red-before-green` gate its implement stage runs checks instead.
 #[test]
 fn every_persona_carries_its_principle_gate_checklist_line() {
-    let missing = missing_checklist_lines(&repo_root());
-    assert!(missing.is_empty(), ".rigger/agents: {missing:#?}");
+    let root = repo_root();
+    let checklist: Vec<(&str, &str)> = PERSONA_CHECKLIST
+        .iter()
+        .copied()
+        .filter(|(_, line)| *line != RED_BEFORE_GREEN_LINE)
+        .collect();
+    let missing = missing_checklist_lines(&root, &checklist);
+    let sdet = std::fs::read_to_string(root.join(".rigger/agents/sdet.md")).unwrap();
+    assert_eq!(
+        (missing, sdet.contains(RED_BEFORE_GREEN_LINE)),
+        (Vec::<String>::new(), false),
+        ".rigger/agents: the missing checklist lines, and whether sdet.md still checks red before green"
+    );
 }
 
 /// The container runtime snippet a gate that runs tests sources, relative to the worktree.
