@@ -583,7 +583,7 @@ fn scaffold_summary_lines(report: &ScaffoldReport) -> Vec<String> {
 /// [`load_template_sets`] refuses, or a set [`parse_template_set`] refuses, leaves the project
 /// untouched.
 pub(crate) fn cmd_init(args: &[String]) -> Res {
-    let sets = parse_setup_args("init", args)?.template_sets()?;
+    let sets = parse_setup_args(SetupCommand::Init, args)?.template_sets()?;
     let site = Site::here();
     let report = init_project(site.located()?, &sets)?;
     let lines = scaffold_summary_lines(&report);
@@ -869,7 +869,7 @@ pub(crate) fn open_project_code_store(
 /// `rigger init`, it scaffolds from the gate template sets of the root `--template <dir>` names,
 /// loaded and parsed before anything is written.
 pub(crate) fn cmd_setup(args: &[String]) -> Res {
-    let opts = parse_setup_args("setup", args)?;
+    let opts = parse_setup_args(SetupCommand::Setup, args)?;
     let sets = opts.template_sets()?;
     // Parsed before the store is resolved, which makes the root's `.rigger/` when absent, so a
     // set `parse_template_set` refuses leaves the project untouched.
@@ -1610,11 +1610,35 @@ impl SetupOpts {
     }
 }
 
-/// Parse the arguments of `rigger <command>`, `command` being `init` or `setup`: `--template
-/// <dir>` for both and `--agents <dir>` for setup alone, each directory kept as typed and a
-/// repeated flag's last value winning. An unknown argument or a flag with no value is refused
-/// naming `command`, never skipped.
-fn parse_setup_args(command: &str, args: &[String]) -> Result<SetupOpts, String> {
+/// The command whose arguments [`parse_setup_args`] reads: it names itself in each refusal and
+/// declares which flags it takes.
+#[derive(Debug, Clone, Copy)]
+enum SetupCommand {
+    Init,
+    Setup,
+}
+
+impl SetupCommand {
+    /// Whether the command takes `--agents <dir>`: setup alone imports an agent fleet.
+    fn takes_agents(self) -> bool {
+        matches!(self, Self::Setup)
+    }
+}
+
+impl std::fmt::Display for SetupCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Init => "init",
+            Self::Setup => "setup",
+        })
+    }
+}
+
+/// Parse the arguments of `rigger <command>`: `--template <dir>` for both commands and `--agents
+/// <dir>` for the one that [takes it](SetupCommand::takes_agents), each directory kept as typed
+/// and a repeated flag's last value winning. An unknown argument or a flag with no value is
+/// refused naming `command`, never skipped.
+fn parse_setup_args(command: SetupCommand, args: &[String]) -> Result<SetupOpts, String> {
     let mut opts = SetupOpts::default();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -1625,7 +1649,7 @@ fn parse_setup_args(command: &str, args: &[String]) -> Result<SetupOpts, String>
                     .ok_or(format!("{command}: --template needs a directory argument"))?;
                 opts.template = Some(PathBuf::from(dir));
             }
-            "--agents" if command == "setup" => {
+            "--agents" if command.takes_agents() => {
                 let dir = it.next().ok_or(format!(
                     "{command}: --agents needs a directory argument (a local checkout of an \
                      agent collection)"
@@ -4513,40 +4537,41 @@ mod tests {
     /// never skipped. Each row is `(command, args, (template, agents) or the refusal)`.
     #[test]
     fn parse_setup_args_reads_the_template_root_and_the_agents_directory() {
+        use SetupCommand::{Init, Setup};
         type Parsed<'a> = Result<(Option<&'a str>, Option<&'a str>), &'a str>;
-        let rows: [(&str, &[&str], Parsed); 14] = [
-            ("setup", &[], Ok((None, None))),
-            ("init", &[], Ok((None, None))),
-            ("setup", &["--agents", "/c"], Ok((None, Some("/c")))),
-            ("setup", &["--template", "/r"], Ok((Some("/r"), None))),
-            ("init", &["--template", "/r"], Ok((Some("/r"), None))),
+        let rows: [(SetupCommand, &[&str], Parsed); 14] = [
+            (Setup, &[], Ok((None, None))),
+            (Init, &[], Ok((None, None))),
+            (Setup, &["--agents", "/c"], Ok((None, Some("/c")))),
+            (Setup, &["--template", "/r"], Ok((Some("/r"), None))),
+            (Init, &["--template", "/r"], Ok((Some("/r"), None))),
             (
-                "setup",
+                Setup,
                 &["--template", "/a", "--template", "/b"],
                 Ok((Some("/b"), None)),
             ),
             (
-                "setup",
+                Setup,
                 &["--agents", "/a", "--agents", "/b"],
                 Ok((None, Some("/b"))),
             ),
             (
-                "setup",
+                Setup,
                 &["--agents", "/c", "--template", "rel/root"],
                 Ok((Some("rel/root"), Some("/c"))),
             ),
             (
-                "init",
+                Init,
                 &["--template"],
                 Err("init: --template needs a directory argument"),
             ),
             (
-                "setup",
+                Setup,
                 &["--template"],
                 Err("setup: --template needs a directory argument"),
             ),
             (
-                "setup",
+                Setup,
                 &["--agents"],
                 Err(
                     "setup: --agents needs a directory argument (a local checkout of an agent \
@@ -4554,17 +4579,17 @@ mod tests {
                 ),
             ),
             (
-                "init",
+                Init,
                 &["--agents", "/c"],
                 Err("init: unknown argument \"--agents\""),
             ),
             (
-                "init",
+                Init,
                 &["--bogus"],
                 Err("init: unknown argument \"--bogus\""),
             ),
             (
-                "setup",
+                Setup,
                 &["--bogus"],
                 Err("setup: unknown argument \"--bogus\""),
             ),
