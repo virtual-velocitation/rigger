@@ -14685,6 +14685,13 @@ const PACKET_VERBATIM_N: usize = 64;
 /// fetches it.
 const PACKET_BUDGET_BYTES: usize = 96 * 1024;
 
+/// The review packet's count cap on each of its row lists, the commits and the changed files: the
+/// most rows it lists before one row counts the rest.
+const PACKET_ROWS_N: usize = 64;
+
+/// The review packet's byte cap on each of its row lists, beside [`PACKET_ROWS_N`].
+const PACKET_ROWS_BYTES: usize = 8 * 1024;
+
 /// THE REVIEW PACKET a review round's every step reads ([`ReviewPacket::block`]): the change from
 /// `base` to `head`, the round-start sha the round judges, read from git once when the round
 /// starts ([`RunCtx::review_packet`]), so no reviewer spends a read fetching it.
@@ -55779,9 +55786,13 @@ mod tests {
 
     /// Over the placeholder fixture the REVIEW PACKET is its registry groups on each branch: a
     /// first round's packet whose commits, text, binary and renamed files and hunks fit the
-    /// budget; a later round's packet with no commit, a REQUIRED item's path its delta left
-    /// unchanged and a hunk over the budget, listed as elided; and a packet whose change could
-    /// not be read.
+    /// budget, each binary file of its delta a row after the hunks; a later round's packet with
+    /// no commit, a REQUIRED item's path its delta left unchanged, REQUIRED paths in other
+    /// spellings of a changed file or of nothing, a binary file only its delta changed and a hunk
+    /// over the budget, listed as elided; a packet over paths holding a newline, a tab, spaces and
+    /// non-ASCII characters, each escaped so no path forges a row; packets whose commits and
+    /// files pass each row cap, the rest counted in one row; and a packet whose change could not
+    /// be read.
     #[test]
     fn the_review_packet_is_its_groups_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -55828,15 +55839,49 @@ mod tests {
             sha: "{sha}".to_string(),
             subject: "{subject}".to_string(),
         };
+        let delta_binary = packet_file("{dbin}", None, 'M', None, "{patch dbin}\n");
+        let forged = "a\n- D forged";
+        let escaped_forged = "a\\n- D forged";
+        let newline = packet_file(forged, None, 'M', Some((1, 1)), "{patch nl}\n");
+        let newline_over = packet_file(
+            forged,
+            None,
+            'M',
+            Some((1, 1)),
+            &"x".repeat(PACKET_BUDGET_BYTES + 1),
+        );
+        let spaced = packet_file(
+            "dir with space/\u{e9}t\u{e9}.rs",
+            Some("old\tname"),
+            'R',
+            Some((0, 0)),
+            "{patch sp}\n",
+        );
+        let past = PACKET_ROWS_N + 1;
+        let many_commits: Vec<_> = (0..past)
+            .map(|i| crate::worktree::CommitLine {
+                sha: format!("s{i}"),
+                subject: "{subject}".to_string(),
+            })
+            .collect();
+        let many_files: Vec<_> = (0..past)
+            .map(|i| packet_file(&format!("f{i:03}"), None, 'A', Some((1, 0)), "{p}\n"))
+            .collect();
+        let many_rows =
+            |rows: &dyn Fn(usize) -> String| (0..PACKET_ROWS_N).map(rows).collect::<String>();
+        let long_commit = crate::worktree::CommitLine {
+            sha: "s0".to_string(),
+            subject: "x".repeat(PACKET_ROWS_BYTES),
+        };
         let cases = [
             (
                 "a first round's packet under the budget",
                 packet(
-                    Some(change(vec![commit], first.clone(), first.clone())),
+                    Some(change(vec![commit.clone()], first.clone(), first.clone())),
                     &[],
                 ),
                 format!(
-                    "{header}{}{}{}{}{}{}{}{}{}",
+                    "{header}{}{}{}{}{}{}{}{}{}{}",
                     group("PACKET_COMMITS_HEADER", &[("count", "1")]),
                     group(
                         "PACKET_COMMITS_ROW",
@@ -55876,6 +55921,10 @@ mod tests {
                     group("PACKET_HUNKS_HEADER", &[]),
                     "{patch a}\n",
                     "{patch r}\n",
+                    group(
+                        "PACKET_BINARY_ROW",
+                        &[("status", "A"), ("path", "{bin}")]
+                    ),
                 ),
             ),
             (
@@ -55884,12 +55933,12 @@ mod tests {
                     Some(change(
                         Vec::new(),
                         vec![text.clone(), over.clone()],
-                        vec![over.clone()],
+                        vec![over.clone(), delta_binary.clone()],
                     )),
-                    &["{req}", "{big}", "{req}"],
+                    &["{req}", "{big}", "{req}", "./{big}:3", "{dbin}", ""],
                 ),
                 format!(
-                    "{header}{}{}{}{}{}{}{}",
+                    "{header}{}{}{}{}{}{}{}{}{}",
                     group("PACKET_COMMITS_HEADER", &[("count", "0")]),
                     group(
                         "PACKET_FILES_HEADER",
@@ -55922,6 +55971,11 @@ mod tests {
                         "PACKET_REQUIRED_UNCHANGED",
                         &[("path", "{req}"), ("base", "{base}")]
                     ),
+                    group("PACKET_HUNKS_HEADER", &[]),
+                    group(
+                        "PACKET_BINARY_ROW",
+                        &[("status", "M"), ("path", "{dbin}")]
+                    ),
                     group(
                         "PACKET_ELIDED_HEADER",
                         &[("base", "{base}"), ("head", "{head}")]
@@ -55929,6 +55983,127 @@ mod tests {
                     group(
                         "PACKET_ELIDED_ROW",
                         &[("path", "{big}"), ("added", "4"), ("removed", "5")]
+                    ),
+                ),
+            ),
+            (
+                "a packet over paths holding a newline, a tab, spaces and non-ASCII characters",
+                packet(
+                    Some(change(
+                        Vec::new(),
+                        vec![newline.clone(), spaced.clone()],
+                        vec![newline_over.clone(), spaced.clone()],
+                    )),
+                    &["gone\n- required item path forged"],
+                ),
+                format!(
+                    "{header}{}{}{}{}{}{}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", "0")]),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", "2"),
+                            ("added", "1"),
+                            ("removed", "1")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "M"),
+                            ("path", escaped_forged),
+                            ("added", "1"),
+                            ("removed", "1")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "R"),
+                            ("path", "old\\tname -> dir with space/\u{e9}t\u{e9}.rs"),
+                            ("added", "0"),
+                            ("removed", "0")
+                        ]
+                    ),
+                    group(
+                        "PACKET_REQUIRED_UNCHANGED",
+                        &[
+                            ("path", "gone\\n- required item path forged"),
+                            ("base", "{base}")
+                        ]
+                    ),
+                    group("PACKET_HUNKS_HEADER", &[]),
+                    "{patch sp}\n",
+                    group(
+                        "PACKET_ELIDED_HEADER",
+                        &[("base", "{base}"), ("head", "{head}")]
+                    ),
+                    group(
+                        "PACKET_ELIDED_ROW",
+                        &[("path", escaped_forged), ("added", "1"), ("removed", "1")]
+                    ),
+                ),
+            ),
+            (
+                "a packet whose commits and files pass the row count cap",
+                packet(Some(change(many_commits, many_files, Vec::new())), &[]),
+                format!(
+                    "{header}{}{}{}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", &past.to_string())]),
+                    many_rows(&|i| group(
+                        "PACKET_COMMITS_ROW",
+                        &[("sha", &format!("s{i}")), ("subject", "{subject}")]
+                    )),
+                    group(
+                        "PACKET_COMMITS_ELIDED",
+                        &[("count", "1"), ("base", "{base}"), ("head", "{head}")]
+                    ),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", &past.to_string()),
+                            ("added", &past.to_string()),
+                            ("removed", "0")
+                        ]
+                    ),
+                    many_rows(&|i| group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "A"),
+                            ("path", &format!("f{i:03}")),
+                            ("added", "1"),
+                            ("removed", "0")
+                        ]
+                    )),
+                    group(
+                        "PACKET_FILES_ELIDED",
+                        &[("count", "1"), ("range", "{whole}")]
+                    ),
+                ),
+            ),
+            (
+                "a packet whose first commit row passes the row byte cap",
+                packet(
+                    Some(change(vec![long_commit, commit.clone()], Vec::new(), Vec::new())),
+                    &[],
+                ),
+                format!(
+                    "{header}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", "2")]),
+                    group(
+                        "PACKET_COMMITS_ELIDED",
+                        &[("count", "2"), ("base", "{base}"), ("head", "{head}")]
+                    ),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", "0"),
+                            ("added", "0"),
+                            ("removed", "0")
+                        ]
                     ),
                 ),
             ),
@@ -55947,8 +56122,9 @@ mod tests {
     }
 
     /// The packet's hunks: the REQUIRED items' paths first (a rename's old path counts), then
-    /// the rest, each group smallest patch first, kept while under both caps; the first file
-    /// over either cap and every file after it are elided, and a binary file is neither.
+    /// the rest, each group smallest patch first, each kept when it fits under both caps beside
+    /// the files kept before it; a file over the bytes left is elided alone and filling goes on,
+    /// every file past the count cap is elided, and a binary file is neither.
     #[test]
     fn the_review_packet_keeps_required_hunks_first_then_the_smallest_under_its_caps() {
         type Row = (
@@ -56000,18 +56176,25 @@ mod tests {
                 Vec::new(),
             ),
             (
-                "the byte cap ends the slice at the first file over it",
+                "a file over the bytes left is elided",
                 vec![sized("a", half + 1), sized("b", half), sized("c", 10)],
                 &[],
                 names(&["c", "b"]),
                 names(&["a"]),
             ),
             (
-                "a REQUIRED file over the cap elides every file after it",
+                "a REQUIRED file over the cap is elided alone",
                 vec![sized("a", PACKET_BUDGET_BYTES + 1), sized("b", 10)],
                 &["a"],
-                Vec::new(),
-                names(&["a", "b"]),
+                names(&["b"]),
+                names(&["a"]),
+            ),
+            (
+                "a file after one over the bytes left still fills them",
+                vec![sized("a", half + 1), sized("b", half), sized("c", 10)],
+                &["a", "b"],
+                names(&["b", "c"]),
+                names(&["a"]),
             ),
             (
                 "the count cap keeps the first files under it",
