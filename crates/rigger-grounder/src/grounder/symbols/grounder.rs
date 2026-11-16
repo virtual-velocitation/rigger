@@ -1,4 +1,4 @@
-//! The `symbols` grounder (spec 15, unit 4): the `Grounder` port over the code store's view of
+//! The `symbols` grounder (spec 15, unit 4): the `Grounder` interface over the code store's view of
 //! the head, serving the PRECISE grounding contract (architecture 5.5.6). It ranks a DEFINITION
 //! whose name matches the query above a mere REFERENCE, above an incidental prose mention
 //! (which the view does not hold as a symbol at all, so it never appears). Selection is wired in

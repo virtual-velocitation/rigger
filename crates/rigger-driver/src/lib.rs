@@ -1,5 +1,5 @@
 //! Rigger's agent-host adapters, ring 3 of the workspace: the drivers behind the `AgentDriver`
-//! port (the headless Claude Code host, the CLI, the Workflow and the replay driver), the
+//! interface (the headless Claude Code host, the CLI, the Workflow and the replay driver), the
 //! per-spawn liveness markers, the peers side-car, the installed Claude Code hooks and the
 //! supervised child guard. They know `std::process`, the filesystem, the stores and the domain;
 //! the root `rigger` crate re-exports every module under its historical path.

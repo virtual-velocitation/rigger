@@ -1,4 +1,5 @@
 use super::*;
+use rigger::code_facts::Recorded;
 use rigger_domain::code_view::{tests_hidden_line, Tests, ViewFilter};
 
 /// The value of a `--tests` option, `raw`: `exclude`, `include` or `only` through the one parser
@@ -240,8 +241,8 @@ fn print_around_subgraph(g: &contextgraph::Graph, around: &str, unresolved: &[St
 /// omitted-line count), so a bounded body is never mistaken for the whole definition.
 const SHOW_MAX_BODY_LINES: u32 = 60;
 
-/// The decision, lesson or finding `id` names, read from the run store's log the way `rigger
-/// peers` reads it ([`Sidecar::site_of`]), for an id the graph no longer holds: a `rigger reset
+/// The decision, lesson or finding `id` names, read from the run store's log by its id alone
+/// ([`Sidecar::logged_site`], the site `rigger peers` reads), for an id the graph no longer holds: a `rigger reset
 /// --runs` prune drops a superseded run's records from the graph and deletes no event. A project
 /// with no store yet holds no such record. The store is the one `site` resolves.
 fn logged_site(
@@ -252,7 +253,7 @@ fn logged_site(
         return Ok(None);
     };
     over_the_run_store_at(&loc, &selection, |store| {
-        Ok(Sidecar::read(store, conductor::STREAM)?.site_of(id))
+        Ok(Sidecar::logged_site(store, conductor::STREAM, id)?)
     })
 }
 
@@ -335,13 +336,18 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
     match located {
         Located::None => match logged_site(site, entity)? {
             Some(site) => {
-                print_entity_site(&tree, &root, &site);
+                print_entity_site(&tree, &root, &site, None);
                 println!("  ({})", rigger::sidecar::LOGGED_SITE_NOTE);
             }
             None if hidden > 0 => {}
-            None => println!(
-                "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
-            ),
+            None => {
+                println!(
+                    "show {entity:?}: no such entity in the graph (has it been built? try `rigger graph build`)"
+                );
+                if let Some(near) = rigger::lookup::nearest(entity, graph)? {
+                    println!("  {}", rigger::lookup::nearest_line(&near));
+                }
+            }
         },
         Located::Many(cands) => {
             println!(
@@ -352,7 +358,10 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
                 println!("  {}   ({})", c.id, c.file);
             }
         }
-        Located::One(site) => print_entity_site(&tree, &root, &site),
+        Located::One(site) => {
+            let stored_end = graph.definition_end(&site)?;
+            print_entity_site(&tree, &root, &site, stored_end);
+        }
     }
     Ok(())
 }
@@ -375,11 +384,13 @@ fn print_show(site: &Site, graph: &dyn ContextGraph, entity: &str) -> Res {
 /// none, bounded by name, kind and line alone. A node with no `name` at a non-zero line gets the
 /// "no production definition named" note with its id in place of the name, here, ahead of the
 /// feature-gated [`locate_definition_extent`], so both lanes print the same note; one at line 0
-/// keeps [`definition_body`]'s `source unavailable`.
+/// keeps [`definition_body`]'s `source unavailable`. `stored_end` is the end the graph's facts
+/// bound the definition to, when they hold one ([`ContextGraph::definition_end`]).
 fn print_entity_site(
     tree: &Result<PathBuf, String>,
     root: &Result<PathBuf, String>,
     site: &contextgraph::EntitySite,
+    stored_end: Option<u32>,
 ) {
     println!("show {}", site.id);
     let Some(file) = site.file.as_deref() else {
@@ -402,10 +413,13 @@ fn print_entity_site(
             tree,
             root,
             file,
-            site.line,
-            name.unwrap_or_default(),
-            contextgraph::query::split_id(&site.id).1,
-            &site.kind,
+            Recorded {
+                name: name.unwrap_or_default(),
+                path: contextgraph::query::split_id(&site.id).1,
+                kind: &site.kind,
+                line: site.line,
+            },
+            stored_end,
         ),
     };
     match body {
@@ -527,24 +541,26 @@ enum ShowBody {
 /// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
-/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
-/// omitted-line count so a bounded body is never read as whole.
+/// it). The window is `[start, extent]`, `start` the `recorded` definition's line, clamped by
+/// [`SHOW_MAX_BODY_LINES`]; a clamp reports its omitted-line count so a bounded body is never read
+/// as whole. A `stored_end`, the extent the graph's facts hold for the definition
+/// ([`ContextGraph::definition_end`], the bound the same declared extractor or grammar gave when
+/// the file was extracted), bounds the body without extracting the file again.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
 /// body cannot be shown honestly: the `start` line is `0` or past end-of-file, `tree` or `root`
-/// is unavailable, the file cannot be read, the tree holds no production definition (one outside test code) of that name and kind
-/// at `id_path`, when one is given, at `start`, or this build has no extraction grammar (the
+/// is unavailable, the file cannot be read, the tree holds no production definition (one outside test code) of the `recorded` name and kind
+/// at its id path, when it has one, at `start`, or this build has no extraction grammar (the
 /// light, `--no-default-features` lane). It never GUESSES a body from a structural
 /// next-definition bound.
 fn definition_body(
     tree: &Result<PathBuf, String>,
     root: &Result<PathBuf, String>,
     file: &str,
-    start: u32,
-    name: &str,
-    id_path: Option<&str>,
-    kind: &str,
+    recorded: Recorded,
+    stored_end: Option<u32>,
 ) -> ShowBody {
+    let start = recorded.line;
     // A line of 0 never named a real source line: degrade before any read. (Also covers a
     // reference-only graph entity with no definition site of its own.)
     if start == 0 {
@@ -571,11 +587,26 @@ fn definition_body(
             "source unavailable at {file}:{start}; the recorded location may be stale"
         ));
     }
-    // The extent's end through the ONE extent authority the code store extracts by. A miss (no such definition at
-    // the line, or a light-lane build with no grammar) is an explicit note, never a guessed body.
-    let extent_end = match locate_definition_extent(root, file, &text, start, name, id_path, kind) {
+    // The extent's end: the one the graph's facts stored, the project's extractor's bound read
+    // when the file was extracted, else through the ONE extent authority the code store extracts
+    // by. A miss (no such definition at the line, or a light-lane build with no grammar) is an
+    // explicit note, never a guessed body.
+    let located = match stored_end {
+        Some(end) => Ok(end),
+        None => {
+            #[cfg(test)]
+            tests::EXTENT_LOCATES.with(|n| n.set(n.get() + 1));
+            locate_definition_extent(root, file, &text, recorded)
+        }
+    };
+    let extent_end = match located {
         Ok(end) => end.min(total),
-        Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
+        Err(why) => {
+            let Recorded {
+                name, path, kind, ..
+            } = recorded;
+            return ShowBody::Note(why.note(name, path, kind, file, start));
+        }
     };
     // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
     // caller can announce the omitted lines.
@@ -592,8 +623,8 @@ fn definition_body(
     }
 }
 
-/// The 1-based, inclusive last line of the definition named `name` of kind `kind` at `start`, at
-/// the id path `id_path` when one is given (spec 58; spec 119, ONE EXTENT and IDS FOLLOW THE
+/// The 1-based, inclusive last line of the `recorded` definition, by its name and kind at its line,
+/// at its id path when it has one (spec 58; spec 119, ONE EXTENT and IDS FOLLOW THE
 /// LANGUAGE'S PATH), in `file` holding `source`, read as the code store reads it over the project
 /// at `root` (spec 125, THE EXTRACTOR PROTOCOL): its definitions are those the project's
 /// extractor gives the file
@@ -607,7 +638,7 @@ fn definition_body(
 /// authority, which reads production definitions only, those outside test code.
 ///
 /// Returns the [`Unbounded`] reason - the caller degrades to a note - when no such production
-/// definition sits at `start`, and a worded one when the grammar cannot tag the source. A failed
+/// definition sits at its line, and a worded one when the grammar cannot tag the source. A failed
 /// answer holds no definition, as the code store holds none for that file, and a file neither a
 /// declaration nor a grammar covers holds none: the code view extracts through the same routing,
 /// so it holds no entity there, and the miss is no production definition.
@@ -616,22 +647,13 @@ fn locate_definition_extent(
     root: &Path,
     file: &str,
     source: &str,
-    start: u32,
-    name: &str,
-    id_path: Option<&str>,
-    kind: &str,
+    recorded: Recorded,
 ) -> Result<u32, Unbounded> {
-    use rigger::grounder::symbols::extract::{self, Recorded};
+    use rigger::grounder::symbols::extract;
     use rigger_grounder::facts::ProjectExtractor;
     let defs = ProjectExtractor::of(root)
         .defs(file, source)
         .map_err(Unbounded::Note)?;
-    let recorded = Recorded {
-        name,
-        path: id_path,
-        kind,
-        line: start,
-    };
     extract::extent_in(&defs, recorded).ok_or(Unbounded::Missing)
 }
 
@@ -645,10 +667,7 @@ fn locate_definition_extent(
     _root: &Path,
     _file: &str,
     _source: &str,
-    _start: u32,
-    _name: &str,
-    _id_path: Option<&str>,
-    _kind: &str,
+    _recorded: Recorded,
 ) -> Result<u32, Unbounded> {
     Err(Unbounded::Note(
         "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
@@ -950,119 +969,173 @@ pub(crate) fn cmd_emit(args: &[String]) -> Res {
     })
 }
 
-#[cfg(all(test, unix, feature = "symbols"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{
-        answer_defining_at, request_for, root_dir_of, workflow_declaring_extractors, write_file,
-        StubExtractor,
-    };
-    use rigger::contextgraph::CODE_KIND_FUNCTION;
+    use std::cell::Cell;
 
-    /// A Rust function over two lines, which the bundled grammar bounds at its second.
-    const RUST_MAIN: &str = "fn main() {\n}\n";
+    thread_local! {
+        /// How many times this thread's [`definition_body`] bounded an extent through the grammar.
+        pub(super) static EXTENT_LOCATES: Cell<u32> = const { Cell::new(0) };
+    }
 
-    /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE on the show surface (spec 125, criterion 8): with
-    /// the project root's workflow declaring the stub extractor, `locate_definition_extent` bounds
-    /// the function `main` of a file whose extension the declaration lists by the `end_line` of the
-    /// stub's answer - for an extension no grammar covers, and for `rs` under a declaration named
-    /// `rust`, which replaces the bundled grammar - asking it once, through one session started in
-    /// the root and closed after; an answer that fails bounds nothing, never falling back to the
-    /// grammar; and a file no declaration lists is bounded by its bundled grammar, the stub never
-    /// started though it holds an answer for it.
+    /// A body the graph's facts bound is read without bounding it again: GIVEN a file defining
+    /// `alpha` over its first three lines, WHEN its body is read with the end the facts stored and
+    /// with none, THEN the stored end bounds the body with no extent located, and with none the
+    /// grammar locates it once (a light-lane build notes its missing grammar instead of a body).
     #[test]
-    fn a_declared_extension_bounds_its_body_by_its_extractors_end_line() {
-        // (the extractor's name, its extensions, the file, its text, the stub's answer for it,
-        // the function's line, its extent or the note in its place, whether the stub was asked)
-        let rows = [
-            (
-                "zig",
-                "[zig]",
-                "a.zig",
-                "const a = 1;\npub fn main() void {\n    a;\n}\n",
-                answer_defining_at("a.zig", "main", 2, 4),
-                2,
-                Ok(4),
-                true,
-            ),
-            (
-                "rust",
-                "[rs]",
-                "a.rs",
-                RUST_MAIN,
-                answer_defining_at("a.rs", "main", 1, 3),
-                1,
-                Ok(3),
-                true,
-            ),
-            (
-                "rust",
-                "[rs]",
-                "a.rs",
-                RUST_MAIN,
-                r#"{"path":"a.rs","error":"no parser"}"#.to_string(),
-                1,
-                Err(
-                    r#"no production definition named "main" at path "main" of kind function at line 1 of a.rs"#
-                        .to_string(),
-                ),
-                true,
-            ),
-            (
-                "zig",
-                "[zig]",
-                "a.rs",
-                RUST_MAIN,
-                answer_defining_at("a.rs", "main", 1, 3),
-                1,
-                Ok(2),
-                false,
-            ),
+    fn a_stored_end_bounds_the_body_without_locating_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "fn alpha() {\n    1\n}\nfn beta() {}\n";
+        std::fs::write(dir.path().join("a.rs"), source).unwrap();
+        let tree = Ok(dir.path().to_path_buf());
+        // (case, the stored end, the extents located, whether the body prints)
+        let cases = [
+            ("a stored end", Some(3), 0, true),
+            ("no stored end", None, 1, cfg!(feature = "symbols")),
         ];
-        for (name, extensions, file, text, answer, line, extent, asked) in rows {
-            let stub_dir = tempfile::tempdir().expect("tempdir");
-            let project = tempfile::tempdir().expect("tempdir");
-            let stub = StubExtractor::new(stub_dir.path());
-            stub.answers(file, &answer);
-            write_file(
-                &project.path().join(RIGGER_DIR).join(WORKFLOW_FILE),
-                workflow_declaring_extractors(&stub.declaring(name, extensions)).as_bytes(),
-            );
-            let row = format!("{file} under {name} over {extensions}");
-            assert_eq!(
-                locate_definition_extent(
-                    project.path(),
-                    file,
-                    text,
-                    line,
-                    "main",
-                    Some("main"),
-                    CODE_KIND_FUNCTION
-                )
-                .map_err(|why| why.note(
-                    "main",
-                    Some("main"),
-                    CODE_KIND_FUNCTION,
-                    file,
-                    line
-                )),
-                extent,
-                "{row}: the extent"
-            );
-            let session = if asked {
-                (
-                    vec![root_dir_of(project.path())],
-                    vec![request_for(file, text)],
-                    vec!["ended".to_string()],
-                )
-            } else {
-                (Vec::new(), Vec::new(), Vec::new())
+        for (case, stored_end, locates, body) in cases {
+            EXTENT_LOCATES.with(|n| n.set(0));
+            let alpha = Recorded {
+                name: "alpha",
+                path: Some("alpha"),
+                kind: "function",
+                line: 1,
+            };
+            let read = definition_body(&tree, &tree, "a.rs", alpha, stored_end);
+            let printed = match read {
+                ShowBody::Lines {
+                    lines,
+                    omitted: 0,
+                    extent_end: 3,
+                } => Some(lines.into_iter().map(|(n, _)| n).collect::<Vec<_>>()),
+                _ => None,
             };
             assert_eq!(
-                (stub.starts(), stub.requests(), stub.ends()),
-                session,
-                "{row}: one session in the root, asked once and closed, or none"
+                (EXTENT_LOCATES.with(Cell::get), printed),
+                (locates, body.then(|| vec![1, 2, 3])),
+                "{case}"
             );
+        }
+    }
+
+    /// The show surface over a project whose workflow declares extractors (spec 125).
+    #[cfg(all(unix, feature = "symbols"))]
+    mod declared {
+        use super::*;
+        use crate::test_support::{
+            answer_defining_at, request_for, root_dir_of, workflow_declaring_extractors,
+            write_file, StubExtractor,
+        };
+        use rigger::contextgraph::CODE_KIND_FUNCTION;
+
+        /// A Rust function over two lines, which the bundled grammar bounds at its second.
+        const RUST_MAIN: &str = "fn main() {\n}\n";
+
+        /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE on the show surface (spec 125, criterion 8): with
+        /// the project root's workflow declaring the stub extractor, `locate_definition_extent` bounds
+        /// the function `main` of a file whose extension the declaration lists by the `end_line` of the
+        /// stub's answer - for an extension no grammar covers, and for `rs` under a declaration named
+        /// `rust`, which replaces the bundled grammar - asking it once, through one session started in
+        /// the root and closed after; an answer that fails bounds nothing, never falling back to the
+        /// grammar; and a file no declaration lists is bounded by its bundled grammar, the stub never
+        /// started though it holds an answer for it.
+        #[test]
+        fn a_declared_extension_bounds_its_body_by_its_extractors_end_line() {
+            // (the extractor's name, its extensions, the file, its text, the stub's answer for it,
+            // the function's line, its extent or the note in its place, whether the stub was asked)
+            let rows = [
+                (
+                    "zig",
+                    "[zig]",
+                    "a.zig",
+                    "const a = 1;\npub fn main() void {\n    a;\n}\n",
+                    answer_defining_at("a.zig", "main", 2, 4),
+                    2,
+                    Ok(4),
+                    true,
+                ),
+                (
+                    "rust",
+                    "[rs]",
+                    "a.rs",
+                    RUST_MAIN,
+                    answer_defining_at("a.rs", "main", 1, 3),
+                    1,
+                    Ok(3),
+                    true,
+                ),
+                (
+                    "rust",
+                    "[rs]",
+                    "a.rs",
+                    RUST_MAIN,
+                    r#"{"path":"a.rs","error":"no parser"}"#.to_string(),
+                    1,
+                    Err(
+                        r#"no production definition named "main" at path "main" of kind function at line 1 of a.rs"#
+                            .to_string(),
+                    ),
+                    true,
+                ),
+                (
+                    "zig",
+                    "[zig]",
+                    "a.rs",
+                    RUST_MAIN,
+                    answer_defining_at("a.rs", "main", 1, 3),
+                    1,
+                    Ok(2),
+                    false,
+                ),
+            ];
+            for (name, extensions, file, text, answer, line, extent, asked) in rows {
+                let stub_dir = tempfile::tempdir().expect("tempdir");
+                let project = tempfile::tempdir().expect("tempdir");
+                let stub = StubExtractor::new(stub_dir.path());
+                stub.answers(file, &answer);
+                write_file(
+                    &project.path().join(RIGGER_DIR).join(WORKFLOW_FILE),
+                    workflow_declaring_extractors(&stub.declaring(name, extensions)).as_bytes(),
+                );
+                let row = format!("{file} under {name} over {extensions}");
+                assert_eq!(
+                    locate_definition_extent(
+                        project.path(),
+                        file,
+                        text,
+                        Recorded {
+                            name: "main",
+                            path: Some("main"),
+                            kind: CODE_KIND_FUNCTION,
+                            line
+                        }
+                    )
+                    .map_err(|why| why.note(
+                        "main",
+                        Some("main"),
+                        CODE_KIND_FUNCTION,
+                        file,
+                        line
+                    )),
+                    extent,
+                    "{row}: the extent"
+                );
+                let session = if asked {
+                    (
+                        vec![root_dir_of(project.path())],
+                        vec![request_for(file, text)],
+                        vec!["ended".to_string()],
+                    )
+                } else {
+                    (Vec::new(), Vec::new(), Vec::new())
+                };
+                assert_eq!(
+                    (stub.starts(), stub.requests(), stub.ends()),
+                    session,
+                    "{row}: one session in the root, asked once and closed, or none"
+                );
+            }
         }
     }
 }

@@ -109,7 +109,7 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
     };
 
     // A knowledge event and a grouped one ahead of a derived one: refused whole, through the
-    // folding form and through the port, and neither file gains a row.
+    // folding form and through the interface, and neither file gains a row.
     let grouped = decision("d0").with_meta(META_GROUP, "gc/src/a.rs");
     let mixed = [decision("d1"), grouped.clone(), code_entity()];
     assert_eq!(
@@ -120,7 +120,7 @@ fn a_derived_batch_through_the_composed_store_is_refused_by_name_and_spends_noth
     assert_eq!(
         refused(folding.append(STREAM, ExpectedRevision::NoStream, &mixed)),
         naming("CodeEntityExtracted"),
-        "the port of the composed store answers the same refusal"
+        "the interface of the composed store answers the same refusal"
     );
     assert_eq!(
         held(),

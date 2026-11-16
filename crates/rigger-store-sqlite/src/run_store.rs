@@ -2024,7 +2024,7 @@ mod tests {
     /// events every later read of the log is partitioned by.
     ///
     /// Both writes used to hand their append report to `?;` and throw it away, which
-    /// compiled unchanged when the port stopped promising a position. A store that wrote
+    /// compiled unchanged when the interface stopped promising a position. A store that wrote
     /// nothing then handed `ensure_started` a run id for a run the log does not contain,
     /// and every later `current_run_id` / `current_run_base` / attribution read would
     /// partition the stream against a boundary that was never recorded - silently, and for

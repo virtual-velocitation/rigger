@@ -472,20 +472,21 @@ struct ShowCase<'a> {
     out: &'a [&'a str],
     /// What the show says on stderr.
     err: &'a str,
-    /// The request each session the show starts reads, one per session.
+    /// The request each session the read and the show start reads, one per session.
     asked: Vec<String>,
 }
 
 /// Given a committed repository whose workflow declares the stub and a graph built under it, when
 /// the operator shows a definition, a file of a declared extension prints the lines from the
-/// definition's line through the `end_line` the stub answers for the shown tree's text - for an
+/// definition's line through the `end_line` the stub answered for the shown tree's text - for an
 /// extension no grammar covers, and for `rs` under a declaration named `rust`, which replaces the
-/// bundled grammar's bound - the show starting the stub in the root, asking it that text and
-/// closing it; a file no declaration lists is bounded by its bundled grammar, the stub never
-/// started though it holds a wider answer for it; an answer that fails prints the
-/// missing-definition note in place of the body, never the grammar's, and says why on stderr; and
-/// in a linked worktree, which holds no declaration of its own, the body is the worktree's text,
-/// the read and the show each asking the root's extractor in the root.
+/// bundled grammar's bound - read from the facts the build stored, so the show starts no session
+/// and never asks again, even when the stub would now answer with an error; a file no declaration
+/// lists is bounded by its bundled grammar, the stub never started though it holds a wider answer
+/// for it; and in a linked worktree, which holds no declaration of its own, the body is the
+/// worktree's text, bounded by the end the read's one session asked the root's extractor for in
+/// the root. An answer that fails while the show itself bounds a body is
+/// `a_declared_extension_bounds_its_body_by_its_extractors_end_line`'s, in `src/cli/graph.rs`.
 #[test]
 fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
     let two_answer = answer_defining_at("src/two.rs", "two", 1, 4);
@@ -507,7 +508,7 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
                 "       4 | }",
             ],
             err: "",
-            asked: vec![request_for("src/a.zig", MAIN_ZIG)],
+            asked: vec![],
         },
         ShowCase {
             declared: ("rust", "[rs]"),
@@ -530,7 +531,7 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
                 "       4 | // after two",
             ],
             err: "",
-            asked: vec![request_for("src/two.rs", TWO_RS)],
+            asked: vec![],
         },
         ShowCase {
             declared: ("zig", "[zig]"),
@@ -571,10 +572,13 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
                 "  site: src/two.rs:1   kind function   degree 2",
                 "  name two",
                 "  lang rust",
-                r#"  (no production definition named "two" at path "two" of kind function at line 1 of src/two.rs)"#,
+                "       1 | pub fn two() {",
+                "       2 |     1;",
+                "       3 | }",
+                "       4 | // after two",
             ],
-            err: "rigger: extractor rust: src/two.rs: the answer is an error: \"no parser\"\n",
-            asked: vec![request_for("src/two.rs", TWO_RS)],
+            err: "",
+            asked: vec![],
         },
         ShowCase {
             declared: ("zig", "[zig]"),
@@ -595,7 +599,7 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
                 "       5 | }",
             ],
             err: "",
-            asked: vec![request_for("src/a.zig", FRESH_ZIG); 2],
+            asked: vec![request_for("src/a.zig", FRESH_ZIG)],
         },
     ];
     for case in cases {
@@ -650,7 +654,8 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
                 case.asked,
                 ended(sessions)
             ),
-            "{}: each session the show starts begins in the root, is asked once and is closed",
+            "{}: each session the read and the show start begins in the root, is asked once and is \
+             closed",
             case.query
         );
     }

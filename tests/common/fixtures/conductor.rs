@@ -1,4 +1,4 @@
-//! Conductor-port fixtures.
+//! Conductor-interface fixtures.
 
 use std::path::Path;
 
@@ -424,7 +424,7 @@ pub fn isolated(
     run(&cfg, deps)
 }
 
-/// The conductor's ports for one run over `repo`: no grounder, no graph and no criteria.
+/// The conductor's interfaces for one run over `repo`: no grounder, no graph and no criteria.
 pub fn bare_deps<'a>(
     store: &'a dyn EventStore,
     driver: &'a dyn AgentDriver,

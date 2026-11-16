@@ -1,4 +1,4 @@
-//! The keep-awake port (spec 105): a process driving a run asks the operating system to keep the
+//! The keep-awake interface (spec 105): a process driving a run asks the operating system to keep the
 //! machine from sleeping for as long as it drives. [`SleepHold::acquire`] takes the hold and
 //! returns the [`SleepGuard`] whose drop releases it; an adapter that cannot take one answers
 //! [`Unavailable`] with its reason, which never fails the run. One adapter per OS family sits in

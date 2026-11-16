@@ -136,7 +136,8 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 /// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
 /// for a decorator that also intercepts `latest_in_group`; `(append)` expands the append alone,
 /// forwarded the same way, for a decorator that intercepts reads instead; `(typed)` expands the
-/// typed stream read alone, for a decorator that intercepts the boundary lookup ahead of it.
+/// typed stream read alone, for a decorator that intercepts the boundary lookup ahead of it; and
+/// `(record)` expands the record-id read alone.
 #[macro_export]
 macro_rules! delegate_event_store_reads {
     (append) => {
@@ -157,6 +158,16 @@ macro_rules! delegate_event_store_reads {
             group: &str,
         ) -> Result<Option<rigger::eventstore::GroupHead>, rigger::eventstore::Error> {
             self.inner.latest_in_group(stream, group)
+        }
+    };
+    (record) => {
+        fn read_by_record_id(
+            &self,
+            stream: &str,
+            types: &[&str],
+            id: &str,
+        ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
+            self.inner.read_by_record_id(stream, types, id)
         }
     };
     (typed) => {
@@ -221,6 +232,7 @@ macro_rules! delegate_event_store_reads {
             self.inner.last_position(stream, event_type)
         }
         $crate::delegate_event_store_reads!(typed);
+        $crate::delegate_event_store_reads!(record);
         fn read_stream_positions(
             &self,
             stream: &str,
@@ -243,9 +255,9 @@ macro_rules! delegate_event_store_reads {
     };
 }
 
-/// A port that ACCEPTS every append and reports writing nothing - the one answer every
+/// An interface that ACCEPTS every append and reports writing nothing - the one answer every
 /// single-event seam has to surface rather than absorb. It lives with the shared fixtures,
-/// one definition for every crate whose seams append through the port, so each seam's test
+/// one definition for every crate whose seams append through the interface, so each seam's test
 /// holds it to the SAME double instead of to a local one that could drift into a friendlier
 /// shape.
 ///
@@ -334,9 +346,17 @@ impl EventStore for SilentStore {
     fn latest_in_group(&self, _stream: &str, _group: &str) -> Result<Option<GroupHead>, Error> {
         Ok(None)
     }
+    fn read_by_record_id(
+        &self,
+        _stream: &str,
+        _types: &[&str],
+        _id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        Ok(Vec::new())
+    }
 }
 
-/// The port methods a double REFUSES, each panicking with `$why` and what the caller tried -
+/// The interface methods a double REFUSES, each panicking with `$why` and what the caller tried -
 /// expanded inside that double's `impl EventStore` block, naming the methods it does not answer.
 macro_rules! refuse_event_store_calls {
     ($why:literal: $($method:ident),+ $(,)?) => {
@@ -418,9 +438,14 @@ macro_rules! refuse_event_store_calls {
             panic!(concat!($why, ": nothing looks up a group"))
         }
     };
+    (@ $why:literal read_by_record_id) => {
+        fn read_by_record_id(&self, _: &str, _: &[&str], _: &str) -> Result<Vec<Event>, Error> {
+            panic!(concat!($why, ": nothing reads a record by id"))
+        }
+    };
 }
 
-/// A store whose ONLY reachable port method is the group lookup (spec 101): it answers every group
+/// A store whose ONLY reachable interface method is the group lookup (spec 101): it answers every group
 /// with one fixed answer - a newest member, no member, or a backend error - and records each
 /// `(stream, group)` it was asked. Every other method panics, so a caller that reads the stream,
 /// subscribes or appends where it should only have asked the lookup fails.
@@ -459,6 +484,7 @@ impl EventStore for GroupLookupOnly {
         read_stream_typed,
         read_stream_positions,
         read_stream_batched,
+        read_by_record_id,
     );
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.asked
@@ -499,6 +525,7 @@ impl EventStore for ReadsFailWhenArmed<'_> {
         read_stream_positions,
         read_stream_batched,
         latest_in_group,
+        read_by_record_id,
     );
     crate::delegate_event_store_reads!(append);
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
@@ -519,7 +546,7 @@ impl EventStore for ReadsFailWhenArmed<'_> {
 /// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
 /// reach: its events are stamped in the order given as the sqlite store stamps an append to an
 /// empty log, per-stream revisions from 0 and log positions from 1, and only the boundary lookup
-/// and the typed read answer, as the port words them. Every other method panics, and another
+/// and the typed read answer, as the interface words them. Every other method panics, and another
 /// stream holds nothing.
 pub struct HandBuiltLog {
     stream: String,
@@ -563,6 +590,7 @@ impl EventStore for HandBuiltLog {
         read_stream_positions,
         read_stream_batched,
         latest_in_group,
+        read_by_record_id,
     );
     fn last_position(&self, stream: &str, event_type: &str) -> Result<Option<Revision>, Error> {
         Ok(self
@@ -629,7 +657,7 @@ impl EventStore for FailAppendMetaContaining<'_> {
 /// already ran for real and the single append that would durably record it, or a record lost
 /// while the work around it carries on. It matches the payload, where
 /// [`FailAppendMetaContaining`] matches metadata. Never a production hook: `EventStore` is the
-/// injected port, the same seam a genuine backend failure surfaces through.
+/// injected interface, the same seam a genuine backend failure surfaces through.
 pub struct FailAppendContaining<'a> {
     pub inner: &'a dyn EventStore,
     pub needle: &'static str,
@@ -766,6 +794,14 @@ pub enum CountedRead {
         types: Vec<String>,
         materialized: usize,
     },
+    /// A record-id read: the `types` it named, the `id` it asked, and how many events it handed
+    /// back.
+    Record {
+        stream: String,
+        types: Vec<String>,
+        id: String,
+        materialized: usize,
+    },
 }
 
 /// One group lookup of each of `identities` on `stream`, in order: what a counting store saw of
@@ -787,7 +823,8 @@ impl CountedRead {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
             | CountedRead::AllPage { materialized, .. }
-            | CountedRead::Typed { materialized, .. } => *materialized,
+            | CountedRead::Typed { materialized, .. }
+            | CountedRead::Record { materialized, .. } => *materialized,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered,
             CountedRead::StreamBatched { batches, .. } => batches.iter().sum(),
@@ -805,7 +842,8 @@ impl CountedRead {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
             | CountedRead::AllPage { materialized, .. }
-            | CountedRead::Typed { materialized, .. } => *materialized = 0,
+            | CountedRead::Typed { materialized, .. }
+            | CountedRead::Record { materialized, .. } => *materialized = 0,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered = 0,
             CountedRead::LastPosition { .. }
@@ -824,7 +862,8 @@ impl CountedRead {
             CountedRead::Stream { materialized, .. }
             | CountedRead::All { materialized, .. }
             | CountedRead::AllPage { materialized, .. }
-            | CountedRead::Typed { materialized, .. } => *materialized += n,
+            | CountedRead::Typed { materialized, .. }
+            | CountedRead::Record { materialized, .. } => *materialized += n,
             CountedRead::SubscribeStream { delivered, .. }
             | CountedRead::SubscribeAll { delivered, .. } => *delivered += n,
             CountedRead::StreamPositions { handed, .. } => *handed += n,
@@ -843,7 +882,7 @@ type CallLog = std::sync::Arc<std::sync::Mutex<Vec<CountedRead>>>;
 /// it forwards and how many events each one materialized, so a test asserts a command's read
 /// cost at the store seam instead of measuring resident memory. Appends pass through uncounted.
 /// The one shared instance of this instrument: every criterion that asserts a read cost uses it,
-/// and a new port method gains its forwarding and its [`CountedRead`] here.
+/// and a new interface method gains its forwarding and its [`CountedRead`] here.
 pub struct ReadCountingStore<'a> {
     inner: Held<'a>,
     reads: CallLog,
@@ -1104,6 +1143,21 @@ impl EventStore for ReadCountingStore<'_> {
         let head = self.inner.latest_in_group(stream, group);
         self.returned(at);
         head
+    }
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        let at = self.record(CountedRead::Record {
+            stream: stream.to_string(),
+            types: types.iter().map(|t| t.to_string()).collect(),
+            id: id.to_string(),
+            materialized: 0,
+        });
+        let events = self.inner.read_by_record_id(stream, types, id)?;
+        Ok(self.handed_back(at, events))
     }
 }
 

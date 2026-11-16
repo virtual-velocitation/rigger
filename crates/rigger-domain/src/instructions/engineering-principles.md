@@ -6,8 +6,8 @@ them; a violation a review finds is a finding, and the review rule of the workin
 decides whether it blocks.
 
 **Clean Architecture.** Dependencies point inward only: the domain's entities, use cases and
-rules know nothing of stores, processes, the agent host, git, HTTP or the terminal. Ports are
-interfaces owned by the inner layer; adapters (a store, a projector, a host, the git worktree,
+rules know nothing of stores, processes, the agent host, git, HTTP or the terminal. Interfaces
+are owned by the inner layer; adapters (a store, a projector, a host, the git worktree,
 the dashboard, the CLI) implement them from outside and are wired in exactly one composition
 root. A use case never imports an adapter; an adapter never holds domain rules. Framework
 and I/O types stop at the adapter boundary and are translated into domain types there. The
@@ -15,10 +15,10 @@ inner layer compiling without the outer layers, with no filesystem, process, net
 is the mechanical proof that it is clean.
 
 **SOLID.** Single responsibility: one package per concern, one module per responsibility, one
-reason to change per type. Open/closed: extend through the existing ports and enums; a new
+reason to change per type. Open/closed: extend through the existing interfaces and enums; a new
 behavior is a new adapter or variant, never a branch bolted into a caller.
-Liskov: an adapter honors its port's whole contract; a port's conformance tests pass unchanged.
-Interface segregation: ports stay small; a consumer depends on the interface it uses. Dependency
+Liskov: an adapter honors its interface's whole contract and passes its conformance tests unchanged.
+Interface segregation: interfaces stay small; a consumer depends on the interface it uses. Dependency
 inversion: domain and use-case code depend on interfaces; stores, processes, clocks and
 filesystems are injected at the composition root and nowhere else, and the inner layer
 keeps compiling without them. Package dependencies point one way, pinned by a structural test.

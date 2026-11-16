@@ -1,7 +1,7 @@
 //! Rigger's verification discipline: a gate is a command plus a trust level, it
 //! yields compact evidence (never a raw log), and its autonomy moves on a
 //! bidirectional ratchet so a graduated gate can never silently auto-pass bad
-//! work. `Runner` is the port; `ExecRunner` is the adapter.
+//! work. `Runner` is the interface; `ExecRunner` is the adapter.
 
 use std::collections::BTreeMap;
 use std::process::Command;

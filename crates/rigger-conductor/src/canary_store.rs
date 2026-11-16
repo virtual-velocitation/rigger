@@ -1736,7 +1736,7 @@ mod tests {
     /// report is for the CLI's summary print and is gone at process exit - so a write this
     /// seam loses is a measurement that reads as taken and cannot be found afterwards.
     ///
-    /// The append used to discard its report with `?;`, which kept compiling when the port
+    /// The append used to discard its report with `?;`, which kept compiling when the interface
     /// stopped promising a position. It now asks the same authority every other
     /// single-event seam asks, so the loss surfaces where it happened.
     #[test]

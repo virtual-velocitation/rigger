@@ -1,4 +1,4 @@
-//! Spec 48, criterion 1 - the SINGLE AUTHORITY behind the event-store port.
+//! Spec 48, criterion 1 - the SINGLE AUTHORITY behind the event-store interface.
 //!
 //! Which backend a project uses is CONFIGURATION resolved by ONE authority every command
 //! shares, never a per-command flag only one command honors. This file pins that two ways:
@@ -83,7 +83,7 @@ fn the_sqlite_event_log_backend_is_constructed_at_exactly_one_call_site() {
     let (line_no, _) = &sites[0];
     let owner = enclosing_fn(&lines, line_no - 1);
     // The one sqlite `Store::open` lives in `open_sqlite_store`, the resolver's dedicated
-    // sqlite constructor: `resolve_store` boxes it as the port for every command, and the
+    // sqlite constructor: `resolve_store` boxes it as the interface for every command, and the
     // local identity migration - which needs the concrete `Store` for its stream renames -
     // also constructs through it, so the backend is built at a single call site.
     assert_eq!(
@@ -127,7 +127,7 @@ use common::cli::run_stream_identity;
 use common::fixtures::with_kurrentdb;
 use common::repo::production_main_rs;
 
-/// Open the server store as a namespaced port, retrying briefly while it finishes coming up
+/// Open the namespaced server store, retrying briefly while it finishes coming up
 /// (the adapter connects eagerly). Panics only after the deadline, matching the contract test.
 fn open_server(conn: &str) -> rigger::eventstore::kurrentdb::Store {
     use rigger::eventstore::kurrentdb::Store;

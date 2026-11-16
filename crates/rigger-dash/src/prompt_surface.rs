@@ -62,7 +62,8 @@ instructions, skills, docs, decisions, lessons and findings, ranked by relevance
 answers from your own working tree: the graph takes each file that differs there from the \
 commit it was built at from your tree, and the label heading the section says so; a tree that \
 cannot be compared withholds every graph hit and counts them in the label. Same as `rigger graph --lookup <term>...`. `show` \
-<entity> gives its definition site (same as `rigger graph --show <entity>`); `around` \
+<entity> gives its definition site, or for a name no entity carries the names it is nearest \
+to (same as `rigger graph --show <entity>`); `around` \
 <file|entity> (optionally `depth`) its structural neighborhood (same as `rigger graph --around \
 <file|entity> --depth <n>`). Worked examples - who calls <name>: pass `around` <name>; where is \
 <name> defined: pass `show` <name>.";
