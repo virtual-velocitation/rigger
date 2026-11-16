@@ -167,6 +167,8 @@ jobs:
   # derivation degrades to `+unversioned` without go-gitsemver, so the job installs nothing else.
   cross-os-check:
     strategy:
+      # A red leg never cancels the other, so each OS reports its own errors in the one run.
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
