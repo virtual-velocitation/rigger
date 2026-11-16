@@ -1,11 +1,11 @@
 //! Guard the CI invariant that EVERY feature lane stays fully gated, and that CI runs the
 //! non-default lanes through the one lanes script.
 //!
-//! rigger ships with `turbovec` as a *default* feature, a deliberate `--no-default-features`
-//! "grep-only" opt-out, and the pure `core` lane (`--no-default-features --features core`, see
-//! `Cargo.toml`). Those are distinct `cfg` universes: code behind a feature vanishes in a lane
-//! that drops it, and code only *reachable* there (fallback paths, the "built without turbovec"
-//! branch) is dead in the others. Any lane can grow a lint - an unused import, dead code, a
+//! rigger ships with `symbols` and `store` as its *default* features, a deliberate
+//! `--no-default-features` "grep-only" opt-out, and the pure `core` lane (`--no-default-features
+//! --features core`, see `Cargo.toml`). Those are distinct `cfg` universes: code behind a feature
+//! vanishes in a lane that drops it, and code only *reachable* there (a fallback path) is dead in
+//! the others. Any lane can grow a lint - an unused import, dead code, a
 //! `needless_return` - that `cargo build` still accepts but `cargo clippy -- -D warnings`
 //! rejects, or a test that fails in that universe alone.
 //!
@@ -24,7 +24,7 @@
 //! `--no-default-features` (see `assert_lane_command`'s `forbidden` arg).
 //!
 //! It is intentionally NOT feature-gated: it reads YAML files and runs a shell script, touching
-//! no turbovec/grep symbols, so it runs identically in every lane that runs it.
+//! no feature-gated symbol, so it runs identically in every lane that runs it.
 
 use crate::common;
 use common::repo::{repo_root, repo_text, stub_path, table_declares_key, table_lines};
@@ -106,10 +106,10 @@ fn line_has_all(line: &str, needles: &[&str]) -> bool {
 
 /// Assert some single `run:` line contains every token of `needles` (in order) AND
 /// does NOT contain `forbidden`. The `forbidden` clause is what makes a lane assertion
-/// DISCRIMINATING: the turbovec (default) lane's commands are prefixes of the grep-only
-/// lane's (which just add `--no-default-features`), so without excluding that flag the
-/// turbovec assertions would be satisfied by grep-only lines and pass even if the whole
-/// turbovec lane were deleted. Pass `forbidden = None` when no anchor is needed (e.g. a
+/// DISCRIMINATING: the default lane's commands are prefixes of the grep-only lane's (which
+/// just add `--no-default-features`), so without excluding that flag the default-lane
+/// assertions would be satisfied by grep-only lines and pass even if the whole default lane
+/// were deleted. Pass `forbidden = None` when no anchor is needed (e.g. a
 /// grep-only assertion that already requires `--no-default-features` positively).
 fn assert_lane_command(script: &str, needles: &[&str], forbidden: Option<&str>, what: &str) {
     let found = script
@@ -126,14 +126,13 @@ fn assert_lane_command(script: &str, needles: &[&str], forbidden: Option<&str>, 
     );
 }
 
-/// The turbovec (default-feature) lane must run the full gate battery: fmt check,
-/// clippy over all targets with warnings denied, the default `cargo build`, and the
-/// test suite. Every feature-sensitive assertion is ANCHORED to exclude
-/// `--no-default-features` so a matching grep-only line cannot vacuously satisfy it -
-/// deleting the turbovec lane makes this test fail (verified by the reviewer's lane-
-/// deletion simulation), which is the whole point of the guard.
+/// The default-feature lane must run the full gate battery: fmt check, clippy over all
+/// targets with warnings denied, the default `cargo build`, and the test suite. Every
+/// feature-sensitive assertion is ANCHORED to exclude `--no-default-features` so a matching
+/// grep-only line cannot vacuously satisfy it - deleting the default lane makes this test fail
+/// (verified by the reviewer's lane-deletion simulation), which is the whole point of the guard.
 #[test]
-fn turbovec_lane_runs_the_full_gate_battery() {
+fn default_lane_runs_the_full_gate_battery() {
     let wf = workflow_yaml();
     let script = job_run_scripts(&wf, "build-test");
     const NO_DEFAULTS: &str = "--no-default-features";
@@ -151,19 +150,19 @@ fn turbovec_lane_runs_the_full_gate_battery() {
         &script,
         &["cargo clippy", "--all-targets", "-D warnings"],
         Some(NO_DEFAULTS),
-        "cargo clippy --all-targets -- -D warnings on the turbovec (default) build",
+        "cargo clippy --all-targets -- -D warnings on the default build",
     );
     assert_lane_command(
         &script,
         &["cargo build"],
         Some(NO_DEFAULTS),
-        "cargo build on the turbovec (default) build",
+        "cargo build on the default build",
     );
     assert_lane_command(
         &script,
         &["cargo test"],
         Some(NO_DEFAULTS),
-        "cargo test on the turbovec (default) build",
+        "cargo test on the default build",
     );
 }
 
@@ -527,11 +526,11 @@ fn every_job_that_compiles_the_dev_profile_builds_it_with_line_tables_only() {
 /// execute the resulting binary. That job is the regression guard for dependency skew on a
 /// FRESH resolve (`cargo install` without `--locked` ignores Cargo.lock and re-resolves to
 /// the newest versions the manifest constraints allow - exactly how an end user installs,
-/// and where a transitive crate like `ort-sys` can skew forward past the `ort` it must
-/// match). `Cargo.toml` pins `ort-sys = "=2.0.0-rc.9"` to keep that resolve coherent; this
-/// test ensures the CI job that PROVES the pin holds cannot be quietly deleted or have its
-/// teeth pulled by someone adding `--locked` (which would make the install pass by reusing
-/// the committed lockfile, defeating the entire point of the guard). Like the rest of this
+/// and where a transitive crate can skew forward past the version a pinned direct dependency
+/// was built against). This test ensures the CI job that PROVES the resolve stays coherent
+/// cannot be quietly deleted or have its teeth pulled by someone adding `--locked` (which
+/// would make the install pass by reusing the committed lockfile, defeating the entire point
+/// of the guard). Like the rest of this
 /// file it parses the committed workflow rather than the running config, so it fails at
 /// `cargo test` time - in the very build-test lane above - if the guard erodes.
 #[test]
