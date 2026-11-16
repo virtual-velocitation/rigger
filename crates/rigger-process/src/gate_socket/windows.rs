@@ -36,7 +36,7 @@ use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResultEx, OVERLAPPED};
 
 use super::serving::{answer_one, exchange, served_already, ACCEPT_POLL, REQUEST_READ_TIMEOUT};
-use super::{canonical_root_bytes, pipe_name};
+use super::{canonical_root_bytes, is_gate_pipe_name, pipe_name};
 use crate::win32::wide;
 
 /// Each direction's buffer, in bytes: the size std gives its own pipes, so a request line is
@@ -371,12 +371,16 @@ impl GateChannel for GateSocket {
 }
 
 /// Ask the driver serving the pipe named `path` to answer `request`: its reply, or `None` only
-/// when no pipe of that name exists. A pipe whose every instance is busy is waited for; one whose
-/// server was gone before the request was written, which [`exchange`] answers `None`, is an error
-/// here, as is one closed with the request unread, and any other failure to open or exchange. The
-/// pipe is opened at the identification level, so
-/// a server that is not the driver cannot act as this user.
+/// when `path` is no gate pipe's name ([`is_gate_pipe_name`]), which is never opened, so an
+/// address naming a file leaves that file untouched as on unix, or when no pipe of that name
+/// exists. A pipe whose every instance is busy is waited for; one whose server was gone before
+/// the request was written, which [`exchange`] answers `None`, is an error here, as is one closed
+/// with the request unread, and any other failure to open or exchange. The pipe is opened at the
+/// identification level, so a server that is not the driver cannot act as this user.
 pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> {
+    if !path.to_str().is_some_and(is_gate_pipe_name) {
+        return Ok(None);
+    }
     loop {
         let opened = std::fs::OpenOptions::new()
             .read(true)

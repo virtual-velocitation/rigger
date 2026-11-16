@@ -117,10 +117,28 @@ fn canonical_root_bytes(repo_root: &Path) -> io::Result<Vec<u8>> {
         .into_encoded_bytes())
 }
 
+/// What every gate pipe's name begins with, before its root's digits.
+const GATE_PIPE_PREFIX: &str = r"\\.\pipe\rigger-gate-";
+
 /// The Windows named pipe for the canonical repo root whose bytes are `root_bytes`:
-/// `\\.\pipe\rigger-gate-` and [`root_digest`], the digits the unix socket's file name carries.
+/// [`GATE_PIPE_PREFIX`] and [`root_digest`], the digits the unix socket's file name carries.
 pub fn pipe_name(root_bytes: &[u8]) -> String {
-    format!(r"\\.\pipe\rigger-gate-{}", root_digest(root_bytes))
+    format!("{GATE_PIPE_PREFIX}{}", root_digest(root_bytes))
+}
+
+/// Whether `address` is a name [`pipe_name`] gives: [`GATE_PIPE_PREFIX`] and [`DIGEST_HEX`]
+/// lower-case hex digits, nothing else. So no address that names a file, or that a `..` leads out
+/// of the pipe namespace, passes it.
+#[cfg(any(windows, test))]
+fn is_gate_pipe_name(address: &str) -> bool {
+    address
+        .strip_prefix(GATE_PIPE_PREFIX)
+        .is_some_and(|digits| {
+            digits.len() == DIGEST_HEX
+                && digits
+                    .bytes()
+                    .all(|digit| matches!(digit, b'0'..=b'9' | b'a'..=b'f'))
+        })
 }
 
 /// The gate channel `rigger gate` asks for the project rooted at `repo_root`:
