@@ -296,15 +296,48 @@ pub fn unit_slug(n: usize, criterion: &str) -> String {
 }
 
 /// The executable shape every unit fanned out from `template` inherits: its `agent`, `gates`,
-/// `on_pass` and `partition`. The one inheritance list a baseline ([`baseline_units`]) and a
-/// planner-proposed unit both start from, so a unit is scheduled, gated and integrated as its
-/// template declares whichever way it reached the DAG.
+/// `on_pass`, `partition`, `review`, `autonomy`, `speculation_width` and `max_retries`. The one
+/// inheritance list a baseline ([`baseline_units`]) and a planner-proposed unit both start from,
+/// so a unit is run, gated, integrated, scheduled, reviewed, paused, raced and retried as its
+/// template declares whichever way it reached the DAG; a setting the template leaves unset
+/// stays unset on the unit, which then reads the run's `defaults`. Every other field starts at
+/// its default: the unit's own name, needs and coverage are set per unit, `strategy` and
+/// `produces` would make it a template or a producer, `agents`, `adversary` and `adjudicator`
+/// belong to a standalone review stage (a unit's panel is `review`), and the rest is the run's
+/// per-unit bookkeeping. The destructure names every field, so a field added to [`Stage`] does
+/// not compile here until it is classified.
 pub fn inherited_shape(template: &Stage) -> Stage {
+    let Stage {
+        agent,
+        gates,
+        on_pass,
+        partition,
+        review,
+        autonomy,
+        speculation_width,
+        max_retries,
+        name: _,
+        needs: _,
+        coverage: _,
+        strategy: _,
+        produces: _,
+        agents: _,
+        adversary: _,
+        adjudicator: _,
+        baseline: _,
+        criterion_id: _,
+        episode: _,
+        unmatched_fanout_proposal: _,
+    } = template.clone();
     Stage {
-        agent: template.agent.clone(),
-        gates: template.gates.clone(),
-        on_pass: template.on_pass.clone(),
-        partition: template.partition.clone(),
+        agent,
+        gates,
+        on_pass,
+        partition,
+        review,
+        autonomy,
+        speculation_width,
+        max_retries,
         ..Default::default()
     }
 }

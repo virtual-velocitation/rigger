@@ -13850,8 +13850,9 @@ impl RunCtx<'_> {
                     // of the same rank this proposal was just ranked by above.
                     episode: u.episode,
                     unmatched_fanout_proposal,
-                    // The rest of the template's inherited shape (its `on_pass` and
-                    // `partition`), on both branches, as a baseline carries it.
+                    // The rest of the template's inherited shape (its `on_pass`,
+                    // `partition`, `review`, `autonomy`, `speculation_width` and
+                    // `max_retries`), on both branches, as a baseline carries it.
                     ..template.clone()
                 },
             );
