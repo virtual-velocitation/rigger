@@ -6277,10 +6277,12 @@ impl RunCtx<'_> {
         // spawning under its own step's token, and each step handed only the members that ran;
         // `None` runs every member. A log that cannot be read runs every member.
         let finders = match (&round, panel.later_rounds) {
-            (Some(round), LaterRounds::Finders) => self
-                .read_current_run()
-                .ok()
-                .and_then(|events| later_round_finders(&events, &st.name, attempt, round, &steps)),
+            (Some(round), LaterRounds::Finders) => {
+                let tier = routing.policy.then_some(routing.tier);
+                self.read_current_run().ok().and_then(|events| {
+                    later_round_finders(&events, &st.name, attempt, round, &steps, tier)
+                })
+            }
             _ => None,
         };
         let runs = |token: &String| {
@@ -14808,6 +14810,11 @@ fn packet_file_is(file: &FileDiff, path: &str) -> bool {
     file.path == path || file.old_path.as_deref() == Some(path)
 }
 
+/// Whether the REQUIRED item path `required` names the repository path `path`.
+fn required_names(required: &str, path: &str) -> bool {
+    required == path
+}
+
 /// The files of `delta` whose hunks a review packet carries, and the files its caps leave out,
 /// each in the order the packet lists them: the files `required` names first, then the rest, each
 /// group smallest patch first and then by path. [`within_budget`] keeps the prefix under
@@ -16261,6 +16268,7 @@ fn later_round_finders(
     attempt: u32,
     round: &ReviewRound,
     steps: &[ReviewStep],
+    _tier: Option<&str>,
 ) -> Option<Vec<String>> {
     let required = |path: &String| round.required.iter().any(|item| item.path == *path);
     if !round.delta.iter().all(required) {
@@ -16888,6 +16896,7 @@ mod tests {
     use crate::test_support::gate_def;
     use crate::test_support::gate_def_inputs;
     use crate::test_support::git_ok;
+    use crate::test_support::git_ok_with_identity;
     use crate::test_support::git_out;
     use crate::test_support::has_status_marker as has_status;
     use crate::test_support::one_gated_stage_cfg;
@@ -32707,6 +32716,22 @@ mod tests {
                 required: "feature.rs",
                 runs: every.clone(),
             },
+            LaterRoundsRow {
+                name: "a required path spelled from the root names the file",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "./fix1.rs",
+                runs: vec![lens.clone()],
+            },
+            LaterRoundsRow {
+                name: "a required path naming a line names the file",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "fix1.rs:12",
+                runs: vec![lens.clone()],
+            },
         ];
         for row in rows {
             let mut panel = json!({
@@ -32779,6 +32804,194 @@ mod tests {
         }
     }
 
+    /// One row of [`a_later_round_counts_as_finders_the_members_any_earlier_round_upheld`]: the
+    /// findings rounds 0 and 1 recorded as (attempt, role, id), the ids each round's reject
+    /// upheld, the review tier round 1 recorded and the one round 2 routes to (`None` for no
+    /// depth policy), and the members round 2 runs, adjudicator last, or `None` when every member
+    /// runs.
+    struct FindersRow {
+        name: &'static str,
+        found: Vec<(u32, String, &'static str)>,
+        upheld: Vec<&'static str>,
+        recorded: Option<&'static str>,
+        tier: Option<&'static str>,
+        runs: Option<Vec<String>>,
+    }
+
+    /// WHO A LATER ROUND RE-RUNS, READ FROM THE LOG: round 2 of unit `u` reviews from round 1,
+    /// whose reject upheld the row's ids after rounds 0 and 1 recorded the row's findings. A
+    /// member is a finder when any earlier round recorded an upheld id under its role, so the
+    /// owner of a finding still open since round 0 re-runs though it recorded nothing in round
+    /// 1. Every member runs when round 1 recorded a review tier other than the one round 2 routes
+    /// to, or when no upheld id is one a member recorded.
+    #[test]
+    fn a_later_round_counts_as_finders_the_members_any_earlier_round_upheld() {
+        let (lens, other) = (lens_role("lens"), lens_role("other"));
+        let steps = [
+            ReviewStep::Lenses(vec!["lens".into(), "other".into()]),
+            ReviewStep::Adjudicator("adj".into()),
+        ];
+        let round = ReviewRound {
+            base: "sha1".into(),
+            delta: vec!["fix.rs".into()],
+            required: vec![RequiredItem {
+                finding: "close it".into(),
+                path: "fix.rs".into(),
+                correctness: true,
+                pattern: String::new(),
+            }],
+            audit: String::new(),
+        };
+        let finders = |members: &[&String]| {
+            Some(
+                members
+                    .iter()
+                    .map(|member| member.to_string())
+                    .chain([ROLE_ADJUDICATOR.to_string()])
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let rows = [
+            FindersRow {
+                name: "a finding round 1 recorded and upheld",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                recorded: None,
+                tier: None,
+                runs: finders(&[&lens]),
+            },
+            FindersRow {
+                name: "a finding round 0 recorded and round 1 upheld again",
+                found: vec![(0, other.clone(), "o-1"), (1, lens.clone(), "f-1")],
+                upheld: vec!["o-1", "f-1"],
+                recorded: None,
+                tier: None,
+                runs: finders(&[&lens, &other]),
+            },
+            FindersRow {
+                name: "round 1 under the review tier round 2 routes to",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                recorded: Some("full"),
+                tier: Some("full"),
+                runs: finders(&[&lens]),
+            },
+            FindersRow {
+                name: "round 1 under another review tier",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                recorded: Some("light"),
+                tier: Some("full"),
+                runs: None,
+            },
+            FindersRow {
+                name: "round 1 under no depth policy and round 2 under one",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                recorded: None,
+                tier: Some("full"),
+                runs: None,
+            },
+            FindersRow {
+                name: "an upheld id no member recorded",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["ghost"],
+                recorded: None,
+                tier: None,
+                runs: None,
+            },
+        ];
+        let status = |payload: Value| {
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&payload).unwrap(),
+            )
+        };
+        for row in rows {
+            let mut log = Vec::new();
+            for attempt in 0..2u32 {
+                log.push(
+                    status(
+                        json!({"id": "u", "status": STATUS_REVIEW_ROUND_START, "attempt": attempt}),
+                    )
+                    .with_meta(META_WORKTREE_SHA, &format!("sha{attempt}")),
+                );
+                if let Some(tier) = row.recorded.filter(|_| attempt == 1) {
+                    log.push(
+                        status(json!({"id": "u", "status": STATUS_REVIEW_TIER, "evidence": {"review-tier": tier}}))
+                            .with_meta(META_REPLAY_KEY, &review_tier_key("u", attempt)),
+                    );
+                }
+                for (_, role, id) in row.found.iter().filter(|(at, _, _)| *at == attempt) {
+                    log.push(
+                        Event::new(
+                            contextgraph::TYPE_REVIEW_FINDING,
+                            serde_json::to_vec(
+                                &json!({"id": id, "summary": "a defect", "by": role}),
+                            )
+                            .unwrap(),
+                        )
+                        .with_meta(META_SPAWN, &spawn_id("u", role, attempt)),
+                    );
+                }
+                let reject = json!({
+                    "verdict": "reject",
+                    "upheld": row.upheld,
+                    "required": [{"finding": "close it", "path": "fix.rs", "correctness": true}],
+                });
+                log.push(Event::new(
+                    ledger::TYPE_UNIT_FAILED,
+                    serde_json::to_vec(&json!({
+                        "id": "u",
+                        "cause": CAUSE_REJECT,
+                        "review_reason": reject.to_string(),
+                    }))
+                    .unwrap(),
+                ));
+            }
+            for (position, e) in (1..).zip(log.iter_mut()) {
+                e.position = position;
+            }
+            assert_eq!(
+                later_round_finders(&log, "u", 2, &round, &steps, row.tier),
+                row.runs,
+                "{}",
+                row.name
+            );
+        }
+    }
+
+    /// Each spelling of a REQUIRED item's path that names a repository path: the path itself,
+    /// from the root (`./`), with the line or range it points at (`:12`, `:12-14`), and a
+    /// directory, which names every path under it; an empty path, another file, and a file whose name only
+    /// starts the same name nothing.
+    #[test]
+    fn a_required_path_names_a_file_in_each_spelling_an_adjudicator_writes() {
+        let rows = [
+            ("src/a.rs", "src/a.rs", true),
+            ("./src/a.rs", "src/a.rs", true),
+            ("src/a.rs:12", "src/a.rs", true),
+            ("src/a.rs:12-14", "src/a.rs", true),
+            ("./src/a.rs:12:5", "src/a.rs", true),
+            (" src/a.rs ", "src/a.rs", true),
+            ("src", "src/a.rs", true),
+            ("src/", "src/a.rs", true),
+            ("./src/", "src/a.rs", true),
+            ("", "src/a.rs", false),
+            ("./", "src/a.rs", false),
+            ("src/b.rs", "src/a.rs", false),
+            ("src/a", "src/a.rs", false),
+            ("sr", "src/a.rs", false),
+        ];
+        for (required, path, names) in rows {
+            assert_eq!(
+                required_names(required, path),
+                names,
+                "{required:?} names {path:?}"
+            );
+        }
+    }
+
     /// The verdict a [`ReuseRow`]'s round 0 approved with.
     const REUSE_PRIOR: &str = r#"{"verdict":"approve"}"#;
 
@@ -32795,20 +33008,64 @@ mod tests {
         ApprovedElsewhere,
         /// An approve recorded at the tip, then a later review's reject of the unit.
         ApprovedThenRejected,
+        /// An approve recorded at the tip, then a gate the unit failed.
+        ApprovedThenGateRed,
         /// A reject requiring one fix.
         Rejected,
     }
 
+    /// What a [`ReuseRow`]'s unit holds when attempt 1's review starts.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum AttemptOne {
+        /// The tree round 0 judged.
+        Unchanged,
+        /// That tree and the `fix1.rs` attempt 1's implementer writes.
+        Fixed,
+        /// That tree and a gitlink a later commit on the unit's branch adds, which the
+        /// repository's `diff.ignoreSubmodules=all` hides from every name diff.
+        HiddenGitlink,
+    }
+
     /// One row of [`a_later_round_reuses_the_approve_of_an_unchanged_tree_and_fails_closed`]:
-    /// whether round 0 stamped its start mark, its verdict, the review tier it recorded, whether
-    /// attempt 1's implementer changes the tree, and whether attempt 1 reuses round 0's approve.
+    /// whether round 0 stamped its start mark, its verdict, the review tier it recorded, what
+    /// attempt 1's tree holds, and whether attempt 1 reuses round 0's approve.
     struct ReuseRow {
         name: &'static str,
         started: bool,
         verdict: RoundZero,
         tier: Option<&'static str>,
-        changes: bool,
+        attempt_one: AttemptOne,
         reused: bool,
+    }
+
+    /// Commit on `branch` of `repo` a gitlink to `commit` at `sub`, and set the repository's
+    /// `diff.ignoreSubmodules=all`: the branch's tree then differs from `commit`'s while every
+    /// name diff between them lists nothing.
+    fn hide_a_gitlink_on(repo: &str, branch: &str, commit: &str) {
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("gitlink");
+        let dir = dir.to_str().unwrap();
+        git_ok(repo, &["worktree", "add", dir, branch]);
+        git_ok(
+            dir,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{commit},sub"),
+            ],
+        );
+        git_ok_with_identity(dir, &["commit", "-q", "-m", "add a gitlink"]);
+        git_ok(repo, &["worktree", "remove", "--force", dir]);
+        git_ok(repo, &["config", "diff.ignoreSubmodules", "all"]);
+        assert_eq!(
+            git_out(
+                repo,
+                &["diff", "--name-only", &format!("{commit}..{branch}")]
+            ),
+            "",
+            "precondition: no name diff sees the gitlink"
+        );
     }
 
     /// The log a [`ReuseRow`] seeds for unit `s`, whose branch's tip is `tip`: the unit started,
@@ -32878,6 +33135,7 @@ mod tests {
             RoundZero::ApprovedThenRejected => {
                 vec![approved(tip), failed(CAUSE_REJECT, REUSE_REJECT)]
             }
+            RoundZero::ApprovedThenGateRed => vec![approved(tip), failed("gate:ok", "")],
             RoundZero::Rejected => vec![failed(CAUSE_REJECT, REUSE_REJECT)],
         });
         log
@@ -32891,12 +33149,12 @@ mod tests {
     /// Every other log runs the whole panel. The unit integrates either way.
     #[test]
     fn a_later_round_reuses_the_approve_of_an_unchanged_tree_and_fails_closed() {
-        let row = |name, started, verdict, tier, changes, reused| ReuseRow {
+        let row = |name, started, verdict, tier, attempt_one, reused| ReuseRow {
             name,
             started,
             verdict,
             tier,
-            changes,
+            attempt_one,
             reused,
         };
         let rows = [
@@ -32905,7 +33163,7 @@ mod tests {
                 true,
                 RoundZero::ApprovedAtTip,
                 None,
-                false,
+                AttemptOne::Unchanged,
                 true,
             ),
             row(
@@ -32913,7 +33171,15 @@ mod tests {
                 true,
                 RoundZero::ApprovedAtTip,
                 None,
+                AttemptOne::Fixed,
+                false,
+            ),
+            row(
+                "a tree no name diff sees changed runs the panel",
                 true,
+                RoundZero::ApprovedAtTip,
+                None,
+                AttemptOne::HiddenGitlink,
                 false,
             ),
             row(
@@ -32921,7 +33187,7 @@ mod tests {
                 true,
                 RoundZero::Rejected,
                 None,
-                false,
+                AttemptOne::Unchanged,
                 false,
             ),
             row(
@@ -32929,7 +33195,7 @@ mod tests {
                 true,
                 RoundZero::ApprovedElsewhere,
                 None,
-                false,
+                AttemptOne::Unchanged,
                 false,
             ),
             row(
@@ -32937,7 +33203,7 @@ mod tests {
                 true,
                 RoundZero::ApprovedAtTip,
                 Some("light"),
-                false,
+                AttemptOne::Unchanged,
                 false,
             ),
             row(
@@ -32945,7 +33211,7 @@ mod tests {
                 false,
                 RoundZero::ApprovedAtTip,
                 None,
-                false,
+                AttemptOne::Unchanged,
                 false,
             ),
             row(
@@ -32953,7 +33219,15 @@ mod tests {
                 true,
                 RoundZero::ApprovedThenRejected,
                 None,
+                AttemptOne::Unchanged,
                 false,
+            ),
+            row(
+                "an approve a red gate condemned runs the panel",
+                true,
+                RoundZero::ApprovedThenGateRed,
+                None,
+                AttemptOne::Unchanged,
                 false,
             ),
         ];
@@ -32967,10 +33241,13 @@ mod tests {
             let repo_path = repo.path().to_str().unwrap().to_string();
             commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
             let tip = trimmed_stdout(&run_git(&repo_path, &["rev-parse", &unit_branch("s")]));
+            if row.attempt_one == AttemptOne::HiddenGitlink {
+                hide_a_gitlink_on(&repo_path, &unit_branch("s"), &tip);
+            }
             let st = Store::open(":memory:").unwrap();
             seed_events_in_run(&st, &[], &reuse_row_log(&row, &tip));
             let mut driver = approving_panel_stub(&["lens"]);
-            if row.changes {
+            if row.attempt_one == AttemptOne::Fixed {
                 driver.write_files_by_spawn_id.insert(
                     spawn_id("s", ROLE_IMPLEMENTER, 1),
                     vec!["fix1.rs".to_string()],
