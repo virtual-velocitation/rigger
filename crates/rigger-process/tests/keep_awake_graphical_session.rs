@@ -15,12 +15,13 @@ mod keep_awake_fixtures;
 
 use keep_awake_fixtures::{
     client_end, connected_end, fake_bus, logind_inhibit, pending, portal_inhibit, private_bus,
-    Answer, Call, FakeBus, LogindInhibit, PortalInhibit,
+    Answer, Call, FakeBus, LogindInhibit, PortalInhibit, Request,
 };
 use rigger_domain::sleep_hold::SleepHold;
 use rigger_process::keep_awake::OsSleepHold;
 use std::io::ErrorKind;
 use std::os::unix::net::UnixListener;
+use std::time::Duration;
 
 /// The reason every acquire of this test gives.
 const REASON: &str = "the rigger-process graphical-session test";
@@ -60,7 +61,7 @@ fn the_acquire_asks_the_desktop_portal_exactly_when_the_environment_names_a_disp
             "a Wayland display, the portal grants",
             Some("wayland-0"),
             None,
-            Some(Answer::Handle(Some(0))),
+            Some(Answer::Handle(Request::Responds(0))),
             ("open", "closed"),
             Some(vec![portal_inhibit(REASON)]),
         ),
@@ -68,7 +69,7 @@ fn the_acquire_asks_the_desktop_portal_exactly_when_the_environment_names_a_disp
             "an X display, the portal grants",
             None,
             Some(":1"),
-            Some(Answer::Handle(Some(0))),
+            Some(Answer::Handle(Request::Responds(0))),
             ("open", "closed"),
             Some(vec![portal_inhibit(REASON)]),
         ),
@@ -108,7 +109,7 @@ fn the_acquire_asks_the_desktop_portal_exactly_when_the_environment_names_a_disp
                 None => std::env::remove_var(name),
             }
         }
-        let logind = fake_bus::<LogindInhibit>(logind_listener, Answer::Descriptor);
+        let logind = fake_bus::<LogindInhibit>(logind_listener, Answer::Descriptor(Duration::ZERO));
         let portal = match answer {
             Some(answer) => Ok(fake_bus::<PortalInhibit>(portal_listener, answer)),
             None => Err(portal_listener),

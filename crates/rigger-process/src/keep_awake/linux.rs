@@ -315,12 +315,12 @@ mod tests {
     use super::{acquire_on, graphical_session, no_system_bus, unavailable};
     use crate::test_support::{
         client_end, connected_end, fake_bus, logind_inhibit, pending, portal_inhibit, private_bus,
-        Answer, Call, FakeBus, LogindInhibit, PortalInhibit,
+        Answer, Call, FakeBus, LogindInhibit, PortalInhibit, Request,
     };
     use rigger_domain::sleep_hold::Unavailable;
     use std::ffi::OsStr;
     use std::io::ErrorKind;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use zbus::connection::Builder;
 
     /// An error reply named `name` to an `Inhibit` call, sent by `sender` and carrying `detail`
@@ -383,65 +383,106 @@ mod tests {
     /// (flags 12) giving the reason, and whatever the portal does the acquire stands granted. The
     /// portal grants only when the request its `Inhibit` returns responds 0: that connection is
     /// open while the guard stands and closed once it drops. One whose request responds anything
-    /// else, or does not respond by the deadline, one the portal refuses, and one it never answers
-    /// by the deadline, is closed before the acquire returns; and with no portal listening there
-    /// is no connection to make. Logind is asked once in every row.
+    /// else, a response of another request before it included, or does not respond by the
+    /// deadline, or whose portal closes the connection before it responds, one the portal refuses,
+    /// and one it never answers by the deadline, is closed before the acquire returns; and with no
+    /// portal listening there is no connection to make. Logind is asked once in every row, and
+    /// the acquire answers within its one deadline, a logind that grants late leaving the portal
+    /// what remains of it.
     #[test]
     fn a_graphical_session_asks_the_portal_and_any_answer_leaves_the_acquire_granted() {
-        // What, how the portal answers (none: no portal listens), its connection while the guard
-        // stands and once it dropped, and the calls the portal received.
+        // What, how long logind takes to grant, how the portal answers (none: no portal listens),
+        // its connection while the guard stands and once it dropped, and the calls the portal
+        // received.
         type Row<'a> = (
             &'a str,
+            Duration,
             Option<Answer>,
             Option<(&'a str, &'a str)>,
             Option<Vec<Call<PortalInhibit>>>,
         );
+        let deadline = Duration::from_secs(5);
+        // What the acquire may take past its deadline: the joins of a portal thread and a
+        // runtime the deadline already ended, well under the 3 s a portal given the whole
+        // deadline after a late logind would add.
+        let slack = Duration::from_secs(1);
         let rows: Vec<Row> = vec![
             (
                 "the portal grants: its request responds 0",
-                Some(Answer::Handle(Some(0))),
+                Duration::ZERO,
+                Some(Answer::Handle(Request::Responds(0))),
                 Some(("open", "closed")),
                 Some(vec![portal_inhibit("a reason")]),
             ),
             (
                 "the portal's request responds 1",
-                Some(Answer::Handle(Some(1))),
+                Duration::ZERO,
+                Some(Answer::Handle(Request::Responds(1))),
+                Some(("closed", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            (
+                "another request responds 0, then the portal's request responds 1",
+                Duration::ZERO,
+                Some(Answer::Handle(Request::RespondsAfterAnother(1))),
                 Some(("closed", "closed")),
                 Some(vec![portal_inhibit("a reason")]),
             ),
             (
                 "the portal's request does not respond by the deadline",
-                Some(Answer::Handle(None)),
+                Duration::ZERO,
+                Some(Answer::Handle(Request::Never)),
+                Some(("closed", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            (
+                "the portal closes the connection before its request responds",
+                Duration::ZERO,
+                Some(Answer::Handle(Request::Closes)),
                 Some(("closed", "closed")),
                 Some(vec![portal_inhibit("a reason")]),
             ),
             (
                 "the portal refuses",
+                Duration::ZERO,
                 Some(Answer::Refusal),
                 Some(("closed", "closed")),
                 Some(vec![portal_inhibit("a reason")]),
             ),
             (
                 "the portal never answers by the deadline",
+                Duration::ZERO,
                 Some(Answer::Nothing),
                 Some(("closed", "closed")),
                 Some(vec![portal_inhibit("a reason")]),
             ),
-            ("no portal listens", None, None, None),
+            (
+                "logind grants 3 s in and the portal never answers: the portal has what remains",
+                Duration::from_secs(3),
+                Some(Answer::Nothing),
+                Some(("closed", "closed")),
+                Some(vec![portal_inhibit("a reason")]),
+            ),
+            ("no portal listens", Duration::ZERO, None, None, None),
         ];
-        for (what, answer, connection, portal_calls) in rows {
+        for (what, logind_grants_in, answer, connection, portal_calls) in rows {
             let (listener, address) = private_bus("granting-logind");
-            let logind = fake_bus::<LogindInhibit>(listener, Answer::Descriptor);
+            let logind =
+                fake_bus::<LogindInhibit>(listener, Answer::Descriptor(logind_grants_in));
             let (listener, portal_address) = private_bus("portal");
             let portal = answer.map(|answer| fake_bus::<PortalInhibit>(listener, answer));
+            let started = Instant::now();
             let held = acquire_on(
                 Builder::address(address.as_str()).expect("the private logind's address"),
                 true,
                 || Builder::address(portal_address.as_str()),
                 "a reason",
-                Duration::from_secs(5),
+                deadline,
             );
-            let answered = held.as_ref().err().cloned();
+            let answered = (
+                held.as_ref().err().cloned(),
+                started.elapsed() < deadline + slack,
+            );
             let (end, calls) = match portal {
                 Some(FakeBus { end, calls }) => (
                     Some(connected_end(
@@ -458,11 +499,11 @@ mod tests {
             assert_eq!(
                 (answered, while_held.zip(dropped)),
                 (
-                    None,
+                    (None, true),
                     connection.map(|(held, dropped)| (held.to_string(), dropped.to_string()))
                 ),
-                "{what}: the acquire's answer, and the portal's connection while its guard stood \
-                 and once it dropped"
+                "{what}: the acquire's answer and whether it came within its deadline, and the \
+                 portal's connection while its guard stood and once it dropped"
             );
             assert_eq!(
                 calls.map(|calls| calls.join().expect("the fake portal ends")),
@@ -483,7 +524,7 @@ mod tests {
     #[test]
     fn with_no_graphical_session_the_acquire_makes_no_portal_connection() {
         let (listener, address) = private_bus("granting-logind");
-        let logind = fake_bus::<LogindInhibit>(listener, Answer::Descriptor);
+        let logind = fake_bus::<LogindInhibit>(listener, Answer::Descriptor(Duration::ZERO));
         let (portal, portal_address) = private_bus("unasked-portal");
         let held = acquire_on(
             Builder::address(address.as_str()).expect("the private logind's address"),

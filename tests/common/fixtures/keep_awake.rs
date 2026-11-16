@@ -7,12 +7,14 @@
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
+use std::net::Shutdown;
 use std::os::fd::AsRawFd;
 use std::os::linux::net::SocketAddrExt;
 use std::os::unix::net::{SocketAddr, UnixListener, UnixStream};
 use std::pin::Pin;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
+use std::time::Duration;
 use zbus::connection::Builder;
 use zbus::export::futures_core::Stream;
 use zbus::export::serde::de::DeserializeOwned;
@@ -41,20 +43,40 @@ const BUS_DRIVER: &str = "org.freedesktop.DBus";
 /// The unique name a fake bus gives the one client it serves.
 const CLIENT: &str = ":1.1";
 
+/// The handle of the request a fake portal makes of a call to its `Inhibit`.
+const HANDLE: &str = "/org/freedesktop/portal/desktop/request/1_1/rigger";
+
+/// The handle of another request than the one a call to the fake portal made.
+const ANOTHER_HANDLE: &str = "/org/freedesktop/portal/desktop/request/1_1/another";
+
 /// How a fake bus answers each call other than a call to the bus itself.
 #[derive(Clone, Copy)]
 pub enum Answer {
     /// It answers none.
     Nothing,
-    /// With a descriptor, as logind grants its inhibitor.
-    Descriptor,
-    /// With a request handle, as the portal answers its `Inhibit`, and then the request's
-    /// `Response` signal carrying the code given, as the portal's backend ends the request: 0
-    /// when it registered the inhibitor, any other code when it did not; no `Response` at all
-    /// for none.
-    Handle(Option<u32>),
+    /// With a descriptor once the delay given has passed, as logind grants its inhibitor.
+    Descriptor(Duration),
+    /// With a request handle, as the portal answers its `Inhibit`, and then as the request
+    /// given ends.
+    Handle(Request),
     /// With an error, refusing the call.
     Refusal,
+}
+
+/// How the request a fake portal returned the handle of ends, as the portal's backend ends it.
+#[derive(Clone, Copy)]
+pub enum Request {
+    /// The request's `Response` signal carries the code given: 0 when the backend registered the
+    /// inhibitor, any other code when it did not.
+    Responds(u32),
+    /// Another request's `Response` 0 comes first, and then the request's own with the code
+    /// given.
+    RespondsAfterAnother(u32),
+    /// No `Response` comes, and the connection stays open.
+    Never,
+    /// No `Response` comes: the bus closes its side of the connection instead, and answers
+    /// nothing more.
+    Closes,
 }
 
 /// A fake bus serving the one connection its listener accepts.
@@ -87,7 +109,8 @@ pub fn private_bus(role: &str) -> (UnixListener, String) {
 /// answers each call to the bus itself, the connection's `Hello` with [`CLIENT`] and any other
 /// (the `AddMatch` and `RemoveMatch` of a subscription to signals) with nothing, records every
 /// other call with its body read as `B` and answers it as `answer` says, and hands back the
-/// calls it recorded once the connection closes.
+/// calls it recorded once the connection closes. Once it closed its side of the connection
+/// ([`Request::Closes`]) it still reads and records, and answers nothing.
 pub fn fake_bus<B>(listener: UnixListener, answer: Answer) -> FakeBus<B>
 where
     B: Type + DeserializeOwned + Send + 'static,
@@ -99,6 +122,7 @@ where
             .expect("the adapter connects to the private bus");
         // A test that probes no end has dropped its receiver.
         let _ = accepted.send(stream.try_clone().expect("the bus's end duplicates"));
+        let closer = stream.try_clone().expect("the bus's end duplicates");
         stream
             .set_nonblocking(true)
             .expect("the accepted stream turns non-blocking");
@@ -118,63 +142,72 @@ where
             let bus = zbus::Connection::from(&messages);
             let granted = std::fs::File::open("/dev/null").expect("a descriptor to grant");
             let mut calls = Vec::new();
+            let mut closed = false;
             while let Some(Ok(message)) =
                 std::future::poll_fn(|cx| Pin::new(&mut messages).poll_next(cx)).await
             {
                 let header = message.header();
-                if header
+                let to_the_bus = header
                     .destination()
-                    .is_some_and(|name| name.as_str() == BUS_DRIVER)
-                {
-                    let answered = if header.member().is_some_and(|member| member == "Hello") {
+                    .is_some_and(|name| name.as_str() == BUS_DRIVER);
+                if !to_the_bus {
+                    calls.push((
+                        header.destination().map(|name| name.to_string()),
+                        header.path().map(|path| path.to_string()),
+                        header.interface().map(|name| name.to_string()),
+                        header.member().map(|name| name.to_string()),
+                        message
+                            .body()
+                            .deserialize()
+                            .expect("the call's body has the type the bus serves"),
+                    ));
+                }
+                if closed {
+                    continue;
+                }
+                let answered = if to_the_bus {
+                    if header.member().is_some_and(|member| member == "Hello") {
                         bus.reply(&header, &CLIENT).await
                     } else {
                         bus.reply(&header, &()).await
-                    };
-                    answered.expect("the fake bus answers the call to the bus itself");
-                    continue;
-                }
-                calls.push((
-                    header.destination().map(|name| name.to_string()),
-                    header.path().map(|path| path.to_string()),
-                    header.interface().map(|name| name.to_string()),
-                    header.member().map(|name| name.to_string()),
-                    message
-                        .body()
-                        .deserialize()
-                        .expect("the call's body has the type the bus serves"),
-                ));
-                let answered = match answer {
-                    Answer::Nothing => continue,
-                    Answer::Descriptor => bus.reply(&header, &Fd::from(&granted)).await,
-                    Answer::Handle(response) => {
-                        let handle = ObjectPath::from_static_str_unchecked(
-                            "/org/freedesktop/portal/desktop/request/1_1/rigger",
-                        );
-                        bus.reply(&header, &handle)
-                            .await
-                            .expect("the fake portal returns the request's handle");
-                        match response {
-                            Some(code) => {
-                                bus.emit_signal(
-                                    Some(CLIENT),
-                                    handle,
-                                    "org.freedesktop.portal.Request",
-                                    "Response",
-                                    &(code, HashMap::<String, OwnedValue>::new()),
-                                )
-                                .await
-                            }
-                            None => Ok(()),
-                        }
                     }
-                    Answer::Refusal => {
-                        bus.reply_error(
-                            &header,
-                            "org.freedesktop.DBus.Error.AccessDenied",
-                            &"the inhibitor is refused",
-                        )
-                        .await
+                } else {
+                    match answer {
+                        Answer::Nothing => continue,
+                        Answer::Descriptor(delay) => {
+                            tokio::time::sleep(delay).await;
+                            bus.reply(&header, &Fd::from(&granted)).await
+                        }
+                        Answer::Handle(request) => {
+                            bus.reply(&header, &ObjectPath::from_static_str_unchecked(HANDLE))
+                                .await
+                                .expect("the fake portal returns the request's handle");
+                            match request {
+                                Request::Responds(code) => respond(&bus, HANDLE, code).await,
+                                Request::RespondsAfterAnother(code) => {
+                                    respond(&bus, ANOTHER_HANDLE, 0)
+                                        .await
+                                        .expect("the fake portal ends another request");
+                                    respond(&bus, HANDLE, code).await
+                                }
+                                Request::Never => Ok(()),
+                                Request::Closes => {
+                                    closer
+                                        .shutdown(Shutdown::Write)
+                                        .expect("the fake portal closes its side");
+                                    closed = true;
+                                    Ok(())
+                                }
+                            }
+                        }
+                        Answer::Refusal => {
+                            bus.reply_error(
+                                &header,
+                                "org.freedesktop.DBus.Error.AccessDenied",
+                                &"the inhibitor is refused",
+                            )
+                            .await
+                        }
                     }
                 };
                 answered.expect("the fake bus answers the call");
@@ -183,6 +216,19 @@ where
         })
     });
     FakeBus { end, calls }
+}
+
+/// Emit to the client of `bus` the `Response` signal of the request whose handle is `handle`,
+/// carrying `code` and no results.
+async fn respond(bus: &zbus::Connection, handle: &str, code: u32) -> zbus::Result<()> {
+    bus.emit_signal(
+        Some(CLIENT),
+        handle,
+        "org.freedesktop.portal.Request",
+        "Response",
+        &(code, HashMap::<String, OwnedValue>::new()),
+    )
+    .await
 }
 
 /// The bus's own end of the connection a client makes to the fake bus [`FakeBus::end`] hands it
