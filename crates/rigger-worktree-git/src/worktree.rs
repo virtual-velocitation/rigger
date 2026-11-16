@@ -2839,6 +2839,24 @@ pub fn is_ancestor(dir: &str, ancestor: &str, descendant: &str) -> bool {
     run_git(dir, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
 }
 
+/// Git's id for the empty tree in SHA-1, its default object format: what [`empty_tree`] answers
+/// when git cannot.
+pub const SHA1_EMPTY_TREE: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The arguments of git's query for the empty tree's id in a repository's own object format,
+/// asked with no input.
+pub(crate) const EMPTY_TREE_QUERY: [&str; 4] = ["hash-object", "-t", "tree", "--stdin"];
+
+/// The empty tree's id in the repository at `dir`, in its object format: the base a diff reads
+/// every line of a commit from. SHA-1's ([`SHA1_EMPTY_TREE`]) when git cannot answer.
+pub fn empty_tree(dir: &str) -> String {
+    git_stdout(dir, &EMPTY_TREE_QUERY)
+        .map(|id| id.trim().to_string())
+        .ok()
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| SHA1_EMPTY_TREE.to_string())
+}
+
 /// Which of a git run's streams its answer holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GitOutput {
@@ -3548,6 +3566,38 @@ mod tests {
                     Ok(IntegrateOutcome::Merged(commit))
                 }
             }
+        }
+    }
+
+    /// The empty tree's id is git's own in the repository's object format, SHA-1's in a SHA-1
+    /// repository and SHA-256's in a SHA-256 one, and SHA-1's when git cannot answer, as in a
+    /// directory that does not exist.
+    #[test]
+    fn the_empty_tree_is_gits_own_id_in_the_repositorys_object_format() {
+        let sha1 = init_repo();
+        let sha256 = tempfile::tempdir().unwrap();
+        let sha256_dir = sha256.path().to_str().unwrap();
+        run_git(sha256_dir, &["init", "-q", "--object-format=sha256"]).unwrap();
+        let gone = sha1.path().join("gone");
+        let cases = [
+            (
+                "a SHA-1 repository",
+                sha1.path().to_str().unwrap(),
+                SHA1_EMPTY_TREE,
+            ),
+            (
+                "a SHA-256 repository",
+                sha256_dir,
+                "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321",
+            ),
+            (
+                "a directory git cannot start in",
+                gone.to_str().unwrap(),
+                SHA1_EMPTY_TREE,
+            ),
+        ];
+        for (case, dir, expected) in cases {
+            assert_eq!(empty_tree(dir), expected, "{case}");
         }
     }
 

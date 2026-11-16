@@ -6106,7 +6106,8 @@ impl RunCtx<'_> {
     /// recorded base ([`Self::run_base_env`]) when it is an ancestor of `head`, so the check-in
     /// reviews the whole run. Empty only when there is no worktree or no `head`; a `head` with
     /// no fork point, or a read that fails, renders the packet's header over the round's base,
-    /// else the run's recorded base, with the read that fetches the change.
+    /// else the run's recorded base, else the empty tree ([`worktree::empty_tree`]), so the
+    /// read it names shows every line of `head` and never reads a range with no base.
     fn review_packet(
         &self,
         st: &Stage,
@@ -6123,7 +6124,13 @@ impl RunCtx<'_> {
         let fork = run_base.or_else(|| wt.fork_point(head).ok());
         let base = round
             .map(|r| r.base.clone())
-            .unwrap_or_else(|| fork.clone().unwrap_or_else(|| self.run_base_env()));
+            .or_else(|| fork.clone())
+            .unwrap_or_else(|| self.run_base_env());
+        let base = if base.is_empty() {
+            worktree::empty_tree(&wt.dir)
+        } else {
+            base
+        };
         let read = || {
             let fork = fork.as_deref()?;
             let files = wt.diff_files(fork, head).ok()?;
@@ -51829,7 +51836,8 @@ mod tests {
     /// A round's REVIEW PACKET is empty only with no worktree or no head to judge: a head that
     /// shares no history with the checkout (so it has no fork point) and a round whose base git
     /// does not hold each render the packet's header and the read that fetches the change,
-    /// over the round's base, else the run's recorded base, never an empty string.
+    /// over the round's base, else the run's recorded base, else, in a run that recorded none,
+    /// the empty tree, never an empty string and never a range with no base.
     #[test]
     fn a_review_packet_names_a_range_it_cannot_read() {
         let repo = temp_git_project_with_commit();
@@ -51849,28 +51857,37 @@ mod tests {
             required: Vec::new(),
             audit: String::new(),
         };
-        let st = Store::open(":memory:").unwrap();
-        st.append(
-            STREAM,
-            ExpectedRevision::Any,
-            &[Event::new(
-                crate::run::TYPE_RUN_STARTED,
-                serde_json::to_vec(&json!({
-                    "run": "run-packet",
-                    "criteria": [],
-                    "base_tip": run_base,
-                }))
-                .unwrap(),
-            )],
-        )
-        .unwrap();
+        let store_over = |base_tip: &str| {
+            let st = Store::open(":memory:").unwrap();
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({
+                        "run": "run-packet",
+                        "criteria": [],
+                        "base_tip": base_tip,
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            st
+        };
+        let (st, unbased_st) = (store_over(&run_base), store_over(""));
         let driver = Stub::new();
         let cfg = Config::default();
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&st, &driver, Vec::new())
         };
+        let unbased_deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&unbased_st, &driver, Vec::new())
+        };
         let ctx = RunCtx::for_test(&cfg, &deps);
+        let unbased = RunCtx::for_test(&cfg, &unbased_deps);
         let stage = Stage::default();
         let unreadable = |base: &str, head: &str| {
             let range = [("base", base), ("head", head)];
@@ -51895,6 +51912,11 @@ mod tests {
                 "a head with no fork point, over the run's recorded base",
                 ctx.review_packet(&stage, Some(&wt), &orphan, None),
                 unreadable(&run_base, &orphan),
+            ),
+            (
+                "a head with no fork point in a run that recorded no base, over the empty tree",
+                unbased.review_packet(&stage, Some(&wt), &orphan, None),
+                unreadable(worktree::SHA1_EMPTY_TREE, &orphan),
             ),
             (
                 "a round whose base git does not hold",
