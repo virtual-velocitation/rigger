@@ -1205,7 +1205,7 @@ pub struct BuildConfig {
     /// The variables rigger exports to every gate and every spawn, by name, and nothing else of
     /// its build environment. Empty (the default) exports none. A name is a letter or
     /// underscore followed by letters, digits and underscores, and never one rigger sets itself
-    /// on a gate or a spawn. A value is a template: literal text, `{build_cache}` (the site's
+    /// on a gate or a spawn, in any letter case. A value is a template: literal text, `{build_cache}` (the site's
     /// build cache), `{jobs}` ([`jobs`](Self::jobs) in decimal when above 0), and `{{` and `}}`
     /// for a literal brace. At a site a variable is exported only when every placeholder in it
     /// resolves non-empty there.

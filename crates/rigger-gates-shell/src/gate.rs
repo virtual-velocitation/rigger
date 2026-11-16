@@ -130,8 +130,10 @@ enum Piece {
 }
 
 /// The names rigger sets itself on a gate or a spawn, which a `build.env` declaration may not
-/// take: the gate store fence, the gate scratch root, the run base, the spawn marker, the gate
-/// socket, the event store connection and the two agent credential names.
+/// take in any letter case: the gate store fence, the gate scratch root, the run base, the spawn
+/// marker, the gate socket, the event store connection and the two agent credential names. A
+/// host whose variable names ignore case (Windows) reads any spelling as the variable rigger
+/// sets, and one workflow means the same on every host.
 const RESERVED_ENV: [&str; 8] = [
     STORE_FENCE_ENV,
     GATE_SCRATCH_ENV,
@@ -165,7 +167,8 @@ impl SiteEnv {
 impl BuildEnv {
     /// The one check of the workflow's `build.env`, holding the declaration it accepts with
     /// `build.jobs`. Each variable in name order: a name that is not a letter or underscore
-    /// followed by letters, digits and underscores, a name rigger sets itself, a placeholder
+    /// followed by letters, digits and underscores, a name rigger sets itself in any letter
+    /// case, a placeholder
     /// other than `{build_cache}` and `{jobs}`, and a brace that is neither doubled nor part of
     /// a placeholder are each refused with a message naming the variable.
     pub fn declared(build: &rigger_domain::config::BuildConfig) -> Result<BuildEnv, String> {
@@ -179,7 +182,7 @@ impl BuildEnv {
                          underscore followed by letters, digits and underscores"
                     ));
                 }
-                if RESERVED_ENV.contains(&name.as_str()) {
+                if RESERVED_ENV.iter().any(|r| r.eq_ignore_ascii_case(name)) {
                     return Err(format!(
                         "build.env: {name} is set by rigger itself; declare another name"
                     ));
