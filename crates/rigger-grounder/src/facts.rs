@@ -105,18 +105,14 @@ pub fn declared_extractors(root: &Path) -> BTreeMap<String, ExtractorDecl> {
     })
 }
 
-/// The extractors the workflow at `root` declares, read through [`config_store::load_workflow`]
-/// and checked by [`check_extractors`]: the empty map when there is no workflow, and why when it
-/// cannot be read, does not parse or declares a malformed extractor.
+/// The extractors the workflow at `root` declares, read through
+/// [`config_store::load_project_workflow`] and checked by [`check_extractors`]: the empty map when
+/// there is no workflow, and why when it cannot be read, does not parse or declares a malformed
+/// extractor.
 fn read_declared_extractors(root: &Path) -> Result<BTreeMap<String, ExtractorDecl>, String> {
-    let path = root.join(workflow_doc());
-    if !path
-        .try_exists()
-        .map_err(|e| format!("read workflow: {e}"))?
-    {
+    let Some(workflow) = config_store::load_project_workflow(root).map_err(|e| e.0)? else {
         return Ok(BTreeMap::new());
-    }
-    let workflow = config_store::load_workflow(&path).map_err(|e| e.0)?;
+    };
     check_extractors(&workflow.extractors)?;
     Ok(workflow.extractors)
 }
@@ -675,9 +671,8 @@ fn workflow_facts(text: &str, facts: &mut FileFacts) {
         .collect();
 }
 
-/// The workflow definition's path relative to a project root, its ONE spelling: the path whose
-/// bytes the code store's extractor reads as the workflow definition, and the workflow
-/// [`declared_extractors`] reads the project's extractors from.
+/// The workflow definition's path relative to a project root, as the code store names its files:
+/// the path whose bytes the code store's extractor reads as the workflow definition.
 fn workflow_doc() -> String {
     format!("{RIGGER_DIR}/{WORKFLOW_FILE}")
 }

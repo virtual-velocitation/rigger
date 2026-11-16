@@ -479,24 +479,16 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
 /// test author (`defaults.test_author`) and its stages'. Returns an empty set when the file is
 /// genuinely ABSENT (the legitimate empty-repo signal `init_project` seeds the full default fleet
 /// on) or parses but names no agent (its stages, `defaults.review` and `defaults.test_author` are
-/// optional); a PRESENT-but-unparseable file - most importantly one carrying an unrecognized key -
-/// is a real `Err`, never folded into that same empty set. Routed through
-/// [`config_store::load_workflow`], the one canonical `deny_unknown_fields`-honoring parser,
-/// rather than a second ad hoc `serde_yaml::from_str::<Workflow>` that would silently accept what
-/// that parser rejects.
+/// optional); a file that cannot be read or does not parse - most importantly one carrying an
+/// unrecognized key - is a real `Err`, never folded into that same empty set. Read through
+/// [`config_store::load_project_workflow`], the one reader of a project's optional workflow and
+/// the canonical `deny_unknown_fields`-honoring parse.
 fn get_referenced_agent_ids(
     root: &Path,
 ) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
-    use std::collections::HashSet;
-
-    let workflow_path = root.join(RIGGER_DIR).join(WORKFLOW_FILE);
-    if !workflow_path.exists() {
-        return Ok(HashSet::new());
-    }
-
-    Ok(config_store::load_workflow(&workflow_path)?
-        .agent_ids()
-        .collect())
+    Ok(config_store::load_project_workflow(root)?
+        .map(|workflow| workflow.agent_ids().collect())
+        .unwrap_or_default())
 }
 
 /// The per-artifact summary lines for a scaffold run: ONE line for each artifact this

@@ -263,15 +263,39 @@ pub fn read_agents_dir(dir: &Path) -> Result<Vec<(String, AgentDef)>, Error> {
 /// depending on the agents directory being valid, mirroring the reasoning [`read_store_config`]
 /// below already established for the lightweight `store:`-only probe: indexing what the
 /// definition NAMES must not fail because an unrelated agent frontmatter file is malformed.
-/// Now also the binary crate's (`main.rs::get_referenced_agent_ids`) entry - a bare
-/// `serde_yaml::from_str` there bypassed this function's unknown-key rejection entirely, and
-/// its caller's `.unwrap_or_default()` folded THAT parse error into the same empty set an
-/// absent workflow.yml legitimately produces, so a typo'd key made `rigger init`/`setup`
-/// silently re-scaffold the full default agent fleet over an operator's deliberately curated
-/// one. [`load`] above stays the FULL, validating entry every run-starting path uses.
+/// A project whose workflow may be absent reads it through [`load_project_workflow`] instead.
+/// [`load`] above stays the FULL, validating entry every run-starting path uses.
 pub fn load_workflow(path: &Path) -> Result<Workflow, Error> {
-    let b = std::fs::read_to_string(path).map_err(|e| err(format!("read workflow: {e}")))?;
+    let b = std::fs::read_to_string(path).map_err(|e| read_refused("workflow", e))?;
     parse_workflow(&b)
+}
+
+/// The workflow of the project at `root`, `<root>/.rigger/workflow.yml` parsed by
+/// [`parse_workflow`] as [`load_workflow`] parses it: none when the project has no workflow, the
+/// signal `rigger init` seeds a fresh project on and a project declaring no extractor reads as.
+/// A file that cannot be read or does not parse is the refusal [`load_workflow`] gives, never
+/// the none an absent file gives, so a typo'd key or an unreadable `.rigger` never reads as a
+/// project that declares nothing.
+pub fn load_project_workflow(root: &Path) -> Result<Option<Workflow>, Error> {
+    workflow_text(&root.join(RIGGER_DIR), "workflow")?
+        .map(|body| parse_workflow(&body))
+        .transpose()
+}
+
+/// The text of `<rigger_dir>/workflow.yml`: none when there is no such file, and every other read
+/// failure (a permission or IO fault, a `.rigger` that is no directory) refused as
+/// [`read_refused`] says it, naming `label`, never collapsed into the none an absent file gives.
+fn workflow_text(rigger_dir: &Path, label: &str) -> Result<Option<String>, Error> {
+    match std::fs::read_to_string(rigger_dir.join(WORKFLOW_FILE)) {
+        Ok(body) => Ok(Some(body)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(read_refused(label, e)),
+    }
+}
+
+/// The refusal of a workflow read that failed with `e`, naming what was read as `label`.
+fn read_refused(label: &str, e: std::io::Error) -> Error {
+    err(format!("read {label}: {e}"))
 }
 
 /// The parse [`load_workflow`] applies to a workflow definition's text `body` (spec 107): the
@@ -323,10 +347,8 @@ fn read_workflow_probe<P>(rigger_dir: &Path, label: &str) -> Result<P, Error>
 where
     P: serde::de::DeserializeOwned + Default,
 {
-    let body = match std::fs::read_to_string(rigger_dir.join(WORKFLOW_FILE)) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(P::default()),
-        Err(e) => return Err(err(format!("read {label}: {e}"))),
+    let Some(body) = workflow_text(rigger_dir, label)? else {
+        return Ok(P::default());
     };
     parse_yaml_naming_unknown_keys(&body).map_err(|msg| err(format!("parse {label}: {msg}")))
 }
@@ -2792,5 +2814,67 @@ class: product\n";
                 .to_string(),
             "config: read workflow: No such file or directory (os error 2)"
         );
+    }
+
+    /// A PROJECT'S WORKFLOW IS NONE ONLY WHEN ABSENT: with no `.rigger` or no workflow file in it,
+    /// a project has no workflow; a present one is parsed as [`parse_workflow`] parses it, each
+    /// stage named after its key; and a file that does not parse, or a path that cannot be read,
+    /// is the refusal [`load_workflow`] gives, never the none an absent file gives.
+    #[test]
+    fn a_project_workflow_is_none_only_when_the_file_is_absent() {
+        /// What stands at a project's workflow path.
+        enum At {
+            NoRiggerDir,
+            NoFile,
+            Text(&'static str),
+            Directory,
+        }
+        let directory = tempfile::tempdir().expect("tempdir");
+        let unreadable =
+            std::fs::read_to_string(directory.path()).expect_err("a directory has no text");
+        let rows = [
+            (At::NoRiggerDir, Ok(None)),
+            (At::NoFile, Ok(None)),
+            (
+                At::Text("stages:\n  build:\n    agent: a\n  check:\n    agent: b\n"),
+                Ok(Some(vec!["build".to_string(), "check".to_string()])),
+            ),
+            (
+                At::Text("bogus: 1\n"),
+                Err("config: parse workflow: bogus: unknown key".to_string()),
+            ),
+            (
+                At::Directory,
+                Err(format!("config: read workflow: {unreadable}")),
+            ),
+        ];
+        for (at, want) in rows {
+            let project = tempfile::tempdir().expect("tempdir");
+            let rigger_dir = project.path().join(RIGGER_DIR);
+            let path = rigger_dir.join(WORKFLOW_FILE);
+            match at {
+                At::NoRiggerDir => {}
+                At::NoFile => std::fs::create_dir(&rigger_dir).expect("create .rigger"),
+                At::Text(text) => {
+                    std::fs::create_dir(&rigger_dir).expect("create .rigger");
+                    std::fs::write(&path, text).expect("write the workflow");
+                }
+                At::Directory => {
+                    std::fs::create_dir_all(&path).expect("a directory at the workflow path")
+                }
+            }
+            let got = load_project_workflow(project.path())
+                .map(|workflow| {
+                    workflow.map(|workflow| {
+                        workflow
+                            .stages
+                            .values()
+                            .map(|stage| stage.name.clone())
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .map_err(|e| e.to_string());
+            assert_eq!(got, want, "{}", path.display());
+        }
     }
 }
