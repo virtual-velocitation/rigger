@@ -2629,16 +2629,6 @@ pub fn bloat_lines(stderr: &str) -> Vec<&str> {
     lines_where(stderr, |line| line.contains("rigger reset --derived"))
 }
 
-/// The line `rigger validate` warns on when `defaults.max_wall_clock` is unbounded (`0`) and the
-/// gating roles `roles` (each quoted, joined by `, `) carry no per-agent bound.
-pub fn wall_clock_advisory_naming(roles: &str) -> String {
-    format!(
-        "warning: defaults.max_wall_clock is unbounded (0) and gating role(s) {roles} carry no \
-         per-agent bound, so a hung gating agent is never swept and the run stalls silently. Set \
-         defaults.max_wall_clock (seconds), or a per-agent max_wall_clock on those roles."
-    )
-}
-
 /// Every line naming gating roles among `stderr`, what `rigger validate` wrote there, in order:
 /// the unbounded wall-clock advisory, and nothing else of validate's.
 pub fn wall_clock_advisory_lines(stderr: &str) -> Vec<&str> {

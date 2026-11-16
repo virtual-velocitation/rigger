@@ -13477,7 +13477,9 @@ fn validate_warns_when_an_unbounded_default_leaves_a_gating_role_unswept() {
     );
     assert_eq!(
         common::cli::wall_clock_advisory_lines(&err),
-        [common::cli::wall_clock_advisory_naming("\"adjudicator\"")],
+        [common::fixtures::wall_clock_advisory_naming(
+            "\"adjudicator\""
+        )],
         "validate must warn on stderr that an unbounded default leaves the gating adjudicator \
          unswept, naming the role and the fix knob; stderr:\n{err}"
     );

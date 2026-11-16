@@ -43,6 +43,16 @@ pub fn agents_beside(implementer: &str) -> Vec<String> {
     files
 }
 
+/// The line `rigger validate` warns on when `defaults.max_wall_clock` is unbounded (`0`) and the
+/// gating roles `roles` (each quoted, joined by `, `) carry no per-agent bound.
+pub fn wall_clock_advisory_naming(roles: &str) -> String {
+    format!(
+        "warning: defaults.max_wall_clock is unbounded (0) and gating role(s) {roles} carry no \
+         per-agent bound, so a hung gating agent is never swept and the run stalls silently. Set \
+         defaults.max_wall_clock (seconds), or a per-agent max_wall_clock on those roles."
+    )
+}
+
 /// The two unit stages' agents, `[implement, checkin]`.
 pub fn stage_agents(cfg: &Config) -> [String; 2] {
     [

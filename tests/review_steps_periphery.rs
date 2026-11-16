@@ -1589,7 +1589,7 @@ fn rigger_validate_warns_of_each_unbounded_gating_agent_once() {
         assert!(ok, "validate must accept {panel}; stderr:\n{err}");
         assert_eq!(
             common::cli::wall_clock_advisory_lines(&err),
-            [common::cli::wall_clock_advisory_naming(roles)],
+            [common::fixtures::wall_clock_advisory_naming(roles)],
             "{panel}"
         );
     }
