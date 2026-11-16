@@ -14723,9 +14723,11 @@ struct PacketChange {
 
 impl ReviewPacket {
     /// The packet, in order: its header naming the range; then, when git read the change, the
-    /// commits, the whole unit's files with their line counts, each REQUIRED item's path the
-    /// round's change left untouched, the hunks [`packet_hunks`] keeps and the files it elides
-    /// with the read that fetches each - or, when a read failed, that read for the whole range.
+    /// commits, the whole unit's files with their line counts, each list capped by
+    /// [`packet_rows`], each REQUIRED item's path the round's change left untouched, the hunks
+    /// [`packet_hunks`] keeps, a row for each binary file of the round's change, and the files it
+    /// elides with the read that fetches each - or, when a read failed, that read for the whole
+    /// range. Every path is escaped ([`debug_escaped`]), so no path forges a row.
     fn block(&self) -> String {
         let range = [("base", self.base.as_str()), ("head", self.head.as_str())];
         let mut b = fill(REVIEW_PACKET_HEADER, &range);
@@ -14737,12 +14739,21 @@ impl ReviewPacket {
             PACKET_COMMITS_HEADER,
             &[("count", &change.commits.len().to_string())],
         ));
-        for commit in &change.commits {
-            b.push_str(&fill(
-                PACKET_COMMITS_ROW,
-                &[("sha", &commit.sha), ("subject", &commit.subject)],
-            ));
-        }
+        b.push_str(&packet_rows(
+            change.commits.iter().map(|commit| {
+                fill(
+                    PACKET_COMMITS_ROW,
+                    &[("sha", &commit.sha), ("subject", &commit.subject)],
+                )
+            }),
+            change.commits.len(),
+            |rest| {
+                fill(
+                    PACKET_COMMITS_ELIDED,
+                    &[("count", &rest.to_string()), range[0], range[1]],
+                )
+            },
+        ));
         let (added, removed) = change
             .files
             .iter()
@@ -14759,21 +14770,30 @@ impl ReviewPacket {
                 ("removed", &removed.to_string()),
             ],
         ));
-        for file in &change.files {
-            let (status, path) = (file.status.to_string(), packet_path(file));
-            b.push_str(&match file.lines {
-                Some((added, removed)) => fill(
-                    PACKET_FILES_ROW,
-                    &[
-                        ("status", &status),
-                        ("path", &path),
-                        ("added", &added.to_string()),
-                        ("removed", &removed.to_string()),
-                    ],
-                ),
-                None => fill(PACKET_BINARY_ROW, &[("status", &status), ("path", &path)]),
-            });
-        }
+        b.push_str(&packet_rows(
+            change.files.iter().map(|file| {
+                let (status, path) = (file.status.to_string(), packet_path(file));
+                match file.lines {
+                    Some((added, removed)) => fill(
+                        PACKET_FILES_ROW,
+                        &[
+                            ("status", &status),
+                            ("path", &path),
+                            ("added", &added.to_string()),
+                            ("removed", &removed.to_string()),
+                        ],
+                    ),
+                    None => packet_binary_row(file),
+                }
+            }),
+            change.files.len(),
+            |rest| {
+                fill(
+                    PACKET_FILES_ELIDED,
+                    &[("count", &rest.to_string()), ("range", &change.whole)],
+                )
+            },
+        ));
         let required: BTreeSet<&str> = self.required.iter().map(String::as_str).collect();
         for path in required {
             if required_path(path).is_some()
@@ -14781,15 +14801,19 @@ impl ReviewPacket {
             {
                 b.push_str(&fill(
                     PACKET_REQUIRED_UNCHANGED,
-                    &[("path", path), ("base", &self.base)],
+                    &[("path", &debug_escaped(path)), ("base", &self.base)],
                 ));
             }
         }
         let (kept, elided) = packet_hunks(&change.delta, &self.required);
-        if !kept.is_empty() {
+        let binary: Vec<&FileDiff> = change.delta.iter().filter(|f| f.lines.is_none()).collect();
+        if !kept.is_empty() || !binary.is_empty() {
             b.push_str(PACKET_HUNKS_HEADER);
             for file in kept {
                 b.push_str(&file.patch);
+            }
+            for file in binary {
+                b.push_str(&packet_binary_row(file));
             }
         }
         if !elided.is_empty() {
@@ -14810,12 +14834,42 @@ impl ReviewPacket {
     }
 }
 
-/// How a review packet names `file`: its path, or `old -> new` for a rename or copy.
+/// How a review packet names `file`: its path, or `old -> new` for a rename or copy, each path
+/// escaped ([`debug_escaped`]) so a newline in a path cannot forge a row.
 fn packet_path(file: &FileDiff) -> String {
+    let path = debug_escaped(&file.path);
     match &file.old_path {
-        Some(old) => format!("{old} -> {}", file.path),
-        None => file.path.clone(),
+        Some(old) => format!("{} -> {path}", debug_escaped(old)),
+        None => path,
     }
+}
+
+/// The review packet's row for the binary file `file`: its status letter and its path.
+fn packet_binary_row(file: &FileDiff) -> String {
+    fill(
+        PACKET_BINARY_ROW,
+        &[
+            ("status", &file.status.to_string()),
+            ("path", &packet_path(file)),
+        ],
+    )
+}
+
+/// The rows of one of the review packet's lists, `rows` of `total`, rendered lazily: the leading
+/// ones [`within_budget`] keeps under [`PACKET_ROWS_N`] rows and [`PACKET_ROWS_BYTES`], then, when
+/// it left any out, the row `rest` renders counting them.
+fn packet_rows(
+    rows: impl Iterator<Item = String>,
+    total: usize,
+    rest: impl Fn(usize) -> String,
+) -> String {
+    let kept = within_budget(rows, PACKET_ROWS_N, PACKET_ROWS_BYTES, String::len);
+    let left_out = total - kept.len();
+    let mut b = kept.concat();
+    if left_out > 0 {
+        b.push_str(&rest(left_out));
+    }
+    b
 }
 
 /// Whether `file` is a change the REQUIRED item path `required` names ([`required_names`]): its
@@ -14859,9 +14913,10 @@ fn required_names(required: &str, path: &str) -> bool {
 
 /// The files of `delta` whose hunks a review packet carries, and the files its caps leave out,
 /// each in the order the packet lists them: the files `required` names first, then the rest, each
-/// group smallest patch first and then by path. [`within_budget`] keeps the prefix under
-/// [`PACKET_VERBATIM_N`] files and [`PACKET_BUDGET_BYTES`]; the first file over either cap and
-/// every file after it are elided. A binary file has no hunk, so it is in neither list.
+/// group smallest patch first and then by path. Each file is kept when its [`Budget`] of
+/// [`PACKET_VERBATIM_N`] files and [`PACKET_BUDGET_BYTES`] admits it beside the files kept
+/// before it, so a file over the bytes left is elided alone and filling goes on; every file past
+/// the count cap is elided. A binary file has no hunk, so it is in neither list.
 fn packet_hunks<'a>(
     delta: &'a [FileDiff],
     required: &[String],
@@ -14872,14 +14927,8 @@ fn packet_hunks<'a>(
     };
     let mut text: Vec<&'a FileDiff> = delta.iter().filter(|f| f.lines.is_some()).collect();
     text.sort_by(|a, b| order(a).cmp(&order(b)));
-    let kept = within_budget(
-        text.iter().copied(),
-        PACKET_VERBATIM_N,
-        PACKET_BUDGET_BYTES,
-        |f| f.patch.len(),
-    );
-    let elided = text.split_off(kept.len());
-    (kept, elided)
+    let mut budget = Budget::new(PACKET_VERBATIM_N, PACKET_BUDGET_BYTES);
+    text.into_iter().partition(|f| budget.admit(f.patch.len()))
 }
 
 /// Whether an adjudicator's `output` rejects without naming a single item it requires fixed:
@@ -15044,17 +15093,44 @@ pub fn within_budget<T>(
     budget_bytes: usize,
     size: impl Fn(&T) -> usize,
 ) -> Vec<T> {
-    let mut used = 0usize;
-    let mut kept = Vec::new();
-    for entry in entries {
-        let bytes = size(&entry);
-        if kept.len() >= verbatim_n || used + bytes > budget_bytes {
-            break;
+    let mut budget = Budget::new(verbatim_n, budget_bytes);
+    entries
+        .into_iter()
+        .take_while(|entry| budget.admit(size(entry)))
+        .collect()
+}
+
+/// The ONE admission rule behind every capped slice: an entry is admitted while fewer than
+/// `verbatim_n` are admitted AND its bytes fit under `budget_bytes` beside every entry admitted
+/// before it. [`within_budget`] stops at the first entry it refuses; [`packet_hunks`] walks on.
+struct Budget {
+    verbatim_n: usize,
+    budget_bytes: usize,
+    kept: usize,
+    used: usize,
+}
+
+impl Budget {
+    /// A budget of `verbatim_n` entries and `budget_bytes`, nothing admitted yet.
+    fn new(verbatim_n: usize, budget_bytes: usize) -> Self {
+        Self {
+            verbatim_n,
+            budget_bytes,
+            kept: 0,
+            used: 0,
         }
-        used += bytes;
-        kept.push(entry);
     }
-    kept
+
+    /// Whether an entry of `bytes` fits beside the entries admitted so far, counting it in when it
+    /// does.
+    fn admit(&mut self, bytes: usize) -> bool {
+        let fits = self.kept < self.verbatim_n && self.used + bytes <= self.budget_bytes;
+        if fits {
+            self.kept += 1;
+            self.used += bytes;
+        }
+        fits
+    }
 }
 
 /// The SINGLE recent-N + byte-budget + elision-note core behind EVERY budgeted prompt section -

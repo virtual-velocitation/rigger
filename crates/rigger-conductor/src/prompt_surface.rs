@@ -313,6 +313,11 @@ pub const PACKET_COMMITS_HEADER: &str = "COMMITS ({count}):\n";
 /// FRAMING: one commit's row: its abbreviated `{sha}` and its `{subject}`.
 pub const PACKET_COMMITS_ROW: &str = "- {sha} {subject}\n";
 
+/// FRAMING: the row counting the `{count}` commits past the packet's row caps and the read that
+/// lists them from `{base}..{head}`.
+pub const PACKET_COMMITS_ELIDED: &str = "- {count} more commits past the packet's cap - list \
+     them with git log --oneline {base}..{head}\n";
+
 /// FRAMING: the header over the files the unit changed over `{range}`: their `{count}` and the
 /// lines their text diffs `{added}` and `{removed}`.
 pub const PACKET_FILES_HEADER: &str = "CHANGED FILES in {range} ({count}; +{added} -{removed}):\n";
@@ -321,14 +326,21 @@ pub const PACKET_FILES_HEADER: &str = "CHANGED FILES in {range} ({count}; +{adde
 /// rename) and the lines it `{added}` and `{removed}`.
 pub const PACKET_FILES_ROW: &str = "- {status} {path} (+{added} -{removed})\n";
 
-/// FRAMING: a binary file's row: git's `{status}` letter and its `{path}`.
+/// FRAMING: a binary file's row, among the changed files and under the hunks: git's `{status}`
+/// letter and its `{path}`.
 pub const PACKET_BINARY_ROW: &str = "- {status} {path} (no text diff)\n";
+
+/// FRAMING: the row counting the `{count}` changed files past the packet's row caps and the
+/// read that lists them over `{range}`.
+pub const PACKET_FILES_ELIDED: &str = "- {count} more files past the packet's cap - list them \
+     with git diff --stat {range}\n";
 
 /// FRAMING: a REQUIRED item's `{path}` the round's change left untouched since `{base}`, printed
 /// only on a later round.
 pub const PACKET_REQUIRED_UNCHANGED: &str = "- required item path {path}: unchanged since {base}\n";
 
-/// FRAMING: the header over the hunks the packet carries, printed only when it carries one.
+/// FRAMING: the header over the hunks the packet carries and the binary files of the round's
+/// change, printed only when it carries one of either.
 pub const PACKET_HUNKS_HEADER: &str = "HUNKS:\n";
 
 /// FRAMING: the header over the files the packet's budget left out of its hunks and the read
@@ -552,9 +564,11 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             PACKET_UNREADABLE,
             PACKET_COMMITS_HEADER,
             PACKET_COMMITS_ROW,
+            PACKET_COMMITS_ELIDED,
             PACKET_FILES_HEADER,
             PACKET_FILES_ROW,
             PACKET_BINARY_ROW,
+            PACKET_FILES_ELIDED,
             PACKET_REQUIRED_UNCHANGED,
             PACKET_HUNKS_HEADER,
             PACKET_ELIDED_HEADER,
@@ -685,10 +699,12 @@ mod tests {
         ("LOOKUP_VERBS", "CONTRACT"),
         ("MISSED_HANDOVER", "FRAMING"),
         ("PACKET_BINARY_ROW", "FRAMING"),
+        ("PACKET_COMMITS_ELIDED", "FRAMING"),
         ("PACKET_COMMITS_HEADER", "FRAMING"),
         ("PACKET_COMMITS_ROW", "FRAMING"),
         ("PACKET_ELIDED_HEADER", "FRAMING"),
         ("PACKET_ELIDED_ROW", "FRAMING"),
+        ("PACKET_FILES_ELIDED", "FRAMING"),
         ("PACKET_FILES_HEADER", "FRAMING"),
         ("PACKET_FILES_ROW", "FRAMING"),
         ("PACKET_HUNKS_HEADER", "FRAMING"),
