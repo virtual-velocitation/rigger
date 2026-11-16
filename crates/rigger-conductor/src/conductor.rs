@@ -21984,15 +21984,11 @@ mod tests {
     /// implementer spawn, never without one.
     fn a_proposal_naming_no_agent_is_implemented_by_the_templates_agent(proposal: Value) {
         let unit = proposal["id"].as_str().unwrap().to_string();
-        let without_agent: [(&str, fn(&mut Value)); 2] = [
-            ("left out", |data| {
-                data.as_object_mut().unwrap().remove("agent");
-            }),
-            ("empty", |data| data["agent"] = json!("")),
-        ];
-        for (shape, strip) in without_agent {
-            let mut data = proposal.clone();
-            strip(&mut data);
+        let mut left_out = proposal.clone();
+        left_out.as_object_mut().unwrap().remove("agent");
+        let mut empty = proposal;
+        empty["agent"] = json!("");
+        for (shape, data) in [("left out", left_out), ("empty", empty)] {
             let driver = Stub {
                 emits_by_agent: HashMap::from([(
                     "planner".to_string(),
