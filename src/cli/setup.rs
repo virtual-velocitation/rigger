@@ -4489,6 +4489,22 @@ mod tests {
         );
     }
 
+    /// A WORKFLOW THAT CANNOT BE READ IS LOUD, NEVER ABSENT: GIVEN a project whose `.rigger` is a
+    /// file, so the path of its workflow cannot be read, THEN the referenced set is that read's
+    /// error, as every other reader of a project's workflow answers it, never the empty set only
+    /// an absent workflow gives.
+    #[cfg(unix)]
+    #[test]
+    fn get_referenced_agent_ids_is_the_read_error_when_the_workflow_path_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(RIGGER_DIR), "").unwrap();
+        let got = get_referenced_agent_ids(dir.path()).map_err(|e| e.to_string());
+        assert_eq!(
+            got,
+            Err("config: read workflow: Not a directory (os error 20)".to_string())
+        );
+    }
+
     /// Spec 08 item 4: a FAILED scaffold write is an error naming the artifact, never a
     /// swallowed `false` that drops the artifact from the summary while setup exits 0. An
     /// already-present file is a silent `Ok(false)` (kept), a fresh path is `Ok(true)`
