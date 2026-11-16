@@ -2170,6 +2170,43 @@ mod tests {
         );
     }
 
+    /// How a render names where a unit's remediation bound comes from: the key the conductor
+    /// reads first ([`crate::blocker::stage_max_retries`]).
+    const OWN_BOUND: &str = "its stage's or fan-out template's own `max_retries`";
+
+    /// `render` names a unit's own bound ([`OWN_BOUND`]) and, where it names
+    /// `defaults.max_retries` too, names the unit's own key first, so no reader takes the run
+    /// default for every unit's bound; it also carries each of `also`.
+    fn names_the_units_own_bound(render: fn(&DocsContext) -> String, also: &[&str]) {
+        let out = render(&sentinel_ctx());
+        let own = out
+            .find(OWN_BOUND)
+            .unwrap_or_else(|| panic!("no `{OWN_BOUND}` in:\n{out}"));
+        if let Some(default) = out.find("`defaults.max_retries`") {
+            assert!(
+                own < default,
+                "the run default is named before a unit's own key:\n{out}"
+            );
+        }
+        for text in also {
+            assert!(out.contains(text), "no `{text}` in:\n{out}");
+        }
+    }
+
+    crate::test_cases! {
+        /// The escalation skill also names the blocker line that showed the bound.
+        the_escalation_skill_names_the_units_own_bound: names_the_units_own_bound(
+            render_handle_an_escalation_skill,
+            &["`reject-recurrence #n/max`"],
+        );
+        the_using_rigger_skill_names_the_units_own_bound:
+            names_the_units_own_bound(render_using_rigger_skill, &[]);
+        the_handbook_names_the_units_own_bound:
+            names_the_units_own_bound(render_handbook_discipline, &[]);
+        the_churn_skill_names_the_units_own_bound:
+            names_the_units_own_bound(render_diagnose_churn_skill, &[]);
+    }
+
     /// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, the headline claim): `rigger-watch-a-run`
     /// names the five signals `crate::watch::Signal` actually defines, each mapped BY THE SAME
     /// STRING to its real response - pinned against the runtime (`Signal::name()`/`response()`
