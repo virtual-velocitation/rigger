@@ -125,14 +125,18 @@ pub(super) fn listening_pid(port: u16) -> Option<u32> {
         .find(|&pid| open_files(pid).contains(&socket))
 }
 
-/// The inode of the socket bound to `port` in `/proc/net/tcp`, the kernel's IPv4 TCP socket
-/// table, which lists its listening sockets before its connections. One row per socket:
-/// `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout inode ...`,
-/// whitespace-separated, header row skipped; `local_address` is `<hex-ip>:<hex-port>` in the
-/// kernel's own hex formatting. Matching on the PORT alone (not the ip half) is deliberate: a
-/// bind to `0.0.0.0:<port>` reserves every interface including loopback, so it holds a loopback
-/// port exactly as a same-address listener does. `None` when the table cannot be read or no
-/// row's port matches.
+/// The kernel's `st` value for a listening socket (`TCP_LISTEN`), in `/proc/net/tcp`'s hex.
+const TCP_LISTEN_STATE: &str = "0A";
+
+/// The inode of the socket listening on `port` in `/proc/net/tcp`, the kernel's IPv4 TCP socket
+/// table. One row per socket: `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout
+/// inode ...`, whitespace-separated, header row skipped; `local_address` is `<hex-ip>:<hex-port>`
+/// in the kernel's own hex formatting, and `st` is [`TCP_LISTEN_STATE`] for a listener. A
+/// connection's row is never the answer, though its own end is bound to `port`, as an accepted
+/// connection's is. Matching on the PORT alone (not the ip half) is deliberate: a bind to
+/// `0.0.0.0:<port>` reserves every interface including loopback, so it holds a loopback port
+/// exactly as a same-address listener does. `None` when the table cannot be read or no
+/// listening row's port matches.
 fn tcp_listen_inode_for_port(port: u16) -> Option<u64> {
     let text = std::fs::read_to_string("/proc/net/tcp").ok()?;
     let port_hex = format!("{port:04X}");
@@ -144,7 +148,9 @@ fn tcp_listen_inode_for_port(port: u16) -> Option<u64> {
         let Some((_, local_port)) = local_address.split_once(':') else {
             continue;
         };
-        if !local_port.eq_ignore_ascii_case(&port_hex) {
+        if !local_port.eq_ignore_ascii_case(&port_hex)
+            || fields.get(3) != Some(&TCP_LISTEN_STATE)
+        {
             continue;
         }
         if let Some(inode) = fields.get(9).and_then(|s| s.parse().ok()) {
