@@ -1,4 +1,4 @@
-//! Agent drivers: adapters implementing the conductor's AgentDriver port. `claude_code` is the
+//! Agent drivers: adapters implementing the conductor's AgentDriver interface. `claude_code` is the
 //! headless-session host `rigger run` and `rigger critique` launch their agents through;
 //! `cli` is the blocking one-shot host `rigger canary` probes with; `replay` answers a spawn
 //! from the run's log or parks an unrecorded one, the read the headless host makes before

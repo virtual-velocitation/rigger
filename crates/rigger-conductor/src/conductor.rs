@@ -1,8 +1,8 @@
 //! The conductor executes a workflow: it walks the stage DAG in dependency order,
-//! runs each stage's agent through the AgentDriver port and its gates through the
-//! gate::Runner port, advances units under the safety rails, and emits the event
+//! runs each stage's agent through the AgentDriver interface and its gates through the
+//! gate::Runner interface, advances units under the safety rails, and emits the event
 //! stream that both the ledger and the context graph project from. It is the
-//! top-level use case; it depends only on ports and domain, never on an adapter.
+//! top-level use case; it depends only on interfaces and domain, never on an adapter.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
@@ -52,7 +52,7 @@ use rigger_domain::wave::{
     is_fan_out_template, is_producer, wave_ready,
 };
 pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_out_templates};
-// The agent-host port, moved inward to `rigger-domain` (workspace split) so the driver adapters
+// The agent-host interface, moved inward to `rigger-domain` (workspace split) so the driver adapters
 // implement it without naming the conductor; re-exported so every `conductor::` path holds.
 pub use rigger_domain::agent::{
     classify_failure, no_result_error, parked_spawn, spawn_request, store_fault,
@@ -2986,7 +2986,7 @@ impl InfraRetries {
     }
 }
 
-/// The conductor's injected ports.
+/// The conductor's injected interfaces.
 pub struct Deps<'a> {
     pub store: &'a dyn EventStore,
     pub driver: &'a dyn AgentDriver,
@@ -10851,7 +10851,7 @@ impl RunCtx<'_> {
     /// |---|---|---|---|
     /// | 1 | [`Self::record_merge_attempt`]: the run tip about to be merged | [`Worktree::merge_into_worktree`]: `git merge --no-commit --no-ff` into the unit worktree | [`Self::record_merge_outcome`]: "clean" (ready to land) or the conflicting path list |
     /// | 2 | [`Self::record_regenerate_pending`]: the paths about to be placeholder-staged (mixed-conflict episode) | [`Worktree::accept_incoming`]: `git checkout --theirs` per regenerable path | [`Self::record_placeholder_staged`]: those paths finished staging |
-    /// | 3 | [`Self::record_regenerate_pending`]: the regenerate-pending set (identical marker for a mixed episode; its own fresh marker for a confined-to-regenerable conflict, round 4's own gap fix) | [`Self::regenerate_conflicted_paths`]: run the registered regeneration command through the gates port and commit | [`Self::record_regenerate_commit`]: the regeneration commit's sha |
+    /// | 3 | [`Self::record_regenerate_pending`]: the regenerate-pending set (identical marker for a mixed episode; its own fresh marker for a confined-to-regenerable conflict, round 4's own gap fix) | [`Self::regenerate_conflicted_paths`]: run the registered regeneration command through the gates interface and commit | [`Self::record_regenerate_commit`]: the regeneration commit's sha |
     /// | 4 | [`Self::record_landing_intent`]: the landing intent (unit tip, run tip) | [`Worktree::land`]: `git merge --no-edit` onto the run branch | [`Self::record_landed`]: the landed sha |
     ///
     /// Row 1's and row 4's OWN git mutations are individually idempotent via worktree state
@@ -11050,7 +11050,7 @@ impl RunCtx<'_> {
         // genuinely block for real, open-ended wall-clock time: a conflict-resolution
         // implementer spawn (a real agent turnaround), and a registered regeneration
         // command ([`Self::regenerate_conflicted_paths`], routed through the shared
-        // `gate::Runner` port and [`Self::build_budget`] - spec 65's machine-wide build-
+        // `gate::Runner` interface and [`Self::build_budget`] - spec 65's machine-wide build-
         // concurrency budget, an UNBOUNDED wait when every slot is taken by a sibling's own
         // gate: adv-u88c1r1-budget-fix-worsens-unfixed-lock-span). Neither one touches the
         // shared run branch, so a sibling's concurrent `integrate_and_emit` runs freely for
@@ -11235,7 +11235,7 @@ impl RunCtx<'_> {
                                 self.union_regenerate_pending(&st.name, attempt, &regenerable);
                             // TABLE row 3's before-record (round 4: this branch never recorded
                             // the obligation at all before this diff - the regeneration command
-                            // it is about to run through the gates port/build budget is real,
+                            // it is about to run through the gates interface/build budget is real,
                             // open-ended wall-clock time, the same class of crash window the
                             // mixed branch's own `record_regenerate_pending` call already closes).
                             let episode = format!("confined{pass}");
@@ -11748,12 +11748,12 @@ impl RunCtx<'_> {
     }
 
     /// Run a registered regeneration command inside a unit's worktree, routed through the
-    /// SAME [`gate::Runner`] port ([`Self::deps`]`.gates`) every OTHER command execution in
+    /// SAME [`gate::Runner`] interface ([`Self::deps`]`.gates`) every OTHER command execution in
     /// this crate answers to - never a second, un-injected `std::process::Command` shell-out
     /// (a Clean-Architecture/DI violation on its own: one mutation authority per concern,
     /// never a parallel implementation reconciled after the fact). Fixed for
     /// arch-u88c1-regenerate-bypasses-runner-port-and-build-budget: the raw shell-out this
-    /// superseded called neither the injected port nor [`Self::build_budget`], so a
+    /// superseded called neither the injected interface nor [`Self::build_budget`], so a
     /// `regenerate:` rule's command (this diff's own `.rigger/workflow.yml` registers a full
     /// `cargo test` recompile) ran completely outside `build.max_concurrent`, the one
     /// authority spec 65 established to bound concurrent cargo/rustc load - letting
@@ -40153,8 +40153,8 @@ mod tests {
             ),
             (
                 "the decisions section",
-                render_capped_decisions(&[("d-one", "keep the port".into(), "")], &seed),
-                "Decisions that govern these files:\n- d-one: keep the port\n\n".to_string(),
+                render_capped_decisions(&[("d-one", "keep the interface".into(), "")], &seed),
+                "Decisions that govern these files:\n- d-one: keep the interface\n\n".to_string(),
                 SUPERSEDE_A_PEER
                     .map(|sentence| (communication, sentence))
                     .to_vec(),

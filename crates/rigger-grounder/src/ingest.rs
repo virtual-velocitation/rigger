@@ -14,7 +14,7 @@ pub use rigger_domain::ingest::*;
 /// was appended to, so a fold of the copy reads it as the log does (spec 124, THE APPENDER):
 /// what a fold of that append folds.
 fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Event>, Error> {
-    // The port promises ONE slot per event handed in, and this authority folds by ZIPPING
+    // The interface promises ONE slot per event handed in, and this authority folds by ZIPPING
     // the report against the batch - so a report of a different length is not a smaller
     // fold, it is a MISALIGNED one: every slot after the discrepancy names a different
     // event than the store meant, and the graph is then keyed by position onto the wrong
@@ -39,7 +39,7 @@ fn placed(stream: &str, events: &[Event], appended: &Appended) -> Result<Vec<Eve
 }
 
 /// An [`EventStore`] that folds every event appended through it into the context graph, so a writer
-/// that knows only the store port - a run's mint, a parked spawn, a recorded liveness fault, an
+/// that knows only the store interface - a run's mint, a parked spawn, a recorded liveness fault, an
 /// operator's resume - still leaves no event the graph's applied ledger misses. The append keeps
 /// the caller's own expectation and goes to the log FIRST; only then is the graph opened, through
 /// the `graph` opener the store was wired with (spec 101: a verb whose job is to append never opens
@@ -105,7 +105,7 @@ where
     /// This folds exactly the events [`Appended::placed`] names, at the positions the store
     /// reported, and derives no position of its own. Computing them arithmetically as
     /// `base = last + 1 - n` is unsound twice over: an append may write FEWER events than it was
-    /// handed (a store may recognise an event as already recorded), and the port has never
+    /// handed (a store may recognise an event as already recorded), and the interface has never
     /// promised a batch lands at CONSECUTIVE positions - only distinct, strictly increasing ones,
     /// which a backend whose position is a byte offset satisfies with gaps. The graph's applied
     /// ledger is keyed BY position, so a wrong one marks a location applied forever and silently
@@ -118,7 +118,7 @@ where
     /// single-event folds are not this body: `rigger emit`
     /// (`mcpserver::emit_event`) and `rigger result` (`fold_recorded_result`) each append their one
     /// event through the store and fold it through [`Fold::of`]. It is deliberately NOT
-    /// `symbols`-gated: it only moves events through the store and graph ports, which both feature
+    /// `symbols`-gated: it only moves events through the store and graph interfaces, which both feature
     /// lanes compile.
     pub fn append_and_fold(
         &self,

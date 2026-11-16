@@ -3,7 +3,7 @@ name = "rigger-driver"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's agent-host adapters: the drivers behind the AgentDriver port (the headless Claude Code host, the CLI, the Workflow and the replay driver), the per-spawn liveness markers, the peers side-car, the installed hooks and the supervised child guard."
+description = "Rigger's agent-host adapters: the drivers behind the AgentDriver interface (the headless Claude Code host, the CLI, the Workflow and the replay driver), the per-spawn liveness markers, the peers side-car, the installed hooks and the supervised child guard."
 
 [lib]
 name = "rigger_driver"
@@ -19,7 +19,7 @@ core = ["rigger-domain/core", "rigger-process/core", "rigger-store-sqlite/core",
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
-# The process-spawn port and the reaper every agent child ends through (a same-ring edge).
+# The process-spawn interface and the reaper every agent child ends through (a same-ring edge).
 rigger-process = { path = "../rigger-process", default-features = false }
 # The event-store adapters and the spawn/progress write halves (a same-ring edge).
 rigger-store-sqlite = { path = "../rigger-store-sqlite", default-features = false }

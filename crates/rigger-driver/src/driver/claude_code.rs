@@ -102,7 +102,7 @@ pub struct Driver<'a> {
     /// The progress store `launch` records `SpawnLaunched` to and THE STREAM (criterion
     /// 2) records every waiting/denied/unparseable line and every [`ApiRetry`] to
     /// (`crate::progress_store`, `.rigger/progress.db` at the composition root) - injected,
-    /// never opened by this driver itself, mirroring how every other store-touching port in
+    /// never opened by this driver itself, mirroring how every other store-touching interface in
     /// this codebase takes its store by reference rather than a path it resolves on its own.
     pub progress_store: &'a dyn EventStore,
     /// The run's own event store (`.rigger/events.db`). THE STREAM records the `result`
@@ -885,7 +885,7 @@ impl Driver<'_> {
                     // and the session ran its whole task with no rigger tools while the host
                     // recorded a success. A spawn without its server cannot ground, emit or
                     // record through the graph, so it is not a working spawn: the session is
-                    // stopped here, before its task runs, and the port returns the fault's
+                    // stopped here, before its task runs, and the interface returns the fault's
                     // class. The tell of this defect class: a progress note where a failure
                     // class belongs.
                     if let Some(status) = rigger_server_fault(&v) {
@@ -1114,7 +1114,7 @@ impl Driver<'_> {
     /// End a launch as a FAULT (spec 104 THE LAUNCH: "at exit it closes the record with
     /// `ended: ... fault ...` and the class"; FAILURE CLASS: "the port returns the class as
     /// data"): close the launch record `fault` under `class`, and return the classed `Error`
-    /// through the port. The ONE ending both fault shapes share - a session that ended with no
+    /// through the interface. The ONE ending both fault shapes share - a session that ended with no
     /// result ([`Driver::classify_no_result`]) and a session whose `rigger` MCP server did not
     /// connect ([`Driver::stop_for_launch_fault`]).
     ///

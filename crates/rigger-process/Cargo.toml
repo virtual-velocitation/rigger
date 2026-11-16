@@ -3,7 +3,7 @@ name = "rigger-process"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's process adapters: the one process-spawn port, the directory-rooted reaper, the machine-wide build-slot budget, the ordered parallel map, the keep-awake adapter, the detached start and the interrupt trigger."
+description = "Rigger's process adapters: the one process-spawn interface, the directory-rooted reaper, the machine-wide build-slot budget, the ordered parallel map, the keep-awake adapter, the detached start and the interrupt trigger."
 
 [lib]
 name = "rigger_process"
@@ -18,7 +18,7 @@ store = ["rigger-domain/store"]
 core = ["rigger-domain/core"]
 
 [dependencies]
-# The keep-awake adapter implements the domain's `SleepHold` port (spec 105).
+# The keep-awake adapter implements the domain's `SleepHold` interface (spec 105).
 rigger-domain = { path = "../rigger-domain", default-features = false }
 
 # The native-only adapter dependencies, target-gated exactly as in the root manifest: the

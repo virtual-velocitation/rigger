@@ -19,7 +19,7 @@ core = ["rigger-domain/core", "rigger-process/core", "rigger-driver/core", "rigg
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
-# The process-spawn port and the reaper every removal goes through (a same-ring edge).
+# The process-spawn interface and the reaper every removal goes through (a same-ring edge).
 rigger-process = { path = "../rigger-process", default-features = false }
 # The scratch-root resolvers' cache-home resolver and liveness marker encoding (a same-ring edge).
 rigger-driver = { path = "../rigger-driver", default-features = false }

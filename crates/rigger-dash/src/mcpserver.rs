@@ -74,9 +74,9 @@ pub struct Server<'a> {
     /// [`with_context`](Server::with_context). `None` when none is wired: `rigger_graph` then
     /// answers [`NO_GRAPH_WIRED`].
     context: Option<&'a dyn OpenGraph>,
-    /// The read-only grounder port `rigger_ground` answers through (spec 92, criterion 4's fix
+    /// The read-only grounder interface `rigger_ground` answers through (spec 92, criterion 4's fix
     /// round), wired via [`with_grounder`] (or a resolution failure recorded through its `Err`
-    /// arm) - the SAME port `rigger ground` resolves, so one dispatch and read loop answers
+    /// arm) - the SAME interface `rigger ground` resolves, so one dispatch and read loop answers
     /// both tool surfaces rather than a second parallel MCP loop reaching for the concrete
     /// grounder across the crate boundary. Both `None` when no grounder is wired:
     /// `rigger_ground` then reports that as its own tool-call error.
@@ -167,7 +167,7 @@ impl<'a> Server<'a> {
         self
     }
 
-    /// Wire the operator's own read-only grounder port (spec 92, criterion 4's fix round) - or
+    /// Wire the operator's own read-only grounder interface (spec 92, criterion 4's fix round) - or
     /// the reason resolving it FAILED. `Ok`: `rigger_ground` answers through it, over the SAME
     /// `Grounder` trait `rigger ground` resolves via `select_grounder` - so ground's ranking
     /// (spec 92 criterion 3's territory) is inherited automatically, never re-implemented here.
@@ -512,7 +512,7 @@ impl<'a> Server<'a> {
     }
 
     /// `rigger_ground` (spec 92, criterion 4's fix round): the operator's own MEMORY-adjacent
-    /// intent lookup, over the SAME [`Grounder`] port [`with_grounder`](Server::with_grounder)
+    /// intent lookup, over the SAME [`Grounder`] interface [`with_grounder`](Server::with_grounder)
     /// wires - the exact trait `rigger ground` resolves through `select_grounder`, so ground's
     /// ranking (spec 92 criterion 3's territory) is inherited automatically, never
     /// re-implemented here. Argument validation runs BEFORE the grounder-unavailable check, so
@@ -2356,7 +2356,7 @@ mod tests {
         no_argument_is_no_term: lookup_terms_are(None, &[]);
     }
 
-    /// The lookup surface answers `rigger_ground` through the wired [`Grounder`] port, and
+    /// The lookup surface answers `rigger_ground` through the wired [`Grounder`] interface, and
     /// REJECTS the spawn-bound `rigger_emit` as unknown - it is not merely unadvertised, it
     /// is genuinely undispatchable on this surface, so an operator session can never emit onto
     /// the run's event stream through the MCP tool that exists to emit for LOOP agents.
