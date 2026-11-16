@@ -44056,10 +44056,10 @@ mod tests {
         pub(super) static RADIUS_EDGES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
-    /// A radius walk reads each edge at most three times, once to index it and once from each
-    /// end, however many nodes it reaches: GIVEN a chain, a star and a complete graph of file
-    /// nodes, each at two sizes, WHEN the files reachable from its last node are walked, THEN
-    /// every file is reached and the edges read stay within three times the graph's edges.
+    /// A radius walk reads each edge three times, once to index it and once from each end,
+    /// however many nodes it reaches: GIVEN a chain, a star and a complete graph of file nodes,
+    /// each at two sizes, WHEN the files reachable from its last node are walked, THEN every file
+    /// is reached and the walk has read exactly three times the graph's edges.
     #[test]
     fn files_reachable_reads_each_edge_a_bounded_number_of_times() {
         let file = |i: usize| format!("f{i}.rs");
@@ -44103,11 +44103,7 @@ mod tests {
             let reached = files_reachable(&g, &[file(n - 1)], &[contextgraph::TIER_EXTRACTED]);
             let read = RADIUS_EDGES_READ.with(std::cell::Cell::get) - before;
             assert_eq!(reached, (0..n).map(file).collect(), "{shape} of {n}");
-            assert!(
-                read <= 3 * g.edges.len(),
-                "{shape} of {n}: {read} edge reads over {} edges",
-                g.edges.len()
-            );
+            assert_eq!(read, 3 * g.edges.len(), "edges read for {shape} of {n}");
         }
     }
 
