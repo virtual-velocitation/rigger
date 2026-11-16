@@ -12,9 +12,9 @@
 //! The ten forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
 //! that file (out of the gate's own scope, so it may name the literal pattern text) for the
 //! precise regex. In prose: a `Command::new` shell-out to any of five OS process-termination
-//! utility names, the Windows one among them; the bare shell form of two of those names,
-//! invoked with a leading-hyphen signal argument; one of the five also appearing as a
-//! standalone shell token on its own; the libc process-group signal call name; a direct call
+//! utility names, the Windows one among them, the name in any case; the bare shell form of two
+//! of those names, invoked with a leading-hyphen signal argument; one of the five also appearing
+//! as a standalone shell token on its own; the libc process-group signal call name; a direct call
 //! through `libc` or a `signal` module; the sanctioned rustix call itself (forbidden only
 //! OUTSIDE the two sanctioned files - see below); the `--` argv separator passed to
 //! `.arg(...)`; a `format!` call shaped to build a leading-hyphen (negative-pid-style)
@@ -114,10 +114,11 @@ fn shell_kill_words() -> Vec<String> {
 
 /// The gate's Command::new shell-out shape (see `.rigger/gates/content.sh` for the literal
 /// pattern) - a shell-out to one of the five OS process-termination utility names, the Windows
-/// one (task-kill) among them.
+/// one (task-kill) among them, matched in any case as the gate matches it: Windows, and macOS's
+/// default filesystem, resolve a program name case-insensitively.
 fn shape_command_new_signal(line: &str) -> bool {
-    let chars: Vec<char> = line.chars().collect();
-    let marker: Vec<char> = "Command::new(".chars().collect();
+    let chars: Vec<char> = line.to_ascii_lowercase().chars().collect();
+    let marker: Vec<char> = "command::new(".chars().collect();
     let words = [
         prefixed_kill("p"),
         suffixed_kill("all"),

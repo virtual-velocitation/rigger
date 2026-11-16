@@ -11,11 +11,12 @@
 #     places, an internal guarded signal call: the worktree reaper
 #     (crates/rigger-process/src/reap.rs) and the shared test lifecycle helper
 #     (tests/common/mod.rs). Everywhere else in src/, crates/ and tests/, an added line that shells
-#     out to kill/pkill/killall/xkill/taskkill, formats a negative (process-group) pid, uses the
-#     `--` argv separator, or calls a signal API directly FAILS. Inside the two sanctioned files a
-#     shell-out is still a failure. The Windows process-termination call (TerminateProcess) has
-#     one site, the reaper's send_signal: an added call anywhere else, the test helper included,
-#     FAILS. Scoped to code: prose in docs/, specs/ and .rigger/ may name the rule.
+#     out to kill/pkill/killall/xkill/taskkill (the name in any case), formats a negative
+#     (process-group) pid, uses the `--` argv separator, or calls a signal API directly FAILS.
+#     Inside the two sanctioned files a shell-out is still a failure. The Windows
+#     process-termination call (TerminateProcess) has one site, the reaper's send_signal: an added
+#     call anywhere else, the test helper included, FAILS. Scoped to code: prose in docs/, specs/
+#     and .rigger/ may name the rule.
 #     WHY: computed kill targets (a pgid, a marker pid, a /proc scan) resolved to kill(-1) and
 #     destroyed the operator's whole desktop session seven-plus times; the review panel approved
 #     each site because nothing mechanical forbade it. Now something does.
@@ -62,12 +63,19 @@ style)
     fi
     ;;
 no-os-kill)
-    bad="Command::new\(.(kill|pkill|killall|xkill|taskkill)|[^a-zA-Z_]kill(all)? -[0-9A-Za-z]|[^a-zA-Z_]pkill[^a-zA-Z_]|killpg|libc::kill\(|signal::kill\(|kill_process\(|\.arg\(.--.\)|format!\(.-\{"
-    if added src crates tests ":(exclude)crates/rigger-process/src/reap.rs" ":(exclude)tests/common/mod.rs" | grep -qE "$bad"; then
+    # A shell-out to a termination utility, matched in any case: Windows, and macOS's default
+    # filesystem, resolve a program name case-insensitively.
+    shell_out="Command::new\(.(kill|pkill|killall|xkill|taskkill)"
+    # The `--` argv separator, or a format! building a leading-hyphen (process-group) pid.
+    group_target="\.arg\(.--.\)|format!\(.-\{"
+    bad="[^a-zA-Z_]kill(all)? -[0-9A-Za-z]|[^a-zA-Z_]pkill[^a-zA-Z_]|killpg|libc::kill\(|signal::kill\(|kill_process\(|$group_target"
+    outside=$(added src crates tests ":(exclude)crates/rigger-process/src/reap.rs" ":(exclude)tests/common/mod.rs")
+    if printf '%s\n' "$outside" | grep -qiE "$shell_out" || printf '%s\n' "$outside" | grep -qE "$bad"; then
         echo "no-os-kill gate FAILED: an OS-level kill, a process-group target, or a direct signal call was introduced outside the sanctioned lifecycle helpers (crates/rigger-process/src/reap.rs, tests/common/mod.rs). Lifecycle is handle-bound: Child::kill()/wait(), or the shared helper. See specs/78-no-os-level-kills.md"
         exit 1
     fi
-    if added crates/rigger-process/src/reap.rs tests/common/mod.rs | grep -qE "Command::new\(.(kill|pkill|killall|xkill|taskkill)|\.arg\(.--.\)|format!\(.-\{"; then
+    sanctioned=$(added crates/rigger-process/src/reap.rs tests/common/mod.rs)
+    if printf '%s\n' "$sanctioned" | grep -qiE "$shell_out" || printf '%s\n' "$sanctioned" | grep -qE "$group_target"; then
         echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"
         exit 1
     fi
