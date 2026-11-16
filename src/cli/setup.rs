@@ -6412,8 +6412,8 @@ mod tests {
     /// the workflow lists it, where the no-default lane is linted and where its suite runs, the
     /// statement that the workflow's gates run the full battery and are the authority (a gate
     /// failure is the next round's finding), the only commands the author runs before it reports
-    /// (fmt, default-lane clippy and the tests it added or changed - the no-default lane only for
-    /// feature-gated code), the root test filter by module on `all` or by executable name, the
+    /// (the fmt gate's own command, default-lane clippy and the tests it added or changed - the
+    /// no-default lane only for feature-gated code), the root test filter by module on `all` or by executable name, the
     /// declaration of a new test file and how a suite reaches the shared helpers, the test homes
     /// with the lookup's tests filter that finds the test code in them, the counted check - the
     /// roots a retired spelling is counted over
@@ -6440,8 +6440,10 @@ mod tests {
             .split_last()
             .expect("the implement stage names its gates");
         let implement_gates = format!("{} and {last}", rest.join(", "));
+        let fmt_gate = format!("`{}`", cfg.workflow.gates["fmt"].run);
         for wanted in [
             implement_gates.as_str(),
+            fmt_gate.as_str(),
             "The workflow's gates run that full battery on your committed result and are the \
              authority: you do not run the whole suite, the other lanes, the boundary suite, the \
              content gates or red-before-green by hand, and a gate failure comes back as the \
@@ -6449,7 +6451,6 @@ mod tests {
             "The no-default lane is linted at every unit and its whole suite runs once, at the \
              check-in, on the merged tree.",
             "these and nothing else",
-            "`cargo fmt --all --check`",
             "`cargo clippy --workspace --all-targets -- -D warnings`",
             "the tests you added or changed, on the default lane: `cargo test --test all \
              <module>::` for a module of the consolidated `all` executable, `cargo test --test \
@@ -6485,6 +6486,11 @@ mod tests {
             block.matches("--no-default-features").count(),
             1,
             "the no-default lane runs only the touched tests, and only for feature-gated code"
+        );
+        assert!(
+            !block.contains("cargo fmt"),
+            "the author checks formatting with the fmt gate's own command, which formats every \
+             tracked file by its crate's edition, never with a cargo fmt run that skips modules"
         );
         for gate_run in [
             "cargo test --test boundary_audit",

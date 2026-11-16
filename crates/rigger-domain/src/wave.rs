@@ -296,15 +296,48 @@ pub fn unit_slug(n: usize, criterion: &str) -> String {
 }
 
 /// The executable shape every unit fanned out from `template` inherits: its `agent`, `gates`,
-/// `on_pass` and `partition`. The one inheritance list a baseline ([`baseline_units`]) and a
-/// planner-proposed unit both start from, so a unit is scheduled, gated and integrated as its
-/// template declares whichever way it reached the DAG.
+/// `on_pass`, `partition`, `review`, `autonomy`, `speculation_width` and `max_retries`. The one
+/// inheritance list a baseline ([`baseline_units`]) and a planner-proposed unit both start from,
+/// so a unit is run, gated, integrated, scheduled, reviewed, paused, raced and retried as its
+/// template declares whichever way it reached the DAG; a setting the template leaves unset
+/// stays unset on the unit, which then reads the run's `defaults`. Every other field starts at
+/// its default: the unit's own name, needs and coverage are set per unit, `strategy` and
+/// `produces` would make it a template or a producer, `agents`, `adversary` and `adjudicator`
+/// belong to a standalone review stage (a unit's panel is `review`), and the rest is the run's
+/// per-unit bookkeeping. The destructure names every field, so a field added to [`Stage`] does
+/// not compile here until it is classified.
 pub fn inherited_shape(template: &Stage) -> Stage {
+    let Stage {
+        agent,
+        gates,
+        on_pass,
+        partition,
+        review,
+        autonomy,
+        speculation_width,
+        max_retries,
+        name: _,
+        needs: _,
+        coverage: _,
+        strategy: _,
+        produces: _,
+        agents: _,
+        adversary: _,
+        adjudicator: _,
+        baseline: _,
+        criterion_id: _,
+        episode: _,
+        unmatched_fanout_proposal: _,
+    } = template.clone();
     Stage {
-        agent: template.agent.clone(),
-        gates: template.gates.clone(),
-        on_pass: template.on_pass.clone(),
-        partition: template.partition.clone(),
+        agent,
+        gates,
+        on_pass,
+        partition,
+        review,
+        autonomy,
+        speculation_width,
+        max_retries,
         ..Default::default()
     }
 }
@@ -828,6 +861,143 @@ mod tests {
             ("unexhausted, past the ceiling", &unexhausted, 4, true),
         ] {
             assert_eq!(critic.settles(critique, attempts), want, "{why}");
+        }
+    }
+
+    /// Every field of `stage` by name, as its debug rendering. The destructure names every field,
+    /// so a field added to `Stage` does not compile here until it is listed.
+    fn stage_fields(stage: &Stage) -> Vec<(&'static str, String)> {
+        let Stage {
+            name,
+            agent,
+            agents,
+            needs,
+            strategy,
+            partition,
+            gates,
+            adversary,
+            adjudicator,
+            review,
+            autonomy,
+            produces,
+            coverage,
+            on_pass,
+            speculation_width,
+            max_retries,
+            baseline,
+            criterion_id,
+            episode,
+            unmatched_fanout_proposal,
+        } = stage;
+        vec![
+            ("name", format!("{name:?}")),
+            ("agent", format!("{agent:?}")),
+            ("agents", format!("{agents:?}")),
+            ("needs", format!("{needs:?}")),
+            ("strategy", format!("{strategy:?}")),
+            ("partition", format!("{partition:?}")),
+            ("gates", format!("{gates:?}")),
+            ("adversary", format!("{adversary:?}")),
+            ("adjudicator", format!("{adjudicator:?}")),
+            ("review", format!("{review:?}")),
+            ("autonomy", format!("{autonomy:?}")),
+            ("produces", format!("{produces:?}")),
+            ("coverage", format!("{coverage:?}")),
+            ("on_pass", format!("{on_pass:?}")),
+            ("speculation_width", format!("{speculation_width:?}")),
+            ("max_retries", format!("{max_retries:?}")),
+            ("baseline", format!("{baseline:?}")),
+            ("criterion_id", format!("{criterion_id:?}")),
+            ("episode", format!("{episode:?}")),
+            (
+                "unmatched_fanout_proposal",
+                format!("{unmatched_fanout_proposal:?}"),
+            ),
+        ]
+    }
+
+    /// The fields every unit takes from its fan-out template: what runs it, how it is gated,
+    /// integrated, scheduled and reviewed, whether its gate pauses for a human, how many
+    /// candidates race it and how many attempts it gets.
+    const INHERITED: &[&str] = &[
+        "agent",
+        "gates",
+        "on_pass",
+        "partition",
+        "review",
+        "autonomy",
+        "speculation_width",
+        "max_retries",
+    ];
+
+    /// The fields a unit never takes from its template: its identity, dependencies and coverage,
+    /// which the baseline and the planner set per unit; the fields that make a stage a fan-out
+    /// template, a producer or a standalone review stage instead of a unit; and the run's own
+    /// bookkeeping the conductor stamps.
+    const NOT_INHERITED: &[&str] = &[
+        "name",
+        "needs",
+        "coverage",
+        "strategy",
+        "produces",
+        "agents",
+        "adversary",
+        "adjudicator",
+        "baseline",
+        "criterion_id",
+        "episode",
+        "unmatched_fanout_proposal",
+    ];
+
+    /// A unit's inherited shape carries each [`INHERITED`] field of a template that sets every
+    /// field, and leaves each [`NOT_INHERITED`] field at its default; every `Stage` field is in
+    /// exactly one of the two.
+    #[test]
+    fn a_unit_takes_exactly_its_templates_inherited_fields() {
+        let template = Stage {
+            name: "implement".into(),
+            agent: "worker".into(),
+            agents: vec!["lens".into()],
+            needs: vec!["plan".into()],
+            strategy: "fan-out".into(),
+            partition: "by-blast-radius".into(),
+            gates: vec!["fmt".into()],
+            adversary: "adversary".into(),
+            adjudicator: "adjudicator".into(),
+            review: crate::config::ReviewPanel {
+                lenses: vec!["template-lens".into()],
+                ..Default::default()
+            },
+            autonomy: "manual".into(),
+            produces: "dag".into(),
+            coverage: "each unit is implemented".into(),
+            on_pass: "merge".into(),
+            speculation_width: 3,
+            max_retries: 5,
+            baseline: true,
+            criterion_id: "c1-0000000000000000".into(),
+            episode: "plan#1".into(),
+            unmatched_fanout_proposal: true,
+        };
+        let shape = inherited_shape(&template);
+        let fields = stage_fields(&template)
+            .into_iter()
+            .zip(stage_fields(&shape))
+            .zip(stage_fields(&Stage::default()));
+        for (((field, declared), (_, carried)), (_, default)) in fields {
+            let inherited = INHERITED.contains(&field);
+            assert_ne!(
+                inherited,
+                NOT_INHERITED.contains(&field),
+                "`{field}` must be classified in exactly one of INHERITED and NOT_INHERITED"
+            );
+            assert_ne!(declared, default, "the template must set `{field}`");
+            let (want, which) = if inherited {
+                (declared, "the template's value")
+            } else {
+                (default, "its default")
+            };
+            assert_eq!(carried, want, "a unit's `{field}` must be {which}");
         }
     }
 }

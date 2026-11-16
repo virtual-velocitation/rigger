@@ -301,8 +301,9 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     // Liveness ages: rigger stats each in-flight spawn's marker IN RUST here. The configured
     // remediation bound is read from the SAME config (via the shared `scratch_defaults`, spec
-    // 83 criterion 2 round 2) so the current-blocker classifier's `#n/max` line matches the
-    // depth the run actually escalates at. An age reads through the run's hold intervals, so an
+    // 83 criterion 2 round 2): the current-blocker classifier's `#n/max` line names it for a
+    // failure carrying no stamped bound, and the bound the conductor stamped (the one it
+    // escalates that unit at) for every other. An age reads through the run's hold intervals, so an
     // age read after a released hold counts only the time outside it and a held spawn never
     // reads as a dead one (spec 105 LIVENESS).
     let (workdir, max_retries) = scratch_defaults(&loc);

@@ -303,8 +303,10 @@ an adjudicator step comes at most once and last.
 
 So per unit, over the canonical sequence, the conductor runs: **implement -> the unit's gates -> lenses (parallel) ->
 adversary (if present) -> adjudicator (if present, verdict gates) -> integrate**. Every
-step is optional and they compose; an empty panel runs no per-unit review. Every
-planner-proposed unit inherits `defaults.review` automatically.
+step is optional and they compose; an empty panel runs no per-unit review. Every unit,
+baseline or planner-proposed, takes its fan-out template's `review` block when the template
+declares one, else `defaults.review`; the template's `max_retries`, `autonomy` and
+`speculation_width` reach every unit the same way.
 
 **Risk-tiered review depth (opt-in).** A `review` block may carry an optional `tiers:`
 depth policy to right-size the panel to each unit's *observable* risk - the grounded

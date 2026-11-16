@@ -50,7 +50,7 @@ If a unit will not pass, the fix belongs in the loop - the spec, the gate, the a
 
 ## Auto-integration on approve
 
-An approved unit integrates itself onto the run branch. A human reviews the whole run by opening a pull request FROM the run branch, never by cherry-picking approved units by hand - cherry-picking drops the run's accumulated context and its ordering. A failing unit is retried under a bounded budget (up to 3 attempts) and then escalated to a human rather than spinning forever.
+An approved unit integrates itself onto the run branch. A human reviews the whole run by opening a pull request FROM the run branch, never by cherry-picking approved units by hand - cherry-picking drops the run's accumulated context and its ordering. A failing unit is retried under a bounded budget (its stage's or fan-out template's own `max_retries`, else `defaults.max_retries`, 3 attempts when neither is set) and then escalated to a human rather than spinning forever.
 
 ## The verdict line
 
