@@ -390,6 +390,18 @@ rigger::test_cases! {
     /// The same imports in the edition 2021 root package, out of that edition's order.
     the_fmt_gate_fails_imports_out_of_their_own_crates_edition_order:
         fmt_gate_verdict(&[("src/hidden.rs", IMPORTS_IN_2024_ORDER)], Some("src/hidden.rs"));
+    /// The edition 2024 member's manifest with CRLF line endings, as a Windows checkout writes it:
+    /// its edition is still read.
+    the_fmt_gate_reads_the_edition_of_a_crlf_manifest: fmt_gate_verdict(
+        &[
+            (
+                "member/Cargo.toml",
+                "[package]\r\nname = \"member\"\r\nversion = \"0.1.0\"\r\nedition = \"2024\"\r\n",
+            ),
+            ("member/src/inner.rs", IMPORTS_IN_2024_ORDER),
+        ],
+        None,
+    );
 }
 
 /// The review checklist line each persona carries for the principle gates, as `(agent file,
