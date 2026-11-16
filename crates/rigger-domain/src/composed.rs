@@ -13,9 +13,9 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
-use crate::code_facts::Tip;
+use crate::code_facts::{Recorded, Tip};
 use crate::code_graph::{CodeGraph, DOC_ATTR};
 use crate::code_view::{CodeView, Compared, Groupings, Tests, ViewFilter};
 use crate::community::DEFAULT_RESOLUTION;
@@ -57,6 +57,9 @@ pub struct WholeRead {
     /// The nodes the read withheld and the edges it dropped for an end it withheld: empty when
     /// nothing is withheld, so a view of the answer can count the withheld hits it would have held.
     pub withheld: Graph,
+    /// The test code entities the filter hides, less any withheld: what a reader counts as test
+    /// hits it does not show ([`ContextGraph::hidden_tests`]).
+    pub tests_hidden: usize,
     /// What the read describes.
     pub label: Label,
 }
@@ -392,11 +395,21 @@ pub trait CodeHalf: Neighbors {
     /// Whether the half holds a node `id`.
     fn holds(&self, id: &str) -> bool;
     /// The concepts the view groups `member` into, in grouping order, when the half holds it.
-    fn concepts_of(&self, member: &str) -> Vec<String>;
+    fn concepts_of(&self, member: &str) -> Vec<String> {
+        self.concepts_of_within(member, None)
+    }
+    /// [`Self::concepts_of`], less any concept outside `within` when it is given: a concept a
+    /// reader would drop is never read, nor is `member` asked whether the half holds it unless
+    /// a concept is left.
+    fn concepts_of_within(&self, member: &str, within: Option<&BTreeSet<String>>) -> Vec<String>;
     /// The members of `concept` the half holds, in grouping order.
     fn concept_members(&self, concept: &str) -> Vec<String>;
     /// The test entities the filter hides, in id order.
     fn hidden_tests(&self) -> Vec<Node>;
+    /// How many of [`Self::hidden_tests`] `keep` keeps, counted without copying them.
+    fn hidden_test_count(&self, keep: &dyn Fn(&Node) -> bool) -> usize {
+        self.hidden_tests().iter().filter(|n| keep(n)).count()
+    }
     /// Every distinct name a code entity of the half may carry, in order, perhaps with names
     /// none carries ([`ContextGraph::entity_names`]).
     fn entity_names(&self) -> Vec<String>;
@@ -413,6 +426,12 @@ pub trait CodeHalf: Neighbors {
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
     fn summarised_files(&self, id: &str) -> Vec<String>;
+    /// The last line the facts of the code file `file` bound the `recorded` definition to
+    /// ([`Recorded::widest_end`]); `None` when no such definition is there or the half keeps no
+    /// facts of `file`, as a half resolved whole keeps none.
+    fn definition_end(&self, _file: &str, _recorded: Recorded) -> Option<u32> {
+        None
+    }
     /// The groupings of the view the half resolves.
     fn groupings(&self) -> &Groupings;
     /// The half's whole graph ([`Neighbors::whole`]), moved out of the half where it is held
@@ -494,6 +513,13 @@ impl Whole {
     /// groupings at `resolution` when that is not the stored grain: computed from this view as
     /// the grouping reports compute them ([`computed_at`]), and never stored.
     pub(crate) fn at(view: &dyn CodeView, filter: ViewFilter, resolution: f64) -> Self {
+        Self::read(view, filter, resolution, true)
+    }
+
+    /// [`Self::at`], reading the test calls landing on a placeholder that a callers walk reaches
+    /// ([`CodeGraph::placeholder_calls`]) only when `walked`: a read that is never walked leaves
+    /// them unresolved.
+    fn read(view: &dyn CodeView, filter: ViewFilter, resolution: f64, walked: bool) -> Self {
         let computed = computed_at(view, resolution);
         let grains: Vec<&Groupings> = std::iter::once(view.groupings())
             .chain(computed.as_ref())
@@ -509,7 +535,12 @@ impl Whole {
         }
         let code = Indexed::new(graph, Vec::new());
         let mut placeholder_callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (leaf, caller) in resolved.placeholder_calls {
+        let placeholder_calls = if walked {
+            code_graph.placeholder_calls()
+        } else {
+            Vec::new()
+        };
+        for (leaf, caller) in placeholder_calls {
             placeholder_callers.entry(leaf).or_default().push(caller);
         }
         for callers in placeholder_callers.values_mut() {
@@ -585,8 +616,11 @@ impl CodeHalf for Whole {
     fn holds(&self, id: &str) -> bool {
         self.code.holds(id)
     }
-    fn concepts_of(&self, member: &str) -> Vec<String> {
-        self.concepts_of.get(member).cloned().unwrap_or_default()
+    fn concepts_of_within(&self, member: &str, within: Option<&BTreeSet<String>>) -> Vec<String> {
+        let concepts = self.concepts_of.get(member).into_iter().flatten();
+        (concepts.filter(|c| within.is_none_or(|ids| ids.contains(*c))))
+            .cloned()
+            .collect()
     }
     fn concept_members(&self, concept: &str) -> Vec<String> {
         self.concept_members
@@ -596,6 +630,9 @@ impl CodeHalf for Whole {
     }
     fn hidden_tests(&self) -> Vec<Node> {
         self.hidden_tests.clone()
+    }
+    fn hidden_test_count(&self, keep: &dyn Fn(&Node) -> bool) -> usize {
+        self.hidden_tests.iter().filter(|n| keep(n)).count()
     }
     fn entity_names(&self) -> Vec<String> {
         let shown = (self.code).held(
@@ -649,6 +686,176 @@ impl CodeHalf for Whole {
     fn take_whole(&mut self) -> Result<Graph, Error> {
         let Indexed { nodes, edges, .. } = std::mem::take(&mut self.code);
         Ok(Graph { nodes, edges })
+    }
+}
+
+/// A code half resolved whole that a [`WholeMemo`] may share with later reads: it answers what
+/// the [`Whole`] it holds answers.
+impl Neighbors for Arc<Whole> {
+    fn node(&self, id: &str) -> Result<Option<Node>, Error> {
+        (**self).node(id)
+    }
+    fn out(&self, id: &str) -> Result<Vec<Edge>, Error> {
+        (**self).out(id)
+    }
+    fn incoming(&self, id: &str) -> Result<Vec<Edge>, Error> {
+        (**self).incoming(id)
+    }
+    fn members(&self, file: &str) -> Result<Vec<Node>, Error> {
+        (**self).members(file)
+    }
+    fn leaf_nodes(&self, leaf: &str) -> Result<Vec<Node>, Error> {
+        (**self).leaf_nodes(leaf)
+    }
+    fn of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
+        (**self).of_kind(kind)
+    }
+    fn unresolved(&self, node: &Node) -> Result<Vec<String>, Error> {
+        (**self).unresolved(node)
+    }
+    fn aliases(&self) -> Result<Vec<(String, String)>, Error> {
+        (**self).aliases()
+    }
+    fn whole(&self) -> Result<Graph, Error> {
+        (**self).whole()
+    }
+}
+
+impl CodeHalf for Arc<Whole> {
+    fn holds(&self, id: &str) -> bool {
+        (**self).holds(id)
+    }
+    fn concepts_of_within(&self, member: &str, within: Option<&BTreeSet<String>>) -> Vec<String> {
+        (**self).concepts_of_within(member, within)
+    }
+    fn concept_members(&self, concept: &str) -> Vec<String> {
+        (**self).concept_members(concept)
+    }
+    fn hidden_tests(&self) -> Vec<Node> {
+        (**self).hidden_tests()
+    }
+    fn hidden_test_count(&self, keep: &dyn Fn(&Node) -> bool) -> usize {
+        (**self).hidden_test_count(keep)
+    }
+    fn entity_names(&self) -> Vec<String> {
+        (**self).entity_names()
+    }
+    fn hidden_tests_named(&self, name: &str) -> Vec<Node> {
+        (**self).hidden_tests_named(name)
+    }
+    fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
+        (**self).hidden_provers(ids)
+    }
+    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+        (**self).placeholder_callers(leaf)
+    }
+    fn summarised_files(&self, id: &str) -> Vec<String> {
+        (**self).summarised_files(id)
+    }
+    fn groupings(&self) -> &Groupings {
+        (**self).groupings()
+    }
+    /// Moved out of the half when no memo shares it, else copied, so a held half keeps its graph.
+    fn take_whole(&mut self) -> Result<Graph, Error> {
+        match Arc::get_mut(self) {
+            Some(whole) => whole.take_whole(),
+            None => self.whole(),
+        }
+    }
+}
+
+/// The code halves a process resolved whole for its whole reads ([`Composed::whole_held_at`]),
+/// each held by what names it: the view's stamp and the files it takes from the worktree
+/// ([`CodeView::overlaid`]), with the read's filter and resolution. A read whose key one holds
+/// takes it rather than resolving the view again; the record half is never held, so every read
+/// merges the log as it stands. Every entry describes one tree: a read of another drops them all.
+/// Of one tree it holds at most its bound, dropping the least recently read beyond that.
+pub struct WholeMemo {
+    bound: usize,
+    held: Mutex<HeldWholes>,
+}
+
+/// What names a held whole: the tree, the worktree files over it, the filter and the grain.
+#[derive(Clone, PartialEq)]
+struct WholeKey {
+    stamp: crate::code_facts::Stamp,
+    overlaid: Vec<(String, Option<String>)>,
+    tests: Tests,
+    /// The resolution's bits, so a grain is held by exactly the value read.
+    resolution: u64,
+}
+
+impl WholeKey {
+    /// Whether `self` and `other` describe one tree: the same stamp and worktree files.
+    fn of_tree(&self, other: &WholeKey) -> bool {
+        self.stamp == other.stamp && self.overlaid == other.overlaid
+    }
+}
+
+/// A memo's wholes, each with the tick it was last read or held at.
+#[derive(Default)]
+struct HeldWholes {
+    tick: u64,
+    wholes: Vec<(WholeKey, u64, Arc<Whole>)>,
+}
+
+impl WholeMemo {
+    /// The bound a dash holds: four reads of its tree, so the default view, the view with tests
+    /// shown or shown alone and one other grain each answer from it while the tree stands.
+    pub const BOUND: usize = 4;
+
+    /// An empty memo holding at most `bound` reads of one tree.
+    pub fn new(bound: usize) -> Self {
+        Self {
+            bound,
+            held: Mutex::new(HeldWholes::default()),
+        }
+    }
+
+    /// `view` resolved whole under `filter` at `resolution` for a whole read: the held whole of
+    /// the read when the memo holds it, else resolved now and held. It resolves outside the
+    /// memo's lock, so a read of the memo never waits on another's resolve.
+    fn whole(&self, view: &dyn CodeView, filter: ViewFilter, resolution: f64) -> Arc<Whole> {
+        let key = WholeKey {
+            stamp: view.stamp().clone(),
+            overlaid: view.overlaid(),
+            tests: filter.tests,
+            resolution: resolution.to_bits(),
+        };
+        if let Some(whole) = self.get(&key) {
+            return whole;
+        }
+        let whole = Arc::new(Whole::read(view, filter, resolution, false));
+        self.put(key, Arc::clone(&whole));
+        whole
+    }
+
+    fn get(&self, key: &WholeKey) -> Option<Arc<Whole>> {
+        let mut held = self.held.lock().ok()?;
+        held.tick += 1;
+        let tick = held.tick;
+        let (_, read, whole) = held.wholes.iter_mut().find(|(k, ..)| k == key)?;
+        *read = tick;
+        Some(Arc::clone(whole))
+    }
+
+    fn put(&self, key: WholeKey, whole: Arc<Whole>) {
+        let Ok(mut held) = self.held.lock() else {
+            return;
+        };
+        held.tick += 1;
+        let tick = held.tick;
+        held.wholes.retain(|(k, ..)| k.of_tree(&key) && *k != key);
+        held.wholes.push((key, tick, whole));
+        while held.wholes.len() > self.bound {
+            let oldest = (held.wholes.iter().enumerate())
+                .min_by_key(|(_, (_, read, _))| *read)
+                .map(|(at, _)| at);
+            match oldest {
+                Some(at) => held.wholes.remove(at),
+                None => break,
+            };
+        }
     }
 }
 
@@ -747,6 +954,47 @@ impl<'r> Composed<'r> {
     }
 }
 
+/// An open of the whole graph that answers only the whole graph ([`Composed::whole_at`]): it
+/// cannot be walked, so it reads nothing only a walk reads.
+pub struct WholeOpen<'r>(Composed<'r, Arc<Whole>>);
+
+impl WholeOpen<'_> {
+    /// The whole graph, its withheld part and its label ([`ContextGraph::into_whole`]).
+    pub fn into_whole(self) -> Result<WholeRead, Error> {
+        Box::new(self.0).into_whole()
+    }
+}
+
+impl<'r> Composed<'r> {
+    /// [`Self::at`] opened for its whole graph alone ([`WholeOpen`]): the read the dash's graph
+    /// view makes.
+    pub fn whole_at(
+        records: &'r dyn Neighbors,
+        view: &dyn CodeView,
+        filter: ViewFilter,
+        honesty: Honesty,
+        resolution: f64,
+    ) -> Result<WholeOpen<'r>, Error> {
+        let code = Arc::new(Whole::read(view, filter, resolution, false));
+        Composed::over(records, code, &view.stamp().tip, honesty).map(WholeOpen)
+    }
+
+    /// [`Self::whole_at`] with the code half taken from `memo` when it holds it for this read,
+    /// else resolved and held there ([`WholeMemo`]): the read of a process that reads the whole
+    /// graph again and again, as the dash does.
+    pub fn whole_held_at(
+        records: &'r dyn Neighbors,
+        view: &dyn CodeView,
+        filter: ViewFilter,
+        honesty: Honesty,
+        resolution: f64,
+        memo: &WholeMemo,
+    ) -> Result<WholeOpen<'r>, Error> {
+        let code = memo.whole(view, filter, resolution);
+        Composed::over(records, code, &view.stamp().tip, honesty).map(WholeOpen)
+    }
+}
+
 impl<'r, C: CodeHalf> Composed<'r, C> {
     /// `records` composed with `code`, a view of the tree `tip`, labelled by `honesty`.
     fn over(
@@ -824,6 +1072,15 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
     /// grouping's are the files it summarises).
     fn withholds(&self, node: &Node) -> bool {
         self.stale && self.code.holds(&node.id) && self.withholds_code(node)
+    }
+
+    /// How many test entities [`ContextGraph::hidden_tests`] answers, counted without copying
+    /// them.
+    fn hidden_test_count(&self) -> usize {
+        if self.label.compared == Compared::Uncomparable {
+            return 0;
+        }
+        self.code.hidden_test_count(&|n| !self.withholds_code(n))
     }
 
     /// Whether `node`, a node of the code half shown or hidden, is withheld because the worktree
@@ -1015,7 +1272,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         match way {
             Way::Out => {
                 for e in found.iter().filter(|e| e.rel == REL_GOVERNS) {
-                    for c in self.code.concepts_of(&e.to) {
+                    for c in self.code.concepts_of_within(&e.to, within) {
                         attached.push(attachment(e, &c));
                     }
                 }
@@ -1155,6 +1412,20 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
     fn locate(&self, entity: &str) -> Result<Located, Error> {
         locate(self, entity)
     }
+    fn definition_end(&self, site: &EntitySite) -> Result<Option<u32>, Error> {
+        let name = site.attrs.get("name").filter(|name| !name.is_empty());
+        let (Some(name), false) = (name, self.label.compared.withholds_code()) else {
+            return Ok(None);
+        };
+        let (file, path) = split_id(&site.id);
+        let recorded = Recorded {
+            name,
+            path,
+            kind: &site.kind,
+            line: site.line,
+        };
+        Ok(self.code.definition_end(file, recorded))
+    }
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
         self.of_kind(kind)
     }
@@ -1229,12 +1500,14 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
     /// The whole read in two phases: what withholding reads of the code half beside its graph
     /// first, then the graph moved out of the half and merged with the record half's.
     fn into_whole(mut self: Box<Self>) -> Result<WholeRead, Error> {
+        let tests_hidden = self.hidden_test_count();
         let withheld = self.withheld_groupings();
         let code = self.code.take_whole()?;
         let (graph, withheld) = self.whole_over(code, &withheld)?;
         Ok(WholeRead {
             graph,
             withheld,
+            tests_hidden,
             label: self.stamp_label(),
         })
     }
@@ -1753,6 +2026,382 @@ mod tests {
         }
         fn groupings(&self) -> &Groupings {
             &self.groupings
+        }
+    }
+
+    /// [`view`] whose file reads and definitions read by leaf are recorded, to count the files
+    /// and leaves an open resolves, holding what a store settles as a snapshot does.
+    struct Counted<'v> {
+        view: &'v Grouped,
+        asked: Mutex<Vec<String>>,
+        /// The files the view takes from a worktree ([`CodeView::overlaid`]).
+        overlaid: Vec<(String, Option<String>)>,
+    }
+
+    impl<'v> Counted<'v> {
+        /// `view`, its stamped tree alone, with nothing read yet.
+        fn new(view: &'v Grouped) -> Self {
+            Self {
+                view,
+                asked: Mutex::new(Vec::new()),
+                overlaid: Vec::new(),
+            }
+        }
+    }
+
+    impl CodeView for Counted<'_> {
+        fn stamp(&self) -> &Stamp {
+            self.view.stamp()
+        }
+        fn files(&self) -> Box<dyn Iterator<Item = FileRef<'_>> + '_> {
+            self.view.files()
+        }
+        fn file(&self, path: &str) -> Option<Cow<'_, FileFacts>> {
+            self.asked.lock().unwrap().push(format!("file {path}"));
+            self.view.file(path)
+        }
+        fn defs_named(&self, leaf: &str) -> Box<dyn Iterator<Item = DefRef<'_>> + '_> {
+            self.asked.lock().unwrap().push(format!("defs {leaf}"));
+            self.view.defs_named(leaf)
+        }
+        fn mentions_named(&self, leaf: &str) -> Box<dyn Iterator<Item = MentionRef<'_>> + '_> {
+            self.view.mentions_named(leaf)
+        }
+        fn groupings(&self) -> &Groupings {
+            self.view.groupings()
+        }
+        fn settled(&self) -> Option<&dyn crate::code_view::Settled> {
+            Some(self)
+        }
+        fn overlaid(&self) -> Vec<(String, Option<String>)> {
+            self.overlaid.clone()
+        }
+    }
+
+    /// What a store settles for the view at advance: no test file, and no proof, its one test
+    /// call landing on a placeholder; a read takes them rather than walking the test calls.
+    impl crate::code_view::Settled for Counted<'_> {
+        fn test_files(&self) -> Vec<&str> {
+            Vec::new()
+        }
+        fn proofs(&self, _of: crate::code_view::Proofs<'_>) -> Vec<ProofCall> {
+            Vec::new()
+        }
+    }
+
+    /// A whole read resolves no leaf only a walk reads: GIVEN a test in a code file calling
+    /// `helper`, which nothing defines, so the call lands on a placeholder, WHEN the graph is
+    /// opened for walks and for its whole graph alone under each filter, THEN only the open for
+    /// walks hiding tests reads `helper`'s definitions (the callers a walk reaches through its
+    /// placeholder), the open showing tests reads them once for the call's edge, and both opens
+    /// answer the same whole graph and count the hidden tests [`ContextGraph::hidden_tests`]
+    /// lists.
+    #[test]
+    fn a_whole_read_resolves_no_leaf_only_a_walk_reads() {
+        let mut grouped = view(Some("c1"));
+        let mut files: Vec<FileFacts> = (grouped.facts.files())
+            .filter_map(|f| grouped.facts.file(f.path).map(Cow::into_owned))
+            .collect();
+        let mut check = def("check");
+        check.test = true;
+        files.push(rust(
+            "src/c.rs",
+            vec![def("serve"), check],
+            vec![Mention {
+                enclosing: Some(1),
+                name: "helper".into(),
+                leaf: "helper".into(),
+                kind: MentionKind::Call,
+                line: 1,
+                test: true,
+            }],
+        ));
+        grouped.facts = FactsView::new(grouped.facts.stamp().clone(), files);
+        let records = records();
+        // (open, filter, the reads of `helper`'s definitions)
+        let cases = [
+            ("walks", Tests::Exclude, 1),
+            ("whole", Tests::Exclude, 0),
+            ("walks", Tests::Include, 1),
+            ("whole", Tests::Include, 1),
+        ];
+        let mut wholes = BTreeMap::new();
+        for (open, tests, want) in cases {
+            let counted = Counted::new(&grouped);
+            let filter = ViewFilter { tests };
+            let read = match open {
+                "walks" => Box::new(
+                    Composed::at(&records, &counted, filter, exact(), DEFAULT_RESOLUTION).unwrap(),
+                )
+                .into_whole(),
+                _ => Composed::whole_at(&records, &counted, filter, exact(), DEFAULT_RESOLUTION)
+                    .unwrap()
+                    .into_whole(),
+            }
+            .unwrap();
+            let asked = counted.asked.lock().unwrap();
+            let helper = asked.iter().filter(|read| *read == "defs helper").count();
+            assert_eq!(helper, want, "{open} under {tests:?}: reads of helper");
+            let hidden = Composed::at(&records, &grouped, filter, exact(), DEFAULT_RESOLUTION)
+                .unwrap()
+                .hidden_tests()
+                .unwrap()
+                .len();
+            assert_eq!(
+                read.tests_hidden, hidden,
+                "{open} under {tests:?}: the hidden tests counted"
+            );
+            let graph = format!("{:?}", read.graph);
+            let first = wholes
+                .entry(format!("{tests:?}"))
+                .or_insert_with(|| graph.clone());
+            assert_eq!(*first, graph, "{open} under {tests:?}: the whole graph");
+        }
+    }
+
+    /// A neighbourhood's last level resolves no file past it: GIVEN `dec-9`, about
+    /// `src/b.rs::compute` and governing `src/z.rs`, a file nothing else reaches, in a concept or
+    /// not, WHEN the neighbourhood of `compute` one hop deep is read near it, THEN `dec-9` at the
+    /// last level reads none of `src/z.rs` (its edge there, and an attachment to a concept the
+    /// walk never reached, are dropped unread), and the neighbourhood is the whole open's.
+    #[test]
+    fn a_neighbourhood_s_last_level_resolves_no_file_past_it() {
+        // (case, whether a concept groups `src/z.rs`)
+        let cases = [("in a concept", true), ("in no concept", false)];
+        for (case, grouped) in cases {
+            let mut view = view(Some("c1"));
+            let mut files: Vec<FileFacts> = (view.facts.files())
+                .filter_map(|f| view.facts.file(f.path).map(Cow::into_owned))
+                .collect();
+            files.push(rust("src/z.rs", vec![def("idle")], Vec::new()));
+            view.facts = FactsView::new(view.facts.stamp().clone(), files);
+            if grouped {
+                view.groupings.concepts.push(Cluster {
+                    id: "concept/1/1".into(),
+                    label: "idle".into(),
+                    resolution: 1.0,
+                    hash: "z".into(),
+                    members: vec!["src/z.rs".into()],
+                });
+            }
+            let (mut rows, aliases) = record_rows();
+            rows.nodes.push(node("dec-9", KIND_DECISION, &[]));
+            rows.edges
+                .push(edge("dec-9", "src/b.rs::compute", REL_ABOUT));
+            rows.edges.push(edge("dec-9", "src/z.rs", REL_GOVERNS));
+            let records = Indexed::new(rows, aliases);
+            let counted = Counted::new(&view);
+            let seed = ["src/b.rs::compute".to_string()];
+            let near = Composed::near(&records, &counted, ViewFilter::default(), exact()).unwrap();
+            let got = near.subgraph(&seed, 1).unwrap();
+            let asked = counted.asked.lock().unwrap();
+            let past: Vec<&String> = asked.iter().filter(|r| r.contains("src/z.rs")).collect();
+            assert!(
+                past.is_empty(),
+                "{case}: read past the last level: {past:?}"
+            );
+            let whole = composed(&records, &view, exact())
+                .subgraph(&seed, 1)
+                .unwrap();
+            assert_eq!(
+                format!("{got:?}"),
+                format!("{whole:?}"),
+                "{case}: the whole open's neighbourhood"
+            );
+        }
+    }
+
+    /// What a whole read of `view` under `tests` at `resolution` answers over `records`, through
+    /// `memo` when one is given, with whether it read any of the view (it resolved the view).
+    fn whole_read(
+        records: &Indexed,
+        view: &Counted,
+        tests: Tests,
+        resolution: f64,
+        memo: Option<&WholeMemo>,
+    ) -> (String, bool) {
+        view.asked.lock().unwrap().clear();
+        let filter = ViewFilter { tests };
+        let open = match memo {
+            Some(memo) => Composed::whole_held_at(records, view, filter, exact(), resolution, memo),
+            None => Composed::whole_at(records, view, filter, exact(), resolution),
+        };
+        let read = open.unwrap().into_whole().unwrap();
+        let answer = format!(
+            "{:?} {:?} {} {}",
+            read.graph, read.withheld, read.tests_hidden, read.label
+        );
+        (answer, !view.asked.lock().unwrap().is_empty())
+    }
+
+    /// A held whole answers only the read it was resolved for: GIVEN a memo holding the whole of
+    /// the view at `c1` with tests hidden at the default resolution, WHEN the graph is read whole
+    /// through it again for each row's tree, worktree files, filter and resolution, THEN only the
+    /// read of the same tree, files, filter and resolution is answered from the memo, reading
+    /// nothing of the view, and every read answers what a read through no memo answers.
+    #[test]
+    fn a_held_whole_answers_only_the_read_it_was_resolved_for() {
+        let (records, c1, c2) = (records(), view(Some("c1")), view(Some("c2")));
+        let other = vec![("src/a.rs".to_string(), Some("a2".to_string()))];
+        let deleted = vec![("src/a.rs".to_string(), None)];
+        // (read, its tree, the files it takes from the worktree, filter, resolution, whether it
+        // resolves the view again)
+        let rows = [
+            (
+                "the same read",
+                &c1,
+                vec![],
+                Tests::Exclude,
+                DEFAULT_RESOLUTION,
+                false,
+            ),
+            (
+                "tests shown",
+                &c1,
+                vec![],
+                Tests::Include,
+                DEFAULT_RESOLUTION,
+                true,
+            ),
+            (
+                "tests alone",
+                &c1,
+                vec![],
+                Tests::Only,
+                DEFAULT_RESOLUTION,
+                true,
+            ),
+            ("another grain", &c1, vec![], Tests::Exclude, 2.0, true),
+            (
+                "another tree",
+                &c2,
+                vec![],
+                Tests::Exclude,
+                DEFAULT_RESOLUTION,
+                true,
+            ),
+            (
+                "a worktree file",
+                &c1,
+                other,
+                Tests::Exclude,
+                DEFAULT_RESOLUTION,
+                true,
+            ),
+            (
+                "a deleted file",
+                &c1,
+                deleted,
+                Tests::Exclude,
+                DEFAULT_RESOLUTION,
+                true,
+            ),
+        ];
+        for (read, tree, overlaid, tests, resolution, resolves) in rows {
+            let memo = WholeMemo::new(WholeMemo::BOUND);
+            let first = Counted::new(&c1);
+            whole_read(
+                &records,
+                &first,
+                Tests::Exclude,
+                DEFAULT_RESOLUTION,
+                Some(&memo),
+            );
+            let view = Counted {
+                overlaid,
+                ..Counted::new(tree)
+            };
+            let (held, resolved) = whole_read(&records, &view, tests, resolution, Some(&memo));
+            let (unheld, _) = whole_read(&records, &view, tests, resolution, None);
+            assert_eq!(
+                (resolved, held == unheld),
+                (resolves, true),
+                "{read}: (resolved, answers the unheld read)"
+            );
+        }
+    }
+
+    /// The record half is never held: GIVEN a memo holding the whole of the view, WHEN a decision
+    /// about `src/b.rs::compute` is recorded and the graph is read whole through it again, THEN
+    /// the read reads nothing of the view and its answer holds the new decision, as a read
+    /// through no memo does.
+    #[test]
+    fn a_held_whole_merges_the_records_as_they_stand() {
+        let (c1, memo) = (view(Some("c1")), WholeMemo::new(WholeMemo::BOUND));
+        let view = Counted::new(&c1);
+        let (before, _) = whole_read(&records(), &view, Tests::Exclude, 1.0, Some(&memo));
+        let (mut rows, aliases) = record_rows();
+        rows.nodes.push(node("dec-2", KIND_DECISION, &[]));
+        rows.edges
+            .push(edge("dec-2", "src/b.rs::compute", REL_ABOUT));
+        let recorded = Indexed::new(rows, aliases);
+        let (held, resolved) = whole_read(&recorded, &view, Tests::Exclude, 1.0, Some(&memo));
+        let (unheld, _) = whole_read(&recorded, &view, Tests::Exclude, 1.0, None);
+        assert_eq!(
+            (
+                resolved,
+                held.contains("dec-2"),
+                before.contains("dec-2"),
+                held == unheld
+            ),
+            (false, true, false, true)
+        );
+    }
+
+    /// A memo holds its bound of one tree's reads: GIVEN a memo bound to two reads, WHEN the
+    /// rows' reads are made through it in order, THEN a read resolves the view again only when
+    /// the memo does not hold it: past the bound the least recently read is dropped, and a read
+    /// of another tree drops every read of the last.
+    #[test]
+    fn a_whole_memo_holds_its_bound_of_one_tree_s_reads() {
+        let (records, c1, c2) = (records(), view(Some("c1")), view(Some("c2")));
+        let memo = WholeMemo::new(2);
+        // (read, tree, filter, resolution, whether it resolves the view)
+        let rows = [
+            ("hidden", &c1, Tests::Exclude, DEFAULT_RESOLUTION, true),
+            ("shown", &c1, Tests::Include, DEFAULT_RESOLUTION, true),
+            (
+                "hidden again",
+                &c1,
+                Tests::Exclude,
+                DEFAULT_RESOLUTION,
+                false,
+            ),
+            (
+                "another grain, dropping shown",
+                &c1,
+                Tests::Exclude,
+                2.0,
+                true,
+            ),
+            (
+                "hidden held",
+                &c1,
+                Tests::Exclude,
+                DEFAULT_RESOLUTION,
+                false,
+            ),
+            (
+                "shown, dropping the grain",
+                &c1,
+                Tests::Include,
+                DEFAULT_RESOLUTION,
+                true,
+            ),
+            ("the grain again", &c1, Tests::Exclude, 2.0, true),
+            (
+                "another tree",
+                &c2,
+                Tests::Exclude,
+                DEFAULT_RESOLUTION,
+                true,
+            ),
+            ("the last tree's grain", &c1, Tests::Exclude, 2.0, true),
+        ];
+        for (read, tree, tests, resolution, resolves) in rows {
+            let view = Counted::new(tree);
+            let (_, resolved) = whole_read(&records, &view, tests, resolution, Some(&memo));
+            assert_eq!(resolved, resolves, "{read}: resolves the view");
         }
     }
 
@@ -2283,6 +2932,73 @@ mod tests {
                 let got = format!("{:#?}", (read.graph, read.label));
                 assert_eq!(got, want, "{case} (near {near})");
             }
+        }
+    }
+
+    /// A located definition's end is read from the facts the graph was read from: GIVEN the facts
+    /// of `src/a.rs` bounding `run` from line 1 to line 2, WHEN the near read is asked the end of
+    /// a site at each worktree comparison, THEN a read describing the worktree answers the facts'
+    /// bound for the definition at its name, kind and line, and none for a site no definition
+    /// sits at, while a read withholding its code facts answers none.
+    #[test]
+    fn a_located_definition_s_end_is_read_from_the_facts() {
+        // (case, the comparison, the site's id, kind and line, the end)
+        let cases = [
+            (
+                "the facts' bound",
+                Compared::Overlaid(0),
+                "src/a.rs::run",
+                "function",
+                1,
+                Some(2),
+            ),
+            (
+                "another line",
+                Compared::Overlaid(0),
+                "src/a.rs::run",
+                "function",
+                2,
+                None,
+            ),
+            (
+                "another kind",
+                Compared::Overlaid(0),
+                "src/a.rs::run",
+                "struct",
+                1,
+                None,
+            ),
+            (
+                "another path",
+                Compared::Overlaid(0),
+                "src/a.rs::x::run",
+                "function",
+                1,
+                None,
+            ),
+            (
+                "no comparison",
+                Compared::Uncomparable,
+                "src/a.rs::run",
+                "function",
+                1,
+                None,
+            ),
+        ];
+        let (records, view) = (records(), view(Some("c1")));
+        for (case, compared, id, kind, line, want) in cases {
+            let near = Composed::near(&records, &view, ViewFilter::default(), honest(compared));
+            let site = EntitySite {
+                id: id.into(),
+                kind: kind.into(),
+                file: Some("src/a.rs".into()),
+                line,
+                degree: 0,
+                attrs: BTreeMap::from([("name".to_string(), "run".to_string())]),
+                unresolved: Vec::new(),
+            };
+            let got = near.unwrap().definition_end(&site).unwrap();
+            assert_eq!(got, want, "{case}");
         }
     }
 

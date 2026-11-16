@@ -1063,6 +1063,15 @@ pub trait ContextGraph: Send + Sync {
         Ok(Located::None)
     }
 
+    /// The last line of the definition `site` locates, as the file facts this graph was read from
+    /// bound it ([`crate::code_facts::Recorded::widest_end`], the rule the extractor bounds by),
+    /// when those facts describe the caller's tree: what `graph --show` bounds a body by without
+    /// parsing the file again. `None` when the graph read no such fact or withholds its code
+    /// facts; the caller then bounds the body itself. The default answers `None`.
+    fn definition_end(&self, _site: &EntitySite) -> Result<Option<u32>, Error> {
+        Ok(None)
+    }
+
     /// Every node of `kind` this graph holds, ordered by id: the names the combined lookup
     /// resolves a term against (`code-entity`) and the records it ranks as prose (`decision`,
     /// `lesson`, `finding`). A projection that holds no node of `kind` answers an empty set.
@@ -1133,13 +1142,14 @@ pub trait ContextGraph: Send + Sync {
     /// differs from it, with the count of nodes withheld so far for differing.
     fn stamp_label(&self) -> crate::composed::Label;
 
-    /// [`Self::whole`] and then [`Self::stamp_label`], read by consuming the graph so a graph
-    /// that holds its nodes may move them into the answer rather than copy them; a graph that
-    /// withholds nothing has no withheld part.
+    /// [`Self::whole`], the count of [`Self::hidden_tests`] and then [`Self::stamp_label`], read
+    /// by consuming the graph so a graph that holds its nodes may move them into the answer rather
+    /// than copy them; a graph that withholds nothing has no withheld part.
     fn into_whole(self: Box<Self>) -> Result<crate::composed::WholeRead, Error> {
         Ok(crate::composed::WholeRead {
             graph: self.whole()?,
             withheld: Graph::default(),
+            tests_hidden: self.hidden_tests()?.len(),
             label: self.stamp_label(),
         })
     }

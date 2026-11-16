@@ -29349,6 +29349,27 @@ fn mcp_rigger_graph_show_resolves_a_seeded_entity_and_reports_none_for_an_unknow
         missing["result"]["structuredContent"]["status"], "none",
         "an unresolved show query must answer honestly none, never error; got:\n{missing}"
     );
+    // A miss names what it is nearest to, as `rigger graph --show`'s not-found note does: the
+    // entity a misspelling reaches by id, else the names sharing its longest prefix, else none.
+    for (show, nearest) in [
+        (
+            "frobnicat",
+            serde_json::json!(["src/widget.rs::frobnicate"]),
+        ),
+        ("frobzzzzzz", serde_json::json!(["frobnicate"])),
+        ("zzz_nothing", serde_json::json!([])),
+    ] {
+        let missed = mcp.call(
+            "tools/call",
+            serde_json::json!({"name": "rigger_graph", "arguments": {"show": show}}),
+        );
+        let missed = &missed["result"]["structuredContent"];
+        assert_eq!(
+            (&missed["status"], &missed["nearest"]),
+            (&serde_json::json!("none"), &nearest),
+            "{show}: {missed}"
+        );
+    }
 
     mcp.finish_cleanly();
 }

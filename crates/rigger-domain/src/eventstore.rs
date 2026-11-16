@@ -825,6 +825,114 @@ pub trait EventStore: Send + Sync {
     /// (spec 101). A backend answers from its own group index or group stream, never by reading
     /// the stream and never by materializing it.
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error>;
+
+    /// The events on `stream` of one of `types` whose data holds the record id `id`
+    /// ([`record_id_of`]), in log (position) order: what a show surface reads a decision, lesson
+    /// or finding the graph no longer holds by. A backend answers from its own index of the
+    /// record id where it keeps one, so the read costs the events holding the id and never the
+    /// stream; one that keeps none reads `types` from its type index and hands back only the
+    /// events holding the id.
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error>;
+}
+
+/// The RECORD ID an event's data holds: the string under the top-level `"id"` key of a data that
+/// is a JSON object, the id a decision, lesson or finding is shown by; `None` for a data that is
+/// not such an object or whose `"id"` is not a string. A repeated `"id"` key holds its first
+/// value, as SQLite's JSON path reads it. Every other value is skipped unread.
+pub fn record_id_of(data: &[u8]) -> Option<String> {
+    serde_json::from_slice::<ObjectId>(data).ok()?.0
+}
+
+/// The record id of a JSON object ([`record_id_of`]), read by a visitor of objects alone: serde
+/// reads a derived struct from an array too, by position.
+struct ObjectId(Option<String>);
+
+impl<'de> serde::Deserialize<'de> for ObjectId {
+    fn deserialize<D: serde::Deserializer<'de>>(reader: D) -> Result<Self, D::Error> {
+        reader.deserialize_map(ObjectIdVisitor)
+    }
+}
+
+/// Visits a JSON object's keys, reading the value of the first `"id"` alone.
+struct ObjectIdVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ObjectIdVisitor {
+    type Value = ObjectId;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a JSON object")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<ObjectId, A::Error> {
+        let mut first: Option<Option<String>> = None;
+        while let Some(key) = map.next_key::<IdKey>()? {
+            match (key, &first) {
+                (IdKey::Id, None) => {
+                    first = Some(match map.next_value::<serde_json::Value>()? {
+                        serde_json::Value::String(id) => Some(id),
+                        _ => None,
+                    });
+                }
+                _ => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(ObjectId(first.flatten()))
+    }
+}
+
+/// A key of a data's object: `"id"`, or another.
+enum IdKey {
+    Id,
+    Other,
+}
+
+impl<'de> serde::Deserialize<'de> for IdKey {
+    fn deserialize<D: serde::Deserializer<'de>>(reader: D) -> Result<Self, D::Error> {
+        reader.deserialize_identifier(IdKeyVisitor)
+    }
+}
+
+/// Tells `"id"` from every other key, borrowed or unescaped alike.
+struct IdKeyVisitor;
+
+impl serde::de::Visitor<'_> for IdKeyVisitor {
+    type Value = IdKey;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("an object key")
+    }
+
+    fn visit_str<E: serde::de::Error>(self, key: &str) -> Result<IdKey, E> {
+        Ok(match key {
+            "id" => IdKey::Id,
+            _ => IdKey::Other,
+        })
+    }
+}
+
+/// [`EventStore::read_by_record_id`] answered from the type read alone
+/// ([`EventStore::read_stream_typed`]): every event of `types` on `stream`, less each whose data
+/// holds another record id or none ([`record_id_of`]). The read of a backend that keeps no index
+/// of the record id.
+pub fn record_read_by_types(
+    store: &(impl EventStore + ?Sized),
+    stream: &str,
+    types: &[&str],
+    id: &str,
+) -> Result<Vec<Event>, Error> {
+    if types.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut events = store.read_stream_typed(stream, 0, TypeSelection::Only(types))?;
+    events.retain(|e| record_id_of(&e.data).as_deref() == Some(id));
+    Ok(events)
 }
 
 /// THE ONE MEANING OF AN ABSENCE ON A SINGLE-EVENT APPEND, tested where it is decided.
@@ -893,6 +1001,31 @@ mod appended_one_tests {
             "and it must not silently hand back the last of several positions as though it \
              were the one: {message}"
         );
+    }
+}
+
+#[cfg(test)]
+mod record_id_tests {
+    use super::record_id_of;
+
+    #[test]
+    fn a_record_id_is_the_id_string_of_an_object_and_nothing_else() {
+        let rows: [(&str, Option<&str>); 10] = [
+            (r#"{"id":"r-1","n":0}"#, Some("r-1")),
+            (r#"{"n":6,"id":"r-1"}"#, Some("r-1")),
+            // A repeated key reads its first value, as SQLite's JSON path does.
+            (r#"{"id":"r-1","id":"r-2"}"#, Some("r-1")),
+            (r#"{"id":1,"id":"r-2"}"#, None),
+            (r#"{"\u0069d":"r-1"}"#, Some("r-1")),
+            (r#"["r-1"]"#, None),
+            (r#"{"id":1}"#, None),
+            (r#"{"n":1}"#, None),
+            ("not json", None),
+            (r#""r-1""#, None),
+        ];
+        for (data, id) in rows {
+            assert_eq!(record_id_of(data.as_bytes()).as_deref(), id, "{data}");
+        }
     }
 }
 

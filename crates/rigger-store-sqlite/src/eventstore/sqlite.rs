@@ -75,7 +75,58 @@ fn latest_in_group_sql() -> String {
     )
 }
 
+/// The expression the record index and both record reads name, indexed or not: the string under
+/// a row's top-level `"id"` key, as SQLite's JSON reads it, and NULL for a data that is not JSON or
+/// holds no string id - so a row a broken writer left undecodable is simply not indexed, never an
+/// error that fails every later write or the open that creates the index. It agrees with
+/// [`super::record_id_of`] on every row a rigger writer makes.
+const RECORD_ID_EXPR: &str = "CASE WHEN json_valid(CAST(data AS TEXT)) \
+     AND json_type(CAST(data AS TEXT), '$.id') = 'text' \
+     THEN json_extract(CAST(data AS TEXT), '$.id') END";
+
+/// The record index behind [`EventStore::read_by_record_id`]: a PARTIAL expression index over the
+/// stream and [`RECORD_ID_EXPR`], holding only the rows whose data carries a record id, created
+/// with the schema of a new store; a store recorded before it gains it at `rigger setup`
+/// ([`Store::index_record_ids`]), and is read without it until then. Its rows go with the events
+/// they index. The read's `WHERE` names the identical expression, so the planner seeks it.
+fn record_index_sql() -> String {
+    format!(
+        "CREATE INDEX IF NOT EXISTS idx_events_record ON events(stream, {RECORD_ID_EXPR}, position) \
+         WHERE {RECORD_ID_EXPR} IS NOT NULL"
+    )
+}
+
+/// Whether the schema of `conn`'s file holds a table or an index named `name`.
+fn holds(conn: &Connection, name: &str) -> Result<bool, Error> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = ?1)",
+        params![name],
+        |r| r.get(0),
+    )
+    .map_err(be)
+}
+
 const COLS: &str = "position, stream, type, id, data, meta, valid_from, recorded_at, revision";
+
+/// The record read: the stream's events holding the record id `?2`, of the types bound from `?3`
+/// on, in log order - one seek of `idx_events_record` when the store holds it, else the same
+/// filter on the same [`RECORD_ID_EXPR`] over the stream's rows, so the two cannot answer apart.
+fn record_read_sql(types: usize, indexed: bool) -> String {
+    let binds = (0..types)
+        .map(|i| format!("?{}", i + 3))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let index = if indexed {
+        "INDEXED BY idx_events_record "
+    } else {
+        ""
+    };
+    format!(
+        "SELECT {COLS} FROM events {index}\
+         WHERE stream = ?1 AND {RECORD_ID_EXPR} = ?2 AND {RECORD_ID_EXPR} IS NOT NULL \
+         AND type IN ({binds}) ORDER BY position"
+    )
+}
 
 /// The global read behind [`EventStore::read_all`] in `dir`: the events past position `?1`
 /// (exclusive) whose stream matches the slice pattern `?2`, in log order.
@@ -136,13 +187,42 @@ pub struct Store {
 
 impl Store {
     /// Open (creating if needed) the store at path. Use ":memory:" in tests.
+    ///
+    /// A new store is created with the record index in the transaction that creates its table;
+    /// an existing one is never given it here ([`Store::index_record_ids`]), so an open of a store
+    /// that holds its table writes nothing the store did not already hold.
     pub fn open(path: &str) -> Result<Self, Error> {
-        let conn = open_connection(path).map_err(be)?;
-        conn.execute_batch(SCHEMA).map_err(be)?;
-        conn.execute_batch(&group_index_sql()).map_err(be)?;
+        let mut conn = open_connection(path).map_err(be)?;
+        if holds(&conn, "events")? {
+            conn.execute_batch(SCHEMA).map_err(be)?;
+            conn.execute_batch(&group_index_sql()).map_err(be)?;
+        } else {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(be)?;
+            tx.execute_batch(SCHEMA).map_err(be)?;
+            tx.execute_batch(&group_index_sql()).map_err(be)?;
+            tx.execute_batch(&record_index_sql()).map_err(be)?;
+            tx.commit().map_err(be)?;
+        }
         Ok(Store {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    /// Whether the store holds the record index behind [`EventStore::read_by_record_id`].
+    pub fn has_record_index(&self) -> Result<bool, Error> {
+        holds(&self.conn.lock().unwrap(), "idx_events_record")
+    }
+
+    /// Index the record ids of every event the store holds, when it does not yet: one write
+    /// transaction reading every row's data, which `rigger setup` runs on a store recorded before
+    /// the index once no run is live. A record read answers the same without it, filtering the
+    /// stream's rows on the same expression the index holds.
+    pub fn index_record_ids(&self) -> Result<(), Error> {
+        (self.conn.lock().unwrap())
+            .execute_batch(&record_index_sql())
+            .map_err(be)
     }
 
     /// Whether any stream whose name starts with `prefix` holds an event. An EXACT
@@ -1225,6 +1305,30 @@ impl EventStore for Store {
         .optional()
         .map_err(be)
     }
+
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        if types.is_empty() {
+            return Ok(Vec::new());
+        }
+        let indexed = self.has_record_index()?;
+        let binds: Vec<rusqlite::types::Value> = [stream.to_string().into(), id.to_string().into()]
+            .into_iter()
+            .chain(types.iter().map(|t| t.to_string().into()))
+            .collect();
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(&record_read_sql(types.len(), indexed))
+            .map_err(be)?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(binds), row_to_event)
+            .map_err(be)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(be)
+    }
 }
 
 /// The watermark a subscription's polling thread advances as it delivers events.
@@ -1316,15 +1420,16 @@ mod tests {
 
     /// EVERY LOOKUP IS ONE SEEK (spec 101): sqlite's own plan for the boundary lookup is one search
     /// of the stream-and-type index, and for the group lookup one search of the partial group index
-    /// over the stream and the group entry - never a scan of the table and never a sort step, so
-    /// neither cost grows with the events the stream holds. The page (spec 124) is one range
+    /// over the stream and the group entry, and for the record read one search of the partial
+    /// record index over the stream and the record id - never a scan of the table and never a sort
+    /// step, so no cost grows with the events the stream holds. The page (spec 124) is one range
     /// search of the position key with no sort step, so its `LIMIT` stops the read at the page's
     /// last row.
     #[test]
     fn each_lookup_is_one_seek_of_its_index() {
         let s = Store::open(":memory:").unwrap();
         let conn = s.conn.lock().unwrap();
-        let rows: [(String, &[&dyn rusqlite::ToSql], &str); 3] = [
+        let rows: [(String, &[&dyn rusqlite::ToSql], &str); 4] = [
             (
                 LAST_POSITION_SQL.to_string(),
                 &[&"rigger", &"RunStarted"],
@@ -1339,6 +1444,11 @@ mod tests {
                 page_sql(),
                 &[&0_i64, &"proj-a-%", &256_i64],
                 "SEARCH events USING INTEGER PRIMARY KEY (rowid>?)",
+            ),
+            (
+                record_read_sql(2, true),
+                &[&"rigger", &"d-1", &"DecisionMade", &"LessonLearned"],
+                "SEARCH events USING INDEX idx_events_record (stream=? AND <expr>=?)",
             ),
         ];
         for (sql, bound, plan) in rows {
@@ -1443,6 +1553,231 @@ mod tests {
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
             })
+        );
+    }
+
+    /// An events file as a binary from before the record index wrote it at `path`: the schema and
+    /// the group index, a row holding the record id `r-1` and a row whose data is not JSON.
+    fn an_events_file_from_before_the_record_index(path: &str) {
+        let old = Connection::open(path).unwrap();
+        old.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+        old.execute_batch(SCHEMA).unwrap();
+        old.execute_batch(&group_index_sql()).unwrap();
+        for (id, data, revision) in [("e0", &br#"{"id":"r-1"}"#[..], 0), ("e1", b"\xff", 1)] {
+            old.execute(
+                "INSERT INTO events (stream, type, id, data, meta, valid_from, recorded_at, revision)
+                 VALUES ('rigger', 'X', ?1, ?2, '{}', 0, 0, ?3)",
+                params![id, data, revision],
+            )
+            .unwrap();
+        }
+    }
+
+    /// Whether the file at `path` holds the record index, read through a connection of its own.
+    fn holds_the_record_index(path: &str) -> bool {
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'idx_events_record')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// The ids of the events of type `X` on `rigger` holding the record id `r-1`.
+    fn r1_read(s: &Store) -> Vec<String> {
+        let read = s.read_by_record_id("rigger", &["X"], "r-1").unwrap();
+        read.into_iter().map(|e| e.id).collect()
+    }
+
+    /// AN OPEN OF AN EXISTING STORE NEVER WRITES IT: GIVEN an events file from before the record
+    /// index, WHEN it is opened as each opener finds it - free, held by another connection's
+    /// write transaction, or a file the process cannot write - THEN the open succeeds, the record
+    /// read answers the row holding the id without the index, and once every connection has
+    /// closed the file's bytes are the ones it held before and it holds no record index.
+    #[test]
+    fn opening_an_events_file_from_before_the_record_index_writes_nothing_and_reads_records() {
+        // (opener, whether another connection holds a write transaction, whether the file is
+        // read-only)
+        let rows = [
+            ("a free file", false, false),
+            ("a file another connection is writing", true, false),
+            ("a read-only file", false, true),
+        ];
+        for (opener, held, read_only) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("events.db");
+            let path = path.to_str().unwrap();
+            an_events_file_from_before_the_record_index(path);
+            let before = std::fs::read(path).unwrap();
+            let writer = held.then(|| {
+                let w = Connection::open(path).unwrap();
+                w.execute_batch("BEGIN IMMEDIATE").unwrap();
+                w
+            });
+            let set_read_only = |on: bool| {
+                let mut perms = std::fs::metadata(path).unwrap().permissions();
+                perms.set_readonly(on);
+                std::fs::set_permissions(path, perms).unwrap();
+            };
+            if read_only {
+                set_read_only(true);
+            }
+            let s = Store::open(path).unwrap_or_else(|e| panic!("{opener}: the open fails: {e}"));
+            assert_eq!(r1_read(&s), ["e0"], "{opener}: the record read");
+            drop(s);
+            drop(writer);
+            if read_only {
+                set_read_only(false);
+            }
+            assert_eq!(
+                (
+                    std::fs::read(path).unwrap() == before,
+                    holds_the_record_index(path)
+                ),
+                (true, false),
+                "{opener}: the file is left as it stood"
+            );
+        }
+    }
+
+    /// GIVEN an events file from before the record index, WHEN the store indexes its record ids,
+    /// THEN it holds the index, the record read is one seek of it answering the row holding the
+    /// id, and a row whose data is not JSON fails neither the index's creation nor a later write.
+    #[test]
+    fn indexing_an_events_file_from_before_the_record_index_seeks_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let path = path.to_str().unwrap();
+        an_events_file_from_before_the_record_index(path);
+        let s = Store::open(path).unwrap();
+        let before = s.has_record_index().unwrap();
+        s.index_record_ids()
+            .expect("an undecodable row never fails the index's creation");
+        s.conn
+            .lock()
+            .unwrap()
+            .execute("UPDATE events SET data = x'ff' WHERE id = 'e1'", [])
+            .expect("nor a later write of one");
+        let plan: Vec<String> = {
+            let conn = s.conn.lock().unwrap();
+            let mut stmt = conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {}", record_read_sql(1, true)))
+                .unwrap();
+            let rows = stmt.query_map(params!["rigger", "r-1", "X"], |r| r.get::<_, String>(3));
+            rows.unwrap().map(Result::unwrap).collect()
+        };
+        assert_eq!(
+            (before, s.has_record_index().unwrap(), plan, r1_read(&s)),
+            (
+                false,
+                true,
+                vec!["SEARCH events USING INDEX idx_events_record (stream=? AND <expr>=?)".into()],
+                vec!["e0".to_string()]
+            )
+        );
+    }
+
+    /// A store created new holds the record index from its first open.
+    #[test]
+    fn a_new_events_file_holds_the_record_index_from_its_first_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.db");
+        let s = Store::open(path.to_str().unwrap()).unwrap();
+        assert!(s.has_record_index().unwrap());
+        assert!(holds_the_record_index(path.to_str().unwrap()));
+    }
+
+    /// THE RECORD READ WITHOUT ITS INDEX: a store whose record index is absent answers the
+    /// contract's record rows, and every other, as the indexed store does.
+    #[test]
+    fn passes_the_contract_without_the_record_index() {
+        let s = Store::open(":memory:").unwrap();
+        (s.conn.lock().unwrap())
+            .execute_batch("DROP INDEX idx_events_record")
+            .unwrap();
+        assert!(!s.has_record_index().unwrap());
+        crate::eventstore::contract::assert_contract(&s);
+    }
+
+    /// BOTH SQLITE RECORD READS SHARE ONE EXPRESSION: GIVEN rows no rigger writer makes, on which
+    /// SQLite's JSON and a strict JSON decoder disagree, WHEN the record read runs with its index
+    /// and then without it, THEN both answer exactly the rows SQLite's JSON reads the id from, so
+    /// one log answers alike before and after `rigger setup` indexes it.
+    #[test]
+    fn the_record_read_answers_alike_with_its_index_and_without_it() {
+        let deep = format!(
+            r#"{{"id":"r-1","x":{}{}}}"#,
+            "[".repeat(1000),
+            "]".repeat(1000)
+        );
+        // (row, its data, whether SQLite's JSON reads the id `r-1` from it)
+        let rows: [(&str, Vec<u8>, bool); 4] = [
+            (
+                "an object holding the id",
+                br#"{"id":"r-1"}"#.to_vec(),
+                true,
+            ),
+            (
+                "a key holding a lone surrogate escape",
+                br#"{"\ud800":1,"id":"r-1"}"#.to_vec(),
+                true,
+            ),
+            (
+                "a key holding a raw 0xff byte",
+                b"{\"\xff\":1,\"id\":\"r-1\"}".to_vec(),
+                true,
+            ),
+            (
+                "a value nested 1000 deep after the id",
+                deep.into_bytes(),
+                false,
+            ),
+        ];
+        let s = Store::open(":memory:").unwrap();
+        let events: Vec<Event> = rows
+            .iter()
+            .map(|(_, data, _)| Event::new("X", data.clone()))
+            .collect();
+        s.append("rigger", ExpectedRevision::NoStream, &events)
+            .unwrap();
+        let read = |s: &Store| -> Vec<&str> {
+            let held = s.read_by_record_id("rigger", &["X"], "r-1").unwrap();
+            held.into_iter()
+                .map(|e| rows[e.revision as usize].0)
+                .collect()
+        };
+        let expected: Vec<&str> = rows.iter().filter(|r| r.2).map(|r| r.0).collect();
+        let indexed = read(&s);
+        (s.conn.lock().unwrap())
+            .execute_batch("DROP INDEX idx_events_record")
+            .unwrap();
+        let unindexed = read(&s);
+        assert_eq!(
+            (indexed, unindexed),
+            (expected.clone(), expected),
+            "(with the index, without it)"
+        );
+    }
+
+    /// `rigger reset --derived`'s rewrite keeps the record index: GIVEN a store holding free pages,
+    /// WHEN its derived events are deleted and its space reclaimed, the file rewritten in full,
+    /// THEN the file still holds the record index.
+    #[test]
+    fn reclaiming_a_store_s_space_keeps_the_record_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let (s, path) = store_holding_free_pages(dir.path(), 400);
+        let on_disk = s.bytes_on_disk();
+        s.delete_derived("run").unwrap();
+        let reclaimed = s.reclaim_space(on_disk);
+        assert_eq!(
+            (
+                reclaimed.compaction_ran,
+                s.has_record_index().unwrap(),
+                holds_the_record_index(path.to_str().unwrap())
+            ),
+            (true, true, true)
         );
     }
 

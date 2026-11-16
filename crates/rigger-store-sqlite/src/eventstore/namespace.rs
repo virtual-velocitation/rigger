@@ -224,6 +224,18 @@ impl EventStore for Namespaced<'_> {
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.inner.latest_in_group(&self.scoped(stream), group)
     }
+
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        let events = self
+            .inner
+            .read_by_record_id(&self.scoped(stream), types, id)?;
+        Ok(self.strip(events))
+    }
 }
 
 /// Wrap a subscription so each delivered event has the namespace prefix stripped

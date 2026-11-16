@@ -241,6 +241,15 @@ where
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.store.latest_in_group(stream, group)
     }
+
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        self.store.read_by_record_id(stream, types, id)
+    }
 }
 
 /// What [`FoldingStore::append_and_fold`] did: the store's own report of what it wrote, and what became
