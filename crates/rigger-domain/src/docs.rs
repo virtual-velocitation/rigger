@@ -42,7 +42,8 @@ pub struct DocsContext {
     pub base_ref: String,
     /// The loopback port the always-on dashboard binds first (`dash::DEFAULT_PORT`).
     pub dash_port: u16,
-    /// The bounded-remediation ceiling before a unit escalates (`safety::MAX_RETRIES`).
+    /// The built-in remediation bound a unit escalates at when neither its stage nor
+    /// `defaults` sets `max_retries` (`safety::MAX_RETRIES`).
     pub max_retries: u32,
     /// The verdict value that approves a unit on the result channel, read from the same
     /// definition the integration gate uses (`conductor::VERDICT_APPROVE`).
@@ -328,8 +329,9 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "An approved unit integrates itself onto the run branch. A human reviews the whole \
          run by opening a pull request FROM the run branch, never by cherry-picking approved \
          units by hand - cherry-picking drops the run's accumulated context and its ordering. \
-         A failing unit is retried under a bounded budget (up to {max} attempts) and then \
-         escalated to a human rather than spinning forever.\n",
+         A failing unit is retried under a bounded budget (its stage's or fan-out template's \
+         own `max_retries`, else `defaults.max_retries`, {max} attempts when neither is set) \
+         and then escalated to a human rather than spinning forever.\n",
         max = ctx.max_retries
     );
 
@@ -1083,9 +1085,9 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
 
 /// Render the `rigger-handle-an-escalation` skill (spec 68, criterion 2): acting on a
 /// unit the loop handed back to a human. Unlike its four siblings, this one DOES
-/// interpolate from `ctx`: the remediation bound it names is [`DocsContext::max_retries`],
-/// the same code-derived fact `using-rigger` interpolates, so the two can never disagree
-/// on what the bound actually is.
+/// interpolate from `ctx`: the built-in remediation bound it names is
+/// [`DocsContext::max_retries`], the same code-derived fact `using-rigger` interpolates, so
+/// the two can never disagree on what the bound is when no key sets it.
 fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
     render_operation_skill(
         "rigger-handle-an-escalation",
@@ -1096,9 +1098,10 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
         &[],
         &[
             &format!(
-                "An escalated unit gave up at the remediation bound (`defaults.max_retries`, {max} \
-                 by default) - the loop will not retry it on its own; it is waiting on a human \
-                 decision. Read the recorded lesson for the CONCRETE final failure - via `rigger \
+                "An escalated unit gave up at its remediation bound - its stage's or fan-out \
+                 template's own `max_retries`, else `defaults.max_retries` ({max} when neither \
+                 is set), the bound its `reject-recurrence #n/max` blocker line showed. The loop \
+                 will not retry it on its own; it is waiting on a human decision. Read the recorded lesson for the CONCRETE final failure - via `rigger \
                  peers` scoped to the unit's files, or the dashboard - rather than guessing: the \
                  escalation lesson carries the actual failing gate or review reason, not a \
                  placeholder, and that reason is the bounded remedy you are about to apply.\n",
@@ -1307,8 +1310,9 @@ fn render_diagnose_churn_skill(ctx: &DocsContext) -> String {
         ],
         "Never blame the model or the panel without having run the finding audit first - a \
          reviewer that is factually correct every single round is not the problem, even when \
-         it rejects the same unit five times in a row. And do not reflexively raise \
-         `defaults.max_retries` to buy another attempt: a bigger budget spent against the \
+         it rejects the same unit five times in a row. And do not reflexively raise the \
+         unit's bound (its stage's or fan-out template's own `max_retries`, else \
+         `defaults.max_retries`) to buy another attempt: a bigger budget spent against the \
          SAME unaudited failure reproduces exactly the failure the audit exists to catch, \
          just more expensively.\n",
         "planning-a-spec owns the churn-signature table and the spec-amendment protocol this \

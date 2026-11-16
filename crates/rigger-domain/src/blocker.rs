@@ -43,8 +43,9 @@ pub const TYPE_BUDGET_EXHAUSTED: &str = "BudgetExhausted";
 
 /// The reject-recurrence diagnose threshold (spec 69 Design: "reject-recurrence at the diagnose
 /// threshold (>= 3 ...")): the count at which a failing unit stops reading as remediating on its
-/// own and needs an operator's look. Fixed by the spec text, independent of the run's configured
-/// `defaults.max_retries` (a different bound, for a different purpose - when the conductor
+/// own and needs an operator's look. Fixed by the spec text, independent of the bound the
+/// conductor escalates a unit at (its stage's or fan-out template's own `max_retries`, else
+/// `defaults.max_retries`: a different bound, for a different purpose - when the conductor
 /// escalates, not when an operator should look). It lives here, beside the `reject-recurrence`
 /// kind, rather than in the store-gated `watch` module whose reject-recurrence-trend signal
 /// alerts on it, so the console's always-compiled needs-you dock reads the same constant.
@@ -80,10 +81,10 @@ pub enum Kind {
     /// Gates are green and the unit is under review (adjudication pending).
     Reviewing,
     /// The unit failed and is remediating: this is failure `n` of the `max` bound it
-    /// escalates at ([`ledger::Unit::max_retries`], stamped on its failure). `cause` is the conductor's own
-    /// closed-vocabulary tag for WHY (spec 69, criterion 3: the cause wire) - `reject`,
-    /// `gate:<name>`, `integrate-conflict`, or `infra:<kind>` - defaulted to `"unknown"`
-    /// when the folded [`ledger::Unit::cause`] is empty (a cause-less prior event).
+    /// escalates at ([`ledger::Unit::max_retries`], stamped on its failure). `cause` is the
+    /// conductor's own closed-vocabulary tag for WHY (spec 69, criterion 3: the cause wire) -
+    /// `reject`, `gate:<name>`, `integrate-conflict`, or `infra:<kind>` - defaulted to
+    /// `"unknown"` when the folded [`ledger::Unit::cause`] is empty (a cause-less prior event).
     RejectRecurrence { n: u32, max: u32, cause: String },
     /// The review approved (on the result channel) but the unit is not yet integrated.
     ApprovedNotIntegrated,
