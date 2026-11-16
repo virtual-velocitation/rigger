@@ -4,47 +4,79 @@
 //! lock command. In production code under `src/` or a crate's `src/`, outside that file, a
 //! `"flock"` string literal, or `"sh"` as the first argument of `command`, `command_in` or
 //! `Command::new`, fails the suite, naming file and line; a `#[cfg(test)]` module and a comment
-//! line are not production code and are skipped.
+//! line are not production code and are skipped. A spawn's first argument is read through the
+//! source audits' lexer, so a call rustfmt splits across lines is named at its `"sh"` line, and a
+//! string literal or a block comment holds no call.
 
 use crate::common;
 use crate::source_audit;
-use source_audit::Finding;
+use source_audit::{Finding, RawKind, RawTok};
 use std::path::Path;
 
 /// The process-spawn port, the one production file that spawns `sh` by name.
 const SPAWN_PORT: &str = "crates/rigger-process/src/subprocess.rs";
 
-/// Each literal the scan finds, with the shape it reports.
-const NEEDLES: [(&str, &str); 4] = [
-    (
-        "\"flock\"",
-        "the external lock command named outside the process-spawn port",
-    ),
-    (
-        "command(\"sh\"",
-        "an sh spawn outside the process-spawn port",
-    ),
-    (
-        "command_in(\"sh\"",
-        "an sh spawn outside the process-spawn port",
-    ),
-    (
-        "Command::new(\"sh\"",
-        "an sh spawn outside the process-spawn port",
-    ),
-];
+/// The external lock command's name as a string literal.
+const LOCK_COMMAND: &str = "\"flock\"";
 
-/// Every needle's hit in the production sources under `root`, in file and line order.
+/// The shape a hit of [`LOCK_COMMAND`] reports.
+const LOCK_COMMAND_SHAPE: &str = "the external lock command named outside the process-spawn port";
+
+/// The shape an `sh` spawn's hit reports.
+const SH_SPAWN_SHAPE: &str = "an sh spawn outside the process-spawn port";
+
+/// Every hit in the production sources under `root`, in file and line order: each
+/// [`LOCK_COMMAND`] and each [`sh_spawns`] one.
 fn scan_tree(root: &Path) -> Vec<Finding> {
     let sources = common::repo::production_sources(root);
-    let mut findings: Vec<Finding> = NEEDLES
-        .iter()
-        .flat_map(|&(literal, shape)| {
-            source_audit::literal_outside(&sources, SPAWN_PORT, literal, shape)
-        })
-        .collect();
+    let mut findings =
+        source_audit::literal_outside(&sources, SPAWN_PORT, LOCK_COMMAND, LOCK_COMMAND_SHAPE);
+    findings.extend(sh_spawns(&sources));
     findings.sort_by(|a, b| (&a.file, a.line_no).cmp(&(&b.file, b.line_no)));
     findings
+}
+
+/// Each `"sh"` that is the first argument of `command`, `command_in` or `Command::new` in a file
+/// of `sources` other than the spawn port, outside that file's `#[cfg(test)]` modules, named at
+/// the line the `"sh"` is on. Each file is read through [`source_audit::tokenize`], which yields
+/// no token from a comment or from inside a string literal.
+fn sh_spawns(sources: &[(String, String)]) -> Vec<Finding> {
+    sources
+        .iter()
+        .filter(|(rel, _)| rel != SPAWN_PORT)
+        .flat_map(|(rel, content)| {
+            let lines: Vec<&str> = content.lines().collect();
+            let tests = source_audit::cfg_test_ranges(&lines);
+            let toks = source_audit::tokenize(&content.chars().collect::<Vec<_>>());
+            (0..toks.len())
+                .filter(|&at| {
+                    spawns_by_name(&toks, at)
+                        && source_audit::ref_punct(toks.get(at + 1), "(")
+                        && source_audit::ref_token(toks.get(at + 2), RawKind::Lit, "\"sh\"")
+                })
+                .map(|at| toks[at + 2].line - 1)
+                .filter(|&line| !source_audit::in_ranges(line, &tests))
+                .map(|line| Finding {
+                    file: rel.clone(),
+                    line_no: line + 1,
+                    shape: SH_SPAWN_SHAPE,
+                    line_text: lines[line].to_string(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Whether `toks[at]` names a function that spawns the program its first argument names:
+/// `command` or `command_in` under any qualifier, or `new` qualified by `Command`.
+fn spawns_by_name(toks: &[RawTok], at: usize) -> bool {
+    let tok = &toks[at];
+    tok.kind == RawKind::Ident
+        && match tok.text.as_str() {
+            "command" | "command_in" => true,
+            "new" => source_audit::qualifier_before(toks, at).as_deref() == Some("Command"),
+            _ => false,
+        }
 }
 
 #[test]

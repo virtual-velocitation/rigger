@@ -6,11 +6,12 @@
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
 //! which are comment lines ([`is_comment_line`], which `tests/prompt_surface_sweep.rs` reads
 //! too), and which function encloses a line. And the one Rust lexer, [`tokenize`], that rule 4 of
-//! `tests/boundary_audit.rs` finds string literals with and its appender audit finds calls with,
-//! and the token readers the boundary audit reads its tokens with ([`ref_punct`], [`ref_token`],
-//! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
-//! [`imported_names`]). And the boundary scans' one rule, [`literal_outside`], with the fixture
-//! reader [`flagged_by`] and its empty expectation [`none`], which `tests/os_process_boundary.rs`,
+//! `tests/boundary_audit.rs` finds string literals with, its appender audit finds calls with and
+//! `tests/os_shell_boundary.rs` finds an `sh` spawn's first argument with, and the token readers
+//! those audits read their tokens with ([`ref_punct`], [`ref_token`], [`qualifier_before`],
+//! [`follows_keyword`], [`is_definition_site`], [`close_of`], [`imported_names`]). And the
+//! boundary scans' shared literal rule, [`literal_outside`], with the fixture reader
+//! [`flagged_by`] and its empty expectation [`none`], which `tests/os_process_boundary.rs`,
 //! `tests/os_shell_boundary.rs` and `tests/os_home_boundary.rs` share. Each suite uses the subset
 //! it needs (hence the module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
 
@@ -69,10 +70,10 @@ pub fn assert_real_tree_clean(scan: fn(&Path) -> Vec<Finding>, audit: &str, what
     );
 }
 
-/// The rule of the boundary scans (spec 125, THE BOUNDARY SCANS) over `sources`, the production
-/// files as `(path, text)` pairs: each line holding `literal` in a file other than `home`, outside
-/// that file's `#[cfg(test)]` modules and off its comment lines, is one finding of `shape` naming
-/// the file and the line.
+/// The literal rule of the boundary scans (spec 125, THE BOUNDARY SCANS) over `sources`, the
+/// production files as `(path, text)` pairs: each line holding `literal` in a file other than
+/// `home`, outside that file's `#[cfg(test)]` modules and off its comment lines, is one finding of
+/// `shape` naming the file and the line.
 pub fn literal_outside(
     sources: &[(String, String)],
     home: &str,
