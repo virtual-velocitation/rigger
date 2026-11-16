@@ -6523,10 +6523,10 @@ mod tests {
         }
     }
 
-    /// The author roles owe no sentence-walk record, so no persona and no scaffold seed spells a
-    /// command only that record ran: the rule-spelling search over a pair of terms, or the
-    /// by-shape generator of the predicates a range adds. The counted check stays, pinned by its
-    /// own test.
+    /// The retired sentence-walk record is gone (the implementer's hand-over walk, pinned by its
+    /// own test, runs none of its commands), so no persona and no scaffold seed spells a command
+    /// only that record ran: the rule-spelling search over a pair of terms, or the by-shape
+    /// generator of the predicates a range adds. The counted check stays, pinned by its own test.
     #[test]
     fn no_persona_or_seed_spells_a_retired_walk_command() {
         let seeds = SCAFFOLD_AGENTS
@@ -6558,8 +6558,8 @@ mod tests {
     /// criterion. Test shape - copies of a test function where one table would do, a test-side
     /// shape the unit added twice - and a sentence false at head are notes, each cited with its
     /// `file:line`, while duplication the unit did not write is never a finding. The lens reads
-    /// the hunks and docs itself and requires and keeps no record of searches, walks or
-    /// witnesses, so none of the retired walk enforcement is spelled in the persona.
+    /// the hunks and docs itself, the implementer's hand-over walk never standing in for that
+    /// read, keeps no record of its own, and spells none of the retired walk enforcement.
     #[test]
     fn the_sdet_lens_blocks_on_a_missing_criterion_test_and_notes_shape_and_sentences() {
         const HEADING: &str = "## Review the tests against the criteria";
@@ -6580,9 +6580,9 @@ mod tests {
              touched only in a lift's call-site rewrite included.",
             "A sentence about the changed behaviour that is false at head is a note, citing the \
              sentence's `file:line` and the `file:line` of the code at head that contradicts it.",
-            "You read the hunks and the docs they touch yourself: no author record of a search, a \
-             walk or a witness is owed or read, and your review keeps none of its own beyond its \
-             findings.",
+            "You read the hunks and the docs they touch yourself: an author's record, its \
+             hand-over walk included, never stands in for that read, and your review keeps none of \
+             its own beyond its findings.",
         ] {
             assert!(flat.contains(wanted), "sdet.md must say {wanted:?}");
         }
@@ -6612,8 +6612,9 @@ mod tests {
     /// The architecture lens raises each structural defect as a finding the adjudicator weighs by
     /// the built-in review rule - wrong code when it breaks something, a note when it bends a
     /// principle and nothing breaks - and a second spelling of a fact the production delta states
-    /// as a note citing both spellings, read from the hunks itself: it requires and reads no
-    /// author record, spells no generator and blocks on no one-home line.
+    /// as a note citing both spellings, read from the hunks itself, no author record (the
+    /// implementer's hand-over walk included) standing in for that read: it spells no generator
+    /// and blocks on no one-home line.
     #[test]
     fn the_architecture_lens_raises_a_second_spelling_as_a_note_and_reads_no_record() {
         let flat = rigger::wave::normalize_ws(&committed_persona("architecture-reviewer.md"));
@@ -6626,7 +6627,7 @@ mod tests {
             "A fact the unit's production delta spells a second time - a constant, list, closure \
              or predicate the tree already states - is a DRY finding raised as a note, citing \
              both spellings' `file:line`: you read the unit's production hunks for it yourself, \
-             and no author record of it is owed or read.",
+             and no author record, the hand-over walk included, stands in for that read.",
         ] {
             assert!(
                 flat.contains(wanted),
@@ -6690,6 +6691,82 @@ mod tests {
             flat.contains("Run the hand-over checks below yourself"),
             "rust-engineer.md must send the implementer to its hand-over checks"
         );
+    }
+
+    /// The implementer hands over a walk of its unit's own diff, and of that diff only, as the
+    /// DecisionMade `<unit>-walk`, the one hand-over record the persona asks for over the
+    /// built-in rule that hand-over checks owe none: three lists true against the diff at head -
+    /// each branch with the test that drives it, each new rule, helper, fixture or test shape
+    /// with the lookup run for an existing home, each touched or falsified sentence reread
+    /// against head - an empty one saying "none", the check-in owing none; the exact-assertion
+    /// block's both-arms bullet points at the Branches list instead of restating its corners.
+    /// The adjudicator owns the walk's truth: a missing walk, or a branch the Branches list leaves
+    /// out or pairs with a test that does not drive it, is a missing test, a Homes or Sentences
+    /// line an upheld finding shows false is wrong code, and a walk never asks a re-audit.
+    #[test]
+    fn the_implementer_hands_over_a_walk_and_the_adjudicator_blocks_on_its_truth() {
+        const HEADING: &str = "## The hand-over walk";
+        assert_section_belongs_to(HEADING, &["rust-engineer.md"]);
+        let text = committed_persona("rust-engineer.md");
+        let walk = rigger::wave::normalize_ws(markdown_section(&text, HEADING));
+        for wanted in [
+            "This project's persona asks for exactly one hand-over record, the walk, over the \
+             built-in rule that hand-over checks owe no record; no other record of a search, a \
+             witness or a check is owed.",
+            "walk your unit's own diff, `git diff $(git merge-base rigger-run HEAD)..HEAD`, and \
+             only that diff: the walk is no audit of the tree around it, and its first line names \
+             the range it covers and says so.",
+            "as the DecisionMade `<unit>-walk` (`<unit>` as your spawn id names it), governing the \
+             files the diff changes; a later round emits the same id again, written for its new \
+             head.",
+            "You have not handed over until the record holds three lists, each true against the \
+             diff at head:",
+            "- Branches: each branch or refusal the diff adds, the arm taken on the empty, zero, \
+             absent or repeated input included, with the test that drives it, or \"none\" and \
+             why.",
+            "- Homes: each rule, helper, fixture or test shape the diff adds, with the lookup you \
+             ran for an existing home of it (`rigger graph --lookup <term>`, its tests filter set \
+             to include for test code, or `rigger peers <file>`) and what came back.",
+            "- Sentences: each doc comment, handbook or README sentence the diff touches or makes \
+             false, at its `file:line`, reread against head.",
+            "A list with nothing in it says \"none\". The check-in, whose prompt carries the run's \
+             notes, owes no walk.",
+        ] {
+            assert!(walk.contains(wanted), "rust-engineer.md's walk must say {wanted:?}");
+        }
+        let tests =
+            rigger::wave::normalize_ws(markdown_section(&text, "## Every test asserts exactly"));
+        assert_eq!(
+            (
+                tests
+                    .matches("every early return, as your walk's Branches list names them.")
+                    .count(),
+                tests.matches("including the arm taken on").count()
+            ),
+            (1, 0),
+            "rust-engineer.md's both-arms bullet points at the walk and no longer restates its \
+             corners: {tests}"
+        );
+        let adjudicator = rigger::wave::normalize_ws(&committed_persona("adjudicator.md"));
+        for wanted in [
+            "The implementer's hand-over walk is the DecisionMade `<unit>-walk`, under the \
+             decisions that govern the unit's files; `rigger graph --show <unit>-walk` reads it.",
+            "It is the one record this project's review blocks on.",
+            "A missing walk is a missing test; its item names the missing walk where a criterion \
+             would go.",
+            "A branch the diff adds that the Branches list leaves out, or pairs with a test that \
+             does not drive it, is a missing test; its item names the branch.",
+            "A Homes or Sentences line that an upheld finding shows false against the diff is \
+             wrong code: a false claim in what the unit hands over.",
+            "The walk is never a reason to re-audit what it lists as clean beyond your normal read.",
+            "The check-in works off the run's notes and owes no walk.",
+        ] {
+            assert_eq!(
+                adjudicator.matches(wanted).count(),
+                1,
+                "adjudicator.md must say {wanted:?} once"
+            );
+        }
     }
 
     /// Spec 125's THE IMPLEMENTER LEAVES THE GATES TO THE GATES: whitespace-normalized, each text
