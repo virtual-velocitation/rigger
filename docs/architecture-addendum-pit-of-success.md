@@ -418,8 +418,9 @@ anyone who does not.)
 
 **Fix.** Without regressing the legitimate long-running unbounded case: the native driver
 enforces an outer per-agent wall-clock so an unbounded-config spawn is
-abandoned-and-surfaced rather than awaited forever, and `rigger validate` warns when the
-default is unbounded and no per-agent bound covers the gating roles. A hung agent surfaces
+abandoned-and-surfaced rather than awaited forever, and `rigger validate` warns when a gating
+role's wall-clock resolves to unbounded: its own is `0`, or it sets none under an unbounded
+default. A hung agent surfaces
 within a bounded time.
 
 _Code:_ the driver heartbeat framing (`workflows/rigger.js`), the wall-clock default +

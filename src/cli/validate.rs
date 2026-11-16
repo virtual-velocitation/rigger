@@ -229,10 +229,11 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     for advisory in validate_advisories(root, cfg.workflow.defaults.grep_guard)? {
         eprintln!("{advisory}");
     }
-    // Unbounded wall-clock advisory (spec 19c, unit 3): warn when `defaults.max_wall_clock`
-    // is unbounded and a gating role carries no per-agent bound, so a hung gating agent that
-    // is never swept - a silent stall - is visible at author time. Non-fatal like the others;
-    // reuses the single `config::gating_agent_ids` authority the verdict-line lint uses.
+    // Unbounded wall-clock advisory (spec 19c, unit 3): warn when a gating role's
+    // `max_wall_clock` resolves to `0` (its own, or the default it inherits), so a hung gating
+    // agent that is never swept - a silent stall - is visible at author time. Non-fatal like
+    // the others; reuses the single `config::gating_agent_ids` authority the verdict-line lint
+    // uses.
     if let Some(advisory) = config::unbounded_wall_clock_advisory(&cfg) {
         eprintln!("{advisory}");
     }

@@ -98,12 +98,12 @@ pub fn lint_gating_verdict_lines(cfg: &Config) -> Result<(), Error> {
     Ok(())
 }
 
-/// Advisory (spec 19c, unit 3): warn when `defaults.max_wall_clock` is unbounded (`0`) AND
-/// some GATING role carries no per-agent bound, so a gating agent that hangs is never swept
-/// (the liveness watchdog only times out a spawn with a resolved bound - see
-/// [`resolve_wall_clocks`], which no-ops on a `0` default). Returns the warning line naming
-/// the unbounded gating roles and the fix, or `None` when the risk is absent (a bounded
-/// default, or every gating role sets its own `max_wall_clock`).
+/// Advisory (spec 19c, unit 3): warn when some GATING role's `max_wall_clock` resolves to `0`,
+/// unbounded - its own value is `0`, or it sets none and `defaults.max_wall_clock` is `0` - so a
+/// gating agent that hangs is never swept (the liveness watchdog only times out a spawn with a
+/// non-zero bound - see [`resolve_wall_clocks`], which no-ops on a `0` default). Returns the
+/// warning line naming those gating roles and the fix, or `None` when every gating role
+/// resolves to a non-zero bound.
 ///
 /// Reuses the single [`gating_agent_ids`] authority - the SAME gating-role set the
 /// verdict-line lint ([`lint_gating_verdict_lines`]) inspects - so "which roles gate" is
@@ -111,20 +111,18 @@ pub fn lint_gating_verdict_lines(cfg: &Config) -> Result<(), Error> {
 /// (`rigger validate`) prints it to stderr without changing the exit status, like the other
 /// advisories.
 pub fn unbounded_wall_clock_advisory(cfg: &Config) -> Option<String> {
-    // Only the unbounded default is at risk: a non-zero default is folded onto every unset
-    // agent at load time, so every gating role is already swept.
-    if cfg.workflow.defaults.max_wall_clock != 0 {
-        return None;
-    }
-    // The gating roles left unbounded under that `0` default. `gating_agent_ids` returns a
-    // sorted `BTreeSet`, so the collected roster is deterministic. A gating id absent from
-    // `agents` is a referential error (`Config::validate`), reported there, not here.
+    // The gating roles whose bound resolves to `0`: their own value, or the default they
+    // inherit (already folded onto them at load when it is non-zero). `gating_agent_ids`
+    // returns a sorted `BTreeSet`, so the collected roster is deterministic. A gating id absent
+    // from `agents` is a referential error (`Config::validate`), reported there, not here.
     let unbounded: Vec<String> = gating_agent_ids(cfg)
         .into_iter()
         .filter(|id| {
-            cfg.agents
-                .get(id)
-                .is_some_and(|a| a.max_wall_clock.is_none())
+            cfg.agents.get(id).is_some_and(|a| {
+                a.max_wall_clock
+                    .unwrap_or(cfg.workflow.defaults.max_wall_clock)
+                    == 0
+            })
         })
         .map(|id| format!("{id:?}"))
         .collect();
@@ -132,9 +130,10 @@ pub fn unbounded_wall_clock_advisory(cfg: &Config) -> Option<String> {
         return None;
     }
     Some(format!(
-        "warning: defaults.max_wall_clock is unbounded (0) and gating role(s) {} carry no \
-         per-agent bound, so a hung gating agent is never swept and the run stalls silently. \
-         Set defaults.max_wall_clock (seconds), or a per-agent max_wall_clock on those roles.",
+        "warning: gating role(s) {} resolve max_wall_clock to 0 (unbounded), so a hung gating \
+         agent is never swept and the run stalls silently. Set a non-zero max_wall_clock \
+         (seconds) on those roles, or leave theirs unset under a non-zero \
+         defaults.max_wall_clock.",
         unbounded.join(", ")
     ))
 }
