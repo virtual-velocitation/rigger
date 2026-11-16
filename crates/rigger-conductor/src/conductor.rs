@@ -16394,6 +16394,7 @@ mod tests {
     use crate::test_support::agent_with_prompt;
     use crate::test_support::build_declaring;
     use crate::test_support::commit_at_fixed_date;
+    use crate::test_support::conductor_fault_hold;
     use crate::test_support::count_of_type;
     use crate::test_support::declare_test_author;
     use crate::test_support::gate_def;
@@ -16401,6 +16402,7 @@ mod tests {
     use crate::test_support::git_ok;
     use crate::test_support::git_out;
     use crate::test_support::has_status_marker as has_status;
+    use crate::test_support::holds_in;
     use crate::test_support::one_gated_stage_cfg;
     use crate::test_support::repo_review_panel;
     use crate::test_support::run_git;
@@ -26459,6 +26461,11 @@ mod tests {
             "a verdict-less halt charges the unit no attempt"
         );
         assert!(!has_status(&events, "reviewed"));
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&err.0)],
+            "the halt holds the run for a person, naming the fault"
+        );
     }
 
     #[test]
@@ -27260,6 +27267,11 @@ mod tests {
                 .iter()
                 .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
             "a degenerate-reviewer halt must emit no per-unit lesson (no misattribution)"
+        );
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&err.0)],
+            "the halt holds the run for a person, naming the fault"
         );
         // The implementer ran exactly once - the halt did not restart the unit lifecycle.
         assert_eq!(occurrences(&driver.call_order, "worker"), 1);
@@ -31346,7 +31358,8 @@ mod tests {
     /// other call straight to `inner` (the real store), so a test can force a hard
     /// Err out of exactly one internal write ([`RunCtx::record_plan_intent`]'s
     /// `plan-intent:<unit>` `DecisionMade`, in the tests below) without disturbing
-    /// anything else the run does.
+    /// anything else the run does. A `RunHeld` is never failed: the hold a halt writes names
+    /// the failure's own text, and is not the write the double fails.
     struct FailingStore<'a> {
         inner: &'a dyn EventStore,
         fail_containing: &'static str,
@@ -31358,10 +31371,10 @@ mod tests {
             expected: ExpectedRevision,
             events: &[Event],
         ) -> Result<Appended, crate::eventstore::Error> {
-            if events
-                .iter()
-                .any(|e| String::from_utf8_lossy(&e.data).contains(self.fail_containing))
-            {
+            if events.iter().any(|e| {
+                e.type_ != crate::run::TYPE_RUN_HELD
+                    && String::from_utf8_lossy(&e.data).contains(self.fail_containing)
+            }) {
                 return Err(crate::eventstore::Error::Backend(format!(
                     "simulated store failure appending an event containing {:?}",
                     self.fail_containing
@@ -31515,6 +31528,11 @@ mod tests {
                 .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
             "a plan-landing infra-fault halt must record NO per-unit lesson - it would \
              misattribute a conductor/git-plumbing fault to the producer unit"
+        );
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&err.0)],
+            "the halt holds the run for a person, naming the fault"
         );
     }
 
@@ -33978,6 +33996,11 @@ mod tests {
             status_mark_keys(&events, "verified"),
             Vec::<String>::new(),
             "no attempt is verified on a tree the crashed spawn never finished"
+        );
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&err.0)],
+            "the halt holds the run for a person, naming the fault"
         );
 
         // The relaunch after the outage: the next ordinal crashes once more, then recovers.
@@ -48686,6 +48709,11 @@ mod tests {
             ],
             [0; 6],
             "a probe fault charges no attempt and writes no lesson, infra mark or deferred failure"
+        );
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&probe_fault().to_string())],
+            "the halt holds the run for a person, naming the fault"
         );
     }
 

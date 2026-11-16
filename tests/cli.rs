@@ -4821,8 +4821,26 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             expected,
             "{name}: the closes; stderr: {err}"
         );
-        assert_eq!(run_holds(root), case.holds, "{name}: the holds");
+        let holds = run_holds(root);
+        let (halt, before) = holds
+            .split_last()
+            .unwrap_or_else(|| panic!("{name}: the halt holds the run; stderr: {err}"));
+        assert_eq!(before, case.holds, "{name}: the holds before the halt");
+        assert_eq!(
+            (halt.cause.as_str(), halt.by.as_str(), halt.needs_person),
+            ("conductor-fault", "conductor", true),
+            "{name}: the halt holds the run for a person"
+        );
+        assert!(
+            halt.detail.contains(case.cause)
+                && halt.detail.contains("past the failure taxonomy's infra limit"),
+            "{name}: the hold names the halt: {halt:?}"
+        );
         assert_eq!(run_releases(root), case.releases, "{name}: the releases");
+        assert!(
+            !common::cli::driver_record(root).is_empty(),
+            "{name}: the driver leaves its record for `rigger release` to relaunch the run"
+        );
     }
 }
 
@@ -15996,7 +16014,7 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
             &["watch", "--once"],
             Over::Held,
             false,
-            Some("held by the operator, and no driver runs it; `rigger release` relaunches it"),
+            Some("held for a person, and no driver runs it; `rigger release` relaunches it"),
         ),
         (&["status"], Over::LinkedWorktree, false, None),
         (&["prime"], Over::LinkedWorktree, false, None),
@@ -16458,32 +16476,73 @@ fn hold_the_run(root: &Path) {
     assert!(ok, "the operator hold lands; stdout: {out}\nstderr: {err}");
 }
 
-/// AN OPERATOR HOLD IS THE STOP: a run its operator held, whether the hold came before its
-/// driver's death or after it, a relaunched driver that died at once included, is relaunched by
-/// no invocation, and its record is left as it was, until `rigger release` relaunches it.
+/// The fault a conductor-fault hold [`hold_on_a_conductor_fault`] seeds names.
+const SEEDED_CONDUCTOR_FAULT: &str = "worktree: git worktree add failed: the path already exists";
+
+/// Hold the current run of the project at `root` as the conductor does on a fault of its own that
+/// ended the run's drive.
+fn hold_on_a_conductor_fault(root: &Path) {
+    common::cli::seed_on_the_run(
+        root,
+        common::fixtures::run_held_event(&common::fixtures::conductor_fault_hold(
+            SEEDED_CONDUCTOR_FAULT,
+        )),
+    );
+}
+
+/// A HOLD FOR A PERSON IS THE STOP: a run its operator held, or the conductor held on a fault of
+/// its own, whether the hold came before its driver's death or after it, a relaunched driver that
+/// died at once included, is relaunched by no invocation, and its record is left as it was, until
+/// `rigger release` relaunches it. `rigger status` names the hold among what needs a person, with
+/// `rigger release` as what continues the run, and `rigger watch` reports it.
 #[test]
 fn an_operator_hold_stops_a_run_for_good_until_its_release() {
-    // Each row: its name, whether the hold lands before the death, and whether the dead driver
-    // was itself a relaunch made just now.
-    let rows = [
-        ("a hold, then the death", true, false),
-        ("the death, then a hold", false, false),
-        ("a relaunched driver held, then dead at once", true, true),
+    // Each row: its name, the hold, whether the hold lands before the death, whether the dead
+    // driver was itself a relaunch made just now, and what `rigger status` says of the hold.
+    let rows: [(&str, fn(&Path), bool, bool, &str); 4] = [
+        (
+            "a hold, then the death",
+            hold_the_run,
+            true,
+            false,
+            "the operator stops the run",
+        ),
+        (
+            "the death, then a hold",
+            hold_the_run,
+            false,
+            false,
+            "the operator stops the run",
+        ),
+        (
+            "a relaunched driver held, then dead at once",
+            hold_the_run,
+            true,
+            true,
+            "the operator stops the run",
+        ),
+        (
+            "a conductor fault held the run as its driver ended",
+            hold_on_a_conductor_fault,
+            true,
+            false,
+            SEEDED_CONDUCTOR_FAULT,
+        ),
     ];
-    for (case, hold_first, revived) in rows {
+    for (case, hold, hold_first, revived, reason) in rows {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
         let scratch = common::default_scratch_root(root);
         let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], |driver| {
             if hold_first {
-                hold_the_run(root);
+                hold(root);
             }
             common::fixtures::cleanup(driver);
         });
         common::cli::release_the_unit(ended.fake.path());
         if !hold_first {
-            hold_the_run(root);
+            hold(root);
         }
         let mut record: serde_json::Value = serde_json::from_str(&ended.record).unwrap();
         if revived {
@@ -16499,6 +16558,24 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
                 after.err
             );
         }
+        let status = invoke_over_record(root, &record, &["status"], &[]);
+        let needs_you = status.out.split_once("needs you:").map(|(_, after)| after);
+        assert!(
+            needs_you.is_some_and(|after| after.contains(reason))
+                && status.out.contains("rigger release"),
+            "{case}: status names the hold among what needs a person, and `rigger release`; \
+             stdout: {}",
+            status.out
+        );
+        let watched = invoke_over_record(root, &record, &["watch", "--once"], &[]);
+        let held_for_a_person =
+            "held for a person, and no driver runs it; `rigger release` relaunches it";
+        assert!(
+            watched.out.contains(held_for_a_person) || watched.err.contains(held_for_a_person),
+            "{case}: watch reports the hold; stdout: {}\nstderr: {}",
+            watched.out,
+            watched.err
+        );
         let released = invoke_over_record(root, &record, &["release"], &[]);
         assert_eq!(
             (released.relaunches, released.err.contains(RELAUNCHED)),

@@ -63,6 +63,26 @@ pub fn run_held_event(body: &rigger::run::RunHeld) -> Event {
     body.to_event().unwrap()
 }
 
+/// The hold the conductor writes for a person on a fault of its own that ended the run's drive:
+/// `error`, the fault's text, on one line as its detail and its action, needing a person.
+pub fn conductor_fault_hold(error: &str) -> rigger::run::RunHeld {
+    let line = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    rigger::run::RunHeld {
+        detail: line.clone(),
+        needs_person: true,
+        ..hold_naming("conductor-fault", &line, "conductor")
+    }
+}
+
+/// Every `RunHeld` body among `events`, oldest first.
+pub fn holds_in(events: &[Event]) -> Vec<rigger::run::RunHeld> {
+    events
+        .iter()
+        .filter(|e| e.type_ == rigger::run::TYPE_RUN_HELD)
+        .filter_map(Event::decode::<rigger::run::RunHeld>)
+        .collect()
+}
+
 /// A `RunReleased` event by `by`, the hold having stood `held_for_s` seconds.
 pub fn released_event(by: &str, held_for_s: u64) -> Event {
     rigger::run::RunReleased {
