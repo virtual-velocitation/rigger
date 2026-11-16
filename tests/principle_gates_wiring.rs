@@ -12,7 +12,7 @@ use common::cli::{cargo_project, loaded_config, run_rigger};
 use common::fixtures::{
     container_labels_and_host_ports, with_kurrentdb_container, TEST_CONTAINER_LABEL,
 };
-use common::git::{build_unit_branch, unit_branch_repo};
+use common::git::{build_unit_branch, commit_files, init_repo, unit_branch_repo};
 use common::repo::{repo_root, run_gate_script, run_sh, stub_path};
 use common::shell_outcome;
 use std::collections::BTreeMap;
@@ -306,6 +306,90 @@ rigger::test_cases! {
             MEMBER_LIB,
             "not a source component",
         )]);
+}
+
+/// The workspace the `fmt` gate runs on, every file formatted: an edition 2021 root package whose
+/// `src/lib.rs` declares `plain` the ordinary way and `hidden` inside `std::cfg_select!`, and an
+/// edition 2024 member whose `src/lib.rs` declares `inner` inside `std::cfg_select!`.
+const FMT_FIXTURE: &[(&str, &str)] = &[
+    (
+        "Cargo.toml",
+        "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\
+         members = [\".\", \"member\"]\n",
+    ),
+    (
+        "member/Cargo.toml",
+        "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    ),
+    (
+        "src/lib.rs",
+        "mod plain;\n\nstd::cfg_select! {\n    _ => {\n        mod hidden;\n    }\n}\n",
+    ),
+    ("src/plain.rs", "pub fn f() {}\n"),
+    ("src/hidden.rs", "pub fn g() {}\n"),
+    (
+        "member/src/lib.rs",
+        "std::cfg_select! {\n    _ => {\n        mod inner;\n    }\n}\n",
+    ),
+    ("member/src/inner.rs", "pub fn h() {}\n"),
+];
+
+/// An item rustfmt respaces.
+const MISFORMATTED: &str = "const   A :u8=1;\n";
+
+/// An import list in the order edition 2024's style sorts it, upper case first; the style of every
+/// earlier edition sorts it the other way.
+const IMPORTS_IN_2024_ORDER: &str = "use m::{B, a};\n";
+
+/// This repository's declared `fmt` gate command, read through the production parser, run under
+/// `sh -c` as the gate runner runs it, from a committed copy of [`FMT_FIXTURE`] with each
+/// `(path, content)` of `changes` written over it and this repository's gate scripts under
+/// `.rigger/gates/`, where a unit's worktree holds them. Returns (passed, output).
+fn run_the_declared_fmt_gate(changes: &[(&str, &str)]) -> (bool, String) {
+    let workflow = loaded_config(&repo_root()).workflow;
+    let command = &workflow.gates["fmt"].run;
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    let gates = dir.path().join(".rigger/gates");
+    std::fs::create_dir_all(&gates).unwrap();
+    for script in std::fs::read_dir(repo_root().join(".rigger/gates")).unwrap() {
+        let script = script.unwrap();
+        std::fs::copy(script.path(), gates.join(script.file_name())).unwrap();
+    }
+    commit_files(dir.path(), &[FMT_FIXTURE, changes].concat(), "fixture");
+    run_sh(dir.path(), &["-c".as_ref(), command.as_ref()], &[])
+}
+
+/// The declared `fmt` gate passes the fixture with `changes` written over it when `failing` is
+/// `None`, and otherwise fails naming the file `failing`.
+fn fmt_gate_verdict(changes: &[(&str, &str)], failing: Option<&str>) {
+    let (passed, out) = run_the_declared_fmt_gate(changes);
+    match failing {
+        None => assert!(passed, "the fmt gate must pass a formatted tree: {out}"),
+        Some(path) => assert!(
+            !passed && out.contains(path),
+            "the fmt gate must fail naming the mis-formatted {path}: {out}"
+        ),
+    }
+}
+
+rigger::test_cases! {
+    /// Every file formatted.
+    the_fmt_gate_passes_a_formatted_workspace: fmt_gate_verdict(&[], None);
+    /// A mis-formatted module declared inside `std::cfg_select!`, which cargo fmt's module walk
+    /// does not visit on every toolchain.
+    the_fmt_gate_fails_a_misformatted_module_declared_inside_cfg_select:
+        fmt_gate_verdict(&[("src/hidden.rs", MISFORMATTED)], Some("src/hidden.rs"));
+    /// A mis-formatted module declared the ordinary way, which cargo fmt's module walk reaches.
+    the_fmt_gate_fails_a_misformatted_module_declared_the_ordinary_way:
+        fmt_gate_verdict(&[("src/plain.rs", MISFORMATTED)], Some("src/plain.rs"));
+    /// Imports in edition 2024's order in the edition 2024 member: a file is checked by its own
+    /// crate's edition.
+    the_fmt_gate_checks_a_file_by_its_own_crates_edition:
+        fmt_gate_verdict(&[("member/src/inner.rs", IMPORTS_IN_2024_ORDER)], None);
+    /// The same imports in the edition 2021 root package, out of that edition's order.
+    the_fmt_gate_fails_imports_out_of_their_own_crates_edition_order:
+        fmt_gate_verdict(&[("src/hidden.rs", IMPORTS_IN_2024_ORDER)], Some("src/hidden.rs"));
 }
 
 /// The review checklist line each persona carries for the principle gates, as `(agent file,
