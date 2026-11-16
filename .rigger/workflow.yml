@@ -92,11 +92,14 @@ defaults:
   # neutral final judge - it weighs the lenses against the adversary, blocks only on
   # wrong code, an unmet Done-when criterion or a missing test for one (every other
   # finding a note), and its approve/reject verdict GATES the unit's integration. Declared once; inherited by the implement stage and
-  # every planner-proposed unit.
+  # every planner-proposed unit. A unit the adjudicator sent back is reviewed again after its
+  # fix by the members whose upheld findings sent it back and the adjudicator; every member when
+  # the verdict upheld none of theirs or the fix reaches a file no required item names.
   review:
     lenses: [architecture-reviewer, sdet]   # tier 1: the expert lenses
     adversary: adversary                    # tier 2: refutes the lenses
     adjudicator: adjudicator                # tier 3: neutral judge; verdict gates
+    later_rounds: finders                   # a later round re-runs only the upheld findings' members
 
   # The declarative failure taxonomy (spec 10, unit 2). An ORDERED, first-match-wins
   # list of rules that classify a failure signal (a process's `exit_status`, terminating
