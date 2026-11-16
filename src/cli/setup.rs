@@ -6503,6 +6503,40 @@ mod tests {
         }
     }
 
+    /// The implementer lifecycle the language-neutral `implementer.md` seed states, from its
+    /// failing test to the gates on its commit, is every gate template set's implementer's too,
+    /// whitespace-normalized: each holds the seed's lifecycle up to its checks once, and its
+    /// commit and gates sentence once, so a set may name its checks between the two and an edit
+    /// to the lifecycle in one home cannot leave the other behind.
+    #[test]
+    fn every_set_implementer_states_the_seeds_lifecycle() {
+        let seed = SCAFFOLD_AGENTS
+            .iter()
+            .find(|(file, _)| *file == "implementer.md")
+            .map(|(_, text)| rigger::wave::normalize_ws(text))
+            .expect("SCAFFOLD_AGENTS seeds implementer.md");
+        let lifecycle = &seed[seed
+            .find("Write the failing test first")
+            .expect("the seed states its lifecycle")..];
+        let (checks, gates) = lifecycle
+            .split_once(", commit.")
+            .expect("the seed's lifecycle commits");
+        let commit = format!(", commit.{gates}");
+        // The sets are the template root's, which this_repositorys_scaffold_loads_the_rust_set
+        // pins as the one `rust` set.
+        for (at, persona) in set_implementers() {
+            let words = rigger::wave::normalize_ws(&persona);
+            assert_eq!(
+                (
+                    words.matches(checks).count(),
+                    words.matches(&commit).count()
+                ),
+                (1, 1),
+                "{at} holds {checks:?} and {commit:?} once each; it reads:\n{words}"
+            );
+        }
+    }
+
     /// rigger's core is agnostic to the gates a project wires: no built-in instruction entry,
     /// persona, helper or review-tier discipline it ships, and no production line of its own
     /// source, names mutation testing, its mutants, its sweep, its gate or its tool's
