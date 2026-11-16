@@ -82,25 +82,24 @@ pub fn build_index(root: &str, override_lang: Option<Lang>) -> SymbolIndex {
 }
 
 /// The symbols of the file at `path` under the grammar the registry resolves for that path and
-/// `override_lang`, beside the text they were extracted from: none when no grammar resolves, an
-/// inner none when `source` answers no text or the extraction fails. `source` is asked for the
-/// text only once a grammar resolves, so a path under no grammar costs no read. This is the ONE place
-/// a path's grammar is paired with the extraction its stored symbols come from, so every reader
-/// of them reads the same symbols from the same text; a show
-/// surface's body bound, for a file whose extension no declared extractor lists, resolves its
-/// grammar itself and extracts through [`extract::locate_extent`].
+/// `override_lang`, beside the text they were extracted from, or why the grammar cannot tag that
+/// text: none when no grammar resolves, an inner none when `source` answers no text. `source` is
+/// asked for the text only once a grammar resolves, so a path under no grammar costs no read.
+/// This is the ONE place a path's grammar is paired with the extraction its stored symbols come
+/// from, so every reader of them, a show surface's body bound included, reads the same symbols
+/// from the same text.
 #[cfg(feature = "symbols")]
 pub(crate) fn extracted<S: AsRef<str>>(
     path: &str,
     source: impl FnOnce() -> Option<S>,
     override_lang: Option<Lang>,
-) -> Option<Option<(S, model::FileSymbols)>> {
+) -> Option<Option<(S, Result<model::FileSymbols, String>)>> {
     let grammar = registry::for_path(path, override_lang)?;
-    Some(source().and_then(|text| {
-        let tags = grammar.tags().ok()?;
-        extract::extract(text.as_ref(), grammar.lang, tags)
-            .ok()
-            .map(|symbols| (text, symbols))
+    Some(source().map(|text| {
+        let symbols = grammar
+            .tags()
+            .and_then(|tags| extract::extract(text.as_ref(), grammar.lang, tags));
+        (text, symbols)
     }))
 }
 
@@ -123,8 +122,8 @@ pub fn index_one_file(root: &str, rel: &str, idx: &mut SymbolIndex, override_lan
     let read = || std::fs::read_to_string(Path::new(root).join(rel)).ok();
     match extracted(rel, read, override_lang) {
         None => {}
-        Some(Some((_, fs))) => idx.insert_file(rel.to_string(), fs),
-        Some(None) => idx.remove_file(rel),
+        Some(Some((_, Ok(fs)))) => idx.insert_file(rel.to_string(), fs),
+        Some(None | Some((_, Err(_)))) => idx.remove_file(rel),
     }
 }
 
@@ -251,9 +250,10 @@ mod tests {
 
         let (text, symbols) = extracted("a.rs", source, None)
             .expect("a grammar resolves for a.rs")
-            .expect("the handed text extracts");
+            .expect("the source answers a text");
         assert_eq!(asked.get(), 1, "the text is asked exactly once");
         assert_eq!(text, "fn one() {}\n");
+        let symbols = symbols.expect("the handed text extracts");
         assert_eq!(symbols.lang, Lang::Rust);
         let defs: Vec<(&str, Kind, u32)> = symbols
             .defs

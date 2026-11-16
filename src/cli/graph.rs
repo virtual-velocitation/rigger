@@ -595,21 +595,22 @@ fn definition_body(
 /// The 1-based, inclusive last line of the definition named `name` of kind `kind` at `start`, at
 /// the id path `id_path` when one is given (spec 58; spec 119, ONE EXTENT and IDS FOLLOW THE
 /// LANGUAGE'S PATH), in `file` holding `source`, read as the code store reads it over the project
-/// at `root` (spec 125, THE EXTRACTOR PROTOCOL). A file whose extension an extractor the root's
-/// workflow declares lists is bounded by that extractor's answer alone, asked through a session
-/// started in `root`
-/// ([`ProjectExtractor::declared_defs`](rigger_grounder::facts::ProjectExtractor::declared_defs)),
-/// so a declaration named as a bundled language replaces its grammar; any other file by the
-/// grammar the symbols registry resolves for its path, so a `.tsx` file keeps its TSX grammar,
-/// through [`extract::locate_extent`](rigger::grounder::symbols::extract::locate_extent). Both
-/// are bounded by [`extract::extent_in`](rigger::grounder::symbols::extract::extent_in), the ONE
-/// extent authority, which reads production definitions only, those outside test code.
+/// at `root` (spec 125, THE EXTRACTOR PROTOCOL): its definitions are those the project's
+/// extractor gives the file
+/// ([`ProjectExtractor::defs`](rigger_grounder::facts::ProjectExtractor::defs)), the one routing
+/// an advance reads files through, so the workflow definition holds none, a file whose extension
+/// an extractor the root's workflow declares lists is bounded by that extractor's answer alone,
+/// asked through a session started in `root`, a declaration named as a bundled language replaces
+/// its grammar, and any other file is read by the grammar the symbols registry resolves for its
+/// path, so a `.tsx` file keeps its TSX grammar. The bound is
+/// [`extract::extent_in`](rigger::grounder::symbols::extract::extent_in), the ONE extent
+/// authority, which reads production definitions only, those outside test code.
 ///
 /// Returns the [`Unbounded`] reason - the caller degrades to a note - when no such production
 /// definition sits at `start`, and a worded one when the grammar cannot tag the source. A failed
 /// answer holds no definition, as the code store holds none for that file, and a file neither a
-/// declaration nor a grammar covers holds none: the code view extracts by the same declarations
-/// and registry lookup, so it holds no entity there, and the miss is no production definition.
+/// declaration nor a grammar covers holds none: the code view extracts through the same routing,
+/// so it holds no entity there, and the miss is no production definition.
 #[cfg(feature = "symbols")]
 fn locate_definition_extent(
     root: &Path,
@@ -621,23 +622,17 @@ fn locate_definition_extent(
     kind: &str,
 ) -> Result<u32, Unbounded> {
     use rigger::grounder::symbols::extract::{self, Recorded};
-    use rigger::grounder::symbols::registry;
     use rigger_grounder::facts::ProjectExtractor;
+    let defs = ProjectExtractor::of(root)
+        .defs(file, source)
+        .map_err(Unbounded::Note)?;
     let recorded = Recorded {
         name,
         path: id_path,
         kind,
         line: start,
     };
-    let extent = match ProjectExtractor::of(root).declared_defs(file, source) {
-        Some(defs) => extract::extent_in(&defs, recorded),
-        None => {
-            let entry = registry::for_path(file, None).ok_or(Unbounded::Missing)?;
-            let tags = entry.tags().map_err(Unbounded::Note)?;
-            extract::locate_extent(source, entry.lang, tags, recorded).map_err(Unbounded::Note)?
-        }
-    };
-    extent.ok_or(Unbounded::Missing)
+    extract::extent_in(&defs, recorded).ok_or(Unbounded::Missing)
 }
 
 /// Light-lane [`locate_definition_extent`]: a build WITHOUT the `symbols` feature links no grammar

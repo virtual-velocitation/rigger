@@ -7,8 +7,8 @@
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
 //! bundled extraction under the extractors the project's workflow declares, whose fingerprint
-//! changes with the declaration; the show surface asks it for a declared file's definitions
-//! ([`ProjectExtractor::declared_defs`]), so a shown body is bounded as the store extracts it.
+//! changes with the declaration; the show surface asks it for a file's definitions
+//! ([`ProjectExtractor::defs`]), so a shown body is bounded as the store extracts it.
 
 use std::collections::{btree_map, BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
@@ -151,23 +151,37 @@ impl ProjectExtractor {
             .map(|(name, decl)| (name.as_str(), decl))
     }
 
-    /// The name of the declared extractor whose extensions list the extension of the file at
-    /// `path` ([`ProjectExtractor::declaration_of`]), and the symbols it answers for the file's
-    /// text `text` ([`ProjectExtractor::declared_symbols`]): none for no text or a failed answer;
-    /// `None` when no declaration lists the extension.
-    fn declared_code(&self, path: &str, text: Option<&str>) -> Option<(&str, Option<CodeSymbols>)> {
-        let (name, decl) = self.declaration_of(path)?;
-        let symbols = text.and_then(|text| self.declared_symbols(name, &decl.run, path, text));
-        Some((name, symbols))
+    /// The file at `path` holding `text` read as code, the one routing an advance
+    /// ([`Extract::extract`]) and a shown body ([`ProjectExtractor::defs`]) share: a file whose
+    /// extension a declaration lists ([`ProjectExtractor::declaration_of`]) in the declared
+    /// extractor's name, its symbols the extractor's answer
+    /// ([`ProjectExtractor::declared_symbols`]), none for no text or a failed answer, so a declared
+    /// extension is never read by a bundled grammar; any other file as the bundled grammars read
+    /// it ([`bundled_code`]).
+    fn code(&self, path: &str, text: Option<&str>) -> Option<CodeFile> {
+        let Some((name, decl)) = self.declaration_of(path) else {
+            return bundled_code(path, text);
+        };
+        Some(CodeFile {
+            lang: name.to_string(),
+            symbols: text
+                .and_then(|text| self.declared_symbols(name, &decl.run, path, text))
+                .map(Ok),
+        })
     }
 
-    /// The definitions the declared extractor whose extensions list the extension of the file at
-    /// `path` answers for its text `text`, asked as an advance asks it ([`Extract::extract`]): none
-    /// for a failed answer, so a declared extension is never read by a bundled grammar; `None`
-    /// when no declaration lists the extension.
-    pub fn declared_defs(&self, path: &str, text: &str) -> Option<Vec<model::Def>> {
-        self.declared_code(path, Some(text))
-            .map(|(_, symbols)| symbols.map_or_else(Vec::new, |symbols| symbols.defs))
+    /// The definitions of the file at `path` holding `text`, read as an advance reads them
+    /// ([`file_facts`] over [`ProjectExtractor::code`]): none for the workflow definition, which
+    /// is read as the workflow before any declaration is consulted, for a file no extraction reads
+    /// and for a failed answer; why, when the bundled grammar cannot tag the text.
+    pub fn defs(&self, path: &str, text: &str) -> Result<Vec<model::Def>, String> {
+        if is_workflow_doc(path) {
+            return Ok(Vec::new());
+        }
+        match self.code(path, Some(text)).and_then(|file| file.symbols) {
+            Some(symbols) => symbols.map(|symbols| symbols.defs),
+            None => Ok(Vec::new()),
+        }
     }
 
     /// The symbols the declared extractor `name`, run as `run`, answers for the file at `path`
@@ -236,20 +250,12 @@ impl Extract for ProjectExtractor {
     }
 
     /// A file whose extension a declaration lists is code in the declared extractor's name, its
-    /// symbols the extractor's answer ([`ProjectExtractor::declared_symbols`]) - none for bytes
-    /// that are not UTF-8 or a failed answer - and the workflow definition and every other file
-    /// read as [`FactsExtractor`] reads them; a declaration named as a bundled language
-    /// (`rust`) replaces its grammar for the extensions it lists.
+    /// symbols the extractor's answer ([`ProjectExtractor::code`]) - none for bytes that are not
+    /// UTF-8 or a failed answer - and the workflow definition and every other file read as
+    /// [`FactsExtractor`] reads them; a declaration named as a bundled language (`rust`) replaces
+    /// its grammar for the extensions it lists.
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
-        file_facts(entry, bytes, |path, text| {
-            match self.declared_code(path, text) {
-                Some((name, symbols)) => Some(CodeFile {
-                    lang: name.to_string(),
-                    symbols,
-                }),
-                None => bundled_code(path, text),
-            }
-        })
+        file_facts(entry, bytes, |path, text| self.code(path, text))
     }
 }
 
@@ -481,10 +487,11 @@ struct CodeSymbols {
 }
 
 /// A code file as an extraction reads it: the language it is read as and its symbols, none when
-/// the extraction failed.
+/// there is no text or a declared extractor's answer failed, and why when the bundled grammar
+/// cannot tag the text.
 struct CodeFile {
     lang: String,
-    symbols: Option<CodeSymbols>,
+    symbols: Option<Result<CodeSymbols, String>>,
 }
 
 /// One file's facts, the one skeleton every extraction reads a file through: its identity and its
@@ -511,7 +518,7 @@ fn file_facts(
         ..FileFacts::default()
     };
     let text = text_of(Some(bytes));
-    if path == workflow_doc() {
+    if is_workflow_doc(path) {
         facts.half = Half::Workflow;
         if let Some(text) = text {
             workflow_facts(text, &mut facts);
@@ -522,7 +529,7 @@ fn file_facts(
         Some(file) => {
             facts.half = Half::Code;
             facts.lang = file.lang;
-            if let Some(symbols) = file.symbols {
+            if let Some(Ok(symbols)) = file.symbols {
                 code_facts(
                     path,
                     &symbols.defs,
@@ -541,18 +548,20 @@ fn file_facts(
 }
 
 /// The bundled grammars' read of the file at `path` holding `text`: the language of the grammar
-/// its extension names and the symbols it extracts, none when there is no text or the extraction
-/// fails; none at all when no grammar names the extension.
+/// its extension names and the symbols it extracts ([`extracted`]), none when there is no text
+/// and why when the grammar cannot tag it; none at all when no grammar names the extension.
 fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
     let grammar = registry::for_path(path, None)?;
     Some(CodeFile {
         lang: lang_str(grammar.lang).to_string(),
         symbols: extracted(path, || text, None)
             .flatten()
-            .map(|(_, symbols)| CodeSymbols {
-                defs: symbols.defs,
-                refs: symbols.refs,
-                partial: symbols.partial,
+            .map(|(_, symbols)| {
+                symbols.map(|symbols| CodeSymbols {
+                    defs: symbols.defs,
+                    refs: symbols.refs,
+                    partial: symbols.partial,
+                })
             }),
     })
 }
@@ -681,6 +690,12 @@ fn workflow_doc() -> String {
     format!("{RIGGER_DIR}/{WORKFLOW_FILE}")
 }
 
+/// Whether the file at `path` is the workflow definition ([`workflow_doc`]), which every
+/// extraction reads as the workflow before any declaration or grammar is consulted.
+fn is_workflow_doc(path: &str) -> bool {
+    path == workflow_doc()
+}
+
 /// The text of a file's `bytes` as an extraction half reads it: none for no bytes and for bytes
 /// that are not UTF-8, the two inputs every half maps to no facts.
 fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
@@ -740,8 +755,8 @@ mod tests {
         for (path, lang, source) in table {
             let symbols = extracted(path, || Some(source), None)
                 .flatten()
-                .unwrap_or_else(|| panic!("{path}: the symbol extractor reads the fixture"))
-                .1;
+                .and_then(|(_, symbols)| symbols.ok())
+                .unwrap_or_else(|| panic!("{path}: the symbol extractor reads the fixture"));
             let facts = facts_of(path, source.as_bytes());
             assert_eq!(facts.path, path, "{path}");
             assert_eq!(facts.blob, format!("blob-of-{path}"), "{path}");

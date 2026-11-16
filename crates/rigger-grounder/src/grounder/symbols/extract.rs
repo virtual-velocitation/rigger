@@ -2319,7 +2319,7 @@ pub struct Recorded<'a> {
 }
 
 /// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT), over a
-/// file's definitions `defs`, a bundled grammar's ([`locate_extent`]) or a declared extractor's
+/// file's definitions `defs`, a bundled grammar's ([`extract`]) or a declared extractor's
 /// answer (spec 125, THE EXTRACTOR PROTOCOL): the 1-based, inclusive last line of the
 /// `recorded` definition's whole construct is the widest [`Def::end_line`] among the production
 /// definitions - those not `is_test`, as the graph holds no other - named `name`, of kind `kind`,
@@ -2343,19 +2343,6 @@ pub fn extent_in(defs: &[Def], recorded: Recorded) -> Option<u32> {
         })
         .map(|d| d.end_line)
         .max()
-}
-
-/// The `recorded` definition's extent in `source` ([`extent_in`]), its definitions those
-/// [`extract`] gives under the INJECTED grammar and tags query, exactly as the code graph is
-/// extracted. `None` when no such definition sits at the line; an `Err` is a grammar or query
-/// that cannot run over the source.
-pub fn locate_extent(
-    source: &str,
-    lang: Lang,
-    tags: &CompiledTags,
-    recorded: Recorded,
-) -> Result<Option<u32>, String> {
-    Ok(extent_in(&extract(source, lang, tags)?.defs, recorded))
 }
 
 /// The byte offset at which each 0-based line begins. `offsets[0]` is always `0`; each `\n` opens
@@ -4052,14 +4039,16 @@ class K
         );
     }
 
-    /// The last line [`locate_extent`] bounds the Rust definition named `name` of kind `kind`
-    /// recorded at `line` in `source` to, at no path, under the registered Rust grammar and query.
+    /// The last line [`extent_in`] bounds the Rust definition named `name` of kind `kind`
+    /// recorded at `line` in `source` to, at no path, over the definitions [`extract`] gives under
+    /// the registered Rust grammar and query.
     fn located(source: &str, name: &str, kind: Kind, line: u32) -> Option<u32> {
         let entry = crate::symbol_index::registered("rs");
-        locate_extent(
-            source,
-            entry.lang,
-            entry.tags().unwrap(),
+        let defs = extract(source, entry.lang, entry.tags().unwrap())
+            .expect("the registered query runs over the source")
+            .defs;
+        extent_in(
+            &defs,
             Recorded {
                 name,
                 path: None,
@@ -4067,7 +4056,6 @@ class K
                 line,
             },
         )
-        .expect("the registered query runs over the source")
     }
 
     crate::test_cases! {
