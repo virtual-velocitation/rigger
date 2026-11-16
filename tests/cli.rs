@@ -15502,7 +15502,17 @@ fn a_run_opted_in_registers_a_login_entry_that_relaunches_it_or_removes_itself()
     let gone_bin = gone_bin.to_string();
     let gone = canonical.join("gone");
     let gone_key = rigger::login_start::run_key(gone.to_str().unwrap());
-    let rows: [(&str, &Path, Option<&str>, bool, Vec<String>, Vec<String>); 7] = [
+    /// The case, the root the entry names, the text written to its step lock (`None`, none written),
+    /// whether a driver holds the lock, the relaunches started and the login-start calls made.
+    type Row<'a> = (
+        &'a str,
+        &'a Path,
+        Option<&'a str>,
+        bool,
+        Vec<String>,
+        Vec<String>,
+    );
+    let rows: [Row; 7] = [
         (
             "a dead driver's record carrying the flag",
             &canonical,
@@ -15598,7 +15608,17 @@ fn only_a_flagged_launch_holding_the_lock_registers_a_login_entry_and_its_return
     let unavailable = format!("unavailable:{why}");
     let adopt = ["run", "--adopt", "no-such-run"];
     let flagged = ["run", "--relaunch-at-login", "--adopt", "no-such-run"];
-    let rows: [(&str, &[&str], Option<&str>, bool, &[&str], &str); 4] = [
+    /// The case, the launch's arguments, the login-start knob (`None`, the recording fake), whether
+    /// a driver holds the step lock, the verbs of the login-start calls made and what stderr says.
+    type Row<'a> = (
+        &'a str,
+        &'a [&'a str],
+        Option<&'a str>,
+        bool,
+        &'a [&'a str],
+        &'a str,
+    );
+    let rows: [Row; 4] = [
         (
             "a flagged launch refused its adoption",
             &flagged,

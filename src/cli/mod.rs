@@ -9466,7 +9466,9 @@ mod tests {
     #[test]
     fn parse_run_args_reads_the_login_start_flags() {
         let r = |a: &[&str]| parse_run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        let rows: [(&[&str], bool, Option<&str>, Option<&str>); 4] = [
+        /// The arguments, whether they opt in, the root a login entry names, and the spec.
+        type Row<'a> = (&'a [&'a str], bool, Option<&'a str>, Option<&'a str>);
+        let rows: [Row; 4] = [
             (&[], false, None, None),
             (
                 &["--relaunch-at-login", "spec.md"],
