@@ -1323,6 +1323,25 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
+    /// [`hold_shared_lock`] takes the guard SHARED: while it holds the guard, a second open of
+    /// it takes a shared try-lock and is refused an exclusive one, so two guarded gates on one
+    /// cache run side by side and only `rigger reset --build-cache` waits for them.
+    #[test]
+    fn the_held_guard_admits_a_second_shared_lock_and_refuses_an_exclusive_one() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guard = dir.path().join("cargo-target.lock");
+        let _held = hold_shared_lock(guard.to_str().unwrap()).expect("a usable guard locks");
+        let second = open_build_cache_guard(&guard).expect("a second open of the guard");
+        assert_eq!(
+            (
+                fs2::FileExt::try_lock_shared(&second).map_err(|e| e.raw_os_error()),
+                try_exclusive_lock(&guard),
+            ),
+            (Ok(()), contended()),
+            "a shared hold shares the guard and refuses an exclusive lock"
+        );
+    }
+
     #[test]
     fn exec_runner_never_touches_the_guard_when_build_cache_guard_is_empty() {
         // Empty means off, mirroring `target_dir`'s own convention: a per-unit build's
