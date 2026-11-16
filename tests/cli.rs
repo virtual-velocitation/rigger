@@ -26314,7 +26314,8 @@ fn the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_with
     // Assembled at runtime, so this file's own source carries neither shape.
     let utility = ["ki", "ll"].concat();
     let landed = format!(
-        "// a dash \u{2014} here\npub fn stop() {{ let _ = std::process::Command::new(\"{utility}\"); }}\n"
+        "// a dash \u{2014} here\npub fn stop() {{ let _ = std::process::Command::new(\"{utility}\"); }}\n\
+         pub const TYPE_NEW_FACT: &str = \"NewFact\";\n"
     );
     common::git::commit_files(repo, &[("src/lib.rs", &landed)], "an operator commit");
     git_ok(repo, &["checkout", "-q", "-b", "rigger/u/checkin"]);
@@ -26339,7 +26340,7 @@ fn the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_with
         );
         (out.status.success(), text)
     };
-    for check in ["style", "no-os-kill"] {
+    for check in ["style", "no-os-kill", "no-new-event-type"] {
         let (passed, out) = run_gate(&format!(
             "sh .rigger/gates/content.sh {check} \"$RIGGER_RUN_BASE\""
         ));
@@ -26354,6 +26355,57 @@ fn the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_with
             "`{check}` with no base must judge only the branch's own clean commit: {out}"
         );
     }
+}
+
+/// The shipped `.rigger/gates/content.sh no-new-event-type`, run by path from a fixture repository
+/// as a unit's gate runs it, judges the unit branch `commits` build on a `rigger-run` base whose
+/// one source file declares the event type `TYPE_OLD`, and answers exactly `(passed, output)`.
+fn event_type_gate_judges(commits: &[(&str, &str, &str)], (passed, output): (bool, &str)) {
+    let (dir, _) = common::git::unit_branch_repo("pub const TYPE_OLD: &str = \"Old\";\n", commits);
+    assert_eq!(
+        common::repo::run_gate_script(dir.path(), "content.sh", &["no-new-event-type"], &[]),
+        (passed, output.to_string()),
+        "the no-new-event-type gate's verdict on {commits:?}"
+    );
+}
+
+/// The gate's whole output when it finds the new event type `TYPE_NEW_FACT`.
+const NEW_FACT_TYPE: &str = "no-new-event-type gate FAILED: the diff declares a new event type \
+                             (TYPE_NEW_FACT); carry the fact on an existing event type, as a \
+                             status or a meta key\n";
+
+// GIVEN a unit branch, WHEN the shipped no-new-event-type gate judges its diff from the run
+// branch, THEN an event type const it declares in production code fails it, naming the type,
+// while an event type it moves between files, one a test suite declares, a const of another
+// name, or the name in prose passes.
+rigger::test_cases! {
+    the_event_type_gate_fails_a_type_added_to_a_crate: event_type_gate_judges(
+        &[("crates/a/src/lib.rs", "pub const TYPE_NEW_FACT: &str = \"NewFact\";\n", "adds")],
+        (false, NEW_FACT_TYPE),
+    );
+    the_event_type_gate_fails_a_static_type_added_to_the_bin: event_type_gate_judges(
+        &[("src/a.rs", "const TYPE_NEW_FACT: &'static str = \"NewFact\";\n", "adds")],
+        (false, NEW_FACT_TYPE),
+    );
+    the_event_type_gate_passes_a_type_moved_between_files: event_type_gate_judges(
+        &[
+            ("src/lib.rs", "pub fn f() {}\n", "drops it here"),
+            ("crates/a/src/lib.rs", "pub const TYPE_OLD: &str = \"Old\";\n", "declares it there"),
+        ],
+        (true, ""),
+    );
+    the_event_type_gate_passes_a_type_a_test_suite_declares: event_type_gate_judges(
+        &[("tests/a.rs", "const TYPE_NEW_FACT: &str = \"NewFact\";\n", "adds")],
+        (true, ""),
+    );
+    the_event_type_gate_passes_a_const_of_another_name: event_type_gate_judges(
+        &[("crates/a/src/lib.rs", "pub const KIND_NEW_FACT: &str = \"NewFact\";\n", "adds")],
+        (true, ""),
+    );
+    the_event_type_gate_passes_the_name_in_prose: event_type_gate_judges(
+        &[("docs/a.md", "const TYPE_NEW_FACT: &str\n", "adds")],
+        (true, ""),
+    );
 }
 
 /// Round-9 escalation-remedy reject (adj-u69c1r9-verdict-reject upholding
