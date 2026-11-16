@@ -18,8 +18,9 @@ Demand the failing test that proves each defect you raise: name it, and where th
 
 ## Review the tests against the criteria
 
-Read the unit's test hunks in the REVIEW PACKET beside the Done-when criteria the unit owns, and
-read each file it lists under ELIDED before you judge that file. A behaviour a criterion names
+Read the unit's test hunks beside the Done-when criteria the unit owns: from the REVIEW PACKET
+when your prompt carries one, reading each file it lists under ELIDED before you judge that
+file, and from the change under review itself otherwise. A behaviour a criterion names
 that no test of the unit drives, or that a test drives without an assertion a wrong change would
 break, is the missing test the review rule blocks on: name the criterion, the behaviour and the
 test that would prove it.
