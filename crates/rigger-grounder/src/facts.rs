@@ -95,10 +95,11 @@ pub fn read_head(
 }
 
 /// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
-/// the one read of the map, the code store's and the show surface's. A workflow that cannot be read or fails its check
-/// declares none, said on stderr as `rigger: extractors: {error}` in one write ([`whole_line`]),
-/// so the bundled grammars proceed alone.
-pub fn declared_extractors(root: &Path) -> BTreeMap<String, ExtractorDecl> {
+/// the one read of the map, the code store's and the show surface's through
+/// [`ProjectExtractor::of`]. A workflow that cannot be read or fails its check declares none, said
+/// on stderr as `rigger: extractors: {error}` in one write ([`whole_line`]), so the bundled
+/// grammars proceed alone.
+fn declared_extractors(root: &Path) -> BTreeMap<String, ExtractorDecl> {
     read_declared_extractors(root).unwrap_or_else(|error| {
         whole_line::say(format_args!("rigger: extractors: {error}"));
         BTreeMap::new()
