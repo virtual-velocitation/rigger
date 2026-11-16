@@ -2372,13 +2372,13 @@ fn live_branches_for_sweep(
 /// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
 fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
     rigger::reap::reap_processes_rooted_under(dir, authorized_root);
-    let deregistered = !repo.is_empty()
-        && subprocess::git_in(repo)
-            .args(["worktree", "remove", "--force"])
-            .arg(dir)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+    let deregistered = subprocess::git_in(repo)
+        .and_then(|mut git| {
+            git.args(["worktree", "remove", "--force"])
+                .arg(dir)
+                .output()
+        })
+        .is_ok_and(|o| o.status.success());
     if !deregistered {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3285,7 +3285,7 @@ fn materialize_config_at_rev(
     let checkout_str = checkout
         .to_str()
         .ok_or("rigger replay: non-utf8 scratch path")?;
-    let add = subprocess::git_in(repo)
+    let add = subprocess::git_in(repo)?
         .args(["worktree", "add", "--detach"])
         .arg(checkout_str)
         .arg(rev)
@@ -3313,10 +3313,11 @@ fn materialize_config_at_rev(
     // `config::load`, `resolve_spawn_host` and `definition_hash` (just above) - each a pure
     // `std::fs` reader with no subprocess spawned inside the checkout - so nothing can be rooted
     // there to reap.
-    let _ = subprocess::git_in(repo)
-        .args(["worktree", "remove", "--force"])
-        .arg(checkout_str)
-        .output();
+    let _ = subprocess::git_in(repo).and_then(|mut git| {
+        git.args(["worktree", "remove", "--force"])
+            .arg(checkout_str)
+            .output()
+    });
     Ok(loaded?)
 }
 

@@ -220,14 +220,30 @@ const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
 /// the one it operates on whatever repository this process's environment names (the convention
 /// git documents for a hook that operates on another repository). A caller may still set one of
 /// them on the command it is handed.
-pub fn git_in(dir: impl AsRef<OsStr>) -> Command {
+///
+/// The one place a production git command is built, so the one place an empty `dir` is refused:
+/// git reads `-C ""` as the process's own working directory, which for a caller holding no
+/// repository (a repo-less run) is whatever repository the process happens to sit in, never one
+/// the caller chose. Every git call of such a caller fails here instead of acting there.
+pub fn git_in(dir: impl AsRef<OsStr>) -> std::io::Result<Command> {
+    let dir = dir.as_ref();
+    if dir.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            NO_REPOSITORY,
+        ));
+    }
     let mut cmd = command("git");
     cmd.arg("-C").arg(dir);
     for variable in GIT_REPOSITORY_VARIABLES {
         cmd.env_remove(variable);
     }
-    cmd
+    Ok(cmd)
 }
+
+/// Why [`git_in`] refuses an empty repository path.
+pub const NO_REPOSITORY: &str =
+    "no repository: an empty repository path names the process's working directory";
 
 #[cfg(test)]
 mod tests {
@@ -250,7 +266,7 @@ mod tests {
     /// the child's environment, and nothing else added.
     #[test]
     fn git_in_anchors_git_at_the_directory() {
-        let cmd = git_in("/repo");
+        let cmd = git_in("/repo").unwrap();
         assert_eq!(cmd.get_program(), "git");
         let args: Vec<&OsStr> = cmd.get_args().collect();
         assert_eq!(args, vec![OsStr::new("-C"), OsStr::new("/repo")]);
@@ -262,6 +278,15 @@ mod tests {
             .collect();
         removed.sort();
         assert_eq!(envs, removed);
+    }
+
+    /// An empty repository path builds no git command: git would read it as this process's own
+    /// working directory.
+    #[test]
+    fn git_in_refuses_an_empty_repository_path() {
+        let refused = git_in("").unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(refused.to_string(), NO_REPOSITORY);
     }
 
     /// `cmd_argument` is cmd's switches - no AutoRun, the outer quotes stripped, run then end -

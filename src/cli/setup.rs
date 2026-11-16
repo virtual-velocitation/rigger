@@ -49,8 +49,7 @@ fn normalize_origin_url(url: &str) -> String {
 /// network and no newer git than the rest of rigger already assumes.
 fn origin_url_at(root: &Path) -> Option<String> {
     let out = subprocess::git_in(root)
-        .args(["config", "--get", "remote.origin.url"])
-        .output()
+        .and_then(|mut git| git.args(["config", "--get", "remote.origin.url"]).output())
         .ok()?;
     if !out.status.success() {
         return None;
@@ -479,10 +478,8 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
 
     // Check if the path is tracked in git (it should not be, as .claude/ is machine-local and
     // should never be committed). This is just a safety check.
-    let is_tracked = subprocess::command("git")
-        .args(["ls-files"])
-        .current_dir(root)
-        .output()
+    let is_tracked = subprocess::git_in(root)
+        .and_then(|mut git| git.arg("ls-files").output())
         .ok()
         .map(|output| {
             String::from_utf8_lossy(&output.stdout)
@@ -645,8 +642,7 @@ fn git_hooks_dir(root: &Path) -> Result<Option<PathBuf>, String> {
     }
     let args = ["rev-parse", "--git-path", "hooks"];
     let out = subprocess::git_in(root)
-        .args(args)
-        .output()
+        .and_then(|mut git| git.args(args).output())
         .map_err(|e| format!("git {} in {}: {e}", args.join(" "), root.display()))?;
     if !out.status.success() {
         return Err(format!(

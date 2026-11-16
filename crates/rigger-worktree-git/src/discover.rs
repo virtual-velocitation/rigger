@@ -285,20 +285,16 @@ enum Met {
     Nothing,
 }
 
-/// `start` as git takes it: an empty `start` is the current directory, as `git -C ""` takes it.
-fn as_git_takes(start: &Path) -> &Path {
-    if start.as_os_str().is_empty() {
-        Path::new(".")
-    } else {
-        start
-    }
-}
-
 /// Walks up from `start` as git does: from its physical path, never into a ceiling of `reach`
 /// that is a proper ancestor, and never onto another device unless `reach` crosses devices
 /// (a device this OS does not report is never a boundary, which can only lengthen the walk).
+/// An empty `start` names no directory and meets nothing, as no git command runs against an
+/// empty path ([`crate::subprocess::git_in`]): git would take it as the process's own working
+/// directory, a repository the caller never named.
 fn walk(start: &Path, reach: &Reach) -> Met {
-    let start = as_git_takes(start);
+    if start.as_os_str().is_empty() {
+        return Met::Nothing;
+    }
     let physical = match std::fs::canonicalize(start) {
         Ok(physical) => physical,
         Err(e) if e.kind() == ErrorKind::NotFound => return Met::Nothing,
@@ -940,7 +936,6 @@ fn repository_asked(start: &Path, out: &[u8]) -> Result<Repository, &'static str
     let [toplevel, git_dir, common, prefix] = text.split('\n').collect::<Vec<_>>()[..] else {
         return Err(NO_REPOSITORY);
     };
-    let start = as_git_takes(start);
     let physical = |path: &Path| std::fs::canonicalize(path).map_err(|_| NO_REPOSITORY);
     let common_dir = physical(&start.join(common))?;
     let recorded = std::fs::read(common_dir.join("config"))
@@ -1364,23 +1359,16 @@ mod tests {
             }
             assert_discovery_agrees(&start, &asks, *inside, path);
         }
-        // An empty start is the directory this process runs in, which git takes `-C ""` to mean.
-        let (here, empty) = (
-            read_repository(Path::new(".")),
-            read_repository(Path::new("")),
-        );
+        // An empty start names no directory, so it lies in no repository, whatever repository
+        // this process runs in.
+        assert_eq!(read_repository(Path::new("")), Some(None), "an empty start");
+        assert_eq!(discover(Path::new("")), Ok(None), "an empty start");
         for ask in asks {
-            let answer = |found: &Option<Option<Repository>>| {
-                found.as_ref().map(|r| r.as_ref().map(|r| r.answer(ask)))
-            };
-            assert_eq!(answer(&empty), answer(&here), "an empty start: {ask:?}");
             assert_eq!(
                 rev_parse(Path::new(""), ask),
-                rev_parse(Path::new("."), ask),
+                Ok(None),
                 "an empty start: {ask:?}"
             );
-            let inside = walk(Path::new(""), &Reach::default()) != Met::Nothing;
-            assert_rev_parse_agrees(Path::new(""), ask, inside, "an empty start");
         }
         let outside = tempfile::tempdir().unwrap();
         if git_says(outside.path(), Location::Toplevel).is_none() {
@@ -1458,6 +1446,7 @@ mod tests {
             let start = dir.path().join(path);
             let value = std::env::join_paths(&entries).unwrap();
             let out = crate::subprocess::git_in(&start)
+                .unwrap()
                 .env(CEILINGS, &value)
                 .args(["rev-parse", Location::Toplevel.flag()])
                 .output()
@@ -1518,12 +1507,8 @@ mod tests {
             packed.1,
             Some(git_out(dir.path().join("main"), &["rev-parse", "packed"]))
         );
-        // An empty start is the directory this process runs in, which git takes `-C ""` to mean.
-        let empty = read_head(Path::new(""));
-        assert_eq!(empty, read_head(Path::new(".")), "an empty start");
-        if let Some(head) = empty {
-            assert_eq!(head, git_head(Path::new("")), "an empty start");
-        }
+        // An empty start names no directory, so no checkout stands there.
+        assert_eq!(read_head(Path::new("")), None, "an empty start");
     }
 
     /// The main checkout git records for the repository `start` lies in, from git's own answers

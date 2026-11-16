@@ -768,9 +768,7 @@ impl Worktree {
         // negative-pid kill target, not a git pathspec - never matches here.
         args.push("--");
         let out = crate::subprocess::git_in(&self.dir)
-            .args(&args)
-            .args(scope)
-            .output()
+            .and_then(|mut git| git.args(&args).args(scope).output())
             .map_err(|e| Error(format!("git grep conflict markers: {e}")))?;
         match out.status.code() {
             Some(0) => {}
@@ -1352,18 +1350,22 @@ impl Worktree {
     fn patch_id_of(dir: &str, sha: &str) -> Result<String, Error> {
         use std::process::Stdio;
         let mut show = crate::subprocess::git_in(dir)
-            .args(["show", "--no-color", sha])
-            .stdout(Stdio::piped())
-            .spawn()
+            .and_then(|mut git| {
+                git.args(["show", "--no-color", sha])
+                    .stdout(Stdio::piped())
+                    .spawn()
+            })
             .map_err(|e| Error(format!("git show {sha}: {e}")))?;
         let show_stdout = show
             .stdout
             .take()
             .ok_or_else(|| Error(format!("git show {sha}: no stdout pipe")))?;
         let patch_id = crate::subprocess::git_in(dir)
-            .args(["patch-id", "--stable"])
-            .stdin(Stdio::from(show_stdout))
-            .output()
+            .and_then(|mut git| {
+                git.args(["patch-id", "--stable"])
+                    .stdin(Stdio::from(show_stdout))
+                    .output()
+            })
             .map_err(|e| Error(format!("git patch-id {sha}: {e}")))?;
         // The Child handle that spawned `show` is waited on directly, never signalled -
         // this crate's handle-bound process lifecycle discipline (spec 78): a process
@@ -1632,8 +1634,7 @@ pub fn parse_blocking_paths(out: &str) -> Vec<String> {
 /// already carries byte-identical content at a path a refused landing was blocked by.
 pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
     let out = crate::subprocess::git_in(repo)
-        .args(["show", &format!("{git_ref}:{path}")])
-        .output()
+        .and_then(|mut git| git.args(["show", &format!("{git_ref}:{path}")]).output())
         .ok()?;
     out.status.success().then_some(out.stdout)
 }
@@ -1767,13 +1768,14 @@ impl Drop for BlobBatch {
 /// whose tip already carries the content a refused landing was blocked by, and by `rigger
 /// validate`'s residue scan to flag unit branches no live unit owns.
 pub fn unit_branches(repo: impl AsRef<std::ffi::OsStr>) -> Vec<String> {
-    let out = crate::subprocess::git_in(repo)
-        .args([
+    let out = crate::subprocess::git_in(repo).and_then(|mut git| {
+        git.args([
             "for-each-ref",
             "--format=%(refname:short)",
             "refs/heads/rigger/u/",
         ])
-        .output();
+        .output()
+    });
     let mut branches: Vec<String> = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .lines()
@@ -2677,7 +2679,7 @@ pub fn start_git(
     dir: impl AsRef<std::ffi::OsStr>,
     args: &[&str],
 ) -> std::io::Result<std::process::Child> {
-    start_command(crate::subprocess::git_in(dir), args)
+    start_command(crate::subprocess::git_in(dir)?, args)
 }
 
 /// `git`, a git command, run with `args`, no input and its output streams piped, so several can
@@ -2983,7 +2985,7 @@ mod blob_batch_tests {
 
     /// The batch process over the repository holding `root`, run as the plain git there.
     fn started(root: &Path) -> Result<Option<BlobBatch>, Error> {
-        BlobBatch::start(root, crate::subprocess::git_in(root))
+        BlobBatch::start(root, crate::subprocess::git_in(root).unwrap())
     }
 
     /// What `batch` answers for `id`: the bytes, none, or the error's text.
@@ -3040,6 +3042,7 @@ mod blob_batch_tests {
         git_ok_with_identity(root, &["commit", "-q", "-m", "one"]);
         let tree = git_out(root, &["rev-parse", "HEAD^{tree}"]);
         let tree_bytes = crate::subprocess::git_in(root)
+            .unwrap()
             .args(["cat-file", "tree", &tree])
             .output()
             .unwrap()
@@ -3290,6 +3293,7 @@ mod tests {
         let inside = temp_git_project_with_commit();
         let root = inside.path();
         let started = crate::subprocess::git_in(root)
+            .unwrap()
             .args(BLOB_BATCH)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
