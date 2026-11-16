@@ -23,13 +23,10 @@ pub(super) fn pids() -> Vec<u32> {
         .collect()
 }
 
-/// The `PPid:` field of `/proc/<pid>/status`.
+/// `/proc/<pid>/stat`'s `ppid` field, the parent ([`stat_field_after_comm`] index `1`): the one
+/// read of a process's parent in this adapter.
 pub(super) fn parent(pid: u32) -> Option<u32> {
-    let status = std::fs::read_to_string(proc_of(pid).join("status")).ok()?;
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("PPid:"))
-        .and_then(|value| value.trim().parse().ok())
+    stat_field_after_comm(pid, 1)?.parse().ok()
 }
 
 /// The ONE `/proc/<pid>/stat` parser: the `index`-th (0-based) whitespace-separated field
@@ -106,12 +103,11 @@ pub(super) fn open_files(pid: u32) -> Vec<PathBuf> {
 /// clears inside `execve` before it closes the close-on-exec descriptors.
 const PF_FORKNOEXEC: u64 = 0x40;
 
-/// Whether `pid`'s `/proc/<pid>/stat` names `parent` as its parent and carries
-/// [`PF_FORKNOEXEC`] in its flags.
-pub(super) fn is_unexeced_fork_of(pid: u32, parent: u32) -> bool {
-    let field = |index| stat_field_after_comm(pid, index);
-    field(1).and_then(|ppid| ppid.parse::<u32>().ok()) == Some(parent)
-        && field(6)
+/// Whether `pid`'s [`parent`] is `parent_pid` and its `/proc/<pid>/stat` flags carry
+/// [`PF_FORKNOEXEC`].
+pub(super) fn is_unexeced_fork_of(pid: u32, parent_pid: u32) -> bool {
+    parent(pid) == Some(parent_pid)
+        && stat_field_after_comm(pid, 6)
             .and_then(|flags| flags.parse::<u64>().ok())
             .is_some_and(|flags| flags & PF_FORKNOEXEC != 0)
 }
