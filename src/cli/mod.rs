@@ -69,8 +69,8 @@ pub(crate) use hold::*;
 pub(crate) use hygiene::*;
 pub(crate) use observe::*;
 pub(crate) use prime::*;
-use relaunch::KeptRecord;
 pub(crate) use relaunch::{check_point, relaunch_a_dead_driver, CheckPoint};
+use relaunch::{relaunch_at_login, KeptRecord};
 pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
@@ -203,8 +203,14 @@ enum StoreKind {
     KurrentDb,
 }
 
+/// `rigger run`'s opt-in to a login entry that relaunches the run ([`RunArgs::relaunch_at_login`]).
+const RELAUNCH_AT_LOGIN_FLAG: &str = "--relaunch-at-login";
+/// What a login entry runs `rigger run` with, before the project root ([`RunArgs::at_login`]).
+const AT_LOGIN_FLAG: &str = "--at-login";
+
 /// The parsed flags of `run`: which event store, the connection string for the server backend, the
 /// positional spec path, and whether to force a fresh run.
+#[derive(Default)]
 struct RunArgs {
     store: Option<StoreKind>,
     conn: Option<String>,
@@ -228,6 +234,12 @@ struct RunArgs {
     /// run whose driver died ([`relaunch`]) passes it, so a relaunch whose run is gone, or would be
     /// minted anew, refuses before it appends anything instead of driving another run.
     adopt: Option<String>,
+    /// `--relaunch-at-login`: the user's opt-in to a login entry ([`rigger::login_start`]) that
+    /// relaunches this run when the machine went down while its driver held the step lock.
+    relaunch_at_login: bool,
+    /// `--at-login <root>`: what a login entry runs, alone: relaunch the run of the project at
+    /// `<root>` whose driver died, or remove the entry when no such run is owed there.
+    at_login: Option<String>,
 }
 
 /// The backend an `--eventstore` flag's `value` names, for `verb`'s flag parser: `rigger run`'s
@@ -272,8 +284,9 @@ fn spec_positional(
 
 /// Parse `rigger run`'s flags: `--fresh`, `--rebase-definition`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
-/// criterion 6), `--adopt <run>`, and a single positional spec path. Unknown flags, a second
-/// positional, and `--adopt` beside `--fresh`, which mints rather than adopts, are rejected (§10).
+/// criterion 6), `--adopt <run>`, `--relaunch-at-login`, and a single positional spec path; or
+/// `--at-login <root>` alone. Unknown flags, a second positional, `--adopt` beside `--fresh`,
+/// which mints rather than adopts, and `--at-login` beside any other argument are rejected (§10).
 fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>> {
     let mut store = None;
     let mut conn = None;
@@ -282,10 +295,22 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
     let mut rebase_definition = false;
     let mut base = None;
     let mut adopt = None;
+    let mut relaunch_at_login = false;
+    let mut at_login = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--fresh" => fresh = true,
+            RELAUNCH_AT_LOGIN_FLAG => relaunch_at_login = true,
+            AT_LOGIN_FLAG => {
+                i += 1;
+                at_login = match args.get(i) {
+                    Some(root) => Some(root.clone()),
+                    None => {
+                        return Err(format!("run: {AT_LOGIN_FLAG} expects a project root").into())
+                    }
+                };
+            }
             "--adopt" => {
                 i += 1;
                 adopt = match args.get(i) {
@@ -318,6 +343,12 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
             "run: --adopt names the run to adopt, --fresh begins a new one; pass one".into(),
         );
     }
+    if at_login.is_some() && args.len() != 2 {
+        return Err(format!(
+            "run: {AT_LOGIN_FLAG} <root> is what a login entry runs, and takes no other argument"
+        )
+        .into());
+    }
     Ok(RunArgs {
         store,
         conn,
@@ -326,6 +357,8 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         rebase_definition,
         base,
         adopt,
+        relaunch_at_login,
+        at_login,
     })
 }
 
@@ -9441,8 +9474,54 @@ mod tests {
                 &["a", "b"],
                 &["--adopt"],
                 &["--fresh", "--adopt", "r-1"],
+                &["--at-login"],
+                &["--at-login", "/home/dev/project", "spec.md"],
+                &["--relaunch-at-login", "--at-login", "/home/dev/project"],
             ],
         );
+    }
+
+    /// `rigger run --relaunch-at-login` opts the run into a login entry, beside a spec in either
+    /// order, and `--at-login <root>` names the project a login entry relaunches; with neither flag
+    /// the run opts in to nothing.
+    #[test]
+    fn parse_run_args_reads_the_login_start_flags() {
+        let r = |a: &[&str]| parse_run_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        /// The arguments, whether they opt in, the root a login entry names, and the spec.
+        type Row<'a> = (&'a [&'a str], bool, Option<&'a str>, Option<&'a str>);
+        let rows: [Row; 4] = [
+            (&[], false, None, None),
+            (
+                &["--relaunch-at-login", "spec.md"],
+                true,
+                None,
+                Some("spec.md"),
+            ),
+            (
+                &["spec.md", "--relaunch-at-login"],
+                true,
+                None,
+                Some("spec.md"),
+            ),
+            (
+                &["--at-login", "/home/dev/a project"],
+                false,
+                Some("/home/dev/a project"),
+                None,
+            ),
+        ];
+        for (args, relaunch_at_login, at_login, spec) in rows {
+            let a = r(args).unwrap();
+            assert_eq!(
+                (
+                    a.relaunch_at_login,
+                    a.at_login.as_deref(),
+                    a.spec.as_deref()
+                ),
+                (relaunch_at_login, at_login, spec),
+                "{args:?}"
+            );
+        }
     }
 
     /// `rigger run --adopt <run>` names the run the start must adopt, beside a spec in either

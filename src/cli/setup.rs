@@ -1,5 +1,6 @@
 use super::*;
 use rigger::contextgraph::sqlite::CatchUp;
+use rigger::login_start::{sweep, Swept, Unlisted};
 use rigger_domain::code_view::AdvanceCodeStore;
 
 /// `rigger version` (and `rigger --version` / `-V`): print the crate version and the build
@@ -891,7 +892,8 @@ pub(crate) fn open_project_code_store(
 /// `rigger setup` is the FULL project setup: it does everything `rigger init` does
 /// (scaffold `.rigger/` + install the session hook), installs every registry skill, the docs
 /// pre-commit hook, the operator MCP entry and the session settings, and deletes what an
-/// earlier setup installed for an in-session workflow driver rigger does not ship. After it runs
+/// earlier setup installed for an in-session workflow driver rigger does not ship, and removes each
+/// login entry whose program is gone ([`sweep`]). After it runs
 /// the user drives the loop with `rigger run <spec> --base <ref>` with zero manual setup. Like
 /// `rigger init`, it scaffolds from the gate template sets of the root `--template <dir>` names,
 /// loaded and parsed before anything is written.
@@ -1003,6 +1005,28 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
             skill_source_rel("<name>")
         );
     }
+    // Sweep the login entries whose program is gone ([`sweep`]), the reaper of an entry a run
+    // registered with `--relaunch-at-login` whose binary was since uninstalled or moved. An entry
+    // the sweep leaves, not in rigger's form or not removable, is said on EVERY setup, before the
+    // silent-no-op check, like a stray; one it removed is a change, reported below. A host with
+    // no login-start facility is passed over in silence, so a setup there stays a silent no-op:
+    // there a run's register is refused, so no entry stands. Each entry setup cannot read, and a
+    // directory of entries it cannot list, is said in one warning line on stderr, naming the path
+    // and the error, and fails nothing.
+    let swept = match sweep(&*login_start()) {
+        Ok(swept) => swept,
+        Err(Unlisted::NoFacility(_)) => Vec::new(),
+        Err(unlisted) => {
+            eprintln!("warning: {}", unlisted.line());
+            Vec::new()
+        }
+    };
+    for left in swept.iter().filter(|swept| !swept.is_change()) {
+        match left {
+            Swept::Unreadable { .. } => eprintln!("warning: {}", left.line()),
+            _ => println!("{}", left.line()),
+        }
+    }
 
     let skill_changed = skills
         .outcomes
@@ -1013,9 +1037,11 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     let lookup_hook_changed = lookup_hook.is_change();
     let status_line_changed = status_line.is_change();
     let code_store_moved = code_store.as_ref().is_some_and(|opened| opened.moved);
+    let login_entry_removed = swept.iter().any(Swept::is_change);
     if !scaffold.changed()
         && !graph_rebuilt
         && retired.is_empty()
+        && !login_entry_removed
         && !skill_changed
         && !hook_changed
         && !imported
@@ -1041,6 +1067,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     }
     for line in &retired {
         println!("{line}");
+    }
+    for removed in swept.iter().filter(|swept| swept.is_change()) {
+        println!("{}", removed.line());
     }
     for (name, outcome) in &skills.outcomes {
         match outcome {

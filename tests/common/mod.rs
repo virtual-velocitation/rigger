@@ -206,6 +206,11 @@ pub fn rigger_bin() -> PathBuf {
 /// facility, so no test outside the adapter's own rows depends on the host's power facility. A
 /// test that drives the knob re-sets it with `.env(...)` or clears it with `.env_remove(...)`,
 /// either of which wins.
+///
+/// Also pins [`RELAUNCH_ENV`] and [`LOGIN_START_ENV`] to recording fakes under
+/// [`test_cache_home`], so no rigger a test runs starts a detached driver or registers a
+/// relaunch with the host's login facility; a test that drives either knob re-sets it with
+/// `.env(...)`, which wins.
 pub fn rigger_courier() -> Command {
     let mut cmd = Command::new(rigger_bin());
     unfenced(&mut cmd);
@@ -213,7 +218,8 @@ pub fn rigger_courier() -> Command {
 }
 
 /// Applies [`rigger_courier`]'s own env hygiene (the `STORE_FENCE_ENV`/`KURRENTDB_CONN`/
-/// `SPAWN_ENV`/`GATE_SOCKET_ENV` strip and the `XDG_CACHE_HOME` and keep-awake pins - see that function's doc
+/// `SPAWN_ENV`/`GATE_SOCKET_ENV` strip and the `XDG_CACHE_HOME`, keep-awake, relaunch and
+/// login-start pins - see that function's doc
 /// comment for the full WHY)
 /// to an ALREADY-CONSTRUCTED `Command`, for the one class of call site `rigger_courier`
 /// itself cannot cover: a suite that drives the product binary through an intermediate
@@ -245,7 +251,23 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
         RELAUNCH_ENV,
         format!("record:{}", relaunch_record().display()),
     );
+    cmd.env(
+        LOGIN_START_ENV,
+        format!("record:{}", login_start_record().display()),
+    );
     cmd
+}
+
+/// The variable that selects how a rigger invocation registers a run's relaunch at login: its
+/// `record:<path>` value appends a `register <key> <program> <args...>` or `unregister <key>`
+/// line to `<path>` in place of writing the host's login-start entry, and lists the entries
+/// those lines leave standing in place of the host's.
+pub use rigger::login_start::LOGIN_START_ENV;
+
+/// The file the login-start registrations of this test's rigger invocations are recorded in
+/// ([`unfenced`]), so no rigger a test runs registers with, or sweeps, the host's login facility.
+pub fn login_start_record() -> PathBuf {
+    test_cache_home().join("login-start")
 }
 
 /// The variable that selects how a rigger invocation relaunches a run whose driver died: its

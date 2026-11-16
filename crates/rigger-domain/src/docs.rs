@@ -890,8 +890,8 @@ pub const DRIVER_STOP_RULE: &str = "A hold (`rigger hold --reason <text>`) stops
      relaunched by `rigger release` alone, and an interrupted driver is never relaunched. Ending a \
      driver's process any other way is a death, and the next `rigger status` (not `--line` or \
      `--json`) or session start (`rigger prime`) brings it back by adoption, as `rigger release` \
-     and `rigger resume-unit` do, each invoked from the main checkout; no other command relaunches \
-     it.";
+     and `rigger resume-unit` do, each invoked from the main checkout, and as the next login does \
+     for a run started with `--relaunch-at-login`; no other command relaunches it.";
 
 /// Render the `rigger-reset-store` skill (spec 68, criterion 2): store hygiene for the
 /// three files under `.rigger/`. `ctx` is accepted only to match the registry's uniform
@@ -1033,7 +1033,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
             &format!(
                 "A `rigger run` driver that died needs no hand relaunch. {stop} The relaunch \
                  adopts the run in the background, resolving the store, scratch and state roots \
-                 the dead driver resolved, and says so in one line on stderr, naming its \
+                 the dead driver resolved and finding its tools on the search path (`PATH`) it \
+                 had, and says so in one line on stderr, naming its \
                  pid and the file its output goes to (`.rigger/driver.out`, which `rigger status` \
                  names while it holds what a relaunched driver said before it ended, and a driver \
                  started by hand removes). `rigger \
@@ -1047,7 +1048,25 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  the login token in `RIGGER_CLAUDE_CODE_OAUTH_TOKEN`, or drove the server store \
                  named in `KURRENTDB_CONN` or by `--conn`, is relaunched only from an environment \
                  that sets that variable too; from any other, the line names that command and \
-                 nothing is relaunched.\n",
+                 nothing is relaunched. A run started with `--relaunch-at-login` also registers \
+                 a login entry with the OS's login-start facility (a systemd user unit on Linux, a \
+                 LaunchAgent on macOS, a script in the Startup folder on Windows) while the run is \
+                 live, so a machine that reboots mid-run brings the run back at the next login, \
+                 with no session opened: the entry runs `rigger run --at-login <project root>`, \
+                 which relaunches a dead driver as `rigger status` would and removes the entry \
+                 once no relaunch is owed. A driver that ends on its own or is refused removes \
+                 its entry as it empties its record, save one parked on an operator hold, whose \
+                 entry stands with its record; a run started without the flag registers nothing, \
+                 and a login removes the entry an earlier launch of it left. A login also removes \
+                 the entry of a project on a volume not mounted at that login; its run comes back \
+                 by the usual relaunch at the next session start or `rigger status`, and registers \
+                 its entry again. Each launch with the flag and `rigger setup` remove an entry \
+                 whose program was since uninstalled or moved, one line naming its key and \
+                 program, and name in one line, leaving it, an entry under rigger's key that is \
+                 not in the form rigger writes; an entry they cannot read is named in one line \
+                 with its path and the error and left while the rest are swept, and a directory \
+                 they cannot list is named the same way and none is swept, failing neither, and \
+                 a host with no login-start facility leaves `rigger setup` silent.\n",
                 stop = DRIVER_STOP_RULE
             ),
             "When that line says the run was left stopped, or a driver was stopped on purpose, \

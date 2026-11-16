@@ -406,6 +406,16 @@ prompts) that drifted from what this live run pinned at\n                       
 start: record the supersession and continue instead of\n                                   \
 halting. The explicit mid-campaign-edit escape (a live\n                                   \
 run otherwise HALTS loudly on definition drift)\n  \
+--relaunch-at-login              keep a login entry with the OS's login-start facility\n                                   \
+while the run is live, so a machine that reboots\n                                   \
+mid-run relaunches the run at the next login; the\n                                   \
+driver removes it as it ends, a login owing no\n                                   \
+relaunch removes it. Nothing is registered without it;\n                                   \
+each flagged launch and `rigger setup` remove an entry\n                                   \
+whose program was since uninstalled or moved\n  \
+--at-login <root>                what that entry runs: relaunch the run of the project\n                                   \
+at <root> if its driver died, removing the entry once\n                                   \
+no relaunch is owed. Takes no other argument\n  \
 --adopt <run>                    adopt that run and no other: refuse, recording\n                                   \
 nothing, when the start would adopt another or begin a\n                                   \
 new one. What a relaunch after a driver died passes\n\n\

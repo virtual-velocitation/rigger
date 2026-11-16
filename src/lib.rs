@@ -124,6 +124,9 @@ pub use rigger_process::holders;
 pub use rigger_process::interrupt;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub use rigger_process::keep_awake;
+/// The login-start interface a run registers its relaunch with: see that module's own doc.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub use rigger_process::login_start;
 /// The one interface every fact about a running process is read through: see that module's own
 /// doc.
 #[cfg(any(feature = "store", not(feature = "core")))]

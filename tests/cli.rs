@@ -15417,6 +15417,485 @@ fn relaunch_line(record: &str) -> String {
     )
 }
 
+/// The `register` and `unregister` lines this test's rigger invocations recorded
+/// ([`common::login_start_record`]).
+fn recorded_login_starts() -> Vec<String> {
+    std::fs::read_to_string(common::login_start_record())
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// One `rigger run --at-login <root>`, as the login entry of the project at `root` runs it, from a
+/// directory outside every project, after `record`, given one, is written to the step lock, with
+/// another process holding that lock when `held`: the relaunches and the login-start calls it
+/// recorded, its success, and its stderr.
+fn at_login(
+    root: &Path,
+    record: Option<&str>,
+    held: bool,
+) -> (Vec<String>, Vec<String>, bool, String) {
+    if let Some(record) = record {
+        std::fs::write(common::cli::rigger_file(root, "step.lock"), record).unwrap();
+    }
+    let _holder = held.then(|| common::cli::hold_step_lock(root));
+    let _ = std::fs::remove_file(common::relaunch_record());
+    let _ = std::fs::remove_file(common::login_start_record());
+    let away = tempfile::tempdir().unwrap();
+    let (_, err, ok) = run_rigger_envs(
+        away.path(),
+        &["run", "--at-login", root.to_str().unwrap()],
+        &[],
+    );
+    (recorded_relaunches(), recorded_login_starts(), ok, err)
+}
+
+/// A RUN OPTED IN COMES BACK AT LOGIN: a run started with `--relaunch-at-login` registers one login
+/// entry under its project's key once it holds the step lock, running the binary it runs as with
+/// `run --at-login <root>`, and its record carries the flag to every relaunch. After its driver
+/// died, what the entry runs relaunches the run through the one relaunch entry and keeps the
+/// entry; while a driver holds the lock it does neither; over an emptied, unreadable or unflagged
+/// record, a record whose binary is gone, and a project since removed, it relaunches nothing and
+/// removes the entry. Each answers success.
+#[test]
+fn a_run_opted_in_registers_a_login_entry_that_relaunches_it_or_removes_itself() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = common::default_scratch_root(root);
+    let ended = common::cli::a_run_ended_mid_units(
+        root,
+        &["run", "--relaunch-at-login"],
+        &scratch,
+        &[],
+        common::cli::HOLDING_WORKER_ARM,
+        &["started"],
+        common::fixtures::cleanup,
+    );
+    common::cli::release_the_unit(ended.fake.path());
+    let canonical = root.canonicalize().unwrap();
+    let key = rigger::login_start::run_key(canonical.to_str().unwrap());
+    let record: serde_json::Value =
+        serde_json::from_str(&ended.record).expect("a live run's driver keeps a record");
+    let bin = record["bin"].as_str().expect("the binary a record names");
+    let flagged = record["args"]
+        .as_array()
+        .is_some_and(|args| args.iter().any(|arg| arg == "--relaunch-at-login"));
+    assert_eq!(
+        (recorded_login_starts(), flagged),
+        (
+            vec![format!(
+                "register {key} {bin} run --at-login {}",
+                canonical.display()
+            )],
+            true
+        ),
+        "a run opted in registers one login entry once it holds the step lock, and its record \
+         carries the flag; record: {}",
+        ended.record
+    );
+    let removed = vec![format!("unregister {key}")];
+    let unflagged = ended.record.replace("\"--relaunch-at-login\",", "");
+    let mut gone_bin = record.clone();
+    gone_bin["bin"] = serde_json::Value::from(canonical.join("gone").join("rigger").to_str());
+    let gone_bin = gone_bin.to_string();
+    let gone = canonical.join("gone");
+    let gone_key = rigger::login_start::run_key(gone.to_str().unwrap());
+    /// The case, the root the entry names, the text written to its step lock (`None`, none written),
+    /// whether a driver holds the lock, the relaunches started and the login-start calls made.
+    type Row<'a> = (
+        &'a str,
+        &'a Path,
+        Option<&'a str>,
+        bool,
+        Vec<String>,
+        Vec<String>,
+    );
+    let rows: [Row; 7] = [
+        (
+            "a dead driver's record carrying the flag",
+            &canonical,
+            Some(&ended.record),
+            false,
+            vec![relaunch_line(&ended.record)],
+            vec![],
+        ),
+        (
+            "a driver holding the lock",
+            &canonical,
+            Some(&ended.record),
+            true,
+            vec![],
+            vec![],
+        ),
+        (
+            "an emptied record",
+            &canonical,
+            Some(""),
+            false,
+            vec![],
+            removed.clone(),
+        ),
+        (
+            "a record that does not parse",
+            &canonical,
+            Some("not a record"),
+            false,
+            vec![],
+            removed.clone(),
+        ),
+        (
+            "a record of a driver started without the flag",
+            &canonical,
+            Some(&unflagged),
+            false,
+            vec![],
+            removed.clone(),
+        ),
+        (
+            "a record whose binary is gone",
+            &canonical,
+            Some(&gone_bin),
+            false,
+            vec![],
+            removed.clone(),
+        ),
+        (
+            "a project since removed",
+            &gone,
+            None,
+            false,
+            vec![],
+            vec![format!("unregister {gone_key}")],
+        ),
+    ];
+    for (case, at, record, held, relaunches, logins) in rows {
+        let (got_relaunches, got_logins, ok, err) = at_login(at, record, held);
+        assert_eq!(
+            (got_relaunches, got_logins, ok),
+            (relaunches, logins, true),
+            "{case}; stderr: {err}"
+        );
+    }
+}
+
+/// A LOGIN ENTRY ONLY WHERE OPTED IN, AND ONLY UNDER THE LOCK: a launch with `--relaunch-at-login`
+/// registers its entry once it holds the step lock and removes it as it returns, here refused the
+/// run it was told to adopt; a launch without the flag registers nothing; one whose login-start
+/// facility is unavailable refuses, naming why, and one refused for a busy step lock registers
+/// nothing.
+#[test]
+fn only_a_flagged_launch_holding_the_lock_registers_a_login_entry_and_its_return_removes_it() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let canonical = root.canonicalize().unwrap();
+    let canonical = canonical.to_str().unwrap();
+    let key = rigger::login_start::run_key(canonical);
+    let label = |line: &str| {
+        if line.starts_with(&format!("register {key} "))
+            && line.ends_with(&format!(" run --at-login {canonical}"))
+        {
+            "register".to_string()
+        } else if line == format!("unregister {key}") {
+            "unregister".to_string()
+        } else {
+            line.to_string()
+        }
+    };
+    let why = "no login session here";
+    let unavailable = format!("unavailable:{why}");
+    let adopt = ["run", "--adopt", "no-such-run"];
+    let flagged = ["run", "--relaunch-at-login", "--adopt", "no-such-run"];
+    /// The case, the launch's arguments, the login-start knob (`None`, the recording fake), whether
+    /// a driver holds the step lock, the verbs of the login-start calls made and what stderr says.
+    type Row<'a> = (
+        &'a str,
+        &'a [&'a str],
+        Option<&'a str>,
+        bool,
+        &'a [&'a str],
+        &'a str,
+    );
+    let rows: [Row; 4] = [
+        (
+            "a flagged launch refused its adoption",
+            &flagged,
+            None,
+            false,
+            &["register", "unregister"],
+            "--adopt no-such-run",
+        ),
+        (
+            "an unflagged launch refused its adoption",
+            &adopt,
+            None,
+            false,
+            &[],
+            "--adopt no-such-run",
+        ),
+        (
+            "a flagged launch whose login-start facility is unavailable",
+            &flagged,
+            Some(&unavailable),
+            false,
+            &[],
+            why,
+        ),
+        (
+            "a flagged launch refused for the busy step lock",
+            &flagged,
+            None,
+            true,
+            &[],
+            "Refusing to run concurrently",
+        ),
+    ];
+    for (case, args, knob, held, logins, says) in rows {
+        let _ = std::fs::remove_file(common::login_start_record());
+        let _holder = held.then(|| common::cli::hold_step_lock(root));
+        let envs: Vec<(&str, &str)> = knob
+            .map(|knob| (common::LOGIN_START_ENV, knob))
+            .into_iter()
+            .collect();
+        let (_, err, ok) = run_rigger_envs(root, args, &envs);
+        let got: Vec<String> = recorded_login_starts()
+            .iter()
+            .map(|line| label(line))
+            .collect();
+        assert_eq!(
+            (got, ok, err.contains(says)),
+            (logins.iter().map(|l| l.to_string()).collect(), false, true),
+            "{case}; stderr: {err}"
+        );
+    }
+}
+
+/// A LOGIN ENTRY WHOSE PROGRAM IS GONE IS SWEPT, BY SETUP AND BY A FLAGGED LAUNCH: GIVEN login
+/// entries standing for a program since removed, for one that stands, and under a key in a form
+/// rigger does not write, WHEN `rigger setup` reruns over a set-up project or a launch with
+/// `--relaunch-at-login` registers its own entry, THEN the entry whose program is gone is removed
+/// with one line naming its key and program, the standing one is kept, and the foreign one is
+/// named in one line and left; setup names the foreign one before it decides it changed nothing,
+/// so a further setup says that line alone, and a setup whose facility is unavailable says nothing.
+#[test]
+fn setup_and_a_flagged_launch_sweep_the_login_entries_whose_program_is_gone() {
+    let set_up = temp_project();
+    setup_ok(set_up.path(), &[]);
+    let launched = temp_git_project_with_commit();
+    write_workflow_fixture(launched.path(), &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let canonical = launched.path().canonicalize().unwrap();
+    let canonical = canonical.to_str().unwrap();
+    let key = rigger::login_start::run_key(canonical);
+    let scratch = tempfile::tempdir().unwrap();
+    let gone = scratch.path().join("gone").join("rigger");
+    let gone = gone.to_str().unwrap();
+    let standing = common::rigger_bin();
+    let stale = "rigger-run-5a5a5a5a5a5a5a5a";
+    let foreign = "rigger-run-ffffffffffffffff";
+    let seeded = [
+        format!("register {stale} {gone} run --at-login /gone-project"),
+        format!(
+            "register rigger-run-1f2e3d4c5b6a7980 {} run --at-login /kept-project",
+            standing.display()
+        ),
+        format!("register {foreign}"),
+    ];
+    let seed = |extra: &[String]| {
+        let mut lines = seeded.to_vec();
+        lines.extend_from_slice(extra);
+        std::fs::write(common::login_start_record(), lines.join("\n") + "\n").unwrap();
+    };
+    let removed =
+        format!("removed the login entry {stale}: the program it starts, {gone}, does not exist");
+    let left = format!("left the login entry {foreign} alone: it is not in the form rigger writes");
+    let swept = format!("unregister {stale}");
+    let own = |line: &str| {
+        if line.starts_with(&format!("register {key} "))
+            && line.ends_with(&format!(" run --at-login {canonical}"))
+        {
+            "register <own>".to_string()
+        } else {
+            line.to_string()
+        }
+    };
+    /// The case, the project it runs in, its arguments, the login-start calls it records after the
+    /// seeded entries, its lines naming a login entry, and its success.
+    type Row<'a> = (
+        &'a str,
+        &'a Path,
+        &'a [&'a str],
+        Vec<String>,
+        Vec<String>,
+        bool,
+    );
+    let rows: [Row; 2] = [
+        (
+            "a setup rerun over the set-up project",
+            set_up.path(),
+            &["setup"],
+            vec![swept.clone()],
+            vec![left.clone(), removed.clone()],
+            true,
+        ),
+        (
+            "a flagged launch refused its adoption",
+            launched.path(),
+            &["run", "--relaunch-at-login", "--adopt", "no-such-run"],
+            vec![
+                "register <own>".to_string(),
+                swept.clone(),
+                format!("unregister {key}"),
+            ],
+            vec![
+                format!("rigger run: {removed}"),
+                format!("rigger run: {left}"),
+            ],
+            false,
+        ),
+    ];
+    for (case, root, args, recorded, said, ok) in rows {
+        seed(&[]);
+        let (out, err, got_ok) = run_rigger_envs(root, args, &[]);
+        let expected: Vec<String> = seeded.iter().cloned().chain(recorded).collect();
+        let got: Vec<String> = recorded_login_starts().iter().map(|l| own(l)).collect();
+        let got_said: Vec<String> = out
+            .lines()
+            .chain(err.lines())
+            .filter(|line| line.contains("login entry"))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            (got, got_said, got_ok),
+            (expected, said, ok),
+            "{case}; stdout: {out}; stderr: {err}"
+        );
+    }
+    seed(&[swept]);
+    assert_eq!(
+        setup_ok(set_up.path(), &[]),
+        format!("{left}\n"),
+        "a further setup, with nothing left to sweep, says the foreign entry alone"
+    );
+    assert_eq!(
+        setup_ok(
+            set_up.path(),
+            &[(common::LOGIN_START_ENV, "unavailable:no login session here")]
+        ),
+        "",
+        "a setup whose login-start facility is unavailable stays a silent no-op"
+    );
+}
+
+/// A SETUP NAMES EACH LOGIN ENTRY IT CANNOT READ AND SWEEPS THE REST, SAVE ON A HOST WITHOUT THE
+/// FACILITY: GIVEN a set-up project, WHEN `rigger setup` reruns where the login-start facility is
+/// unavailable, where one entry cannot be read beside one whose program is gone, or where the
+/// entries cannot be listed at all, THEN setup succeeds each time; it says nothing where the
+/// facility is unavailable; it names the entry it cannot read in one line on stderr, with the path
+/// and the error, and still removes the stale one; and where the entries cannot be listed it says
+/// in one line on stderr that they were not swept, naming the path and the error, and sweeps none.
+#[test]
+fn setup_names_each_login_entry_it_cannot_read_and_sweeps_the_rest_save_without_the_facility() {
+    let set_up = temp_project();
+    setup_ok(set_up.path(), &[]);
+    let scratch = tempfile::tempdir().unwrap();
+    // A record that is a directory, which no user on any host reads as a file.
+    let unlistable = scratch.path().join("login-start");
+    std::fs::create_dir(&unlistable).unwrap();
+    let error = std::fs::read_to_string(&unlistable).unwrap_err();
+    let unlistable_record = format!("record:{}", unlistable.display());
+    let record = format!("record:{}", common::login_start_record().display());
+    let stale = "rigger-run-5a5a5a5a5a5a5a5a";
+    let unread = "rigger-run-1f2e3d4c5b6a7980";
+    let gone = scratch.path().join("gone").join("rigger");
+    let gone = gone.to_str().unwrap();
+    let why = format!(
+        "cannot read {}: Permission denied (os error 13)",
+        scratch.path().join(format!("{unread}.service")).display()
+    );
+    let seeded = vec![
+        format!("register {stale} {gone} run --at-login /gone-project"),
+        format!("unreadable {unread} {why}"),
+    ];
+    /// The case, the login-start knob, the entries seeded in the test's record, setup's lines
+    /// naming a login entry on stdout and on stderr, the calls it records after the seeded
+    /// entries, and whether its stdout is empty.
+    type Row<'a> = (
+        &'a str,
+        &'a str,
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        Vec<String>,
+        bool,
+    );
+    let rows: [Row; 3] = [
+        (
+            "a host without the facility",
+            "unavailable:no login session here",
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            true,
+        ),
+        (
+            "an entry setup cannot read beside one whose program is gone",
+            &record,
+            seeded.clone(),
+            vec![format!(
+                "removed the login entry {stale}: the program it starts, {gone}, does not exist"
+            )],
+            vec![format!(
+                "warning: the login entry {unread} was not swept: {why}"
+            )],
+            vec![format!("unregister {stale}")],
+            false,
+        ),
+        (
+            "entries setup cannot list",
+            &unlistable_record,
+            Vec::new(),
+            Vec::new(),
+            vec![format!(
+                "warning: the login entries whose program is gone were not swept: cannot read \
+                 {}: {error}",
+                unlistable.display()
+            )],
+            Vec::new(),
+            true,
+        ),
+    ];
+    for (case, knob, seed, out_said, err_said, recorded, quiet) in rows {
+        let seed_text: String = seed.iter().map(|line| format!("{line}\n")).collect();
+        std::fs::write(common::login_start_record(), seed_text).unwrap();
+        let (out, err, ok) = run_rigger_envs(
+            set_up.path(),
+            &["setup"],
+            &[(common::LOGIN_START_ENV, knob)],
+        );
+        let said = |text: &str| -> Vec<String> {
+            text.lines()
+                .filter(|line| line.contains("login entr"))
+                .map(str::to_owned)
+                .collect()
+        };
+        let expected: Vec<String> = seed.into_iter().chain(recorded).collect();
+        assert_eq!(
+            (
+                said(&out),
+                said(&err),
+                recorded_login_starts(),
+                out.is_empty(),
+                ok
+            ),
+            (out_said, err_said, expected, quiet, true),
+            "{case}; stdout: {out}; stderr: {err}"
+        );
+    }
+}
+
 /// What a row of [`only_the_checking_verbs_relaunch_a_run_whose_driver_died`] invokes over: the
 /// dead driver's record as it stands, or that record with the run held, with another binary
 /// recorded, with a recorded binary since removed, or invoked from a linked worktree, the run
@@ -16176,6 +16655,7 @@ fn a_hold_released_while_a_parked_adopting_driver_runs_drives_the_run_to_its_end
     let scratch = common::default_scratch_root(root);
     let ended = common::cli::a_run_ended_mid_units(
         root,
+        &["run"],
         &scratch,
         &[],
         &chained_unit_arms(),
