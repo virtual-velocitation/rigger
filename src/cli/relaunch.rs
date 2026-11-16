@@ -849,6 +849,39 @@ mod tests {
         assert_eq!(record.env, expected);
     }
 
+    /// A relaunch starts the driver on the PATH the driver that died found its tools on, not the
+    /// checker's: a login manager starts what a login entry runs on its own short PATH, which
+    /// finds none of the agent host, git or the project's gate tools the run was started with.
+    #[test]
+    fn a_relaunch_starts_the_driver_on_the_path_it_found_its_tools_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let parsed = RunArgs {
+            adopt: Some("a-run".into()),
+            ..RunArgs::default()
+        };
+        let kept = KeptRecord::hold(acquire_step_lock(dir.path()).unwrap());
+        kept.keep(&parsed, dir.path(), dir.path(), "a-run");
+        let text = kept.lock.contents().unwrap();
+        drop(kept);
+        std::fs::write(dir.path().join("step.lock"), &text).unwrap();
+        let check = Check {
+            now: now_secs(),
+            released: false,
+            in_main_checkout: &|| true,
+            operator_holds: &|_| false,
+            credentials: BTreeSet::new(),
+        };
+        let keeper = EnvKeeper::default();
+        revive(dir.path(), &check, &keeper);
+        let handed: Vec<Option<OsString>> = keeper
+            .0
+            .into_inner()
+            .into_iter()
+            .map(|env| env.get("PATH").cloned().flatten())
+            .collect();
+        assert_eq!(handed, vec![std::env::var_os("PATH")], "record: {text}");
+    }
+
     /// A driver given the store connection by `--conn` has had the store connection as surely as
     /// one given it by its variable: its record names the variable, never the value, and a check
     /// whose environment does not set the variable relaunches nothing, saying how the operator
