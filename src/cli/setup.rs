@@ -4156,6 +4156,56 @@ mod tests {
         );
     }
 
+    /// Spec 125's existing-data corner: a `.gitignore` already carrying a runtime line, spelled
+    /// with or without a trailing `/` and padded or not, keeps that line as it is. `init_project`
+    /// appends every other line it writes to an empty `.gitignore`, in the same order, and
+    /// reports exactly the lines it appended.
+    #[test]
+    fn init_project_keeps_an_existing_runtime_ignore_line_in_any_spelling_and_appends_the_rest() {
+        let fresh = tempfile::tempdir().unwrap();
+        let fresh_report = init_project(fresh.path(), &[]).expect("init must scaffold");
+        let fresh_lines: Vec<String> = std::fs::read_to_string(fresh.path().join(".gitignore"))
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            fresh_report.gitignore_added, fresh_lines,
+            "a fresh init reports exactly the lines it wrote"
+        );
+        let rows = [
+            (".claude/", ".claude"),
+            (".claude", ".claude"),
+            (".rigger/tmp/", ".rigger/tmp"),
+            (".rigger/playbooks/", ".rigger/playbooks"),
+            ("  .rigger/store/  ", ".rigger/store"),
+            (".rigger/dash.url", ".rigger/dash.url"),
+        ];
+        for (existing, covered) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join(".gitignore"), format!("{existing}\n")).unwrap();
+            let report = init_project(dir.path(), &[]).expect("init must scaffold");
+            let written = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+            let appended: Vec<String> = fresh_lines
+                .iter()
+                .filter(|line| *line != covered)
+                .cloned()
+                .collect();
+            assert_eq!(
+                (
+                    written.lines().map(str::to_string).collect::<Vec<_>>(),
+                    report.gitignore_added
+                ),
+                (
+                    [vec![existing.to_string()], appended.clone()].concat(),
+                    appended
+                ),
+                "an existing {existing:?} line stays as it is and covers {covered}: init appends \
+                 and reports every other line"
+            );
+        }
+    }
+
     /// Spec 08 item 2: the scaffold seed and the scaffold workflow reference the SAME
     /// canonical persona set - every seeded agent is referenced by the workflow and every
     /// referenced agent is seeded (no stray, unreferenced persona on a fresh-repo init) -
