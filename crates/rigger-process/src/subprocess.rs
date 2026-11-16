@@ -1,4 +1,4 @@
-//! THE PROCESS-SPAWN PORT: the one place production code constructs a [`Command`].
+//! THE PROCESS-SPAWN INTERFACE: the one place production code constructs a [`Command`].
 //!
 //! Every process this crate starts - git, the gate shell, the agent CLI, the dash child, a declared
 //! extractor - is built here and handed back for the caller to add its own arguments and run. One

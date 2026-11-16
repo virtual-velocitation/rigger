@@ -111,7 +111,7 @@ impl AgentDriver for PanicOnAnySpawn {
 /// this proves the OPPOSITE half: the trigger succeeds for real, on disk and in the log, and
 /// everything durable that was SUPPOSED to follow it is exactly what never arrives - the one
 /// window this criterion's fix closes. Never a production hook: `EventStore` is the crate's own
-/// injected port ([`Deps::store`]), the same seam a genuine backend failure would surface
+/// injected interface ([`Deps::store`]), the same seam a genuine backend failure would surface
 /// through.
 struct FailAfterContaining<'a> {
     inner: &'a dyn EventStore,

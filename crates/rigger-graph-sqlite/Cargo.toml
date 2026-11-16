@@ -3,7 +3,7 @@ name = "rigger-graph-sqlite"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Rigger's context-graph persistence adapter: the SQLite projector that folds the event log into the bi-temporal graph behind the Projection port."
+description = "Rigger's context-graph persistence adapter: the SQLite projector that folds the event log into the bi-temporal graph behind the Projection interface."
 
 [lib]
 name = "rigger_graph_sqlite"

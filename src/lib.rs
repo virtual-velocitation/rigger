@@ -1,8 +1,8 @@
 //! Rigger: a config-driven, event-sourced multi-agent dev-loop harness.
 //!
-//! Clean Architecture: the ports are traits (EventStore, ...), the adapters live
+//! Clean Architecture: the interfaces are traits (EventStore, ...), the adapters live
 //! beside them, and the conductor is the top-level use case depending only on
-//! ports. It generalizes a proven internal multi-agent dev-loop harness into a
+//! interfaces. It generalizes a proven internal multi-agent dev-loop harness into a
 //! standalone, config-driven product.
 
 // THE FEATURE SPLIT (spec 93, criterion 1): a `core` module is either wholly listed

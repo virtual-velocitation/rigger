@@ -20,7 +20,7 @@ use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_LESSON_LEARNED, TYPE_REVIEW_F
 use crate::eventstore::Event;
 
 /// The one read a one-shot command folds (spec 101): the run from its boundary and the
-/// carried-over knowledge by type, through the store port. Gated with [`crate::retention`],
+/// carried-over knowledge by type, through the store interface. Gated with [`crate::retention`],
 /// whose perception types it refuses.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod read;

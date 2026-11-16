@@ -13,6 +13,7 @@ use crate::contextgraph::{
     CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE,
 };
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
+use rigger_domain::code_facts::{Bound, Recorded};
 use rigger_domain::wave::normalize_ws;
 use tree_sitter::StreamingIterator;
 
@@ -2304,45 +2305,20 @@ fn enclosing_defs(
     callers
 }
 
-/// A definition as its graph node records it, the one [`extent_in`] bounds.
-#[derive(Clone, Copy, Debug)]
-pub struct Recorded<'a> {
-    /// Its leaf, the node's `name`.
-    pub name: &'a str,
-    /// Its id path in its file, the node id's text after the file (spec 119, IDS FOLLOW THE
-    /// LANGUAGE'S PATH); `None` for an id holding no `::`, found by name, kind and line alone.
-    pub path: Option<&'a str>,
-    /// Its kind, a `kind_str` rendering, as the node carries it.
-    pub kind: &'a str,
-    /// Its recorded 1-based line.
-    pub line: u32,
-}
-
 /// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT), over a
 /// file's definitions `defs`, a bundled grammar's ([`extract`]) or a declared extractor's
-/// answer (spec 125, THE EXTRACTOR PROTOCOL): the 1-based, inclusive last line of the
-/// `recorded` definition's whole construct is the widest [`Def::end_line`] among the production
-/// definitions - those not `is_test`, as the graph holds no other - named `name`, of kind `kind`,
-/// at `line` and, when its `path` is given, at that id path ([`Def::path`]). The kind is compared
-/// through `kind_str`, so a field beside a same-named fn, or a variant inside its same-named enum,
-/// never widens the bound. `None` when no such definition sits at the line.
+/// answer (spec 125, THE EXTRACTOR PROTOCOL): the `recorded` definition's last line is
+/// [`Recorded::widest_end`] over them, their kinds rendered through `kind_str`, the one rule the
+/// code store's facts are bounded by too. `None` when no such definition sits at the line.
 pub fn extent_in(defs: &[Def], recorded: Recorded) -> Option<u32> {
-    let Recorded {
-        name,
-        path,
-        kind,
-        line,
-    } = recorded;
-    defs.iter()
-        .filter(|d| {
-            !d.is_test
-                && d.name == name
-                && path.is_none_or(|path| d.path == path)
-                && kind_str(d.kind) == kind
-                && d.line == line
-        })
-        .map(|d| d.end_line)
-        .max()
+    recorded.widest_end(defs.iter().map(|d| Bound {
+        name: &d.name,
+        path: &d.path,
+        kind: kind_str(d.kind),
+        line: d.line,
+        end_line: d.end_line,
+        test: d.is_test,
+    }))
 }
 
 /// The byte offset at which each 0-based line begins. `offsets[0]` is always `0`; each `\n` opens

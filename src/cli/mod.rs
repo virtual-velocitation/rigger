@@ -435,7 +435,7 @@ pub(crate) fn stderr_line(line: &str) {
 }
 
 /// Open the embedded sqlite event log at `path`. This is the ONE sqlite event-log constructor
-/// (§48, the single authority): [`resolve_store`] boxes it as the port for every command, and
+/// (§48, the single authority): [`resolve_store`] boxes it as the interface for every command, and
 /// the local identity migration - which needs the concrete [`Store`] for its stream-rename
 /// maintenance - constructs through here too, so the sqlite backend is built at exactly one
 /// call site. The structural test in `tests/store_resolution.rs` pins that.
@@ -832,7 +832,7 @@ fn store_selection_in(
     store_selection_at(flag_store, flag_conn, env_conn(), &rigger_dir)
 }
 
-/// Construct the selected event-log backend as a boxed port (§48, "one resolution authority").
+/// Construct the selected event-log backend as a boxed interface (§48, "one resolution authority").
 /// This is the ONLY place a concrete event-log backend is handed to a command: every command
 /// routes its backend through here (the isolated replay store and the local identity migration
 /// pass an explicit [`StoreSelection::Sqlite`], being local by construction), so store selection
@@ -1578,7 +1578,7 @@ fn main_worktree_or_refuse(site: &Site, command: &str) -> Result<String, String>
 }
 
 /// The whole name the run stream of the project `identity` scopes has in the store's file - the
-/// one spelling a read below the namespacing port ([`Namespaced`]) names it by: the identity's
+/// one spelling a read below the namespacing interface ([`Namespaced`]) names it by: the identity's
 /// prefix, then [`conductor::STREAM`].
 fn run_stream_of(identity: &str) -> String {
     format!("{}{}", Namespaced::prefix_for(identity), conductor::STREAM)
@@ -2108,6 +2108,27 @@ impl ReadGraph<'_> {
     ) -> Result<Box<dyn ContextGraph + '_>, contextgraph::Error> {
         let head = self.head().map_err(contextgraph::Error)?;
         Ok(Box::new(self.composed_at(&head, filter, resolution)?))
+    }
+
+    /// [`Self::open_at`] opened for its whole graph alone
+    /// ([`rigger_domain::composed::Composed::whole_at`]): the read of the dash's graph view, its
+    /// code half taken from `held` when it is given and holds this read
+    /// ([`rigger_domain::composed::Composed::whole_held_at`]).
+    pub(crate) fn open_whole_at(
+        &self,
+        filter: rigger_domain::code_view::ViewFilter,
+        resolution: f64,
+        held: Option<&rigger_domain::composed::WholeMemo>,
+    ) -> Result<rigger_domain::composed::WholeOpen<'_>, contextgraph::Error> {
+        use rigger_domain::composed::Composed;
+        let head = self.head().map_err(contextgraph::Error)?;
+        let (view, honesty) = (&*head.view, Self::honesty(&head));
+        match held {
+            Some(held) => {
+                Composed::whole_held_at(self.records, view, filter, honesty, resolution, held)
+            }
+            None => Composed::whole_at(self.records, view, filter, honesty, resolution),
+        }
     }
 
     /// The graph composed over `head` under `filter`, the groupings at `resolution` beside the

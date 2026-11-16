@@ -1,12 +1,12 @@
-//! Rigger's process adapters, ring 3 of the workspace: the one process-spawn port every child
+//! Rigger's process adapters, ring 3 of the workspace: the one process-spawn interface every child
 //! is built through, the one interface every fact about a running process is read through, the
 //! reaper that ends processes rooted inside a directory, the read-only check for a process still
 //! holding a directory, the machine-wide
 //! build-slot budget, the ordered parallel map, the whole-line writer for a stream other processes share, the
 //! keep-awake adapter behind the domain's
-//! `SleepHold` port, the login-start adapter a run registers its relaunch with, the detached start
-//! of a process that outlives its starter, the trigger an interactive interrupt fires, and the one
-//! read of the user's home directory. They know
+//! `SleepHold` interface, the login-start adapter a run registers its relaunch with, the detached
+//! start of a process that outlives its starter, the trigger an interactive interrupt fires, and
+//! the one read of the user's home directory. They know
 //! `std::process`, the filesystem, threads and the host's OS facilities; the root `rigger` crate
 //! re-exports every public module but `file_trust` and `home` under its own name.
 

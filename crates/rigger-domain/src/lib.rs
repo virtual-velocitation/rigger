@@ -2,7 +2,7 @@
 //! touches a file, a process, the network, the clock, a store or the agent host; the root
 //! `rigger` crate re-exports the modules it names under their historical path.
 
-/// The agent-host port: the `AgentDriver` trait, its options, result and error, and the park and
+/// The agent-host interface: the `AgentDriver` trait, its options, result and error, and the park and
 /// failure-class sentinels that cross it.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod agent;
@@ -30,7 +30,7 @@ pub mod failure;
 pub mod gate;
 /// The gate request interface: how `rigger gate` asks the run's driver to gate a unit's commit.
 pub mod gate_channel;
-/// The grounding port: the `Grounder` trait and the plain values it returns.
+/// The grounding interface: the `Grounder` trait and the plain values it returns.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod grounder;
 pub mod groupings;
@@ -67,7 +67,7 @@ pub mod retention;
 pub mod review;
 pub mod run;
 pub mod safety;
-/// The keep-awake port (spec 105): the hold a run's driver takes so the machine does not sleep.
+/// The keep-awake interface (spec 105): the hold a run's driver takes so the machine does not sleep.
 pub mod sleep_hold;
 pub mod spawn;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -77,7 +77,7 @@ pub mod test_view;
 pub mod watch;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod wave;
-/// The worktree adapter's error value the agent port's `Error` converts from.
+/// The worktree adapter's error value the agent interface's `Error` converts from.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod worktree;
 

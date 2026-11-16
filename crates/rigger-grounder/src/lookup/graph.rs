@@ -12,7 +12,7 @@ use rigger_domain::composed::Label;
 #[cfg(feature = "symbols")]
 use super::budget::GRAPH_ENTITIES;
 #[cfg(feature = "symbols")]
-use super::names::{Held, Names, Resolved, Tier};
+use super::names::{Held, Names, Resolved, Tier, NEAREST};
 #[cfg(feature = "symbols")]
 use super::normalise;
 #[cfg(feature = "symbols")]
@@ -149,6 +149,34 @@ pub(crate) fn answer(asked: &[&str], graph: &dyn ContextGraph) -> Result<Answere
         terms,
         test_hits,
     })
+}
+
+/// What `term`, which [`ContextGraph::locate`] resolves to nothing, is nearest to, as [`answer`]
+/// resolves it: the first [`NEAREST`] ids the name index's variant, prefix or fuzzy tier reaches,
+/// else the nearest names, none when the graph holds no near name. The names are indexed whole and
+/// an entity is read only when the search reaches its name.
+#[cfg(feature = "symbols")]
+pub(crate) fn nearest(
+    term: &str,
+    graph: &dyn ContextGraph,
+) -> Result<Option<Vec<String>>, crate::contextgraph::Error> {
+    let names = Names::build(graph.entity_names()?);
+    let shown = |name: &str| {
+        (graph.entities_named(name)).map(|nodes| nodes.into_iter().map(|n| n.id).collect())
+    };
+    Ok(Some(match names.resolve(term, &mut Held::new(&shown))? {
+        Resolved::Found { ids, .. } => ids.into_iter().take(NEAREST).collect(),
+        Resolved::Missing { nearest } => nearest,
+    }))
+}
+
+/// This build extracts no code, so its graph holds no code entity to be near.
+#[cfg(not(feature = "symbols"))]
+pub(crate) fn nearest(
+    _term: &str,
+    _graph: &dyn ContextGraph,
+) -> Result<Option<Vec<String>>, crate::contextgraph::Error> {
+    Ok(None)
 }
 
 /// The ids [`ContextGraph::locate`] resolves `term` to, `None` when it resolves none.
