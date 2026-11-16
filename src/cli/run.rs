@@ -4,7 +4,7 @@ use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::held::HeldDriver;
 use rigger::keep_awake::{OsSleepHold, KEEP_AWAKE_ENV};
-use rigger::login_start::{Entry, LoginStart, OsLoginStart, LOGIN_START_ENV};
+use rigger::login_start::{Entry, LoginStart, OsLoginStart, Unlisted, LOGIN_START_ENV};
 use rigger::review;
 use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
@@ -820,12 +820,15 @@ impl LoginStart for RecordingLoginStart {
     /// Each key a `register` line names until an `unregister` line names it, by key, its program
     /// the text between the key and ` run --at-login `, which a program path holding a space
     /// keeps whole, and none for a line without that text; empty when no record is made.
-    fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
+    fn entries(&self) -> Result<Vec<Entry>, Unlisted> {
         let text = match std::fs::read_to_string(&self.0) {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            text => {
-                text.map_err(|e| Unavailable(format!("cannot read {}: {e}", self.0.display())))?
-            }
+            text => text.map_err(|e| {
+                Unlisted::NoFacility(Unavailable(format!(
+                    "cannot read {}: {e}",
+                    self.0.display()
+                )))
+            })?,
         };
         let separator = format!(" run {AT_LOGIN_FLAG} ");
         let mut standing = std::collections::BTreeMap::new();
@@ -860,8 +863,8 @@ impl LoginStart for UnavailableLoginStart {
         Err(Unavailable(self.0.clone()))
     }
 
-    fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
-        Err(Unavailable(self.0.clone()))
+    fn entries(&self) -> Result<Vec<Entry>, Unlisted> {
+        Err(Unlisted::NoFacility(Unavailable(self.0.clone())))
     }
 }
 

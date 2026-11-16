@@ -15788,6 +15788,56 @@ fn setup_and_a_flagged_launch_sweep_the_login_entries_whose_program_is_gone() {
     );
 }
 
+/// A SETUP SAYS THE LOGIN ENTRIES IT COULD NOT LIST, SAVE ON A HOST WITHOUT THE FACILITY: GIVEN
+/// a set-up project, WHEN `rigger setup` reruns where the login-start facility is unavailable or
+/// where its entries cannot be read, THEN setup succeeds and prints nothing on stdout either way;
+/// on stderr it says nothing where the facility is unavailable, and where the entries cannot be
+/// read one line that they were not swept, naming the path and the error.
+#[test]
+fn setup_names_the_login_entries_it_could_not_list_save_on_a_host_without_the_facility() {
+    let set_up = temp_project();
+    setup_ok(set_up.path(), &[]);
+    let scratch = tempfile::tempdir().unwrap();
+    // A record that is a directory, which no user on any host reads as a file.
+    let unreadable = scratch.path().join("login-start");
+    std::fs::create_dir(&unreadable).unwrap();
+    let error = std::fs::read_to_string(&unreadable).unwrap_err();
+    let unreadable_record = format!("record:{}", unreadable.display());
+    let rows: [(&str, &str, Vec<String>); 2] = [
+        (
+            "a host without the facility",
+            "unavailable:no login session here",
+            Vec::new(),
+        ),
+        (
+            "entries setup cannot read",
+            &unreadable_record,
+            vec![format!(
+                "warning: the login entries whose program is gone were not swept: cannot read \
+                 {}: {error}",
+                unreadable.display()
+            )],
+        ),
+    ];
+    for (case, knob, said) in rows {
+        let (out, err, ok) = run_rigger_envs(
+            set_up.path(),
+            &["setup"],
+            &[(common::LOGIN_START_ENV, knob)],
+        );
+        let got_said: Vec<String> = err
+            .lines()
+            .filter(|line| line.contains("login entr"))
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(
+            (out.as_str(), got_said, ok),
+            ("", said, true),
+            "{case}; stderr: {err}"
+        );
+    }
+}
+
 /// What a row of [`only_the_checking_verbs_relaunch_a_run_whose_driver_died`] invokes over: the
 /// dead driver's record as it stands, or that record with the run held, with another binary
 /// recorded, with a recorded binary since removed, or invoked from a linked worktree, the run

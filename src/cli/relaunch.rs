@@ -291,9 +291,7 @@ impl KeptRecord {
             Ok(swept) => swept
                 .iter()
                 .for_each(|swept| stderr_line(&format!("rigger run: {}", swept.line()))),
-            Err(Unavailable(why)) => stderr_line(&format!(
-                "rigger run: the login entries whose program is gone were not swept: {why}"
-            )),
+            Err(unlisted) => stderr_line(&format!("rigger run: {}", unlisted.line())),
         }
         let _ = self.at_login.set(AtLogin { start, key });
         Ok(())
@@ -1000,7 +998,9 @@ mod tests {
             Ok(())
         }
 
-        fn entries(&self) -> Result<Vec<rigger::login_start::Entry>, Unavailable> {
+        fn entries(
+            &self,
+        ) -> Result<Vec<rigger::login_start::Entry>, rigger::login_start::Unlisted> {
             Ok(Vec::new())
         }
     }
