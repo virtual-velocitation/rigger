@@ -86,9 +86,9 @@ pub trait Runner: Send + Sync {
     ) -> Result<GateResult, ProbeFault>;
 }
 
-/// A requested shared-cache guard [`hold_shared_lock`] could not lock, its probe (spec 121
-/// criterion 19): its parent directory could not be created, the guard could not be opened, or
-/// its filesystem refused an advisory lock. An infrastructure fault, not a gate failure: no wait
+/// A requested shared-cache guard that [`hold_shared_lock`] could not lock (spec 121 criterion
+/// 19): its parent directory could not be created, the guard could not be opened, or its
+/// filesystem refused an advisory lock. An infrastructure fault, not a gate failure: no wait
 /// and no rerun changes a local filesystem's answer, only the operator's fix, so its text names
 /// the guard path, the OS error and that fix.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

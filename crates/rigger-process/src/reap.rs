@@ -353,16 +353,16 @@ enum Signal {
 }
 
 /// Send `signal` to `pid` - the reaper's ONE sanctioned signalling call (the `no-os-kill`
-/// gate, spec 78, excludes only this function and `tests/common/mod.rs::terminate_pid` from
-/// its ban on shelling out to `kill`/`pkill`/`killall` or calling a signal API directly, and
-/// this function alone from its ban on the Windows process-termination call): on unix the
-/// internal rustix syscall, on Windows the process opened for termination and ended with exit
-/// code 1, on any other OS nothing. `pid > 1` is an EXPLICIT guard
-/// here too (belt-and-braces alongside [`is_signal_eligible`]'s own check, since the pinned
-/// rustix's `Pid::from_raw` accepts negative raw values and rejects only zero). Best-effort:
-/// ESRCH (the process already exited) or any other failure (permission, ...) is silently
-/// ignored, since the reap is teardown cleanup, never a hard error that could fail a worktree
-/// removal or a step.
+/// gate, spec 78, exempts only this function and `tests/common/mod.rs::terminate_pid` from
+/// its ban on calling a signal API directly, never from its ban on shelling out to a process
+/// termination utility, and this function alone from its ban on the Windows
+/// process-termination call): on unix the internal rustix syscall, on Windows the process
+/// opened for termination and ended with exit code 1, on any other OS nothing. `pid > 1` is an
+/// EXPLICIT guard here too (belt-and-braces alongside [`is_signal_eligible`]'s own check, since
+/// the pinned rustix's `Pid::from_raw` accepts negative raw values and rejects only zero).
+/// Best-effort: ESRCH (the process already exited) or any other failure (permission, ...) is
+/// silently ignored, since the reap is teardown cleanup, never a hard error that could fail a
+/// worktree removal or a step.
 fn send_signal(signal: Signal, pid: u32) {
     if pid <= 1 {
         return;
