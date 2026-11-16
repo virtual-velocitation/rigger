@@ -513,23 +513,23 @@ fn entry_file(dir: &Path, key: &str, extension: &str) -> PathBuf {
 
 /// Every entry under `dir` whose file is named `<key>.<extension>` ([`entry_file`]), `<key>` starting
 /// [`KEY_PREFIX`], by key, each with the program `program` reads from its text; none when `dir`
-/// is not yet made. A file that is not UTF-8 text is in no writer's form. Unreadable, naming the
-/// path and the error, when `dir` cannot be listed or an entry's file cannot be read, as when it
-/// is a directory or a link to nothing.
+/// is not yet made. A file that is not UTF-8 text is in no writer's form, and one that cannot be
+/// read, as when it is a directory or a link to nothing, is listed unreadable, naming the path and
+/// the error. Unreadable, naming the path and the error, when `dir` cannot be listed.
 fn list_entries(
     dir: &Path,
     extension: &str,
     program: fn(&str) -> Option<String>,
 ) -> Result<Vec<Entry>, Unlisted> {
-    let unlisted = |doing, path: &Path, e| Unlisted::Unreadable(failed(doing, path, e));
+    let unlisted = |e| Unlisted::Unreadable(failed("list", dir, e));
     let listing = match fs::read_dir(dir) {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        listing => listing.map_err(|e| unlisted("list", dir, e))?,
+        listing => listing.map_err(unlisted)?,
     };
     let suffix = format!(".{extension}");
     let mut entries = Vec::new();
     for found in listing {
-        let path = found.map_err(|e| unlisted("list", dir, e))?.path();
+        let path = found.map_err(unlisted)?.path();
         let key = path
             .file_name()
             .and_then(|name| name.to_str())
@@ -538,14 +538,17 @@ fn list_entries(
         let Some(key) = key else {
             continue;
         };
-        let text = fs::read(&path).map_err(|e| unlisted("read", &path, e))?;
-        entries.push(Entry {
-            key: key.to_string(),
-            program: String::from_utf8(text)
+        let read = match fs::read(&path) {
+            Ok(text) => String::from_utf8(text)
                 .ok()
                 .as_deref()
                 .and_then(program)
                 .map_or(Program::Foreign, Program::Read),
+            Err(e) => Program::Unreadable(failed("read", &path, e).0),
+        };
+        entries.push(Entry {
+            key: key.to_string(),
+            program: read,
         });
     }
     entries.sort_by(|a, b| a.key.cmp(&b.key));

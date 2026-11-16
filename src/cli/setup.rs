@@ -1010,8 +1010,9 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
     // the sweep leaves, not in rigger's form or not removable, is said on EVERY setup, before the
     // silent-no-op check, like a stray; one it removed is a change, reported below. A host with
     // no login-start facility is passed over in silence, so a setup there stays a silent no-op:
-    // there a run's register is refused, so no entry stands. Entries setup cannot read are said
-    // in one line on stderr, naming the path and the error, and fail nothing.
+    // there a run's register is refused, so no entry stands. Each entry setup cannot read, and a
+    // directory of entries it cannot list, is said in one warning line on stderr, naming the path
+    // and the error, and fails nothing.
     let swept = match sweep(&*login_start()) {
         Ok(swept) => swept,
         Err(Unlisted::NoFacility(_)) => Vec::new(),
@@ -1021,7 +1022,10 @@ pub(crate) fn cmd_setup(args: &[String]) -> Res {
         }
     };
     for left in swept.iter().filter(|swept| !swept.is_change()) {
-        println!("{}", left.line());
+        match left {
+            Swept::Unreadable { .. } => eprintln!("warning: {}", left.line()),
+            _ => println!("{}", left.line()),
+        }
     }
 
     let skill_changed = skills
