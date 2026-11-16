@@ -1700,16 +1700,12 @@ mod tests {
         is_test: bool,
     ) -> model::Def {
         model::Def {
-            kind: Kind::Function,
-            name: name.to_string(),
             line,
             end_line,
             path: path.to_string(),
             parent: parent.map(str::to_string),
             is_test,
-            is_out_of_line_module: false,
-            path_override: None,
-            enclosing_inline_module_path: None,
+            ..crate::symbol_index::def(Kind::Function, name)
         }
     }
 
@@ -1722,11 +1718,8 @@ mod tests {
         is_test: bool,
     ) -> SymRef {
         SymRef {
-            name: name.to_string(),
-            line,
-            enclosing: enclosing.map(str::to_string),
-            is_test,
             ref_kind: ref_kind.map(str::to_string),
+            ..crate::symbol_index::sym_ref(name, line, enclosing, is_test)
         }
     }
 
