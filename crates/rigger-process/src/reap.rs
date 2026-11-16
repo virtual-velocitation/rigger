@@ -63,11 +63,11 @@
 //! refusal (a spawn's own scratch dir that was never created would otherwise fail
 //! `base_dir.canonicalize()` and log a false "not strictly under" refusal on every single
 //! `rigger result`). And a process can hold a now-DELETED dir as its cwd, which the process
-//! interface names by that dir's path ([`crate::os_process::cwd`]), so [`is_inside`] matches it
-//! against the base: a test binary that loops after the tool that built its scratch tree
-//! removed that tree out from under it holds exactly such a cwd, and a cwd-rooted reaper that
-//! never matched the deleted path would never even try to signal it. A genuinely OUTSIDE
-//! `base_dir` is still refused, whether or not it exists.
+//! interface names by that dir's path ([`crate::os_process::cwd`]), so it still lies in the base
+//! ([`crate::os_process::cwd_lies_in`]): a test binary that loops after the tool that built its
+//! scratch tree removed that tree out from under it holds exactly such a cwd, and a cwd-rooted
+//! reaper that never matched the deleted path would never even try to signal it. A genuinely
+//! OUTSIDE `base_dir` is still refused, whether or not it exists.
 //!
 //! SIGNAL API (spec 78): every signal rigger issues to a process it does not hold a
 //! [`std::process::Child`] handle to goes through [`send_signal`], whose unix arm is
@@ -116,11 +116,12 @@ const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 ///
 /// Containment is RESOLVED-PATH STRICT-INSIDE, matched on path components: a process is
 /// returned iff its cwd as the interface names it ([`crate::os_process::cwd`]: absolute,
-/// resolved, and named by its path even once removed - [`is_inside`]) equals the resolved
-/// `base_dir` or starts with it as a path prefix. Component matching (not string prefix) is the
-/// load-bearing safety boundary - `<base>-sibling` shares a string prefix with `<base>` but is a
-/// different component and is never matched, so a process outside the exact dir is never
-/// reaped. The scanning process itself is excluded (rigger never reaps its own pid). Each
+/// resolved, and named by its path even once removed) lies in the resolved `base_dir`
+/// ([`crate::os_process::cwd_lies_in`]): equals it or starts with it as a path prefix.
+/// Component matching (not string prefix) is the load-bearing safety boundary -
+/// `<base>-sibling` shares a string prefix with `<base>` but is a different component and is
+/// never matched, so a process outside the exact dir is never reaped. The scanning process
+/// itself is excluded (rigger never reaps its own pid). Each
 /// match's command ([`crate::os_process::command`]) is purely descriptive: it names the leak in
 /// the `rigger validate` advisory and never affects which processes are reaped.
 pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
@@ -141,7 +142,7 @@ pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
     os_process::pids()
         .into_iter()
         .filter(|&pid| pid != self_pid)
-        .filter(|&pid| os_process::cwd(pid).is_some_and(|cwd| is_inside(&cwd, &base)))
+        .filter(|&pid| os_process::cwd_lies_in(pid, &base))
         .map(|pid| (pid, os_process::command(pid)))
         .collect()
 }
@@ -300,11 +301,11 @@ fn toctou_still_same_process(
 }
 
 /// Re-read `target`'s cwd ([`crate::os_process::cwd`]) IMMEDIATELY before signalling it, and
-/// signal only if it is still [`is_inside`] `base` AND [`toctou_still_same_process`]. This is
-/// the cwd half of the TOCTOU guard (spec 78): a pid that exited and was recycled onto an
-/// unrelated process (even one that happens to also be rooted under `base`) between the scan
-/// and this call is silently skipped, never signalled, and so is a pid whose cwd cannot be
-/// read.
+/// signal only if it still lies in `base` ([`crate::os_process::cwd_lies_in`]) AND
+/// [`toctou_still_same_process`]. This is the cwd half of the TOCTOU guard (spec 78): a pid
+/// that exited and was recycled onto an unrelated process (even one that happens to also be
+/// rooted under `base`) between the scan and this call is silently skipped, never signalled,
+/// and so is a pid whose cwd cannot be read.
 fn signal_if_unchanged(
     target: &ScanEntry,
     base: &Path,
@@ -312,10 +313,7 @@ fn signal_if_unchanged(
     self_ancestors: &HashSet<u32>,
     signal: Signal,
 ) {
-    let Some(cwd) = os_process::cwd(target.pid) else {
-        return;
-    };
-    if !is_inside(&cwd, base) {
+    if !os_process::cwd_lies_in(target.pid, base) {
         return;
     }
     if toctou_still_same_process(target, self_pid, self_ancestors) {
@@ -672,20 +670,6 @@ pub fn reap_authorized(base: PathBuf) {
     }
 }
 
-/// Whether `cwd` is `base` itself or strictly under it, matched on path COMPONENTS. Both are
-/// absolute (the interface names a cwd by its absolute, resolved path; `base` is resolved by
-/// the caller, via [`resolve_lexically`]). `Path::starts_with` is component-wise, so `/a/bc`
-/// never matches `/a/b` - the safety boundary against a raw string-prefix false match.
-///
-/// A cwd removed under a live process still matches (spec 89 criterion 3): the interface names
-/// it by the removed dir's path ([`crate::os_process::cwd`]), so a runaway whose scratch WAS
-/// removed out from under it, a looping test binary among them, is found by every later scan
-/// for as long as it runs - the same "compare paths, not existence" rule
-/// [`resolve_lexically`] applies to `base`.
-fn is_inside(cwd: &Path, base: &Path) -> bool {
-    cwd.starts_with(base)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -856,8 +840,8 @@ mod tests {
         // reaper's cwd match never saw through that marker once the mutation tool removed its
         // tree). Both halves of this fix are exercised here: `processes_rooted_under` must
         // still be ABLE to scan for a base dir that no longer exists (not short-circuit to
-        // empty), and the interface's cwd must name the removed dir by its path so `is_inside`
-        // matches it.
+        // empty), and the interface's cwd must name the removed dir by its path so it still lies
+        // in the base.
         let root = tempfile::tempdir().unwrap();
         let base = root.path().join("scratch");
         std::fs::create_dir_all(&base).unwrap();
@@ -885,14 +869,6 @@ mod tests {
             "a process whose cwd was deleted out from under it must still be matched, via \
              the kernel's \" (deleted)\" suffix stripped"
         );
-    }
-
-    #[test]
-    fn is_inside_matches_on_components_not_string_prefix() {
-        assert!(is_inside(Path::new("/a/b"), Path::new("/a/b")));
-        assert!(is_inside(Path::new("/a/b/c"), Path::new("/a/b")));
-        assert!(!is_inside(Path::new("/a/bc"), Path::new("/a/b")));
-        assert!(!is_inside(Path::new("/a"), Path::new("/a/b")));
     }
 
     #[test]

@@ -142,6 +142,15 @@ pub fn cwd(pid: u32) -> Option<PathBuf> {
     native::cwd(pid)
 }
 
+/// Whether process `pid`'s working directory ([`cwd`]) is `dir` or lies inside it, matched on
+/// path components, so a working directory `/a/bc` never lies in `/a/b`: the safety boundary
+/// against a string-prefix match. `dir` is absolute and resolved, as [`cwd`] names a working
+/// directory, and a working directory removed under a live process still lies in `dir` by its
+/// path. False when `pid` is gone or its working directory cannot be read.
+pub(crate) fn cwd_lies_in(pid: u32, dir: &Path) -> bool {
+    cwd(pid).is_some_and(|cwd| cwd.starts_with(dir))
+}
+
 /// Process `pid`'s command: on Linux its arguments joined by single spaces, or its short name when
 /// its arguments cannot be read; on macOS and Windows the full path of its executable.
 /// Descriptive only, it names a process in a message and decides nothing. Empty when `pid` is
@@ -200,12 +209,11 @@ fn scan_holders(dir: &Path) -> Vec<u32> {
         .collect()
 }
 
-/// Whether process `pid`'s working directory or one of its open files lies in `dir` or inside
-/// it, matched on path components.
+/// Whether process `pid`'s working directory ([`cwd_lies_in`]) or one of its open files lies in
+/// `dir` or inside it, matched on path components.
 #[cfg(not(target_os = "windows"))]
 fn holds(pid: u32, dir: &Path) -> bool {
-    cwd(pid).is_some_and(|cwd| cwd.starts_with(dir))
-        || open_files(pid).iter().any(|file| file.starts_with(dir))
+    cwd_lies_in(pid, dir) || open_files(pid).iter().any(|file| file.starts_with(dir))
 }
 
 /// `path` without the `" (deleted)"` marker linux and android add to the path of a directory or
@@ -303,6 +311,42 @@ mod tests {
                 Some(std::env::current_dir().unwrap().canonicalize().unwrap()),
                 Some(started_in)
             )
+        );
+    }
+
+    /// A WORKING DIRECTORY LIES IN A DIRECTORY BY PATH COMPONENTS: a child started in `<tmp>/ab`
+    /// lies in `<tmp>/ab` and in `<tmp>`, never in `<tmp>/a`, which its path extends only as
+    /// text, nor in `<tmp>/ab/c`, inside it; a gone process lies in nothing, not even `/`.
+    #[cfg(unix)]
+    #[test]
+    fn a_working_directory_lies_in_a_directory_by_path_components_never_by_text() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tmp.path().canonicalize().unwrap();
+        let started_in = tmp.join("ab");
+        std::fs::create_dir(&started_in).unwrap();
+        let mut child = sleeper_in(&started_in);
+        let gone = gone_pid();
+        let rows = [
+            ("its own directory", child.id(), started_in.clone()),
+            ("its parent", child.id(), tmp.clone()),
+            ("a text prefix", child.id(), tmp.join("a")),
+            ("a directory inside it", child.id(), started_in.join("c")),
+            ("a gone process", gone, PathBuf::from("/")),
+        ];
+        let lies: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|(what, pid, dir)| (*what, cwd_lies_in(*pid, dir)))
+            .collect();
+        cleanup(&mut child);
+        assert_eq!(
+            lies,
+            [
+                ("its own directory", true),
+                ("its parent", true),
+                ("a text prefix", false),
+                ("a directory inside it", false),
+                ("a gone process", false),
+            ]
         );
     }
 
