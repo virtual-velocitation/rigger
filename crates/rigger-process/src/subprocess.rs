@@ -336,6 +336,34 @@ mod tests {
         }
     }
 
+    /// `lookup_names` is each host's by-name rule on every host: an empty name, or one holding a
+    /// path separator (`/`, and `\` under Windows' rules alone), has no name to try; under
+    /// Windows' rules a name is each of its `PATHEXT` candidates, the bare name never among them;
+    /// otherwise it is the name alone, `PATHEXT` unread.
+    #[test]
+    fn lookup_names_follow_each_hosts_separator_and_extension_rules() {
+        let rows: [(&str, &str, bool, &[&str]); 11] = [
+            ("git", ".COM;.EXE", false, &["git"]),
+            ("git", ".COM;.EXE", true, &["git.COM", "git.EXE"]),
+            ("git", "", false, &["git"]),
+            ("git", "", true, &[]),
+            ("git.exe", ".COM;.EXE", true, &["git.exe"]),
+            ("bin/git", ".EXE", false, &[]),
+            ("bin/git", ".EXE", true, &[]),
+            (r"bin\git", ".EXE", false, &[r"bin\git"]),
+            (r"bin\git", ".EXE", true, &[]),
+            ("", ".EXE", false, &[]),
+            ("", ".EXE", true, &[]),
+        ];
+        for (bin, pathext, windows, names) in rows {
+            assert_eq!(
+                lookup_names(bin, pathext, windows),
+                names,
+                "{bin:?} over {pathext:?}, Windows' rules: {windows}"
+            );
+        }
+    }
+
     /// Which command a row of the inheritance table marks with [`inherit_on_exec`].
     #[cfg(unix)]
     #[derive(Debug, Clone, Copy)]
