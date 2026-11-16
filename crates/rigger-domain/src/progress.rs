@@ -294,8 +294,14 @@ pub fn closed_after_release(close: Option<Revision>, release: Option<Revision>) 
 /// stamped close before it, a close written before spec 105 among them, it orders before every
 /// stamped one and counts as it stands. An
 /// [`ENDED_INTERRUPTED`] close neither counts nor resets: the resume fallback, a hold or a
-/// supervisor start's reconciliation wrote it, and no launch failed.
-pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>) -> usize {
+/// supervisor start's reconciliation wrote it, and no launch failed. Nor does a close whose class
+/// `rejected` names, a class whose row says the API refused the request as the conductor built it:
+/// the request failed, not the API.
+pub fn failed_closes_since(
+    progress_events: &[Event],
+    released: Option<Revision>,
+    rejected: impl Fn(&str) -> bool,
+) -> usize {
     let mut stamp = None;
     let mut closes: Vec<SpawnLaunched> = decoded_launches(progress_events)
         .map(|(_, launch)| launch)
@@ -314,7 +320,10 @@ pub fn failed_closes_since(progress_events: &[Event], released: Option<Revision>
             close.ended.as_deref() != Some(ENDED_COMPLETED)
                 && closed_after_release(close.revision, released)
         })
-        .filter(|close| matches!(close.ended.as_deref(), Some(ENDED_FAULT | ENDED_STOPPED)))
+        .filter(|close| {
+            matches!(close.ended.as_deref(), Some(ENDED_FAULT | ENDED_STOPPED))
+                && !close.class.as_deref().is_some_and(&rejected)
+        })
         .count()
 }
 
@@ -1261,7 +1270,12 @@ mod tests {
                 .collect();
             events.push(opened("u/implementer#9", 0));
             events.push(stop_failure("u/implementer#9", "rate_limit"));
-            assert_eq!(failed_closes_since(&events, released), expected, "{name}");
+            let rejected = |class: &str| class == "invalid_request";
+            assert_eq!(
+                failed_closes_since(&events, released, rejected),
+                expected,
+                "{name}"
+            );
         }
     }
 

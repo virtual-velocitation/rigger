@@ -1296,7 +1296,9 @@ impl Driver<'_> {
             .last_position(run::STREAM, run::TYPE_RUN_RELEASED)
             .and_then(|released| {
                 let events = progress::read_run(self.progress_store, &opts.run_id)?;
-                Ok(progress::failed_closes_since(&events, released))
+                Ok(progress::failed_closes_since(&events, released, |class| {
+                    AgentFailure::from_category(class).is_rejected()
+                }))
             });
         match count {
             Ok(count) if count >= progress::API_UNSTABLE_CLOSES => {

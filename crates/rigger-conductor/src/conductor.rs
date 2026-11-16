@@ -3179,9 +3179,13 @@ pub fn run_serving(
 /// continues the run. It is the one home of every error a begun run's drive returns: each
 /// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, a
 /// refused landing, an outage past the infra limit, a failed guard probe, a worktree it could not
-/// make) and every other. A
-/// hold it cannot write is said through [`Deps::log`]; `e` is returned unchanged either way.
+/// make) and every other, but a park ([`is_parked`]): whatever parked a spawn left its own hold
+/// standing. A hold it cannot write is said through [`Deps::log`]; `e` is returned unchanged
+/// either way.
 fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
+    if is_parked(&e) {
+        return e;
+    }
     let fault = strip_failure_marker(&e);
     if let Err(write) = crate::run_store::hold_on_a_fault(&deps.folding(), &fault) {
         (deps.log)(&format!(

@@ -1999,7 +1999,9 @@ impl Fixture {
 
     /// How many closes of the run the progress log counts toward `api-unstable`.
     fn failed_closes(&self) -> usize {
-        rigger::progress::failed_closes_since(&self.progress_stream(), None)
+        rigger::progress::failed_closes_since(&self.progress_stream(), None, |class| {
+            AgentFailure::from_category(class).is_rejected()
+        })
     }
 
     /// Every close of the run as `(launch, ended, class)` ([`close`]), in append order.

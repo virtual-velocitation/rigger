@@ -407,9 +407,9 @@ pub struct DispositionRow {
 
 impl DispositionRow {
     /// Whether a session that ended of this category waits on the run, a hold or a wait row,
-    /// rather than failing its spawn as a fault row does.
+    /// rather than failing its spawn as a fault or a rejected row does.
     pub fn waits(&self) -> bool {
-        self.disposition != Disposition::Fault
+        matches!(self.disposition, Disposition::Hold | Disposition::Wait)
     }
 }
 
@@ -439,6 +439,11 @@ const FAULTS: DispositionRow = DispositionRow {
     action: "",
     needs_person: false,
     credential: false,
+};
+
+const REJECTED: DispositionRow = DispositionRow {
+    disposition: Disposition::Rejected,
+    ..FAULTS
 };
 
 /// The row a hold of `action` reads, every category that holds on sight needing a person.
@@ -522,6 +527,12 @@ impl AgentFailure {
             .unwrap_or(AgentFailure::Unknown)
     }
 
+    /// Whether the API refused the request as the conductor built it: this category's row
+    /// rejects ([`Disposition::Rejected`]).
+    pub fn is_rejected(self) -> bool {
+        self.row().disposition == Disposition::Rejected
+    }
+
     /// This category's row of the disposition table (spec 105): THE one table, beside the enum
     /// so a new category cannot compile without one.
     pub fn row(self) -> DispositionRow {
@@ -541,9 +552,8 @@ impl AgentFailure {
                  then run rigger release",
             ),
             AgentFailure::RateLimit | AgentFailure::Overloaded | AgentFailure::ServerError => WAITS,
-            AgentFailure::InvalidRequest
-            | AgentFailure::MaxOutputTokens
-            | AgentFailure::Unknown => FAULTS,
+            AgentFailure::InvalidRequest => REJECTED,
+            AgentFailure::MaxOutputTokens | AgentFailure::Unknown => FAULTS,
         }
     }
 }

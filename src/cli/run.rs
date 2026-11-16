@@ -1198,8 +1198,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // A driver that parked a launch on a hold for a person drives again once the hold is gone,
     // since a release while it still runs relaunches nothing; it ends only while the hold stands.
     // A drive that failed under such a hold, the conductor's own fault hold included, leaves its
-    // record for `rigger release` the same way. Each drive holds a verdict key of its own, as a
-    // relaunched driver would.
+    // record for `rigger release` the same way, and so does a drive whose spawn the API refused,
+    // which the decorator parked on the hold it put on the run: that driver fails, naming the
+    // fault. Each drive holds a verdict key of its own, as a relaunched driver would.
     let rs = loop {
         let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
         let driven = beating(
@@ -1217,14 +1218,12 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             Err(e) => {
                 if let Some(reason) = held_for_a_person(&folding) {
                     step_record.leave_for_release();
-                    stderr_line(&format!(
-                        "{command}: run {run} is held for a person ({reason}), so this driver \
-                         ended; `rigger release` relaunches it"
-                    ));
+                    stderr_line(&ended_held_for_a_person(command, &run, &reason));
                 }
                 return Err(e.into());
             }
         };
+        let refused = held.take_rejected_spawn();
         if !held.take_parked() {
             break rs;
         }
@@ -1232,6 +1231,10 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             continue;
         }
         step_record.leave_for_release();
+        if let Some(fault) = refused {
+            stderr_line(&ended_held_for_a_person(command, &run, &fault));
+            return Err(fault.into());
+        }
         stderr_line(&format!(
             "{command}: run {run} is held for a person, so this driver parked its next launch \
              and ended; `rigger release` relaunches it"
@@ -1358,6 +1361,15 @@ fn reclaim_orphans_at_start(
         }
         Err(e) => stderr_line(&format!("rigger run: orphan sweep skipped: {e}")),
     }
+}
+
+/// The line `command`'s driver says as it ends on its failed drive, `run` held for a person on
+/// `reason`, leaving its record for `rigger release`.
+fn ended_held_for_a_person(command: &str, run: &str, reason: &str) -> String {
+    format!(
+        "{command}: run {run} is held for a person ({reason}), so this driver ended; \
+         `rigger release` relaunches it"
+    )
 }
 
 /// Whether a hold for a person, the operator's or the conductor's, stands on the current run in
