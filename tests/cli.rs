@@ -26374,14 +26374,49 @@ const NEW_FACT_TYPE: &str = "no-new-event-type gate FAILED: the diff declares a 
                              (TYPE_NEW_FACT); carry the fact on an existing event type, as a \
                              status or a meta key\n";
 
+/// The gate's whole output when the diff gives the existing event type `TYPE_OLD` a new value.
+const REVALUED_OLD_TYPE: &str = "no-new-event-type gate FAILED: the diff changes the value of an \
+                                 existing event type (TYPE_OLD); every log already written names \
+                                 it by its value, so keep the value\n";
+
 // GIVEN a unit branch, WHEN the shipped no-new-event-type gate judges its diff from the run
-// branch, THEN an event type const it declares in production code fails it, naming the type,
-// while an event type it moves between files, one a test suite declares, a const of another
-// name, or the name in prose passes.
+// branch, THEN an event type const whose value the run branch does not already declare fails it,
+// naming the type, in production code and in an in-crate test module alike, and so does a new
+// value for an existing type; while an event type it moves between files, re-exports or declares
+// again, one an integration suite under tests/ declares, a const of another name, or the name in
+// prose passes.
 rigger::test_cases! {
     the_event_type_gate_fails_a_type_added_to_a_crate: event_type_gate_judges(
         &[("crates/a/src/lib.rs", "pub const TYPE_NEW_FACT: &str = \"NewFact\";\n", "adds")],
         (false, NEW_FACT_TYPE),
+    );
+    the_event_type_gate_fails_a_type_an_in_crate_test_module_declares: event_type_gate_judges(
+        &[(
+            "crates/a/src/lib.rs",
+            "#[cfg(test)]\nmod tests {\n    const TYPE_NEW_FACT: &str = \"NewFact\";\n}\n",
+            "adds",
+        )],
+        (false, NEW_FACT_TYPE),
+    );
+    the_event_type_gate_fails_a_re_export_of_a_type_nothing_declares: event_type_gate_judges(
+        &[(
+            "crates/a/src/lib.rs",
+            "pub const TYPE_NEW_FACT: &str = ledger::TYPE_NEW_FACT;\n",
+            "adds",
+        )],
+        (false, NEW_FACT_TYPE),
+    );
+    the_event_type_gate_fails_a_new_value_for_an_existing_type: event_type_gate_judges(
+        &[("src/lib.rs", "pub const TYPE_OLD: &str = \"Older\";\n", "re-values it")],
+        (false, REVALUED_OLD_TYPE),
+    );
+    the_event_type_gate_passes_a_re_export_of_an_existing_type: event_type_gate_judges(
+        &[("crates/a/src/lib.rs", "pub const TYPE_OLD: &str = ledger::TYPE_OLD;\n", "re-exports")],
+        (true, ""),
+    );
+    the_event_type_gate_passes_a_second_declaration_of_an_existing_type: event_type_gate_judges(
+        &[("crates/a/src/lib.rs", "pub const TYPE_OLD: &str = \"Old\";\n", "declares it again")],
+        (true, ""),
     );
     the_event_type_gate_fails_a_static_type_added_to_the_bin: event_type_gate_judges(
         &[("src/a.rs", "const TYPE_NEW_FACT: &'static str = \"NewFact\";\n", "adds")],
