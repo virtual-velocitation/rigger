@@ -3228,8 +3228,9 @@ mod tests {
     /// `parse_template_set` refuses, naming the set key, a `set.yml` that fails to parse or
     /// lacks its `implementer`, a `gates` text that fails to parse, a stage list naming a gate
     /// the `gates` text does not declare, an implementer persona that fails to parse, one
-    /// whose `id` is a scaffold seed's, and an `env` declaring each entry the build environment's
-    /// one check refuses, with that check's refusal.
+    /// whose `id` is a scaffold seed's, an `env` declaring each entry the build environment's
+    /// one check refuses, with that check's refusal, and an `env` name of 1025 characters, one
+    /// past the longest key YAML reads plain, with the load error of the workflow it scaffolds.
     #[test]
     fn parse_template_set_refuses_naming_the_set_key() {
         let refusal = |set: &str| parse_template_set(&synthetic(set)).map(|_| ()).unwrap_err();
@@ -3291,7 +3292,27 @@ mod tests {
                 ),
                 format!("gate template set synthetic: env: {}", refused.message),
             )
-        })) {
+        }))
+        .chain([{
+            // A set.yml carries a name over 1024 characters only as an explicit key; the
+            // scaffold writes it plain on its `env` line, which no set's rendering moves.
+            let line = 1 + SCAFFOLD_WORKFLOW
+                .lines()
+                .position(|line| line == "  env: @BUILD_ENV@")
+                .unwrap();
+            (
+                format!(
+                    "{}env:\n  ? {}\n  : x\n",
+                    with_implementer!("detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n"),
+                    "A".repeat(1025)
+                ),
+                format!(
+                    "gate template set synthetic: the workflow it scaffolds fails to load: \
+                     config: parse workflow: did not find expected ',' or '}}' at line {line} \
+                     column 1034, while parsing a flow mapping at line {line} column 8"
+                ),
+            )
+        }]) {
             assert_eq!(refusal(set.as_str()), want, "{set}");
         }
     }
@@ -4988,7 +5009,7 @@ mod tests {
     /// is a plain scalar but for the nine spellings YAML reads as null or a boolean, which are
     /// double-quoted. Each value is double-quoted, with `"`, `\`, each character below U+0020 or
     /// in U+007F-U+009F, and U+2028, U+2029, U+FFFE and U+FFFF written `\uXXXX`. The rendering
-    /// loads back as exactly the set's variables.
+    /// loads back as exactly the set's variables, a name of 1024 characters included.
     #[test]
     fn scaffold_workflow_renders_a_sets_env_as_a_flow_map_that_loads_back_as_written() {
         // (why, the set.yml `env` value or none, the rendered `env` value, the loaded variables)
@@ -5021,6 +5042,13 @@ mod tests {
                 var("V", "x, y: z # {{w}}"),
             ),
         ];
+        let longest = "A".repeat(1024);
+        rows.push((
+            "a name of 1024 characters, the longest key YAML reads plain".into(),
+            Some(format!("{{{longest}: x}}")),
+            format!("{{{longest}: \"x\"}}"),
+            var(&longest, "x"),
+        ));
         for (name, quoted) in [
             ("null", true),
             ("Null", true),
