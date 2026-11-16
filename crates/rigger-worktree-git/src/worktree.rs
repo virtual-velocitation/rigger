@@ -7052,6 +7052,40 @@ mod tests {
         wt2.remove().unwrap();
     }
 
+    /// A unit whose branch is gone (a branch reclaim deleted it along with its worktree) and
+    /// whose deterministic path holds a plain leftover directory - a store directory nested in
+    /// it - is created afresh off HEAD: the leftover is cleared, never a `git worktree add -b`
+    /// refused with "already exists" on every relaunch that re-derives the same path.
+    #[test]
+    fn create_clears_a_leftover_dir_when_the_units_branch_is_gone() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/u/unit-gone";
+        let dir = format!("{root}/rigger-wt-unit-gone");
+        let store = std::path::Path::new(&dir).join(".rigger").join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("events.db"), "torn\n").unwrap();
+        assert!(
+            !branch_exists(&repo_path, branch),
+            "precondition: the unit's branch is gone"
+        );
+
+        let wt = Worktree::create(&repo_path, &dir, branch, "").expect(
+            "create must clear a leftover dir when the unit's branch is gone, not fail \
+             `git worktree add -b` on it",
+        );
+        assert!(
+            worktree_on_branch(&dir, branch),
+            "the unit's worktree is checked out on its branch at its deterministic path"
+        );
+        assert!(
+            !store.exists(),
+            "the leftover's nested store directory is cleared, never carried into the checkout"
+        );
+        wt.remove().unwrap();
+    }
+
     #[test]
     fn create_adopts_the_deterministic_dir_via_a_path_lookup() {
         // Gap 12 (spec 06:48): with a DETERMINISTIC dir, a second process computes the
