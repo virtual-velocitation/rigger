@@ -1963,7 +1963,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
         "F10 landing-order circularity's corpus-wide total is pinned to its observed count"
     );
     assert_eq!(
-        f11_total, 44,
+        f11_total, 45,
         "F11 undecided removal's corpus-wide total (both tells) is pinned to its observed \
          count, minus 1 hit removed by the rewrite of specs/107 (operator review 2026-10-05: its \
          rebuild identity names its comparison surface), plus 1 hit from specs/120 criterion 5 \
@@ -2024,7 +2024,7 @@ fn spec_lint_self_clean_over_the_committed_corpus() {
          or a regression in the heuristic"
     );
     assert_eq!(
-        shape_total, 175,
+        shape_total, 206,
         "F2 bundling / F6 copyability's corpus-wide total is pinned as a regression guard \
          (spot-checked legitimate by the round-5 adversary sweep), plus 8 hits added by \
          specs/80-criteria-survive-extraction.md, specs/81-deflake-held-port-contract.md and \
