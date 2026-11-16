@@ -336,14 +336,32 @@ mod tests {
         }
     }
 
+    /// Which command a row of the inheritance table marks with [`inherit_on_exec`].
+    #[cfg(unix)]
+    #[derive(Debug, Clone, Copy)]
+    enum Marked {
+        /// The shell that writes through the file's descriptor number.
+        Writer,
+        /// No command.
+        Neither,
+        /// Another command, run to its end before the writer: the mark is its child's alone.
+        Other,
+    }
+
     /// On unix, `inherit_on_exec` hands an open file to the command it marks, and only to it:
     /// the marked shell writes through the file's descriptor number, and an unmarked one finds
-    /// that descriptor closed, since every file this process opens closes on exec.
+    /// that descriptor closed, since every file this process opens closes on exec - even after
+    /// another command was marked with the same file and has run, since the mark clears the
+    /// flag in that command's child and never in this process.
     #[cfg(unix)]
     #[test]
     fn inherit_on_exec_hands_the_file_to_the_marked_command_only() {
         use std::os::fd::AsRawFd;
-        for (inherit, outcome) in [(true, (true, "hi")), (false, (false, ""))] {
+        for (marked, outcome) in [
+            (Marked::Writer, (true, "hi")),
+            (Marked::Neither, (false, "")),
+            (Marked::Other, (false, "")),
+        ] {
             let dir = tempfile::tempdir().expect("tempdir");
             let path = dir.path().join("held");
             let file = std::fs::File::create(&path).expect("create the held file");
@@ -351,16 +369,19 @@ mod tests {
                 &format!("printf hi >> /dev/fd/{}", file.as_raw_fd()),
                 dir.path(),
             );
-            if inherit {
-                inherit_on_exec(&mut cmd, &file);
+            match marked {
+                Marked::Writer => inherit_on_exec(&mut cmd, &file),
+                Marked::Neither => {}
+                Marked::Other => {
+                    let mut other = shell_command("true", dir.path());
+                    inherit_on_exec(&mut other, &file);
+                    let status = other.status().expect("run the other shell");
+                    assert_eq!(status.code(), Some(0), "the other shell ran");
+                }
             }
             let ran = cmd.output().expect("run the shell").status.success();
             let written = std::fs::read_to_string(&path).expect("read the held file");
-            assert_eq!(
-                (ran, written.as_str()),
-                outcome,
-                "marked for inheritance: {inherit}"
-            );
+            assert_eq!((ran, written.as_str()), outcome, "marked: {marked:?}");
         }
     }
 }
