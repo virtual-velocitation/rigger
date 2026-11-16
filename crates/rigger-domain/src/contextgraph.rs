@@ -1,4 +1,4 @@
-//! The context graph's domain model and its port: the node, edge and relation vocabulary, the
+//! The context graph's domain model and its interface: the node, edge and relation vocabulary, the
 //! graph and call-graph values, the event types and payloads the offline passes record, and the
 //! `RecordFold`, `ContextGraph` and `Neighbors` traits, plus the pure query engine over a projected [`Graph`] (`query`). The
 //! sqlite projector lives in `rigger-graph-sqlite`.

@@ -1,4 +1,4 @@
-//! The event log's domain types and its port: the immutable `Event` fact, its ordering values,
+//! The event log's domain types and its interface: the immutable `Event` fact, its ordering values,
 //! the append report, the content-identity policy and the `EventStore` trait every backend
 //! implements. The backends themselves live in the root crate's `eventstore` module.
 
@@ -208,7 +208,7 @@ pub fn from_nanos(n: i64) -> SystemTime {
 /// that folds what it appended has to stamp each event with the position the store
 /// issued. Deriving positions arithmetically from a single "last" value is unsound in
 /// two independent ways: it assumes every handed event was written, and it assumes a
-/// batch lands at CONSECUTIVE positions, which this port has never promised (it
+/// batch lands at CONSECUTIVE positions, which this interface has never promised (it
 /// promises DISTINCT, strictly increasing positions - a backend whose positions are
 /// byte offsets satisfies that and is not consecutive).
 ///
@@ -517,7 +517,7 @@ pub enum Error {
     /// Spec 71 - APPEND REFUSES DISORDER. The store's position-order cursor for
     /// `stream` (the revision its own last-written row holds) sits at or below a
     /// revision the stream ALREADY records elsewhere: appending `attempted` would land
-    /// it at or below `recorded`, which never happens through this port alone (every
+    /// it at or below `recorded`, which never happens through this interface alone (every
     /// write it issues strictly extends both orders together) and is the exact
     /// signature a stale writer leaves behind after a compaction reissues a revision
     /// hole. Refusing here, before the write, is what keeps that signature from
@@ -659,7 +659,7 @@ impl Subscription {
 /// position of the stream's last event.
 pub type EventBatchSink<'s> = dyn FnMut(&[Event], Position) -> Result<(), Error> + 's;
 
-/// EventStore is the append-only, bi-temporal log port (KurrentDB-shaped).
+/// EventStore is the append-only, bi-temporal log interface (KurrentDB-shaped).
 /// Implementations are safe to share across threads.
 ///
 /// # The `from` boundary convention
@@ -694,14 +694,14 @@ pub trait EventStore: Send + Sync {
     ///
     /// The returned [`Appended`] carries one slot per event handed in, in input order,
     /// and every reported position is one the store ITSELF issued - never arithmetic
-    /// an adapter invented. This is a PORT obligation every adapter owes, pinned by
+    /// an adapter invented. This is an INTERFACE obligation every adapter owes, pinned by
     /// the backend-agnostic contract suite, because it is what lets a caller fold what
     /// it appended at the positions the log actually holds it at. An adapter that
     /// cannot answer where an event landed reports an error, never a guess.
     ///
     /// Reported positions are DISTINCT and strictly increasing within one append. They
     /// are NOT promised to be consecutive: a backend whose global position is a byte
-    /// offset satisfies this port and leaves gaps.
+    /// offset satisfies this interface and leaves gaps.
     ///
     /// An append of no events writes nothing and reports an empty [`Appended`].
     ///
@@ -713,7 +713,7 @@ pub trait EventStore: Send + Sync {
     /// [`Error::DerivedAppend`], naming the first such type in batch order, and nothing of it
     /// is written: no event, no group member, no position and no revision. The tree
     /// re-derives a derived event, so the log keeps only the ledger entry of its generation.
-    /// A PORT obligation every adapter owes, pinned by the backend-agnostic contract suite.
+    /// An INTERFACE obligation every adapter owes, pinned by the backend-agnostic contract suite.
     fn append(
         &self,
         stream: &str,
@@ -857,7 +857,7 @@ mod appended_one_tests {
         let message = err.to_string();
         assert!(
             matches!(err, Error::Backend(_)),
-            "a port that accepted the append and wrote nothing is a backend failure, not a \
+            "an interface that accepted the append and wrote nothing is a backend failure, not a \
              concurrency conflict: {message}"
         );
         assert!(
