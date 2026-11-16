@@ -5,7 +5,6 @@
 //! when its last instance closes, so a driver that died leaves nothing to reclaim.
 
 use std::io;
-use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::path::{Path, PathBuf};
@@ -36,8 +35,9 @@ use windows_sys::Win32::System::Pipes::{
 use windows_sys::Win32::System::Threading::{CreateEventW, INFINITE};
 use windows_sys::Win32::System::IO::{CancelIoEx, GetOverlappedResultEx, OVERLAPPED};
 
-use super::pipe_name;
 use super::serving::{answer_one, exchange, served_already, ACCEPT_POLL, REQUEST_READ_TIMEOUT};
+use super::{canonical_root_bytes, pipe_name};
+use crate::win32::wide;
 
 /// Each direction's buffer, in bytes: the size std gives its own pipes, so a request line is
 /// written whole without waiting on the driver's read.
@@ -47,15 +47,7 @@ const PIPE_BUFFER: u32 = 64 * 1024;
 /// `rigger gate` asks by when no driver addressed it ([`socket_to_ask`](super::socket_to_ask)):
 /// [`pipe_name`] over the canonical repo root. Errors when the repo root does not resolve.
 pub fn socket_path(repo_root: &Path) -> io::Result<PathBuf> {
-    let root = repo_root.canonicalize()?;
-    Ok(PathBuf::from(pipe_name(
-        root.as_os_str().as_encoded_bytes(),
-    )))
-}
-
-/// `path` as the NUL-terminated UTF-16 string the Win32 calls take.
-fn wide(path: &Path) -> Vec<u16> {
-    path.as_os_str().encode_wide().chain([0]).collect()
+    Ok(PathBuf::from(pipe_name(&canonical_root_bytes(repo_root)?)))
 }
 
 /// `wait` in the milliseconds a Win32 wait takes, a wait too long for them being `INFINITE`.

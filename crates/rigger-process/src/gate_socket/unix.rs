@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest};
 
-use super::root_digest;
+use super::{canonical_root_bytes, root_digest};
 use super::serving::{answer_one, exchange, served_already, ACCEPT_POLL, REQUEST_READ_TIMEOUT};
 
 /// The gate socket path for the project rooted at `repo_root`, the one rule the driver binds by
@@ -27,9 +27,7 @@ pub fn socket_path(repo_root: &Path) -> io::Result<PathBuf> {
 /// and the path is as long as the runtime directory plus a fixed tail. Errors when the repo root
 /// does not resolve.
 pub fn socket_path_under(runtime_dir: &Path, repo_root: &Path) -> io::Result<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let root = repo_root.canonicalize()?;
-    let name = root_digest(root.as_os_str().as_bytes());
+    let name = root_digest(&canonical_root_bytes(repo_root)?);
     Ok(owner_dir(runtime_dir).join(format!("{name}.sock")))
 }
 

@@ -7,7 +7,7 @@
 //! `SleepHold` port, the detached start of a process that outlives its starter, the trigger an
 //! interactive interrupt fires, and the one read of the user's home directory. They know
 //! `std::process`, the filesystem, threads and the host's OS facilities; the root `rigger` crate
-//! re-exports every module but `file_trust` and `home` under its own name.
+//! re-exports every public module but `file_trust` and `home` under its own name.
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod budget;
@@ -34,6 +34,9 @@ pub mod reap;
 pub mod subprocess;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod whole_line;
+/// The Win32 conversions the Windows adapters of `gate_socket` and `os_process` share.
+#[cfg(all(windows, any(feature = "store", not(feature = "core"))))]
+mod win32;
 
 pub use home::home_dir;
 

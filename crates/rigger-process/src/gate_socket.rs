@@ -106,6 +106,17 @@ fn root_digest(root_bytes: &[u8]) -> String {
         })
 }
 
+/// The bytes of `repo_root`'s canonical path, whose [`root_digest`] names the project's gate
+/// channel on every OS, so every path to one repo names one channel. Errors when the repo root
+/// does not resolve.
+#[cfg(any(unix, windows))]
+fn canonical_root_bytes(repo_root: &Path) -> io::Result<Vec<u8>> {
+    Ok(repo_root
+        .canonicalize()?
+        .into_os_string()
+        .into_encoded_bytes())
+}
+
 /// The Windows named pipe for the canonical repo root whose bytes are `root_bytes`:
 /// `\\.\pipe\rigger-gate-` and [`root_digest`], the digits the unix socket's file name carries.
 pub fn pipe_name(root_bytes: &[u8]) -> String {

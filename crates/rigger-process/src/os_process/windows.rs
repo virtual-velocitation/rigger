@@ -7,7 +7,6 @@
 //! files, so [`cwd`] and [`state`] answer `None` and [`open_files`] empty, and with no fork
 //! [`is_unexeced_fork_of`] answers false.
 
-use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::ptr::null;
 
@@ -31,6 +30,8 @@ use windows_sys::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION,
 };
+
+use crate::win32::wide;
 
 /// The most files one Restart Manager registration call is given.
 const FILES_PER_REGISTRATION: usize = 256;
@@ -287,7 +288,7 @@ fn regular_files(dir: &Path, files: &mut Vec<Vec<u16>>) {
         if kind.is_dir() {
             regular_files(&path, files);
         } else if kind.is_file() {
-            files.push(path.as_os_str().encode_wide().chain([0]).collect());
+            files.push(wide(&path));
         }
     }
 }
