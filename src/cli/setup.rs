@@ -2593,6 +2593,9 @@ mod tests {
         LOOKUP_METHOD, ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
     use crate::test_support::{build_declaring, RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
+    use crate::test_support::{
+        env_written_named, overlong_name_refusal, set_env_line_named, LONGEST_PLAIN_KEY,
+    };
     use crate::test_support::{production_boundary, production_files};
 
     rigger::test_cases! {
@@ -3452,14 +3455,13 @@ mod tests {
                 .unwrap();
             (
                 format!(
-                    "{}env:\n  ? {}\n  : x\n",
+                    "{}{}",
                     with_implementer!("detect: []\ngates: \"\"\nimplement: []\ncheckin: []\n"),
-                    "A".repeat(1025)
+                    set_env_line_named(LONGEST_PLAIN_KEY + 1)
                 ),
                 format!(
-                    "gate template set synthetic: the workflow it scaffolds fails to load: \
-                     config: parse workflow: did not find expected ',' or '}}' at line {line} \
-                     column 1034, while parsing a flow mapping at line {line} column 8"
+                    "gate template set synthetic: {}",
+                    overlong_name_refusal(line)
                 ),
             )
         }]) {
@@ -5261,11 +5263,11 @@ mod tests {
                 var("V", "x, y: z # {{w}}"),
             ),
         ];
-        let longest = "A".repeat(1024);
+        let longest = "A".repeat(LONGEST_PLAIN_KEY);
         rows.push((
             "a name of 1024 characters, the longest key YAML reads plain".into(),
             Some(format!("{{{longest}: x}}")),
-            format!("{{{longest}: \"x\"}}"),
+            env_written_named(LONGEST_PLAIN_KEY),
             var(&longest, "x"),
         ));
         for (name, quoted) in [

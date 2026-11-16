@@ -2,9 +2,12 @@
 //! criterion names, the `build` block that declares a set of variables, in its typed and its
 //! workflow-file form, the Rust gate template set's `env` and the `build.env` a scaffold from that
 //! set writes, every `build.env` entry the one check refuses with the exact refusal it names and
-//! the `set.yml` line declaring it, and every `build` block carrying a retired key with what
-//! validation answers for it. It names only the domain crate, so the gate adapter's, the config
-//! adapter's, the conductor's and the root crate's tests read one copy.
+//! the `set.yml` line declaring it, the longest `env` name a scaffold writes and loads back with
+//! the `set.yml` lines declaring a name of a given length, the `build.env` a scaffold writes of
+//! them and the refusal of a set declaring one past it, and every `build` block carrying a
+//! retired key with what validation answers for it.
+//! It names only the domain crate, so the gate adapter's, the config adapter's, the conductor's
+//! and the root crate's tests read one copy.
 
 /// The criterion's declaration: `B` over the site's build cache, `J` the jobs cap, `L` a literal.
 pub const DECLARED_BJL: [(&str, &str); 3] =
@@ -185,6 +188,33 @@ pub const REFUSED_DECLARATIONS: &[RefusedDeclaration] = &[
         "build.env: B: a stray brace in \"}}}\"; write {{ or }} for a literal brace",
     ),
 ];
+
+/// The length of the longest key YAML reads plain: the longest `env` name a scaffold writes on
+/// its `env` line and loads back.
+pub const LONGEST_PLAIN_KEY: usize = 1024;
+
+/// The `env:` lines of a gate template set's `set.yml` declaring one variable, valued `x`, whose
+/// name is `len` `A`s, spelled as an explicit key, the one spelling YAML reads of a name longer
+/// than [`LONGEST_PLAIN_KEY`].
+pub fn set_env_line_named(len: usize) -> String {
+    format!("env:\n  ? {}\n  : x\n", "A".repeat(len))
+}
+
+/// The `build.env` value a scaffold writes under `build:` from the `env` that
+/// [`set_env_line_named`] declares, byte for byte: its one variable as a flow map, the name plain.
+pub fn env_written_named(len: usize) -> String {
+    format!("{{{}: \"x\"}}", "A".repeat(len))
+}
+
+/// Why a set whose `env` name is one character past [`LONGEST_PLAIN_KEY`] is refused: the
+/// workflow it scaffolds, which writes that name plain on its `env` line `line`, fails to load.
+pub fn overlong_name_refusal(line: usize) -> String {
+    format!(
+        "the workflow it scaffolds fails to load: config: parse workflow: did not find expected \
+         ',' or '}}' at line {line} column 1034, while parsing a flow mapping at line {line} \
+         column 8"
+    )
+}
 
 /// The refusal of a workflow still carrying a `build.wrapper` value.
 const WRAPPER_RETIRED: &str = "the workflow key `build.wrapper` is retired (rigger exports only what `build.env` declares; declare there each variable your builds need (your build cache over `{build_cache}`, your job count over `{jobs}`)): delete the `wrapper:` line under `build:` from your workflow.yml (config key: build.wrapper)";

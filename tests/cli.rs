@@ -13433,56 +13433,63 @@ fn status_never_checks_a_gate_requirement() {
     );
 }
 
-/// Spec 19c Unit 3: `rigger validate` WARNS (on stderr, without failing) when
-/// `defaults.max_wall_clock` is unbounded and a gating role carries no per-agent bound - so
-/// a hung gating agent that the liveness sweep never times out is visible at author time -
-/// and stays SILENT on that risk once a bound covers the gating roles. A fresh scaffold
-/// declares `defaults.max_wall_clock: 3600` (spec 125), so `rigger validate` on a new project
-/// prints no wall-clock advisory; with that default rewritten to `0` (unbounded), its
-/// adjudicator (the one gating role, carrying no per-agent bound) trips the advisory.
+/// Spec 19c Unit 3 and spec 125: `rigger validate` WARNS (on stderr, still exiting 0) when a
+/// gating role's `max_wall_clock` resolves to `0`, unbounded - its own value is `0`, or it sets
+/// none under a `defaults.max_wall_clock` of `0` - so a hung gating agent that the liveness sweep
+/// never times out is visible at author time, and stays SILENT on that risk once every gating role
+/// resolves to a non-zero bound. Given a fresh scaffold, whose `defaults.max_wall_clock` is `3600`
+/// and whose one gating role, the adjudicator, sets no bound of its own, with that default and the
+/// adjudicator's own bound rewritten per row, validate names the adjudicator exactly when its own
+/// bound is `0`, or absent under a `0` default.
 #[test]
-fn validate_warns_when_an_unbounded_default_leaves_a_gating_role_unswept() {
-    let dir = temp_project();
-    let root = dir.path();
-
-    // The scaffolded default bounds every spawn, so the gating adjudicator is swept: no
-    // wall-clock advisory, and exit 0.
-    let (out, err) = validate_after_init(root, |_| {});
-    assert!(
-        out.contains("config valid"),
-        "validate must still print its config summary; stdout:\n{out}"
-    );
-    assert_eq!(
-        common::cli::wall_clock_advisory_lines(&err),
-        [""; 0],
-        "validate must NOT warn about an unswept gating agent on a fresh scaffold, whose \
-         default is bounded; stderr:\n{err}"
-    );
-
-    // Unbound the default -> the gating adjudicator carries no bound, so validate warns on
-    // stderr naming it and the fix knob, still exit 0.
-    let workflow = root.join(".rigger").join("workflow.yml");
-    let unbounded = std::fs::read_to_string(&workflow)
-        .unwrap()
-        .replace("  max_wall_clock: 3600\n", "  max_wall_clock: 0\n");
-    assert!(
-        unbounded.contains("  max_wall_clock: 0\n"),
-        "test setup: expected to unbound the scaffolded default; workflow.yml:\n{unbounded}"
-    );
-    std::fs::write(&workflow, unbounded).unwrap();
-    let (_out, err, ok) = run_rigger(root, &["validate"]);
-    assert!(
-        ok,
-        "validate must succeed with an unbounded default; stderr:\n{err}"
-    );
-    assert_eq!(
-        common::cli::wall_clock_advisory_lines(&err),
-        [common::fixtures::wall_clock_advisory_naming(
-            "\"adjudicator\""
-        )],
-        "validate must warn on stderr that an unbounded default leaves the gating adjudicator \
-         unswept, naming the role and the fix knob; stderr:\n{err}"
-    );
+fn validate_warns_when_a_gating_roles_bound_resolves_to_zero() {
+    // (the scaffolded `defaults.max_wall_clock` rewritten to, the adjudicator's own
+    // `max_wall_clock`, whether validate names it).
+    for (default, own, named) in [
+        (3600, None, false),
+        (3600, Some(0), true),
+        (3600, Some(1), false),
+        (0, None, true),
+        (0, Some(0), true),
+        (0, Some(1), false),
+    ] {
+        let dir = temp_project();
+        let (out, err) = validate_after_init(dir.path(), |root| {
+            let rewrite = |path: &str, from: &str, to: &str| {
+                let path = root.join(path);
+                let text = std::fs::read_to_string(&path).unwrap();
+                assert_eq!(text.matches(from).count(), 1, "{from:?} in:\n{text}");
+                std::fs::write(&path, text.replace(from, to)).unwrap();
+            };
+            rewrite(
+                ".rigger/workflow.yml",
+                "  max_wall_clock: 3600\n",
+                &format!("  max_wall_clock: {default}\n"),
+            );
+            if let Some(own) = own {
+                rewrite(
+                    ".rigger/agents/adjudicator.md",
+                    "---\nid: adjudicator\n",
+                    &format!("---\nid: adjudicator\nmax_wall_clock: {own}\n"),
+                );
+            }
+        });
+        assert_eq!(
+            (
+                out.lines().find(|line| line.starts_with("config valid")),
+                common::cli::wall_clock_advisory_lines(&err),
+            ),
+            (
+                Some("config valid: 7 agents, 4 stages, 0 gates"),
+                named
+                    .then(|| common::fixtures::wall_clock_advisory_naming("\"adjudicator\""))
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+            ),
+            "default {default}, the adjudicator's own bound {own:?}; stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
 }
 
 /// Spec 18 Unit 4: `rigger validate <spec>` emits a NAMED, non-failing advisory for a

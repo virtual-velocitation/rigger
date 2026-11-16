@@ -28,6 +28,9 @@ use common::fixtures::{
     LANGUAGE_NEUTRAL_IMPLEMENTER,
 };
 use common::fixtures::{build_declaring, RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
+use common::fixtures::{
+    env_written_named, overlong_name_refusal, set_env_line_named, LONGEST_PLAIN_KEY,
+};
 use common::repo::{collect_files, repo_root};
 use std::path::Path;
 
@@ -384,7 +387,7 @@ fn config_valid_lines(out: &str) -> Vec<&str> {
 /// workflow loads with `defaults.max_wall_clock` 3600 and `rigger validate` accepts it printing no
 /// wall-clock warning: a new scaffold bounds every spawn, whatever its template root. `rigger init`
 /// naming no template root is driven through `rigger validate` by `tests/cli.rs`'
-/// `validate_warns_when_an_unbounded_default_leaves_a_gating_role_unswept`.
+/// `validate_warns_when_a_gating_roles_bound_resolves_to_zero`.
 #[test]
 fn a_fresh_scaffold_bounds_every_spawn_so_validate_prints_no_wall_clock_warning() {
     for (label, project, verb, ..) in fresh_scaffolds() {
@@ -885,17 +888,19 @@ fn a_template_root_holding_no_scaffold_dir_is_refused_before_any_write() {
 
 /// Given a command line `rigger init` or `rigger setup` refuses - `--template` with no directory,
 /// `--agents` given to `init`, or a template root whose one set brings an implementer reusing a
-/// scaffold seed's id, or declares under `env` an entry the build environment's check refuses -
-/// when the operator runs it, then the command fails on the refusal naming what is wrong - for a
-/// set, the set's key, and for a refused `env` entry, the check's own refusal naming the variable
-/// after it - before any write: nothing is reported scaffolded and the project is left as it was,
-/// with no directory made.
+/// scaffold seed's id, declares under `env` an entry the build environment's check refuses, or
+/// declares under `env` a name one character past the longest key YAML reads plain, so the
+/// workflow it scaffolds fails to load - when the operator runs it, then the command fails on the
+/// refusal naming what is wrong - for a set, the set's key, for a refused `env` entry, the check's
+/// own refusal naming the variable after it, and for the overlong name, the load error at the
+/// line a scaffold writes its set's `env` on - before any write: nothing is reported scaffolded
+/// and the project is left as it was, with no directory made.
 #[test]
 fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
     let seeded = operator_template_root("implementer");
     let seeded = seeded.path().to_str().unwrap();
     let seed_id = "gate template set demo: implementer id implementer is a scaffold seed's id";
-    // Each refused `env` entry's template root, kept alive for the rows below, and its refusal.
+    // Each refused `env`'s template root, kept alive for the rows below, and its refusal.
     let declaring: Vec<(tempfile::TempDir, String)> = REFUSED_DECLARATIONS
         .iter()
         .map(|refused| {
@@ -904,6 +909,13 @@ fn an_argument_or_a_set_the_command_refuses_writes_nothing() {
                 format!("gate template set demo: env: {}", refused.message),
             )
         })
+        .chain([(
+            operator_template_root_declaring(&set_env_line_named(LONGEST_PLAIN_KEY + 1)),
+            format!(
+                "gate template set demo: {}",
+                overlong_name_refusal(scaffolded_env_line())
+            ),
+        )])
         .collect();
     let env_rows: Vec<([&str; 3], &str)> = declaring
         .iter()
@@ -1283,6 +1295,24 @@ fn operator_template_root_declaring(env_line: &str) -> tempfile::TempDir {
     dir
 }
 
+/// The line, counted from 1, that a scaffold writes its set's `env` on: where the workflow a fresh
+/// `rigger init` writes, applying an operator's set whose `env` name is the longest key YAML reads
+/// plain, holds that `env` under `build:`.
+fn scaffolded_env_line() -> usize {
+    let template = operator_template_root_declaring(&set_env_line_named(LONGEST_PLAIN_KEY));
+    let dir = demo_project();
+    run_rigger_ok(
+        dir.path(),
+        &["init", "--template", template.path().to_str().unwrap()],
+    );
+    let workflow = std::fs::read_to_string(dir.path().join(".rigger/workflow.yml")).unwrap();
+    let env = format!("  env: {}", env_written_named(LONGEST_PLAIN_KEY));
+    1 + workflow
+        .lines()
+        .position(|line| line == env)
+        .unwrap_or_else(|| panic!("no line {env:?} in the workflow:\n{workflow}"))
+}
+
 /// Given a project holding the operator's own set's marker and no `Cargo.toml`, when the operator
 /// runs `rigger init` or `rigger setup` naming a template root of their own - by an absolute path,
 /// or by a path relative to the directory the command runs in, that directory below the git root
@@ -1497,14 +1527,14 @@ const DEMO_BUILD_REPORT: [&str; 4] = [
 ];
 
 /// Where a scaffold's gate template sets come from.
-enum Sets {
+enum Sets<'a> {
     /// This repository's root, its Rust set among them.
     Repository,
     /// No template root.
     NoRoot,
     /// A template root of the operator's own whose one set ends with the `env:` line given, or
     /// declares no `env` at all.
-    Operator(Option<&'static str>),
+    Operator(Option<&'a str>),
 }
 
 /// A fresh project holding the operator's own set's marker and no `Cargo.toml`.
@@ -1520,23 +1550,27 @@ fn demo_project() -> tempfile::TempDir {
 /// `{build_cache}` - and loads declaring exactly those two variables; matching no set, naming no
 /// template root beside a root `Cargo.toml`, or applying an operator's set that declares no `env`,
 /// it writes `env: {}` and declares none; applying an operator's set that declares its own `env`,
-/// it writes that `env` in name order and loads declaring exactly it. `rigger validate` accepts
-/// each scaffold and reports one `build env:` line per declared variable in name order, or none
-/// declared, then the build budget.
+/// it writes that `env` in name order and loads declaring exactly it, a name of the longest key
+/// YAML reads plain among them. `rigger validate` accepts each scaffold and reports one `build
+/// env:` line per declared variable in name order, or none declared, then the build budget.
 #[test]
 fn a_fresh_scaffold_declares_its_template_sets_build_environment() {
     // (label, the project, the command, where its sets come from, the `build.env` value written,
     // the variables the workflow loads declaring, validate's build lines).
-    type Row = (
-        &'static str,
+    type Row<'a> = (
+        &'a str,
         fn() -> tempfile::TempDir,
-        &'static str,
-        Sets,
-        &'static str,
-        &'static [(&'static str, &'static str)],
-        &'static [&'static str],
+        &'a str,
+        Sets<'a>,
+        &'a str,
+        &'a [(&'a str, &'a str)],
+        &'a [&'a str],
     );
-    let rows: [Row; 7] = [
+    let longest = "A".repeat(LONGEST_PLAIN_KEY);
+    let longest_line = set_env_line_named(LONGEST_PLAIN_KEY);
+    let longest_written = env_written_named(LONGEST_PLAIN_KEY);
+    let longest_report = format!("build env: {longest}=x");
+    let rows: [Row<'_>; 8] = [
         (
             "init, this repository's root, the Rust set",
             cargo_project,
@@ -1599,6 +1633,15 @@ fn a_fresh_scaffold_declares_its_template_sets_build_environment() {
             DEMO_ENV_WRITTEN,
             &DEMO_ENV,
             &DEMO_BUILD_REPORT,
+        ),
+        (
+            "init, an operator's set declaring a name of the longest key YAML reads plain",
+            demo_project,
+            "init",
+            Sets::Operator(Some(longest_line.as_str())),
+            longest_written.as_str(),
+            &[(longest.as_str(), "x")],
+            &[longest_report.as_str(), UNDECLARED_BUILD_REPORT[1]],
         ),
     ];
     for (label, project, command, sets, written, declared, report) in rows {
