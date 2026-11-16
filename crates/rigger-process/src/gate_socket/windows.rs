@@ -307,8 +307,8 @@ pub struct GateSocket {
 
 impl GateSocket {
     /// Bind the pipe named `path`, the name [`socket_path`] gives, as its first instance: open to
-    /// its owner alone and to local clients only. A pipe of that name another process already
-    /// serves is refused with `AddrInUse`.
+    /// its owner alone and to local clients only. A pipe of that name already served, by another
+    /// process or by an earlier bind in this one, is refused with `AddrInUse`.
     pub fn bind(path: &Path) -> io::Result<GateSocket> {
         let name = wide(path);
         let listening = Instance::create(&name, true).map_err(|e| {
@@ -372,8 +372,9 @@ impl GateChannel for GateSocket {
 
 /// Ask the driver serving the pipe named `path` to answer `request`: its reply, or `None` only
 /// when no pipe of that name exists. A pipe whose every instance is busy is waited for; one whose
-/// server closed before reading the request, which [`exchange`] answers `None`, is an error here,
-/// as is any other failure to open or exchange. The pipe is opened at the identification level, so
+/// server was gone before the request was written, which [`exchange`] answers `None`, is an error
+/// here, as is one closed with the request unread, and any other failure to open or exchange. The
+/// pipe is opened at the identification level, so
 /// a server that is not the driver cannot act as this user.
 pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> {
     loop {
