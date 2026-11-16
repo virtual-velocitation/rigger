@@ -14924,6 +14924,7 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
             ".rigger/*.db",
             ".rigger/*.db-wal",
             ".rigger/*.db-shm",
+            ".rigger/*.db.*",
             ".rigger/*.lock",
             ".rigger/dash.url",
             ".rigger/dash.marker",

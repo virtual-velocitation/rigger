@@ -4015,7 +4015,7 @@ mod tests {
     /// path no rule ignores.
     #[test]
     fn a_new_project_ignores_riggers_runtime_files_by_class_and_keeps_its_configuration() {
-        let rows: [(&str, Option<&str>); 23] = [
+        let rows: [(&str, Option<&str>); 26] = [
             (".claude/settings.json", Some(".claude")),
             (".rigger/events.db", Some(".rigger/*.db")),
             (".rigger/events.db-wal", Some(".rigger/*.db-wal")),
@@ -4033,6 +4033,9 @@ mod tests {
             (".rigger/driver.out", Some(".rigger/driver.out")),
             (".rigger/store.conn", Some(".rigger/store.conn")),
             (".rigger/events.db.bak-x", Some(".rigger/*.bak-*")),
+            (".rigger/graph.db.rebuild", Some(".rigger/*.db.*")),
+            (".rigger/graph.db.rebuild-wal", Some(".rigger/*.db.*")),
+            (".rigger/graph.db.pruned", Some(".rigger/*.db.*")),
             (".rigger/workflow.yml", None),
             (".rigger/agents/planner.md", None),
             (".rigger/project.id", None),
