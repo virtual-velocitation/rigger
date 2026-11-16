@@ -14682,9 +14682,14 @@ struct ReviewRound {
 
 impl ReviewRound {
     /// Whether `item` holds the unit back on this round: a correctness defect anywhere, or any
-    /// finding in the delta this round reviewed. Every other item is the operator's.
+    /// finding whose path names a file of the delta this round reviewed ([`required_names`]).
+    /// Every other item is the operator's.
     fn blocks(&self, item: &RequiredItem) -> bool {
-        item.correctness || self.delta.contains(&item.path)
+        item.correctness
+            || self
+                .delta
+                .iter()
+                .any(|path| required_names(&item.path, path))
     }
 
     /// The block every review tier's prompt ends with on this round: what it reviews (the
@@ -33176,6 +33181,55 @@ mod tests {
                 names,
                 "{required:?} names {path:?}"
             );
+        }
+    }
+
+    /// A later round's REQUIRED item holds the unit back when it is a correctness defect, or
+    /// when its path names a file of the round's delta in any spelling [`required_names`]
+    /// reads; any other item is the operator's.
+    #[test]
+    fn a_round_blocks_on_an_item_whose_path_names_its_delta_in_any_spelling() {
+        let accented = "docs/a b/\u{e9}.md";
+        let round = ReviewRound {
+            base: "b".to_string(),
+            delta: vec!["src/fix.rs".to_string(), accented.to_string()],
+            required: Vec::new(),
+            audit: String::new(),
+        };
+        let item = |path: &str, correctness: bool| RequiredItem {
+            path: path.to_string(),
+            correctness,
+            ..RequiredItem::default()
+        };
+        let rows = [
+            ("the delta path itself", item("src/fix.rs", false), true),
+            (
+                "from the root, at a line",
+                item("./src/fix.rs:3", false),
+                true,
+            ),
+            ("at a range", item("src/fix.rs:3-9", false), true),
+            ("its directory", item("src/", false), true),
+            (
+                "a path with spaces and non-ASCII characters",
+                item(accented, false),
+                true,
+            ),
+            ("another file", item("src/other.rs", false), false),
+            (
+                "a name the delta path only starts with",
+                item("src/fix", false),
+                false,
+            ),
+            ("an empty path", item("", false), false),
+            (
+                "a correctness defect outside the delta",
+                item("src/other.rs", true),
+                true,
+            ),
+        ];
+        for (case, item, blocks) in rows {
+            assert_eq!(round.blocks(&item), blocks, "{case}");
         }
     }
 
