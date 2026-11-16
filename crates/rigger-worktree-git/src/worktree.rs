@@ -267,13 +267,14 @@ impl Worktree {
                 // remove the bare dir) so the branch's committed checkpoint is checked out
                 // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
                 // cleared, never the durable branch - the branch's work is exactly what we reuse.
-                if std::path::Path::new(dir).exists() {
-                    clear_worktree_dir(repo, dir, authorized_root)?;
-                }
+                clear_leftover_at(repo, dir, authorized_root)?;
                 // Reuse the existing branch's committed work: check it out into the fresh
                 // worktree dir, no `-b` (which would refuse, the ref already exists).
                 git(repo, &["worktree", "add", dir, branch])?;
             } else {
+                // The same wedge with the branch gone too (a branch reclaim deleted both): no
+                // worktree of this branch can sit at `dir`, so whatever does is a leftover.
+                clear_leftover_at(repo, dir, authorized_root)?;
                 git(repo, &["worktree", "add", "-b", branch, dir, "HEAD"])?;
             }
         }
@@ -2290,6 +2291,16 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
             .map_err(|e| Error(format!("remove leftover worktree dir {dir}: {e}")))?;
     }
     git(repo, &["worktree", "prune"])?;
+    Ok(())
+}
+
+/// Clear a leftover sitting at `dir`, the path a worktree is about to be added at, through
+/// [`clear_worktree_dir`]: a plain directory, or a registration git still tracks there. Nothing
+/// at `dir` is a no-op. CALLER-LOCKED, as [`clear_worktree_dir`] is.
+fn clear_leftover_at(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
+    if std::path::Path::new(dir).exists() {
+        clear_worktree_dir(repo, dir, authorized_root)?;
+    }
     Ok(())
 }
 
