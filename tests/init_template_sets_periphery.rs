@@ -563,9 +563,10 @@ fn a_rerun_writes_back_the_seed_only_for_the_test_author_the_workflow_declares()
 }
 
 /// Given a fresh project holding an agent file that does not parse, when the operator runs `rigger
-/// init` or `rigger setup` naming no template root, then the command fails, printing only the line
-/// `rigger validate` prints for that file, and writes no seed beside it; once the operator fixes
-/// the file, the same command writes every seed and `rigger validate` accepts the eight agents.
+/// init` or `rigger setup` naming no template root, then the command fails before its first write,
+/// printing only the line `rigger validate` prints for that file and leaving the project holding
+/// that file alone; once the operator fixes the file, the same command writes every seed and
+/// `rigger validate` accepts the eight agents.
 #[test]
 fn an_agent_file_that_does_not_parse_stops_every_seed_until_it_is_fixed() {
     const BROKEN: &str = "---\nid: broken\nrecurse: not-a-bool\n---\nThe project's own agent.\n";
@@ -577,17 +578,27 @@ fn an_agent_file_that_does_not_parse_stops_every_seed_until_it_is_fixed() {
         let root = dir.path();
         let agents = root.join(".rigger/agents");
         write_files(&agents, &[("broken.md", BROKEN)]);
+        // The project's top level and its `.rigger/`, so a directory made and left empty in
+        // either shows.
+        let snapshot = || {
+            (
+                dir_snapshot(root, ""),
+                dir_snapshot(&root.join(".rigger"), ""),
+            )
+        };
+        let entries = snapshot();
         let (out, err, ok) = run_rigger(root, &[verb]);
+        let left = (project_files(root), snapshot());
         let (_, refused, _) = run_rigger(root, &["validate"]);
         assert_eq!(
+            (ok, out.as_str(), err.as_str(), refused.as_str(), left),
             (
-                ok,
-                out.as_str(),
-                err.as_str(),
-                refused.as_str(),
-                sorted_dir_names(&agents)
+                false,
+                "",
+                REFUSAL,
+                REFUSAL,
+                (vec![".rigger/agents/broken.md".to_string()], entries)
             ),
-            (false, "", REFUSAL, REFUSAL, vec!["broken.md".to_string()]),
             "{verb} over an agent file that does not parse"
         );
 
