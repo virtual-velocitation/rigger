@@ -243,9 +243,9 @@ macro_rules! delegate_event_store_reads {
     };
 }
 
-/// A port that ACCEPTS every append and reports writing nothing - the one answer every
+/// An interface that ACCEPTS every append and reports writing nothing - the one answer every
 /// single-event seam has to surface rather than absorb. It lives with the shared fixtures,
-/// one definition for every crate whose seams append through the port, so each seam's test
+/// one definition for every crate whose seams append through the interface, so each seam's test
 /// holds it to the SAME double instead of to a local one that could drift into a friendlier
 /// shape.
 ///
@@ -336,7 +336,7 @@ impl EventStore for SilentStore {
     }
 }
 
-/// The port methods a double REFUSES, each panicking with `$why` and what the caller tried -
+/// The interface methods a double REFUSES, each panicking with `$why` and what the caller tried -
 /// expanded inside that double's `impl EventStore` block, naming the methods it does not answer.
 macro_rules! refuse_event_store_calls {
     ($why:literal: $($method:ident),+ $(,)?) => {
@@ -420,7 +420,7 @@ macro_rules! refuse_event_store_calls {
     };
 }
 
-/// A store whose ONLY reachable port method is the group lookup (spec 101): it answers every group
+/// A store whose ONLY reachable interface method is the group lookup (spec 101): it answers every group
 /// with one fixed answer - a newest member, no member, or a backend error - and records each
 /// `(stream, group)` it was asked. Every other method panics, so a caller that reads the stream,
 /// subscribes or appends where it should only have asked the lookup fails.
@@ -519,7 +519,7 @@ impl EventStore for ReadsFailWhenArmed<'_> {
 /// A read-only store over ONE hand-built stream, for a use case tested where no backend is in
 /// reach: its events are stamped in the order given as the sqlite store stamps an append to an
 /// empty log, per-stream revisions from 0 and log positions from 1, and only the boundary lookup
-/// and the typed read answer, as the port words them. Every other method panics, and another
+/// and the typed read answer, as the interface words them. Every other method panics, and another
 /// stream holds nothing.
 pub struct HandBuiltLog {
     stream: String,
@@ -629,7 +629,7 @@ impl EventStore for FailAppendMetaContaining<'_> {
 /// already ran for real and the single append that would durably record it, or a record lost
 /// while the work around it carries on. It matches the payload, where
 /// [`FailAppendMetaContaining`] matches metadata. Never a production hook: `EventStore` is the
-/// injected port, the same seam a genuine backend failure surfaces through.
+/// injected interface, the same seam a genuine backend failure surfaces through.
 pub struct FailAppendContaining<'a> {
     pub inner: &'a dyn EventStore,
     pub needle: &'static str,
@@ -843,7 +843,7 @@ type CallLog = std::sync::Arc<std::sync::Mutex<Vec<CountedRead>>>;
 /// it forwards and how many events each one materialized, so a test asserts a command's read
 /// cost at the store seam instead of measuring resident memory. Appends pass through uncounted.
 /// The one shared instance of this instrument: every criterion that asserts a read cost uses it,
-/// and a new port method gains its forwarding and its [`CountedRead`] here.
+/// and a new interface method gains its forwarding and its [`CountedRead`] here.
 pub struct ReadCountingStore<'a> {
     inner: Held<'a>,
     reads: CallLog,

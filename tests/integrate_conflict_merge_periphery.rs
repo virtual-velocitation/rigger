@@ -60,21 +60,21 @@
 //! the shared base either).
 //!
 //! GAP 4 (round 1 review fix), `regenerate_conflicted_paths_runs_through_the_injected_gates_
-//! port_not_a_raw_shell_out`. Round 1 fixed `run_regenerate_command` to call the injected
-//! `gate::Runner` port (`Deps.gates`) instead of a raw, un-injected `std::process::Command`
+//! interface_not_a_raw_shell_out`. Round 1 fixed `run_regenerate_command` to call the injected
+//! `gate::Runner` interface (`Deps.gates`) instead of a raw, un-injected `std::process::Command`
 //! shell-out (arch-u88c1-regenerate-bypasses-runner-port-and-build-budget) - but every existing
 //! test that exercises regeneration, this file's own GAP 2 included, wires `Deps.gates` to the
 //! REAL `ExecRunner`, which runs the registered command as a real shell either way and so cannot
 //! tell the two implementations apart. This drives the confined-to-regenerable scenario with a
-//! fake `Runner` that intercepts only the `"regenerate"` gate id and proves BOTH that the port is
-//! actually called (with the exact gate id/command/dir) and that the port's own output - not a
+//! fake `Runner` that intercepts only the `"regenerate"` gate id and proves BOTH that the interface is
+//! actually called (with the exact gate id/command/dir) and that the interface's own output - not a
 //! parallel raw shell-out's - is what lands.
 //!
 //! GAP 5 (round 2 review fix), `regenerate_never_holds_integrate_mu_letting_an_unrelated_unit_
 //! land_meanwhile`. The operator ruling op-u88c1-round-1-conflict-resolution-is-a-parked-spawn-
 //! not-an-inline-loop (round 1 REJECT) required `integrate_mu` never span a conflict-resolution
 //! implementer spawn; round 1's OWN fix (GAP 4 above) then routed `regenerate_conflicted_paths`
-//! through the injected `gate::Runner` port and `Self::build_budget` - an UNBOUNDED wait when
+//! through the injected `gate::Runner` interface and `Self::build_budget` - an UNBOUNDED wait when
 //! every concurrency slot is taken (spec 65) - which round 2's review caught still running
 //! WHILE `integrate_mu` was held (adv-u88c1r1-budget-fix-worsens-unfixed-lock-span): the exact
 //! same class of defect the spawn fix had just closed, reopened one call site over. None of
@@ -177,7 +177,7 @@
 //! - Row 2's after-record boundary (mutation|after-record),
 //!   `a_crash_right_after_placeholder_staging_resumes_and_completes_row_2`: a real mixed
 //!   conflict (GAP 2's shape); call 1 uses a `FailAppendContaining` event-store decorator (an
-//!   injected `EventStore` port failure - a real backend error, never a production hook) that
+//!   injected `EventStore` interface failure - a real backend error, never a production hook) that
 //!   refuses the SPECIFIC append carrying `integrate-conflict-placeholder-staged` after
 //!   `Worktree::accept_incoming` has ALREADY run for real on disk - proving the mutation's
 //!   on-disk effect survives a log-append failure and a resumed call still lands the
@@ -186,7 +186,7 @@
 //!   coverage - the confined branch never recorded this row at all before this diff),
 //!   `a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_complete_row_3`:
 //!   a fake `gate::Runner` fails the `"regenerate"` gate id exactly once (a real subprocess-
-//!   level failure through the injected port, mirroring GAP 4/5's `RecordingGateRunner` family)
+//!   level failure through the injected interface, mirroring GAP 4/5's `RecordingGateRunner` family)
 //!   for the before-record|mutation half, and a separate `FailAppendContaining` case for the
 //!   mutation|after-record half.
 //! - Row 4 (landing), before-record|mutation boundary,
@@ -204,7 +204,7 @@
 //!   failure and a resumed call's idempotent re-land ("already up to date") completes the
 //!   after-record exactly once.
 //!
-//! Every one of these eight is a REAL fault at a REAL injected port (`AgentDriver`,
+//! Every one of these eight is a REAL fault at a REAL injected interface (`AgentDriver`,
 //! `gate::Runner`, or `EventStore`) - never a production-only test hook, and never a literal
 //! process kill (which the no-os-kill rule forbids regardless): the mutation's on-disk git
 //! effect (where one runs) is always genuinely present before the failure, exactly as a real
@@ -1061,15 +1061,15 @@ fn a_post_merge_red_rollback_resets_the_units_own_branch_not_just_the_repo() {
 
 // ============================================================================================
 // Gap 4: `run_regenerate_command`'s NEW cross-module call into the injected `gate::Runner`
-// port (round 1 review fix for arch-u88c1-regenerate-bypasses-runner-port-and-build-budget) has
-// zero test anywhere that can tell a real port-routed call apart from a raw, un-injected
+// interface (round 1 review fix for arch-u88c1-regenerate-bypasses-runner-port-and-build-budget) has
+// zero test anywhere that can tell a real interface-routed call apart from a raw, un-injected
 // `std::process::Command` shell-out producing the same visible result: every existing test that
 // exercises regeneration - the implementer's own three conductor.rs unit tests AND this file's
 // GAP 2 - wires `Deps.gates` to the REAL `rigger::gate::ExecRunner`, which actually runs the
 // registered shell command either way. Reverting `run_regenerate_command` back to a raw
 // `std::process::Command::new("sh")` call (the exact regression the fix's own doc comment names)
 // would still make every one of those tests pass unchanged, because they only ever check the
-// resulting file content, never which side of the port boundary produced it.
+// resulting file content, never which side of the interface boundary produced it.
 // ============================================================================================
 
 /// A [`rigger::gate::Runner`] fake that ONLY intercepts the `"regenerate"` gate id (recording
@@ -1118,10 +1118,11 @@ impl rigger::gate::Runner for RecordingGateRunner {
             dir.to_string(),
             gate_scratch.to_string(),
         ));
-        std::fs::write(Path::new(dir).join("c.rs"), "FAKE_REGEN_VIA_PORT\n").unwrap();
+        std::fs::write(Path::new(dir).join("c.rs"), "FAKE_REGEN_VIA_INTERFACE\n").unwrap();
         Ok(rigger::gate::GateResult {
             pass: true,
-            evidence: "fake runner: regenerated via the injected port, never a raw shell".into(),
+            evidence: "fake runner: regenerated via the injected interface, never a raw shell"
+                .into(),
         })
     }
 }
@@ -1130,12 +1131,12 @@ impl rigger::gate::Runner for RecordingGateRunner {
 /// `conflict_fixture` (conductor.rs) and this file's other drivers: `c.rs` is registered
 /// regenerable, so the loser's conflict resolves with NO implementer spawn at all - this test's
 /// whole point is the conductor's OWN regeneration call, not anything an implementer does.
-struct GatesPortConflictDriver {
+struct GatesInterfaceConflictDriver {
     repo: String,
     calls: Mutex<Vec<String>>,
 }
 
-impl AgentDriver for GatesPortConflictDriver {
+impl AgentDriver for GatesInterfaceConflictDriver {
     fn spawn(
         &self,
         _a: &AgentDef,
@@ -1159,14 +1160,14 @@ impl AgentDriver for GatesPortConflictDriver {
 }
 
 #[test]
-fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_shell_out() {
+fn regenerate_conflicted_paths_runs_through_the_injected_gates_interface_not_a_raw_shell_out() {
     let repo = temp_git_project_with_commit();
     let repo_path = repo.path().to_str().unwrap().to_string();
     std::fs::write(Path::new(&repo_path).join("c.rs"), "BASE\n").unwrap();
     git_commit_all(&repo_path, "base c.rs");
 
     let store = Store::open(":memory:").unwrap();
-    let driver = GatesPortConflictDriver {
+    let driver = GatesInterfaceConflictDriver {
         repo: repo_path.clone(),
         calls: Mutex::new(Vec::new()),
     };
@@ -1205,14 +1206,14 @@ fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_sh
         "a conflict confined to a registered regenerable path resolves with NO spawn; got {calls:?}"
     );
 
-    // THE decisive proof of DI routing: the injected port was actually invoked, carrying the
+    // THE decisive proof of DI routing: the injected interface was actually invoked, carrying the
     // EXACT gate id and command `run_regenerate_command` documents constructing, in the unit's
     // own worktree dir - never the shared repo dir.
     let runs = runner.calls.lock().unwrap();
     assert_eq!(
         runs.len(),
         1,
-        "regenerate_conflicted_paths must call the injected gate::Runner port exactly once for \
+        "regenerate_conflicted_paths must call the injected gate::Runner interface exactly once for \
          the one distinct registered command; got {runs:?}"
     );
     let (id, run_cmd, dir, gate_scratch) = &runs[0];
@@ -1222,11 +1223,11 @@ fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_sh
     );
     assert_eq!(
         run_cmd, "printf 'REAL_SHELL_WOULD_WRITE_THIS\\n' > c.rs",
-        "the injected port must receive the EXACT command the registered RegenerateRule names"
+        "the injected interface must receive the EXACT command the registered RegenerateRule names"
     );
     assert_ne!(
         dir, &repo_path,
-        "the port must be called with the LOSING unit's own worktree dir, never the shared repo \
+        "the interface must be called with the LOSING unit's own worktree dir, never the shared repo \
          (the worktree itself may already be reclaimed by the time this assertion runs, since \
          both units have finished integrating - matching GAP 2/3's own convention of reading \
          final state off the repo, never a per-unit worktree, after `run()` returns)"
@@ -1260,8 +1261,8 @@ fn regenerate_conflicted_paths_runs_through_the_injected_gates_port_not_a_raw_sh
     // periphery) provides today.
     let final_c = std::fs::read_to_string(Path::new(&repo_path).join("c.rs")).unwrap();
     assert_eq!(
-        final_c, "FAKE_REGEN_VIA_PORT\n",
-        "the regenerated content must come from the injected gate::Runner port, never a raw \
+        final_c, "FAKE_REGEN_VIA_INTERFACE\n",
+        "the regenerated content must come from the injected gate::Runner interface, never a raw \
          shell-out that bypassed it"
     );
     drop(repo);
@@ -1318,7 +1319,7 @@ impl rigger::gate::Runner for BlockingRegenerateGateRunner {
     }
 }
 
-/// Drives unit-a/unit-b through the same conflicting-`c.rs` shape as [`GatesPortConflictDriver`]
+/// Drives unit-a/unit-b through the same conflicting-`c.rs` shape as [`GatesInterfaceConflictDriver`]
 /// (whichever loses the integrate-lock race hits the confined-to-regenerable conflict), PLUS a
 /// third, entirely independent unit-c (its own file, `d.rs`, never touched by a or b) whose
 /// implementer commit is deliberately GATED: it waits on `proceed_rx` before writing anything,
@@ -1355,7 +1356,7 @@ impl AgentDriver for GatedThirdUnitDriver {
             }
             if !opts.dir.is_empty() {
                 // Barrier: both a/b branches must exist before either writes, so both cut
-                // their worktree from the SAME base (mirrors GatesPortConflictDriver).
+                // their worktree from the SAME base (mirrors GatesInterfaceConflictDriver).
                 wait_for_both_unit_branches(&self.repo);
                 write_unit_side(&opts.dir, unit, &[("c.rs", "A_LINE\n", "B_LINE\n")]);
             }
@@ -2372,7 +2373,7 @@ fn a_crash_right_after_placeholder_staging_resumes_and_completes_row_2() {
     drop(repo);
 }
 
-/// Fails the `"regenerate"` gate id exactly once through the injected `gate::Runner` port
+/// Fails the `"regenerate"` gate id exactly once through the injected `gate::Runner` interface
 /// (mirroring GAP 4/5's `RecordingGateRunner` family): its first call answers the outcome the
 /// runner was built with - a red verdict ([`Self::red_once`]) or a failed guard probe - and
 /// every later call runs for real. One shared instance drives BOTH calls of a two-call resume,

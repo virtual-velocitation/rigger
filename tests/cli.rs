@@ -1081,7 +1081,7 @@ fn reset_runs_reports_nonzero_bytes_reclaimed_then_a_second_pass_is_an_idempoten
 
 /// `Projector::compact()` is the new PUBLIC graph-mutation API (spec 46, criterion 3); this drives
 /// it DIRECTLY (the CLI tests reach it only through `rigger reset --runs`) to pin its return-value
-/// contract at the port edge: (1) after a `prune` frees pages onto the freelist, `compact()`, no
+/// contract at the interface edge: (1) after a `prune` frees pages onto the freelist, `compact()`, no
 /// reader holding the write-ahead log, returns a POSITIVE byte count that EXACTLY equals the on-disk file-size drop it caused - the reported
 /// reclamation is the truth on disk, not an estimate (this also fails closed if the internal
 /// `wal_checkpoint(TRUNCATE)` is removed: with the connection still open the main file has not

@@ -120,7 +120,7 @@
 //!    (`run_gates_derives_and_injects_the_review_worktrees_store_fence`) proves the VALUE is
 //!    derived and injected correctly - but only against a `RecordingRunner` test double, never
 //!    a real spawned process. This test drives the real `conductor::run` -> `run_gates` chain
-//!    with the REAL `gate::ExecRunner` as its `Runner` port (never a mock) through a real
+//!    with the REAL `gate::ExecRunner` as its `Runner` interface (never a mock) through a real
 //!    standalone review stage, and proves the gate-spawned courier's write lands in the fenced
 //!    scratch location rather than the repo's live store - the one observation neither the
 //!    RecordingRunner-based unit test nor a hand-typed-fence unit test can make.
@@ -812,7 +812,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
     // proves the derivation and injection - but only against a `RecordingRunner` test double
     // that never touches a real process or a real `STORE_FENCE_ENV`. This test drives the
     // SAME real `conductor::run` -> `run_gates` chain with the REAL `gate::ExecRunner` as the
-    // `Runner` port (never a mock) through a real standalone review stage, and observes the
+    // `Runner` interface (never a mock) through a real standalone review stage, and observes the
     // only thing a periphery layer can: whether the gate-spawned courier's write actually
     // lands in the fenced scratch location rather than the repo's live store, exactly
     // mirroring test 2's live-store-diff proof for the pre-existing unit-worktree case. The

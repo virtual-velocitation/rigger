@@ -28,18 +28,18 @@
 //! document integrity (criterion 3), and both-lanes-green (criterion 4) are pinned by
 //! their own tests and are not this test's concern.
 //!
-//! # The port-signature pin (spec 60)
+//! # The interface-signature pin (spec 60)
 //!
 //! The two pins above compare the document against LITERAL tokens written into this file,
 //! which is the right shape for a configuration surface whose names are chosen once. It is
-//! the wrong shape for a PORT the crate asks external adapter authors to implement: the
+//! the wrong shape for an INTERFACE the crate asks external adapter authors to implement: the
 //! document renders `EventStore` as as-built Rust, so its rendering can be falsified by any
 //! change to the trait itself, and a literal token here would have to be updated by the
 //! same hand that let the document go stale. The third pin below therefore compares the
 //! document against THE SOURCE: it extracts `EventStore::append`'s return type from
 //! `src/eventstore/mod.rs` and from the document's own snippet and requires them to be the
 //! same text. Nothing in it is a copy of either side, so it stays true across future
-//! changes to the port and fails RED the moment the front door and the code disagree
+//! changes to the interface and fails RED the moment the front door and the code disagree
 //! about the contract a consumer must implement.
 
 use crate::common;
@@ -152,7 +152,7 @@ fn architecture_names_the_current_store_and_inspector_surface() {
 }
 
 #[test]
-fn architecture_renders_the_event_store_port_the_source_declares() {
+fn architecture_renders_the_event_store_interface_the_source_declares() {
     let declared = append_return_type(&repo_text("crates/rigger-domain/src/eventstore.rs"));
     let rendered = append_return_type(&repo_text("docs/architecture.md"));
 

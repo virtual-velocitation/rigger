@@ -12,10 +12,10 @@
 //!    `contextgraph`) and no single module's tests can see it;
 //!  - every in-crate test of the fold uses the embedded store, whose positions are
 //!    consecutive rowids. A backend whose global position is a byte offset satisfies
-//!    this port (it promises DISTINCT, strictly increasing positions and never the word
+//!    this interface (it promises DISTINCT, strictly increasing positions and never the word
 //!    consecutive) and leaves gaps, and the arithmetic this criterion deletes
 //!    (`base = last + 1 - n`) is wrong there even when nothing is suppressed. Only a
-//!    consumer-implemented port can exhibit that, so it is pinned here;
+//!    consumer-implemented interface can exhibit that, so it is pinned here;
 //!  - `Appended` and `ContentIdentity` are new PUBLIC types. Their edges - a report
 //!    whose written events are not a prefix of the batch, a trailing suppression, an
 //!    all-suppressed report, a type the policy does not cover - are reachable by any
@@ -100,7 +100,7 @@ impl RecordFold for CapturingProjection {
 }
 
 /// A consumer-implemented `EventStore` that reports EXACTLY the placements it was built
-/// with. It is the only way to exhibit two port-legal behaviors the embedded store
+/// with. It is the only way to exhibit two interface-legal behaviors the embedded store
 /// cannot: positions with GAPS (a backend whose global position is a byte offset), and
 /// an append that writes nothing at all on a seam where no guard is configured.
 ///
@@ -110,16 +110,16 @@ impl RecordFold for CapturingProjection {
 /// read is pinned. The seams that MUST read before they append to reach the write under test
 /// (`record_result_if_absent` reads the stream to decide whether a result already exists,
 /// `start_fresh` to find the hold the run it ends leaves open) are served by
-/// [`PortDouble::over_an_empty_stream`], which answers those reads with an empty stream and
+/// [`InterfaceDouble::over_an_empty_stream`], which answers those reads with an empty stream and
 /// nothing else.
-struct PortDouble {
+struct InterfaceDouble {
     report: Vec<Option<Position>>,
     handed: AtomicUsize,
     /// Whether the double insists its report answers the batch it is handed. False only
     /// for the deliberate liar below.
     exact: bool,
     /// Whether `read_stream` answers instead of refusing. True only for the seams that
-    /// READ before they append; what it answers is [`PortDouble::replayed`].
+    /// READ before they append; what it answers is [`InterfaceDouble::replayed`].
     reads_empty: bool,
     /// What `read_stream` replays when it answers at all. Empty for a seam whose decision
     /// is "nothing recorded yet"; a prior state for a seam that must FIND something and
@@ -127,15 +127,15 @@ struct PortDouble {
     replayed: Vec<Event>,
 }
 
-impl PortDouble {
+impl InterfaceDouble {
     fn new(report: Vec<Option<Position>>) -> Self {
-        PortDouble::built(report, true, None)
+        InterfaceDouble::built(report, true, None)
     }
 
-    /// A port answering `report`, `exact` about its slot count, whose reads replay `replayed`
+    /// An interface answering `report`, `exact` about its slot count, whose reads replay `replayed`
     /// (then whose append writes nothing) when given, and are live otherwise.
     fn built(report: Vec<Option<Position>>, exact: bool, replayed: Option<Vec<Event>>) -> Self {
-        PortDouble {
+        InterfaceDouble {
             report,
             handed: AtomicUsize::new(0),
             exact,
@@ -144,31 +144,31 @@ impl PortDouble {
         }
     }
 
-    /// A port that reports a DIFFERENT number of slots than it was handed. It is
-    /// port-ILLEGAL - the contract is one slot per handed event - and it exists so the
+    /// An interface that reports a DIFFERENT number of slots than it was handed. It is
+    /// interface-ILLEGAL - the contract is one slot per handed event - and it exists so the
     /// fold authority can be driven against a report it must refuse instead of absorb.
     fn miscounting(report: Vec<Option<Position>>) -> Self {
-        PortDouble::built(report, false, None)
+        InterfaceDouble::built(report, false, None)
     }
 
-    /// A port whose stream is EMPTY and whose append writes nothing - the exact state a
+    /// An interface whose stream is EMPTY and whose append writes nothing - the exact state a
     /// compare-and-append seam must not mistake for "someone else already recorded it".
     fn over_an_empty_stream(report: Vec<Option<Position>>) -> Self {
-        PortDouble::over_a_stream(Vec::new(), report)
+        InterfaceDouble::over_a_stream(Vec::new(), report)
     }
 
-    /// A port that REPLAYS `events` to a read and then writes nothing on the append that
+    /// An interface that REPLAYS `events` to a read and then writes nothing on the append that
     /// follows - for a seam whose write is a decision about state it had to read first.
     fn over_a_stream(events: Vec<Event>, report: Vec<Option<Position>>) -> Self {
-        PortDouble::built(report, true, Some(events))
+        InterfaceDouble::built(report, true, Some(events))
     }
 }
 
 fn unreadable() -> StoreError {
-    StoreError::Backend("the port double answers appends only".into())
+    StoreError::Backend("the interface double answers appends only".into())
 }
 
-impl EventStore for PortDouble {
+impl EventStore for InterfaceDouble {
     fn append(
         &self,
         _stream: &str,
@@ -307,7 +307,7 @@ impl EventStore for PortDouble {
 // ---------------------------------------------------------------------------
 
 /// THE FALSIFICATION OF THE DELETED ARITHMETIC, and the reason a consumer-implemented
-/// port earns its place here: this backend's positions have GAPS, which the port allows
+/// interface earns its place here: this backend's positions have GAPS, which the interface allows
 /// (it promises distinct, strictly increasing positions - a backend whose `$all`
 /// position is a byte offset satisfies that) and which every in-crate test, driving the
 /// embedded store's consecutive rowids, cannot exhibit.
@@ -318,7 +318,7 @@ impl EventStore for PortDouble {
 /// arithmetic and green only when every stamp comes from the store's own report.
 #[test]
 fn the_fold_uses_the_reported_positions_on_a_backend_whose_positions_have_gaps() {
-    let gapped = PortDouble::new(vec![Some(100), Some(250), Some(900)]);
+    let gapped = InterfaceDouble::new(vec![Some(100), Some(250), Some(900)]);
     let cap = CapturingProjection::default();
     let events: Vec<Event> = (0..3)
         .map(|i| Event::new("Gapped", vec![i as u8]))
@@ -347,12 +347,12 @@ fn the_fold_uses_the_reported_positions_on_a_backend_whose_positions_have_gaps()
     );
 }
 
-/// A port that reports writing nothing - which any adapter may do, and which the seams
+/// An interface that reports writing nothing - which any adapter may do, and which the seams
 /// above must express rather than paper over - folds nothing. A fold at a fabricated
 /// `0` would mark position 0 applied forever in a ledger keyed by position.
 #[test]
-fn a_port_that_wrote_nothing_is_never_folded_at_a_fabricated_position() {
-    let silent = PortDouble::new(vec![None, None]);
+fn an_interface_that_wrote_nothing_is_never_folded_at_a_fabricated_position() {
+    let silent = InterfaceDouble::new(vec![None, None]);
     let cap = CapturingProjection::default();
     let events: Vec<Event> = (0..2)
         .map(|i| Event::new("Silent", vec![i as u8]))
@@ -389,7 +389,7 @@ fn a_port_that_wrote_nothing_is_never_folded_at_a_fabricated_position() {
 /// names both counts.
 #[test]
 fn a_report_that_does_not_answer_the_batch_is_refused_rather_than_folded() {
-    let miscounting = PortDouble::miscounting(vec![Some(7)]);
+    let miscounting = InterfaceDouble::miscounting(vec![Some(7)]);
     let cap = CapturingProjection::default();
     let events: Vec<Event> = (0..3)
         .map(|i| Event::new("Derived", vec![i as u8]))
@@ -509,16 +509,16 @@ fn the_content_identity_policy_answers_exactly_what_it_was_configured_with() {
 /// A RESULT SEAM THAT CANNOT SAY WHERE IT WROTE HAS NOT RECORDED ANYTHING, and must say
 /// so. `record_result` answers a bare `Position` because a run-lifecycle event is outside
 /// every content-identity policy by construction (the type test is asked first), so a
-/// store reporting that it wrote nothing here is a BROKEN PORT rather than a case to
+/// store reporting that it wrote nothing here is a BROKEN INTERFACE rather than a case to
 /// absorb. The alternative - handing back a fabricated `0` - is the worst of the three
 /// outcomes: a lost self-report that reads as a recorded one and whose cited position
 /// belongs to a different event entirely.
 ///
-/// A consumer-implemented port is the only way to reach this arm, since no policy the
+/// A consumer-implemented interface is the only way to reach this arm, since no policy the
 /// composition root could configure will ever suppress a spawn result.
 #[test]
 fn the_result_seam_reports_a_store_that_wrote_nothing_as_an_error_naming_what_happened() {
-    let silent = PortDouble::new(vec![None]);
+    let silent = InterfaceDouble::new(vec![None]);
     let result = rigger::spawn::SpawnResult::ok("u1/impl#0", "done");
 
     let err = rigger::spawn_store::record_result(&silent, &result)
@@ -543,7 +543,7 @@ fn the_result_seam_reports_a_store_that_wrote_nothing_as_an_error_naming_what_ha
 /// compare-and-append. Both were rewritten by this criterion to stop deriving a position
 /// and to ask the store instead, so both acquired the same new arm, and neither is
 /// reachable from any policy the composition root could configure - only a
-/// consumer-implemented port gets there.
+/// consumer-implemented interface gets there.
 ///
 /// The `if_absent` half carries the sharper hazard, and it is a hazard of MEANING rather
 /// than of arithmetic. That seam already answers `Ok(None)`, and `Ok(None)` means "a
@@ -555,7 +555,7 @@ fn the_result_seam_reports_a_store_that_wrote_nothing_as_an_error_naming_what_ha
 #[test]
 fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
     let request = common::spawn_request("u1", "build", "impl", 0, "do the thing");
-    let silent = PortDouble::new(vec![None]);
+    let silent = InterfaceDouble::new(vec![None]);
 
     let err = rigger::spawn_store::park_in_run(&silent, &request, "run-1", "")
         .expect_err("a parked spawn nobody can locate has not been parked");
@@ -572,7 +572,7 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
 
     // The compare-and-append seam reads first (an empty stream: no result recorded yet),
     // then appends - and the append writes nothing.
-    let quiet = PortDouble::over_an_empty_stream(vec![None]);
+    let quiet = InterfaceDouble::over_an_empty_stream(vec![None]);
     let result = rigger::spawn::SpawnResult::ok("u1/impl#0", "done");
     let outcome = rigger::spawn_store::record_result_if_absent(&quiet, &result);
     assert!(
@@ -598,7 +598,7 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
 /// finishes reading a partition that was never there.
 ///
 /// Both writes reached the store through a report they discarded, which is why they need
-/// pinning from OUT HERE: a discarded report keeps compiling when the port's answer
+/// pinning from OUT HERE: a discarded report keeps compiling when the interface's answer
 /// changes, so no signature and no in-module read can tell you whether the seam still
 /// looks. The property is a property of the API: no public run entry may hand back an id,
 /// or report a re-pin, for a boundary that was never written.
@@ -610,7 +610,7 @@ fn the_park_and_compare_and_append_seams_refuse_a_store_that_wrote_nothing() {
 fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
     let criteria = ["build the thing".to_string()];
 
-    let silent = PortDouble::over_an_empty_stream(vec![None]);
+    let silent = InterfaceDouble::over_an_empty_stream(vec![None]);
     let message = rigger::run_store::start_fresh(&silent, &criteria, "hash-A", "base-sha", "", "")
         .expect_err("a run whose boundary was never written has not started")
         .to_string();
@@ -622,12 +622,15 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
 
     // A mint reads the run first, for the hold it ends: one that cannot read stops on that
     // error and writes nothing, since a boundary minted over an unread hold leaves it open.
-    let unreadable = PortDouble::new(vec![None]);
+    let unreadable = InterfaceDouble::new(vec![None]);
     let message =
         rigger::run_store::start_fresh(&unreadable, &criteria, "hash-A", "base-sha", "", "")
             .expect_err("a mint that cannot see a hold has not ended it")
             .to_string();
-    assert_eq!(message, "event store: the port double answers appends only");
+    assert_eq!(
+        message,
+        "event store: the interface double answers appends only"
+    );
     assert_eq!(
         unreadable.handed.load(Ordering::SeqCst),
         0,
@@ -636,7 +639,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
 
     // The same answer through the entry the CLI actually calls, which mints over an empty
     // store: a caller that only ever uses the pinned entry must not get a run id either.
-    let silent = PortDouble::over_an_empty_stream(vec![None]);
+    let silent = InterfaceDouble::over_an_empty_stream(vec![None]);
     let message = rigger::run_store::ensure_started_pinned(
         &silent, &criteria, "hash-A", false, "base-sha", "", "",
     )
@@ -660,7 +663,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
         .expect("the boundary reads back");
     assert_eq!(recorded.len(), 1, "the fixture is one real RunStarted");
 
-    let drifted = PortDouble::over_a_stream(recorded, vec![None]);
+    let drifted = InterfaceDouble::over_a_stream(recorded, vec![None]);
     let message = rigger::run_store::ensure_started_pinned(
         &drifted, &criteria, "hash-B", true, "base-sha", "", "",
     )
@@ -674,7 +677,7 @@ fn no_public_run_entry_reports_a_boundary_the_store_never_wrote() {
 }
 
 /// THE HOLD WRITERS, on a store that loses the write. Each decides from the hold it reads, so
-/// the port replays a run the module itself minted and held, then writes nothing.
+/// the interface replays a run the module itself minted and held, then writes nothing.
 ///
 /// The compare-and-append behind them already answers `Ok` for a write it decided against, the
 /// same absence a lost write would collapse into, so a lost hold must surface as a failure
@@ -690,7 +693,7 @@ fn no_hold_writer_reports_a_hold_or_a_release_the_store_never_wrote() {
     struct Case {
         name: &'static str,
         replayed: Vec<Event>,
-        write: fn(&PortDouble) -> Result<(), StoreError>,
+        write: fn(&InterfaceDouble) -> Result<(), StoreError>,
         lost: &'static str,
     }
 
@@ -748,7 +751,7 @@ fn no_hold_writer_reports_a_hold_or_a_release_the_store_never_wrote() {
     ];
     for case in cases {
         let name = case.name;
-        let lossy = PortDouble::over_a_stream(case.replayed, vec![None]);
+        let lossy = InterfaceDouble::over_a_stream(case.replayed, vec![None]);
         let message = (case.write)(&lossy).expect_err(name).to_string();
         assert_eq!(
             message, case.lost,
@@ -779,7 +782,7 @@ impl rigger::conductor::AgentDriver for NeverSpawns {
     }
 }
 
-/// THE CANARY'S RECORD, through the public entry, on a port that wrote nothing.
+/// THE CANARY'S RECORD, through the public entry, on an interface that wrote nothing.
 ///
 /// The canary is a MEASUREMENT, and the events it appends are the only durable trace it
 /// leaves: the returned report is for the command's summary print and is gone at process
@@ -793,7 +796,7 @@ impl rigger::conductor::AgentDriver for NeverSpawns {
 /// the run rather than being carried past it.
 #[test]
 fn the_canary_records_nothing_it_cannot_find_afterwards() {
-    let silent = PortDouble::new(vec![None]);
+    let silent = InterfaceDouble::new(vec![None]);
     let panel = rigger::config::ReviewPanel {
         adjudicator: "adj".into(),
         ..Default::default()
@@ -973,7 +976,7 @@ fn the_built_binary_cites_only_positions_the_log_actually_holds() {
 }
 
 // ---------------------------------------------------------------------------
-// The policy is a PORT, and the port is only as good as what it refuses
+// The policy is an INTERFACE, and the interface is only as good as what it refuses
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

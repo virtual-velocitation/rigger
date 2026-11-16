@@ -5416,7 +5416,7 @@ fn a_decision_recorded_before_any_run_is_live_on_both_peers_surfaces_until_a_run
 /// Given a sqlite log with a stream subscription or an all-streams subscription live over it, each
 /// having delivered the event the log held, when the log's events table is dropped under it by
 /// another connection, then the subscription ends and reports the database's own error exactly as
-/// the database spells it, never re-spelled as the port's error: the one forward read the stream
+/// the database spells it, never re-spelled as the interface's error: the one forward read the stream
 /// subscription polls through spells a failure as its caller does, so both kinds report the same
 /// words.
 #[test]
