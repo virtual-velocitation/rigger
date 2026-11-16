@@ -6104,8 +6104,9 @@ impl RunCtx<'_> {
     /// the round that sent the unit back, or on a first round from the unit's fork point, beside
     /// the whole unit's files from that fork point. A check-in stage's fork point is the run's
     /// recorded base ([`Self::run_base_env`]) when it is an ancestor of `head`, so the check-in
-    /// reviews the whole run. Empty when there is no worktree, no `head` or no fork point; a
-    /// failed read renders the packet's header with the read that fetches the change.
+    /// reviews the whole run. Empty only when there is no worktree or no `head`; a `head` with
+    /// no fork point, or a read that fails, renders the packet's header over the round's base,
+    /// else the run's recorded base, with the read that fetches the change.
     fn review_packet(
         &self,
         st: &Stage,
@@ -6119,12 +6120,13 @@ impl RunCtx<'_> {
         let run_base = is_check_in(st, &self.cfg.workflow.stages)
             .then(|| self.run_base_env())
             .filter(|base| !base.is_empty() && worktree::is_ancestor(&wt.dir, base, head));
-        let Some(fork) = run_base.or_else(|| wt.fork_point(head).ok()) else {
-            return String::new();
-        };
-        let base = round.map_or_else(|| fork.clone(), |r| r.base.clone());
+        let fork = run_base.or_else(|| wt.fork_point(head).ok());
+        let base = round
+            .map(|r| r.base.clone())
+            .unwrap_or_else(|| fork.clone().unwrap_or_else(|| self.run_base_env()));
         let read = || {
-            let files = wt.diff_files(&fork, head).ok()?;
+            let fork = fork.as_deref()?;
+            let files = wt.diff_files(fork, head).ok()?;
             let delta = if base == fork {
                 files.clone()
             } else {
