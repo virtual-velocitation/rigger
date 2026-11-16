@@ -13835,7 +13835,14 @@ impl RunCtx<'_> {
                 u.id.clone(),
                 Stage {
                     name: u.id,
-                    agent: u.agent,
+                    // A proposal naming no implementer (`agent` is optional on the wire) is
+                    // implemented by the template's agent, as its baseline would be: an empty
+                    // agent would run the unit's gates with no implementer spawn.
+                    agent: if u.agent.is_empty() {
+                        template.agent.clone()
+                    } else {
+                        u.agent
+                    },
                     needs,
                     coverage: u.coverage,
                     // GATE INHERITANCE (spec 103, decided): the template's gates are
