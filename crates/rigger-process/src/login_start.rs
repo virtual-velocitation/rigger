@@ -107,14 +107,30 @@ impl Swept {
 /// and one not in the facility's own form is left alone. Answers what it did with each entry it
 /// names, in the listing's key order; or why `start` could not list its entries.
 pub fn sweep(start: &dyn LoginStart) -> Result<Vec<Swept>, Unavailable> {
-    let _ = start;
-    Ok(Vec::new())
+    let mut swept = Vec::new();
+    for Entry { key, program } in start.entries()? {
+        let Some(program) = program else {
+            swept.push(Swept::Foreign { key });
+            continue;
+        };
+        // A program whose existence cannot be read, as behind a directory the user cannot search,
+        // is not known to be absent, so its entry stands.
+        if !matches!(Path::new(&program).try_exists(), Ok(false)) {
+            continue;
+        }
+        swept.push(match start.unregister(&key) {
+            Ok(()) => Swept::Removed { key, program },
+            Err(Unavailable(why)) => Swept::NotRemoved { key, program, why },
+        });
+    }
+    Ok(swept)
 }
 
 /// The knob selecting the login-start adapter a run registers its relaunch with, read by the
 /// composition root's `login_start` alone, beside [`crate::keep_awake::KEEP_AWAKE_ENV`] and with
 /// its grammar: unset, the host's [`OsLoginStart`]; `record:<path>`, a fake appending a
-/// `register <key> <program> <args...>` or `unregister <key>` line to `<path>`;
+/// `register <key> <program> <args...>` or `unregister <key>` line to `<path>` and listing the
+/// entries its lines leave standing;
 /// `unavailable:<reason>`, every call answering `<reason>`; any other value, every call answering
 /// that the value names no adapter. The tests set the fake, so no test registers with its host.
 pub const LOGIN_START_ENV: &str = "RIGGER_LOGIN_START";
@@ -148,16 +164,20 @@ pub struct SystemdUserUnits {
 #[cfg(unix)]
 const WANTS_DIR: &str = "default.target.wants";
 
+/// The extension of a user unit's file.
+#[cfg(unix)]
+const UNIT_EXTENSION: &str = "service";
+
 #[cfg(unix)]
 impl SystemdUserUnits {
     /// The unit file of `key`.
     fn unit(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{key}.service"))
+        entry_file(&self.dir, key, UNIT_EXTENSION)
     }
 
     /// The link that enables the unit of `key`.
     fn link(&self, key: &str) -> PathBuf {
-        self.dir.join(WANTS_DIR).join(format!("{key}.service"))
+        entry_file(&self.dir.join(WANTS_DIR), key, UNIT_EXTENSION)
     }
 }
 
@@ -169,7 +189,7 @@ impl LoginStart for SystemdUserUnits {
         remove_entry(&link)?;
         let wants = self.dir.join(WANTS_DIR);
         fs::create_dir_all(&wants).map_err(|e| failed("create", &wants, e))?;
-        std::os::unix::fs::symlink(Path::new("..").join(format!("{key}.service")), &link)
+        std::os::unix::fs::symlink(entry_file(Path::new(".."), key, UNIT_EXTENSION), &link)
             .map_err(|e| failed("link", &link, e))
     }
 
@@ -179,7 +199,7 @@ impl LoginStart for SystemdUserUnits {
     }
 
     fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
-        Ok(Vec::new())
+        list_entries(&self.dir, UNIT_EXTENSION, systemd_program)
     }
 }
 
@@ -218,6 +238,39 @@ fn systemd_word(word: &str) -> String {
     quoted
 }
 
+/// The program of the unit `text`: the first word of its `ExecStart` line, unquoted as
+/// [`systemd_word`] quotes it; `None` when it has no such line or that word is not quoted so.
+fn systemd_program(text: &str) -> Option<String> {
+    let command = text
+        .lines()
+        .find_map(|line| line.strip_prefix("ExecStart="))?;
+    let mut chars = command.strip_prefix('"')?.chars();
+    let mut word = String::new();
+    loop {
+        match chars.next()? {
+            '"' => return Some(word),
+            sign @ ('%' | '$') => {
+                if chars.next()? != sign {
+                    return None;
+                }
+                word.push(sign);
+            }
+            '\\' => match chars.next()? {
+                escaped @ ('\\' | '"') => word.push(escaped),
+                'x' => {
+                    let hex: String = chars.by_ref().take(2).collect();
+                    if hex.len() != 2 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+                        return None;
+                    }
+                    word.push(char::from(u8::from_str_radix(&hex, 16).ok()?));
+                }
+                _ => return None,
+            },
+            c => word.push(c),
+        }
+    }
+}
+
 /// The macOS writer: under `dir`, the launchd agent `<key>.plist` ([`launch_agent_plist`]), which
 /// launchd loads, and so runs, as the user logs in.
 pub struct LaunchAgents {
@@ -225,10 +278,13 @@ pub struct LaunchAgents {
     pub dir: PathBuf,
 }
 
+/// The extension of a launchd agent's property list.
+const AGENT_EXTENSION: &str = "plist";
+
 impl LaunchAgents {
     /// The property list of `key`.
     fn plist(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{key}.plist"))
+        entry_file(&self.dir, key, AGENT_EXTENSION)
     }
 }
 
@@ -242,7 +298,7 @@ impl LoginStart for LaunchAgents {
     }
 
     fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
-        Ok(Vec::new())
+        list_entries(&self.dir, AGENT_EXTENSION, launch_agent_program)
     }
 }
 
@@ -281,6 +337,35 @@ fn xml_text(text: &str) -> String {
     escaped
 }
 
+/// The program of the agent `text`: the first string of its `ProgramArguments` array, unescaped as
+/// [`xml_text`] escapes it; `None` when it has no such array or string.
+fn launch_agent_program(text: &str) -> Option<String> {
+    let (_, arguments) = text.split_once("<key>ProgramArguments</key>")?;
+    let first = arguments
+        .trim_start()
+        .strip_prefix("<array>")?
+        .trim_start()
+        .strip_prefix("<string>")?;
+    let (escaped, _) = first.split_once("</string>")?;
+    let mut text = String::with_capacity(escaped.len());
+    let mut rest = escaped;
+    while let Some(at) = rest.find('&') {
+        text.push_str(&rest[..at]);
+        let (entity, after) = rest[at..].split_once(';')?;
+        text.push(match entity {
+            "&amp" => '&',
+            "&lt" => '<',
+            "&gt" => '>',
+            "&quot" => '"',
+            "&apos" => '\'',
+            _ => return None,
+        });
+        rest = after;
+    }
+    text.push_str(rest);
+    Some(text)
+}
+
 /// The Windows writer: under `dir`, the command file `<key>.cmd` ([`startup_command`]), which
 /// Windows runs from the user's Startup folder as the user logs in.
 pub struct StartupFolder {
@@ -288,10 +373,13 @@ pub struct StartupFolder {
     pub dir: PathBuf,
 }
 
+/// The extension of a command file Windows runs.
+const COMMAND_EXTENSION: &str = "cmd";
+
 impl StartupFolder {
     /// The command file of `key`.
     fn command(&self, key: &str) -> PathBuf {
-        self.dir.join(format!("{key}.cmd"))
+        entry_file(&self.dir, key, COMMAND_EXTENSION)
     }
 }
 
@@ -305,7 +393,7 @@ impl LoginStart for StartupFolder {
     }
 
     fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
-        Ok(Vec::new())
+        list_entries(&self.dir, COMMAND_EXTENSION, startup_program)
     }
 }
 
@@ -339,6 +427,17 @@ fn cmd_word(word: &str) -> Result<String, Unavailable> {
     ))
 }
 
+/// The program of the command file `text`: the first word of its line, unquoted as [`cmd_word`]
+/// quotes it; `None` when the file does not start `@"` or that word is not quoted so.
+fn startup_program(text: &str) -> Option<String> {
+    let (quoted, _) = text.strip_prefix("@\"")?.split_once('"')?;
+    let trailing = quoted.len() - quoted.trim_end_matches('\\').len();
+    if trailing % 2 != 0 {
+        return None;
+    }
+    Some(quoted[..quoted.len() - trailing / 2].replace("%%", "%"))
+}
+
 /// Write `text` to the entry at `path`, replacing any, its directory created; on unix readable by
 /// all and writable by its owner alone, which launchd requires of an agent it loads.
 fn write_entry(path: &Path, text: &str) -> Result<(), Unavailable> {
@@ -361,6 +460,45 @@ fn remove_entry(path: &Path) -> Result<(), Unavailable> {
         Err(e) if e.kind() != io::ErrorKind::NotFound => Err(failed("remove", path, e)),
         _ => Ok(()),
     }
+}
+
+/// The file of the entry under `key` in `dir`: `<key>.<extension>`.
+fn entry_file(dir: &Path, key: &str, extension: &str) -> PathBuf {
+    dir.join(format!("{key}.{extension}"))
+}
+
+/// Every entry under `dir` whose file is named `<key>.<extension>` ([`entry_file`]), `<key>` starting
+/// [`KEY_PREFIX`], by key, each with the program `program` reads from its text; none when `dir`
+/// is not yet made. A file that is not UTF-8 text is in no writer's form.
+fn list_entries(
+    dir: &Path,
+    extension: &str,
+    program: fn(&str) -> Option<String>,
+) -> Result<Vec<Entry>, Unavailable> {
+    let listing = match fs::read_dir(dir) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        listing => listing.map_err(|e| failed("list", dir, e))?,
+    };
+    let suffix = format!(".{extension}");
+    let mut entries = Vec::new();
+    for found in listing {
+        let path = found.map_err(|e| failed("list", dir, e))?.path();
+        let key = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(suffix.as_str()))
+            .filter(|key| key.starts_with(KEY_PREFIX));
+        let Some(key) = key.filter(|_| path.is_file()) else {
+            continue;
+        };
+        let text = fs::read(&path).map_err(|e| failed("read", &path, e))?;
+        entries.push(Entry {
+            key: key.to_string(),
+            program: String::from_utf8(text).ok().as_deref().and_then(program),
+        });
+    }
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    Ok(entries)
 }
 
 /// The facility is unavailable since `doing` `path` failed with `e`.

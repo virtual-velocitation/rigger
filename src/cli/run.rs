@@ -749,7 +749,7 @@ fn sleep_hold() -> Box<dyn SleepHold> {
 
 /// The login-start adapter [`LOGIN_START_ENV`] selects ([`adapter_knob`]): the host's
 /// [`OsLoginStart`], a [`RecordingLoginStart`] or an [`UnavailableLoginStart`].
-fn login_start() -> Box<dyn LoginStart> {
+pub(super) fn login_start() -> Box<dyn LoginStart> {
     match adapter_knob(LOGIN_START_ENV, "login-start") {
         Knob::Host => Box::new(OsLoginStart),
         Knob::Record(path) => Box::new(RecordingLoginStart(path)),
@@ -801,8 +801,8 @@ impl SleepHold for UnavailableSleepHold {
 
 /// The login-start fake [`LOGIN_START_ENV`]'s `record:<path>` selects: a registration appends the
 /// line `register <key> <program> <args>` to the file at `<path>` and a removal `unregister
-/// <key>`, so a test reads what a run registered with the host's login facility. A call it cannot
-/// record answers unavailable.
+/// <key>`, so a test reads what a run registered with the host's login facility, and its listing
+/// is the entries those lines leave standing. A call it cannot record answers unavailable.
 struct RecordingLoginStart(PathBuf);
 
 impl LoginStart for RecordingLoginStart {
@@ -817,8 +817,33 @@ impl LoginStart for RecordingLoginStart {
         record_line(&self.0, &format!("unregister {key}"))
     }
 
+    /// Each key a `register` line names until an `unregister` line names it, by key, its program
+    /// the text between the key and ` run --at-login `, which a program path holding a space
+    /// keeps whole, and none for a line without that text; empty when no record is made.
     fn entries(&self) -> Result<Vec<Entry>, Unavailable> {
-        Ok(Vec::new())
+        let text = match std::fs::read_to_string(&self.0) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            text => {
+                text.map_err(|e| Unavailable(format!("cannot read {}: {e}", self.0.display())))?
+            }
+        };
+        let separator = format!(" run {AT_LOGIN_FLAG} ");
+        let mut standing = std::collections::BTreeMap::new();
+        for line in text.lines() {
+            if let Some(key) = line.strip_prefix("unregister ") {
+                standing.remove(key);
+            } else if let Some(entry) = line.strip_prefix("register ") {
+                let (key, command) = entry.split_once(' ').unwrap_or((entry, ""));
+                let program = command
+                    .split_once(separator.as_str())
+                    .map(|(program, _)| program.to_string());
+                standing.insert(key.to_string(), program);
+            }
+        }
+        Ok(standing
+            .into_iter()
+            .map(|(key, program)| Entry { key, program })
+            .collect())
     }
 }
 

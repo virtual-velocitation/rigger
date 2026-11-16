@@ -410,7 +410,9 @@ run otherwise HALTS loudly on definition drift)\n  \
 while the run is live, so a machine that reboots\n                                   \
 mid-run relaunches the run at the next login; the\n                                   \
 driver removes it as it ends, a login owing no\n                                   \
-relaunch removes it. Nothing is registered without it\n  \
+relaunch removes it. Nothing is registered without it;\n                                   \
+each flagged launch and `rigger setup` remove an entry\n                                   \
+whose program was since uninstalled or moved\n  \
 --at-login <root>                what that entry runs: relaunch the run of the project\n                                   \
 at <root> if its driver died, removing the entry once\n                                   \
 no relaunch is owed. Takes no other argument\n  \

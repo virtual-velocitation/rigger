@@ -15678,7 +15678,7 @@ fn only_a_flagged_launch_holding_the_lock_registers_a_login_entry_and_its_return
 /// `--relaunch-at-login` registers its own entry, THEN the entry whose program is gone is removed
 /// with one line naming its key and program, the standing one is kept, and the foreign one is
 /// named in one line and left; setup names the foreign one before it decides it changed nothing,
-/// so a further setup says that line alone.
+/// so a further setup says that line alone, and a setup whose facility is unavailable says nothing.
 #[test]
 fn setup_and_a_flagged_launch_sweep_the_login_entries_whose_program_is_gone() {
     let set_up = temp_project();
@@ -15777,6 +15777,14 @@ fn setup_and_a_flagged_launch_sweep_the_login_entries_whose_program_is_gone() {
         setup_ok(set_up.path(), &[]),
         format!("{left}\n"),
         "a further setup, with nothing left to sweep, says the foreign entry alone"
+    );
+    assert_eq!(
+        setup_ok(
+            set_up.path(),
+            &[(common::LOGIN_START_ENV, "unavailable:no login session here")]
+        ),
+        "",
+        "a setup whose login-start facility is unavailable stays a silent no-op"
     );
 }
 

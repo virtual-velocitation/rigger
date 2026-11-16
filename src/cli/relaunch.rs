@@ -30,7 +30,10 @@
 //! `rigger run --at-login <root>` at the user's next login ([`relaunch_at_login`]). A driver the
 //! machine's end killed (a power loss, a reboot, a forced end) leaves its record and the entry,
 //! and that login relaunches the run through the one relaunch entry; a driver parked on an
-//! operator hold leaves both for `rigger release`. Without the flag nothing is registered.
+//! operator hold leaves both for `rigger release`. Without the flag nothing is registered. The
+//! entry's reapers are its driver as it ends, a login that finds no relaunch owed, and the sweep
+//! of every entry whose program is gone ([`sweep`]) that each flagged launch and `rigger setup`
+//! run.
 //!
 //! The record's one reaper is the driver that wrote it, as it ends; a record whose driver ended
 //! without reaping it is reaped by the check that relaunches it, by the driver that relaunch
@@ -41,7 +44,7 @@
 
 use super::*;
 use rigger::interrupt::{empty_on_interrupt, InterruptTrigger};
-use rigger::login_start::{run_key, LoginStart};
+use rigger::login_start::{run_key, sweep, LoginStart};
 use rigger::sleep_hold::Unavailable;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -256,7 +259,9 @@ impl KeptRecord {
     /// binary as `run --at-login <root>`, `<root>` the project whose store is at `dir`, so a login
     /// after the machine went down mid-run relaunches the run ([`relaunch_at_login`]). The entry
     /// is removed as the record is emptied, and left beside a record left for `rigger release`.
-    /// A registration the facility refuses is the launch's refusal, naming why.
+    /// A registration the facility refuses is the launch's refusal, naming why. Once the facility
+    /// takes the entry, the entries it holds whose program is gone are swept ([`sweep`]), one line
+    /// on stderr for each entry the sweep names.
     pub(super) fn register_at_login(
         &self,
         start: Box<dyn LoginStart>,
@@ -282,6 +287,14 @@ impl KeptRecord {
         start
             .register(&key, bin, &args)
             .map_err(|Unavailable(why)| refused(why))?;
+        match sweep(&*start) {
+            Ok(swept) => swept
+                .iter()
+                .for_each(|swept| stderr_line(&format!("rigger run: {}", swept.line()))),
+            Err(Unavailable(why)) => stderr_line(&format!(
+                "rigger run: the login entries whose program is gone were not swept: {why}"
+            )),
+        }
         let _ = self.at_login.set(AtLogin { start, key });
         Ok(())
     }

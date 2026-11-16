@@ -1055,7 +1055,13 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  once no relaunch is owed. A driver that ends on its own or is refused removes \
                  its entry as it empties its record, save one parked on an operator hold, whose \
                  entry stands with its record; a run started without the flag registers nothing, \
-                 and a login removes the entry an earlier launch of it left.\n",
+                 and a login removes the entry an earlier launch of it left. A login also removes \
+                 the entry of a project on a volume not mounted at that login; its run comes back \
+                 by the usual relaunch at the next session start or `rigger status`, and registers \
+                 its entry again. Each launch with the flag and `rigger setup` remove an entry \
+                 whose program was since uninstalled or moved, one line naming its key and \
+                 program, and name in one line, leaving it, an entry under rigger's key that is \
+                 not in the form rigger writes.\n",
                 stop = DRIVER_STOP_RULE
             ),
             "When that line says the run was left stopped, or a driver was stopped on purpose, \
