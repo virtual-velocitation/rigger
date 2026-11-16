@@ -53,7 +53,7 @@ pub const APPDATA_ENV: &str = "APPDATA";
 /// FNV-1a hash of its canonical root's text, so every launch in one checkout replaces one entry
 /// and two checkouts hold two.
 pub fn run_key(root: &str) -> String {
-    todo!("the login-start writers")
+    format!("rigger-run-{:016x}", fnv1a_64(root.as_bytes()))
 }
 
 /// The Linux writer: under `dir`, the user unit `<key>.service` ([`systemd_unit`]) and the link
@@ -85,11 +85,18 @@ impl SystemdUserUnits {
 #[cfg(unix)]
 impl LoginStart for SystemdUserUnits {
     fn register(&self, key: &str, program: &str, args: &[String]) -> Result<(), Unavailable> {
-        todo!("the login-start writers")
+        let link = self.link(key);
+        write_entry(&self.unit(key), &systemd_unit(program, args))?;
+        remove_entry(&link)?;
+        let wants = self.dir.join(WANTS_DIR);
+        fs::create_dir_all(&wants).map_err(|e| failed("create", &wants, e))?;
+        std::os::unix::fs::symlink(Path::new("..").join(format!("{key}.service")), &link)
+            .map_err(|e| failed("link", &link, e))
     }
 
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
-        todo!("the login-start writers")
+        remove_entry(&self.link(key))?;
+        remove_entry(&self.unit(key))
     }
 }
 
@@ -98,7 +105,15 @@ impl LoginStart for SystemdUserUnits {
 /// in the unit's control group, where the manager would end it if the unit went inactive. Every
 /// word is double-quoted ([`systemd_word`]).
 pub fn systemd_unit(program: &str, args: &[String]) -> String {
-    todo!("the login-start writers")
+    let command: Vec<String> = std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(systemd_word)
+        .collect();
+    format!(
+        "[Unit]\nDescription=Relaunch a rigger run whose driver died\n\n[Service]\nType=oneshot\n\
+         RemainAfterExit=yes\nExecStart={}\n\n[Install]\nWantedBy=default.target\n",
+        command.join(" ")
+    )
 }
 
 /// `word` as one `ExecStart` word: double-quoted, with the specifier sign `%` and the variable
@@ -136,11 +151,11 @@ impl LaunchAgents {
 
 impl LoginStart for LaunchAgents {
     fn register(&self, key: &str, program: &str, args: &[String]) -> Result<(), Unavailable> {
-        todo!("the login-start writers")
+        write_entry(&self.plist(key), &launch_agent_plist(key, program, args))
     }
 
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
-        todo!("the login-start writers")
+        remove_entry(&self.plist(key))
     }
 }
 
@@ -148,7 +163,19 @@ impl LoginStart for LaunchAgents {
 /// XML-escaped string ([`xml_text`]), and leaves the process group of the driver its command
 /// starts in the background alive when that command returns.
 pub fn launch_agent_plist(label: &str, program: &str, args: &[String]) -> String {
-    todo!("the login-start writers")
+    let arguments: String = std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(|word| format!("\t\t<string>{}</string>\n", xml_text(word)))
+        .collect();
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \
+         \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n<dict>\n\t<key>Label</key>\n\t<string>{}</string>\n\
+         \t<key>ProgramArguments</key>\n\t<array>\n{arguments}\t</array>\n\
+         \t<key>RunAtLoad</key>\n\t<true/>\n\t<key>AbandonProcessGroup</key>\n\t<true/>\n\
+         </dict>\n</plist>\n",
+        xml_text(label)
+    )
 }
 
 /// `text` as XML character data: each of `&`, `<`, `>`, `"` and `'` as its entity.
@@ -183,18 +210,22 @@ impl StartupFolder {
 
 impl LoginStart for StartupFolder {
     fn register(&self, key: &str, program: &str, args: &[String]) -> Result<(), Unavailable> {
-        todo!("the login-start writers")
+        write_entry(&self.command(key), &startup_command(program, args)?)
     }
 
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
-        todo!("the login-start writers")
+        remove_entry(&self.command(key))
     }
 }
 
 /// The one line that runs `program` with `args`, not echoed, each word double-quoted
 /// ([`cmd_word`]); unavailable when a word holds what no quoted word can carry.
 pub fn startup_command(program: &str, args: &[String]) -> Result<String, Unavailable> {
-    todo!("the login-start writers")
+    let words = std::iter::once(program)
+        .chain(args.iter().map(String::as_str))
+        .map(cmd_word)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(format!("@{}\r\n", words.join(" ")))
 }
 
 /// `word` as one double-quoted word of a command file's line: `%` doubled, so the command
@@ -250,19 +281,33 @@ fn failed(doing: &str, path: &Path, e: io::Error) -> Unavailable {
 /// [`CONFIG_HOME_ENV`] (`config_home`), else `.config` under the home directory; `None` when
 /// neither is set.
 pub fn systemd_user_dir(config_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    todo!("the login-start writers")
+    Some(
+        xdg_or_home(config_home, home, &[".config"])?
+            .join("systemd")
+            .join("user"),
+    )
 }
 
 /// The macOS writer's directory: `Library/LaunchAgents` under the home directory; `None` when no
 /// home is set.
 pub fn launch_agents_dir(home: Option<OsString>) -> Option<PathBuf> {
-    todo!("the login-start writers")
+    Some(
+        PathBuf::from(non_empty(home)?)
+            .join("Library")
+            .join("LaunchAgents"),
+    )
 }
 
 /// The Windows writer's directory: the Startup folder under the roaming application data
 /// directory, the value of [`APPDATA_ENV`] (`appdata`); `None` when it is not set.
 pub fn startup_dir(appdata: Option<OsString>) -> Option<PathBuf> {
-    todo!("the login-start writers")
+    Some(
+        ["Microsoft", "Windows", "Start Menu", "Programs", "Startup"]
+            .iter()
+            .fold(PathBuf::from(non_empty(appdata)?), |dir, part| {
+                dir.join(part)
+            }),
+    )
 }
 
 // The one spelling of the OS set: each OS with a login-start facility binds `native` to its
@@ -326,11 +371,11 @@ pub struct OsLoginStart;
 
 impl LoginStart for OsLoginStart {
     fn register(&self, key: &str, program: &str, args: &[String]) -> Result<(), Unavailable> {
-        todo!("the login-start writers")
+        native()?.register(key, program, args)
     }
 
     fn unregister(&self, key: &str) -> Result<(), Unavailable> {
-        todo!("the login-start writers")
+        native()?.unregister(key)
     }
 }
 
