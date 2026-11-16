@@ -40,6 +40,30 @@ pub enum DiffMode {
     Direct,
 }
 
+/// One path a diff between two commits changed, as [`Worktree::diff_files`] reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileDiff {
+    /// The path after the change; the deleted path for a deletion.
+    pub path: String,
+    /// The path before a rename or copy.
+    pub old_path: Option<String>,
+    /// git's status letter for the change: `A`, `C`, `D`, `M`, `R` or `T`.
+    pub status: char,
+    /// The lines the change added and removed; none for a binary file.
+    pub lines: Option<(u32, u32)>,
+    /// The path's unified diff with three lines of context, from its `diff --git` header on.
+    pub patch: String,
+}
+
+/// One commit, as [`Worktree::commits_between`] reads it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitLine {
+    /// The commit's abbreviated sha.
+    pub sha: String,
+    /// The commit message's subject line.
+    pub subject: String,
+}
+
 /// An isolated git worktree for one unit of work.
 pub struct Worktree {
     pub dir: String,
@@ -837,12 +861,84 @@ impl Worktree {
         // itself: other units may have merged into base since this worktree branched,
         // and a three-dot diff from the merge-base reports only THIS branch's own
         // changes, never the unrelated commits that landed meanwhile.
-        let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        let base = self.repo_head()?;
         let mut paths = self.diff_names(&base, DiffMode::MergeBase)?;
         paths.extend(self.changed_files()?);
         paths.sort();
         paths.dedup();
         Ok(paths)
+    }
+
+    /// The sha the repository's own checkout is at: the base this worktree branched from, or
+    /// the run branch's tip once other units landed on it.
+    fn repo_head(&self) -> Result<String, Error> {
+        Ok(git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
+    /// The commit `to` forked from the repository's checkout at: the merge-base of the two, so
+    /// a unit that landed on the run branch since this worktree branched moves it nowhere.
+    pub fn fork_point(&self, to: &str) -> Result<String, Error> {
+        let base = self.repo_head()?;
+        Ok(git_stdout(&self.dir, &["merge-base", &base, to])?
+            .trim()
+            .to_string())
+    }
+
+    /// Every path the direct diff `from..to` changed, sorted by path, each with its status,
+    /// its line counts and its own patch section (`-U3`). Three reads of the one diff, each
+    /// with rename detection and with no external diff, text conversion or colour a user's
+    /// config may set: the statuses, the counts and the patch. They list the same paths in
+    /// the same order; a read where they disagree is an error, never a misattributed patch.
+    pub fn diff_files(&self, from: &str, to: &str) -> Result<Vec<FileDiff>, Error> {
+        let range = format!("{from}..{to}");
+        let read = |form: &[&str]| {
+            let mut args = vec!["diff", "-M", "--no-ext-diff", "--no-textconv", "--no-color"];
+            args.extend_from_slice(form);
+            args.extend([range.as_str(), "--"]);
+            git_stdout(&self.dir, &args)
+        };
+        let statuses = read(&["--name-status", "-z"])?;
+        let counts = read(&["--numstat", "-z"])?;
+        let patch = read(&["-U3"])?;
+        let mismatch = || Error(format!("git diff {range}: its reads list different files"));
+        let counts = numstat_lines(&counts);
+        let mut sections = patch_sections(&patch).into_iter();
+        let mut files = Vec::new();
+        for (status, old_path, path) in name_status_entries(&statuses).ok_or_else(mismatch)? {
+            // git writes a change between a file and a symlink as a deletion and a creation.
+            let parts = if status == 'T' { 2 } else { 1 };
+            let patch: String = sections.by_ref().take(parts).collect();
+            let lines = *counts.get(files.len()).ok_or_else(mismatch)?;
+            files.push(FileDiff {
+                path,
+                old_path,
+                status,
+                lines,
+                patch,
+            });
+        }
+        if counts.len() != files.len() || sections.next().is_some() {
+            return Err(mismatch());
+        }
+        files.sort_by(|a, b| a.path.cmp(&b.path));
+        Ok(files)
+    }
+
+    /// Every commit reachable from `to` and not from `from`, oldest first.
+    pub fn commits_between(&self, from: &str, to: &str) -> Result<Vec<CommitLine>, Error> {
+        let range = format!("{from}..{to}");
+        let out = git_stdout(
+            &self.dir,
+            &["log", "--reverse", "--format=%h %s", &range, "--"],
+        )?;
+        Ok(out
+            .lines()
+            .filter_map(|line| line.split_once(' '))
+            .map(|(sha, subject)| CommitLine {
+                sha: sha.to_string(),
+                subject: subject.to_string(),
+            })
+            .collect())
     }
 
     /// The diff between `from` and this worktree's current `HEAD`, name-only, sorted and
@@ -881,7 +977,7 @@ impl Worktree {
     /// base", which for a worktree branch that only ever gains commits (never rebased)
     /// is precisely this branch's own.
     pub fn commits_since_base(&self) -> Result<Vec<String>, Error> {
-        let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        let base = self.repo_head()?;
         let out = git(
             &self.dir,
             &["rev-list", "--reverse", &format!("{base}..HEAD")],
@@ -2595,7 +2691,74 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
 }
 
 pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
-    run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
+    run_git(dir, args).map_err(|out| git_failed(args, &out))
+}
+
+/// [`git`]'s standard output alone, for output a caller parses: a warning git writes to
+/// standard error never lands inside it.
+fn git_stdout(dir: &str, args: &[&str]) -> Result<String, Error> {
+    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+    git_output(dir, args, GitOutput::Stdout)
+        .map(text)
+        .map_err(|said| git_failed(args, &text(said)))
+}
+
+/// The error of `git <args>` failing, saying `said`.
+fn git_failed(args: &[&str], said: &str) -> Error {
+    Error(format!("git {}: {said}", args.join(" ")))
+}
+
+/// The `(status, path before, path)` of each entry `git diff --name-status -z` wrote, in its
+/// order: a rename or copy names both its paths. None when the output ends inside an entry.
+fn name_status_entries(out: &str) -> Option<Vec<(char, Option<String>, String)>> {
+    let mut fields = out.split('\0').filter(|f| !f.is_empty());
+    let mut entries = Vec::new();
+    while let Some(status) = fields.next() {
+        let letter = status.chars().next()?;
+        let first = fields.next()?.to_string();
+        entries.push(if matches!(letter, 'R' | 'C') {
+            (letter, Some(first), fields.next()?.to_string())
+        } else {
+            (letter, None, first)
+        });
+    }
+    Some(entries)
+}
+
+/// The `(added, removed)` lines of each entry `git diff --numstat -z` wrote, in its order;
+/// none for a binary file, whose counts git writes as `-`.
+fn numstat_lines(out: &str) -> Vec<Option<(u32, u32)>> {
+    let mut fields = out.split('\0');
+    let mut lines = Vec::new();
+    while let Some(record) = fields.next() {
+        let mut cols = record.splitn(3, '\t');
+        let (Some(added), Some(removed), Some(path)) = (cols.next(), cols.next(), cols.next())
+        else {
+            continue;
+        };
+        if path.is_empty() {
+            // A rename or copy: its two paths follow as fields of their own.
+            fields.nth(1);
+        }
+        lines.push(added.parse().ok().zip(removed.parse().ok()));
+    }
+    lines
+}
+
+/// The sections of a `git diff` patch, each from a `diff --git` header line up to the next.
+fn patch_sections(patch: &str) -> Vec<&str> {
+    let mut starts: Vec<usize> = patch
+        .split_inclusive('\n')
+        .scan(0, |at, line| {
+            let start = *at;
+            *at += line.len();
+            Some((start, line))
+        })
+        .filter(|(_, line)| line.starts_with("diff --git "))
+        .map(|(start, _)| start)
+        .collect();
+    starts.push(patch.len());
+    starts.windows(2).map(|w| &patch[w[0]..w[1]]).collect()
 }
 
 /// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
@@ -4576,9 +4739,22 @@ mod tests {
         assert_eq!(wt.fork_point("HEAD").unwrap(), fork);
         let files = wt.diff_files(fork, "HEAD").unwrap();
         // (path, status, path before the change, lines added and removed, a line its patch holds)
-        let rows: [(&str, char, Option<&str>, Option<(u32, u32)>, &str); 5] = [
+        type Row = (
+            &'static str,
+            char,
+            Option<&'static str>,
+            Option<(u32, u32)>,
+            &'static str,
+        );
+        let rows: [Row; 5] = [
             ("added.txt", 'A', None, Some((2, 0)), "\n+two\n"),
-            ("after.txt", 'R', Some("before.txt"), Some((0, 0)), "\nrename to after.txt\n"),
+            (
+                "after.txt",
+                'R',
+                Some("before.txt"),
+                Some((0, 0)),
+                "\nrename to after.txt\n",
+            ),
             ("blob.bin", 'M', None, None, "\nBinary files "),
             ("gone.txt", 'D', None, Some((0, 1)), "\n-bye\n"),
             ("kept.txt", 'M', None, Some((1, 1)), "\n+B\n"),
@@ -4625,7 +4801,13 @@ mod tests {
         let files = wt.diff_files(&fork, "HEAD").unwrap();
         let read: Vec<(&str, char, usize)> = files
             .iter()
-            .map(|f| (f.path.as_str(), f.status, f.patch.matches("diff --git ").count()))
+            .map(|f| {
+                (
+                    f.path.as_str(),
+                    f.status,
+                    f.patch.matches("diff --git ").count(),
+                )
+            })
             .collect();
         assert_eq!(read, [("link", 'T', 2), ("next.txt", 'M', 1)]);
         wt.remove().unwrap();
