@@ -1,11 +1,11 @@
 //! Guard the CI invariant that EVERY feature lane stays fully gated, and that CI runs the
 //! non-default lanes through the one lanes script.
 //!
-//! rigger ships with `turbovec` as a *default* feature, a deliberate `--no-default-features`
-//! "grep-only" opt-out, and the pure `core` lane (`--no-default-features --features core`, see
-//! `Cargo.toml`). Those are distinct `cfg` universes: code behind a feature vanishes in a lane
-//! that drops it, and code only *reachable* there (fallback paths, the "built without turbovec"
-//! branch) is dead in the others. Any lane can grow a lint - an unused import, dead code, a
+//! rigger ships with `symbols` and `store` as its *default* features, a deliberate
+//! `--no-default-features` "grep-only" opt-out, and the pure `core` lane (`--no-default-features
+//! --features core`, see `Cargo.toml`). Those are distinct `cfg` universes: code behind a feature
+//! vanishes in a lane that drops it, and code only *reachable* there (a fallback path) is dead in
+//! the others. Any lane can grow a lint - an unused import, dead code, a
 //! `needless_return` - that `cargo build` still accepts but `cargo clippy -- -D warnings`
 //! rejects, or a test that fails in that universe alone.
 //!
@@ -24,7 +24,7 @@
 //! `--no-default-features` (see `assert_lane_command`'s `forbidden` arg).
 //!
 //! It is intentionally NOT feature-gated: it reads YAML files and runs a shell script, touching
-//! no turbovec/grep symbols, so it runs identically in every lane that runs it.
+//! no feature-gated symbol, so it runs identically in every lane that runs it.
 
 use crate::common;
 use common::repo::{repo_root, repo_text, stub_path, table_declares_key, table_lines};
@@ -45,18 +45,29 @@ fn workflow_yaml() -> serde_yaml::Value {
         .unwrap_or_else(|e| panic!("CI workflow .github/workflows/rust.yml is not valid YAML: {e}"))
 }
 
-/// Every `run:` script across the steps of the named job, concatenated. A step's
-/// `run` may be a single command or a multi-line block; both flatten to text we can
-/// substring-match the gate commands against.
-fn job_run_scripts(workflow: &serde_yaml::Value, job: &str) -> String {
-    let steps = workflow
+/// The steps of the named job, in order; a workflow without a `jobs.<job>.steps` sequence fails
+/// the test that asked, naming the job.
+fn job_steps<'a>(workflow: &'a serde_yaml::Value, job: &str) -> &'a [serde_yaml::Value] {
+    workflow
         .get("jobs")
         .and_then(|j| j.get(job))
         .and_then(|j| j.get("steps"))
         .and_then(|s| s.as_sequence())
-        .unwrap_or_else(|| panic!("workflow has no `jobs.{job}.steps` sequence"));
+        .unwrap_or_else(|| panic!("workflow has no `jobs.{job}.steps` sequence"))
+}
 
-    steps
+/// Does `step` run the action `action` (its `uses` names it, at any version)?
+fn step_uses(step: &serde_yaml::Value, action: &str) -> bool {
+    step.get("uses")
+        .and_then(|u| u.as_str())
+        .is_some_and(|u| u.starts_with(action))
+}
+
+/// Every `run:` script across the steps of the named job, concatenated. A step's
+/// `run` may be a single command or a multi-line block; both flatten to text we can
+/// substring-match the gate commands against.
+fn job_run_scripts(workflow: &serde_yaml::Value, job: &str) -> String {
+    job_steps(workflow, job)
         .iter()
         .filter_map(|step| step.get("run").and_then(|r| r.as_str()))
         .collect::<Vec<_>>()
@@ -68,20 +79,9 @@ fn job_run_scripts(workflow: &serde_yaml::Value, job: &str) -> String {
 /// targets are a step INPUT, not a `run:` script, so this reads `uses`/`with` rather than
 /// `job_run_scripts`'s `run:` text.
 fn job_toolchain_targets(workflow: &serde_yaml::Value, job: &str) -> String {
-    let steps = workflow
-        .get("jobs")
-        .and_then(|j| j.get(job))
-        .and_then(|j| j.get("steps"))
-        .and_then(|s| s.as_sequence())
-        .unwrap_or_else(|| panic!("workflow has no `jobs.{job}.steps` sequence"));
-
-    steps
+    job_steps(workflow, job)
         .iter()
-        .find(|step| {
-            step.get("uses")
-                .and_then(|u| u.as_str())
-                .is_some_and(|u| u.starts_with("dtolnay/rust-toolchain"))
-        })
+        .find(|step| step_uses(step, "dtolnay/rust-toolchain"))
         .and_then(|step| step.get("with"))
         .and_then(|w| w.get("targets"))
         .and_then(|t| t.as_str())
@@ -106,10 +106,10 @@ fn line_has_all(line: &str, needles: &[&str]) -> bool {
 
 /// Assert some single `run:` line contains every token of `needles` (in order) AND
 /// does NOT contain `forbidden`. The `forbidden` clause is what makes a lane assertion
-/// DISCRIMINATING: the turbovec (default) lane's commands are prefixes of the grep-only
-/// lane's (which just add `--no-default-features`), so without excluding that flag the
-/// turbovec assertions would be satisfied by grep-only lines and pass even if the whole
-/// turbovec lane were deleted. Pass `forbidden = None` when no anchor is needed (e.g. a
+/// DISCRIMINATING: the default lane's commands are prefixes of the grep-only lane's (which
+/// just add `--no-default-features`), so without excluding that flag the default-lane
+/// assertions would be satisfied by grep-only lines and pass even if the whole default lane
+/// were deleted. Pass `forbidden = None` when no anchor is needed (e.g. a
 /// grep-only assertion that already requires `--no-default-features` positively).
 fn assert_lane_command(script: &str, needles: &[&str], forbidden: Option<&str>, what: &str) {
     let found = script
@@ -126,14 +126,13 @@ fn assert_lane_command(script: &str, needles: &[&str], forbidden: Option<&str>, 
     );
 }
 
-/// The turbovec (default-feature) lane must run the full gate battery: fmt check,
-/// clippy over all targets with warnings denied, the default `cargo build`, and the
-/// test suite. Every feature-sensitive assertion is ANCHORED to exclude
-/// `--no-default-features` so a matching grep-only line cannot vacuously satisfy it -
-/// deleting the turbovec lane makes this test fail (verified by the reviewer's lane-
-/// deletion simulation), which is the whole point of the guard.
+/// The default-feature lane must run the full gate battery: fmt check, clippy over all
+/// targets with warnings denied, the default `cargo build`, and the test suite. Every
+/// feature-sensitive assertion is ANCHORED to exclude `--no-default-features` so a matching
+/// grep-only line cannot vacuously satisfy it - deleting the default lane makes this test fail
+/// (verified by the reviewer's lane-deletion simulation), which is the whole point of the guard.
 #[test]
-fn turbovec_lane_runs_the_full_gate_battery() {
+fn default_lane_runs_the_full_gate_battery() {
     let wf = workflow_yaml();
     let script = job_run_scripts(&wf, "build-test");
     const NO_DEFAULTS: &str = "--no-default-features";
@@ -151,19 +150,19 @@ fn turbovec_lane_runs_the_full_gate_battery() {
         &script,
         &["cargo clippy", "--all-targets", "-D warnings"],
         Some(NO_DEFAULTS),
-        "cargo clippy --all-targets -- -D warnings on the turbovec (default) build",
+        "cargo clippy --all-targets -- -D warnings on the default build",
     );
     assert_lane_command(
         &script,
         &["cargo build"],
         Some(NO_DEFAULTS),
-        "cargo build on the turbovec (default) build",
+        "cargo build on the default build",
     );
     assert_lane_command(
         &script,
         &["cargo test"],
         Some(NO_DEFAULTS),
-        "cargo test on the turbovec (default) build",
+        "cargo test on the default build",
     );
 }
 
@@ -527,11 +526,11 @@ fn every_job_that_compiles_the_dev_profile_builds_it_with_line_tables_only() {
 /// execute the resulting binary. That job is the regression guard for dependency skew on a
 /// FRESH resolve (`cargo install` without `--locked` ignores Cargo.lock and re-resolves to
 /// the newest versions the manifest constraints allow - exactly how an end user installs,
-/// and where a transitive crate like `ort-sys` can skew forward past the `ort` it must
-/// match). `Cargo.toml` pins `ort-sys = "=2.0.0-rc.9"` to keep that resolve coherent; this
-/// test ensures the CI job that PROVES the pin holds cannot be quietly deleted or have its
-/// teeth pulled by someone adding `--locked` (which would make the install pass by reusing
-/// the committed lockfile, defeating the entire point of the guard). Like the rest of this
+/// and where a transitive crate can skew forward past the version a pinned direct dependency
+/// was built against). This test ensures the CI job that PROVES the resolve stays coherent
+/// cannot be quietly deleted or have its teeth pulled by someone adding `--locked` (which
+/// would make the install pass by reusing the committed lockfile, defeating the entire point
+/// of the guard). Like the rest of this
 /// file it parses the committed workflow rather than the running config, so it fails at
 /// `cargo test` time - in the very build-test lane above - if the guard erodes.
 #[test]
@@ -604,25 +603,106 @@ fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_tes
 }
 
 /// Spec 93 criterion 3, THE BUILD EMBEDS IT: "a workflow-level install in
-/// `.github/workflows/rust.yml`; no unit installs it". `build.rs`'s nested cross-compile of
-/// `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer build compiles
-/// `crates/rigger-dash/src/dash.rs` - which is every cargo invocation in THIS workflow (none of them build the
-/// pure `--features core` lane exclusively): `build-test`'s default AND
-/// `--no-default-features` lanes and `install-nolock`'s default-feature install. Each of
-/// those two jobs' own `dtolnay/rust-toolchain@*` step must therefore declare the target - a
-/// job whose toolchain step lacks it would fail on a runner with no target preinstalled. The
-/// `kurrentdb` job builds `rigger-store-sqlite` alone, which never compiles dash.rs.
+/// `.github/workflows/rust.yml`; no unit installs it". `crates/rigger-dash/build.rs`'s nested
+/// cross-compile of `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer
+/// build compiles `crates/rigger-dash/src/dash.rs`, and three jobs' cargo invocations do:
+/// `build-test`'s default AND `--no-default-features` lanes, `install-nolock`'s default-feature
+/// install and `cross-os-check`'s `cargo check --workspace`, which runs the build script of every
+/// package it checks. Each of those three jobs' own `dtolnay/rust-toolchain@*` step must
+/// therefore declare the target - a job whose toolchain step lacks it would fail on a runner with
+/// no target preinstalled. The `kurrentdb` job builds `rigger-store-sqlite` alone, which never
+/// compiles dash.rs, and neither does `build-test`'s pure `--features core` lane.
 #[test]
 fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
     let wf = workflow_yaml();
-    for job in ["build-test", "install-nolock"] {
+    for job in ["build-test", "install-nolock", "cross-os-check"] {
         let targets = job_toolchain_targets(&wf, job);
         assert!(
             targets.contains("wasm32-unknown-unknown"),
             "job `{job}`'s rust-toolchain step must declare `targets: wasm32-unknown-unknown` \
              (spec 93 criterion 3: build.rs's nested cross-compile of crates/console-core \
-             needs it whenever this job's cargo invocations compile crates/rigger-dash/src/dash.rs, which none \
-             of `{job}`'s commands avoid). Found targets: {targets:?}"
+             needs it whenever a cargo invocation compiles crates/rigger-dash/src/dash.rs, and \
+             `{job}`'s cargo invocations do). Found targets: {targets:?}"
         );
     }
+}
+
+/// THE CROSS-OS CHECK (spec 125 criterion 12): CI compiles the workspace on Windows and on macOS.
+/// The `cross-os-check` job's `strategy.matrix` is exactly `os: [windows-latest, macos-latest]`,
+/// with no `include` or `exclude` to add or drop a leg, and its `runs-on` is that matrix value, so
+/// each leg runs on its own OS. Its strategy sets `fail-fast: false`, so a red leg never cancels
+/// the other before that one reports its own errors, and neither the job nor any of its steps
+/// carries an `if` or a `continue-on-error`, so each leg checks and a red one fails the job. Its
+/// checkout fetches full history. Its one `run:` step runs under
+/// `bash` on every runner and, in that step's own shell, exports an empty `RUSTC_WRAPPER` and then
+/// runs `cargo check --workspace`: the empty value overrides `.cargo/config.toml`'s Unix wrapper
+/// script for cargo and every nested cargo it starts. The job's wasm target is pinned once, by
+/// `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
+#[test]
+fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
+    const JOB: &str = "cross-os-check";
+    let wf = workflow_yaml();
+    let job = &wf["jobs"][JOB];
+    let matrix: serde_yaml::Value = serde_yaml::from_str("os: [windows-latest, macos-latest]")
+        .expect("the expected matrix is valid YAML");
+    assert_eq!(
+        job["strategy"]["matrix"], matrix,
+        "job `{JOB}`'s matrix must be exactly `os: [windows-latest, macos-latest]`"
+    );
+    assert_eq!(
+        job["runs-on"].as_str(),
+        Some("${{ matrix.os }}"),
+        "job `{JOB}` must run on its matrix value, one leg per OS"
+    );
+    assert_eq!(
+        job["strategy"]["fail-fast"].as_bool(),
+        Some(false),
+        "job `{JOB}` must set `fail-fast: false`, so a red leg never cancels the other"
+    );
+    let steps = job_steps(&wf, JOB);
+    let conditioned: Vec<(usize, &str)> = std::iter::once(job)
+        .chain(steps)
+        .enumerate()
+        .flat_map(|(at, node)| {
+            ["if", "continue-on-error"]
+                .into_iter()
+                .filter(move |key| node.get(key).is_some())
+                .map(move |key| (at, key))
+        })
+        .collect();
+    assert_eq!(
+        conditioned,
+        Vec::<(usize, &str)>::new(),
+        "neither job `{JOB}` (0) nor any of its steps (1 on) may carry an `if` or a \
+         `continue-on-error` (where, key): one lets a leg check nothing, the other a red leg pass"
+    );
+    let checkout_depths: Vec<Option<u64>> = steps
+        .iter()
+        .filter(|step| step_uses(step, "actions/checkout"))
+        .map(|step| step["with"]["fetch-depth"].as_u64())
+        .collect();
+    assert_eq!(
+        checkout_depths,
+        [Some(0)],
+        "job `{JOB}` must check out once, with `fetch-depth: 0` (full history)"
+    );
+    let run_steps: Vec<(Option<&str>, Vec<&str>)> = steps
+        .iter()
+        .filter_map(|step| {
+            let lines = step.get("run")?.as_str()?.lines().map(str::trim);
+            Some((
+                step["shell"].as_str(),
+                lines.filter(|line| !line.is_empty()).collect(),
+            ))
+        })
+        .collect();
+    assert_eq!(
+        run_steps,
+        [(
+            Some("bash"),
+            vec!["export RUSTC_WRAPPER=", "cargo check --workspace"]
+        )],
+        "job `{JOB}` must have one `run:` step, under `shell: bash`, exporting an empty \
+         `RUSTC_WRAPPER` and then running `cargo check --workspace` (shell, lines)"
+    );
 }

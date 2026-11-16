@@ -108,9 +108,9 @@ rigger::test_cases! {
     // already reaps the worktree dir itself (spec 23), then calls `reclaim_cache_sibling`
     // to remove the per-unit `cargo-target-<slug>` cache dir a gate's build populated - a
     // BARE `remove_dir_all` with no reap of its own before this fix. A build a gate spawned
-    // with its `CARGO_TARGET_DIR` pointed at the cache (the everyday case, Gap 19) can still
-    // be alive when the unit's worktree is torn down; it must be reaped before the cache dir
-    // that holds its cwd is removed.
+    // with its `CARGO_TARGET_DIR` pointed at the cache (a workflow declaring it over
+    // `{build_cache}`, Gap 19) can still be alive when the unit's worktree is torn down; it
+    // must be reaped before the cache dir that holds its cwd is removed.
     worktree_remove_reaps_a_process_rooted_in_its_sibling_build_cache_before_reclaiming_it: reaps_before_removing(
         Teardown::UnitRemove,
         "cachereaptest",

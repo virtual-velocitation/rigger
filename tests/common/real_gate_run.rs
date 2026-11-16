@@ -53,8 +53,8 @@ pub fn run_real_gate_and_agent(
 }
 
 /// Hand `run` - the PUBLIC library entry point, never through `config::load` - a one-gate
-/// workflow configured with `build` whose build environment cannot be resolved: the run must
-/// return `Err` (`must_fail` says why a silent `Ok` is wrong) before a single agent spawns.
+/// workflow configured with `build`, whose `build.env` declaration the one check refuses: the run
+/// must return `Err` (`must_fail` says why a silent `Ok` is wrong) before a single agent spawns.
 /// Returns the error's message.
 pub fn refused_run(build: BuildConfig, must_fail: &str) -> String {
     let cfg = one_gate_workflow(build, "core", "true");
@@ -70,7 +70,7 @@ pub fn refused_run(build: BuildConfig, must_fail: &str) -> String {
     };
     assert!(
         driver.outputs().is_empty(),
-        "the build-env resolution failure must surface BEFORE any agent spawns, not after \
+        "the refused build declaration must surface BEFORE any agent spawns, not after \
          wasted work: {:?}",
         driver.outputs()
     );
@@ -80,6 +80,31 @@ pub fn refused_run(build: BuildConfig, must_fail: &str) -> String {
 /// The fixture agent that echoes the build variables it was spawned with.
 pub fn echo_agent_path() -> PathBuf {
     crate::common::repo::repo_root().join("tests/fixtures/env-echo-agent.sh")
+}
+
+/// A fixture "agent" written to `dir` that runs the shell `body`, then prints the final
+/// structured line every real `cli::Driver::spawn` parses a result from and hands its task over
+/// (`tests/fixtures/launch-args.sh`'s `hand_over`): `tests/fixtures/env-echo-agent.sh`'s shape
+/// with the body a suite observes its spawn through.
+pub fn write_agent_running(dir: &Path, body: &str) -> PathBuf {
+    let path = dir.join("agent.sh");
+    let launch_args = crate::common::repo::repo_root().join("tests/fixtures/launch-args.sh");
+    std::fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n{body}\necho '{{\"id\":\"final\",\"pass\":true}}'\n\
+             . '{}'\nhand_over \"$(cat)\"\n",
+            launch_args.display()
+        ),
+    )
+    .expect("write agent fixture");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod agent fixture");
+    }
+    path
 }
 
 /// A workflow of ONE `worker` stage whose one gate of kind `gate_kind` runs `gate_cmd`, with

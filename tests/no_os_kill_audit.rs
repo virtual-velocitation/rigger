@@ -3,23 +3,31 @@
 //! the run base; this test walks EVERY `.rs` file under `src/`, `crates/` and `tests/` in the checked-out
 //! tree and fails, naming file and line, on any of the gate's forbidden shapes found outside
 //! the two sanctioned lifecycle helpers (`crates/rigger-process/src/reap.rs`, `tests/common/mod.rs`) - or on a
-//! shell-out / `--` argv separator / negative-pid `format!` found INSIDE those two files,
+//! shell-out / `--` argv separator / negative-pid `format!` found INSIDE those two files (and
+//! on the Windows process-termination call inside the test helper),
 //! where calling the internal signal API directly is exactly the point and must NOT be
 //! flagged. It runs under plain `cargo test`, so unlike the shell gate it also covers CI
 //! (`.github/workflows/rust.yml`), which runs `cargo test` but not the rigger-loop gate.
 //!
-//! The nine forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
+//! The ten forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
 //! that file (out of the gate's own scope, so it may name the literal pattern text) for the
-//! precise regex. In prose: a `Command::new` shell-out to any of four OS process-termination
-//! utility names; the bare shell form of two of those names, invoked with a leading-hyphen
-//! signal argument; one of the four also appearing as a standalone shell token on its own;
-//! the libc process-group signal call name; a direct call through `libc` or a `signal`
-//! module; the sanctioned rustix call itself (forbidden only OUTSIDE the two sanctioned
-//! files - see below); the `--` argv separator passed to `.arg(...)`; and a `format!` call
-//! shaped to build a leading-hyphen (negative-pid-style) argument. Inside the two sanctioned
-//! files only the Command::new shell-out, the `--` separator and the negative-pid `format!`
-//! remain banned (the gate's own narrower second check) - the direct signal call is exactly
-//! what those two files exist to make.
+//! precise regex. In prose: a `Command::new` shell-out to any of five OS process-termination
+//! utility names, the Windows one among them, the name in any case; the bare shell form of two
+//! of those names, invoked with a leading-hyphen signal argument; one of the five also appearing
+//! as a standalone shell token on its own; the libc process-group signal call name; a direct call
+//! through `libc` or a `signal` module; the sanctioned rustix call itself (forbidden only
+//! OUTSIDE the two sanctioned files - see below); the `--` argv separator passed to
+//! `.arg(...)`; a `format!` call shaped to build a leading-hyphen (negative-pid-style)
+//! argument; and an opened call of the Windows process-termination function, forbidden in
+//! every file but `reap.rs`. Inside the two sanctioned files the Command::new shell-out, the
+//! `--` separator and the negative-pid `format!` remain banned (the gate's own narrower second
+//! check), and so does the Windows call inside the test helper - the direct unix signal call is
+//! exactly what those two files exist to make, and the reaper's `send_signal` is the one
+//! Windows termination site.
+//!
+//! The test module also runs the shipped script itself, by path, over one fixture unit branch
+//! per row, so the script's own patterns for the two Windows shapes are pinned by its exit and
+//! its whole output, not only mirrored by this file's needles.
 //!
 //! SOURCE HYGIENE (load-bearing - read this before touching a needle or a fixture below).
 //! This file's whole job is to DETECT the shapes the `no-os-kill` gate forbids, and its own
@@ -83,6 +91,10 @@ fn kill_process_open() -> String {
 fn module_kill_open(module: &str) -> String {
     join(module, &suffixed_kill("("))
 }
+/// An opened call of the Windows process-termination function (Terminate-Process).
+fn windows_termination_open() -> String {
+    join("Terminate", "Process(")
+}
 
 /// The exact set of words the Command::new shell-out shape and the bare shell
 /// kill/killall-plus-signal shape both key off (see `.rigger/gates/content.sh` for the literal
@@ -101,14 +113,17 @@ fn shell_kill_words() -> Vec<String> {
 // ---------------------------------------------------------------------------------------
 
 /// The gate's Command::new shell-out shape (see `.rigger/gates/content.sh` for the literal
-/// pattern) - a shell-out to one of the four OS process-termination utility names.
+/// pattern) - a shell-out to one of the five OS process-termination utility names, the Windows
+/// one (task-kill) among them, matched in any case as the gate matches it: Windows, and macOS's
+/// default filesystem, resolve a program name case-insensitively.
 fn shape_command_new_signal(line: &str) -> bool {
-    let chars: Vec<char> = line.chars().collect();
-    let marker: Vec<char> = "Command::new(".chars().collect();
+    let chars: Vec<char> = line.to_ascii_lowercase().chars().collect();
+    let marker: Vec<char> = "command::new(".chars().collect();
     let words = [
         prefixed_kill("p"),
         suffixed_kill("all"),
         prefixed_kill("x"),
+        prefixed_kill("task"),
         kill_word(),
     ];
     let mlen = marker.len();
@@ -228,10 +243,16 @@ fn has_marker_shape(line: &str, (marker, tail): MarkerShape) -> bool {
 /// `interrupt_pid`, and `is_alive`) - this audit's own
 /// record of the boundary, checked against each scanned file's REPO-RELATIVE, forward-slash
 /// path, independent of `.rigger/gates/content.sh`'s copy.
-const SANCTIONED_FILES: [&str; 2] = ["crates/rigger-process/src/reap.rs", "tests/common/mod.rs"];
+const SANCTIONED_FILES: [&str; 2] = [REAPER, "tests/common/mod.rs"];
+
+/// The reaper, whose `send_signal` is the one site of the Windows process-termination call:
+/// the one file [`scan_tree`] never flags for it (the test helper is sanctioned for the unix
+/// signal call only).
+const REAPER: &str = "crates/rigger-process/src/reap.rs";
 
 /// Every forbidden shape found in one line of a file that is NOT one of the two sanctioned
-/// lifecycle helpers - the gate's full nine-shape ban.
+/// lifecycle helpers - the gate's ban on every shape but the Windows process-termination call,
+/// which [`scan_tree`] checks in every file but [`REAPER`].
 fn general_hits(line: &str) -> Vec<&'static str> {
     let mut hits = Vec::new();
     if shape_command_new_signal(line) {
@@ -277,13 +298,15 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
 
 /// Scan every `.rs` file under `root/src`, `root/crates` and `root/tests`, deterministically ordered by
 /// (file, line), applying [`general_hits`] outside [`SANCTIONED_FILES`] and
-/// [`sanctioned_hits`] inside them - the whole-tree twin of the diff-scoped `no-os-kill`
-/// gate (spec 78, THE AUDIT TEST).
+/// [`sanctioned_hits`] inside them, and flagging the Windows process-termination call in every
+/// file but [`REAPER`] - the whole-tree twin of the diff-scoped `no-os-kill` gate (spec 78, THE
+/// AUDIT TEST).
 fn scan_tree(root: &Path) -> Vec<Finding> {
     let mut files = Vec::new();
     for top in ["src", "crates", "tests"] {
         collect_rs_files(&root.join(top), &mut files);
     }
+    let windows_termination = windows_termination_open();
     let mut findings = Vec::new();
     for path in &files {
         let rel = path
@@ -296,11 +319,14 @@ fn scan_tree(root: &Path) -> Vec<Finding> {
             continue;
         };
         for (i, line) in content.lines().enumerate() {
-            let hits = if sanctioned {
+            let mut hits = if sanctioned {
                 sanctioned_hits(line)
             } else {
                 general_hits(line)
             };
+            if rel != REAPER && line.contains(&windows_termination) {
+                hits.push("Windows process-termination call outside reap.rs");
+            }
             for shape in hits {
                 findings.push(Finding {
                     file: rel.clone(),
@@ -376,15 +402,26 @@ mod tests {
         assert!(findings.is_empty(), "{why}; {findings:?}");
     }
 
+    /// A line opening a call of the Windows process-termination function.
+    fn windows_termination_call() -> String {
+        format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open())
+    }
+
+    /// A line shelling out to `program`.
+    fn shell_out_to(program: &str) -> String {
+        format!("let _ = std::process::Command::new(\"{program}\");\n")
+    }
+
+    /// The Windows process-termination utility's name (task-kill).
+    fn task_kill() -> String {
+        prefixed_kill("task")
+    }
+
     #[test]
     fn command_new_shell_out_is_caught_outside_the_sanctioned_files() {
         // `killall`, not the p-kill utility - it does not ALSO satisfy the standalone-token
         // shape, so this fixture isolates the Command::new shape alone.
-        let line = format!(
-            "let _ = std::process::Command::new(\"{}\");\n",
-            suffixed_kill("all")
-        );
-        let finding = caught_in("src/somewhere.rs", &line);
+        let finding = caught_in("src/somewhere.rs", &shell_out_to(&suffixed_kill("all")));
         assert_eq!(finding.line_no, 1);
         assert!(finding.shape.contains("Command::new"), "{finding:?}");
     }
@@ -433,6 +470,26 @@ mod tests {
             &format!("let arg = format!(\"{}\", pgid);\n", join("-", "{}")),
             "negative-pid",
         );
+        windows_termination_call_is_caught_outside_reap_rs: caught_as(
+            "crates/somewhere/src/lib.rs",
+            &windows_termination_call(),
+            "Windows process-termination call",
+        );
+        taskkill_shell_out_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere.rs",
+            &shell_out_to(&task_kill()),
+            "Command::new",
+        );
+        task_kill_shell_out_in_another_case_is_caught_outside_the_sanctioned_files: caught_as(
+            "src/somewhere.rs",
+            &shell_out_to(&join("Task", "Kill")),
+            "Command::new",
+        );
+        unix_utility_shell_out_in_another_case_is_caught_outside_the_sanctioned_files: caught_as(
+            "tests/somewhere_test.rs",
+            &shell_out_to(&join("KI", "LLALL")),
+            "Command::new",
+        );
     }
 
     #[test]
@@ -471,10 +528,13 @@ mod tests {
         /// A shell-out remains banned even inside a sanctioned file.
         a_shell_out_inside_a_sanctioned_file_is_still_caught: caught_in(
             "crates/rigger-process/src/reap.rs",
-            &format!(
-                "let _ = std::process::Command::new(\"{}\");\n",
-                suffixed_kill("all")
-            ),
+            &shell_out_to(&suffixed_kill("all")),
+        );
+        /// So does a shell-out naming its utility in another case.
+        a_shell_out_in_another_case_inside_a_sanctioned_file_is_still_caught: caught_as(
+            "crates/rigger-process/src/reap.rs",
+            &shell_out_to(&join("TASK", "KILL.EXE")),
+            "Command::new",
         );
         /// The -- separator remains banned even inside a sanctioned file.
         a_dashdash_separator_inside_a_sanctioned_file_is_still_caught: caught_in(
@@ -486,16 +546,168 @@ mod tests {
             "crates/rigger-process/src/reap.rs",
             &format!("let arg = format!(\"{}\", pgid);\n", join("-", "{}")),
         );
-        /// The same violation, rooted outside src/, crates/ and tests/ entirely, must be invisible.
-        a_shape_outside_src_and_tests_is_never_scanned: never_flagged(
+        /// The reaper's send_signal is the one Windows process-termination site.
+        a_windows_termination_call_in_reap_rs_is_never_flagged: never_flagged(
             &[(
-                "scripts/somewhere.rs",
+                "crates/rigger-process/src/reap.rs",
+                &format!("            {}handle, 1);\n", windows_termination_open()),
+            )],
+            "reap.rs's own Windows process-termination call must never be flagged",
+        );
+        /// The test helper is sanctioned for the unix signal call only, never the Windows call.
+        a_windows_termination_call_in_the_test_helper_is_caught: caught_as(
+            "tests/common/mod.rs",
+            &windows_termination_call(),
+            "Windows process-termination call",
+        );
+        /// Naming the Windows function without calling it (an import, a doc) is never a call.
+        a_windows_termination_name_without_a_call_is_never_flagged: never_flagged(
+            &[(
+                "src/somewhere.rs",
                 &format!(
-                    "let _ = std::process::Command::new(\"{}\");\n",
-                    prefixed_kill("p")
+                    "use windows_sys::Win32::System::Threading::{{{}}};\n",
+                    join("Terminate", "Process")
                 ),
             )],
+            "only an opened call of the Windows process-termination function is the shape",
+        );
+        /// A shell-out to the Windows termination utility is banned even inside reap.rs.
+        a_taskkill_shell_out_inside_a_sanctioned_file_is_still_caught: caught_as(
+            "crates/rigger-process/src/reap.rs",
+            &shell_out_to(&task_kill()),
+            "Command::new",
+        );
+        /// The same violation, rooted outside src/, crates/ and tests/ entirely, must be invisible.
+        a_shape_outside_src_and_tests_is_never_scanned: never_flagged(
+            &[("scripts/somewhere.rs", &shell_out_to(&prefixed_kill("p")))],
             "a .rs file outside src/, crates/ and tests/ must never be scanned",
+        );
+    }
+
+    /// The shipped gate's whole output when its main check fires: a forbidden shape added outside
+    /// the two sanctioned lifecycle files.
+    const OUTSIDE_THE_SANCTIONED_FILES: &str = "no-os-kill gate FAILED: an OS-level kill, a \
+        process-group target, or a direct signal call was introduced outside the sanctioned \
+        lifecycle helpers (crates/rigger-process/src/reap.rs, tests/common/mod.rs). Lifecycle is \
+        handle-bound: Child::kill()/wait(), or the shared helper. See \
+        specs/78-no-os-level-kills.md\n";
+
+    /// The shipped gate's whole output when its sanctioned-file check fires: a shell-out added
+    /// inside one of the two sanctioned lifecycle files.
+    const SHELL_OUT_IN_A_SANCTIONED_FILE: &str = "no-os-kill gate FAILED: a sanctioned lifecycle \
+        file shelled out to kill or formatted a process-group target; use the internal guarded \
+        signal call only\n";
+
+    /// The shipped gate's whole output when its Windows check fires: the Windows
+    /// process-termination call added outside the reaper.
+    fn windows_termination_outside_the_reaper() -> String {
+        format!(
+            "no-os-kill gate FAILED: the Windows process-termination call ({}) was introduced \
+             outside crates/rigger-process/src/reap.rs, whose send_signal is its one sanctioned \
+             site. See specs/78-no-os-level-kills.md\n",
+            join("Terminate", "Process")
+        )
+    }
+
+    /// The shipped `.rigger/gates/content.sh no-os-kill`, run by path from a fixture repository as
+    /// a unit's gate runs it, judges a unit branch whose one commit adds `line` at `rel` on a
+    /// `rigger-run` base, and answers exactly `(passed, output)`.
+    fn gate_judges(rel: &str, line: &str, (passed, output): (bool, &str)) {
+        let (dir, _) =
+            common::git::unit_branch_repo("pub fn f() {}\n", &[(rel, line, "adds the line")]);
+        assert_eq!(
+            common::repo::run_gate_script(dir.path(), "content.sh", &["no-os-kill"], &[]),
+            (passed, output.to_string()),
+            "the no-os-kill gate's verdict on {rel} adding {line:?}"
+        );
+    }
+
+    // GIVEN a unit branch whose one commit adds a line, WHEN the shipped no-os-kill gate judges
+    // its diff from the run branch, THEN an opened call of the Windows process-termination
+    // function fails it in every code root but the reaper, the test helper included, while the
+    // function's name imported without a call, or a call named in prose outside the code roots,
+    // passes; and a shell-out to the Windows termination utility fails it in every code root, the
+    // reaper and the test helper included, as does a shell-out naming any termination utility in
+    // another case, since Windows and macOS's default filesystem resolve a program name in any
+    // case. Each failure prints the message of the check that caught it.
+    rigger::test_cases! {
+        the_gate_fails_a_windows_termination_call_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &windows_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_fails_a_windows_termination_call_added_to_the_bin: gate_judges(
+            "src/somewhere.rs",
+            &windows_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_fails_a_windows_termination_call_added_to_a_test_suite: gate_judges(
+            "tests/somewhere.rs",
+            &windows_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_fails_a_windows_termination_call_added_to_the_test_helper: gate_judges(
+            "tests/common/mod.rs",
+            &windows_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_passes_a_windows_termination_call_added_to_the_reaper: gate_judges(
+            REAPER,
+            &windows_termination_call(),
+            (true, ""),
+        );
+        the_gate_passes_the_windows_termination_name_imported_without_a_call: gate_judges(
+            "src/somewhere.rs",
+            &format!(
+                "use windows_sys::Win32::System::Threading::{{{}}};\n",
+                join("Terminate", "Process")
+            ),
+            (true, ""),
+        );
+        the_gate_passes_a_windows_termination_call_named_in_prose: gate_judges(
+            "docs/somewhere.md",
+            &windows_termination_call(),
+            (true, ""),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &shell_out_to(&task_kill()),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_the_bin: gate_judges(
+            "src/somewhere.rs",
+            &shell_out_to(&task_kill()),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_a_test_suite: gate_judges(
+            "tests/somewhere.rs",
+            &shell_out_to(&task_kill()),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_the_reaper: gate_judges(
+            REAPER,
+            &shell_out_to(&task_kill()),
+            (false, SHELL_OUT_IN_A_SANCTIONED_FILE),
+        );
+        the_gate_fails_a_task_kill_shell_out_added_to_the_test_helper: gate_judges(
+            "tests/common/mod.rs",
+            &shell_out_to(&task_kill()),
+            (false, SHELL_OUT_IN_A_SANCTIONED_FILE),
+        );
+        the_gate_fails_a_task_kill_shell_out_in_another_case_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &shell_out_to(&join("Task", "Kill")),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_unix_utility_shell_out_in_another_case_added_to_the_bin: gate_judges(
+            "src/somewhere.rs",
+            &shell_out_to(&join("KI", "LLALL")),
+            (false, OUTSIDE_THE_SANCTIONED_FILES),
+        );
+        the_gate_fails_a_shell_out_in_another_case_added_to_the_reaper: gate_judges(
+            REAPER,
+            &shell_out_to(&join("TASK", "KILL.EXE")),
+            (false, SHELL_OUT_IN_A_SANCTIONED_FILE),
         );
     }
 

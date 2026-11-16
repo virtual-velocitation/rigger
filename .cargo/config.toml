@@ -13,7 +13,7 @@
 jobs = 4
 # Every compile runs at low CPU priority (rationale in the wrapper): a run's review fan-out
 # starts many independent cargo builds at once, and `jobs` caps one cargo, not their number.
-# An environment RUSTC_WRAPPER (CI's sccache) overrides this entry.
+# An environment RUSTC_WRAPPER overrides this entry.
 rustc-wrapper = ".cargo/nice-rustc.sh"
 
 # Run every test binary inside a user+pid+mount namespace (blast-radius containment for the

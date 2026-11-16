@@ -59,8 +59,9 @@ std::cfg_select! {
 }
 
 /// The keep-awake facility of the operating system this binary runs on: on Linux a logind
-/// inhibitor lock, on macOS an IOKit power assertion, on Windows a power request; on an OS with
-/// no native adapter, every acquire answers unavailable naming the OS.
+/// inhibitor lock, with the desktop portal's inhibitor besides in a graphical session, on macOS
+/// an IOKit power assertion, on Windows a power request; on an OS with no native adapter, every
+/// acquire answers unavailable naming the OS.
 pub struct OsSleepHold;
 
 impl SleepHold for OsSleepHold {
@@ -204,9 +205,9 @@ mod tests {
             declared,
             [
                 "[dependencies] rigger-domain",
-                "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies] rustix fs2",
+                "[target.'cfg(not(target_arch = \"wasm32\"))'.dependencies] rustix fs2 ring",
                 "[target.'cfg(target_os = \"linux\")'.dependencies] zbus tokio",
-                "[target.'cfg(unix)'.dependencies] ring libc",
+                "[target.'cfg(unix)'.dependencies] libc",
                 "[target.'cfg(target_os = \"windows\")'.dependencies] windows-sys",
                 "[dev-dependencies] tempfile",
                 "[target.'cfg(target_os = \"linux\")'.dev-dependencies] zbus",

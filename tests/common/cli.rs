@@ -84,6 +84,51 @@ pub fn identified_git_project() -> tempfile::TempDir {
     dir
 }
 
+/// An [`identified_git_project`] whose workflow file is `workflow`, its store seeded and its
+/// rigger state ignored, committed clean (a gate refuses an uncommitted tree), and the
+/// [`short_scratch`] directory its gate runs under.
+pub fn committed_project(workflow: &str) -> (tempfile::TempDir, tempfile::TempDir) {
+    let root = identified_git_project();
+    seed_store(root.path());
+    write_workflow(root.path(), workflow);
+    std::fs::write(root.path().join(".gitignore"), ".rigger/\n").unwrap();
+    std::fs::write(root.path().join("README"), "fixture\n").unwrap();
+    super::fixtures::git_ok(root.path(), &["add", "-A"]);
+    super::fixtures::git_ok(root.path(), &["commit", "-q", "-m", "fixture"]);
+    (root, short_scratch())
+}
+
+/// The workflow block declaring the one gate `g`, which runs `run`, under no build budget, so a
+/// gate run takes no slot from a machine-wide pool.
+pub fn one_gate_workflow(run: &str) -> String {
+    format!("build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"{run}\"\n    kind: core\n")
+}
+
+/// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
+/// (stdout, stderr, success).
+pub fn rigger_in(root: &Path, scratch: &Path, args: &[&str]) -> (String, String, bool) {
+    let scratch = scratch.to_str().unwrap();
+    run_rigger_envs(
+        root,
+        args,
+        &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
+    )
+}
+
+/// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
+/// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
+/// only about a hundred bytes, which a long `TMPDIR` would exceed.
+pub fn short_scratch() -> tempfile::TempDir {
+    #[cfg(unix)]
+    let base = Path::new("/tmp");
+    #[cfg(not(unix))]
+    let base = std::env::temp_dir();
+    tempfile::Builder::new()
+        .prefix("rg")
+        .tempdir_in(base)
+        .expect("a scratch dir")
+}
+
 /// A throwaway project directory that is deliberately NOT a git repo, so the conductor drives
 /// a repo-less run (no worktrees, no run branch).
 pub fn temp_repoless_project() -> tempfile::TempDir {
@@ -1724,6 +1769,25 @@ pub fn open_graph_with_its_log(root: &Path) -> Projector {
     })
 }
 
+/// The source file every [`source_repository`] starts with.
+pub const SOURCE: (&str, &str) = ("src/lib.rs", "pub fn product() {}\n");
+
+/// A repository holding [`SOURCE`] in a commit, its root canonical.
+pub fn source_repository() -> (tempfile::TempDir, PathBuf) {
+    use super::fixtures::{git_commit_all, init_repo, write_files};
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    init_repo(&root);
+    write_files(&root, &[(SOURCE.0, SOURCE.1)]);
+    git_commit_all(&root, "source");
+    (dir, root)
+}
+
+/// The commit the checkout at `root` has checked out.
+pub fn head_of(root: &Path) -> String {
+    super::fixtures::git_out(root, &["rev-parse", "HEAD"])
+}
+
 /// What `rigger graph build` leaves a project, read as the binary's readers read it: the record
 /// half its `.rigger/graph.db` holds, composed with the view of the head the build advanced the
 /// code store to.
@@ -2563,6 +2627,34 @@ pub fn bloat_advisory_naming(events: usize) -> String {
 /// in order: the log-bloat advisory, and nothing else of validate's.
 pub fn bloat_lines(stderr: &str) -> Vec<&str> {
     lines_where(stderr, |line| line.contains("rigger reset --derived"))
+}
+
+/// Every line naming gating roles among `stderr`, what `rigger validate` wrote there, in order:
+/// the unbounded wall-clock advisory, and nothing else of validate's.
+pub fn wall_clock_advisory_lines(stderr: &str) -> Vec<&str> {
+    lines_where(stderr, |line| line.contains("gating role(s)"))
+}
+
+/// Every line of `stdout`, what `rigger validate` printed there, that reports the build
+/// environment, in order: each `build env:` line, then the `build budget:` line.
+pub fn build_report_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("build "))
+}
+
+/// The [`build_report_lines`] of a workflow declaring no build variable and no build budget:
+/// none declared, then the default budget of 4.
+pub const UNDECLARED_BUILD_REPORT: &[&str] = &["build env: none declared", "build budget: 4"];
+
+/// The `config valid:` lines of `stdout`, what `rigger validate` printed there, in order.
+pub fn config_valid_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("config valid:"))
+}
+
+/// The `config valid:` line `rigger validate` prints over a fresh scaffold whose workflow
+/// declares `gates` gates: its seven agents, the six role seeds and the `sdet-author` test author,
+/// and its four stages.
+pub fn fresh_scaffold_valid_line(gates: usize) -> String {
+    format!("config valid: 7 agents, 4 stages, {gates} gates")
 }
 
 /// The lines of `text` that `keep` admits, in order: the one picker of the lines a command

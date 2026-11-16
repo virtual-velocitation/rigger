@@ -4,7 +4,8 @@
 //! OWNED HERE: the verb's CLI face with no driver serving the project (it runs the gate for
 //! information only, prints the result, says it recorded nothing and records nothing, a stale
 //! socket file included); the socket it asks, the one its driver addresses or else the one the
-//! shared path rule names; its refusals of an uncommitted tree, an undeclared gate and a relative
+//! shared path rule names, whose file name carries the digits `pipe_name` gives the Windows gate
+//! pipe for the same canonical root; its refusals of an uncommitted tree, an undeclared gate and a relative
 //! address; and `rigger emit`'s refusal of a GateVerdict, the forge a worker would otherwise reach for.
 //!
 //! NOT OWNED HERE: the driver's answer to a request (the gate run, the signed verdict, its reuse
@@ -17,55 +18,10 @@ use crate::common;
 use std::path::Path;
 
 use common::cli::{
-    emit_refused, identified_git_project, run_rigger_envs, seed_store, with_run_store,
-    write_workflow,
+    committed_project, emit_refused, one_gate_workflow, rigger_in, run_rigger_envs, with_run_store,
 };
-use common::fixtures::git_ok;
 use rigger::eventstore::{Direction, Event};
 use rigger::run::STREAM;
-
-/// The workflow block declaring the one gate `g`, under no build budget, so the verb's run takes
-/// no slot from a machine-wide pool.
-const GATE_G: &str =
-    "build:\n  max_concurrent: 0\ngates:\n  g:\n    run: \"true\"\n    kind: core\n";
-
-/// A committed project declaring gate `g`, its store seeded and its rigger state ignored, and the
-/// scratch directory its gate runs under.
-fn committed_project() -> (tempfile::TempDir, tempfile::TempDir) {
-    let root = identified_git_project();
-    seed_store(root.path());
-    write_workflow(root.path(), GATE_G);
-    std::fs::write(root.path().join(".gitignore"), ".rigger/\n").unwrap();
-    std::fs::write(root.path().join("README"), "fixture\n").unwrap();
-    git_ok(root.path(), &["add", "-A"]);
-    git_ok(root.path(), &["commit", "-q", "-m", "fixture"]);
-    (root, short_scratch())
-}
-
-/// A scratch directory whose path is short enough to hold a socket path under it: the gate socket
-/// sits `rigger-<uid>/<16 hex>.sock` below the runtime directory, and the OS allows a socket path
-/// only about a hundred bytes, which a long `TMPDIR` would exceed.
-fn short_scratch() -> tempfile::TempDir {
-    #[cfg(unix)]
-    let base = Path::new("/tmp");
-    #[cfg(not(unix))]
-    let base = std::env::temp_dir();
-    tempfile::Builder::new()
-        .prefix("rg")
-        .tempdir_in(base)
-        .expect("a scratch dir")
-}
-
-/// `rigger <args>` in `root` with its scratch, and its runtime directory, under `scratch`:
-/// (stdout, stderr, success).
-fn rigger_in(root: &Path, scratch: &Path, args: &[&str]) -> (String, String, bool) {
-    let scratch = scratch.to_str().unwrap();
-    run_rigger_envs(
-        root,
-        args,
-        &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
-    )
-}
 
 /// Every GateVerdict in `root`'s store.
 fn gate_verdicts(root: &Path) -> Vec<Event> {
@@ -85,7 +41,7 @@ fn gate_verdicts(root: &Path) -> Vec<Event> {
 #[test]
 fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_nothing() {
     for stale in [false, true] {
-        let (root, scratch) = committed_project();
+        let (root, scratch) = committed_project(&one_gate_workflow("true"));
         #[cfg(unix)]
         if stale {
             // A listener dropped without unlinking leaves a socket file nothing answers, at the
@@ -126,7 +82,7 @@ fn with_no_driver_the_gate_verb_runs_the_gate_for_information_only_and_records_n
 #[test]
 fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
     use rigger::gate_channel::{GateChannel, GateReply, GateRequest};
-    let (root, scratch) = committed_project();
+    let (root, scratch) = committed_project(&one_gate_workflow("true"));
     let path = rigger::gate_socket::socket_path_under(scratch.path(), root.path()).unwrap();
     let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
     let answer = |request: GateRequest| GateReply::Refused {
@@ -146,6 +102,60 @@ fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
     );
 }
 
+/// THE VERB ASKS THE SOCKET NAMED BY ITS PROJECT'S PIPE DIGITS: GIVEN two projects whose gate
+/// sockets are served side by side in one runtime directory, each named by the digits `pipe_name`
+/// gives after `\\.\pipe\rigger-gate-` for its canonical root, WHEN an agent runs `rigger gate g`
+/// in each, THEN each verb reports the answer served for its own project and nothing else.
+#[cfg(unix)]
+#[test]
+fn the_gate_verb_asks_the_socket_named_by_its_projects_pipe_digits_and_two_projects_ask_two() {
+    use rigger::gate_channel::{GateChannel, GateReply, GateRequest};
+    use std::os::unix::ffi::OsStrExt;
+    let runtime = common::cli::short_scratch();
+    let projects = ["first", "second"].map(|name| {
+        let (root, _scratch) = committed_project(&one_gate_workflow("true"));
+        let canonical = root.path().canonicalize().unwrap();
+        let pipe = rigger::gate_socket::pipe_name(canonical.as_os_str().as_bytes());
+        // Only the owner directory comes from the unix path rule; the name is the pipe's digits.
+        let owner = rigger::gate_socket::socket_path_under(runtime.path(), root.path()).unwrap();
+        let path = owner.with_file_name(common::fixtures::socket_file_name_of(&pipe));
+        let socket = rigger::gate_socket::GateSocket::bind(&path)
+            .unwrap_or_else(|e| panic!("{name}: its own socket {} binds: {e}", path.display()));
+        let answer = move |request: GateRequest| GateReply::Refused {
+            reason: format!("the {name} project's driver heard gate {}", request.gate),
+        };
+        (name, root, socket, answer)
+    });
+    let ran: Vec<_> = std::thread::scope(|s| {
+        let serving: Vec<_> = projects
+            .iter()
+            .map(|(_, _, socket, answer)| s.spawn(move || socket.serve(answer)))
+            .collect();
+        let ran = projects
+            .iter()
+            .map(|(_, root, ..)| rigger_in(root.path(), runtime.path(), &["gate", "g"]))
+            .collect();
+        for (_, _, socket, _) in &projects {
+            socket.close();
+        }
+        for served in serving {
+            served.join().unwrap().unwrap();
+        }
+        ran
+    });
+    for ((name, ..), got) in projects.iter().zip(ran) {
+        assert_eq!(
+            got,
+            (
+                String::new(),
+                format!("rigger: the {name} project's driver heard gate g\n"),
+                false
+            ),
+            "{name}: (stdout, stderr, success) of rigger gate g"
+        );
+    }
+}
+
 /// THE VERB ASKS WHERE ITS DRIVER SAYS: GIVEN a socket served at a path the runtime directory
 /// does not derive, WHEN an agent runs `rigger gate g` with `RIGGER_GATE_SOCKET` naming it, THEN
 /// the answer served there is what the verb reports; WHEN the variable names a relative path, THEN
@@ -154,7 +164,7 @@ fn the_gate_verb_asks_the_socket_the_shared_path_rule_names_for_its_project() {
 #[test]
 fn the_gate_verb_asks_the_socket_its_driver_addresses_and_refuses_a_relative_address() {
     use rigger::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
-    let (root, scratch) = committed_project();
+    let (root, scratch) = committed_project(&one_gate_workflow("true"));
     let path = scratch.path().join("addressed").join("gate.sock");
     let socket = rigger::gate_socket::GateSocket::bind(&path).unwrap();
     let answer = |request: GateRequest| GateReply::Refused {
@@ -200,7 +210,7 @@ fn the_gate_verb_asks_the_socket_its_driver_addresses_and_refuses_a_relative_add
 #[cfg(unix)]
 #[test]
 fn a_runtime_directory_too_long_for_a_socket_is_named_and_the_verb_runs_for_information_only() {
-    let (root, scratch) = committed_project();
+    let (root, scratch) = committed_project(&one_gate_workflow("true"));
     let long = scratch.path().join("r".repeat(120));
     std::fs::create_dir_all(&long).unwrap();
     let (out, err, ok) = run_rigger_envs(
@@ -250,7 +260,7 @@ fn the_gate_verb_refuses_an_uncommitted_tree_and_an_undeclared_gate_recording_no
     ];
     for case in cases {
         let why = case.why;
-        let (root, scratch) = committed_project();
+        let (root, scratch) = committed_project(&one_gate_workflow("true"));
         if case.dirty {
             std::fs::write(root.path().join("loose.rs"), "loose\n").unwrap();
         }
@@ -270,7 +280,7 @@ fn the_gate_verb_refuses_an_uncommitted_tree_and_an_undeclared_gate_recording_no
 
 #[test]
 fn rigger_emit_refuses_a_gate_verdict_so_no_worker_can_forge_one() {
-    let (root, scratch) = committed_project();
+    let (root, scratch) = committed_project(&one_gate_workflow("true"));
     let body = r#"{"gate":"g","pass":true,"flaky":false,"evidence":"PASS"}"#;
     let (_out, err, ok) = rigger_in(root.path(), scratch.path(), &["emit", "GateVerdict", body]);
     assert!(!ok, "rigger emit GateVerdict exits non-zero");

@@ -38,10 +38,9 @@ use std::path::{Path, PathBuf};
 #[path = "common/source_audit.rs"]
 mod source_audit;
 use source_audit::{
-    assert_real_tree_clean, cfg_test_ranges, close_of, enclosing_fn_line, fn_sig_lines,
-    gate_name_in, holds_whole_word, imported_names, in_ranges, is_definition_site,
-    qualifier_before, ref_punct, ref_token, tokenize, write_file, Finding, RawKind, RawTok,
-    GATE_WORD,
+    assert_real_tree_clean, called_at, cfg_test_ranges, close_of, enclosing_fn_line, fn_sig_lines,
+    gate_name_in, holds_whole_word, imported_names, in_ranges, qualifier_before, ref_punct,
+    ref_token, tokenize, write_file, Finding, RawKind, RawTok, GATE_WORD,
 };
 
 // ---------------------------------------------------------------------------------------------
@@ -876,12 +875,6 @@ const STREAM_NAME: &str = "STREAM";
 /// Whether `tok` is the identifier [`STREAM_NAME`].
 fn names_stream(tok: &RawTok) -> bool {
     ref_token(Some(tok), RawKind::Ident, STREAM_NAME)
-}
-
-/// The name called at `at`: an identifier followed by `(` that is no definition site.
-fn called_at(toks: &[RawTok], at: usize) -> Option<&str> {
-    let call = toks[at].kind == RawKind::Ident && ref_punct(toks.get(at + 1), "(");
-    (call && !is_definition_site(toks, at)).then_some(toks[at].text.as_str())
 }
 
 /// Whether the token at `at` is the project stream's constant: `STREAM` qualified by a

@@ -1,11 +1,13 @@
 //! Rigger's process adapters, ring 3 of the workspace: the one process-spawn port every child
-//! is built through, the reaper that ends processes rooted inside a directory, the read-only
-//! check for a process still holding a directory, the machine-wide
+//! is built through, the one interface every fact about a running process is read through, the
+//! reaper that ends processes rooted inside a directory, the read-only check for a process still
+//! holding a directory, the machine-wide
 //! build-slot budget, the ordered parallel map, the whole-line writer for a stream other processes share, the
 //! keep-awake adapter behind the domain's
-//! `SleepHold` port, the detached start of a process that outlives its starter, and the trigger an
-//! interactive interrupt fires. They know `std::process`, the filesystem, threads and the host's OS
-//! facilities; the root `rigger` crate re-exports every module under its historical path.
+//! `SleepHold` port, the detached start of a process that outlives its starter, the trigger an
+//! interactive interrupt fires, and the one read of the user's home directory. They know
+//! `std::process`, the filesystem, threads and the host's OS facilities; the root `rigger` crate
+//! re-exports every public module but `file_trust` and `home` under its own name.
 
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod budget;
@@ -17,10 +19,13 @@ pub mod file_trust;
 pub mod gate_socket;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod holders;
+pub mod home;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod interrupt;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod keep_awake;
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod os_process;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod parallel;
 #[cfg(any(feature = "store", not(feature = "core")))]
@@ -29,6 +34,11 @@ pub mod reap;
 pub mod subprocess;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod whole_line;
+/// The Win32 conversions the Windows adapters of `gate_socket` and `os_process` share.
+#[cfg(all(windows, any(feature = "store", not(feature = "core"))))]
+mod win32;
+
+pub use home::home_dir;
 
 // The parameterised-test macro the moved tests name by its historical `crate::` path. Every
 // module whose tests expand it is store-gated, so it is imported where those modules compile.
@@ -46,11 +56,22 @@ extern crate self as rigger;
 #[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/host.rs"]
 mod host_fixtures;
+/// The fake buses the Linux keep-awake adapter's tests share with this crate's graphical-session
+/// suite, compiled where that adapter is.
+#[cfg(all(
+    test,
+    target_os = "linux",
+    any(feature = "store", not(feature = "core"))
+))]
+#[path = "../../../tests/common/fixtures/keep_awake.rs"]
+mod keep_awake_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[path = "../../../tests/common/fixtures/manifest.rs"]
 mod manifest_fixtures;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
     pub use crate::host_fixtures::*;
+    #[cfg(target_os = "linux")]
+    pub use crate::keep_awake_fixtures::*;
     pub use crate::manifest_fixtures::*;
 }

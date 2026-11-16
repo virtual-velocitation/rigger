@@ -31,14 +31,6 @@ env:
   GIT_TERMINAL_PROMPT: "0"
 
 jobs:
-  # The default build now INCLUDES turbovec (it is a default cargo feature), so this
-  # job builds + tests the real semantic grounder. Turbovec pulls the ONNX runtime
-  # and needs OpenBLAS, installed before any cargo step; CARGO_BUILD_JOBS / the
-  # committed .cargo/config.toml (jobs = 8) keep peak build memory bounded. The
-  # turbovec model tests DO run here: `cargo test` below downloads the ~130 MB of
-  # embedding weights on first use and runs them on CPU (no GPU in CI). They are
-  # serialized cross-binary via serial_test's file lock (the `turbovec_model` key), so
-  # even though CI has no CUDA session to corrupt, no two model constructions overlap.
   build-test:
     # Every lane below names the whole workspace: `--all` on fmt, `--workspace` on clippy, build
     # and test. A bare `cargo clippy`, `cargo build` or `cargo test` at the repository root
@@ -54,10 +46,6 @@ jobs:
       # Full debuginfo in the hundreds of test binaries the three feature lanes build exceeds the
       # runner's disk; line tables keep the file:line of panic messages and backtraces.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      # Pin fastembed's model cache to a stable, absolute path (its default is a
-      # `.fastembed_cache` dir in the CWD) so the cache step below can key on it and
-      # restore the ~130 MB of embedding weights across runs.
-      FASTEMBED_CACHE_DIR: ${{ github.workspace }}/.fastembed_cache
     steps:
       - uses: actions/checkout@v4
         with:
@@ -85,44 +73,19 @@ jobs:
       - name: install go-gitsemver (version derivation, spec 74)
         run: go install github.com/MyCarrier-DevOps/go-gitsemver@v1.11.0
       - uses: Swatinem/rust-cache@v2
-        with:
-          # rust-cache restores the compiled `ort-sys` crate but NOT ort's downloaded ONNX
-          # runtime, which lives in ~/.cache/ort.pyke.io (outside the cargo dirs). On a WARM
-          # cache ort-sys is not rebuilt, so its build script never re-downloads the runtime,
-          # leaving that dir empty on the fresh runner -> ort falls back to the bare
-          # `libonnxruntime.so` and panics ("cannot open shared object file"), poisoning
-          # CONSTRUCT_MU and cascading through every turbovec test. Cache the runtime
-          # alongside the build so the two are restored coherently; the prefix-key bump forces
-          # one cold rebuild that repopulates both from scratch. The fastembed model weights
-          # (~130 MB, downloaded on first `cargo test` model use into FASTEMBED_CACHE_DIR,
-          # pinned below to a stable path) ride the SAME rust-cache so the whole ONNX/embed
-          # working set is restored coherently in one step - no separate, overlapping cache.
-          prefix-key: "v1-rust-ort"
-          cache-directories: |
-            ~/.cache/ort.pyke.io
-            ${{ github.workspace }}/.fastembed_cache
-      - name: install OpenBLAS (turbovec is in the default build)
-        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
-      # The build-environment-authority test asserts against the REAL PATH: it requires the
-      # `sccache` wrapper it configures to exist. Install it as a prebuilt binary.
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: sccache
       - name: fmt
         run: cargo fmt --all --check
-      - name: clippy (turbovec, default features)
+      - name: clippy (default features)
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: build
         run: cargo build --workspace --verbose
       - name: test
         run: cargo test --workspace --no-fail-fast --verbose
-      # The deliberate light opt-out: `--no-default-features` drops turbovec so the grep-only
-      # build (no ONNX/OpenBLAS) stays green. The lanes script gives it the default lane's
-      # battery - clippy over every workspace target with warnings denied, then every workspace
-      # test - so a warning that only surfaces under the grep-only cfg (dead code behind the
-      # turbovec feature, an unused import in the fallback path) fails CI instead of silently
-      # rotting. The loud "built without the turbovec feature" path is asserted by
-      # select_grounder's no-feature test here.
+      # The deliberate light opt-out: `--no-default-features` drops the `symbols` grounder, so the
+      # grep-only build stays green. The lanes script gives it the default lane's battery - clippy
+      # over every workspace target with warnings denied, then every workspace test - so a warning
+      # that only surfaces under the grep-only cfg (dead code behind a default feature, an unused
+      # import in a fallback path) fails CI instead of silently rotting.
       - name: no-default lane (grep-only, --no-default-features)
         run: sh .rigger/gates/lanes.sh no-default
       # Spec 93 criterion 6, the terminal gate: the pure `core` lane (`--no-default-features
@@ -142,20 +105,15 @@ jobs:
   # `--locked` ignores the committed Cargo.lock and re-resolves every dependency to the
   # newest version its constraints allow. That is how an end user installs (the README's
   # `cargo install --git ...` carries no `--locked`), and it is exactly where a transitive
-  # crate can skew FORWARD past a pinned direct dep: `ort =2.0.0-rc.9` only requires
-  # `ort-sys = "2.0.0-rc.9"`, which under pre-release semver matches rc.10/rc.11/rc.12, and
-  # rc.10+ regenerated the OrtApi bindings incompatibly, breaking rc.9's `ortsys!` macro
-  # (267 compile errors). Cargo.toml now pins `ort-sys = "=2.0.0-rc.9"` so the fresh resolve
-  # stays coherent; this job proves it by actually running the no-`--locked` install into a
-  # throwaway --root and executing the resulting binary, so any future forward-skew of
-  # ort-sys (or any other transitive crate) fails CI here instead of only biting a user who
-  # runs `cargo install`. Turbovec is in the default build, so this needs OpenBLAS + the ort
-  # ONNX runtime, cached like the build-test job.
+  # crate can skew FORWARD past the version a pinned direct dependency was built against
+  # (under semver a pre-release requirement such as `2.0.0-rc.9` also matches every later rc
+  # of 2.0.0). This job proves the fresh resolve stays coherent by actually running the
+  # no-`--locked` install into a throwaway --root and executing the resulting binary, so a
+  # forward skew fails CI here instead of only biting a user who runs `cargo install`.
   install-nolock:
     runs-on: ubuntu-latest
     env:
       CARGO_BUILD_JOBS: 8
-      FASTEMBED_CACHE_DIR: ${{ github.workspace }}/.fastembed_cache
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -165,13 +123,6 @@ jobs:
           # of crates/console-core runs here too.
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-        with:
-          prefix-key: "v1-rust-ort"
-          cache-directories: |
-            ~/.cache/ort.pyke.io
-            ${{ github.workspace }}/.fastembed_cache
-      - name: install OpenBLAS (turbovec is in the default build)
-        run: sudo apt-get update && sudo apt-get install -y libopenblas-dev
       # No `--locked`: force a fresh resolution so a forward-skewed transitive dep is
       # caught. `--root "$RUNNER_TEMP/rigger-install"` keeps the install out of the way.
       - name: cargo install --path . WITHOUT --locked (fresh resolve)
@@ -198,8 +149,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      # One crate on its lightest features: nothing here builds the root package, its
-      # turbovec/ONNX stack or its wasm32 cross-compile.
+      # One crate on its lightest features: nothing here builds the root package or its wasm32
+      # cross-compile.
       - name: clippy
         run: cargo clippy -p rigger-store-sqlite --no-default-features --lib --tests -- -D warnings
       # The contract runs under the test runner's default address-space cap
@@ -207,3 +158,33 @@ jobs:
       # so the adapter's threads fit under it.
       - name: contract test (KurrentDB via testcontainers)
         run: cargo test -p rigger-store-sqlite --no-default-features eventstore::kurrentdb
+
+  # The cross-OS check (spec 125): the workspace compiles on Windows and on macOS, one leg per OS.
+  # No job runs a test there: this check is the compile of the macOS and Windows adapters. The check
+  # step runs under bash on every runner and exports an empty RUSTC_WRAPPER in its own shell, so
+  # cargo and any cargo it starts run no wrapper: .cargo/config.toml names a Unix shell script as
+  # its wrapper, and an empty environment value overrides it. The build script's version
+  # derivation degrades to `+unversioned` without go-gitsemver, so the job installs nothing else.
+  cross-os-check:
+    strategy:
+      # A red leg never cancels the other, so each OS reports its own errors in the one run.
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history, as build-test checks out: the build script's provenance (`git describe`)
+          # names the nearest reachable tag, which a shallow checkout lacks.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # Spec 93 criterion 3: `cargo check` runs crates/rigger-dash's build script, which
+          # cross-compiles crates/console-core for this target.
+          targets: wasm32-unknown-unknown
+      - name: check the workspace
+        shell: bash
+        run: |
+          export RUSTC_WRAPPER=
+          cargo check --workspace

@@ -149,7 +149,7 @@ fn core_module_paths_reads_the_real_committed_audit_record() {
 // recording fixture standing in for `cargo` - never a real cross-compile - so this runs on
 // every `cargo test`, always. Every test here mutates real process env (the exact leak
 // surface this function exists to close) so all of them share one lock, the same
-// discipline `tests/build_env_authority_periphery.rs`'s `env_test_lock` uses and documents:
+// discipline `tests/common/mod.rs`'s `env_test_lock` documents:
 // `cargo test` runs a binary's tests as concurrent threads by default, and a concurrent
 // env read racing a concurrent env write is a genuine POSIX getenv/setenv hazard regardless
 // of which keys either side touches.
@@ -161,8 +161,7 @@ fn recording_cargo_fixture() -> PathBuf {
 
 /// Every env var name this file's tests ever set on the real process, removed - the
 /// deterministic baseline each test starts and ends on, regardless of which of them ran
-/// (or panicked) before it, matching `stage_fake_sccache_on_path`'s sibling discipline in
-/// `tests/build_env_authority_periphery.rs`.
+/// (or panicked) before it.
 fn clear_recording_cargo_env() {
     for key in [
         "RECORDING_CARGO_DUMP_FILE",

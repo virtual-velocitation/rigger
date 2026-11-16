@@ -12,14 +12,25 @@ pub const LANGUAGE_NEUTRAL_IMPLEMENTER: &str =
     "---\nid: implementer\nmodel: opus\ntools: [Read, Edit, Write, Grep, Glob, Bash, \
      Agent]\nisolation: worktree\nrecurse: true\n---\nYou implement ONE \
      fully-specified unit inside your worktree.\nWrite the failing test first, confirm \
-     RED, implement minimally, confirm GREEN, run\nthe named gates, commit.\n";
+     RED, implement minimally, confirm GREEN, run the\nchecks your change needs, \
+     commit.\nThe workflow's gates run the full battery on the commit.\n";
+
+/// The `defaults.max_parallel_units: 2` lines every workflow `rigger init` writes, under the
+/// sizing comment that explains the bound, byte for byte.
+pub const MAX_PARALLEL_UNITS_DECLARED: &str =
+    "  # How many implement units build at once (spec 102, per-unit pipelining). Each\n  # live \
+     unit builds in its own worktree, into its own build cache when build.env\n  # points one \
+     at {build_cache}, and unbounded parallelism can fill disk on a wide\n  # fan-out. 0 (the \
+     default) is unbounded, unchanged until you set this; 2 bounds\n  # the worst case to two \
+     live units' builds at a time.\n  max_parallel_units: 2\n";
 
 /// The role seeds a fresh `rigger init` writes beside the implementer persona, sorted.
-pub const ROLE_SEED_FILES: [&str; 5] = [
+pub const ROLE_SEED_FILES: [&str; 6] = [
     "adjudicator.md",
     "adversary.md",
     "architecture-reviewer.md",
     "planner.md",
+    "sdet-author.md",
     "sdet.md",
 ];
 
@@ -30,6 +41,18 @@ pub fn agents_beside(implementer: &str) -> Vec<String> {
     files.push(implementer.to_string());
     files.sort();
     files
+}
+
+/// The line `rigger validate` warns on when the gating roles `roles` (each quoted, joined by
+/// `, `) resolve `max_wall_clock` to `0`, unbounded: each sets `0` itself, or sets none under a
+/// `0` `defaults.max_wall_clock`.
+pub fn wall_clock_advisory_naming(roles: &str) -> String {
+    format!(
+        "warning: gating role(s) {roles} resolve max_wall_clock to 0 (unbounded), so a hung \
+         gating agent is never swept and the run stalls silently. Set a non-zero max_wall_clock \
+         (seconds) on those roles, or leave theirs unset under a non-zero \
+         defaults.max_wall_clock."
+    )
 }
 
 /// The two unit stages' agents, `[implement, checkin]`.

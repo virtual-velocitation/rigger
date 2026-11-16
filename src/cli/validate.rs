@@ -206,27 +206,17 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
              is unintended"
         );
     }
-    // Build-environment SURFACES report (spec 65 units 2 and 5, NO SILENT DEGRADE /
-    // HONEST SURFACES): a named-but-absent `build.wrapper`, or a named wrapper whose cache
-    // dir cannot be created, already failed above (`config::load`'s `Config::validate`
-    // rejects both at run start, before `cfg` could exist), so by this point resolution
-    // can only succeed - this SURFACES what it resolved to (wrapper, cache dir, budget) so
-    // an `auto` probe that quietly found nothing (or found a wrapper whose cache dir turned
-    // out unusable) is SEEN as "none" here rather than silently doing nothing invisibly.
-    // Reads through the SAME `resolve_build_layer` authority `Config::validate` and the
-    // conductor's build-environment authority use - never a second, independently
-    // re-derived report; the formatting itself lives in the pure, unit-tested
-    // `build_environment_report` below so this edge stays a thin resolve-then-print.
-    let wrapper =
-        match resolve_build_layer(&cfg.workflow.build.wrapper, &cfg.workflow.build.cache_dir) {
-            Ok(w) => w,
-            Err(e) => return Err(e.to_string().into()),
-        };
+    // Build-environment SURFACE: the declared `build.env`, each variable with its template, and
+    // the build budget. A declaration the one check refuses already failed above
+    // (`config::load`'s `Config::validate` refuses it before `cfg` could exist), so every line
+    // names a variable a run exports; the formatting lives in the pure, unit-tested
+    // `build_environment_report` below.
+    //
     // Gate requirement SURFACE (spec 113): one line per declared gate, in gate-id order,
     // rendered from the resolution the load itself made - a missing requirement already
     // refused the load above, before any output, so every line names a resolved path and no
     // second lookup runs here.
-    for line in build_environment_report(wrapper.as_deref(), &cfg.workflow.build)
+    for line in build_environment_report(&cfg.workflow.build)
         .into_iter()
         .chain(gate_requirement_lines(&gate_requirements))
     {
@@ -239,10 +229,11 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     for advisory in validate_advisories(root, cfg.workflow.defaults.grep_guard)? {
         eprintln!("{advisory}");
     }
-    // Unbounded wall-clock advisory (spec 19c, unit 3): warn when `defaults.max_wall_clock`
-    // is unbounded and a gating role carries no per-agent bound, so a hung gating agent that
-    // is never swept - a silent stall - is visible at author time. Non-fatal like the others;
-    // reuses the single `config::gating_agent_ids` authority the verdict-line lint uses.
+    // Unbounded wall-clock advisory (spec 19c, unit 3): warn when a gating role's
+    // `max_wall_clock` resolves to `0` (its own, or the default it inherits), so a hung gating
+    // agent that is never swept - a silent stall - is visible at author time. Non-fatal like
+    // the others; reuses the single `config::gating_agent_ids` authority the verdict-line lint
+    // uses.
     if let Some(advisory) = config::unbounded_wall_clock_advisory(&cfg) {
         eprintln!("{advisory}");
     }
@@ -352,35 +343,23 @@ fn store_advisories(
     Ok(())
 }
 
-/// The build-environment lines `rigger validate` prints (spec 65 unit 5, HONEST SURFACES):
-/// given the wrapper ALREADY resolved by [`resolve_build_layer`] (the same authority
-/// `Config::validate`'s run-start check and the conductor's build-environment authority
-/// read - this never re-derives it), render:
-/// - the wrapper name, or `none` when the layer is inactive;
-/// - the cache dir it resolved to (via [`resolved_cache_dir`], the SAME ternary
-///   [`BuildEnv::resolve`] and the cache-dir probe use) - ONLY when a wrapper is actually
-///   active, since an inactive layer touches no cache dir and claiming one would fabricate
-///   a surface nothing backs;
-/// - the machine-wide build budget, ALWAYS: `build.max_concurrent` gates every compiler
-///   invocation this loop runs (spec 65 unit 3) regardless of whether a wrapper is
-///   configured, so an operator sees it even with the wrapper off. `0` is the documented
-///   unlimited convention (mirrors `defaults.budget`), reported in words rather than a
-///   bare, easily-misread `0`.
+/// The build-environment lines `rigger validate` prints: one `build env: NAME=template` line
+/// per variable the workflow's `build.env` declares, in name order, or `build env: none
+/// declared` when it declares none; then the machine-wide build budget, ALWAYS:
+/// `build.max_concurrent` gates every compiler invocation this loop runs (spec 65 unit 3). `0`
+/// is the documented unlimited convention (mirrors `defaults.budget`), reported in words rather
+/// than a bare, easily-misread `0`.
 ///
-/// Pure formatting over already-resolved values, so it is unit-tested without touching
-/// PATH or the filesystem; the effectful wrapper resolution stays at the `cmd_validate`
-/// edge that calls this.
-fn build_environment_report(wrapper: Option<&str>, build: &config::BuildConfig) -> Vec<String> {
-    let mut lines = Vec::new();
-    match wrapper {
-        Some(w) => {
-            lines.push(format!("build wrapper: {w}"));
-            lines.push(format!(
-                "build cache dir: {}",
-                resolved_cache_dir(&build.cache_dir)
-            ));
-        }
-        None => lines.push("build wrapper: none".to_string()),
+/// Pure formatting over the declaration `Config::validate` already accepted, so it is
+/// unit-tested without touching PATH or the filesystem.
+fn build_environment_report(build: &config::BuildConfig) -> Vec<String> {
+    let mut lines: Vec<String> = build
+        .env
+        .iter()
+        .map(|(name, template)| format!("build env: {name}={template}"))
+        .collect();
+    if lines.is_empty() {
+        lines.push("build env: none declared".to_string());
     }
     lines.push(format!(
         "build budget: {}",
@@ -751,8 +730,8 @@ fn residue_advisories(
 /// failure and never a kill (the teardown reaps, such as `Worktree::remove`'s, are the only
 /// kill). Empty when nothing is rooted there; and because the shared scan authority
 /// ([`rigger::reap::processes_rooted_under`] - the SAME one the teardown reap consumes) returns
-/// empty where the dir or `/proc` is absent, this is a graceful no-op (empty, never an error)
-/// on a platform without `/proc` too.
+/// empty where the dir is absent or the process interface cannot read the OS, this is a
+/// graceful no-op (empty, never an error) on such an OS too.
 fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
     rigger::reap::processes_rooted_under(scratch_root)
         .into_iter()
@@ -1042,6 +1021,7 @@ mod tests {
     use crate::test_support::git_ok_with_identity;
     use crate::test_support::git_out;
     use crate::test_support::tool_available;
+    use crate::test_support::{build_declaring, DECLARED_BJL};
     use rigger::gate::ResolvedRequirement;
     use std::process::Command;
 
@@ -1546,9 +1526,9 @@ mod tests {
 
     #[test]
     fn leaked_process_advisories_is_a_graceful_no_op_when_the_scratch_root_is_absent() {
-        // Platform tolerance: an absent scratch root - the stand-in for an absent `/proc`,
-        // since the shared scanner short-circuits to empty in both cases - yields an empty
-        // list and NEVER an error, so validate keeps working on any platform.
+        // Platform tolerance: an absent scratch root - the stand-in for an OS the process
+        // interface cannot read, since the shared scanner answers empty in both cases - yields an
+        // empty list and NEVER an error, so validate keeps working on any platform.
         let dir = tempfile::tempdir().unwrap();
         let absent = dir.path().join("never-created");
         assert!(leaked_process_advisories(&absent).is_empty());
@@ -1582,70 +1562,63 @@ mod tests {
         assert!(!has_tracked_project_id(root).unwrap());
     }
 
-    // --- Spec 65 unit 5: `rigger validate` SURFACES the resolved wrapper, cache dir, and
-    // budget; `rigger setup` writes `build: { wrapper: auto }` for new projects only. ---
+    // --- Spec 125 criterion 4: `rigger validate` reports the declared build environment and
+    // the build budget. ---
 
-    /// With a wrapper active, `rigger validate` reports the wrapper name, the cache dir it
-    /// resolved to, AND the budget - three lines, in that order, so an operator sees the
-    /// whole resolved build environment at a glance (Design: "wrapper ... cache dir, slot
-    /// budget"). The cache dir line reads through the SAME [`resolved_cache_dir`] the
-    /// [`BuildEnv`] resolver and the cache-dir probe use - never a second independently
-    /// re-derived path.
+    /// The report names each declared variable with its template, in name order, or says
+    /// none is declared, then the build budget, `0` in words as unlimited.
     #[test]
-    fn build_environment_report_with_a_wrapper_lists_wrapper_cache_dir_and_budget() {
-        let build = config::BuildConfig {
-            wrapper: "sccache".to_string(),
-            cache_dir: "/tmp/example-cache".to_string(),
-            jobs: 0,
-            max_concurrent: 4,
-        };
-        let lines = build_environment_report(Some("sccache"), &build);
-        assert_eq!(
-            lines,
-            vec![
-                "build wrapper: sccache".to_string(),
-                "build cache dir: /tmp/example-cache".to_string(),
-                "build budget: 4".to_string(),
-            ]
-        );
-    }
-
-    /// With no wrapper resolved (`off`, or `auto` finding nothing), NO cache dir line is
-    /// printed - an inactive layer touches no cache dir, so claiming one would be a fabricated
-    /// surface - but the budget line still prints: `build.max_concurrent` gates every compiler
-    /// invocation this loop runs regardless of whether a wrapper is configured.
-    #[test]
-    fn build_environment_report_with_no_wrapper_omits_cache_dir_but_keeps_budget() {
-        let build = config::BuildConfig {
-            wrapper: String::new(),
-            cache_dir: String::new(),
-            jobs: 0,
-            max_concurrent: 8,
-        };
-        let lines = build_environment_report(None, &build);
-        assert_eq!(
-            lines,
-            vec![
-                "build wrapper: none".to_string(),
-                "build budget: 8".to_string(),
-            ]
-        );
-    }
-
-    /// `max_concurrent: 0` is the documented unlimited convention (matching
-    /// `defaults.budget`'s own `0` = unlimited); the report says so in words, never a bare
-    /// misleading `0`.
-    #[test]
-    fn build_environment_report_zero_max_concurrent_reports_unlimited() {
-        let build = config::BuildConfig {
-            max_concurrent: 0,
-            ..Default::default()
-        };
-        let lines = build_environment_report(None, &build);
-        assert!(
-            lines.iter().any(|l| l == "build budget: unlimited"),
-            "a zero max_concurrent must report as unlimited, got: {lines:?}"
-        );
+    fn build_environment_report_names_each_declared_variable_then_the_budget() {
+        // Each row: why, the declaration, `build.max_concurrent`, then the report's lines.
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], u32, &'a [&'a str]);
+        let cases: [Case; 5] = [
+            (
+                "the criterion's declaration",
+                &DECLARED_BJL,
+                4,
+                &[
+                    "build env: B={build_cache}/x",
+                    "build env: J={jobs}",
+                    "build env: L=lit",
+                    "build budget: 4",
+                ],
+            ),
+            (
+                "an empty template",
+                &[("E", "")],
+                1,
+                &["build env: E=", "build budget: 1"],
+            ),
+            (
+                "nothing declared",
+                &[],
+                8,
+                &["build env: none declared", "build budget: 8"],
+            ),
+            (
+                "an unlimited budget",
+                &[],
+                0,
+                &["build env: none declared", "build budget: unlimited"],
+            ),
+            (
+                "variables in name order",
+                &[("Z", "1"), ("A", "2")],
+                0,
+                &[
+                    "build env: A=2",
+                    "build env: Z=1",
+                    "build budget: unlimited",
+                ],
+            ),
+        ];
+        for (why, declared, max_concurrent, lines) in cases {
+            let build = config::BuildConfig {
+                max_concurrent,
+                ..build_declaring(declared, 3)
+            };
+            assert_eq!(build_environment_report(&build), lines, "{why}");
+        }
     }
 
     // --- Spec 113: `rigger validate` reports each declared gate's requirements from the

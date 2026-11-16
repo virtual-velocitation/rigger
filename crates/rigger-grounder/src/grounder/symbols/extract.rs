@@ -2304,7 +2304,7 @@ fn enclosing_defs(
     callers
 }
 
-/// A definition as its graph node records it, the one [`locate_extent`] bounds.
+/// A definition as its graph node records it, the one [`extent_in`] bounds.
 #[derive(Clone, Copy, Debug)]
 pub struct Recorded<'a> {
     /// Its leaf, the node's `name`.
@@ -2318,31 +2318,22 @@ pub struct Recorded<'a> {
     pub line: u32,
 }
 
-/// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT): [`extract`]
-/// runs over `source` under the INJECTED grammar and tags query, exactly as the code graph is
-/// extracted, and the 1-based, inclusive last line of the `recorded` definition's whole construct
-/// is the widest [`Def::end_line`] among the production definitions - those not `is_test`, as the
-/// graph holds no other - named `name`, of kind `kind`, at `line` and, when its `path` is given,
-/// at that id path ([`Def::path`]). The kind is compared through `kind_str`, so a field beside a
-/// same-named fn, or a variant inside its same-named enum, never widens the bound. `None` when no
-/// such definition sits at the line; an `Err` is a grammar or query that cannot run over the
-/// source.
-pub fn locate_extent(
-    source: &str,
-    lang: Lang,
-    tags: &CompiledTags,
-    recorded: Recorded,
-) -> Result<Option<u32>, String> {
+/// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT), over a
+/// file's definitions `defs`, a bundled grammar's ([`extract`]) or a declared extractor's
+/// answer (spec 125, THE EXTRACTOR PROTOCOL): the 1-based, inclusive last line of the
+/// `recorded` definition's whole construct is the widest [`Def::end_line`] among the production
+/// definitions - those not `is_test`, as the graph holds no other - named `name`, of kind `kind`,
+/// at `line` and, when its `path` is given, at that id path ([`Def::path`]). The kind is compared
+/// through `kind_str`, so a field beside a same-named fn, or a variant inside its same-named enum,
+/// never widens the bound. `None` when no such definition sits at the line.
+pub fn extent_in(defs: &[Def], recorded: Recorded) -> Option<u32> {
     let Recorded {
         name,
         path,
         kind,
         line,
     } = recorded;
-    let symbols = extract(source, lang, tags)?;
-    Ok(symbols
-        .defs
-        .iter()
+    defs.iter()
         .filter(|d| {
             !d.is_test
                 && d.name == name
@@ -2351,7 +2342,7 @@ pub fn locate_extent(
                 && d.line == line
         })
         .map(|d| d.end_line)
-        .max())
+        .max()
 }
 
 /// The byte offset at which each 0-based line begins. `offsets[0]` is always `0`; each `\n` opens
@@ -4048,14 +4039,16 @@ class K
         );
     }
 
-    /// The last line [`locate_extent`] bounds the Rust definition named `name` of kind `kind`
-    /// recorded at `line` in `source` to, at no path, under the registered Rust grammar and query.
+    /// The last line [`extent_in`] bounds the Rust definition named `name` of kind `kind`
+    /// recorded at `line` in `source` to, at no path, over the definitions [`extract`] gives under
+    /// the registered Rust grammar and query.
     fn located(source: &str, name: &str, kind: Kind, line: u32) -> Option<u32> {
         let entry = crate::symbol_index::registered("rs");
-        locate_extent(
-            source,
-            entry.lang,
-            entry.tags().unwrap(),
+        let defs = extract(source, entry.lang, entry.tags().unwrap())
+            .expect("the registered query runs over the source")
+            .defs;
+        extent_in(
+            &defs,
             Recorded {
                 name,
                 path: None,
@@ -4063,7 +4056,6 @@ class K
                 line,
             },
         )
-        .expect("the registered query runs over the source")
     }
 
     crate::test_cases! {

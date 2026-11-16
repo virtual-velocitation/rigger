@@ -18,13 +18,20 @@
 //!     (spec 121 criterion 19); and the same fault at the operator's surface - a `rigger run`
 //!     whose deferred gate's guard probe fails exits non-zero printing that fault as the
 //!     conductor's error, with no deferred verdict, nothing charged and the inline verdict
-//!     kept, and the next run after the guard is fixed finishes (spec 121 criterion 19).
+//!     kept, and the next run after the guard is fixed finishes (spec 121 criterion 19); and
+//!     the lock's lifetime between the real producer and the real consumer - after
+//!     `rigger gate` has run and exited, a gate command's background child, its output sent
+//!     away from the gate's pipes, keeps the guard and so keeps `rigger reset --build-cache`
+//!     refused with the cache untouched until it exits, and the reset reclaims the cache once
+//!     it has (spec 125 criterion 10).
 //!   - NOT OWNED: the exclusion PRIMITIVE's own unit-level contract
 //!     (`reclaim_shared_build_cache`'s rename/idempotent-zero/busy/prompt-release behavior) -
 //!     pinned in-crate beside its definition in `src/cli/mod.rs`; the PRODUCER half's OWN
-//!     internal shape (the flock-wrap construction, the guard probe's fault decision, holding
-//!     the guard SHARED for a genuinely guarded cargo invocation) - pinned in
-//!     `crates/rigger-gates-shell/src/gate.rs` and `crates/rigger-conductor/src/conductor.rs`;
+//!     internal shape (how `gate::hold_shared_lock` takes the shared lock and
+//!     `subprocess::inherit_on_exec` hands its descriptor across exec, the guard probe's fault
+//!     decision, holding the guard SHARED for a genuinely guarded cargo invocation) - pinned in
+//!     `crates/rigger-gates-shell/src/gate.rs`, `crates/rigger-process/src/subprocess.rs` and
+//!     `crates/rigger-conductor/src/conductor.rs`;
 //!     the probe fault's literal message - pinned in `crates/rigger-conductor/src/conductor.rs`'s
 //!     `assert_probe_fault_halts_the_step`, which this file's run test prints through; and
 //!     `rigger validate`'s FOOTPRINT ACCOUNTING category for this cache - spec 77 criterion 5's
@@ -42,8 +49,12 @@ use common::cli::temp_store_project;
 use common::cli::write_workflow_fixture;
 use common::cli::WorkflowFixture;
 use common::cli::ISOLATED_WORKER;
+use common::fixtures::build_declaring;
+use common::fixtures::contended;
 use common::fixtures::count_of_type;
 use common::fixtures::gate_outcomes;
+use common::fixtures::try_exclusive_lock;
+use common::fixtures::wait_until;
 use common::fixtures::write_file;
 use common::git::temp_git_project_with_commit;
 use rigger::budget::BuildBudget;
@@ -260,24 +271,9 @@ fn reset_build_cache_refuses_rather_than_waits_while_a_build_holds_the_guard() {
         .spawn()
         .expect("spawn an external flock holder for the fixture");
 
-    // Wait until the external holder has actually taken the shared lock (an exclusive probe
-    // must fail) before racing the real reset against it.
-    let mut held = false;
-    for _ in 0..200 {
-        let probed = Command::new("flock")
-            .arg("-n")
-            .arg("-x")
-            .arg(&guard)
-            .arg("true")
-            .status()
-            .map(|s| !s.success())
-            .unwrap_or(false);
-        if probed {
-            held = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(25));
-    }
+    // Wait until the external holder has actually taken the shared lock (an exclusive try-lock
+    // is refused) before racing the real reset against it.
+    let held = wait_until(|| try_exclusive_lock(&guard) == contended());
     assert!(
         held,
         "the external fixture holder must take the guard shared before this test proceeds"
@@ -312,14 +308,14 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     // driver's own liveness heartbeat exists around) must never let `reset --build-cache`
     // reclaim a cache a still-running, now-orphaned build is mid-write into.
     //
-    // Simulates the FIXED `gate::ExecRunner::run` command shape end to end with real
-    // processes (mirroring this file's own `..._refuses_rather_than_waits...` test's
+    // Simulates the lifetime of the shared lock `gate::ExecRunner::run` takes end to end with
+    // real processes (mirroring this file's own `..._refuses_rather_than_waits...` test's
     // simulate-via-real-`flock` style, never re-invoking Rust code cross-process): an
     // "orchestrator" (`sh -c "... & wait"`, spawned and owned by THIS test exactly the way
     // the real rigger process is spawned and owned by whatever launches it) backgrounds
-    // `flock -s -F <guard> sh -c '<script>'` - the exact exec-replacing wrapper
-    // `ExecRunner::run` now uses (spec 78's no-os-kill audit bans the bare `--` argv
-    // separator tree-wide, so the wrapper no longer passes one) - then blocks on `wait`,
+    // `flock -s -F <guard> sh -c '<script>'`, whose exec'd shell keeps the locked guard just
+    // as the processes `ExecRunner::run` starts keep the shared lock `gate::hold_shared_lock`
+    // takes, inherited through `subprocess::inherit_on_exec` - then blocks on `wait`,
     // mirroring `Command::output()`'s own blocking wait for its child. `&` guarantees the
     // backgrounded chain is a genuinely separate, already-forked process before the
     // orchestrator ever dies (no shell tail-call exec-replace ambiguity, unlike a bare
@@ -340,21 +336,9 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     let started_str = started.to_str().unwrap();
     let pidfile_str = pidfile.to_str().unwrap();
 
-    fn guard_is_busy(guard: &Path) -> bool {
-        Command::new("flock")
-            .arg("-n")
-            .arg("-x")
-            .arg(guard)
-            .arg("true")
-            .status()
-            .map(|s| !s.success())
-            .unwrap_or(false)
-    }
-
-    // The simulated "orchestrator": backgrounds the exact `flock -s -F <guard>
-    // sh -c '<script>'` command `ExecRunner::run` now constructs (no `--` separator - spec
-    // 78's no-os-kill audit bans that argv shape tree-wide), then blocks on `wait` for it -
-    // the same spawn-then-block shape `Command::output()` gives the real orchestrator.
+    // The simulated "orchestrator": backgrounds `flock -s -F <guard> sh -c '<script>'`, a gate
+    // command holding the inherited shared lock, then blocks on `wait` for it - the same
+    // spawn-then-block shape `Command::output()` gives the real orchestrator.
     let script = format!(
         "flock -s -F {guard_str} sh -c 'echo $$ > {pidfile_str}; touch {started_str}; \
          sleep 30' & wait"
@@ -377,8 +361,9 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
         started_ok,
         "the backgrounded build must start and touch its marker"
     );
-    assert!(
-        guard_is_busy(&guard),
+    assert_eq!(
+        try_exclusive_lock(&guard),
+        contended(),
         "the simulated build must actually hold the guard before this test proceeds"
     );
 
@@ -399,8 +384,9 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
         common::is_alive(child_pid),
         "the build must survive its orchestrator's death as a live orphan: pid {child_pid}"
     );
-    assert!(
-        guard_is_busy(&guard),
+    assert_eq!(
+        try_exclusive_lock(&guard),
+        contended(),
         "the guard must STILL be held after the orchestrator alone died - the orphaned build \
          keeps it, the (now-dead) orchestrator never held it directly"
     );
@@ -420,6 +406,81 @@ fn reset_build_cache_still_refuses_when_the_guard_holders_orchestrator_died_but_
     assert!(
         cache.join("debug").join("a.rlib").exists(),
         "a refused reclaim must leave the cache completely untouched"
+    );
+}
+
+/// Spec 125 criterion 10, THE SHELL AND THE LOCK ARE PORTABLE, through the real producer and the
+/// real consumer: GIVEN a committed project whose gate backgrounds a child with its stdout and
+/// stderr sent away from the gate's pipes, and a populated shared build cache under the project's
+/// scratch root, WHEN an agent runs `rigger gate g` (no driver serves the project, so the gate
+/// runs over the shared cache under its guard) and the binary has exited, THEN the child still
+/// holds the guard: an exclusive try-lock through a second open of it is refused, and
+/// `rigger reset --build-cache` refuses with the cache byte-for-byte untouched; once the child
+/// exits, the try-lock is taken and the reset reclaims the cache's exact bytes. The child waits
+/// on a marker the test removes, bounded so it never outlives the test, and the test removes it
+/// before asserting, so a red run never strands the child on the guard.
+#[cfg(unix)]
+#[test]
+fn a_guarded_gates_background_child_keeps_reset_build_cache_refused_until_it_exits() {
+    use common::cli::{committed_project, one_gate_workflow, rigger_in};
+    use common::fixtures::{background_hold_command, git_out, wait_until_for};
+
+    let markers = tempfile::tempdir().expect("tempdir for the hold marker");
+    let hold = markers.path().join("hold");
+    std::fs::write(&hold, b"").expect("write the hold marker");
+    let (project, scratch) = committed_project(&one_gate_workflow(&background_hold_command(&hold)));
+    let (root, scratch) = (project.path(), scratch.path());
+    let cache = scratch.join(SHARED_CACHE);
+    write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);
+    let guard = scratch.join(CACHE_GUARD);
+    let head = git_out(root, &["rev-parse", "HEAD"]);
+
+    let (gate_out, gate_err, gate_ok) = rigger_in(root, scratch, &["gate", "g"]);
+    let held = try_exclusive_lock(&guard);
+    let (busy_out, busy_err, busy_ok) = rigger_in(root, scratch, &["reset", "--build-cache"]);
+    let busy_bytes = dir_bytes(&cache);
+    std::fs::remove_file(&hold).expect("release the background child");
+    let freed = wait_until_for(400, || try_exclusive_lock(&guard) == Ok(()));
+    let (reset_out, reset_err, reset_ok) = rigger_in(root, scratch, &["reset", "--build-cache"]);
+
+    assert_eq!(
+        (gate_ok, gate_out.lines().next()),
+        (true, Some(format!("PASS gate g on {head}").as_str())),
+        "the gate passes on the committed tree; stderr:\n{gate_err}"
+    );
+    assert_eq!(
+        held,
+        contended(),
+        "the binary has exited and its gate's background child still holds the guard"
+    );
+    assert_eq!(
+        (
+            busy_ok,
+            busy_out.as_str(),
+            busy_err.lines().last(),
+            busy_bytes
+        ),
+        (
+            false,
+            "",
+            Some(
+                "rigger: reset --build-cache: the shared gate build cache is in use by a \
+                 rigger-launched build (its guard lock is held); refusing rather than waiting - \
+                 retry once it is idle"
+            ),
+            64
+        ),
+        "reset refuses while the child lives and leaves the cache untouched"
+    );
+    assert!(freed, "once the background child exits the guard is free");
+    assert_eq!(
+        (reset_ok, reset_out.as_str(), cache.exists()),
+        (
+            true,
+            "--build-cache: reclaimed 64B (64 byte(s)) from the shared gate build cache\n",
+            false
+        ),
+        "reset reclaims the cache once the child has exited; stderr:\n{reset_err}"
     );
 }
 
@@ -480,7 +541,9 @@ fn a_gate_whose_guard_parent_cannot_be_created_faults_runs_nothing_and_writes_no
     // (`gate::ExecRunner::run`) against a real project's shared cache, holding a pre-existing
     // build: the guard's parent lies under a regular file, so the probe cannot create it, and
     // the run must return the `ProbeFault` naming the guard path and the OS error the create
-    // met, never run the gate command, and leave the shared cache exactly as it was.
+    // met, never run the gate command, and leave the shared cache exactly as it was. The build
+    // environment declares `CARGO_TARGET_DIR` over the gate's build cache, so a gate command that
+    // did run would write into the shared cache.
     let project = temp_store_project();
     let root = project.path();
     let cache = scratch_entry(root, SHARED_CACHE);
@@ -511,7 +574,11 @@ fn a_gate_whose_guard_parent_cannot_be_created_faults_runs_nothing_and_writes_no
         cache.to_str().unwrap(),
         bad_guard.to_str().unwrap(),
         "",
-        &BuildEnv::default(),
+        &BuildEnv::declared(&build_declaring(
+            &[("CARGO_TARGET_DIR", "{build_cache}")],
+            0,
+        ))
+        .unwrap(),
         &BuildBudget::default(),
     );
 
@@ -638,9 +705,10 @@ fn a_run_whose_deferred_gate_guard_probe_fails_halts_naming_the_guard_and_the_ne
 /// Gap 96, ONE ACCOUNTING, ONE REAPER: `rigger reset --build-cache` reclaims every class of dead
 /// bytes `rigger validate`'s footprint names with this verb - a dead unit's per-unit cache, a
 /// dead spawn's registered agent scratch, and unowned agent scratch - through the same accounting,
-/// and leaves alone a dead dir a live
-/// process still holds (here: an open file descriptor in this test process) and everything
-/// that is not dead footprint (the sweep's mutation anchor).
+/// and leaves alone each dead dir a live process still holds, by either arm of the holder check
+/// (here: an open file descriptor in this test process, and a child process whose working
+/// directory is inside the dir), naming both in one line, and everything that is not dead
+/// footprint (the sweep's mutation anchor).
 #[test]
 fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_held_dir() {
     let project = temp_store_project();
@@ -651,6 +719,11 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     write_file(&dead_unit_cache.join("debug").join("a.rlib"), &[0u8; 1_000]);
     let held_unit_cache = scratch.join("cargo-target-held-unit");
     write_file(&held_unit_cache.join("debug").join("b.rlib"), &[0u8; 300]);
+    let cwd_held_unit_cache = scratch.join("cargo-target-cwd-unit");
+    write_file(
+        &cwd_held_unit_cache.join("debug").join("d.rlib"),
+        &[0u8; 400],
+    );
     let dead_spawn_leaf = scratch
         .join("agent-scratch")
         .join("run-gone")
@@ -661,12 +734,15 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
     let anchor = scratch.join("mutation-anchor").join("tip");
     write_file(&anchor, b"0123abcd\n");
 
-    // The live holder: this process keeps a file inside the held cache open.
+    // The live holders, one per arm of the holder check: this process keeps a file inside the
+    // held cache open, and a child process works inside the cwd-held cache.
     let holder = std::fs::File::open(held_unit_cache.join("debug").join("b.rlib"))
         .expect("open the held cache's file");
+    let mut cwd_holder = common::fixtures::sleeper_in(&cwd_held_unit_cache.join("debug"));
 
     let (out, err, ok) = run_rigger(root, &["reset", "--build-cache"]);
     drop(holder);
+    common::fixtures::cleanup(&mut cwd_holder);
     assert!(
         ok,
         "reset --build-cache must succeed; stdout {out:?} stderr {err:?}"
@@ -685,13 +761,30 @@ fn reset_build_cache_reclaims_every_dead_class_validate_accounts_and_spares_a_he
         out.contains("1000 byte(s)") && out.contains("per-unit caches"),
         "the report names each class and its measured bytes: {out:?}"
     );
-    assert!(
-        held_unit_cache.join("debug").join("b.rlib").exists(),
-        "a dead dir a live process holds is never removed: {out:?}"
-    );
-    assert!(
-        out.contains("cargo-target-held-unit") && out.contains("live process"),
-        "the report names the held dir and why it stayed: {out:?}"
+    for (what, file) in [
+        (
+            "held by an open file",
+            held_unit_cache.join("debug").join("b.rlib"),
+        ),
+        (
+            "held by a working directory",
+            cwd_held_unit_cache.join("debug").join("d.rlib"),
+        ),
+    ] {
+        assert!(
+            file.exists(),
+            "a dead dir {what} is never removed: {file:?}; stdout {out:?}"
+        );
+    }
+    assert_eq!(
+        common::cli::lines_where(&out, |line| line.starts_with("--build-cache: left ")),
+        vec![format!(
+            "--build-cache: left 2 dead entries of per-unit caches in place - a live process \
+             still holds each: {}, {}",
+            cwd_held_unit_cache.display(),
+            held_unit_cache.display()
+        )],
+        "the report names each held dir, in name order, and why it stayed: {out:?}"
     );
     assert!(
         anchor.exists(),

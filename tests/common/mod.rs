@@ -84,11 +84,12 @@ pub fn suite_profile_dir(test_exe: &Path) -> Option<&Path> {
 /// not include the target-dir path, so a target dir that has MOVED - copied, restored, or
 /// relocated by a build-cache lifecycle - is still judged fresh: nothing recompiles, the baked
 /// path no longer exists, and every suite that spawns the product dies with
-/// `Os { code: 2, kind: NotFound }` before asserting anything. That is not hypothetical here: the
-/// loop gives each unit's gates a per-unit `CARGO_TARGET_DIR`, and a relocated one turned a suite
-/// that is green cold into 0 passed / 3 failed with exactly that error, while the recorded gate
-/// evidence never named it. Runtime derivation cannot drift that way, because the answer is read
-/// from the same directory tree the test itself was just loaded from.
+/// `Os { code: 2, kind: NotFound }` before asserting anything. That is not hypothetical here: a
+/// workflow declaring `CARGO_TARGET_DIR` over `{build_cache}` gives each unit's gates a per-unit
+/// one, and a relocated one turned a suite that is green cold into 0 passed / 3 failed with
+/// exactly that error, while the recorded gate evidence never named it. Runtime derivation cannot
+/// drift that way, because the answer is read from the same directory tree the test itself was
+/// just loaded from.
 ///
 /// It DECLINES (returns `None`) rather than guessing when the executable sits in neither layout -
 /// a hand-run binary, a copied artifact - so [`rigger_bin`] can fall back honestly instead of
@@ -502,11 +503,11 @@ impl Drop for OwnedPid {
     }
 }
 
-/// Whether `pid` is still running - alive and not a zombie (state `Z` in `/proc/<pid>/stat`, read
-/// through the product's one stat parser). An exited-but-unreaped child is a zombie, which
-/// [`is_alive`]'s signal probe still reports alive.
+/// Whether `pid` is still running: its run state, read through the product's process interface
+/// ([`rigger::os_process::state`]), is readable and not `Z`, a zombie. An exited-but-unreaped
+/// child is a zombie, which [`is_alive`]'s signal probe still reports alive.
 pub fn is_running(pid: u32) -> bool {
-    rigger::reap::stat_field_after_comm(pid, 0).is_some_and(|state| !state.starts_with('Z'))
+    rigger::os_process::state(pid).is_some_and(|state| state != 'Z')
 }
 
 /// Whether `pid` is currently alive, via the internal `rustix` liveness probe (mirrors

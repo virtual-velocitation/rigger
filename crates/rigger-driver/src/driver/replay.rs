@@ -144,20 +144,14 @@ pub fn reclaim_finished_spawn_scratch(opts: &SpawnOpts) {
 /// The variable that names the user cache home ([`cache_home_from`]'s `xdg`).
 pub const CACHE_HOME_ENV: &str = "XDG_CACHE_HOME";
 
-/// The variable that names the user's home, [`cache_home_from`]'s `home`.
-pub use rigger_store_sqlite::registry::HOME_ENV;
-
-/// The user cache home: `$XDG_CACHE_HOME` when set and non-empty, else `$HOME/.cache`, else
-/// `None` in a homeless environment. Mirrors `registry::state_home_from`'s XDG-then-HOME
-/// shape. Takes the two candidate env values as plain arguments (never reading `std::env`
-/// itself) so it is a pure function a unit test can drive without depending on - or
-/// mutating - the real process environment.
+/// The user cache home: `$XDG_CACHE_HOME` when set and non-empty, else `.cache` under the home
+/// directory, else `None` in a homeless environment ([`rigger_process::home::xdg_or_home`], the
+/// rule the state home follows too). Takes the `XDG_CACHE_HOME` value and the home directory
+/// ([`rigger_process::home_dir`]) as plain arguments (never reading `std::env` itself) so it is a
+/// pure function a unit test can drive without depending on - or mutating - the real process
+/// environment.
 pub fn cache_home_from(xdg: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    if let Some(dir) = xdg.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(dir));
-    }
-    let home = home.filter(|v| !v.is_empty())?;
-    Some(PathBuf::from(home).join(".cache"))
+    rigger_process::home::xdg_or_home(xdg, home, &[".cache"])
 }
 
 /// What the current run's log holds for one spawn, read by [`read_or_park`].
@@ -324,32 +318,14 @@ mod tests {
         }
     }
 
+    /// The cache home is `.cache` under the home when `XDG_CACHE_HOME` is unset (the XDG-then-home
+    /// precedence is [`rigger_process::home::xdg_or_home`]'s, pinned there).
     #[test]
-    fn cache_home_from_prefers_xdg_cache_home_then_falls_back_to_home_dot_cache() {
-        // A pure (env-var-free) resolver, so its callers' tests never depend on the real
-        // process environment.
-        assert_eq!(
-            cache_home_from(Some("/xdg/cache".into()), Some("/home/u".into())),
-            Some(PathBuf::from("/xdg/cache")),
-            "XDG_CACHE_HOME wins when set and non-empty"
-        );
+    fn the_cache_home_defaults_to_dot_cache_under_the_home() {
         assert_eq!(
             cache_home_from(None, Some("/home/u".into())),
-            Some(PathBuf::from("/home/u/.cache")),
-            "an unset XDG_CACHE_HOME falls back to $HOME/.cache"
+            Some(PathBuf::from("/home/u/.cache"))
         );
-        assert_eq!(
-            cache_home_from(Some("".into()), Some("/home/u".into())),
-            Some(PathBuf::from("/home/u/.cache")),
-            "an EMPTY XDG_CACHE_HOME (set-but-blank) is treated as unset, not a literal empty root"
-        );
-    }
-
-    #[test]
-    fn cache_home_from_is_none_in_a_homeless_environment() {
-        // Neither XDG_CACHE_HOME nor HOME resolves: there is no cache root to target.
-        assert_eq!(cache_home_from(None, None), None);
-        assert_eq!(cache_home_from(Some("".into()), Some("".into())), None);
     }
 
     #[test]
