@@ -194,7 +194,7 @@ cgroup path)`, opened `O_NOFOLLOW` inside the 0700 root, each row a versioned re
 binary upgrade migrates the format rather than misparsing it). A spawn's process SET is its
 cgroup membership, which a descendant cannot leave - so a double-forked or `setsid` process
 is still attributed, and `PR_SET_CHILD_SUBREAPER` is a backstop, not the authority. Ending
-work signals the CGROUP, not a pid from a file, through a typed signal PORT (see lanes
+work signals the CGROUP, not a pid from a file, through a typed signal INTERFACE (see lanes
 below). **Crash reconciliation is keyed on the cgroup subtree and process identity, never on
 a secret.** At daemon start the ledger is reconciled against ground truth that survives a
 restart - the persisted cgroup subtree and each row's `(pid, start-time, boot-id)`: a row
@@ -202,7 +202,7 @@ whose cgroup still holds live processes is ADOPTED (re-attached to the timer, or
 role); a row whose process identity is GONE and for which no `SpawnResult` proposal was
 recorded is DECLARED `SpawnAbandoned`; a row that completed is DECLARED `SpawnResult`. Where
 cgroup v2 delegation is ABSENT (cgroup v1, or a probed-undelegated host - the same posture
-the signal port degrades for), there is no persisted subtree, so reconciliation falls back
+the signal interface degrades for), there is no persisted subtree, so reconciliation falls back
 to `(pid, start-time, boot-id)` identity ALONE. A survivor is UNAMBIGUOUS and acted on when
 either a live process bears the exact recorded `(pid, start-time, boot-id)` (adopt or end)
 or no process bears that pid at all (declare `SpawnAbandoned`); it is AMBIGUOUS - the pid is
@@ -255,7 +255,7 @@ irreversible kill.
 diagnosis, and the self-reap protocol are deleted, not fixed.
 
 **Signals reach a human without a poller.** Arm 5's open anomalies are not only a pull
-surface: the daemon EMITS each new arm-5 signal through the same `notify:` port the
+surface: the daemon EMITS each new arm-5 signal through the same `notify:` interface the
 turn-boundary hook uses (argv-only, JSON on stdin) AND persists it to `anomalies.jsonl`, so a
 signal raised while no loop is driving still reaches a consumer's configured notify hook and
 survives durably for the next reader. Two honest limits are surfaced, not assumed: `rigger
@@ -282,7 +282,7 @@ re-initialized - the breaker's TRIP state is a durable fact of its own (persiste
 `anomalies.jsonl` and read independently of the count), so a corrupt count-ledger is discarded
 and rebuilt whether or not a trip is active and never becomes a stuck posture - so it self-heals
 without waiting for a resume. Rigger owns the durable signal
-and the notify port; delivering it to a pager is the consumer's
+and the notify interface; delivering it to a pager is the consumer's
 `notify:` hook, by scope.
 
 **The CLI as client.** `status`/`watch` are socket queries. `progress`/`result`/`emit` are
@@ -770,17 +770,17 @@ operator can tell whether convergence is one check away or held off by a recurri
 repeated transitions INTO the same posture are rate-limited to a digest after the first few, so
 a mount flapping at the re-check cadence raises attention once, not once per tick.
 
-1. **Pure domain + ports.** The path-authority class registry (including the cgroup class)
+1. **Pure domain + interfaces.** The path-authority class registry (including the cgroup class)
    and its enforcement test; `desired_world` as a tested fold keyed by `(run, owner,
    attempt)` over the declaration surface plus injected clock/sizes, with the run-terminal
    event; `diff -> Plan`; the `ConfinedPath` newtype with `confine()`, its captured
    `RESOLVE_BENEATH` fd, and the per-level descent for deep deletes; the inverse path-parse
-   primitive that fails closed to FOREIGN; a signal PORT and an Fs/Proc/Git port set (time
-   stays threaded as an argument - the crate's existing idiom - so NO new Clock port); the
+   primitive that fails closed to FOREIGN; a signal INTERFACE and an Fs/Proc/Git interface set (time
+   stays threaded as an argument - the crate's existing idiom - so NO new Clock interface); the
    compaction-disjointness test. Ends with observe-only `validate --world-diff` (labeled with
    daemon-liveness - simply "offline" until stage 3 mints the daemon, so an offline diff never
    justifies a manual kill) and `--adopt` moved to a named write command.
-2. **Process authority.** The typed signal wrapper as a port whose DEFAULT lane signals the
+2. **Process authority.** The typed signal wrapper as an interface whose DEFAULT lane signals the
    whole process set recycle-proof by writing `cgroup.kill` (a plain sysfs write, needing no
    libc), with a `libc`/`rustix` adapter for hosts on cgroup v1 and a last-resort `kill(1)`
    adapter reserved for hosts lacking cgroup v2 - where the pid-recycle risk is documented as
@@ -801,7 +801,7 @@ a mount flapping at the re-check cadence raises attention once, not once per tic
    CLI/courier as clients with the fenced-gate direct-write exception (fstat-the-handle
    live-store refusal), work-assignment tokens minted at `wave --pull`, the
    structurally-unforgeable operator capability (with the headless 0700 credential path)
-   gating daemon-authority and destructive-control verbs, the arm-5 notify-port emission +
+   gating daemon-authority and destructive-control verbs, the arm-5 notify-interface emission +
    durable restart-ledger + missing-hook status warning, a persisted-nowhere fold cursor with
    full-derive-on-start and a versioned materialized-snapshot fast path (full-derive wins on
    mismatch; provisional labeling with a progress signal pre-verify), a crash-loop breaker

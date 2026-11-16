@@ -31,11 +31,11 @@ progress side-store (`.rigger/progress.db`). Measured on this project's own stor
 
 The seconds and gigabytes are not the engine's: every courier replays the whole stream from
 position zero. Specs 101, 107 and 108 bound the reads, move perception out of the log and
-archive finished runs, and they do so behind the two store ports. What remains after them is
+archive finished runs, and they do so behind the two store interfaces. What remains after them is
 the engine itself, and the engine is wrong in three ways that no read discipline fixes:
 
 - **It is a foreign engine under a log-shaped workload.** Across 10,135 lines of store code
-  behind two ports of five and six methods (`EventStore`, `crates/rigger-domain/src/eventstore.rs:499`;
+  behind two interfaces of five and six methods (`EventStore`, `crates/rigger-domain/src/eventstore.rs:499`;
   `Projection`, `crates/rigger-domain/src/contextgraph.rs:531`), the relational surface in use is four joins
   and no trigger, view or full-text index; the log is one table (`crates/rigger-store-sqlite/src/eventstore/sqlite.rs:21`)
   and the progress side-store is a second instance of the same engine over the same schema.
@@ -68,7 +68,7 @@ the engine itself, and the engine is wrong in three ways that no read discipline
 - No distribution, replication, sharding or consensus. Rigger runs on one machine.
 - No new dependency. The engine, its checksums and its file formats are written in the
   tree; the build loses a dependency and gains none.
-- No change to the two store ports' contracts as specs 101, 107 and 108 leave them. The
+- No change to the two store interfaces' contracts as specs 101, 107 and 108 leave them. The
   engine is a backend; conductor, grounding and dash code do not learn it exists. The
   project namespace on stream names (`eventstore::namespace::Namespaced`,
   `docs/architecture.md:570`) and the server-backed store (`store.backend = "kurrentdb"`)
@@ -394,20 +394,20 @@ compact in C`.
 
 ## 9. Delivery
 
-Three specs, behind the two ports, after spec 105 has made the supervisor the resident
+Three specs, behind the two interfaces, after spec 105 has made the supervisor the resident
 process and spec 106 has detached it, so the mount owner exists before the engine expects
 one. Each spec leaves both backends selectable by config until the last removes the old one.
 
 1. **Spec 109, the segmented log.** Segments, footers, manifest, journal lock, typed and
    boundary reads, computed revisions, tail subscription, torn-tail recovery, the existing
-   port conformance suite (`eventstore::contract::assert_contract`) passing against it;
-   `rigger store migrate` reads the SQL log through the existing port and writes segments,
+   interface conformance suite (`eventstore::contract::assert_contract`) passing against it;
+   `rigger store migrate` reads the SQL log through the existing interface and writes segments,
    keeping the old file as a backup the reaper never deletes; the progress side-store becomes
    kind-2 records of the `progress` stream in the same journal, so a command opens one store
    handle per project root instead of three. Ends with the SQL log backend deleted.
 2. **Spec 110, the graph as a queryable file.** The CSR base snapshot (nodes, edges,
    aliases and the applied-position set; the record graph only), delta files, the
-   resident graph in the owner, the client mapping path behind the same `Projection` port,
+   resident graph in the owner, the client mapping path behind the same `Projection` interface,
    full rebuild of the record graph from the journal (with the code snapshot advanced from
    empty) with verify-on-mount and the PROVISIONAL label. Ends with the SQL graph backend deleted and the SQL dependency gone
    from the build; the `store` lane joins `core` as pure Rust.
@@ -440,7 +440,7 @@ graph, 101 fixes the read classes the footers serve, 107 makes the run the unit 
 5. **Torn tail.** A journal cut mid-record reopens to the last valid record; a batch is
    never half-present.
 6. **Concurrent appends.** Sixty-four processes appending concurrently produce a journal with
-   contiguous positions, every record checksummed, no interleaving; the port conformance
+   contiguous positions, every record checksummed, no interleaving; the interface conformance
    suite passes unchanged.
 7. **No revision holes.** After `reset --derived` and an archive, every stream's revisions
    are contiguous by construction and `rigger validate` has nothing to repair.

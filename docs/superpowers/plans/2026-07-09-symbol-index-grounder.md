@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add a deterministic, tree-sitter-based symbol index and a `symbols` (and `hybrid`) grounder behind the existing `Grounder` port, serving the PRECISE grounding contract, validated against the turbovec default.
+**Goal:** Add a deterministic, tree-sitter-based symbol index and a `symbols` (and `hybrid`) grounder behind the existing `Grounder` interface, serving the PRECISE grounding contract, validated against the turbovec default.
 
 **Architecture:** A new feature-gated module `src/grounder/symbols/` projects the code tree into a per-language symbol model (definitions + references + a name-level, per-language cross-reference graph). Extraction is one function over an INJECTED `(grammar, tag query)` pair (tree-sitter tags); a static registry maps extensions to grammars; the index persists under `.rigger/` with construction-deterministic serialization; a `Symbols` grounder ranks name matches over incidental text. It plugs into `grounder_for` / `select_grounder` alongside `grep` / `turbovec` / `nop`. Blast-radius and conductor wiring are spec 16, OUT OF SCOPE here.
 
