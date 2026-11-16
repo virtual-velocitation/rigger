@@ -2437,4 +2437,44 @@ mod tests {
             "no file started the extractor"
         );
     }
+
+    /// A SHOWN BODY IS BOUNDED AS THE STORE EXTRACTS IT: under a declaration named `rust` over
+    /// `rs` and `yml`, `defs` gives a listed file the leaves of its answer - none when the answer
+    /// fails - a file of a bundled language its grammar's, and the workflow definition and a
+    /// document none; only the `.rs` files were asked of the extractor, so the workflow
+    /// definition is read as the workflow before any declaration is consulted.
+    #[cfg(unix)]
+    #[test]
+    fn a_files_definitions_are_read_as_the_store_reads_them() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "rust", "[rs, yml]", &[]);
+        stub.answers("src/lib.rs", &answer_defining("src/lib.rs", "declared"));
+        let workflow = std::fs::read_to_string(project.path().join(workflow_doc()))
+            .expect("read the workflow");
+        let extractor = ProjectExtractor::of(project.path());
+        // (the file, its text, the leaves of its definitions)
+        let rows: [(&str, &str, &[&str]); 5] = [
+            ("src/lib.rs", "fn held() {}\n", &["declared"]),
+            ("src/gone.rs", "fn held() {}\n", &[]),
+            ("tool/run.py", "def held():\n    pass\n", &["held"]),
+            (".rigger/workflow.yml", &workflow, &[]),
+            ("docs/a-design.md", "# A design\n\n## Parts\n", &[]),
+        ];
+        for (path, text, leaves) in rows {
+            let held = extractor
+                .defs(path, text)
+                .map(|defs| defs.into_iter().map(|d| d.name).collect::<Vec<_>>());
+            assert_eq!(
+                held,
+                Ok(leaves.iter().map(|leaf| leaf.to_string()).collect()),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            (stub.starts(), stub.requests().len()),
+            (vec![root_dir_of(project.path())], 2),
+            "the `.rs` files were asked of one session, no other file of any"
+        );
+    }
 }
