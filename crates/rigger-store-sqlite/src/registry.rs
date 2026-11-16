@@ -180,37 +180,28 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 }
 
 /// The machine-global state directory that roots the instance registry, honoring the platform
-/// convention with a first-class override: `$XDG_STATE_HOME` when set, else `$HOME/.local/state`
-/// (the freedesktop base-directory default). Returns `None` only in a truly homeless environment
-/// (neither variable resolvable), so the caller can degrade to no registration - the registry's
-/// loss is harmless. Honoring `XDG_STATE_HOME` is also what lets a test redirect the whole
-/// registry into a temp dir with no process-global fs writes.
+/// convention with a first-class override: `$XDG_STATE_HOME` when set, else `.local/state` under
+/// the home directory ([`rigger_process::home_dir`], the freedesktop base-directory default).
+/// Returns `None` only in a truly homeless environment (no `XDG_STATE_HOME` and no home directory
+/// known), so the caller can degrade to no registration - the registry's loss is harmless.
+/// Honoring `XDG_STATE_HOME` is also what lets a test redirect the whole registry into a temp dir
+/// with no process-global fs writes.
 pub fn state_home() -> Option<PathBuf> {
-    state_home_from(std::env::var_os(STATE_HOME_ENV), std::env::var_os(HOME_ENV))
+    state_home_from(std::env::var_os(STATE_HOME_ENV), rigger_process::home_dir())
 }
 
 /// The variable that names the machine-global state directory ([`state_home`]).
 pub const STATE_HOME_ENV: &str = "XDG_STATE_HOME";
 
-/// The variable that names the user's home, the state and cache homes' fallback.
-pub const HOME_ENV: &str = "HOME";
-
-/// The PURE core of [`state_home`] over explicit `XDG_STATE_HOME` / `HOME` values, so the
-/// precedence (XDG wins; an empty value is "unset") is unit-tested with no process-global env
-/// mutation - which would race the crate's other multi-threaded tests that read the environment.
-/// `pub(crate)` (not just test-visible) so any OTHER site in the crate that needs this same
-/// precedence over its own explicitly-read env values - [`crate::gate::default_cache_dir`] is
-/// the first - composes it directly instead of reaching for the ambient-reading [`state_home`]
-/// and duplicating this logic behind it.
-pub fn state_home_from(
+/// The PURE core of [`state_home`] over explicit `XDG_STATE_HOME` / home directory values, the
+/// precedence [`rigger_process::home::xdg_or_home`]'s (XDG wins; an empty value is "unset"), so its
+/// default is unit-tested with no process-global env mutation - which would race the crate's other
+/// multi-threaded tests that read the environment.
+fn state_home_from(
     xdg: Option<std::ffi::OsString>,
     home: Option<std::ffi::OsString>,
 ) -> Option<PathBuf> {
-    if let Some(dir) = xdg.filter(|v| !v.is_empty()) {
-        return Some(PathBuf::from(dir));
-    }
-    let home = home.filter(|v| !v.is_empty())?;
-    Some(PathBuf::from(home).join(".local").join("state"))
+    rigger_process::home::xdg_or_home(xdg, home, &[".local", "state"])
 }
 
 /// The instances directory under a given state home: `<state_home>/rigger/instances`. The single
@@ -634,33 +625,20 @@ mod tests {
         );
     }
 
+    /// The state home is `.local/state` under the home when `XDG_STATE_HOME` is unset (the
+    /// XDG-then-home precedence is [`rigger_process::home::xdg_or_home`]'s, pinned there), and the
+    /// registry lives under it.
     #[test]
-    fn state_home_prefers_xdg_over_home() {
+    fn the_state_home_defaults_to_local_state_under_the_home() {
         use std::ffi::OsString;
-        // XDG set => it wins outright.
-        assert_eq!(
-            state_home_from(
-                Some(OsString::from("/xdg/state")),
-                Some(OsString::from("/home/dev"))
-            ),
-            Some(PathBuf::from("/xdg/state"))
-        );
-        assert_eq!(
-            instances_dir(&PathBuf::from("/xdg/state")),
-            PathBuf::from("/xdg/state/rigger/instances")
-        );
-        // XDG unset (or empty) => the freedesktop default under HOME.
         assert_eq!(
             state_home_from(None, Some(OsString::from("/home/dev"))),
             Some(PathBuf::from("/home/dev/.local/state"))
         );
         assert_eq!(
-            state_home_from(Some(OsString::new()), Some(OsString::from("/home/dev"))),
-            Some(PathBuf::from("/home/dev/.local/state")),
-            "an empty XDG_STATE_HOME is treated as unset"
+            instances_dir(&PathBuf::from("/xdg/state")),
+            PathBuf::from("/xdg/state/rigger/instances")
         );
-        // Truly homeless => None, so the caller degrades to no registration.
-        assert_eq!(state_home_from(None, None), None);
     }
 
     /// A courier's writer role with no driver heartbeat of its own to carry.

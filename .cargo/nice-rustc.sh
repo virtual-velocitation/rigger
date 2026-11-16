@@ -8,5 +8,5 @@
 # stalled. `[build] jobs` caps one cargo, not the number of cargos, so the fix is priority:
 # builds yield to interactive work and still use every idle core. Cargo invokes this wrapper
 # as `<wrapper> <rustc> <args...>`; it execs the real rustc under `nice`. An environment
-# `RUSTC_WRAPPER` (CI's sccache) overrides this config entry, so CI is unaffected.
+# `RUSTC_WRAPPER` overrides this config entry.
 exec nice -n 10 "$@"

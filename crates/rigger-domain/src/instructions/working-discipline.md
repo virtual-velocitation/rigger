@@ -57,8 +57,8 @@ reuses that verdict for the same commit instead of running the gate again.
   one the first already spells, it moves to the shared home and both call it, no assertion or
   expected value changed. Duplication you did not write is the tree's debt: your hand-over names
   it and you do not lift it, and a lift's call-site rewrite does not make a statement yours.
-  Check: the project's duplication gate is green, and each behaviour your tests check over
-  several values reads as one table.
+  Check: each shape you add was looked up where the project's test helpers live, and each
+  behaviour your tests check over several values reads as one table.
 - **Every sentence about the changed behaviour is true at head.** The doc comments of each item
   you changed and of its callers, module docs, test names, test docs, assertion messages and
   operator docs say what the code at head does. Check: read the module doc of each file the

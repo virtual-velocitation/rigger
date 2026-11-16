@@ -1,8 +1,8 @@
 //! Rigger's operator-tree adapter, ring 3 of the workspace: the loaded harness configuration and
 //! the readers of the operator's `.rigger/` tree (agent definitions, the workflow, the instruction
 //! layer and the lightweight workflow probes). It knows the filesystem, `PATH` (through the gate
-//! adapter's build-environment probes) and the domain; the root `rigger` crate re-exports every
-//! module under its historical path.
+//! adapter's requirement resolver) and the domain; the root `rigger` crate re-exports every module
+//! under its historical path.
 
 pub mod config;
 /// The write half of [`config`] (spec 93, criterion 1): see that module's own doc.
@@ -29,6 +29,10 @@ use rigger_gates_shell::gate;
 extern crate self as rigger;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 #[allow(dead_code, unused_imports)]
+#[path = "../../../tests/common/fixtures/build_env.rs"]
+mod build_env_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[allow(dead_code, unused_imports)]
 #[path = "../../../tests/common/fixtures/config.rs"]
 mod config_fixtures;
 /// THE EXTRACTION TREE whose workflow definition the bytes-form test parses, compiled here from
@@ -39,6 +43,11 @@ mod config_fixtures;
 #[path = "../../../tests/common/fixtures/extraction_tree.rs"]
 mod extraction_tree;
 #[cfg(all(test, any(feature = "store", not(feature = "core"))))]
+#[path = "../../../tests/common/fixtures/extractors.rs"]
+mod extractors_fixtures;
+#[cfg(all(test, any(feature = "store", not(feature = "core"))))]
 mod test_support {
+    pub use crate::build_env_fixtures::*;
     pub use crate::config_fixtures::*;
+    pub use crate::extractors_fixtures::*;
 }

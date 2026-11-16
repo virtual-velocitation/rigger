@@ -530,82 +530,28 @@ impl DashMarker {
     }
 }
 
-/// The inode of the socket bound to `port` in `/proc/net/tcp` (the dash only ever binds IPv4
-/// loopback - spec 62's own loopback-only charter). One row per socket:
-/// `sl local_address rem_address st tx:rx tr:tm retrnsmt uid timeout inode ...`,
-/// whitespace-separated, header row skipped; `local_address` is `<hex-ip>:<hex-port>` in the
-/// kernel's own hex formatting. Matching on the PORT alone (not the ip half) is correct here: a
-/// bind to `0.0.0.0:<port>` reserves every interface including loopback, so it is EXACTLY as
-/// much a conflict for [`bind_singleton`]'s loopback bind as a same-address holder, and must be
-/// diagnosed the same way. `None` when `/proc/net/tcp` is absent/unreadable (a non-Linux
-/// platform) or no row's port matches - [`pid_holding_port`]'s "holder undiscoverable" case.
-fn tcp_listen_inode_for_port(port: u16) -> Option<u64> {
-    let text = std::fs::read_to_string("/proc/net/tcp").ok()?;
-    let port_hex = format!("{port:04X}");
-    for line in text.lines().skip(1) {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        let Some(local_address) = fields.get(1) else {
-            continue;
-        };
-        let Some((_, local_port)) = local_address.split_once(':') else {
-            continue;
-        };
-        if !local_port.eq_ignore_ascii_case(&port_hex) {
-            continue;
-        }
-        if let Some(inode) = fields.get(9).and_then(|s| s.parse().ok()) {
-            return Some(inode);
-        }
-    }
-    None
-}
-
-/// The pid of the process HOLDING `port` on this machine right now, discovered via the Linux
-/// `/proc` surface (spec 62, criterion 3 - HELD-PORT DIAGNOSIS): read the kernel's own
-/// listening-socket table ([`tcp_listen_inode_for_port`]) for the inode bound to `port`, then
-/// scan every process's open file descriptors (`/proc/<pid>/fd/*`) for the matching
-/// `socket:[<inode>]` link - the same technique `lsof`/`ss` use, done here directly over
-/// `std::fs` (no `libc`, no new dependency) so it compiles identically on both feature lanes.
-/// Best-effort throughout, mirroring [`crate::reap::processes_rooted_under`]'s own established
-/// `/proc`-scanning discipline: a platform without `/proc`, a permission-denied `fd` dir, or a
-/// holder that exits mid-scan all degrade to `None` - never a panic, never a guess.
+/// The pid of the process HOLDING `port` on this machine right now (spec 62, criterion 3 -
+/// HELD-PORT DIAGNOSIS), as the process interface finds its listener
+/// ([`crate::os_process::listening_pid`]). The dash only ever binds IPv4 loopback (spec 62's own
+/// loopback-only charter), and a listener bound to `0.0.0.0:<port>` reserves every interface
+/// including loopback, so it is EXACTLY as much a conflict for [`bind_singleton`]'s loopback bind
+/// as a same-address holder and is diagnosed the same way. Best-effort throughout: an OS the
+/// interface cannot read, a process whose descriptors cannot be read, or a holder that exits
+/// mid-scan all degrade to `None` - never a panic, never a guess.
 fn pid_holding_port(port: u16) -> Option<u32> {
-    let inode = tcp_listen_inode_for_port(port)?;
-    let proc = Path::new("/proc");
-    let entries = std::fs::read_dir(proc).ok()?;
-    let needle = format!("socket:[{inode}]");
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
-            continue;
-        };
-        let Ok(fds) = std::fs::read_dir(proc.join(&name).join("fd")) else {
-            continue;
-        };
-        for fd in fds.flatten() {
-            if let Ok(link) = std::fs::read_link(fd.path()) {
-                if link.to_str() == Some(needle.as_str()) {
-                    return Some(pid);
-                }
-            }
-        }
-    }
-    None
+    crate::os_process::listening_pid(port)
 }
 
-/// The single-character process state of `pid` from `/proc/<pid>/stat` - `R` running, `S`
-/// sleeping, `D` uninterruptible sleep, `T` stopped by job control, `t` stopped under a
-/// tracer, `Z` zombie, and so on (see `proc(5)`). Parses the same field layout every
-/// `/proc/<pid>/stat` reader in this codebase relies on, through the one parser
-/// [`crate::reap::stat_field_after_comm`] - `std`-only, no `libc`. `None` when the pid is
-/// gone or `/proc` is unreadable - a graceful degrade, never a guess.
+/// The single-character process state of `pid` - `R` running, `S` sleeping, `T` stopped, `Z`
+/// zombie, and so on - as the process interface reads it ([`crate::os_process::state`]). `None`
+/// when the pid is gone or its state cannot be read - a graceful degrade, never a guess.
 fn process_state(pid: u32) -> Option<char> {
-    crate::reap::stat_field_after_comm(pid, 0)?.chars().next()
+    crate::os_process::state(pid)
 }
 
 /// Render the HELD-PORT DIAGNOSIS (spec 62, criterion 3) for a bind failure at `addr`, given
 /// whatever [`pid_holding_port`]/[`process_state`] discovered about the holder - the PURE half,
-/// kept separate from the `/proc` reads so the message text is directly testable without
+/// kept separate from the process reads so the message text is directly testable without
 /// spawning a process. ALWAYS names `addr` (spec 62 Notes: "other platforms still get the
 /// held-address report" - a bind failure must never surface as a bare, unexplained exit). When
 /// the holder's pid is known, names it; when its state is ALSO known, names that too. A `T`/`t`
@@ -632,25 +578,25 @@ fn format_held_port(addr: SocketAddr, holder: Option<(u32, Option<char>)>) -> St
 }
 
 /// The impure half of the HELD-PORT DIAGNOSIS (spec 62, criterion 3): discover whatever this
-/// machine's `/proc` surface can prove about the process holding `addr`'s port, and render it
+/// machine's process interface can prove about the process holding `addr`'s port, and render it
 /// via [`format_held_port`]. `pub` - `cmd_dash` (`src/cli/dashboard.rs`) is the one production caller,
 /// reporting THIS as the `Err` it surfaces when [`bind_singleton`] finds the address genuinely
 /// held by a non-dash process (a real rigger dash already on this address resolves to
 /// `AlreadyServing` instead, so a caller only ever reaches this on a genuine conflict). Because
 /// that precondition already holds at the call site (the OS itself confirmed `AddrInUse`), a
 /// `None` holder here is safe to render as [`format_held_port`]'s "already in use (holding
-/// process not found)" - occupancy is already a given, `/proc` has merely failed to attribute
-/// it. Built on [`describe_held_port_if_confirmed`], whose `None` this arm is the ONE place
-/// allowed to promote to that wording, precisely because this caller's precondition licenses
-/// it and no other caller's does. Best-effort throughout: a platform without `/proc`, or a
-/// holder that exits mid-scan, degrades to the "holding process not found" report - never a
-/// panic and never a bare, unexplained exit (spec 62 Notes).
+/// process not found)" - occupancy is already a given, the process interface has merely failed
+/// to attribute it. Built on [`describe_held_port_if_confirmed`], whose `None` this arm is the
+/// ONE place allowed to promote to that wording, precisely because this caller's precondition
+/// licenses it and no other caller's does. Best-effort throughout: an OS the process interface
+/// cannot read, or a holder that exits mid-scan, degrades to the "holding process not found"
+/// report - never a panic and never a bare, unexplained exit (spec 62 Notes).
 pub fn describe_held_port(addr: SocketAddr) -> String {
     describe_held_port_if_confirmed(addr).unwrap_or_else(|| format_held_port(addr, None))
 }
 
 /// The raw `(pid, rendered message)` pair [`describe_held_port_if_confirmed`] resolves from a
-/// SINGLE `/proc` discovery - exposed separately (spec 62 round 4 fix,
+/// SINGLE process discovery - exposed separately (spec 62 round 4 fix,
 /// adj-u62c3r3-verdict-reject-child-self-attribution) because a caller sometimes needs the
 /// discovered pid ITSELF, not only the human-readable message about it: a caller that spawned
 /// its own dash and saw no bind within its startup window must tell a genuinely competing
@@ -659,7 +605,7 @@ pub fn describe_held_port(addr: SocketAddr) -> String {
 /// already-known pid), never the rendered message text, can carry.
 /// Splitting this out is also what lets [`describe_held_port_if_confirmed`] and this function
 /// share the exact same discovery rather than each re-running [`pid_holding_port`] independently:
-/// two scans of a live, mutable `/proc` could in principle disagree (a holder can appear or
+/// two scans of a live, mutable process table could in principle disagree (a holder can appear or
 /// vanish between them); one discovery, consumed both ways, cannot.
 ///
 /// `None` under the identical "nothing independently confirmed" gate as
@@ -673,7 +619,8 @@ pub fn held_port_holder(addr: SocketAddr) -> Option<(u32, String)> {
 /// A message-only view of [`held_port_holder`]'s `(pid, message)` pair - defined in terms of it
 /// (round 4) so the two can never drift apart. This keeps the spec 62 round 3 fix
 /// (adj-u62c3r2-verdict-reject-non-addrinuse-mislabel) gate intact: `None` when nothing can be
-/// independently confirmed holding `addr`'s port via `/proc` ([`pid_holding_port`]), `Some` with
+/// independently confirmed holding `addr`'s port through the process interface
+/// ([`pid_holding_port`]), `Some` with
 /// the full pid/state message when something can - never asserting occupancy [`held_port_holder`]
 /// has not itself confirmed.
 ///
@@ -11570,7 +11517,7 @@ mod tests {
         assert_eq!(
             pid_holding_port(port),
             Some(std::process::id()),
-            "the /proc scan must find THIS process as the holder of its own listener"
+            "the process interface must find THIS process as the holder of its own listener"
         );
         drop(listener);
     }
@@ -11622,10 +11569,11 @@ mod tests {
         /// [`describe_held_port`] (whose one production caller, `cmd_dash`, only ever reaches it
         /// AFTER the OS has already confirmed `AddrInUse`, so a `None` holder there still means a
         /// genuine-but-unattributed conflict), [`describe_held_port_if_confirmed`] is defined in
-        /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy via
-        /// `/proc` before naming a holder rather than trusting any caller's precondition - it must
-        /// never promote an unconfirmed holder to a claim regardless of who calls it, so a caller
-        /// whose bind attempt runs in a detached child with no observable `io::Error` at all (no
+        /// terms of [`held_port_holder`] (round 4), which independently confirms occupancy through
+        /// the process interface before naming a holder rather than trusting any caller's
+        /// precondition - it must never promote an unconfirmed holder to a claim regardless of who
+        /// calls it, so a caller whose bind attempt runs in a detached child with no observable
+        /// `io::Error` at all (no
         /// upstream confirmation of its own to lean on) can use [`held_port_holder`] directly
         /// without weakening this gate. A port a real listener holds must still resolve `Some`, naming
         /// this test process's own pid.

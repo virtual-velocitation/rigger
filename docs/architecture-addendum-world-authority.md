@@ -353,10 +353,10 @@ guarantees are checked facts, never silent assumptions, and `status` names the r
 A RESOURCE is anything rigger causes to exist outside the log. The model is a CLASS
 REGISTRY IN CODE - one enum, one derivation per variant - and the table is generated from
 it. The enforcement test keys on PATH AUTHORITIES, not syscalls: every variant names the
-pure path function that derives it (the eight existing single-authority functions -
+pure path function that derives it (the seven existing single-authority functions -
 `unit_worktree_dir`, `unit_cache_sibling`, `unit_sibling`, `spawn_scratch_path`,
-`liveness::marker_path`, `review_fence_sibling`, `gate::default_cache_dir`,
-`budget::default_slot_dir`, and their peers), PLUS the per-spawn cgroup v2 subtree, now a
+`liveness::marker_path`, `review_fence_sibling`, `budget::default_slot_dir`, and their
+peers), PLUS the per-spawn cgroup v2 subtree, now a
 first-class governed class with its own path authority (`spawn_cgroup_path`) so the kernel
 resource the daemon creates is owned and reaped like any other - a cgroup left empty after
 its process set exits is not auto-removed by the kernel, so its empty-subtree `rmdir` is an
@@ -406,9 +406,8 @@ where idempotent, mark the owner failed where not). A delegate writing OUTSIDE i
 container is a detected anomaly, never silent residue.
 
 **Scope.** Every class is project-, machine-, or user-scoped. The project world derives
-from the project log; the machine world (dashboard singletons, build-budget slots, the
-shared compilation cache) derives from a machine-scoped substrate. That
-substrate is NOT today's instance registry, whose contract is "never a source of truth,
+from the project log; the machine world (dashboard singletons, build-budget slots) derives
+from a machine-scoped substrate. That substrate is NOT today's instance registry, whose contract is "never a source of truth,
 loss is harmless" and which PRUNES rows as a read side effect: machine-scoped ASSIGNMENT
 moves to a separate daemon-written store in the 0700 root, each assignment proven by a HELD
 flock on the resource's own slot file (forgeable JSON can never grant it), carrying the

@@ -207,12 +207,13 @@ pub struct FileFacts {
     pub path: String,
     /// The git blob id, or an FNV content hash when there is no git.
     pub blob: String,
-    /// The language name from the extractor registry.
+    /// The language the file is read as: the extractor registry's name for a bundled grammar, or
+    /// the name of the extractor the project's workflow declares for the file's extension.
     pub lang: String,
     pub half: Half,
     pub scope: Scope,
-    /// Whether the parse of the file held an error, so its defs and mentions cover only as far
-    /// as the parse reached.
+    /// Whether the extraction covered only part of the file - the parse held an error, or the
+    /// declared extractor said so - so its defs and mentions cover only as far as it reached.
     pub partial: bool,
     /// In the extractor's order.
     pub defs: Vec<Def>,

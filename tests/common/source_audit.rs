@@ -6,11 +6,14 @@
 //! source reading those audits and `tests/boundary_audit.rs` share: which lines are test code,
 //! which are comment lines ([`is_comment_line`], which `tests/prompt_surface_sweep.rs` reads
 //! too), and which function encloses a line. And the one Rust lexer, [`tokenize`], that rule 4 of
-//! `tests/boundary_audit.rs` finds string literals with and its appender audit finds calls with,
-//! and the token readers the boundary audit reads its tokens with ([`ref_punct`], [`ref_token`],
-//! [`qualifier_before`], [`follows_keyword`], [`is_definition_site`], [`close_of`],
-//! [`imported_names`]). Each suite uses the subset it needs (hence the
-//! module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
+//! `tests/boundary_audit.rs` finds string literals with, its appender audit finds calls with and
+//! `tests/os_shell_boundary.rs` finds an `sh` spawn's first argument with, and the token readers
+//! those audits read their tokens with ([`ref_punct`], [`ref_token`], [`qualifier_before`],
+//! [`follows_keyword`], [`is_definition_site`], [`called_at`], [`close_of`], [`imported_names`]).
+//! And the boundary scans' shared literal rule, [`literal_outside`], with the fixture reader
+//! [`flagged_by`] and its empty expectation [`none`], which `tests/os_process_boundary.rs`,
+//! `tests/os_shell_boundary.rs` and `tests/os_home_boundary.rs` share. Each suite uses the subset
+//! it needs (hence the module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
 
 #![allow(dead_code)]
 
@@ -65,6 +68,58 @@ pub fn assert_real_tree_clean(scan: fn(&Path) -> Vec<Finding>, audit: &str, what
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// The literal rule of the boundary scans (spec 125, THE BOUNDARY SCANS) over `sources`, the
+/// production files as `(path, text)` pairs: each line holding `literal` in a file other than
+/// `home`, outside that file's `#[cfg(test)]` modules and off its comment lines, is one finding of
+/// `shape` naming the file and the line.
+pub fn literal_outside(
+    sources: &[(String, String)],
+    home: &str,
+    literal: &str,
+    shape: &'static str,
+) -> Vec<Finding> {
+    sources
+        .iter()
+        .filter(|(rel, _)| rel != home)
+        .flat_map(|(rel, content)| {
+            let lines: Vec<&str> = content.lines().collect();
+            let tests = cfg_test_ranges(&lines);
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(i, line)| {
+                    line.contains(literal) && !in_ranges(*i, &tests) && !is_comment_line(line)
+                })
+                .map(|(i, line)| Finding {
+                    file: rel.clone(),
+                    line_no: i + 1,
+                    shape,
+                    line_text: line.to_string(),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The `(file, line)` of each finding `scan` yields over a fixture tree holding `content` at `rel`.
+pub fn flagged_by(
+    scan: fn(&Path) -> Vec<Finding>,
+    rel: &str,
+    content: &str,
+) -> Vec<(String, usize)> {
+    let root = tempfile::tempdir().unwrap();
+    write_file(root.path(), rel, content);
+    scan(root.path())
+        .into_iter()
+        .map(|f| (f.file, f.line_no))
+        .collect()
+}
+
+/// No finding: what [`flagged_by`] answers for a fixture its scan passes.
+pub fn none() -> Vec<(String, usize)> {
+    Vec::new()
 }
 
 /// The number of leading ASCII space characters on `line` - this audit's sole proxy for
@@ -595,6 +650,12 @@ pub fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
 /// `fn` keyword (`fn name(`), rather than a reference to the name.
 pub fn is_definition_site(toks: &[RawTok], i: usize) -> bool {
     follows_keyword(toks, i, "fn")
+}
+
+/// The name called at `at`: an identifier followed by `(` that is no definition site.
+pub fn called_at(toks: &[RawTok], at: usize) -> Option<&str> {
+    let call = toks[at].kind == RawKind::Ident && ref_punct(toks.get(at + 1), "(");
+    (call && !is_definition_site(toks, at)).then_some(toks[at].text.as_str())
 }
 
 /// Whether the token in front of `toks[i]` is the keyword `keyword`; `false` at the first token.

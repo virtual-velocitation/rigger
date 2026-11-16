@@ -25,15 +25,24 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 # `wasm32` core lane never builds them.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
-# (spec 78); see the root manifest for why the 1.x line with only `std` + `process`.
+# (spec 78), and this crate's other system calls: the process ids and owners it reads and
+# `inherit_on_exec`'s descriptor-flag call. See the root manifest for why the 1.x line with only
+# `std` + `process`.
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
-# The build budget's cross-process advisory slot lock (`flock` under the hood).
+# The build budget's cross-process advisory slot lock (`flock(2)` on unix, `LockFileEx` on
+# Windows).
 fs2 = "0.4"
+# The gate channel's name rule, on every OS: the SHA-256 of the canonical repo root names the
+# Unix domain socket and the Windows named pipe alike, from the `ring` the lock already resolves
+# for the conductor.
+ring = "0.17"
 
-# The Linux keep-awake adapter's logind client (spec 105): zbus's async API on its tokio
-# integration, driven by a current-thread tokio runtime each acquire builds and shuts down before
-# it returns, so the adapter adds no executor sized by core count. `tokio` is a direct edge to the
-# tokio the store already links.
+# The Linux keep-awake adapter's bus clients (specs 105 and 125): logind's on the system bus and,
+# in a graphical session, the desktop portal's on the session bus, both zbus's async API on its
+# tokio integration. Each runs on a current-thread tokio runtime of its own: logind's is built and
+# shut down within the acquire, and the portal's lives on the one thread the guard holds, so the
+# adapter adds no executor sized by core count. `tokio` is a direct edge to the tokio the store
+# already links.
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = { version = "5.15", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "time"] }
@@ -41,24 +50,30 @@ tokio = { version = "1", features = ["rt", "time"] }
 # The Windows keep-awake adapter's power request (spec 105), at the 0.61 line the lock already
 # resolves for rustix, tempfile and zbus: `PowerCreateRequest` takes its `REASON_CONTEXT` from
 # Threading and its context version from SystemServices. The detached start's creation flags come
-# from Threading too, and the interrupt trigger's console control handler from Console. The macOS adapter declares no crate: it
-# reaches IOKit and CoreFoundation through `extern` declarations.
-# The gate socket's path rule (Unix domain sockets, so Unix alone): the SHA-256 of the canonical
-# repo root names the socket, from the `ring` the lock already resolves for the conductor.
+# from Threading too, and the interrupt trigger's console control handler from Console. The
+# process interface's Windows adapter (spec 125) reads the process snapshot from ToolHelp, each
+# process's times and image name from Threading, the TCP listener table from IpHelper with its
+# address family from WinSock, and a directory's holders from RestartManager; the reaper's Windows
+# signal opens and ends a process through Threading. The gate channel's named pipe is created,
+# connected and waited for through Pipes, read and written overlapped through FileSystem and IO
+# with its event from Threading, and held to its owner by a descriptor from Security and
+# Authorization. The macOS adapters declare no crate: the
+# keep-awake adapter reaches IOKit and CoreFoundation through `extern` declarations, and the
+# process interface reads libproc through the libc below.
 [target.'cfg(unix)'.dependencies]
-ring = "0.17"
 # The unix interrupt trigger's `SIGINT` handler: `signal`, and the async-signal-safe `ftruncate`
-# and `_exit` it calls, from the libc the lock already resolves for rustix's dependents.
+# and `_exit` it calls, and the macOS process adapter's libproc reads, from the libc the lock
+# already resolves for rustix's dependents.
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Console"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_RestartManager", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization"] }
 
 [dev-dependencies]
 tempfile = "3"
 
 # The Linux keep-awake adapter's tests: the live test's own calls to logind, over zbus's blocking
-# API, and the fake logind a private bus serves, built as a bus implementation.
+# API, and the fake logind and fake portal private buses serve, built as a bus implementation.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 zbus = { version = "5.15", default-features = false, features = ["blocking-api", "bus-impl", "tokio"] }
 

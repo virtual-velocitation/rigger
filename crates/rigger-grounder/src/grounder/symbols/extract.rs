@@ -2305,27 +2305,20 @@ fn enclosing_defs(
     callers
 }
 
-/// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT): [`extract`]
-/// runs over `source` under the INJECTED grammar and tags query,
-/// exactly as the code graph is extracted, and the `recorded` definition's last line is
-/// [`Recorded::widest_end`] over the definitions it finds, their kinds rendered through
-/// `kind_str`. `None` when no such definition sits at the line; an `Err` is a grammar or query
-/// that cannot run over the source.
-pub fn locate_extent(
-    source: &str,
-    lang: Lang,
-    tags: &CompiledTags,
-    recorded: Recorded,
-) -> Result<Option<u32>, String> {
-    let symbols = extract(source, lang, tags)?;
-    Ok(recorded.widest_end(symbols.defs.iter().map(|d| Bound {
+/// THE ONE EXTENT a `rigger graph --show` body is bounded by (spec 119, ONE EXTENT), over a
+/// file's definitions `defs`, a bundled grammar's ([`extract`]) or a declared extractor's
+/// answer (spec 125, THE EXTRACTOR PROTOCOL): the `recorded` definition's last line is
+/// [`Recorded::widest_end`] over them, their kinds rendered through `kind_str`, the one rule the
+/// code store's facts are bounded by too. `None` when no such definition sits at the line.
+pub fn extent_in(defs: &[Def], recorded: Recorded) -> Option<u32> {
+    recorded.widest_end(defs.iter().map(|d| Bound {
         name: &d.name,
         path: &d.path,
         kind: kind_str(d.kind),
         line: d.line,
         end_line: d.end_line,
         test: d.is_test,
-    })))
+    }))
 }
 
 /// The byte offset at which each 0-based line begins. `offsets[0]` is always `0`; each `\n` opens
@@ -4022,14 +4015,16 @@ class K
         );
     }
 
-    /// The last line [`locate_extent`] bounds the Rust definition named `name` of kind `kind`
-    /// recorded at `line` in `source` to, at no path, under the registered Rust grammar and query.
+    /// The last line [`extent_in`] bounds the Rust definition named `name` of kind `kind`
+    /// recorded at `line` in `source` to, at no path, over the definitions [`extract`] gives under
+    /// the registered Rust grammar and query.
     fn located(source: &str, name: &str, kind: Kind, line: u32) -> Option<u32> {
         let entry = crate::symbol_index::registered("rs");
-        locate_extent(
-            source,
-            entry.lang,
-            entry.tags().unwrap(),
+        let defs = extract(source, entry.lang, entry.tags().unwrap())
+            .expect("the registered query runs over the source")
+            .defs;
+        extent_in(
+            &defs,
             Recorded {
                 name,
                 path: None,
@@ -4037,7 +4032,6 @@ class K
                 line,
             },
         )
-        .expect("the registered query runs over the source")
     }
 
     crate::test_cases! {

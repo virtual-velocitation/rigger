@@ -1,9 +1,8 @@
 #!/bin/sh
 # The check-in mutation gate (spec 91): the diff-scoped `cargo mutants` sweep, run ONCE by a
 # `checkin` stage that lists it - after every implement unit has integrated - never per
-# implementer round. The Rust gate template set ships this script unwired: `rigger init` writes
-# it beside a root Cargo.toml, and the workflow it writes neither declares nor lists the gate.
-# To run it, declare it as that set's comment shows, its `requires` kept -
+# implementer round. No gate template set ships it. To run it in a project, copy it, declare
+# it with its `requires` -
 # `mutation: { run: "sh .rigger/gates/mutation.sh", kind: core, requires: [cargo-mutants, cargo-nextest] }`
 # - and list it after `test` in the `checkin` stage's gates.
 #
@@ -44,9 +43,9 @@
 # the first failure, a hung test dies at the per-test bound. `env -u CARGO_TARGET_DIR` gives
 # each mutant copy its own build dir (one shared target serialized every copy on cargo's lock
 # and left the cache holding mutated artifacts); `--cargo-arg=--target-dir=target` pins it
-# INSIDE the copy, because the scratch root's own .cargo/config.toml would otherwise send all
-# copies to one `cargo-target-shared` dir. `CARGO_BUILD_JOBS=8` lifts .cargo/config.toml's
-# 4-job cap for the sweep alone. Line-table debug info (`CARGO_PROFILE_*_DEBUG=1`) keeps each
+# INSIDE the copy, so a .cargo/config.toml in a parent directory (a scratch root an older
+# rigger seeded with a shared `target-dir`) cannot send all copies to one dir.
+# `CARGO_BUILD_JOBS=8` lifts .cargo/config.toml's 4-job cap for the sweep alone. Line-table debug info (`CARGO_PROFILE_*_DEBUG=1`) keeps each
 # relink small: full debug info made 200-290 MB test binaries and 81 s relinks.
 #
 # THE WHOLE WORKSPACE IS MUTATED, ONLY THE TOUCHED PACKAGES ARE TESTED (2026-09-28). The
@@ -105,9 +104,10 @@
 # testcontainers at the operator's rootless podman when no DOCKER_HOST is set. A project
 # without that file sweeps exactly as before.
 #
-# THE BASELINE STAYS ON. A checkin stage that lists `test` before `mutation` (as the Rust gate
-# template set's comment shows it wired) proves nothing to this gate: the conductor runs every listed gate whatever the earlier
-# ones returned and exports no record of their verdicts to a gate command - so nothing here can
+# THE BASELINE STAYS ON. A checkin stage that lists `test` before `mutation` (as
+# docs/handbook/authoring-loops.md shows it wired) proves nothing to this gate: the conductor
+# runs every listed gate whatever the earlier ones returned and exports no record of their
+# verdicts to a gate command - so nothing here can
 # confirm the mutated packages are green on this tree. The baseline (cargo-mutants runs it over
 # the mutated packages only: seconds, not minutes) is that confirmation; only the by-name
 # rerun, which follows it on the same tree, skips its own.

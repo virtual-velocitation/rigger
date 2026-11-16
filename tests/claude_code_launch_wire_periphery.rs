@@ -310,7 +310,7 @@ fn launch_resolves_an_empty_rigger_bin_to_the_literal_rigger_on_path() {
 /// test` runs the functions in one binary as concurrent threads by default, and a
 /// concurrent env read racing a concurrent env write is a hazard at the POSIX
 /// `setenv`/`getenv` level regardless of which keys either side touches (same discipline
-/// `tests/build_env_authority_periphery.rs`'s own `ENV_TEST_LOCK` documents). Only one
+/// `tests/common/mod.rs`'s `env_test_lock` documents). Only one
 /// test in this file touches `PATH` today; the lock stays so a future addition here does
 /// not have to rediscover the hazard.
 static PATH_TEST_LOCK: Mutex<()> = Mutex::new(());

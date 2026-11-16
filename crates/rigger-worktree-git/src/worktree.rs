@@ -209,7 +209,6 @@ impl Worktree {
             // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
             // is a no-op, and a healthy registered worktree is never touched.
             heal_corrupt_worktree_admin(repo);
-            ensure_scratch_root_cargo_config(dir);
             if branch_exists(repo, branch) {
                 // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
                 // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
@@ -1833,43 +1832,6 @@ pub fn shared_build_cache_guard_path(scratch_root: &str) -> String {
     format!("{scratch_root}/{SHARED_BUILD_CACHE_NAME}.lock")
 }
 
-/// The scratch root's ONE build location for anything a driver cannot pin (spec 77,
-/// criterion 1, the mechanical half): every unit worktree lives directly under the scratch
-/// root, and cargo reads `.cargo/config.toml` from every parent directory of its cwd, so a
-/// `[build] target-dir` written once at the root catches every cargo run inside a unit
-/// worktree that carries no `CARGO_TARGET_DIR` - a worker whose driver could not set the
-/// variable, an operator's hand-run test - and sends it to `<root>/cargo-target-shared`
-/// instead of `<worktree>/target` (three such 50 GB trees filled the disk on 2026-09-15).
-/// The environment variable still wins, so the gates and compliant workers keep their
-/// per-unit `cargo-target-<unit>` siblings. Written only when absent, never rewritten: the
-/// root is rigger's, but an operator may tune the file. Best-effort by design - a scratch
-/// root that cannot take the file (read-only, or a unit dir with no parent) changes nothing
-/// about worktree creation, which must go on.
-pub const SCRATCH_CARGO_CONFIG: &str = "\
-# Written by rigger at scratch-root creation (spec 77, criterion 1): every cargo run inside a
-# unit worktree under this root that carries no CARGO_TARGET_DIR builds here, never into
-# `<worktree>/target`. The per-unit caches the gates use still win through the environment.
-[build]
-target-dir = \"cargo-target-shared\"
-";
-
-pub fn ensure_scratch_root_cargo_config(worktree_dir: &str) {
-    if unit_cache_sibling(worktree_dir).is_none() {
-        return;
-    }
-    let Some(root) = std::path::Path::new(worktree_dir).parent() else {
-        return;
-    };
-    let dir = root.join(".cargo");
-    let file = dir.join("config.toml");
-    if file.exists() {
-        return;
-    }
-    if std::fs::create_dir_all(&dir).is_ok() {
-        let _ = std::fs::write(&file, SCRATCH_CARGO_CONFIG);
-    }
-}
-
 /// The gate store fence's scratch sibling for a STANDALONE REVIEW worktree at
 /// `worktree_dir` (spec 70 criterion 3, widened - u4 round 2 fix for
 /// `adv-u3c70-store-fence-half-wired-review-worktree-call-site-unfenced`): a review
@@ -2774,22 +2736,23 @@ pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
 /// `env_override` (the `RIGGER_TMPDIR` environment variable, machine-local placement) >
 /// `configured` (`defaults.workdir` from workflow.yml, versioned placement) > the
 /// cache-home default (spec 89, criterion 2 - see [`cache_scratch_root_from`]). A leading
-/// `~/` expands to $HOME, and an override or configured root that is still relative resolves
-/// against `repo`. NEVER the OS temp dir: worktrees carry multi-gigabyte build
-/// dirs, and on the common small-root/large-home partition layout the OS disk is the one
-/// that cannot absorb them (design-intent Gap 14). The resolved dir is created if absent.
+/// `~/` expands to the home directory ([`rigger_process::home_dir`]), and an override or
+/// configured root that is still relative resolves against `repo`. NEVER the OS temp dir:
+/// worktrees carry multi-gigabyte build dirs, and on the common small-root/large-home
+/// partition layout the OS disk is the one that cannot absorb them (design-intent Gap 14). The
+/// resolved dir is created if absent.
 pub fn scratch_root(repo: &str, configured: &str, env_override: Option<&str>) -> String {
     scratch_root_with(
         repo,
         configured,
         env_override,
         std::env::var_os(crate::driver::replay::CACHE_HOME_ENV),
-        std::env::var_os(crate::driver::replay::HOME_ENV),
+        rigger_process::home_dir(),
     )
 }
 
-/// [`scratch_root`] with the caller's own `XDG_CACHE_HOME`/`HOME` values as plain arguments
-/// (the shape [`cache_scratch_root_from`] already has), so a unit test drives the whole
+/// [`scratch_root`] with the caller's own `XDG_CACHE_HOME` value and home directory as plain
+/// arguments (the shape [`cache_scratch_root_from`] already has), so a unit test drives the whole
 /// create-and-sweep path against a throwaway cache home without touching the process
 /// environment.
 ///
@@ -2873,22 +2836,27 @@ pub fn sweep_orphan_scratch_roots(cache_dir: &std::path::Path) -> usize {
 /// `TMPDIR` (or the `rigger_scratch` tool's container) walk up into the REAL repo's
 /// `.rigger/events.db` - either binding a store it should not have, or (spec 89 Problem 4)
 /// having a running spec's live unit worktrees swept as a stray fixture's. A repo-less
-/// caller or a homeless environment (neither `XDG_CACHE_HOME` nor `HOME` set) has nothing
-/// to key a cache path on and keeps the OLD repo-nested degrade - the one case this
+/// caller or a homeless environment (neither `XDG_CACHE_HOME` nor a home directory known) has
+/// nothing to key a cache path on and keeps the OLD repo-nested degrade - the one case this
 /// criterion leaves alone, since a real spawn (this criterion's actual subject) always has
-/// both a real repo and a real machine `HOME`.
+/// both a real repo and a real machine home directory.
 pub fn scratch_root_path(repo: &str, configured: &str, env_override: Option<&str>) -> String {
     scratch_root_path_with(
         repo,
         configured,
         env_override,
         std::env::var_os(crate::driver::replay::CACHE_HOME_ENV),
-        std::env::var_os(crate::driver::replay::HOME_ENV),
+        rigger_process::home_dir(),
     )
 }
 
-/// [`scratch_root_path`] with the caller's own `XDG_CACHE_HOME`/`HOME` values as plain
-/// arguments - the pure resolver both [`scratch_root_path`] and [`scratch_root_with`] share.
+/// The directory under the repository's `.rigger/` that holds the scratch root when there is no
+/// cache home to key it on ([`scratch_root_path`]'s homeless degrade): `<repo>/.rigger/tmp`.
+pub const REPOSITORY_SCRATCH_SUBDIR: &str = "tmp";
+
+/// [`scratch_root_path`] with the caller's own `XDG_CACHE_HOME` value and home directory as
+/// plain arguments - the pure resolver both [`scratch_root_path`] and [`scratch_root_with`]
+/// share.
 pub fn scratch_root_path_with(
     repo: &str,
     configured: &str,
@@ -2916,7 +2884,7 @@ pub fn scratch_root_path_with(
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| {
                     format!(
-                        "{}/{RIGGER_DIR}/tmp",
+                        "{}/{RIGGER_DIR}/{REPOSITORY_SCRATCH_SUBDIR}",
                         if repo.is_empty() { "." } else { repo }
                     )
                 }),
@@ -2925,8 +2893,8 @@ pub fn scratch_root_path_with(
     }
 }
 
-/// `path` with a leading `~/` expanded to `home` (the caller's `HOME`), or as given when it has
-/// none or `home` is absent or not UTF-8.
+/// `path` with a leading `~/` expanded to `home` (the caller's home directory), or as given when
+/// it has none or `home` is absent or not UTF-8.
 fn expand_home(path: String, home: Option<&std::ffi::OsStr>) -> String {
     match (
         path.strip_prefix("~/"),
@@ -2938,14 +2906,14 @@ fn expand_home(path: String, home: Option<&std::ffi::OsStr>) -> String {
 }
 
 /// The cache-home scratch root for `repo` (spec 89, criterion 2): `<cache-home>/rigger/
-/// <encoded repo>`. `xdg`/`home` are the caller's own `XDG_CACHE_HOME`/`HOME` values,
+/// <encoded repo>`. `xdg`/`home` are the caller's own `XDG_CACHE_HOME` value and home directory,
 /// taken as plain arguments rather than read from `std::env` internally - mirroring
 /// [`crate::driver::replay::cache_home_from`]'s own shape - so this stays a PURE function a
 /// unit test drives directly with explicit values, never by mutating (and so racing
 /// concurrently-running tests over) the real process environment.
 ///
 /// Reuses TWO existing single authorities rather than inventing a THIRD, narrower identity
-/// scheme: [`crate::driver::replay::cache_home_from`] (the exact XDG-then-`$HOME/.cache`
+/// scheme: [`crate::driver::replay::cache_home_from`] (the exact XDG-then-`<home>/.cache`
 /// resolution spec 77 already established for the agent scratch root) supplies the
 /// cache home, and [`crate::liveness::marker_filename`] (spec 77's own injective,
 /// filesystem-safe byte-hex encoding, already the run-id/spawn-id authority
@@ -2999,6 +2967,7 @@ mod blob_batch_tests {
         git_hash_object, git_init_quiet, git_ok_with_identity, git_out, loose_object,
         temp_git_project_with_commit, write_file,
     };
+    use rigger_process::os_process;
     use std::path::Path;
 
     /// The batch process over the repository holding `root`, run as the plain git there.
@@ -3163,13 +3132,9 @@ mod blob_batch_tests {
     /// The ids of the live processes whose command line names `dir`.
     fn processes_naming(dir: &Path) -> Vec<u32> {
         let needle = dir.to_str().unwrap();
-        std::fs::read_dir("/proc")
-            .unwrap()
-            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u32>().ok())
-            .filter(|pid| {
-                std::fs::read(format!("/proc/{pid}/cmdline"))
-                    .is_ok_and(|cmdline| String::from_utf8_lossy(&cmdline).contains(needle))
-            })
+        os_process::pids()
+            .into_iter()
+            .filter(|&pid| os_process::command(pid).contains(needle))
             .collect()
     }
 
@@ -3191,7 +3156,7 @@ mod blob_batch_tests {
 
         drop(batch);
         assert!(
-            !Path::new(&format!("/proc/{}", running[0])).exists(),
+            !os_process::pids().contains(&running[0]),
             "the process is gone and reaped once the batch is dropped"
         );
     }
@@ -4058,40 +4023,21 @@ mod tests {
     }
 
     #[test]
-    fn creating_a_unit_worktree_writes_the_scratch_roots_shared_build_location_once() {
-        // Spec 77 criterion 1's mechanical half: the first unit worktree under a scratch root
-        // leaves `<root>/.cargo/config.toml` pointing unpinned cargo runs at the root's shared
-        // cache; a second worktree leaves an existing file alone; a non-unit worktree writes
-        // nothing.
+    fn creating_a_unit_worktree_writes_nothing_beside_it_under_the_scratch_root() {
+        // Spec 125 criterion 4: rigger writes no toolchain's build configuration. Creating a
+        // unit worktree under a scratch root leaves that root holding the worktree alone - no
+        // `.cargo/config.toml` steering a build tool anywhere.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let root = std::env::temp_dir().join(format!("rigger-scratch-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&root).unwrap();
-        let wt_a = root.join("rigger-wt-unit-a");
-        Worktree::create(&repo_path, wt_a.to_str().unwrap(), "rigger/u/unit-a", "").unwrap();
-        let cfg = root.join(".cargo").join("config.toml");
-        let written = std::fs::read_to_string(&cfg).expect("the root carries a cargo config");
-        assert!(
-            written.contains("[build]") && written.contains("target-dir = \"cargo-target-shared\""),
-            "unpinned cargo inside a unit worktree builds into the root's shared cache: {written}"
-        );
-        std::fs::write(&cfg, "[build]\ntarget-dir = \"operator-tuned\"\n").unwrap();
-        let wt_b = root.join("rigger-wt-unit-b");
-        Worktree::create(&repo_path, wt_b.to_str().unwrap(), "rigger/u/unit-b", "").unwrap();
-        assert!(
-            std::fs::read_to_string(&cfg)
-                .unwrap()
-                .contains("operator-tuned"),
-            "an existing file is never rewritten"
-        );
-        let other = std::env::temp_dir().join(format!("rigger-other-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&other).unwrap();
-        let review = other.join("rigger-review-panel-0");
-        Worktree::create(&repo_path, review.to_str().unwrap(), "rigger/review-0", "").unwrap();
-        assert!(
-            !other.join(".cargo").exists(),
-            "a review worktree is no unit and writes no build location"
-        );
+        let root = tempfile::tempdir().unwrap();
+        let wt = root.path().join("rigger-wt-unit-a");
+        Worktree::create(&repo_path, wt.to_str().unwrap(), "rigger/u/unit-a", "").unwrap();
+        let mut entries: Vec<String> = std::fs::read_dir(root.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        entries.sort();
+        assert_eq!(entries, vec!["rigger-wt-unit-a".to_string()]);
     }
 
     #[test]
@@ -5801,10 +5747,13 @@ mod tests {
         );
         assert_eq!(env, env_dir.to_str().unwrap(), "env override beats config");
 
-        // A leading ~/ expands to $HOME (workflow.yml can say ~/.rigger/tmp).
-        if let Ok(home) = std::env::var("HOME") {
+        // A leading ~/ expands to the home directory (workflow.yml can say ~/.rigger/tmp).
+        if let Some(home) = rigger_process::home_dir() {
             let tilde = scratch_root(&repo_path, "~/.rigger-scratch-test", None);
-            assert_eq!(tilde, format!("{home}/.rigger-scratch-test"));
+            assert_eq!(
+                tilde,
+                format!("{}/.rigger-scratch-test", home.to_str().unwrap())
+            );
             let _ = std::fs::remove_dir_all(tilde);
         }
     }

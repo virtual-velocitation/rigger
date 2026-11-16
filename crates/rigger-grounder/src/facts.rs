@@ -1,11 +1,21 @@
-//! Extraction to facts: the [`Extract`] implementation that reads one file's path and bytes into
-//! its [`FileFacts`]. It re-shapes what the per-language symbol extractors, the design-document
-//! extractor and the workflow-definition extractor already find; it is no extractor of its own,
-//! and holds no language knowledge. Every name is kept as written and nothing is resolved across
-//! files, so a file's facts are a pure function of its path and bytes.
+//! Extraction to facts: the [`Extract`] implementations that read one file's path and bytes into
+//! its [`FileFacts`]. They re-shape what the per-language symbol extractors, the design-document
+//! extractor and the workflow-definition extractor already find, and what an extractor the
+//! project's workflow declares answers over THE EXTRACTOR PROTOCOL (spec 125), whose client is
+//! [`extractor_protocol`]; this module is no extractor of its own, and holds no language
+//! knowledge. Every name is kept as written and
+//! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
+//! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
+//! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
+//! bundled extraction under the extractors the project's workflow declares, whose fingerprint
+//! changes with the declaration; the show surface asks it for a file's definitions
+//! ([`ProjectExtractor::defs`]), so a shown body is bounded as the store extracts it.
 
-use std::collections::HashMap;
+mod extractor_protocol;
+
+use std::collections::{btree_map, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, PoisonError};
 
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
@@ -15,21 +25,24 @@ use rigger_domain::code_view::{Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
+use rigger_process::whole_line;
 use rigger_store::code::{fingerprint, open_current, open_head, DirTreeSource, Memo, Mode, Opened};
 
-use crate::config::{RIGGER_DIR, WORKFLOW_FILE};
+use self::extractor_protocol::{request_line, symbols_answered, Session};
+use crate::config::{check_extractors, ExtractorDecl, RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
 use crate::grounder::design::extract::{extract_concepts, extract_links};
 use crate::grounder::symbols::extract::{kind_str, lang_str};
-use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
+use crate::grounder::symbols::model::{self, SymRef, GRAMMAR_TAGS_VERSION};
 use crate::grounder::symbols::paths::{is_dev_only, module_candidates};
-use crate::grounder::symbols::{extracted, registry};
+use crate::grounder::symbols::{content_hash, extracted, registry};
 use crate::grounder::workflowdef;
 
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
 /// it whenever any of them can give a file other facts than before, as the symbol extractors'
 /// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the extractor's fingerprint,
+/// with the digest of the project's declared extractors when it declares any ([`ProjectExtractor`]),
 /// which the store's fingerprint ([`store_fingerprint`]) folds with the grouper's generation. A golden
 /// test pins it beside the digest of the facts read over a fixture set, so a change that is not
 /// bumped fails there.
@@ -41,17 +54,24 @@ fn fingerprint_of(grammar_generation: &str, facts_generation: &str) -> u64 {
     fnv1a_64(format!("{grammar_generation}\n{facts_generation}").as_bytes())
 }
 
-/// The fingerprint every snapshot of the store [`open_store`] opens is stamped with: the
-/// extractor's and the grouper's folded, as the advance folds them.
-pub fn store_fingerprint() -> u64 {
-    fingerprint(&FactsExtractor, &ProductionGroupings)
+/// The fingerprint every snapshot of the store [`open_store`] opens at `root` is stamped with: the
+/// project's extractor's ([`ProjectExtractor::of`]) and the grouper's folded, as the advance folds
+/// them.
+pub fn store_fingerprint(root: &Path) -> u64 {
+    fingerprint(&ProjectExtractor::of(root), &ProductionGroupings)
 }
 
-/// The code store at `root` opened as `mode` says over `source`: its facts read by
-/// [`FactsExtractor`] and grouped by [`ProductionGroupings`]. Every opener of the store composes it
-/// here.
+/// The code store at `root` opened as `mode` says over `source`: its facts read by the project's
+/// extractor ([`ProjectExtractor::of`] its root) and grouped by [`ProductionGroupings`]. Every
+/// opener of the store composes it here.
 pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Opened, String> {
-    open_current(root, source, &FactsExtractor, &ProductionGroupings, mode)
+    open_current(
+        root,
+        source,
+        &ProjectExtractor::of(root),
+        &ProductionGroupings,
+        mode,
+    )
 }
 
 /// The head of the code store at `root` read for a reader in `worktree`, overlaid with the files
@@ -66,11 +86,176 @@ pub fn read_head(
     open_head(
         root,
         source,
-        &FactsExtractor,
+        &ProjectExtractor::of(root),
         &ProductionGroupings,
         worktree,
         Memo::process(),
     )
+}
+
+/// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
+/// the one read of the map, the code store's and the show surface's through
+/// [`ProjectExtractor::of`]. A workflow that cannot be read or fails its check declares none, said
+/// on stderr as `rigger: extractors: {error}` in one write ([`whole_line`]), so the bundled
+/// grammars proceed alone.
+fn declared_extractors(root: &Path) -> BTreeMap<String, ExtractorDecl> {
+    read_declared_extractors(root).unwrap_or_else(|error| {
+        whole_line::say(format_args!("rigger: extractors: {error}"));
+        BTreeMap::new()
+    })
+}
+
+/// The extractors the workflow at `root` declares, read through
+/// [`config_store::load_project_workflow`] and checked by [`check_extractors`]: the empty map when
+/// there is no workflow, and why when it cannot be read, does not parse or declares a malformed
+/// extractor.
+fn read_declared_extractors(root: &Path) -> Result<BTreeMap<String, ExtractorDecl>, String> {
+    let Some(workflow) = config_store::load_project_workflow(root).map_err(|e| e.0)? else {
+        return Ok(BTreeMap::new());
+    };
+    check_extractors(&workflow.extractors)?;
+    Ok(workflow.extractors)
+}
+
+/// The extractor of one project: the bundled grammars ([`FactsExtractor`]) and the extractors its
+/// workflow declares ([`declared_extractors`]), each declared one asked through a session of its
+/// own (THE EXTRACTOR PROTOCOL, spec 125).
+#[derive(Debug)]
+pub struct ProjectExtractor {
+    root: PathBuf,
+    declared: BTreeMap<String, ExtractorDecl>,
+    /// The open session of each declared extractor, by its name, behind one lock: the store reads
+    /// files on several threads, and a session serves one file at a time.
+    sessions: Mutex<BTreeMap<String, Session>>,
+}
+
+impl ProjectExtractor {
+    /// The extractor of the project at `root`, holding the extractors its workflow declares and no
+    /// session yet: a declared extractor starts, in `root`, at the first file of its extensions.
+    pub fn of(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            declared: declared_extractors(root),
+            sessions: Mutex::default(),
+        }
+    }
+
+    /// The name and declaration of the extractor whose extensions list the extension of the file
+    /// at `path`, as written; the check lets no two extractors list one extension.
+    fn declaration_of(&self, path: &str) -> Option<(&str, &ExtractorDecl)> {
+        let extension = registry::extension(path)?;
+        self.declared
+            .iter()
+            .find(|(_, decl)| decl.extensions.iter().any(|listed| listed == extension))
+            .map(|(name, decl)| (name.as_str(), decl))
+    }
+
+    /// The file at `path` holding `text` read as code, the one routing an advance
+    /// ([`Extract::extract`]) and a shown body ([`ProjectExtractor::defs`]) share: a file whose
+    /// extension a declaration lists ([`ProjectExtractor::declaration_of`]) in the declared
+    /// extractor's name, its symbols the extractor's answer
+    /// ([`ProjectExtractor::declared_symbols`]), none for no text or a failed answer, so a declared
+    /// extension is never read by a bundled grammar; any other file as the bundled grammars read
+    /// it ([`bundled_code`]).
+    fn code(&self, path: &str, text: Option<&str>) -> Option<CodeFile> {
+        let Some((name, decl)) = self.declaration_of(path) else {
+            return bundled_code(path, text);
+        };
+        Some(CodeFile {
+            lang: name.to_string(),
+            symbols: text
+                .and_then(|text| self.declared_symbols(name, &decl.run, path, text))
+                .map(Ok),
+        })
+    }
+
+    /// The definitions of the file at `path` holding `text`, read as an advance reads them
+    /// ([`file_facts`] over [`ProjectExtractor::code`]): none for the workflow definition, which
+    /// is read as the workflow before any declaration is consulted, for a file no extraction reads
+    /// and for a failed answer; why, when the bundled grammar cannot tag the text.
+    pub fn defs(&self, path: &str, text: &str) -> Result<Vec<model::Def>, String> {
+        if is_workflow_doc(path) {
+            return Ok(Vec::new());
+        }
+        match self.code(path, Some(text)).and_then(|file| file.symbols) {
+            Some(symbols) => symbols.map(|symbols| symbols.defs),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// The symbols the declared extractor `name`, run as `run`, answers for the file at `path`
+    /// holding `text`, asked through its session, started first when it has none. A failure -
+    /// the session cannot start, the request cannot be written, the answer cannot be read or is
+    /// refused ([`symbols_answered`]) - says `rigger: extractor {name}: {path}: {why}` on stderr in
+    /// one write ([`whole_line`]), closes the session, so the next file of its extensions starts a
+    /// new one, and gives none.
+    fn declared_symbols(
+        &self,
+        name: &str,
+        run: &str,
+        path: &str,
+        text: &str,
+    ) -> Option<CodeSymbols> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(PoisonError::into_inner);
+        let answered = match sessions.entry(name.to_string()) {
+            btree_map::Entry::Occupied(open) => Ok(open.into_mut()),
+            btree_map::Entry::Vacant(none) => {
+                Session::start(run, &self.root).map(|session| none.insert(session))
+            }
+        }
+        .and_then(|session| session.ask(&request_line(path, text)))
+        .and_then(|line| symbols_answered(path, text, &line));
+        match answered {
+            Ok(symbols) => Some(symbols),
+            Err(why) => {
+                whole_line::say(format_args!("rigger: extractor {name}: {path}: {why}"));
+                if let Some(session) = sessions.remove(name) {
+                    session.close();
+                }
+                None
+            }
+        }
+    }
+}
+
+impl Drop for ProjectExtractor {
+    /// Closes every session the extractor still holds.
+    fn drop(&mut self) {
+        let sessions = self
+            .sessions
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        for session in std::mem::take(sessions).into_values() {
+            session.close();
+        }
+    }
+}
+
+impl Extract for ProjectExtractor {
+    /// [`FactsExtractor`]'s with no declaration, so a store built before any is declared stays in
+    /// force; with any, the grammar generation carries the digest of the declared map's JSON in
+    /// name order, so a changed declaration is a changed extractor.
+    fn fingerprint(&self) -> u64 {
+        if self.declared.is_empty() {
+            return FactsExtractor.fingerprint();
+        }
+        let json = serde_json::to_string(&self.declared)
+            .expect("a map of strings to strings and lists of strings serializes");
+        let digest = content_hash(&json);
+        fingerprint_of(
+            &format!("{GRAMMAR_TAGS_VERSION}+{digest}"),
+            FACTS_GENERATION,
+        )
+    }
+
+    /// A file whose extension a declaration lists is code in the declared extractor's name, its
+    /// symbols the extractor's answer ([`ProjectExtractor::code`]) - none for bytes that are not
+    /// UTF-8 or a failed answer - and the workflow definition and every other file read as
+    /// [`FactsExtractor`] reads them; a declaration named as a bundled language (`rust`) replaces
+    /// its grammar for the extensions it lists.
+    fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
+        file_facts(entry, bytes, |path, text| self.code(path, text))
+    }
 }
 
 /// The code store of a project with no git, read from the directory at its root.
@@ -101,53 +286,116 @@ impl Extract for FactsExtractor {
         fingerprint_of(GRAMMAR_TAGS_VERSION, FACTS_GENERATION)
     }
 
-    /// Total over its input: bytes that are not UTF-8, a failed extraction and a workflow
-    /// definition that does not parse give a file's identity and no lists, as a file that
-    /// extracts to nothing.
+    /// The bundled grammars' read of the file ([`bundled_code`]) through the one skeleton
+    /// ([`file_facts`]).
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
-        let path = entry.path.as_str();
-        let mut facts = FileFacts {
-            path: entry.path.clone(),
-            blob: entry.blob.clone(),
-            scope: if is_dev_only(path) {
-                Scope::Test
-            } else {
-                Scope::Product
-            },
-            ..FileFacts::default()
-        };
-        let text = text_of(Some(bytes));
-        if path == workflow_doc() {
-            facts.half = Half::Workflow;
-            if let Some(text) = text {
-                workflow_facts(text, &mut facts);
-            }
-            return facts;
-        }
-        if let Some(grammar) = registry::for_path(path, None) {
-            facts.half = Half::Code;
-            facts.lang = lang_str(grammar.lang).to_string();
-            if let Some((_, symbols)) = extracted(path, || text, None).flatten() {
-                code_facts(path, &symbols, &mut facts);
-            }
-        } else {
-            facts.half = Half::Design;
-        }
-        if let Some(text) = text {
-            design_facts(path, text, &mut facts);
-        }
-        facts
+        file_facts(entry, bytes, bundled_code)
     }
 }
 
-/// Fills the definitions, mentions, module declarations and parse-error marker of `facts` from the symbols the
-/// extractor found in the file at `path`.
-fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
-    facts.partial = symbols.partial;
-    let by_path = def_indices_by_path(symbols);
+/// The symbols an extraction gives one code file, the bundled grammars' and a declared
+/// extractor's alike: its definitions, its references and whether they cover only part of it.
+#[derive(Debug, PartialEq, Eq)]
+struct CodeSymbols {
+    defs: Vec<model::Def>,
+    refs: Vec<SymRef>,
+    partial: bool,
+}
+
+/// A code file as an extraction reads it: the language it is read as and its symbols, none when
+/// there is no text or a declared extractor's answer failed, and why when the bundled grammar
+/// cannot tag the text.
+struct CodeFile {
+    lang: String,
+    symbols: Option<Result<CodeSymbols, String>>,
+}
+
+/// One file's facts, the one skeleton every extraction reads a file through: its identity and its
+/// scope by the dev-only rule; for the workflow definition, the workflow half and its nodes and
+/// relations, before `code` is asked of it; for any other file, the code half, the language and
+/// the symbols `code` reads it as when it reads it at all, else the design half, then the design
+/// facts of its text. Total over its input: bytes that are not UTF-8, a failed extraction and a
+/// workflow definition that does not parse give a file's identity and no lists, as a file that
+/// extracts to nothing.
+fn file_facts(
+    entry: &Entry,
+    bytes: &[u8],
+    code: impl FnOnce(&str, Option<&str>) -> Option<CodeFile>,
+) -> FileFacts {
+    let path = entry.path.as_str();
+    let mut facts = FileFacts {
+        path: entry.path.clone(),
+        blob: entry.blob.clone(),
+        scope: if is_dev_only(path) {
+            Scope::Test
+        } else {
+            Scope::Product
+        },
+        ..FileFacts::default()
+    };
+    let text = text_of(Some(bytes));
+    if is_workflow_doc(path) {
+        facts.half = Half::Workflow;
+        if let Some(text) = text {
+            workflow_facts(text, &mut facts);
+        }
+        return facts;
+    }
+    match code(path, text) {
+        Some(file) => {
+            facts.half = Half::Code;
+            facts.lang = file.lang;
+            if let Some(Ok(symbols)) = file.symbols {
+                code_facts(
+                    path,
+                    &symbols.defs,
+                    &symbols.refs,
+                    symbols.partial,
+                    &mut facts,
+                );
+            }
+        }
+        None => facts.half = Half::Design,
+    }
+    if let Some(text) = text {
+        design_facts(path, text, &mut facts);
+    }
+    facts
+}
+
+/// The bundled grammars' read of the file at `path` holding `text`: the language of the grammar
+/// its extension names and the symbols it extracts ([`extracted`]), none when there is no text
+/// and why when the grammar cannot tag it; none at all when no grammar names the extension.
+fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
+    let grammar = registry::for_path(path, None)?;
+    Some(CodeFile {
+        lang: lang_str(grammar.lang).to_string(),
+        symbols: extracted(path, || text, None)
+            .flatten()
+            .map(|(_, symbols)| {
+                symbols.map(|symbols| CodeSymbols {
+                    defs: symbols.defs,
+                    refs: symbols.refs,
+                    partial: symbols.partial,
+                })
+            }),
+    })
+}
+
+/// Fills the definitions, mentions, module declarations and parse-error marker of `facts` from
+/// the definitions `defs`, the references `refs` and the `partial` flag an extraction gave the
+/// file at `path`.
+fn code_facts(
+    path: &str,
+    defs: &[model::Def],
+    refs: &[SymRef],
+    partial: bool,
+    facts: &mut FileFacts,
+) {
+    facts.partial = partial;
+    let by_path = def_indices_by_path(defs);
     let index_of = |def_path: &str| by_path.get(def_path).copied();
-    facts.defs = symbols
-        .defs
+    facts.defs = defs
         .iter()
         .map(|d| Def {
             local: d.path.clone(),
@@ -159,8 +407,7 @@ fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
             test: d.is_test,
         })
         .collect();
-    facts.mentions = symbols
-        .refs
+    facts.mentions = refs
         .iter()
         .map(|r| Mention {
             enclosing: r.enclosing.as_deref().and_then(index_of),
@@ -176,8 +423,7 @@ fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
             test: r.is_test,
         })
         .collect();
-    facts.modules = symbols
-        .defs
+    facts.modules = defs
         .iter()
         .filter(|d| d.is_out_of_line_module)
         .map(|d| ModuleDecl {
@@ -189,13 +435,13 @@ fn code_facts(path: &str, symbols: &FileSymbols, facts: &mut FileFacts) {
         .collect();
 }
 
-/// The index in `symbols.defs` of the definition a path names, for the paths the extractor gives
-/// a parent or a caller by. Definitions can share a path (cfg twins, a type and a function of
-/// one name); the one the path names is the one that becomes the entity, the first by
+/// The index in `defs` of the definition a path names, for the paths an extraction gives a parent
+/// or a caller by. Definitions can share a path (cfg twins, a type and a function of one name);
+/// the one the path names is the one that becomes the entity, the first by
 /// [`definition_precedence`], the earlier in the file's order on a tie.
-fn def_indices_by_path(symbols: &FileSymbols) -> HashMap<&str, u32> {
+fn def_indices_by_path(defs: &[model::Def]) -> HashMap<&str, u32> {
     let mut held: HashMap<&str, (u32, (usize, u32))> = HashMap::new();
-    for (i, d) in symbols.defs.iter().enumerate() {
+    for (i, d) in defs.iter().enumerate() {
         let rank = definition_precedence(kind_str(d.kind), d.line);
         held.entry(d.path.as_str())
             .and_modify(|best| {
@@ -254,10 +500,16 @@ fn workflow_facts(text: &str, facts: &mut FileFacts) {
         .collect();
 }
 
-/// The workflow definition's path relative to a project root, its ONE spelling: the path whose
-/// bytes the code store's extractor reads as the workflow definition.
+/// The workflow definition's path relative to a project root, as the code store names its files:
+/// the path whose bytes the code store's extractor reads as the workflow definition.
 fn workflow_doc() -> String {
     format!("{RIGGER_DIR}/{WORKFLOW_FILE}")
+}
+
+/// Whether the file at `path` is the workflow definition ([`workflow_doc`]), which every
+/// extraction reads as the workflow before any declaration or grammar is consulted.
+fn is_workflow_doc(path: &str) -> bool {
+    path == workflow_doc()
 }
 
 /// The text of a file's `bytes` as an extraction half reads it: none for no bytes and for bytes
@@ -270,16 +522,25 @@ fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
+    use crate::extractor_stub::{
+        answer_defining, declared_identity, request_for, root_dir_of, StubExtractor,
+    };
+    use crate::extractors_fixtures::{workflow_declaring_extractors, EXTRACTOR_REFUSALS};
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
+    use crate::grounder::symbols::content_hash;
     use crate::js_ts_definition_sources::{
         JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
     };
     use crate::python_definition_sources::PYTHON_DEFINITIONS_SOURCE;
     use crate::rust_definition_sources::RUST_DEFINITIONS_SOURCE;
+    use rigger_domain::code_view::CodeView;
+    use rigger_domain::config::ExtractorDecl;
     use rigger_domain::contextgraph::{
         KIND_AGENT, KIND_DESIGN_DOC, KIND_GATE, KIND_RATIONALE, KIND_STAGE, REL_EXPLAINS, REL_RUNS,
         REL_SPECIFIES,
     };
+    use rigger_store::code::Store;
+    use std::collections::BTreeMap;
 
     fn facts_of(path: &str, bytes: &[u8]) -> FileFacts {
         let entry = Entry {
@@ -309,8 +570,8 @@ mod tests {
         for (path, lang, source) in table {
             let symbols = extracted(path, || Some(source), None)
                 .flatten()
-                .unwrap_or_else(|| panic!("{path}: the symbol extractor reads the fixture"))
-                .1;
+                .and_then(|(_, symbols)| symbols.ok())
+                .unwrap_or_else(|| panic!("{path}: the symbol extractor reads the fixture"));
             let facts = facts_of(path, source.as_bytes());
             assert_eq!(facts.path, path, "{path}");
             assert_eq!(facts.blob, format!("blob-of-{path}"), "{path}");
@@ -1061,5 +1322,606 @@ mod tests {
         assert_eq!(held, fingerprint_of(GRAMMAR_TAGS_VERSION, FACTS_GENERATION));
         assert_ne!(held, fingerprint_of(GRAMMAR_TAGS_VERSION, "facts-next"));
         assert_ne!(held, fingerprint_of("ts-tags-next", FACTS_GENERATION));
+    }
+
+    /// Writes `workflow` as the workflow definition of the project at `root`.
+    fn write_workflow(root: &Path, workflow: &str) {
+        let path = root.join(workflow_doc());
+        let dir = path
+            .parent()
+            .expect("the workflow lies under the rigger directory");
+        std::fs::create_dir_all(dir).expect("create the rigger directory");
+        std::fs::write(&path, workflow).expect("write the workflow");
+    }
+
+    /// A project in a fresh directory, its workflow definition `workflow` when there is one.
+    fn project_declaring(workflow: Option<&str>) -> tempfile::TempDir {
+        let project = tempfile::tempdir().expect("tempdir");
+        if let Some(workflow) = workflow {
+            write_workflow(project.path(), workflow);
+        }
+        project
+    }
+
+    /// The project at `root` declares no extractor in force: its read answers `read`, the map
+    /// declared is empty, and the project's extractor is the bundled one, its fingerprint
+    /// `FactsExtractor`'s.
+    fn assert_bundled(root: &Path, read: Result<BTreeMap<String, ExtractorDecl>, String>) {
+        let label = root.display();
+        assert_eq!(read_declared_extractors(root), read, "{label}");
+        assert_eq!(declared_extractors(root), BTreeMap::new(), "{label}");
+        assert_eq!(
+            ProjectExtractor::of(root).fingerprint(),
+            FactsExtractor.fingerprint(),
+            "{label}"
+        );
+    }
+
+    /// THE WORKFLOW DECLARES EXTRACTORS, none or failing: with no workflow, a workflow without the
+    /// key, an empty declaration, a workflow that fails to parse at any key, one that cannot be
+    /// read, and each declaration the check refuses, the declared map is empty and the project's
+    /// extractor is the bundled one; the read answers why a declaration failed.
+    #[test]
+    fn with_no_declaration_or_a_failing_one_the_project_extractor_is_the_bundled_one() {
+        let refused = EXTRACTOR_REFUSALS.map(|(mapping, refusal)| {
+            (
+                Some(workflow_declaring_extractors(mapping)),
+                Err(refusal.to_string()),
+            )
+        });
+        let rows = [
+            (None, Ok(BTreeMap::new())),
+            (Some("stages: {}\n".to_string()), Ok(BTreeMap::new())),
+            (
+                Some(workflow_declaring_extractors("{}")),
+                Ok(BTreeMap::new()),
+            ),
+            (
+                Some("nonsense: 1\n".to_string()),
+                Err("parse workflow: nonsense: unknown key".to_string()),
+            ),
+            (
+                Some(workflow_declaring_extractors(
+                    "{ zig: { extensions: [zig], run: zig-tags, args: [] } }",
+                )),
+                Err("parse workflow: extractors.zig.args: unknown key".to_string()),
+            ),
+        ];
+        for (workflow, read) in rows.into_iter().chain(refused) {
+            let project = project_declaring(workflow.as_deref());
+            assert_bundled(project.path(), read);
+        }
+        let project = project_declaring(None);
+        let unreadable = project.path().join(workflow_doc());
+        std::fs::create_dir_all(&unreadable).expect("a directory where the workflow lies");
+        let why = std::fs::read_to_string(&unreadable).expect_err("a directory reads as no text");
+        assert_bundled(project.path(), Err(format!("read workflow: {why}")));
+    }
+
+    /// THE WORKFLOW DECLARES EXTRACTORS, declared: a declaration folds its digest, the content
+    /// hash of the declared map's JSON in name order, into the fingerprint's grammar generation,
+    /// so declarations differing in a name, an extension or a run alone give fingerprints that
+    /// differ from each other and from the bundled one, and one declaration read twice gives one.
+    #[test]
+    fn each_declaration_folds_its_digest_into_the_fingerprint() {
+        // (the `extractors:` mapping, the declared map's JSON in name order)
+        let rows = [
+            (
+                "{ zig: { extensions: [zig], run: zig-tags } }",
+                r#"{"zig":{"extensions":["zig"],"run":"zig-tags"}}"#,
+            ),
+            (
+                "{ zag: { extensions: [zig], run: zig-tags } }",
+                r#"{"zag":{"extensions":["zig"],"run":"zig-tags"}}"#,
+            ),
+            (
+                "{ zig: { extensions: [zog], run: zig-tags } }",
+                r#"{"zig":{"extensions":["zog"],"run":"zig-tags"}}"#,
+            ),
+            (
+                "{ zig: { extensions: [zig], run: zig-facts } }",
+                r#"{"zig":{"extensions":["zig"],"run":"zig-facts"}}"#,
+            ),
+            (
+                "{ zig: { extensions: [zig], run: zig-tags }, ada: { extensions: [adb], run: gnat } }",
+                r#"{"ada":{"extensions":["adb"],"run":"gnat"},"zig":{"extensions":["zig"],"run":"zig-tags"}}"#,
+            ),
+        ];
+        let mut held = vec![FactsExtractor.fingerprint()];
+        for (mapping, json) in rows {
+            let project = project_declaring(Some(&workflow_declaring_extractors(mapping)));
+            let fingerprint = ProjectExtractor::of(project.path()).fingerprint();
+            let digest = content_hash(json);
+            assert_eq!(
+                fingerprint,
+                fingerprint_of(
+                    &format!("{GRAMMAR_TAGS_VERSION}+{digest}"),
+                    FACTS_GENERATION
+                ),
+                "{mapping}"
+            );
+            assert_eq!(
+                ProjectExtractor::of(project.path()).fingerprint(),
+                fingerprint,
+                "{mapping} read twice"
+            );
+            held.push(fingerprint);
+        }
+        let distinct: std::collections::BTreeSet<u64> = held.iter().copied().collect();
+        assert_eq!(distinct.len(), rows.len() + 1, "{held:x?}");
+    }
+
+    /// THE WORKFLOW DECLARES EXTRACTORS, in force: the store `open_store` opens under one
+    /// declaration is in force under it for `store_fingerprint` and for a reader of the head, in
+    /// the root or in a worktree whose own workflow declares another (a reader reads the root's
+    /// declaration), is not in force under another declaration at the root, and is again once the
+    /// first returns.
+    #[test]
+    fn a_store_opened_under_one_declaration_is_not_in_force_under_another() {
+        let a = workflow_declaring_extractors("{ zig: { extensions: [zig], run: zig-tags } }");
+        let b = workflow_declaring_extractors("{ zig: { extensions: [zig], run: zig-facts } }");
+        let project = project_declaring(Some(&a));
+        let root = project.path();
+        std::fs::write(root.join("lib.rs"), "fn held() {}\n").expect("write a source file");
+        let opened = open_store(root, &DirTreeSource::new(root), Mode::Write)
+            .expect("open the store under A");
+        let stamp = opened.view.stamp().clone();
+        assert_eq!(
+            stamp.fingerprint,
+            fingerprint(&ProjectExtractor::of(root), &ProductionGroupings),
+            "opened under A's extractor"
+        );
+        assert_ne!(
+            stamp.fingerprint,
+            fingerprint(&FactsExtractor, &ProductionGroupings),
+            "A's store is not the bundled one"
+        );
+        let in_force = || {
+            let current = Store::new(root).current(store_fingerprint(root));
+            current
+                .expect("read the store")
+                .map(|view| view.stamp().clone())
+        };
+        assert_eq!(in_force(), Some(stamp.clone()), "in force under A");
+        let head = DirectoryHead::new(root)
+            .head(root)
+            .expect("read the head under A");
+        assert_eq!(
+            head.view.stamp(),
+            &stamp,
+            "a reader under A reads A's store"
+        );
+        let worktree = project_declaring(Some(&b));
+        let head = DirectoryHead::new(root)
+            .head(worktree.path())
+            .expect("read the head from a worktree declaring B");
+        assert_eq!(
+            head.view.stamp(),
+            &stamp,
+            "a reader in a worktree declaring B reads the root's declaration, A's store"
+        );
+        write_workflow(root, &b);
+        assert_eq!(in_force(), None, "not in force under B");
+        write_workflow(root, &a);
+        assert_eq!(in_force(), Some(stamp), "in force again under A");
+    }
+
+    /// A project in a fresh directory whose workflow declares `stub` as the extractor `name` of
+    /// the flow sequence `extensions`, holding each of `files` at its path with its text.
+    fn stub_project(
+        stub: &StubExtractor,
+        name: &str,
+        extensions: &str,
+        files: &[(&str, &str)],
+    ) -> tempfile::TempDir {
+        let project = project_declaring(Some(&workflow_declaring_extractors(
+            &stub.declaring(name, extensions),
+        )));
+        for (path, text) in files {
+            let file = project.path().join(path);
+            std::fs::create_dir_all(file.parent().expect("a file lies in a directory"))
+                .expect("create the file's directory");
+            std::fs::write(file, text).expect("write the file");
+        }
+        project
+    }
+
+    /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE: over a project declaring the stub for `zig` and
+    /// `zag`, the store `open_store` advances holds each such file's answer as its facts under the
+    /// declared name - its definitions with their parents, its mentions with their callers and
+    /// kinds, its partial flag, its scope by the dev-only rule and the design facts of its text -
+    /// beside a bundled file's own facts; the stub started once, in the root, read each file's
+    /// request once and was closed when the advance was done.
+    #[cfg(unix)]
+    #[test]
+    fn an_advance_holds_each_declared_files_answer_read_in_one_session() {
+        const A_TEXT: &str = "// WHY: the stub answers it\ntype T\n  fn new\n    call helper\n";
+        const A_ANSWER: &str = concat!(
+            r#"{"path":"src/a.zig","defs":["#,
+            r#"{"kind":"Type","name":"T","line":2,"end_line":4,"path":"T"},"#,
+            r#"{"kind":"Method","name":"new","line":3,"end_line":4,"path":"T::new","parent":"T","is_test":true}"#,
+            r#"],"refs":["#,
+            r#"{"name":"helper","line":4,"enclosing":"T::new"},"#,
+            r#"{"name":"T","line":3,"enclosing":"T","ref_kind":"type","is_test":true},"#,
+            r#"{"name":"top","line":1}"#,
+            r#"],"partial":true}"#
+        );
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(
+            &stub,
+            "zig",
+            "[zig, zag]",
+            &[
+                ("src/a.zig", A_TEXT),
+                ("tests/b.zag", "only\n"),
+                ("lib.rs", "fn held() {}\n"),
+            ],
+        );
+        stub.answers("src/a.zig", A_ANSWER);
+        stub.answers(
+            "tests/b.zag",
+            r#"{"path":"tests/b.zag","defs":[],"refs":[]}"#,
+        );
+        let root = project.path();
+        let opened =
+            open_store(root, &DirTreeSource::new(root), Mode::Write).expect("open the store");
+        let held = |path: &str| {
+            opened
+                .view
+                .file(path)
+                .unwrap_or_else(|| panic!("{path} is in the store"))
+                .into_owned()
+        };
+        let a = held("src/a.zig");
+        let mention = |enclosing, name: &str, kind, line, test| Mention {
+            enclosing,
+            name: name.to_string(),
+            leaf: name.to_string(),
+            kind,
+            line,
+            test,
+        };
+        assert_eq!(
+            a,
+            FileFacts {
+                partial: true,
+                defs: vec![
+                    Def {
+                        local: "T".into(),
+                        leaf: "T".into(),
+                        kind: "type".into(),
+                        line: 2,
+                        end_line: 4,
+                        parent: None,
+                        test: false,
+                    },
+                    Def {
+                        local: "T::new".into(),
+                        leaf: "new".into(),
+                        kind: "method".into(),
+                        line: 3,
+                        end_line: 4,
+                        parent: Some(0),
+                        test: true,
+                    },
+                ],
+                mentions: vec![
+                    mention(Some(1), "helper", MentionKind::Call, 4, false),
+                    mention(Some(0), "T", MentionKind::Tagged("type".into()), 3, true),
+                    mention(None, "top", MentionKind::Call, 1, false),
+                ],
+                doc_concepts: vec![DocConcept {
+                    kind: KIND_RATIONALE.into(),
+                    id: "src/a.zig#L1".into(),
+                    title: "WHY: the stub answers it".into(),
+                }],
+                doc_links: vec![DocLink {
+                    from: "src/a.zig#L1".into(),
+                    rel: REL_EXPLAINS.into(),
+                    to: "src/a.zig".into(),
+                }],
+                ..declared_identity("src/a.zig", &a.blob, "zig")
+            },
+            "a declared file holds its answer"
+        );
+        let b = held("tests/b.zag");
+        assert_eq!(
+            b,
+            FileFacts {
+                scope: Scope::Test,
+                ..declared_identity("tests/b.zag", &b.blob, "zig")
+            },
+            "a declared file's scope is the dev-only rule's"
+        );
+        let lib = held("lib.rs");
+        let entry = Entry {
+            path: "lib.rs".into(),
+            blob: lib.blob.clone(),
+        };
+        assert_eq!(
+            lib,
+            FactsExtractor.extract(&entry, b"fn held() {}\n"),
+            "an undeclared file holds the bundled grammars' facts"
+        );
+        let mut requests = stub.requests();
+        requests.sort();
+        assert_eq!(
+            (stub.starts(), requests, stub.ends()),
+            (
+                vec![root_dir_of(root)],
+                vec![
+                    r#"{"path":"src/a.zig","text":"// WHY: the stub answers it\ntype T\n  fn new\n    call helper\n"}"#
+                        .to_string(),
+                    r#"{"path":"tests/b.zag","text":"only\n"}"#.to_string(),
+                ],
+                vec!["ended".to_string()],
+            ),
+            "one session, in the root, one request a file, closed after the advance"
+        );
+    }
+
+    /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE, failed: in the store `open_store` advances, a
+    /// file the stub answers with an error, with another file's path, with two defs each naming
+    /// the other its parent, or not at all holds its identity facts and no definitions, and a file
+    /// beside them still holds its answer.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_whose_answer_fails_holds_its_identity_and_the_next_file_extracts() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let names = ["a", "b", "c", "d", "e"];
+        let files: Vec<(String, &str)> = names
+            .iter()
+            .map(|name| (format!("{name}.zig"), "x\ny\n"))
+            .collect();
+        let files: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(path, text)| (path.as_str(), *text))
+            .collect();
+        let project = stub_project(&stub, "zig", "[zig]", &files);
+        stub.answers("a.zig", r#"{"path":"a.zig","error":"no parser"}"#);
+        stub.answers("b.zig", r#"{"path":"c.zig","defs":[],"refs":[]}"#);
+        stub.answers(
+            "c.zig",
+            concat!(
+                r#"{"path":"c.zig","defs":["#,
+                r#"{"kind":"Function","name":"f","line":1,"end_line":2,"path":"f","parent":"g"},"#,
+                r#"{"kind":"Function","name":"g","line":2,"end_line":2,"path":"g","parent":"f"}"#,
+                r#"],"refs":[]}"#
+            ),
+        );
+        stub.answers(
+            "d.zig",
+            r#"{"path":"d.zig","defs":[{"kind":"Function","name":"d","line":1,"end_line":2,"path":"d"}],"refs":[{"name":"d","line":2,"enclosing":"d"}]}"#,
+        );
+        let root = project.path();
+        let opened =
+            open_store(root, &DirTreeSource::new(root), Mode::Write).expect("open the store");
+        for name in names {
+            let path = format!("{name}.zig");
+            let held = opened
+                .view
+                .file(&path)
+                .unwrap_or_else(|| panic!("{path} is in the store"))
+                .into_owned();
+            let identity = declared_identity(&path, &held.blob, "zig");
+            let expected = if name == "d" {
+                FileFacts {
+                    defs: vec![Def {
+                        local: "d".into(),
+                        leaf: "d".into(),
+                        kind: "function".into(),
+                        line: 1,
+                        end_line: 2,
+                        parent: None,
+                        test: false,
+                    }],
+                    mentions: vec![Mention {
+                        enclosing: Some(0),
+                        name: "d".into(),
+                        leaf: "d".into(),
+                        kind: MentionKind::Call,
+                        line: 2,
+                        test: false,
+                    }],
+                    ..identity
+                }
+            } else {
+                identity
+            };
+            assert_eq!(held, expected, "{path}");
+        }
+    }
+
+    /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE, restarted: one project extractor reading files
+    /// one at a time closes its session at each failed file - an error, the end of the stub's
+    /// output, another file's path - so the next file starts a new one in the root; a closed
+    /// session's input ends, the stub's own exit aside, and dropping the extractor closes the
+    /// session it still holds.
+    #[cfg(unix)]
+    #[test]
+    fn after_a_failed_file_the_next_file_starts_a_new_session() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "zig", "[zig]", &[]);
+        let good = |name: &str| answer_defining(&format!("{name}.zig"), name);
+        // (the file's name, its answer, the leaves it holds, the stub's starts and ends after it)
+        type Row<'a> = (&'a str, Option<String>, &'a [&'a str], usize, usize);
+        let rows: [Row; 6] = [
+            ("a", Some(good("a")), &["a"], 1, 0),
+            (
+                "b",
+                Some(r#"{"path":"b.zig","error":"no parser"}"#.into()),
+                &[],
+                1,
+                1,
+            ),
+            ("c", Some(good("c")), &["c"], 2, 1),
+            ("d", None, &[], 2, 1),
+            ("e", Some(good("a")), &[], 3, 2),
+            ("f", Some(good("f")), &["f"], 4, 2),
+        ];
+        let extractor = ProjectExtractor::of(project.path());
+        for (name, answer, leaves, starts, ends) in rows {
+            let path = format!("{name}.zig");
+            if let Some(answer) = answer {
+                stub.answers(&path, &answer);
+            }
+            let entry = Entry {
+                path: path.clone(),
+                blob: format!("blob-of-{path}"),
+            };
+            let facts = extractor.extract(&entry, b"x\n");
+            let held: Vec<&str> = facts.defs.iter().map(|d| d.leaf.as_str()).collect();
+            assert_eq!(
+                (
+                    facts.half,
+                    facts.lang.as_str(),
+                    held,
+                    stub.starts().len(),
+                    stub.ends().len()
+                ),
+                (Half::Code, "zig", leaves.to_vec(), starts, ends),
+                "{path}"
+            );
+        }
+        drop(extractor);
+        let root_dir = root_dir_of(project.path());
+        assert_eq!(
+            (stub.starts(), stub.ends().len(), stub.requests()),
+            (
+                vec![root_dir; 4],
+                3,
+                ["a", "b", "c", "d", "e", "f"]
+                    .map(|name| request_for(&format!("{name}.zig"), "x\n"))
+                    .to_vec(),
+            ),
+            "dropping the extractor closes the session it holds"
+        );
+    }
+
+    /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE, over a bundled one: a declaration named `rust`
+    /// over `rs` gives each `.rs` file its answer in place of the Rust grammar's - none when the
+    /// answer fails - while a bundled language it does not list keeps its grammar.
+    #[cfg(unix)]
+    #[test]
+    fn a_declaration_named_rust_over_rs_replaces_the_bundled_grammar() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "rust", "[rs]", &[]);
+        stub.answers("src/lib.rs", &answer_defining("src/lib.rs", "declared"));
+        let extractor = ProjectExtractor::of(project.path());
+        // (the file, its text, the language it holds, the leaves of its definitions)
+        let rows: [(&str, &str, &str, &[&str]); 3] = [
+            ("src/lib.rs", "fn held() {}\n", "rust", &["declared"]),
+            ("src/gone.rs", "fn held() {}\n", "rust", &[]),
+            (
+                "tool/run.py",
+                "def held():\n    pass\n",
+                "python",
+                &["held"],
+            ),
+        ];
+        for (path, text, lang, leaves) in rows {
+            let entry = Entry {
+                path: path.into(),
+                blob: format!("blob-of-{path}"),
+            };
+            let facts = extractor.extract(&entry, text.as_bytes());
+            let held: Vec<&str> = facts.defs.iter().map(|d| d.leaf.as_str()).collect();
+            assert_eq!(
+                (facts.half, facts.lang.as_str(), held),
+                (Half::Code, lang, leaves.to_vec()),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            (stub.starts(), stub.requests().len()),
+            (vec![root_dir_of(project.path())], 2),
+            "the `.rs` files were asked of one session, the `.py` file of none"
+        );
+    }
+
+    /// A DECLARED EXTRACTOR GROUNDS ITS LANGUAGE, unconsulted: under a declaration listing `zig`
+    /// and `yml`, the workflow definition, a file of a bundled language, a document, a file whose
+    /// name only ends in `.zig` and one whose extension differs in case extract exactly as the
+    /// bundled grammars extract them, and a declared file that is not text holds the declared
+    /// identity; none of them starts the extractor.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_no_declaration_reaches_extracts_as_the_bundled_grammars_do() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "zig", "[zig, yml]", &[]);
+        let workflow =
+            std::fs::read(project.path().join(workflow_doc())).expect("read the workflow");
+        let extractor = ProjectExtractor::of(project.path());
+        // (the file, its bytes, the facts it holds when they are not the bundled grammars')
+        let rows: [(&str, &[u8], Option<FileFacts>); 6] = [
+            (".rigger/workflow.yml", &workflow, None),
+            ("src/lib.rs", b"fn held() {}\n", None),
+            ("docs/a-design.md", b"# A design\n\n## Parts\n", None),
+            ("a/.zig", b"x\n", None),
+            ("a.ZIG", b"x\n", None),
+            (
+                "bad.zig",
+                &[0xff, 0xfe],
+                Some(declared_identity("bad.zig", "blob-of-bad.zig", "zig")),
+            ),
+        ];
+        for (path, bytes, declared) in rows {
+            let entry = Entry {
+                path: path.into(),
+                blob: format!("blob-of-{path}"),
+            };
+            let expected = declared.unwrap_or_else(|| FactsExtractor.extract(&entry, bytes));
+            assert_eq!(extractor.extract(&entry, bytes), expected, "{path}");
+        }
+        assert_eq!(
+            (stub.starts(), stub.requests()),
+            (Vec::<String>::new(), Vec::<String>::new()),
+            "no file started the extractor"
+        );
+    }
+
+    /// A SHOWN BODY IS BOUNDED AS THE STORE EXTRACTS IT: under a declaration named `rust` over
+    /// `rs` and `yml`, `defs` gives a listed file the leaves of its answer - none when the answer
+    /// fails - a file of a bundled language its grammar's, and the workflow definition and a
+    /// document none; only the `.rs` files were asked of the extractor, so the workflow
+    /// definition is read as the workflow before any declaration is consulted.
+    #[cfg(unix)]
+    #[test]
+    fn a_files_definitions_are_read_as_the_store_reads_them() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "rust", "[rs, yml]", &[]);
+        stub.answers("src/lib.rs", &answer_defining("src/lib.rs", "declared"));
+        let workflow = std::fs::read_to_string(project.path().join(workflow_doc()))
+            .expect("read the workflow");
+        let extractor = ProjectExtractor::of(project.path());
+        // (the file, its text, the leaves of its definitions)
+        let rows: [(&str, &str, &[&str]); 5] = [
+            ("src/lib.rs", "fn held() {}\n", &["declared"]),
+            ("src/gone.rs", "fn held() {}\n", &[]),
+            ("tool/run.py", "def held():\n    pass\n", &["held"]),
+            (".rigger/workflow.yml", &workflow, &[]),
+            ("docs/a-design.md", "# A design\n\n## Parts\n", &[]),
+        ];
+        for (path, text, leaves) in rows {
+            let held = extractor
+                .defs(path, text)
+                .map(|defs| defs.into_iter().map(|d| d.name).collect::<Vec<_>>());
+            assert_eq!(
+                held,
+                Ok(leaves.iter().map(|leaf| leaf.to_string()).collect()),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            (stub.starts(), stub.requests().len()),
+            (vec![root_dir_of(project.path())], 2),
+            "the `.rs` files were asked of one session, no other file of any"
+        );
     }
 }

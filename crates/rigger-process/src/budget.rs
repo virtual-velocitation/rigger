@@ -39,8 +39,9 @@ const POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// the actual guard.
 ///
 /// `Default` (`max_concurrent: 0`, an empty `slot_dir`) is the unlimited, no-gating shape -
-/// the same "off means nothing happens" convention [`crate::gate::BuildEnv`] uses for an
-/// unconfigured wrapper - so a caller that never resolves one from config gates nothing.
+/// the same "unset means nothing happens" convention a [`crate::gate::BuildEnv`] declaring
+/// nothing follows, exporting nothing - so a caller that never resolves one from config gates
+/// nothing.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildBudget {
     max_concurrent: u32,

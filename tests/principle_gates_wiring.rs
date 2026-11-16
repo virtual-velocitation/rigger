@@ -1,8 +1,9 @@
 //! THE PRINCIPLE GATES ARE DEFINITION: the gates that hold every unit to the engineering
-//! principles mechanically are declared in the workflow `rigger init` scaffolds for a consumer
-//! project from the gate template set matching its language, each listed on the stages it
-//! guards. That scaffolded workflow, written beside a root `Cargo.toml` from the Rust set, is the
-//! one workflow this file reads, loaded through the production parser
+//! principles mechanically are declared in the workflow `rigger init --template <dir>` scaffolds
+//! for a consumer project from the gate template set in that root matching its language, each
+//! listed on the stages it guards. That scaffolded workflow, written beside a root `Cargo.toml`
+//! from the Rust set this repository's root holds, is the one workflow this file reads, loaded
+//! through the production parser
 //! (`rigger::config_store::load`), so a gate that is merely mentioned in a comment, or declared
 //! but never listed on a stage, fails.
 
@@ -11,18 +12,22 @@ use common::cli::{cargo_project, loaded_config, run_rigger};
 use common::fixtures::{
     container_labels_and_host_ports, with_kurrentdb_container, TEST_CONTAINER_LABEL,
 };
-use common::git::{commit_files, git_ok, git_out, init_repo};
-use common::repo::{repo_root, stub_path};
+use common::git::{build_unit_branch, unit_branch_repo};
+use common::repo::{repo_root, run_gate_script, run_sh, stub_path};
 use common::shell_outcome;
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Command;
 
-/// A fixture project holding a root `Cargo.toml`, after `rigger init` ran in it.
+/// A fixture project holding a root `Cargo.toml`, after `rigger init --template <this repository's
+/// root>` ran in it.
 fn rust_project_after_init() -> tempfile::TempDir {
     let dir = cargo_project();
-    let (_out, err, ok) = run_rigger(dir.path(), &["init"]);
+    let template = repo_root();
+    let (_out, err, ok) = run_rigger(
+        dir.path(),
+        &["init", "--template", template.to_str().unwrap()],
+    );
     assert!(ok, "rigger init must succeed; stderr:\n{err}");
     dir
 }
@@ -62,12 +67,8 @@ fn init_writes_each_file_the_rust_set_lists() {
     let paths: Vec<&str> = listed.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(
         paths,
-        [
-            ".rigger/gates/red-before-green.sh",
-            ".rigger/gates/mutation.sh",
-            ".rigger/gates/container-env.sh",
-        ],
-        "the Rust set lists its three scripts"
+        [".rigger/gates/red-before-green.sh"],
+        "the Rust set lists its one script"
     );
     for path in paths {
         let shipped = std::fs::read(repo_root().join(path))
@@ -84,55 +85,10 @@ fn init_writes_each_file_the_rust_set_lists() {
 /// The fixture's committed source file: one function and a trailing test module.
 const LIB: &str = "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn f_is_one() {\n        assert_eq!(super::f(), 1);\n    }\n}\n";
 
-/// Makes `repo` a git repository whose `rigger-run` branch commits everything in it with `lib` as
-/// its one source file, checked out on a unit branch that `commits` (each `(path, content,
-/// message)`, in order) build on it. Returns each commit's short sha.
-fn build_unit_branch(repo: &Path, lib: &str, commits: &[(&str, &str, &str)]) -> Vec<String> {
-    init_repo(repo);
-    commit_files(repo, &[("src/lib.rs", lib)], "base");
-    git_ok(repo, &["branch", "rigger-run"]);
-    git_ok(repo, &["checkout", "-q", "-b", "unit"]);
-    commits
-        .iter()
-        .map(|(rel, content, msg)| {
-            commit_files(repo, &[(*rel, *content)], msg);
-            git_out(repo, &["rev-parse", "--short", "HEAD"])
-        })
-        .collect()
-}
-
-/// A fixture repository built by [`build_unit_branch`]. Returns it and each commit's short sha.
-fn unit_branch_repo(lib: &str, commits: &[(&str, &str, &str)]) -> (tempfile::TempDir, Vec<String>) {
-    let dir = tempfile::tempdir().unwrap();
-    let shas = build_unit_branch(dir.path(), lib, commits);
-    (dir, shas)
-}
-
-/// `sh` run with `args` from `repo`, with each `(name, value)` of `envs` set. Returns (passed,
-/// output).
-fn run_sh(repo: &Path, args: &[&OsStr], envs: &[(&str, &OsStr)]) -> (bool, String) {
-    shell_outcome(
-        &Command::new("sh")
-            .args(args)
-            .envs(envs.iter().copied())
-            .current_dir(repo)
-            .output()
-            .unwrap(),
-    )
-}
-
-/// This repository's gate script `name` (under `.rigger/gates/`) run by path from `repo`, the
-/// working directory a gate runs in, with each `(name, value)` of `envs` set. Returns (passed,
-/// output).
-fn run_gate_script(repo: &Path, name: &str, envs: &[(&str, &OsStr)]) -> (bool, String) {
-    let script = repo_root().join(".rigger/gates").join(name);
-    run_sh(repo, &[script.as_os_str()], envs)
-}
-
 /// The shipped red-before-green gate script run on `repo`'s unit branch against `rigger-run`.
 /// Returns (passed, output).
 fn run_red_before_green(repo: &Path) -> (bool, String) {
-    run_gate_script(repo, "red-before-green.sh", &[])
+    run_gate_script(repo, "red-before-green.sh", &[], &[])
 }
 
 /// The `red-before-green` command the workflow `rigger init` scaffolds in a Rust fixture project,
@@ -573,6 +529,7 @@ fn run_test_gate(work: &Path, tree: &Path) -> (bool, String, String) {
     let (passed, out) = run_gate_script(
         tree,
         "test.sh",
+        &[],
         &[
             ("PATH", path.as_ref()),
             ("RECORDING_CARGO_DUMP_FILE", dump.as_os_str()),

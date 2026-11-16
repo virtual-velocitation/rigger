@@ -1503,17 +1503,22 @@ fn a_stage_of_no_steps_inherits_the_default_list_and_a_stage_list_replaces_it() 
     }
 }
 
-/// Given a project `rigger init` rendered, with no gate template set and with one, when the
-/// operator validates it, it passes and its review is the canonical sequence.
+/// Given a project `rigger init --template <this repository's root>` rendered, matching no gate
+/// template set and matching the Rust one, when the operator validates it, it passes and its
+/// review is the canonical sequence.
 #[test]
 fn a_workflow_rigger_init_renders_validates_as_the_canonical_sequence_with_or_without_gates() {
+    let template = repo_root();
     for (project, summary) in [
-        (temp_project(), "config valid: 6 agents, 4 stages, 0 gates"),
-        (cargo_project(), "config valid: 6 agents, 4 stages, 5 gates"),
+        (temp_project(), common::cli::fresh_scaffold_valid_line(0)),
+        (cargo_project(), common::cli::fresh_scaffold_valid_line(5)),
     ] {
-        run_rigger_ok(project.path(), &["init"]);
+        run_rigger_ok(
+            project.path(),
+            &["init", "--template", template.to_str().unwrap()],
+        );
         let out = run_rigger_ok(project.path(), &["validate"]);
-        assert_eq!(out.lines().nth(1), Some(summary));
+        assert_eq!(out.lines().nth(1), Some(summary.as_str()));
         assert_eq!(
             loaded_config(project.path())
                 .workflow
@@ -1582,18 +1587,9 @@ fn rigger_validate_warns_of_each_unbounded_gating_agent_once() {
         write_panel_project(project.path(), &format!("defaults:\n  review: {panel}\n"));
         let (_out, err, ok) = run_rigger(project.path(), &["validate"]);
         assert!(ok, "validate must accept {panel}; stderr:\n{err}");
-        let advisories: Vec<&str> = err
-            .lines()
-            .filter(|line| line.contains("gating role(s)"))
-            .collect();
         assert_eq!(
-            advisories,
-            [format!(
-                "warning: defaults.max_wall_clock is unbounded (0) and gating role(s) {roles} \
-                 carry no per-agent bound, so a hung gating agent is never swept and the run \
-                 stalls silently. Set defaults.max_wall_clock (seconds), or a per-agent \
-                 max_wall_clock on those roles."
-            )],
+            common::cli::wall_clock_advisory_lines(&err),
+            [common::fixtures::wall_clock_advisory_naming(roles)],
             "{panel}"
         );
     }

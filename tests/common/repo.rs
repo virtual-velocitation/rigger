@@ -1,6 +1,7 @@
 //! Fixtures that read this repository's own checked-in files: sources, docs and manifests (as
-//! text, or with the lock through cargo's resolver).
+//! text, or with the lock through cargo's resolver), and its gate scripts, run by path.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -10,6 +11,35 @@ use super::fixtures::{recorded_argv, recorded_task};
 /// The repository root (the package's manifest directory).
 pub fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+}
+
+/// `sh` run with `args` from `repo`, with each `(name, value)` of `envs` set. Returns (passed,
+/// output).
+pub fn run_sh(repo: &Path, args: &[&OsStr], envs: &[(&str, &OsStr)]) -> (bool, String) {
+    super::shell_outcome(
+        &Command::new("sh")
+            .args(args)
+            .envs(envs.iter().copied())
+            .current_dir(repo)
+            .output()
+            .unwrap(),
+    )
+}
+
+/// This repository's gate script `name` (under `.rigger/gates/`) run by path with `args` from
+/// `repo`, the working directory a gate runs in, with each `(name, value)` of `envs` set. Returns
+/// (passed, output).
+pub fn run_gate_script(
+    repo: &Path,
+    name: &str,
+    args: &[&str],
+    envs: &[(&str, &OsStr)],
+) -> (bool, String) {
+    let script = repo_root().join(".rigger/gates").join(name);
+    let argv: Vec<&OsStr> = std::iter::once(script.as_os_str())
+        .chain(args.iter().map(OsStr::new))
+        .collect();
+    run_sh(repo, &argv, envs)
 }
 
 /// `cargo tree --prefix none` with `args`, run from [`repo_root`] so the resolver reads this

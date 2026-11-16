@@ -25,8 +25,7 @@ use rigger::eventstore::{
     sqlite::Store, Direction, Event, EventStore, ExpectedRevision, Filter, Position,
 };
 use rigger::gate::{
-    resolve_build_layer, resolved_cache_dir, BuildEnv, ExecRunner, Gate, GateRequirements,
-    GateResult, ProbeFault, Runner, STORE_FENCE_ENV,
+    BuildEnv, ExecRunner, Gate, GateRequirements, GateResult, ProbeFault, Runner, STORE_FENCE_ENV,
 };
 use rigger::grounder::Grounder;
 use rigger::instructions;
@@ -38,7 +37,7 @@ use rigger::reap::reap_then_remove_dir;
 use rigger::run as runscope;
 use rigger::run_store as runscope_store;
 use rigger::sidecar::{PeerDecision, Sidecar};
-use rigger::spawn::SpawnEvent;
+use rigger::spawn::{SpawnEvent, CONN_ENV};
 use rigger::worktree::{RunBranchSetup, Worktree};
 use rigger::{hooks, mcpserver, playbooks, progress, spawn, spawn_store, spec, subprocess, watch};
 use rigger_worktree_git::discover::{discover, rev_parse, Location, Repository};
@@ -548,9 +547,6 @@ fn graph_to_read<E>(
     Ok((graph, note))
 }
 
-/// The environment variable carrying the server's full connection string (§48 rung 2).
-const CONN_ENV: &str = "KURRENTDB_CONN";
-
 /// The [`CONN_ENV`] connection string from the environment, treating an empty value as unset so
 /// a stray `KURRENTDB_CONN=` never selects the server with no address.
 fn env_conn() -> Option<String> {
@@ -877,21 +873,21 @@ fn store_identity(sel: &StoreSelection, events_db: String) -> rigger::registry::
 /// FENCE-AWARE (spec 70 criterion 3): when [`STORE_FENCE_ENV`] is set - a unit-worktree gate's
 /// spawned test process, the same condition [`require_store_dir`] itself checks first - this is a
 /// complete no-op before [`rigger::registry::default_dir`] is even consulted. That resolver reads
-/// `XDG_STATE_HOME`/`HOME` directly and is NOT scoped by `loc`/`selection`, so without this check
-/// a fenced courier's registry write would still land in the real, machine-global registry even
-/// though its store write correctly landed in the fenced scratch dir - reopening the exact ambient
-/// side channel the fence exists to close.
+/// `XDG_STATE_HOME` and the home directory directly and is NOT scoped by `loc`/`selection`, so
+/// without this check a fenced courier's registry write would still land in the real,
+/// machine-global registry even though its store write correctly landed in the fenced scratch
+/// dir - reopening the exact ambient side channel the fence exists to close.
 fn refresh_registry_entry(loc: &StoreLocation, selection: &StoreSelection) {
     // The gate store fence (spec 70 criterion 3), mirroring `require_store_dir`'s own check
     // (same env var, same "checked first, before touching any ambient state" placement): a
     // fenced courier's STORE already resolves to the pinned scratch dir via `require_store_dir`,
-    // but `rigger::registry::default_dir()` below reads `XDG_STATE_HOME`/`HOME` directly and is
-    // entirely decoupled from `loc`/`selection` - so without this check, a courier a fenced
-    // gate's own spawned test process runs (the exact call shape spec 70 criterion 3 names) would
-    // still write a real Instance into the machine-global registry, reopening precisely the
-    // ambient side channel that fence exists to close. A fenced gate sees strictly less ambient
-    // state, never more - the registry is ambient state, so a fenced courier skips it entirely
-    // rather than trying to refresh a fenced/scratch registry no discovery consumer ever reads.
+    // but `rigger::registry::default_dir()` below reads `XDG_STATE_HOME` and the home directory
+    // directly and is entirely decoupled from `loc`/`selection` - so without this check, a
+    // courier a fenced gate's own spawned test process runs (the exact call shape spec 70
+    // criterion 3 names) would still write a real Instance into the machine-global registry,
+    // reopening precisely the ambient side channel that fence exists to close. A fenced gate sees
+    // strictly less ambient state, never more - the registry is ambient state, so a fenced
+    // courier skips it entirely rather than trying to refresh a fenced/scratch registry no discovery consumer ever reads.
     if store_fence().is_some() {
         return;
     }
@@ -4293,15 +4289,18 @@ fn is_build_cache_tombstone(name: &str) -> bool {
 /// between call sites (spec 77 Global Constraint 3: fail-safe deletion only, skip anything
 /// a liveness guard claims).
 ///
-/// EXCLUSION: a reader-writer flock on [`rigger::worktree::shared_build_cache_guard_path`] of
-/// `scratch_root`, acquired EXCLUSIVE and NON-BLOCKING here. Every rigger-launched shared-cache build
-/// ([`rigger::gate`]'s `ExecRunner::run`, via an exec-replacing `flock -s -F` wrapper around
-/// the gate command itself) holds the SAME guard SHARED for as long as its cargo/rustc
-/// process tree is alive, so this can only succeed when no such build is in flight - on
-/// contention it returns `Ok(BuildCacheReclaim::Busy)` immediately, never queuing (spec 77
-/// Design: "never waiting, so no build can queue behind the delete" - a prior, now-
-/// superseded design proved a queued waiter can only ever resume into a hole, since flock
-/// never gates a concurrent unlink).
+/// EXCLUSION: a reader-writer advisory lock on
+/// [`rigger::worktree::shared_build_cache_guard_path`] of `scratch_root`, acquired EXCLUSIVE and
+/// NON-BLOCKING here. Every rigger-launched shared-cache build ([`rigger::gate`]'s
+/// `ExecRunner::run`) holds the SAME guard SHARED: the in-process lock
+/// [`rigger::gate::hold_shared_lock`] takes, which the gate command's processes inherit through
+/// [`rigger::subprocess::inherit_on_exec`]. On unix it lives while any process the gate started
+/// keeps the inherited descriptor, so this can only succeed when no such build is in flight; on
+/// Windows it lives as long as the gate's run, so a child the gate leaves running is outside the
+/// exclusion, and no holder check stands in for it here. On contention it returns
+/// `Ok(BuildCacheReclaim::Busy)` immediately, never queuing (spec 77 Design: "never waiting, so
+/// no build can queue behind the delete" - a prior, now-superseded design proved a queued waiter
+/// can only ever resume into a hole, since an advisory lock never gates a concurrent unlink).
 ///
 /// RECLAIM: rename-then-delete, not delete-in-place - a successful rename onto a
 /// process-unique tombstone name ([`build_cache_tombstone_path`]) IS the reclaim (cargo
@@ -4334,7 +4333,7 @@ fn reclaim_shared_build_cache(
     let guard_path =
         rigger::worktree::shared_build_cache_guard_path(&scratch_root.to_string_lossy());
     let guard = rigger::gate::open_build_cache_guard(Path::new(&guard_path))?;
-    // Fully-qualified, matching `gate::probe_build_cache_guard`'s own reasoning: std's
+    // Fully-qualified, matching `gate::hold_shared_lock`'s own reasoning: std's
     // more recently stabilized `File::try_lock`/`lock`/`unlock` share these exact names with
     // `fs2::FileExt`, and a plain method call would silently prefer the std inherent method
     // (leaving this crate's deliberate `fs2` choice unused) rather than genuinely exercising it.
@@ -4488,7 +4487,7 @@ const FOOTPRINT_RECLAIM_HINT_SPAWN_SCOPED: &str =
 /// the operator verb that does.
 const FOOTPRINT_RECLAIM_HINT_UNOWNED_AGENT_SCRATCH: &str =
     "no run or spawn owns this, so nothing reclaims it automatically - `rigger reset \
-     --build-cache` reclaims it now; point future manual scratch/CARGO_TARGET_DIR at the \
+     --build-cache` reclaims it now; point future manual scratch/your build cache variable at the \
      `rigger_scratch` tool's own container instead of a hardcoded agent-scratch/<name> literal";
 
 /// The TOTAL bytes (live and dead together, unconditionally) of the three name-prefix
@@ -5320,8 +5319,8 @@ const PRECOMMIT_END: &str = "# <<< END rigger docs pre-commit (managed) <<<";
 /// must abort the whole hook (including anything chained after it), because a commit that is
 /// about to be refused should not go on to run further gates.
 fn precommit_block() -> String {
-    // A raw-string template so the shell indentation is exact and readable; the sentinels and
-    // the build cache variable are injected from their single-source consts.
+    // A raw-string template so the shell indentation is exact and readable; the sentinels are
+    // injected from their single-source consts.
     const TEMPLATE: &str = r#"__BEGIN__
 # Check rigger's code-derived docs before THIS commit lands: run `rigger docs --check`, which
 # renders every docs output in memory, writes nothing, and prints `fresh <path>` or
@@ -5417,7 +5416,7 @@ newest_of_tier() {
         fi
     done
 }
-newest_of_tier "${__BUILD_CACHE_ENV__:+$__BUILD_CACHE_ENV__/release/rigger}" "${__BUILD_CACHE_ENV__:+$__BUILD_CACHE_ENV__/debug/rigger}"
+newest_of_tier "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/release/rigger}" "${CARGO_TARGET_DIR:+$CARGO_TARGET_DIR/debug/rigger}"
 [ -n "$rigger_bin" ] || newest_of_tier "./target/release/rigger" "./target/debug/rigger"
 [ -n "$rigger_bin" ] || newest_of_tier "$relocated_release" "$relocated_debug"
 [ -n "$rigger_bin" ] || newest_of_tier "$unit_release" "$unit_debug"
@@ -5498,7 +5497,6 @@ __END__
     TEMPLATE
         .replace("__BEGIN__", PRECOMMIT_BEGIN)
         .replace("__END__", PRECOMMIT_END)
-        .replace("__BUILD_CACHE_ENV__", rigger_domain::spawn::BUILD_CACHE_ENV)
 }
 
 /// Find the byte offset of the first occurrence of `needle` in `haystack`, or `None`. Lets the
@@ -7824,8 +7822,8 @@ mod tests {
     fn reclaim_shared_build_cache_refuses_rather_than_waits_when_a_build_holds_the_guard() {
         // spec 77 Design: the exclusion is EXCLUSIVE and NON-BLOCKING - "never waiting, so
         // no build can queue behind the delete". Simulate a rigger-launched shared-cache
-        // build by holding the SAME guard path SHARED (as a build's `flock -s` wrapper does,
-        // via `gate::ExecRunner::run`) before calling the reclaim.
+        // build by holding the SAME guard path SHARED (as `gate::ExecRunner::run` does through
+        // `gate::hold_shared_lock`) before calling the reclaim.
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cargo-target");
         write_file(&cache.join("debug").join("a.rlib"), &[0u8; 64]);

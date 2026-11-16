@@ -7,7 +7,8 @@
 //!   - NO STORE: a project with a `.rigger/` but no event log answers both graph verbs with their
 //!     not-found note and EXITS SUCCESS, never a "no rigger store found" refusal.
 //!   - DEGRADE: inside extent derivation (the `symbols` lane), a file whose EXTENSION has no
-//!     registered grammar degrades to a note with NO body, and the command EXITS SUCCESS.
+//!     registered grammar, and no extractor the project's workflow declares, degrades to a note
+//!     with NO body, and the command EXITS SUCCESS.
 //!   - EXTENT: a definition's line-numbered body is bounded by the definition's OWN extent, derived
 //!     through the shared multi-grammar symbols authority (the grammar's own tree-sitter node
 //!     boundary) - so a nested `fn`, a brace inside a string/comment/char, a signature that itself

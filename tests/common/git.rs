@@ -1,6 +1,7 @@
 //! Git fixtures for the integration suites, re-exported from [`super::fixtures`] - the one
 //! definition the crate's own unit tests share - plus the suite-only go-gitsemver fixture.
-//! The other suite-only fixtures beside it: a commit of given files, a linked worktree nested
+//! The other suite-only fixtures beside it: a commit of given files, a unit branch built on a
+//! `rigger-run` base, a linked worktree nested
 //! under a project or relocated outside it, and the object database's reads - every object id it holds, the bytes of a
 //! blob - with the premise that it holds none.
 
@@ -21,6 +22,33 @@ pub fn commit_files(repo: &Path, files: &[(&str, &str)], message: &str) -> Strin
     write_files(repo, files);
     git_commit_all(repo, message);
     git_out(repo, &["rev-parse", "HEAD"])
+}
+
+/// Makes `repo` a git repository whose `rigger-run` branch commits everything in it with `lib` as
+/// its one source file, checked out on a unit branch that `commits` (each `(path, content,
+/// message)`, in order) build on it. Returns each commit's short sha.
+pub fn build_unit_branch(repo: &Path, lib: &str, commits: &[(&str, &str, &str)]) -> Vec<String> {
+    init_repo(repo);
+    commit_files(repo, &[("src/lib.rs", lib)], "base");
+    git_ok(repo, &["branch", "rigger-run"]);
+    git_ok(repo, &["checkout", "-q", "-b", "unit"]);
+    commits
+        .iter()
+        .map(|(rel, content, msg)| {
+            commit_files(repo, &[(*rel, *content)], msg);
+            git_out(repo, &["rev-parse", "--short", "HEAD"])
+        })
+        .collect()
+}
+
+/// A fixture repository built by [`build_unit_branch`]. Returns it and each commit's short sha.
+pub fn unit_branch_repo(
+    lib: &str,
+    commits: &[(&str, &str, &str)],
+) -> (tempfile::TempDir, Vec<String>) {
+    let dir = tempfile::tempdir().unwrap();
+    let shas = build_unit_branch(dir.path(), lib, commits);
+    (dir, shas)
 }
 
 /// A git-LINKED worktree `name` nested under `root` (which must hold a commit) at

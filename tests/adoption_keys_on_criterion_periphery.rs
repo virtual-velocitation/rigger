@@ -2095,7 +2095,8 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
     };
     let deps3 = deps(&store, &driver3, repo.path(), criterion_x);
     // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be
-    // used here - match explicitly instead (mirrors tests/build_env_authority_periphery.rs).
+    // used here - match explicitly instead (as `tests/common/real_gate_run.rs`'s `refused_run`
+    // does).
     match run(&fresh_run_cfg("true", repo.path()), &deps3) {
         Err(_) => {}
         Ok(_) => panic!(

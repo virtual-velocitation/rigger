@@ -30,7 +30,7 @@ pub const UNIT_CACHE_PREFIX: &str = "cargo-target-";
 /// worktree-less path), which owns no such cache. Because both the worktree dir and the cache
 /// dir derive from the same scratch root and the same slug, swapping the prefix reconstructs
 /// the exact cache path. This is the SINGLE source of the derivation: the conductor's
-/// `run_gates` uses it to point a gate's `CARGO_TARGET_DIR` at the cache, and
+/// `run_gates` hands it to a gate as the gate's build cache, and
 /// `crate::worktree::reclaim_cache_sibling` uses it to reclaim that same cache when the
 /// worktree is removed. Pure path arithmetic (see [`UNIT_WORKTREE_PREFIX`]'s doc for why it
 /// is defined here, not in `worktree`).
@@ -43,7 +43,7 @@ pub fn unit_cache_sibling(worktree_dir: &str) -> Option<String> {
 /// not a unit worktree. The ONE derivation behind [`unit_cache_sibling`] and the per-unit gate
 /// scratch root (`unit_sibling(dir, UNIT_GATE_SCRATCH_PREFIX)`, spec 113: handed to every gate
 /// that runs for the unit as `RIGGER_GATE_SCRATCH`, mirroring how the cache sibling is handed
-/// as `CARGO_TARGET_DIR`). Pure path arithmetic.
+/// to it as its build cache). Pure path arithmetic.
 pub fn unit_sibling(worktree_dir: &str, prefix: &str) -> Option<String> {
     let path = std::path::Path::new(worktree_dir);
     let slug = path
@@ -63,8 +63,8 @@ pub fn unit_sibling(worktree_dir: &str, prefix: &str) -> Option<String> {
 pub const UNIT_GATE_SCRATCH_PREFIX: &str = "rigger-gate-";
 
 /// Filesystem prefix of a unit's REVIEW build cache (`review-target-<slug>`), a SIBLING of its
-/// worktree under the scratch root: the `CARGO_TARGET_DIR` every review tier of the unit is
-/// spawned with, so a reviewer's own reproduction - in its scratch worktree, at whatever sha it
+/// worktree under the scratch root: the build cache every review tier of the unit is spawned
+/// over, so a reviewer's own reproduction - in its scratch worktree, at whatever sha it
 /// probes - never builds into, or swaps a binary in, the unit's own cache that the implementer,
 /// the sdet-author and the gates share. See [`UNIT_WORKTREE_PREFIX`]'s doc for why this lives
 /// here rather than in `worktree`.
@@ -617,12 +617,12 @@ pub struct SpawnRequest {
     /// back-compatible field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<String>,
-    /// The build location the CONDUCTOR chose for this spawn - the `CARGO_TARGET_DIR` its
-    /// spawn environment carries: the unit's `cargo-target-<slug>` cache for a spawn that
-    /// builds the unit's tree, the unit's `review-target-<slug>` cache for a review tier.
-    /// Recorded so every reader of the spawn names the SAME directory from one choice.
-    /// Omitted from the wire when empty (a spawn with no unit worktree, or a request an older
-    /// binary recorded).
+    /// The build cache the CONDUCTOR chose for this spawn - the site cache its declared build
+    /// environment resolves `{build_cache}` to: the unit's `cargo-target-<slug>` cache for a
+    /// spawn that builds the unit's tree, the unit's `review-target-<slug>` cache for a review
+    /// tier. Recorded so every reader of the spawn names the SAME directory from one choice.
+    /// Omitted from the wire when empty (no declared variable the spawn carries uses
+    /// `{build_cache}`, a spawn with no unit worktree, or a request an older binary recorded).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cargo_target_dir: String,
 }
@@ -830,16 +830,27 @@ impl SpawnEventBody for SpawnResult {
     const EVENT_TYPE: &'static str = TYPE_SPAWN_RESULT;
 }
 
-/// The environment variable the build tool reads its cache location from: the ONE home of
-/// that name for every rigger surface that sets or reads it. The conductor sets it in a spawn's
-/// environment, the shell gate runner in a gate's, the agent driver reads it back from a
-/// spawn's, and the managed pre-commit hook reads it to find the build it checks the docs with.
-pub const BUILD_CACHE_ENV: &str = "CARGO_TARGET_DIR";
-
 /// The environment variable that names the run's base: the run branch's tip when the run
 /// started ([`crate::run::current_run_base_tip`]). The conductor's one build environment sets
 /// it, so every gate and every spawn of a run that recorded a base carries it.
 pub const RUN_BASE_ENV: &str = "RIGGER_RUN_BASE";
+
+/// The environment variable a worker reads the spawn it runs as from: the host exports the
+/// spawn's id under it, and the worker's own `rigger emit` stamps that id as the record's author
+/// when no `--spawn` names one, exactly as the spawn-bound MCP server stamps a `rigger_emit`
+/// call. The emit core judges a record id's ownership by that stamp.
+pub const SPAWN_ENV: &str = "RIGGER_SPAWN";
+
+/// The environment variable carrying the event store server's full connection string (§48
+/// rung 2).
+pub const CONN_ENV: &str = "KURRENTDB_CONN";
+
+/// The long-lived agent token's variable, the one the agent CLI reads.
+pub const AGENT_TOKEN_VAR: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/// The variable an operator sets in rigger's environment to give the long-lived token to spawned
+/// agents only: the agent CLI ignores it, so the operator's own sessions keep their login.
+pub const RIGGER_AGENT_TOKEN_VAR: &str = "RIGGER_CLAUDE_CODE_OAUTH_TOKEN";
 
 /// One entry of the pending frontier: the identity of a parked spawn that still awaits its
 /// result - which spawn, of which unit, at which stage. The dash, `rigger status`, `rigger watch`
