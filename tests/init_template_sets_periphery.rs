@@ -645,6 +645,16 @@ fn import_lines(out: &str) -> Vec<&str> {
         .collect()
 }
 
+/// A row of [`setup_agents_imports_a_collections_agent_in_the_place_of_the_seed_of_its_id`]'s
+/// table, whose fields that test names.
+type ImportRow<'a> = (
+    bool,
+    &'a [(&'a str, &'a str)],
+    Option<&'a str>,
+    Option<&'a str>,
+    [&'a str; 2],
+);
+
 /// Given a project - fresh, or one `rigger setup` scaffolded with no template root whose
 /// `sdet-author.md` the operator has since deleted - and a collection holding an agent whose id a
 /// seed carries, when the operator runs `rigger setup --agents <collection>`, then the collection's
@@ -658,7 +668,7 @@ fn setup_agents_imports_a_collections_agent_in_the_place_of_the_seed_of_its_id()
     // `sdet-author.md` deleted since, false for a fresh one; the collection's agents as (file
     // name, id); the seed the import keeps from being written; the collection file it keeps out;
     // the loaded models of `sdet-author` and `planner`).
-    let rows: [(bool, &[(&str, &str)], Option<&str>, Option<&str>, [&str; 2]); 5] = [
+    let rows: [ImportRow<'_>; 5] = [
         (
             false,
             &[("test-author.md", "sdet-author")],
