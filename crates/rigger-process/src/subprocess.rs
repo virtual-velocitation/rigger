@@ -58,27 +58,36 @@ impl SearchPath {
 
 /// The first executable regular file named `bin` inside a directory of `search`'s `dirs` (split
 /// by [`std::env::split_paths`]), checked in listed order. An empty or relative component is
-/// skipped, so every path answered is absolute. `bin` is a file name: one holding a path
-/// separator (`/`, and on Windows `\` too) names no file in a directory and finds nothing, and an
-/// empty one joins to the directory itself, which is no regular file. Each directory is tried
-/// with `bin` alone, except on Windows, where it is tried instead with each of
-/// [`pathext_candidates`] of `bin` over `search`'s `pathext` in turn: a `bin` with no extension
-/// is never tried bare there, and an empty `pathext` leaves such a `bin` no candidate at all.
-/// Symlinks are followed (through [`is_executable_file`]'s `std::fs::metadata`), and a found
-/// symlink is answered at its own path.
+/// skipped, so every path answered is absolute. Each directory is tried with each of
+/// [`lookup_names`] of `bin` over `search`'s `pathext` in turn, under this host's rules: `bin`
+/// is a file name, so an empty one, or one holding a path separator (`/`, and on Windows `\`
+/// too), names no file in a directory and finds nothing; otherwise it is tried alone, except on
+/// Windows, where it is tried instead with each of [`pathext_candidates`]: a `bin` with no
+/// extension is never tried bare there, and an empty `pathext` leaves such a `bin` no candidate
+/// at all. Symlinks are followed (through [`is_executable_file`]'s `std::fs::metadata`), and a
+/// found symlink is answered at its own path.
 pub fn find_executable(search: &SearchPath, bin: &str) -> Option<PathBuf> {
-    if bin.contains(|c| c == '/' || (cfg!(windows) && c == '\\')) {
-        return None;
-    }
-    let candidates = if cfg!(windows) {
-        pathext_candidates(bin, &search.pathext)
-    } else {
-        vec![bin.to_string()]
-    };
+    let names = lookup_names(bin, &search.pathext, cfg!(windows));
     std::env::split_paths(&search.dirs)
         .filter(|dir| dir.is_absolute())
-        .flat_map(|dir| candidates.iter().map(move |name| dir.join(name)))
+        .flat_map(|dir| names.iter().map(move |name| dir.join(name)))
         .find(|candidate| is_executable_file(candidate))
+}
+
+/// The file names a lookup of `bin` tries in each directory, under Windows' rules when `windows`
+/// holds and unix's otherwise, so every host builds and tests both: none when `bin` is empty or
+/// holds a path separator (`/`, and under Windows' rules `\` too), since such a `bin` names no
+/// file in a directory; under Windows' rules [`pathext_candidates`] of `bin` over `pathext`; else
+/// `bin` alone, `pathext` unread.
+fn lookup_names(bin: &str, pathext: &str, windows: bool) -> Vec<String> {
+    if bin.is_empty() || bin.contains(|c| c == '/' || (windows && c == '\\')) {
+        return Vec::new();
+    }
+    if windows {
+        pathext_candidates(bin, pathext)
+    } else {
+        vec![bin.to_string()]
+    }
 }
 
 /// The file names Windows tries for the program `name` over `pathext`, a `PATHEXT`-style list
