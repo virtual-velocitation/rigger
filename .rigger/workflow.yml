@@ -170,7 +170,8 @@ gates:                      # the project's verification library, referenced by 
     kind: core
   # The content gates: checks over the lines a diff adds - `style` (Gap 4a: no em dash, U+2014,
   # in any added text) and `no-os-kill` (spec 78: no OS-level kill, process-group target or
-  # direct signal call in code outside the two sanctioned lifecycle helpers). The checks, and the
+  # direct signal call in code outside the two sanctioned lifecycle helpers) and
+  # `no-new-event-type` (no new event type const in production code). The checks, and the
   # why of each, live in `.rigger/gates/content.sh`. A unit's gates check the unit's own diff,
   # three-dot from the run branch, so a unit is never failed by a change it did not make; the
   # check-in stage's `-spec` gates check the whole spec diff, from `$RIGGER_RUN_BASE` (the run
@@ -178,14 +179,17 @@ gates:                      # the project's verification library, referenced by 
   # commits that landed on the run branch directly are checked too, never only the check-in
   # branch's own commits. `tests/cli.rs` drives both forms on a fixture repository.
   #
-  # The unit forms (`style`, `no-os-kill`) read only the unit's own diff, which is empty once the
-  # unit has landed, so each declares `post_merge: false`: the post-merge re-gate would check
-  # nothing. The `-spec` forms stay in the post-merge re-gate: they read the whole spec diff from
-  # the run base, so after landing they are the one check of content a merge resolution introduced.
-  style:           { run: "sh .rigger/gates/content.sh style",                         kind: core, post_merge: false }
-  no-os-kill:      { run: "sh .rigger/gates/content.sh no-os-kill",                    kind: core, post_merge: false }
-  style-spec:      { run: 'sh .rigger/gates/content.sh style "$RIGGER_RUN_BASE"',      kind: core }
-  no-os-kill-spec: { run: 'sh .rigger/gates/content.sh no-os-kill "$RIGGER_RUN_BASE"', kind: core }
+  # The unit forms (`style`, `no-os-kill`, `no-new-event-type`) read only the unit's own diff,
+  # which is empty once the unit has landed, so each declares `post_merge: false`: the post-merge
+  # re-gate would check nothing. The `-spec` forms stay in the post-merge re-gate: they read the
+  # whole spec diff from the run base, so after landing they are the one check of content a merge
+  # resolution introduced.
+  style:                  { run: "sh .rigger/gates/content.sh style",                                kind: core, post_merge: false }
+  no-os-kill:             { run: "sh .rigger/gates/content.sh no-os-kill",                           kind: core, post_merge: false }
+  style-spec:             { run: 'sh .rigger/gates/content.sh style "$RIGGER_RUN_BASE"',             kind: core }
+  no-os-kill-spec:        { run: 'sh .rigger/gates/content.sh no-os-kill "$RIGGER_RUN_BASE"',        kind: core }
+  no-new-event-type:      { run: "sh .rigger/gates/content.sh no-new-event-type",                    kind: core, post_merge: false }
+  no-new-event-type-spec: { run: 'sh .rigger/gates/content.sh no-new-event-type "$RIGGER_RUN_BASE"', kind: core }
   # The boundary gate (workspace split, step 0): Clean Architecture made mechanical.
   # `tests/boundary_audit.rs` fails when a workspace crate depends outward (the ring table in
   # the test), when production code constructs an adapter (a store, a graph, an agent driver)
@@ -272,8 +276,8 @@ stages:
     needs: [plan-critique]
     agent: rust-engineer
     strategy: fan-out
-    gates: [fmt, clippy, clippy-no-default, build, test, lane-core, style, no-os-kill, boundary,
-             red-before-green]
+    gates: [fmt, clippy, clippy-no-default, build, test, lane-core, style, no-os-kill,
+             no-new-event-type, boundary, red-before-green]
     on_pass: merge
     coverage: "each unit is implemented, three-tier-reviews itself, and integrates on a green workspace"
 
@@ -290,6 +294,7 @@ stages:
     agent: rust-engineer
     max_retries: 2          # an ATTEMPT bound like defaults.max_retries: the gates, one remediation round, the gates again
     # The `mutation` gate is declared above but unwired from this stage until #32 lands.
-    gates: [fmt, clippy, build, test, lane-no-default, lane-core, style-spec, no-os-kill-spec, boundary]
+    gates: [fmt, clippy, build, test, lane-no-default, lane-core, style-spec, no-os-kill-spec,
+            no-new-event-type-spec, boundary]
     on_pass: merge
     coverage: "the whole spec diff passes every gate on the merged tree"

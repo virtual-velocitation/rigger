@@ -20,8 +20,13 @@
 #     WHY: computed kill targets (a pgid, a marker pid, a /proc scan) resolved to kill(-1) and
 #     destroyed the operator's whole desktop session seven-plus times; the review panel approved
 #     each site because nothing mechanical forbade it. Now something does.
+#   no-new-event-type: the event log's vocabulary stays closed. An event type is a
+#     `const TYPE_<NAME>: &str` in src/ or crates/; one the diff declares and does not also
+#     remove (a move between files) FAILS, naming it. A new fact rides an existing event type,
+#     as a status or a meta key, so every reader of the log, an older store's included, already
+#     knows its type. Test suites may declare their own.
 #
-# Usage: sh .rigger/gates/content.sh <style|no-os-kill> [base]
+# Usage: sh .rigger/gates/content.sh <style|no-os-kill|no-new-event-type> [base]
 # Which diff is checked is the caller's stage, and both forms take a three-dot diff to HEAD:
 #   no base - a unit's own changes: from the run branch (`rigger-run`, with an origin/main / HEAD
 #     fallback), run in the unit worktree, so it reports only THIS branch's changes, never the
@@ -54,6 +59,17 @@ added() {
     git diff "$base"...HEAD -- "$@" | grep "^+" | grep -v "^+++ "
 }
 
+# The lines the diff from the base removes under the pathspec "$@", without the file headers.
+removed() {
+    git diff "$base"...HEAD -- "$@" | grep "^-" | grep -v "^--- "
+}
+
+# The event type names (the `TYPE_<NAME>` of each `const TYPE_<NAME>: &`) on the lines read from
+# stdin, one per line, sorted and unique.
+event_types() {
+    grep -oE "const TYPE_[A-Z0-9_]+: &" | sed -e "s/^const //" -e "s/: &\$//" | sort -u
+}
+
 case "$check" in
 style)
     em=$(printf "\342\200\224")
@@ -84,8 +100,19 @@ no-os-kill)
         exit 1
     fi
     ;;
+no-new-event-type)
+    gone=$(removed src crates | event_types)
+    new=""
+    for name in $(added src crates | event_types); do
+        printf '%s\n' "$gone" | grep -qxF "$name" || new="$new${new:+, }$name"
+    done
+    if [ -n "$new" ]; then
+        echo "no-new-event-type gate FAILED: the diff declares a new event type ($new); carry the fact on an existing event type, as a status or a meta key"
+        exit 1
+    fi
+    ;;
 *)
-    echo "usage: sh .rigger/gates/content.sh <style|no-os-kill> [base]" >&2
+    echo "usage: sh .rigger/gates/content.sh <style|no-os-kill|no-new-event-type> [base]" >&2
     exit 2
     ;;
 esac

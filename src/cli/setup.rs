@@ -6473,6 +6473,7 @@ mod tests {
             "cargo test --test boundary_audit",
             "content.sh style",
             "content.sh no-os-kill",
+            "content.sh no-new-event-type",
             "red-before-green.sh",
             "cargo test --tests",
             "--no-default-features -- -D warnings",
