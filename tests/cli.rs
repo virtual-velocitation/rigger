@@ -29465,19 +29465,30 @@ fn docs_installs_the_operator_lookup_rule_text_into_the_shipped_skill_and_handbo
     }
 }
 
+/// Plants the three scratch roots `rigger reset --scratch-orphans` is tried over under
+/// `rigger_dir`, each holding a `rigger-wt-unit` entry: one keyed on the live project at `root`,
+/// one keyed on its never-made `deleted-checkout`, and `test-tmp`, which is not an encoded repo
+/// path. Returns their names in that order.
+fn plant_scratch_roots(rigger_dir: &Path, root: &Path) -> [String; 3] {
+    let enc = |p: &str| rigger::liveness::marker_filename(p).unwrap();
+    let names = [
+        enc(root.to_str().unwrap()),
+        enc(&format!("{}/deleted-checkout", root.display())),
+        "test-tmp".to_string(),
+    ];
+    for name in &names {
+        std::fs::create_dir_all(rigger_dir.join(name).join("rigger-wt-unit")).unwrap();
+    }
+    names
+}
+
 #[test]
 fn reset_scratch_orphans_reclaims_cache_roots_whose_repo_is_gone_and_keeps_the_rest() {
     let dir = temp_store_project();
     let root = dir.path();
     let cache = tempfile::tempdir().unwrap();
     let rigger_dir = cache.path().join("rigger");
-    let enc = |p: &str| rigger::liveness::marker_filename(p).unwrap();
-    let live = rigger_dir.join(enc(root.to_str().unwrap()));
-    let gone = rigger_dir.join(enc(&format!("{}/deleted-checkout", root.to_str().unwrap())));
-    let plain = rigger_dir.join("test-tmp");
-    for d in [&live, &gone, &plain] {
-        std::fs::create_dir_all(d.join("rigger-wt-unit")).unwrap();
-    }
+    let [live, gone, plain] = plant_scratch_roots(&rigger_dir, root).map(|n| rigger_dir.join(n));
     let envs = [("XDG_CACHE_HOME", cache.path().to_str().unwrap())];
     let (out, err, ok) = run_rigger_envs(root, &["reset", "--scratch-orphans"], &envs);
     assert!(ok, "stderr: {err}");
@@ -29561,15 +29572,8 @@ fn assert_scratch_orphans_sweeps_the_winning_cache_home(xdg_cache_home_set: bool
     let xdg = tempfile::tempdir().unwrap();
     let home_rigger = home.path().join(".cache").join("rigger");
     let xdg_rigger = xdg.path().join("rigger");
-    let enc = |p: &str| rigger::liveness::marker_filename(p).unwrap();
-    let live = enc(root.to_str().unwrap());
-    let gone = enc(&format!("{}/deleted-checkout", root.display()));
-    let plain = "test-tmp".to_string();
-    for rigger_dir in [&home_rigger, &xdg_rigger] {
-        for name in [&live, &gone, &plain] {
-            std::fs::create_dir_all(rigger_dir.join(name).join("rigger-wt-unit")).unwrap();
-        }
-    }
+    let [live, gone, plain] = plant_scratch_roots(&home_rigger, root);
+    plant_scratch_roots(&xdg_rigger, root);
     let mut cmd =
         common::cli::rigger_command(root, &["reset", "--scratch-orphans"], &[], state.path());
     cmd.env("HOME", home.path());
