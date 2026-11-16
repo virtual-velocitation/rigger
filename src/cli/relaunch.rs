@@ -2,7 +2,8 @@
 //! holds (`.rigger/step.lock`), the binary it runs as among it, and four verbs invoked from the
 //! project's main checkout check it: the session-start hook `rigger prime`, `rigger status` read by
 //! a person (neither `--line` nor `--json`), `rigger release` and `rigger resume-unit`
-//! ([`check_point`]). No other verb checks, so none pays for it. A record whose lock no driver
+//! ([`check_point`]). No other verb checks, so none pays for it; the login entry a run opted into
+//! checks it too (below). A record whose lock no driver
 //! holds is a driver that died, by a crash, a forced end, a hangup or a reboot, and the check
 //! relaunches it by adoption, in the background, through the binary it recorded and with the
 //! variables its roots resolve from set as it had them ([`ROOTS_ENV`]), as a hand
@@ -23,9 +24,20 @@
 //! so a held run stops for good however its driver then ends, until `rigger release` relaunches
 //! it. A hold of any other writer, an outage's, is waited out by the driver and released by itself.
 //!
+//! A RUN COMES BACK AT LOGIN WHERE ITS USER OPTED IN: a driver started with
+//! `--relaunch-at-login` registers, once it holds the step lock, one entry under its project's key
+//! with the OS's login-start facility ([`rigger::login_start`]), which runs its binary as
+//! `rigger run --at-login <root>` at the user's next login ([`relaunch_at_login`]). A driver the
+//! machine's end killed (a power loss, a reboot, a forced end) leaves its record and the entry,
+//! and that login relaunches the run through the one relaunch entry; a driver parked on an
+//! operator hold leaves both for `rigger release`. Without the flag nothing is registered.
+//!
 //! The record's one reaper is the driver that wrote it, as it ends; a record whose driver ended
 //! without reaping it is reaped by the check that relaunches it, by the driver that relaunch
-//! starts, or, when no relaunch is owed, by the check itself.
+//! starts, or, when no relaunch is owed, by the check itself. The login entry's reaper is the
+//! driver that registered it, as it empties its record; an entry it left is reaped by the login
+//! that finds no relaunch owed: a run that ended, a run last started without the flag, a record a
+//! relaunch cleared, and a project or store since removed.
 
 use super::*;
 use rigger::interrupt::{empty_on_interrupt, InterruptTrigger};
@@ -175,7 +187,8 @@ fn now_secs() -> u64 {
 }
 
 /// The step lock a live driver holds, keeping its record: emptied as the driver ends, by any
-/// return or panic (this guard's drop) or by an interactive interrupt (its trigger).
+/// return or panic (this guard's drop) or by an interactive interrupt (its trigger), the login
+/// entry it registered removed with it.
 pub(super) struct KeptRecord {
     /// Dropped before the lock, so the trigger never outlives the file it empties.
     _interrupt: InterruptTrigger,
@@ -184,6 +197,14 @@ pub(super) struct KeptRecord {
     prior: Option<DriverRecord>,
     /// Whether the record is left for `rigger release` ([`KeptRecord::leave_for_release`]).
     left: std::cell::Cell<bool>,
+    /// The login entry this driver registered ([`KeptRecord::register_at_login`]).
+    at_login: std::cell::OnceCell<AtLogin>,
+}
+
+/// A login entry a driver registered: the facility it is registered with, and its key.
+struct AtLogin {
+    start: Box<dyn LoginStart>,
+    key: String,
 }
 
 impl KeptRecord {
@@ -198,6 +219,7 @@ impl KeptRecord {
             lock,
             prior,
             left: std::cell::Cell::new(false),
+            at_login: std::cell::OnceCell::new(),
         }
     }
 
@@ -225,12 +247,38 @@ impl KeptRecord {
         }
     }
 
-    /// Register this driver's relaunch at login with `start` (a stub until the login wiring lands).
+    /// Register this driver's relaunch with the login-start facility `start`, the user's opt-in
+    /// (`--relaunch-at-login`): one entry under the project's key ([`run_key`]) that runs this
+    /// binary as `run --at-login <root>`, `<root>` the project whose store is at `dir`, so a login
+    /// after the machine went down mid-run relaunches the run ([`relaunch_at_login`]). The entry
+    /// is removed as the record is emptied, and left beside a record left for `rigger release`.
+    /// A registration the facility refuses is the launch's refusal, naming why.
     pub(super) fn register_at_login(
         &self,
-        _start: Box<dyn LoginStart>,
-        _dir: &Path,
+        start: Box<dyn LoginStart>,
+        dir: &Path,
     ) -> Result<(), String> {
+        let refused = |why: String| {
+            format!("rigger run: {RELAUNCH_AT_LOGIN_FLAG}: no login entry was made: {why}")
+        };
+        let dir = dir
+            .canonicalize()
+            .map_err(|e| refused(format!("{}: {e}", dir.display())))?;
+        let program = standing_executable();
+        let (Some(root), Some(bin)) = (dir.parent().and_then(Path::to_str), program.to_str())
+        else {
+            return Err(refused(format!(
+                "the project {} or the binary {} is not a UTF-8 path",
+                dir.display(),
+                program.display()
+            )));
+        };
+        let key = run_key(root);
+        let args = ["run", AT_LOGIN_FLAG, root].map(str::to_string);
+        start
+            .register(&key, bin, &args)
+            .map_err(|Unavailable(why)| refused(why))?;
+        let _ = self.at_login.set(AtLogin { start, key });
         Ok(())
     }
 
@@ -282,17 +330,29 @@ impl KeptRecord {
 }
 
 impl Drop for KeptRecord {
+    /// Empty the record and remove the login entry this driver registered, unless the record is
+    /// left for `rigger release`. An entry that cannot be removed is said on stderr; the next login
+    /// finds no relaunch owed and removes it ([`relaunch_at_login`]).
     fn drop(&mut self) {
-        if !self.left.get() {
-            let _ = self.lock.replace("");
+        if self.left.get() {
+            return;
+        }
+        let _ = self.lock.replace("");
+        if let Some(AtLogin { start, key }) = self.at_login.take() {
+            if let Err(Unavailable(why)) = start.unregister(&key) {
+                stderr_line(&format!(
+                    "rigger run: the login entry {key} was not removed ({why}); the next login \
+                     removes it"
+                ));
+            }
         }
     }
 }
 
 /// The arguments that relaunch the run `parsed` started as `run`: `run`, the spec, an explicit
-/// base (the flag's or `RIGGER_BASE`'s), the event store a flag chose, then `--adopt <run>`.
-/// `--fresh` and `--rebase-definition` are a start's own, and `--conn` may carry a credential,
-/// so none is recorded.
+/// base (the flag's or `RIGGER_BASE`'s), the event store a flag chose, the opt-in to a login
+/// entry, then `--adopt <run>`. `--fresh` and `--rebase-definition` are a start's own, and
+/// `--conn` may carry a credential, so none is recorded.
 fn relaunch_args(parsed: &RunArgs, run: &str) -> Vec<String> {
     let mut args = vec!["run".to_string()];
     args.extend(parsed.spec.clone());
@@ -309,6 +369,9 @@ fn relaunch_args(parsed: &RunArgs, run: &str) -> Vec<String> {
             StoreKind::KurrentDb => "kurrentdb",
         };
         args.extend(["--eventstore".to_string(), kind.to_string()]);
+    }
+    if parsed.relaunch_at_login {
+        args.push(RELAUNCH_AT_LOGIN_FLAG.to_string());
     }
     args.extend(["--adopt".to_string(), run.to_string()]);
     args
@@ -648,10 +711,45 @@ pub(crate) fn forget_driver_output(rigger_dir: &Path) -> std::io::Result<bool> {
     }
 }
 
-/// Whether a login owes the project whose store is at `dir` its relaunch (a stub until the login
-/// wiring lands).
-fn owed_at_login(_dir: &Path) -> bool {
-    false
+/// THE LOGIN ENTRY'S RUN, `rigger run --at-login <root>`: relaunch the run of the project at
+/// `root` whose driver died through the one relaunch entry ([`relaunch_a_dead_driver`]) while a
+/// login owes it one ([`owed_at_login`]); once none is owed, before that relaunch or after it,
+/// remove the project's entry from `start`. So the entry outlives only a driver the machine's end
+/// killed, and every other end is reaped at the next login.
+pub(super) fn relaunch_at_login(root: &str, start: &dyn LoginStart) -> Res {
+    let dir = Path::new(root).join(RIGGER_DIR);
+    if owed_at_login(&dir) {
+        relaunch_a_dead_driver(&Site::of(Path::new(root)), false);
+        if owed_at_login(&dir) {
+            return Ok(());
+        }
+    }
+    start
+        .unregister(&run_key(root))
+        .map_err(|Unavailable(why)| {
+            format!("rigger run {AT_LOGIN_FLAG}: the login entry of {root} was not removed: {why}")
+        })?;
+    Ok(())
+}
+
+/// Whether a login owes the project whose store is at `dir` its relaunch: a driver holds the step
+/// lock there, or none does and the lock holds the record of a driver started with
+/// `--relaunch-at-login`. A store or lock that is gone, and a free lock over an emptied,
+/// unreadable or unflagged record, owe nothing. A lock that cannot be taken is read as held, so a
+/// failure to read it never removes the entry of a run still owed.
+fn owed_at_login(dir: &Path) -> bool {
+    let path = dir.join("step.lock");
+    if !path.is_file() {
+        return false;
+    }
+    match HeldLock::try_take(&path) {
+        Ok(Some(lock)) => lock
+            .contents()
+            .ok()
+            .and_then(|text| serde_json::from_str::<DriverRecord>(&text).ok())
+            .is_some_and(|record| record.args.iter().any(|arg| arg == RELAUNCH_AT_LOGIN_FLAG)),
+        Ok(None) | Err(_) => true,
+    }
 }
 
 /// This binary's path as it stands, the path a relaunch of it runs: an upgrade that replaced it

@@ -4,6 +4,7 @@ use rigger::driver::claude_code;
 use rigger::eventstore::TypeSelection;
 use rigger::held::HeldDriver;
 use rigger::keep_awake::{OsSleepHold, KEEP_AWAKE_ENV};
+use rigger::login_start::{LoginStart, OsLoginStart, LOGIN_START_ENV};
 use rigger::review;
 use rigger::sleep_hold::{SleepGuard, SleepHold, Unavailable};
 
@@ -353,6 +354,9 @@ fn refuse_outside_a_project(cwd: &Path, command: &'static str) -> Res {
 
 pub(crate) fn cmd_run(args: &[String]) -> Res {
     let parsed = parse_run_args(args)?;
+    if let Some(root) = &parsed.at_login {
+        return relaunch_at_login(root, &*login_start());
+    }
     run_cli(&parsed, &*sleep_hold())
 }
 
@@ -705,24 +709,58 @@ fn tick_until_stopped(
     }
 }
 
-/// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects: unset, the host's [`OsSleepHold`];
-/// `record:<path>`, a [`RecordingSleepHold`] appending to `<path>`; `unavailable:<reason>`, an
-/// adapter answering `<reason>`; any other value, an adapter answering that the value names no
-/// adapter, so a mistyped knob never takes the host's hold unasked.
-fn sleep_hold() -> Box<dyn SleepHold> {
-    let Some(knob) = std::env::var_os(KEEP_AWAKE_ENV) else {
-        return Box::new(OsSleepHold);
+/// Which adapter of an OS facility a knob selects ([`adapter_knob`]).
+enum Knob {
+    /// The host's own.
+    Host,
+    /// The recording fake, appending to the file at this path.
+    Record(PathBuf),
+    /// A fake answering every call unavailable with this reason.
+    Unavailable(String),
+}
+
+/// The adapter of the OS facility `facility` the variable `var` selects: unset, the host's;
+/// `record:<path>`, the recording fake appending to `<path>`; `unavailable:<reason>`, a fake
+/// answering `<reason>`; any other value, a fake answering that the value names no adapter, so a
+/// mistyped knob never takes the host's facility unasked.
+fn adapter_knob(var: &str, facility: &str) -> Knob {
+    let Some(knob) = std::env::var_os(var) else {
+        return Knob::Host;
     };
     let knob = knob.to_string_lossy();
     if let Some(path) = knob.strip_prefix("record:") {
-        return Box::new(RecordingSleepHold(PathBuf::from(path)));
+        return Knob::Record(PathBuf::from(path));
     }
-    Box::new(UnavailableSleepHold(
-        match knob.strip_prefix("unavailable:") {
-            Some(why) => why.to_string(),
-            None => format!("{KEEP_AWAKE_ENV}={knob} names no keep-awake adapter"),
-        },
-    ))
+    Knob::Unavailable(match knob.strip_prefix("unavailable:") {
+        Some(why) => why.to_string(),
+        None => format!("{var}={knob} names no {facility} adapter"),
+    })
+}
+
+/// The keep-awake adapter [`KEEP_AWAKE_ENV`] selects ([`adapter_knob`]): the host's
+/// [`OsSleepHold`], a [`RecordingSleepHold`] or an [`UnavailableSleepHold`].
+fn sleep_hold() -> Box<dyn SleepHold> {
+    match adapter_knob(KEEP_AWAKE_ENV, "keep-awake") {
+        Knob::Host => Box::new(OsSleepHold),
+        Knob::Record(path) => Box::new(RecordingSleepHold(path)),
+        Knob::Unavailable(why) => Box::new(UnavailableSleepHold(why)),
+    }
+}
+
+/// The login-start adapter [`LOGIN_START_ENV`] selects ([`adapter_knob`]): the host's
+/// [`OsLoginStart`], a [`RecordingLoginStart`] or an [`UnavailableLoginStart`].
+fn login_start() -> Box<dyn LoginStart> {
+    match adapter_knob(LOGIN_START_ENV, "login-start") {
+        Knob::Host => Box::new(OsLoginStart),
+        Knob::Record(path) => Box::new(RecordingLoginStart(path)),
+        Knob::Unavailable(why) => Box::new(UnavailableLoginStart(why)),
+    }
+}
+
+/// Append `line` to the recording fake's file at `path`, a failure answered unavailable.
+fn record_line(path: &Path, line: &str) -> Result<(), Unavailable> {
+    append_line(path, line)
+        .map_err(|e| Unavailable(format!("cannot record to {}: {e}", path.display())))
 }
 
 /// The keep-awake fake [`KEEP_AWAKE_ENV`]'s `record:<path>` selects: an acquire appends the line
@@ -732,8 +770,7 @@ struct RecordingSleepHold(PathBuf);
 
 impl SleepHold for RecordingSleepHold {
     fn acquire(&self, reason: &str) -> Result<SleepGuard, Unavailable> {
-        append_line(&self.0, &format!("acquire {reason}"))
-            .map_err(|e| Unavailable(format!("cannot record to {}: {e}", self.0.display())))?;
+        record_line(&self.0, &format!("acquire {reason}"))?;
         let record = self.0.clone();
         // A release the record cannot take leaves its acquire standing alone, which a test reads
         // as a hold never released.
@@ -758,6 +795,39 @@ struct UnavailableSleepHold(String);
 
 impl SleepHold for UnavailableSleepHold {
     fn acquire(&self, _reason: &str) -> Result<SleepGuard, Unavailable> {
+        Err(Unavailable(self.0.clone()))
+    }
+}
+
+/// The login-start fake [`LOGIN_START_ENV`]'s `record:<path>` selects: a registration appends the
+/// line `register <key> <program> <args>` to the file at `<path>` and a removal `unregister
+/// <key>`, so a test reads what a run registered with the host's login facility. A call it cannot
+/// record answers unavailable.
+struct RecordingLoginStart(PathBuf);
+
+impl LoginStart for RecordingLoginStart {
+    fn register(&self, key: &str, program: &str, args: &[String]) -> Result<(), Unavailable> {
+        record_line(
+            &self.0,
+            &format!("register {key} {program} {}", args.join(" ")),
+        )
+    }
+
+    fn unregister(&self, key: &str) -> Result<(), Unavailable> {
+        record_line(&self.0, &format!("unregister {key}"))
+    }
+}
+
+/// The login-start fake whose every call answers unavailable with its reason: what
+/// [`LOGIN_START_ENV`]'s `unavailable:<reason>` selects, and what a value naming no adapter gets.
+struct UnavailableLoginStart(String);
+
+impl LoginStart for UnavailableLoginStart {
+    fn register(&self, _key: &str, _program: &str, _args: &[String]) -> Result<(), Unavailable> {
+        Err(Unavailable(self.0.clone()))
+    }
+
+    fn unregister(&self, _key: &str) -> Result<(), Unavailable> {
         Err(Unavailable(self.0.clone()))
     }
 }
@@ -870,6 +940,12 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // The lock keeps this driver's record ([`KeptRecord`]), emptied however the driver ends
     // short of a death, so an invocation that finds a record nobody holds relaunches the run.
     let step_record = KeptRecord::hold(acquire_step_lock(&loc.dir)?);
+    // `--relaunch-at-login` registers the run's login entry once the lock is held and before any
+    // start effect, so a launch refused for the busy lock registers nothing, one the facility
+    // refuses refuses here, and the record's keeper removes the entry as it returns.
+    if parsed.relaunch_at_login {
+        step_record.register_at_login(login_start(), &loc.dir)?;
+    }
     // `--adopt <run>` is checked first of all, before any start effect: an adoption this start
     // cannot make refuses here, and the record's keeper clears the record as it returns.
     if let Some(wanted) = &parsed.adopt {

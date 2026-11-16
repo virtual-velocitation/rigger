@@ -69,8 +69,8 @@ pub(crate) use hold::*;
 pub(crate) use hygiene::*;
 pub(crate) use observe::*;
 pub(crate) use prime::*;
-use relaunch::KeptRecord;
 pub(crate) use relaunch::{check_point, relaunch_a_dead_driver, CheckPoint};
+use relaunch::{relaunch_at_login, KeptRecord};
 pub(crate) use run::*;
 pub(crate) use setup::*;
 pub(crate) use validate::*;
@@ -203,6 +203,11 @@ enum StoreKind {
     KurrentDb,
 }
 
+/// `rigger run`'s opt-in to a login entry that relaunches the run ([`RunArgs::relaunch_at_login`]).
+const RELAUNCH_AT_LOGIN_FLAG: &str = "--relaunch-at-login";
+/// What a login entry runs `rigger run` with, before the project root ([`RunArgs::at_login`]).
+const AT_LOGIN_FLAG: &str = "--at-login";
+
 /// The parsed flags of `run`: which event store, the connection string for the server backend, the
 /// positional spec path, and whether to force a fresh run.
 #[derive(Default)]
@@ -279,8 +284,9 @@ fn spec_positional(
 
 /// Parse `rigger run`'s flags: `--fresh`, `--rebase-definition`, `--eventstore
 /// <sqlite|kurrentdb>`, `--conn <url>`, `--base <ref>` (the run-branch base, spec 18
-/// criterion 6), `--adopt <run>`, and a single positional spec path. Unknown flags, a second
-/// positional, and `--adopt` beside `--fresh`, which mints rather than adopts, are rejected (§10).
+/// criterion 6), `--adopt <run>`, `--relaunch-at-login`, and a single positional spec path; or
+/// `--at-login <root>` alone. Unknown flags, a second positional, `--adopt` beside `--fresh`,
+/// which mints rather than adopts, and `--at-login` beside any other argument are rejected (§10).
 fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>> {
     let mut store = None;
     let mut conn = None;
@@ -289,10 +295,22 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
     let mut rebase_definition = false;
     let mut base = None;
     let mut adopt = None;
+    let mut relaunch_at_login = false;
+    let mut at_login = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--fresh" => fresh = true,
+            RELAUNCH_AT_LOGIN_FLAG => relaunch_at_login = true,
+            AT_LOGIN_FLAG => {
+                i += 1;
+                at_login = match args.get(i) {
+                    Some(root) => Some(root.clone()),
+                    None => {
+                        return Err(format!("run: {AT_LOGIN_FLAG} expects a project root").into())
+                    }
+                };
+            }
             "--adopt" => {
                 i += 1;
                 adopt = match args.get(i) {
@@ -325,6 +343,12 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
             "run: --adopt names the run to adopt, --fresh begins a new one; pass one".into(),
         );
     }
+    if at_login.is_some() && args.len() != 2 {
+        return Err(format!(
+            "run: {AT_LOGIN_FLAG} <root> is what a login entry runs, and takes no other argument"
+        )
+        .into());
+    }
     Ok(RunArgs {
         store,
         conn,
@@ -333,8 +357,8 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, Box<dyn std::error::Error>
         rebase_definition,
         base,
         adopt,
-        relaunch_at_login: false,
-        at_login: None,
+        relaunch_at_login,
+        at_login,
     })
 }
 
