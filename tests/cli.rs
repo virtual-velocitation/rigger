@@ -14914,8 +14914,7 @@ fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() 
 
     // The committed `.gitignore` is EVERY setup-written pattern, in the order setup writes them,
     // despite the hostile global excludes - the artifact is self-contained and portable to a
-    // clean-HOME teammate/CI. The patterns are written in their normalized form (a trailing slash
-    // is stripped before the line is appended), so `.claude/` lands as `.claude`.
+    // clean-HOME teammate/CI.
     let gitignore = std::fs::read_to_string(root.join(".gitignore"))
         .expect("rigger setup must write a .gitignore at the project root");
     assert_eq!(

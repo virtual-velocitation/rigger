@@ -360,14 +360,14 @@ fn print_orientation() {
 }
 
 /// The `.gitignore` lines [`scaffold_project`] writes, each through [`write_gitignore_entries`]
-/// (a trailing `/` trimmed), each naming a class of file rigger writes on one machine at run
+/// as it is spelled here, each naming a class of file rigger writes on one machine at run
 /// time. Left untracked and not ignored, such a file reads as a dirty tree, and `git add` sweeps
 /// it into a unit's commit, whose merge then collides with the live file ("untracked working
 /// tree files would be overwritten"). A class covers a database, lock or scratch file rigger adds
 /// later with no edit here. `.rigger/workflow.yml`, `agents/`, `gates/`, `instructions/`,
 /// `project.id` and `docs-overlay.yml` match no line and stay tracked.
 ///
-/// - `.claude/`: the machine-local Claude Code install.
+/// - `.claude`: the machine-local Claude Code install.
 /// - `.rigger/*.db`, `.rigger/*.db-wal`, `.rigger/*.db-shm`: a store (the event log, the graph,
 ///   the progress store) and its write-ahead log and shared memory.
 /// - `.rigger/*.lock`: a lock file a process holds (a run's step lock, the graph's rebuild lock).
@@ -380,12 +380,12 @@ fn print_orientation() {
 /// - `.rigger/store`: the code store's snapshots and facts memo, a projection of the tree each
 ///   graph read rewrites.
 /// - `.rigger/*.bak-*`: a store file's backup, named `<store file>.bak-<suffix>`.
-/// - `.rigger/tmp/`: the run's scratch (unit and review worktrees, liveness markers, the shared
+/// - `.rigger/tmp`: the run's scratch (unit and review worktrees, liveness markers, the shared
 ///   build cache) when it falls back to the repository, with no cache home to key it on.
-/// - `.rigger/playbooks/`: the playbook pool, a projection of the log
+/// - `.rigger/playbooks`: the playbook pool, a projection of the log
 ///   `rigger playbooks --rebuild` remakes.
 const RUNTIME_IGNORES: [&str; 14] = [
-    ".claude/",
+    ".claude",
     ".rigger/*.db",
     ".rigger/*.db-wal",
     ".rigger/*.db-shm",
@@ -397,14 +397,16 @@ const RUNTIME_IGNORES: [&str; 14] = [
     ".rigger/store.conn",
     ".rigger/store",
     ".rigger/*.bak-*",
-    ".rigger/tmp/",
-    ".rigger/playbooks/",
+    ".rigger/tmp",
+    ".rigger/playbooks",
 ];
 
 /// Write a .gitignore entry for the given pattern if it is not already an explicit line
 /// or a tracked path, returning whether it APPENDED an entry (`true`) or left `.gitignore`
-/// untouched (`false`). Idempotent: a rerun finds the exact line already present and is a
-/// no-op, so setup never pollutes `.gitignore` with duplicates.
+/// untouched (`false`). An existing line names the pattern when, padding and a trailing `/`
+/// trimmed, it equals it, so an operator's `.claude/` covers `.claude`. Idempotent: a rerun
+/// finds the line already present and is a no-op, so setup never pollutes `.gitignore` with
+/// duplicates.
 ///
 /// Deliberately does NOT consult `git check-ignore` to skip a path a BROADER rule already
 /// covers. `git check-ignore` resolves ignores against machine-local global sources
@@ -416,20 +418,19 @@ const RUNTIME_IGNORES: [&str; 14] = [
 /// unit commit - the exact collision spec 46 criterion 1 exists to prevent. The committed
 /// file must be self-contained and portable, so we append the explicit line whenever it is
 /// absent. A redundant-but-correct per-file line in a repo whose OWN rules already ignore a
-/// broader path (e.g. `.rigger/`) is harmless; the exact-line check above still guarantees
+/// broader path (e.g. `.rigger/`) is harmless; the line check above still guarantees
 /// idempotency, and the file stays machine-independent.
 fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn std::error::Error>> {
     let gitignore_path = root.join(".gitignore");
-    let normalized_pattern = pattern.trim_end_matches('/');
 
-    // Already an explicit line in .gitignore: a no-op. This exact-line check is the
-    // idempotency guarantee, and it reads ONLY the repo's own committed `.gitignore` (never
-    // machine-local global git config), so it holds even OUTSIDE a git repo and never makes
-    // the committed file depend on the runner's machine.
+    // Already an explicit line in .gitignore: a no-op. This line check is the idempotency
+    // guarantee, and it reads ONLY the repo's own committed `.gitignore` (never machine-local
+    // global git config), so it holds even OUTSIDE a git repo and never makes the committed
+    // file depend on the runner's machine.
     let current = std::fs::read_to_string(&gitignore_path).unwrap_or_default();
     if current
         .lines()
-        .any(|line| line.trim() == normalized_pattern)
+        .any(|line| line.trim().trim_end_matches('/') == pattern)
     {
         return Ok(false); // Already in .gitignore
     }
@@ -444,7 +445,7 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
         .map(|output| {
             String::from_utf8_lossy(&output.stdout)
                 .lines()
-                .any(|line| line.starts_with(&format!("{}/", normalized_pattern)))
+                .any(|line| line.starts_with(&format!("{pattern}/")))
         })
         .unwrap_or(false);
 
@@ -464,7 +465,7 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
         writeln!(file)?;
     }
 
-    writeln!(file, "{}", normalized_pattern)?;
+    writeln!(file, "{pattern}")?;
 
     Ok(true)
 }
@@ -4010,8 +4011,8 @@ mod tests {
     /// Spec 125, criterion 13: in a fresh git repository `init_project` has run on, the
     /// project's own `.gitignore` ignores each file rigger writes at run time by the line naming
     /// its class, and none of the project's configuration, which stays tracked. Each row is a
-    /// path and the `.gitignore` pattern git reports ignoring it, as written (a trailing `/`
-    /// trimmed), or `None` for a path no rule ignores.
+    /// path and the `.gitignore` pattern git reports ignoring it, as written, or `None` for a
+    /// path no rule ignores.
     #[test]
     fn a_new_project_ignores_riggers_runtime_files_by_class_and_keeps_its_configuration() {
         let rows: [(&str, Option<&str>); 23] = [
@@ -4063,14 +4064,14 @@ mod tests {
     #[test]
     fn scaffold_summary_names_the_appended_ignore_lines_as_keeping_runtime_files_untracked() {
         let report = ScaffoldReport {
-            gitignore_added: vec![".claude/".to_string(), ".rigger/*.db".to_string()],
+            gitignore_added: vec![".claude".to_string(), ".rigger/*.db".to_string()],
             ..ScaffoldReport::default()
         };
         assert_eq!(
             scaffold_summary_lines(&report),
             [
                 "added .gitignore entries so machine-local installs and rigger's runtime files \
-                 stay untracked: .claude/, .rigger/*.db"
+                 stay untracked: .claude, .rigger/*.db"
             ]
         );
     }
