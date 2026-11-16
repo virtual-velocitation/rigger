@@ -39,7 +39,8 @@ fn scan_tree(root: &Path) -> Vec<Finding> {
 /// Each `"sh"` that is the first argument of `command`, `command_in` or `Command::new` in a file
 /// of `sources` other than the spawn port, outside that file's `#[cfg(test)]` modules, named at
 /// the line the `"sh"` is on. Each file is read through [`source_audit::tokenize`], which yields
-/// no token from a comment or from inside a string literal.
+/// no token from a comment or from inside a string literal, and each call through
+/// [`source_audit::called_at`].
 fn sh_spawns(sources: &[(String, String)]) -> Vec<Finding> {
     sources
         .iter()
@@ -50,8 +51,7 @@ fn sh_spawns(sources: &[(String, String)]) -> Vec<Finding> {
             let toks = source_audit::tokenize(&content.chars().collect::<Vec<_>>());
             (0..toks.len())
                 .filter(|&at| {
-                    spawns_by_name(&toks, at)
-                        && source_audit::ref_punct(toks.get(at + 1), "(")
+                    source_audit::called_at(&toks, at).is_some_and(|name| spawns(name, &toks, at))
                         && source_audit::ref_token(toks.get(at + 2), RawKind::Lit, "\"sh\"")
                 })
                 .map(|at| toks[at + 2].line - 1)
@@ -67,16 +67,14 @@ fn sh_spawns(sources: &[(String, String)]) -> Vec<Finding> {
         .collect()
 }
 
-/// Whether `toks[at]` names a function that spawns the program its first argument names:
-/// `command` or `command_in` under any qualifier, or `new` qualified by `Command`.
-fn spawns_by_name(toks: &[RawTok], at: usize) -> bool {
-    let tok = &toks[at];
-    tok.kind == RawKind::Ident
-        && match tok.text.as_str() {
-            "command" | "command_in" => true,
-            "new" => source_audit::qualifier_before(toks, at).as_deref() == Some("Command"),
-            _ => false,
-        }
+/// Whether `name`, called at `toks[at]`, spawns the program its first argument names: `command`
+/// or `command_in` under any qualifier, or `new` qualified by `Command`.
+fn spawns(name: &str, toks: &[RawTok], at: usize) -> bool {
+    match name {
+        "command" | "command_in" => true,
+        "new" => source_audit::qualifier_before(toks, at).as_deref() == Some("Command"),
+        _ => false,
+    }
 }
 
 #[test]

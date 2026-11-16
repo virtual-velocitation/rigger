@@ -9,8 +9,8 @@
 //! `tests/boundary_audit.rs` finds string literals with, its appender audit finds calls with and
 //! `tests/os_shell_boundary.rs` finds an `sh` spawn's first argument with, and the token readers
 //! those audits read their tokens with ([`ref_punct`], [`ref_token`], [`qualifier_before`],
-//! [`follows_keyword`], [`is_definition_site`], [`close_of`], [`imported_names`]). And the
-//! boundary scans' shared literal rule, [`literal_outside`], with the fixture reader
+//! [`follows_keyword`], [`is_definition_site`], [`called_at`], [`close_of`], [`imported_names`]).
+//! And the boundary scans' shared literal rule, [`literal_outside`], with the fixture reader
 //! [`flagged_by`] and its empty expectation [`none`], which `tests/os_process_boundary.rs`,
 //! `tests/os_shell_boundary.rs` and `tests/os_home_boundary.rs` share. Each suite uses the subset
 //! it needs (hence the module-wide `dead_code` allowance, as in `tests/common/mod.rs`).
@@ -650,6 +650,12 @@ pub fn qualifier_before(toks: &[RawTok], i: usize) -> Option<String> {
 /// `fn` keyword (`fn name(`), rather than a reference to the name.
 pub fn is_definition_site(toks: &[RawTok], i: usize) -> bool {
     follows_keyword(toks, i, "fn")
+}
+
+/// The name called at `at`: an identifier followed by `(` that is no definition site.
+pub fn called_at(toks: &[RawTok], at: usize) -> Option<&str> {
+    let call = toks[at].kind == RawKind::Ident && ref_punct(toks.get(at + 1), "(");
+    (call && !is_definition_site(toks, at)).then_some(toks[at].text.as_str())
 }
 
 /// Whether the token in front of `toks[i]` is the keyword `keyword`; `false` at the first token.
