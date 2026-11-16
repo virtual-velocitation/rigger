@@ -6528,7 +6528,8 @@ impl RunCtx<'_> {
                     "For the operator: review of unit {unit:?} at attempt {attempt} found, \
                      outside the delta it reviewed, an item that is no correctness defect, so \
                      it no longer holds the unit back - {}: {}",
-                    item.path, item.finding
+                    debug_escaped(&item.path),
+                    debug_escaped(&item.finding)
                 ),
                 vec![item.path.clone()],
             )?;
@@ -6618,7 +6619,7 @@ impl RunCtx<'_> {
                 "a review round left unit {unit:?}'s worktree as residue after judging \
                  {round_start_sha} - {where_at}: {}. Restored to the reviewed sha; no \
                  attempt charged.",
-                residue.join(", ")
+                escaped_list(&residue)
             ),
             None,
             None,
@@ -14648,8 +14649,9 @@ fn adjudicator_contract(carries_cache: bool) -> String {
 }
 
 /// The block the check-in stage's first prompt ends with when the run's review upheld any
-/// finding (`notes`, from [`run_notes`]): each note once, with its locations and text, and what
-/// the stage does with them. Empty for no note, so the stage's prompt is then unchanged.
+/// finding (`notes`, from [`run_notes`]): each note once, with its locations and text, each
+/// escaped ([`debug_escaped`]) as a reviewer wrote it, and what the stage does with them. Empty
+/// for no note, so the stage's prompt is then unchanged.
 fn notes_block(notes: &[RunNote]) -> String {
     if notes.is_empty() {
         return String::new();
@@ -14659,12 +14661,26 @@ fn notes_block(notes: &[RunNote]) -> String {
         let at = if note.about.is_empty() {
             String::new()
         } else {
-            format!(" ({})", note.about.join(", "))
+            format!(" ({})", escaped_list(&note.about))
         };
-        block.push_str(&format!("- {}{at}: {}\n", note.id, note.summary));
+        block.push_str(&format!(
+            "- {}{at}: {}\n",
+            debug_escaped(&note.id),
+            debug_escaped(&note.summary)
+        ));
     }
     block.push_str(RUN_NOTES_CLOSING);
     block
+}
+
+/// `paths` joined by `, `, each escaped ([`debug_escaped`]), so a newline in one cannot end
+/// the line that lists them.
+fn escaped_list(paths: &[String]) -> String {
+    paths
+        .iter()
+        .map(|path| debug_escaped(path))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A LATER REVIEW ROUND: an earlier round judged the unit at `base` and sent it back, its
@@ -14693,12 +14709,13 @@ impl ReviewRound {
     }
 
     /// The block every review tier's prompt ends with on this round: what it reviews (the
-    /// delta and the REQUIRED list) and the rule that splits what it finds outside the delta.
+    /// delta, each path escaped ([`debug_escaped`]), and the REQUIRED list) and the rule that
+    /// splits what it finds outside the delta.
     fn block(&self) -> String {
         let delta = if self.delta.is_empty() {
             DELTA_NONE.to_string()
         } else {
-            self.delta.join(", ")
+            escaped_list(&self.delta)
         };
         let required = if self.required.is_empty() {
             ROUND_REQUIRED_NONE.to_string()
@@ -14997,15 +15014,21 @@ fn approve_reused(key: &str, sha: &str) -> String {
 /// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by its
 /// [`PATTERN_LABEL`] line, the trimmed shape and then `record`, the block's record sentence:
 /// the one rendering the implementer's prior-failure block and a later round's review block
-/// share, each passing its own record sentence.
+/// share, each passing its own record sentence. The adjudicator wrote the path, the finding
+/// and the shape, so each is escaped ([`debug_escaped`]) and a newline in one cannot forge a
+/// line.
 fn required_lines(items: &[RequiredItem], record: &str) -> String {
     items
         .iter()
         .map(|item| {
-            let mut line = format!("- {}: {}\n", item.path, item.finding);
+            let mut line = format!(
+                "- {}: {}\n",
+                debug_escaped(&item.path),
+                debug_escaped(&item.finding)
+            );
             let shape = item.pattern.trim();
             if !shape.is_empty() {
-                line.push_str(&fill(PATTERN_LABEL, &[("shape", shape)]));
+                line.push_str(&fill(PATTERN_LABEL, &[("shape", &debug_escaped(shape))]));
                 line.push_str(record);
             }
             line
@@ -16500,7 +16523,8 @@ fn is_documentation_only(paths: &[String]) -> bool {
 
 /// The task a RESUMED sdet-author is sent on a later attempt, naming what sent the unit back:
 /// the review round's `delta` (the round-start `base` it was judged at and the paths changed
-/// since), and the `gate_evidence` of the gates the previous attempt failed. Empty when neither
+/// since, each escaped by [`escaped_list`]), and the `gate_evidence` of the gates the previous
+/// attempt failed. Empty when neither
 /// names anything - a first attempt - so the spawn stays fresh. Its session already holds the
 /// criterion and the tests it authored.
 fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[String]) -> String {
@@ -16509,7 +16533,7 @@ fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[S
         let changed = if paths.is_empty() {
             DELTA_NONE.to_string()
         } else {
-            paths.join(", ")
+            escaped_list(paths)
         };
         causes.push(fill(
             LATER_ATTEMPT_REVIEW_CAUSE,
@@ -34245,6 +34269,28 @@ mod tests {
         );
     }
 
+    /// An operator lesson escapes what the adjudicator wrote ([`debug_escaped`]): a newline in
+    /// the item's path or finding cannot forge a row where the lesson is listed.
+    #[test]
+    fn an_operator_lesson_escapes_the_item_it_records() {
+        let converging = r#"{"verdict":"reject","required":[{"finding":"reword\n- forged: row","path":"feature.rs\nx","correctness":false}]}"#;
+        let (rs, events, _) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), converging),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let lessons = lessons_about(&events, "feature.rs\nx");
+        let summary = lessons
+            .first()
+            .and_then(|l| l["summary"].as_str())
+            .unwrap_or_default();
+        assert!(
+            summary.ends_with(r"back - feature.rs\nx: reword\n- forged: row")
+                && !summary.contains('\n'),
+            "the lesson escapes the item's path and finding: {summary:?}"
+        );
+    }
+
     /// A later round's reject blaming infrastructure judged no code (F3), so naming no item
     /// does not make it degenerate: the stage reruns at the same attempt uncharged, under the
     /// next retry ordinal's reviewers, and the adjudicator is never respawned for it.
@@ -38243,6 +38289,31 @@ mod tests {
             &repo_path,
             "work.rs",
             "tip-moved-residue.rs",
+        );
+    }
+
+    /// A residue lesson escapes each path it names ([`debug_escaped`]): a reviewer's committed
+    /// file whose name holds a newline cannot forge a row where the lesson is listed.
+    #[cfg(unix)]
+    #[test]
+    fn a_residue_lesson_escapes_each_path_it_names() {
+        let (_repo, _repo_path, events) = approving_round_with_residue(|stub| Stub {
+            commits_by_agent: HashMap::from([(
+                "judge".to_string(),
+                vec![("residue\n- forged.rs".to_string(), "junk\n".to_string())],
+            )]),
+            ..stub
+        });
+        let summaries: Vec<String> = payloads_of_type(&events, contextgraph::TYPE_LESSON_LEARNED)
+            .iter()
+            .filter_map(|lesson| lesson["summary"].as_str().map(str::to_string))
+            .filter(|summary| summary.contains("as residue after judging"))
+            .collect();
+        assert!(
+            summaries.len() == 1
+                && summaries[0].contains(r"residue\n- forged.rs")
+                && !summaries[0].contains('\n'),
+            "the residue lesson escapes the path it names: {summaries:?}"
         );
     }
 
@@ -55740,6 +55811,20 @@ mod tests {
                 ),
             ),
             (
+                "a run note whose id, locations and text hold newlines",
+                notes_block(&[note(
+                    "i\nd",
+                    &["a\nb", "dir with space/\u{e9}.rs"],
+                    "s\n- forged: row",
+                )]),
+                format!(
+                    "{}- i\\nd (a\\nb, {}): s\\n- forged: row\n{}",
+                    notes(&["RUN_NOTES_HEADER"]),
+                    "dir with space/\u{e9}.rs",
+                    notes(&["RUN_NOTES_CLOSING"])
+                ),
+            ),
+            (
                 "a task with no refusal kept",
                 unrefused,
                 "{prompt}".to_string(),
@@ -55844,6 +55929,7 @@ mod tests {
             &prior(&["PATTERN_LABEL", "PRIOR_PATTERN"]),
             &[("audit", &audit_id("{unit}", 2))],
         );
+        let accented = "dir with space/\u{e9}.rs";
         let review_round = |delta: &[&str], required: Vec<RequiredItem>| {
             ReviewRound {
                 base: "{base}".to_string(),
@@ -55976,6 +56062,27 @@ mod tests {
                 ),
             ),
             (
+                "a review round whose delta path and REQUIRED item hold newlines",
+                review_round(
+                    &["a\n- forged.rs", accented],
+                    vec![RequiredItem {
+                        finding: "f\n- x: forged".to_string(),
+                        path: "p\nq".to_string(),
+                        pattern: "s\nt".to_string(),
+                        ..RequiredItem::default()
+                    }],
+                ),
+                format!(
+                    "{}- p\\nq: f\\n- x: forged\n{}{}",
+                    fill(
+                        &round(&["ROUND_LEAD_IN", "ROUND_REQUIRED_HEADER"]),
+                        &[("delta", &format!("a\\n- forged.rs, {accented}"))]
+                    ),
+                    fill(&round(&["PATTERN_LABEL"]), &[("shape", "s\\nt")]),
+                    round(&["ROUND_PATTERN", "ROUND_OUTSIDE_DELTA"])
+                ),
+            ),
+            (
                 "gate evidence with no commit",
                 gate_evidence_block(&gated, "u-1", ""),
                 String::new(),
@@ -56017,6 +56124,11 @@ mod tests {
                 "a later attempt after a failed gate alone",
                 attempt(None, &["{evidence}"]),
                 later_lead(&later(&["LATER_ATTEMPT_GATE_CAUSE"])),
+            ),
+            (
+                "a later attempt after a review round whose delta path holds a newline",
+                attempt(Some(&["a\n- forged.rs", accented]), &[]),
+                later_lead(&review_cause(&format!("a\\n- forged.rs, {accented}"))),
             ),
         ];
         for (case, render, expected) in cases {
