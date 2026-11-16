@@ -35,7 +35,7 @@ use crate::spawn::{
 #[cfg(test)]
 use crate::spawn_store;
 use crate::verdict_mac::{VerdictFields, VerdictKey};
-use crate::worktree::{self, Worktree};
+use crate::worktree::{self, CommitLine, FileDiff, Worktree};
 use rigger_domain::code_view::AdvanceCodeStore;
 pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
@@ -5972,6 +5972,55 @@ impl RunCtx<'_> {
         Some((base, paths))
     }
 
+    /// THE REVIEW PACKET of the round that judges `head`, its round-start sha, in the unit
+    /// worktree `wt` ([`ReviewPacket::block`]): the commits and hunks from the base of `round`,
+    /// the round that sent the unit back, or on a first round from the unit's fork point, beside
+    /// the whole unit's files from that fork point. A check-in stage's fork point is the run's
+    /// recorded base ([`Self::run_base_env`]) when it is an ancestor of `head`, so the check-in
+    /// reviews the whole run. Empty when there is no worktree, no `head` or no fork point; a
+    /// failed read renders the packet's header with the read that fetches the change.
+    fn review_packet(
+        &self,
+        st: &Stage,
+        wt: Option<&Worktree>,
+        head: &str,
+        round: Option<&ReviewRound>,
+    ) -> String {
+        let Some(wt) = wt.filter(|_| !head.is_empty()) else {
+            return String::new();
+        };
+        let run_base = is_check_in(st, &self.cfg.workflow.stages)
+            .then(|| self.run_base_env())
+            .filter(|base| !base.is_empty() && worktree::is_ancestor(&wt.dir, base, head));
+        let Some(fork) = run_base.or_else(|| wt.fork_point(head).ok()) else {
+            return String::new();
+        };
+        let base = round.map_or_else(|| fork.clone(), |r| r.base.clone());
+        let read = || {
+            let files = wt.diff_files(&fork, head).ok()?;
+            let delta = if base == fork {
+                files.clone()
+            } else {
+                wt.diff_files(&base, head).ok()?
+            };
+            Some(PacketChange {
+                commits: wt.commits_between(&base, head).ok()?,
+                whole: format!("{fork}..{head}"),
+                files,
+                delta,
+            })
+        };
+        ReviewPacket {
+            change: read(),
+            head: head.to_string(),
+            required: round
+                .map(|r| r.required.iter().map(|item| item.path.clone()).collect())
+                .unwrap_or_default(),
+            base,
+        }
+        .block()
+    }
+
     /// Run the review of THIS unit's diff over the routed panel's steps
     /// ([`ReviewPanel::steps`](crate::config::ReviewPanel::steps)), in step order, and return
     /// the outcome (whether it is approved, plus the adjudicator's verdict reasoning) (section 3.2).
@@ -6102,6 +6151,9 @@ impl RunCtx<'_> {
                 required: prior_required.to_vec(),
                 audit: audit_id(&st.name, attempt),
             });
+        // THE REVIEW PACKET every step reads: the change this round judges, read from git once,
+        // here, when the round starts.
+        let packet = self.review_packet(st, wt, &round_start_sha, round.as_ref());
         // THE STEP LOOP: the panel's review sequence ([`ReviewPanel::steps`]) runs in step order,
         // each step grounding AFTER every step before it, so `graph_context` surfaces their
         // findings, each step spawning under its [`review_step_role`] token, computed from
@@ -6136,6 +6188,7 @@ impl RunCtx<'_> {
                     any_parked,
                     wt,
                     round.as_ref(),
+                    &packet,
                     &roster,
                 ),
                 ReviewStep::Adversary(id) => self.run_finding_reviewer(
@@ -6148,10 +6201,21 @@ impl RunCtx<'_> {
                     k,
                     wt,
                     round.as_ref(),
+                    &packet,
                     &roster,
                 ),
                 ReviewStep::Adjudicator(id) => self
-                    .run_adjudicator(st, id, dir, attempt, ordinal, wt, &roster, round.as_ref())
+                    .run_adjudicator(
+                        st,
+                        id,
+                        dir,
+                        attempt,
+                        ordinal,
+                        wt,
+                        &roster,
+                        round.as_ref(),
+                        &packet,
+                    )
                     .map(|judged| verdict = Some((id.as_str(), judged))),
             };
             // A REVIEW ROUND LEAVES THE TREE IT REVIEWED even on a genuine crash (spec 103,
@@ -8622,6 +8686,9 @@ impl RunCtx<'_> {
                 any_lens_parked,
                 None,
                 None,
+                // No unit worktree, so no review packet: each reviewer reads the stage's
+                // change itself.
+                "",
                 &step_roster(&[ReviewStep::Lenses(lenses.clone())], 0, review_step_role),
             )?;
             if !st.adversary.is_empty() {
@@ -8636,6 +8703,7 @@ impl RunCtx<'_> {
                     1,
                     None,
                     None,
+                    "",
                     &review_roster(&lenses),
                 )?;
             }
@@ -8654,6 +8722,7 @@ impl RunCtx<'_> {
                     None,
                     &adjudicator_roster(&lenses, &st.adversary),
                     None,
+                    "",
                 )?
             };
 
@@ -8813,8 +8882,9 @@ impl RunCtx<'_> {
     /// separately from the propagated Err.
     // Each argument is a distinct review input - the stage, its lens ids, the worktree dir,
     // the attempt and its infra retry ordinal, the step's ordinal among the lens steps, the
-    // any-parked out-param, the unit worktree, the later-round block, the lens step's roster -
-    // the same primitive-argument shape `run_reviewer` carries this allow for.
+    // any-parked out-param, the unit worktree, the later-round block, the round's review packet,
+    // the lens step's roster - the same primitive-argument shape `run_reviewer` carries this
+    // allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_review_agents_concurrently(
         &self,
@@ -8829,6 +8899,8 @@ impl RunCtx<'_> {
         any_parked: &std::sync::atomic::AtomicBool,
         wt: Option<&Worktree>,
         round: Option<&ReviewRound>,
+        // The round's review packet ([`Self::review_packet`]), the caller's value.
+        packet: &str,
         // The roster every lens of this step carries ([`step_roster`]), the caller's value.
         roster: &[String],
     ) -> Result<(), Error> {
@@ -8851,6 +8923,7 @@ impl RunCtx<'_> {
                                 k,
                                 wt,
                                 round,
+                                packet,
                                 roster,
                             )
                         })
@@ -8918,8 +8991,8 @@ impl RunCtx<'_> {
     /// [`SpawnOpts::reviews`].
     // Each argument is a distinct review input (stage, step kind, agent id, dir, attempt and its
     // infra retry ordinal, the step's ordinal, the ensure-on-park worktree, the later-round block,
-    // the step's roster) - the same primitive-argument shape `run_reviewer` carries this allow
-    // for.
+    // the round's review packet, the step's roster) - the same primitive-argument shape
+    // `run_reviewer` carries this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_finding_reviewer(
         &self,
@@ -8932,6 +9005,7 @@ impl RunCtx<'_> {
         k: u32,
         wt: Option<&Worktree>,
         round: Option<&ReviewRound>,
+        packet: &str,
         roster: &[String],
     ) -> Result<(), Error> {
         // The output is not a verdict - the findings go to the graph - so the substantive result
@@ -8940,9 +9014,9 @@ impl RunCtx<'_> {
         // step's token so an out-of-process emit (`rigger emit`, the spawn-bound MCP server)
         // carries attribution too.
         let role = review_step_role(kind, agent_id, k);
-        let prompt = self.build_review_prompt(st, dir, &role, round)?;
+        let prompt = self.build_review_prompt(st, dir, &role, round, packet)?;
         let resume = round
-            .map(|r| self.review_resume_task(st, dir, r))
+            .map(|r| self.review_resume_task(st, dir, r, packet))
             .transpose()?;
         self.run_reviewer(
             st,
@@ -9430,9 +9504,9 @@ impl RunCtx<'_> {
     /// and, on a later review round, ends with that round's block, where a reject naming no
     /// REQUIRED item is degenerate ([`ReviewerOutput::RoundVerdict`]).
     // Each argument is a distinct, already-documented review input (stage, agent id, dir,
-    // attempt, the ensure-on-park worktree, the step's roster and the review round) - the same
-    // primitive-argument shape `run_reviewer`/`reviewer_spawn_opts` already carry this allow
-    // for.
+    // attempt, the ensure-on-park worktree, the step's roster, the review round and its review
+    // packet) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts` already
+    // carry this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_adjudicator(
         &self,
@@ -9444,6 +9518,7 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         roster: &[String],
         round: Option<&ReviewRound>,
+        packet: &str,
     ) -> Result<(bool, String, String), Error> {
         // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
         // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
@@ -9460,12 +9535,12 @@ impl RunCtx<'_> {
         // sentence included exactly when its spawn at `dir` carries the unit's review cache.
         let prompt = format!(
             "{}{}{}",
-            self.review_base_prompt(st, dir)?,
+            self.review_base_prompt(st, dir, packet)?,
             adjudicator_contract(self.reviewer_has_build_cache(dir)?),
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round
-            .map(|r| self.review_resume_task(st, dir, r))
+            .map(|r| self.review_resume_task(st, dir, r, packet))
             .transpose()?;
         let result = self.run_reviewer(
             st,
@@ -12597,17 +12672,19 @@ impl RunCtx<'_> {
     /// from the graph, and a reviewer who emits its own findings feeds the next tier the
     /// same way; the `by`-carried `actor` also lets the review-quality folds attribute the
     /// finding on the out-of-process path (see [`review_protocol`]). On a later review round
-    /// it ends with that round's block ([`ReviewRound::block`]).
+    /// it ends with that round's block ([`ReviewRound::block`]). `packet` is the round's review
+    /// packet ([`Self::review_packet`]), read after the gate evidence.
     fn build_review_prompt(
         &self,
         st: &Stage,
         dir: &str,
         actor: &str,
         round: Option<&ReviewRound>,
+        packet: &str,
     ) -> Result<String, Error> {
         Ok(format!(
             "{}{}{}",
-            self.review_base_prompt(st, dir)?,
+            self.review_base_prompt(st, dir, packet)?,
             review_protocol(actor, self.reviewer_has_build_cache(dir)?),
             round.map(ReviewRound::block).unwrap_or_default()
         ))
@@ -12617,10 +12694,11 @@ impl RunCtx<'_> {
     /// [`Self::build_review_prompt`], the adjudicator in [`Self::run_adjudicator`]: the grounded
     /// [`Self::build_prompt`] followed by the [`gate_evidence_block`] of the commit the reviewer
     /// judges - the HEAD of `dir`, addressed by the same [`worktree::head_sha_of`] the gates'
-    /// digests are ([`Self::run_gates_at`]) - read from this run's log.
-    fn review_base_prompt(&self, st: &Stage, dir: &str) -> Result<String, Error> {
+    /// digests are ([`Self::run_gates_at`]) - read from this run's log, and the round's review
+    /// `packet` ([`Self::review_packet`]): the change that commit makes.
+    fn review_base_prompt(&self, st: &Stage, dir: &str, packet: &str) -> Result<String, Error> {
         Ok(format!(
-            "{}{}",
+            "{}{}{packet}",
             self.build_prompt(st)?,
             self.review_gate_evidence(st, dir)?
         ))
@@ -12695,13 +12773,15 @@ impl RunCtx<'_> {
     /// The task a RESUMED review tier is sent on a later round: the findings now recorded about
     /// the unit's files (this round's earlier tiers' among them, which the session has not
     /// seen), the gate evidence of the commit this round judges in `dir` (the session saw only
-    /// an earlier round's), and the round's block - its delta and REQUIRED list. The session
-    /// already holds the criterion, the grounding and its review protocol.
+    /// an earlier round's), the round's review `packet` ([`Self::review_packet`]), and the
+    /// round's block - its delta and REQUIRED list. The session already holds the criterion,
+    /// the grounding and its review protocol.
     fn review_resume_task(
         &self,
         st: &Stage,
         dir: &str,
         round: &ReviewRound,
+        packet: &str,
     ) -> Result<String, Error> {
         let seed = self.grounded_seed(st);
         let mut b = String::new();
@@ -12709,6 +12789,7 @@ impl RunCtx<'_> {
             write_capped_findings(&mut b, &g, &seed);
         }
         b.push_str(&self.review_gate_evidence(st, dir)?);
+        b.push_str(packet);
         b.push_str(&round.block());
         Ok(b)
     }
@@ -14424,6 +14505,169 @@ impl ReviewRound {
             fill(ROUND_LEAD_IN, &[("base", &self.base), ("delta", &delta)])
         )
     }
+}
+
+/// The review packet's count cap: the most files whose hunks it carries ([`packet_hunks`]); every
+/// file after them is listed as elided.
+const PACKET_VERBATIM_N: usize = 64;
+
+/// The review packet's byte cap: a hard bound on the hunks it carries ([`packet_hunks`]), so a
+/// large change never blows a reviewer's prompt; every file past it is listed with the read that
+/// fetches it.
+const PACKET_BUDGET_BYTES: usize = 96 * 1024;
+
+/// THE REVIEW PACKET a review round's every step reads ([`ReviewPacket::block`]): the change from
+/// `base` to `head`, the round-start sha the round judges, read from git once when the round
+/// starts ([`RunCtx::review_packet`]), so no reviewer spends a read fetching it.
+struct ReviewPacket {
+    /// Where the commits and the hunks start: the unit's fork point on a first round, the
+    /// round-start sha of the round that sent the unit back on a later one.
+    base: String,
+    /// The round-start sha: the commit the round judges and the one an approve lands.
+    head: String,
+    /// What git read, or `None` when a read failed.
+    change: Option<PacketChange>,
+    /// The paths the REQUIRED items of the round that sent the unit back name; empty on a first
+    /// round.
+    required: Vec<String>,
+}
+
+/// The change a [`ReviewPacket`] carries, as git read it.
+struct PacketChange {
+    /// Every commit `base..head` adds, oldest first.
+    commits: Vec<CommitLine>,
+    /// The range the file list reads over: the unit's whole change, from its fork point.
+    whole: String,
+    /// Every file `whole` changed, by path.
+    files: Vec<FileDiff>,
+    /// Every file `base..head` changed: the files whose hunks the packet carries, the same as
+    /// `files` on a first round.
+    delta: Vec<FileDiff>,
+}
+
+impl ReviewPacket {
+    /// The packet, in order: its header naming the range; then, when git read the change, the
+    /// commits, the whole unit's files with their line counts, each REQUIRED item's path the
+    /// round's change left untouched, the hunks [`packet_hunks`] keeps and the files it elides
+    /// with the read that fetches each - or, when a read failed, that read for the whole range.
+    fn block(&self) -> String {
+        let range = [("base", self.base.as_str()), ("head", self.head.as_str())];
+        let mut b = fill(REVIEW_PACKET_HEADER, &range);
+        let Some(change) = &self.change else {
+            b.push_str(&fill(PACKET_UNREADABLE, &range));
+            return b;
+        };
+        b.push_str(&fill(
+            PACKET_COMMITS_HEADER,
+            &[("count", &change.commits.len().to_string())],
+        ));
+        for commit in &change.commits {
+            b.push_str(&fill(
+                PACKET_COMMITS_ROW,
+                &[("sha", &commit.sha), ("subject", &commit.subject)],
+            ));
+        }
+        let (added, removed) = change
+            .files
+            .iter()
+            .filter_map(|f| f.lines)
+            .fold((0u64, 0u64), |(a, r), (x, y)| {
+                (a + u64::from(x), r + u64::from(y))
+            });
+        b.push_str(&fill(
+            PACKET_FILES_HEADER,
+            &[
+                ("range", &change.whole),
+                ("count", &change.files.len().to_string()),
+                ("added", &added.to_string()),
+                ("removed", &removed.to_string()),
+            ],
+        ));
+        for file in &change.files {
+            let (status, path) = (file.status.to_string(), packet_path(file));
+            b.push_str(&match file.lines {
+                Some((added, removed)) => fill(
+                    PACKET_FILES_ROW,
+                    &[
+                        ("status", &status),
+                        ("path", &path),
+                        ("added", &added.to_string()),
+                        ("removed", &removed.to_string()),
+                    ],
+                ),
+                None => fill(PACKET_BINARY_ROW, &[("status", &status), ("path", &path)]),
+            });
+        }
+        let required: BTreeSet<&str> = self.required.iter().map(String::as_str).collect();
+        for path in required {
+            if !change.delta.iter().any(|f| packet_file_is(f, path)) {
+                b.push_str(&fill(
+                    PACKET_REQUIRED_UNCHANGED,
+                    &[("path", path), ("base", &self.base)],
+                ));
+            }
+        }
+        let (kept, elided) = packet_hunks(&change.delta, &self.required);
+        if !kept.is_empty() {
+            b.push_str(PACKET_HUNKS_HEADER);
+            for file in kept {
+                b.push_str(&file.patch);
+            }
+        }
+        if !elided.is_empty() {
+            b.push_str(&fill(PACKET_ELIDED_HEADER, &range));
+            for file in elided {
+                let (added, removed) = file.lines.unwrap_or_default();
+                b.push_str(&fill(
+                    PACKET_ELIDED_ROW,
+                    &[
+                        ("path", &packet_path(file)),
+                        ("added", &added.to_string()),
+                        ("removed", &removed.to_string()),
+                    ],
+                ));
+            }
+        }
+        b
+    }
+}
+
+/// How a review packet names `file`: its path, or `old -> new` for a rename or copy.
+fn packet_path(file: &FileDiff) -> String {
+    match &file.old_path {
+        Some(old) => format!("{old} -> {}", file.path),
+        None => file.path.clone(),
+    }
+}
+
+/// Whether `file` is the change to `path`: its path, or the path a rename or copy left.
+fn packet_file_is(file: &FileDiff, path: &str) -> bool {
+    file.path == path || file.old_path.as_deref() == Some(path)
+}
+
+/// The files of `delta` whose hunks a review packet carries, and the files its caps leave out,
+/// each in the order the packet lists them: the files `required` names first, then the rest, each
+/// group smallest patch first and then by path. [`within_budget`] keeps the prefix under
+/// [`PACKET_VERBATIM_N`] files and [`PACKET_BUDGET_BYTES`]; the first file over either cap and
+/// every file after it are elided. A binary file has no hunk, so it is in neither list.
+fn packet_hunks<'a>(
+    delta: &'a [FileDiff],
+    required: &[String],
+) -> (Vec<&'a FileDiff>, Vec<&'a FileDiff>) {
+    let order = |f: &'a FileDiff| {
+        let named = required.iter().any(|path| packet_file_is(f, path));
+        (!named, f.patch.len(), f.path.as_str())
+    };
+    let mut text: Vec<&'a FileDiff> = delta.iter().filter(|f| f.lines.is_some()).collect();
+    text.sort_by(|a, b| order(a).cmp(&order(b)));
+    let kept = within_budget(
+        text.iter().copied(),
+        PACKET_VERBATIM_N,
+        PACKET_BUDGET_BYTES,
+        |f| f.patch.len(),
+    );
+    let elided = text.split_off(kept.len());
+    (kept, elided)
 }
 
 /// Whether an adjudicator's `output` rejects without naming a single item it requires fixed:
@@ -31267,7 +31511,7 @@ mod tests {
                 prompts[0]
             );
             for needle in [
-                format!("..{base}\n"),
+                format!("..{base}, read when this round started"),
                 "A feature.rs (+1 -0)".into(),
                 format!("{feature_hunk}\n"),
                 "+work\n".into(),
