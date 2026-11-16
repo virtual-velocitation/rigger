@@ -37,10 +37,10 @@
 //! change to the trait itself, and a literal token here would have to be updated by the
 //! same hand that let the document go stale. The third pin below therefore compares the
 //! document against THE SOURCE: it extracts `EventStore::append`'s return type from
-//! `src/eventstore/mod.rs` and from the document's own snippet and requires them to be the
-//! same text. Nothing in it is a copy of either side, so it stays true across future
-//! changes to the interface and fails RED the moment the front door and the code disagree
-//! about the contract a consumer must implement.
+//! `crates/rigger-domain/src/eventstore.rs` and from the document's own snippet and requires
+//! them to be the same text. Nothing in it is a copy of either side, so it stays true across
+//! future changes to the interface and fails RED the moment the front door and the code
+//! disagree about the contract a consumer must implement.
 
 use crate::common;
 
@@ -161,8 +161,9 @@ fn architecture_renders_the_event_store_interface_the_source_declares() {
         "docs/architecture.md renders `EventStore` as AS-BUILT Rust and is where an external \
          adapter author reads the contract they must implement, so its `append` arm must be \
          the arm the source declares. The document renders `-> {rendered}`; \
-         src/eventstore/mod.rs declares `-> {declared}`. Re-render the snippet's append arm \
-         and the doc line above it to the contract the code actually ships."
+         crates/rigger-domain/src/eventstore.rs declares `-> {declared}`. Re-render the \
+         snippet's append arm and the doc line above it to the contract the code actually \
+         ships."
     );
 }
 
