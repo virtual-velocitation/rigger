@@ -83,6 +83,24 @@ mod tests {
                 ("src/cli/x.rs".to_string(), 6)
             ]
         );
+        an_sh_spawn_split_across_lines_is_named_at_its_sh_line: assert_eq!(
+            flagged(
+                "src/cli/x.rs",
+                "fn f(dir: &str) {\n    let _ = subprocess::command(\n        \"sh\",\n    );\n    let _ = subprocess::command_in(\n        \"sh\",\n        dir,\n    );\n    let _ = std::process::Command::new(\n        \"sh\",\n    );\n}\n"
+            ),
+            [
+                ("src/cli/x.rs".to_string(), 3),
+                ("src/cli/x.rs".to_string(), 6),
+                ("src/cli/x.rs".to_string(), 10)
+            ]
+        );
+        an_sh_spawn_inside_a_string_or_a_block_comment_is_never_named: assert_eq!(
+            flagged(
+                "src/cli/x.rs",
+                "fn f() {\n    let _ = r#\"command(\"sh\")\"#;\n    /* Command::new(\"sh\") */\n}\n"
+            ),
+            none()
+        );
         a_needle_in_a_crate_is_named: assert_eq!(
             flagged("crates/c/src/lib.rs", "fn f() -> std::process::Command {\n    std::process::Command::new(\"sh\")\n}\n"),
             [("crates/c/src/lib.rs".to_string(), 2)]
@@ -113,7 +131,7 @@ mod tests {
         a_near_miss_of_each_needle_is_never_named: assert_eq!(
             flagged(
                 "src/cli/x.rs",
-                "fn f(run: &str, dir: &Path) {\n    let _ = shell_command(run, dir);\n    let _ = command(\"shx\");\n    let _ = command_in(\"bash\", \"\");\n    let _ = std::process::Command::new(\"cmd\");\n    let _ = \"flocked\";\n}\n"
+                "fn f(run: &str, dir: &Path) {\n    let _ = shell_command(run, dir);\n    let _ = shell_command(\"sh\", dir);\n    let _ = Other::new(\"sh\");\n    let _ = (command, \"sh\");\n    let _ = command(\"shx\");\n    let _ = command_in(\"bash\", \"\");\n    let _ = std::process::Command::new(\"cmd\");\n    let _ = \"flocked\";\n}\n"
             ),
             none()
         );
