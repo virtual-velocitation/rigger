@@ -175,6 +175,28 @@ mod tests {
         assert_ne!(names[0], names[1], "two roots give two names");
     }
 
+    /// ONLY A GATE PIPE'S NAME IS ASKED ON WINDOWS: a name `pipe_name` gives is one, and nothing
+    /// else is: not a file's path, not a pipe prefix a `..` leads out of, and not a name whose
+    /// digits are one too few or too many, upper case, or not hex.
+    #[test]
+    fn a_gate_pipe_name_is_the_name_pipe_name_gives_and_nothing_else() {
+        let given = pipe_name(b"/home/dev/project");
+        let rows: [(&str, bool); 9] = [
+            (&given, true),
+            (r"C:\Users\dev\notes.txt", false),
+            (r"\\.\pipe\..\C:\Users\dev\notes.txt", false),
+            (r"\\.\pipe\rigger-gate-", false),
+            (r"\\.\pipe\rigger-gate-1afbf223bb0b58b", false),
+            (r"\\.\pipe\rigger-gate-1afbf223bb0b58ba0", false),
+            (r"\\.\pipe\rigger-gate-1AFBF223BB0B58BA", false),
+            (r"\\.\pipe\rigger-gate-1afbf223bb0b58bg", false),
+            (r"\\.\pipe\rigger-gate-1afbf223bb0b58b\", false),
+        ];
+        for (address, expected) in rows {
+            assert_eq!(is_gate_pipe_name(address), expected, "{address}");
+        }
+    }
+
     /// THE PIPE CARRIES THE SOCKET'S DIGITS: GIVEN a repo on a unix host, THEN the pipe name over
     /// its canonical root's bytes ends in the digits its socket file is named by.
     #[cfg(unix)]
