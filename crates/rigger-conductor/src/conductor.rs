@@ -6018,7 +6018,8 @@ impl RunCtx<'_> {
     }
 
     /// AN UNCHANGED TREE KEEPS ITS APPROVE: when a later review `round` of `unit` at `attempt`
-    /// judges the very tree the round it reviews from approved ([`reusable_approve`]), record
+    /// judges the very tree the round it reviews from approved ([`reusable_approve`]), the tree
+    /// of `round_start_sha` in `wt` being the tree of the round's base, record
     /// that approve again as this attempt's `reviewed` status and return it, spawning no
     /// reviewer. Its evidence names the approve it reuses and the sha that round judged
     /// ([`approve_reused`]) above that approve's own evidence; it carries that round's
@@ -6037,7 +6038,10 @@ impl RunCtx<'_> {
         let Ok(events) = self.read_current_run() else {
             return Ok(None);
         };
-        let Some((key, approve)) = reusable_approve(&events, unit, attempt, round, tier) else {
+        let same_tree =
+            wt.is_some_and(|w| w.same_tree(&round.base, round_start_sha).unwrap_or(false));
+        let Some((key, approve)) = reusable_approve(&events, unit, attempt, round, tier, same_tree)
+        else {
             return Ok(None);
         };
         let prior = approve
@@ -14765,7 +14769,9 @@ impl ReviewPacket {
         }
         let required: BTreeSet<&str> = self.required.iter().map(String::as_str).collect();
         for path in required {
-            if !change.delta.iter().any(|f| packet_file_is(f, path)) {
+            if required_path(path).is_some()
+                && !change.delta.iter().any(|f| packet_file_is(f, path))
+            {
                 b.push_str(&fill(
                     PACKET_REQUIRED_UNCHANGED,
                     &[("path", path), ("base", &self.base)],
@@ -14805,14 +14811,43 @@ fn packet_path(file: &FileDiff) -> String {
     }
 }
 
-/// Whether `file` is the change to `path`: its path, or the path a rename or copy left.
-fn packet_file_is(file: &FileDiff, path: &str) -> bool {
-    file.path == path || file.old_path.as_deref() == Some(path)
+/// Whether `file` is a change the REQUIRED item path `required` names ([`required_names`]): its
+/// path, or the path a rename or copy left.
+fn packet_file_is(file: &FileDiff, required: &str) -> bool {
+    required_names(required, &file.path)
+        || file
+            .old_path
+            .as_deref()
+            .is_some_and(|old| required_names(required, old))
 }
 
-/// Whether the REQUIRED item path `required` names the repository path `path`.
+/// The repository path the REQUIRED item path `required` spells, in each spelling an
+/// adjudicator writes one: trimmed, without a leading `./`, without the line or range it points
+/// at (`:12`, `:12-14`) and without a trailing `/`. `None` when nothing is left, as for a
+/// pattern item's empty path: such a path names nothing.
+fn required_path(required: &str) -> Option<&str> {
+    let mut plain = required.trim();
+    while let Some(rest) = plain.strip_prefix("./") {
+        plain = rest;
+    }
+    while let Some((file, at)) = plain.rsplit_once(':') {
+        let line = at.starts_with(|c: char| c.is_ascii_digit())
+            && at.chars().all(|c| c.is_ascii_digit() || c == '-');
+        if !line {
+            break;
+        }
+        plain = file;
+    }
+    Some(plain.trim_end_matches('/')).filter(|plain| !plain.is_empty())
+}
+
+/// Whether the REQUIRED item path `required` names the repository path `path`: the path
+/// [`required_path`] spells is `path`, or a directory holding it.
 fn required_names(required: &str, path: &str) -> bool {
-    required == path
+    required_path(required).is_some_and(|plain| {
+        path.strip_prefix(plain)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
 }
 
 /// The files of `delta` whose hunks a review packet carries, and the files its caps leave out,
@@ -16217,22 +16252,32 @@ fn failures_since<'a>(
         .filter(move |v| v["id"] == unit)
 }
 
+/// The review tier `unit`'s review round at `attempt` recorded under its [`review_tier_key`], or
+/// `None` when it recorded none: a panel with no depth policy.
+fn recorded_review_tier(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
+    logged_under(events, &review_tier_key(unit, attempt))
+        .and_then(Event::decode::<Value>)
+        .and_then(|v| v["evidence"]["review-tier"].as_str().map(str::to_string))
+}
+
 /// The approve a later review `round` of `unit` at `attempt` reuses
 /// ([`RunCtx::reuse_approve`]), as its replay key and event: the `reviewed` status of the round
 /// `round` reviews from, when that round approved the very tree this one judges. Every
-/// condition must hold, so reuse fails closed: the round's delta is empty, so the tree is the
-/// one the earlier round judged; that round's approve records its start sha as the sha it
-/// judged; it recorded the review tier `tier` this round routes to (`None` for both with no
-/// depth policy); and what sent the unit back since is one or more merges the post-merge gates
-/// blocked ([`CAUSE_INTEGRATE_CONFLICT`]), never a reject, which condemns the approve.
+/// condition must hold, so reuse fails closed: the tree this round judges is the tree of the
+/// round's base (`same_tree`), so it is the one the earlier round judged; that round's approve
+/// records its start sha as the sha it judged; it recorded the review tier `tier` this round
+/// routes to (`None` for both with no depth policy); and what sent the unit back since is one
+/// or more merges the post-merge gates blocked ([`CAUSE_INTEGRATE_CONFLICT`]), never a reject
+/// or a red gate, which condemns the approve.
 fn reusable_approve<'a>(
     events: &'a [Event],
     unit: &'a str,
     attempt: u32,
     round: &ReviewRound,
     tier: Option<&str>,
+    same_tree: bool,
 ) -> Option<(String, &'a Event)> {
-    if !round.delta.is_empty() {
+    if !same_tree {
         return None;
     }
     let (k, _) = round_reviewed_from(events, unit, attempt, round)?;
@@ -16244,9 +16289,7 @@ fn reusable_approve<'a>(
             && e.decode::<Value>()
                 .is_some_and(|v| v["id"] == unit && v["status"] == "reviewed")
     })?;
-    let recorded = logged_under(events, &review_tier_key(unit, k))
-        .and_then(Event::decode::<Value>)
-        .and_then(|v| v["evidence"]["review-tier"].as_str().map(str::to_string));
+    let recorded = recorded_review_tier(events, unit, k);
     let blocked: Vec<bool> = failures_since(events, unit, approve, attempt)
         .map(|v| v["cause"] == CAUSE_INTEGRATE_CONFLICT)
         .collect();
@@ -16255,30 +16298,44 @@ fn reusable_approve<'a>(
 }
 
 /// The role tokens of the members of `steps` a later review `round` of `unit` at `attempt`
-/// re-runs under `later_rounds: finders` ([`LaterRounds::Finders`]): each member that recorded
-/// a finding ([`round_findings`]) the round that sent the unit back upheld, and the adjudicator.
-/// That round's verdict is its reject: the first `UnitFailed` of the unit logged between that
-/// round's start and this one's that carries a review reason, which only a review reject
-/// records. `None`, so every member runs, when that round is not the one `round` reviews from,
-/// when no such reject upheld a finding a member recorded, or when the round's delta reaches a
-/// file none of its REQUIRED items names.
+/// re-runs under `later_rounds: finders` ([`LaterRounds::Finders`]): each member that recorded,
+/// in that round or any round before it ([`round_findings`]), a finding the round that sent the
+/// unit back upheld, and the adjudicator. That round's verdict is its reject: the first
+/// `UnitFailed` of the unit logged between that round's start and this one's that carries a
+/// review reason, which only a review reject records. `None`, so every member runs, when that
+/// round is not the one `round` reviews from, when it recorded a review tier other than `tier`,
+/// the one this round routes to (`None` for both with no depth policy), so a member of this
+/// round's panel may never have reviewed the unit, when no such reject upheld a finding a
+/// member recorded, or when the round's delta reaches a file none of its REQUIRED items names
+/// ([`required_names`]).
 fn later_round_finders(
     events: &[Event],
     unit: &str,
     attempt: u32,
     round: &ReviewRound,
     steps: &[ReviewStep],
-    _tier: Option<&str>,
+    tier: Option<&str>,
 ) -> Option<Vec<String>> {
-    let required = |path: &String| round.required.iter().any(|item| item.path == *path);
+    let required = |path: &String| {
+        round
+            .required
+            .iter()
+            .any(|item| required_names(&item.path, path))
+    };
     if !round.delta.iter().all(required) {
         return None;
     }
     let (k, mark) = round_reviewed_from(events, unit, attempt, round)?;
+    let k = u32::try_from(k).ok()?;
+    if recorded_review_tier(events, unit, k).as_deref() != tier {
+        return None;
+    }
     let upheld = failures_since(events, unit, mark, attempt)
         .find_map(|v| spawn::Adjudication::parse(v["review_reason"].as_str()?))?
         .upheld;
-    let found = round_findings(events, unit, u32::try_from(k).ok()?);
+    let found: Vec<RoundFinding> = (0..=k)
+        .flat_map(|earlier| round_findings(events, unit, earlier))
+        .collect();
     let finder = |member: &String| {
         member != ROLE_ADJUDICATOR
             && found

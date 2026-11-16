@@ -924,6 +924,24 @@ impl Worktree {
         Ok(files)
     }
 
+    /// Whether the commits `a` and `b` hold the same tree: the exact form of "nothing changed
+    /// between them", which no diff option or user config can hide.
+    pub fn same_tree(&self, a: &str, b: &str) -> Result<bool, Error> {
+        let tree = |rev: &str| {
+            git_stdout(
+                &self.dir,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{rev}^{{tree}}"),
+                ],
+            )
+            .map(|tree| tree.trim().to_string())
+        };
+        Ok(tree(a)? == tree(b)?)
+    }
+
     /// Every commit reachable from `to` and not from `from`, oldest first.
     pub fn commits_between(&self, from: &str, to: &str) -> Result<Vec<CommitLine>, Error> {
         let range = format!("{from}..{to}");
