@@ -63,8 +63,8 @@ fn workflow_writing_env_to(pairs: &[(&str, &str)], jobs: u32, seen: &Path) -> St
     )
 }
 
-/// `rigger gate g` in `root`, its scratch and runtime directory under `scratch`, with
-/// [`TARGET_DIR`] in its environment set to `ambient`, or absent when `None`:
+/// `rigger gate g` in `root`, its scratch and runtime directory under `scratch`, with no
+/// [`WATCHED`] variable in its environment but [`TARGET_DIR`] set to `ambient` when `Some`:
 /// (stdout, stderr, success).
 fn gate_g(root: &Path, scratch: &Path, ambient: Option<&str>) -> (String, String, bool) {
     let state = tempfile::tempdir().expect("a state dir for the rigger run");
@@ -75,10 +75,12 @@ fn gate_g(root: &Path, scratch: &Path, ambient: Option<&str>) -> (String, String
         &[("RIGGER_TMPDIR", scratch), ("XDG_RUNTIME_DIR", scratch)],
         state.path(),
     );
-    match ambient {
-        Some(dir) => cmd.env(TARGET_DIR, dir),
-        None => cmd.env_remove(TARGET_DIR),
-    };
+    for name in WATCHED {
+        cmd.env_remove(name);
+    }
+    if let Some(dir) = ambient {
+        cmd.env(TARGET_DIR, dir);
+    }
     let out = cmd
         .stdin(Stdio::null())
         .output()
@@ -216,8 +218,14 @@ fn one_run_hands_its_real_gate_and_its_real_agent_the_declaration_resolved_at_ea
     // Both subprocesses inherit this process's environment, so every watched name leaves it, and
     // the run's scratch root is a tempdir: the gate's shared cache is then a known path, and its
     // guard lock stays out of the checkout. Held under the lock `tests/common/mod.rs` keeps for
-    // every ambient-environment write.
+    // every ambient-environment write, and each name written is restored to its prior value when
+    // the test ends, a failing row's included.
     let _guard = common::env_test_lock();
+    let written: Vec<&'static str> = WATCHED
+        .into_iter()
+        .chain([rigger::worktree::SCRATCH_ROOT_ENV])
+        .collect();
+    let _restore = common::RestoreEnvVars::capture(&written);
     let scratch = tempfile::tempdir().expect("a scratch root for the run");
     for name in WATCHED {
         std::env::remove_var(name);
@@ -259,7 +267,6 @@ fn one_run_hands_its_real_gate_and_its_real_agent_the_declaration_resolved_at_ea
             "{why}: the agent"
         );
     }
-    std::env::remove_var(rigger::worktree::SCRATCH_ROOT_ENV);
 }
 
 /// A REFUSED DECLARATION RUNS NO GATE: GIVEN a committed project whose workflow declares a name
