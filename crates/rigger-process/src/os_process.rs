@@ -390,20 +390,25 @@ mod tests {
     }
 
     /// The process listening on a port is this process while it holds the listener, and nothing
-    /// listens there once the listener is closed.
+    /// listens there once the listener is closed, though a connection it accepted, whose own end
+    /// is bound to that same port, stays open.
     #[cfg(unix)]
     #[test]
     fn the_listener_on_a_port_is_the_process_holding_it() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
         let listening = listening_pid(port);
         drop(listener);
         assert_eq!(listening, Some(std::process::id()));
         // A sibling test's fork that has not exec'd yet holds a copy of the listener until its
         // exec closes it, so the port is given that moment to close.
+        let closed = wait_until(|| listening_pid(port).is_none());
+        drop((client, accepted));
         assert!(
-            wait_until(|| listening_pid(port).is_none()),
-            "nothing listens on a closed port"
+            closed,
+            "nothing listens on a closed port, though a connection it accepted is open"
         );
     }
 
