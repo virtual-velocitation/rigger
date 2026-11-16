@@ -55,6 +55,23 @@ The scheduling figures are live wall hours, not unit hours: the run's first `Run
 
 The scheduling label says when the figures are approximate: with no gate verdict in the slice, units in flight count agent sessions only, and with neither a heartbeat nor a hold, a driver outage counts as live time and a slot stays open across it. The evidence's `not_shown` lists what no event records: when a unit became ready, that a ready unit was held back and by what, whether a wave applied the radius rule, the width bound a wave ran under, and which unit changed a file.
 
+## The check-in
+
+The check-in is the unit that joins a stage: it works off the run's notes after every work unit has landed. `measure` writes two maps for it to the scorecard; each `_per_unit` figure is over `criterion_units`, the work units it integrated.
+
+| Key | Definition |
+|---|---|
+| `checkin_hours.wall` | live hours from the check-in's first `UnitStarted` to its `UnitIntegrated`, outages removed |
+| `checkin_hours.implementer` | live hours of its implementer sessions, each `SpawnRequested` to its `SpawnResult`, uncapped |
+| `checkin_hours.wall_per_unit`, `checkin_hours.implementer_per_unit` | the two over `criterion_units` |
+| `checkin_work.prompt_records` | the lines of the `RUN NOTES` block in its first implementer prompt that open with a review finding's id: the reviewer records carried into the check-in |
+| `checkin_work.notes` | those records whose summary opens with `NOTE`, `NOTES` or `NON-BLOCKING` |
+| `checkin_work.walk_notes` | the notes of the three kinds the implementer's hand-over walk lists: `walk_notes_tests` (a branch with no test), `walk_notes_homes` (a rule, helper, fixture or test shape spelled twice) and `walk_notes_docs` (a sentence false at head); `walk_notes_per_unit` is over `criterion_units` |
+| `checkin_work.unclassed_notes` | the notes the keyword rule gives no kind |
+| `checkin_work.commits`, `checkin_work.added_lines` | the non-merge commits from the last landing before the check-in started to its landing, and the lines `git diff --numstat` counts added between the two |
+
+A note's kind is read by keyword, the same way every run: a finding whose id names a plan review is `spec`; otherwise the first rule of `NOTE_KINDS` in evaluate.sh whose word appears in the first parenthesised label of the note's first 260 characters gives the kind, and a note with no such word is unclassed. The rule is a first cut; a reading that classes the unclassed notes by hand is named as by reading wherever it is quoted.
+
 ## File format
 
 **Name:** `YYYYMMDD-HHMM-<run8>.md`. The first part is the run's start in UTC and `<run8>` is the first eight characters of its run id, so the names sort in run order. TEMPLATE.md is the layout.
@@ -63,7 +80,7 @@ The scheduling label says when the figures are approximate: with no gate verdict
 
 | Section | Written by | Content |
 |---|---|---|
-| Scorecard | measure | `json scorecard`: the run's numbers (definitions in baseline.md) |
+| Scorecard | measure | `json scorecard`: the run's numbers, the check-in's among them (definitions in baseline.md and The check-in) |
 | Comparison | measure | the headline metrics for the baseline, the last five run files and this run |
 | Scheduling | measure | the scheduling summary, a row per started unit and the top five files of each overlap table (see Scheduling) |
 | Previous proposal | measure | `json previous`: the previous file's adopted proposal, scored |
@@ -86,7 +103,7 @@ The scheduling label says when the figures are approximate: with no gate verdict
 | `surface` | `persona`, `gate`, `workflow`, `spec-skill` or `binary`. A binary change becomes an ordinary spec. So does a spec-skill change: the spec-writing skills ship to every project that uses rigger, so a change to them is reviewed like a change to the binary. A binary change is to rigger's own code and tests: rigger is language and process agnostic, so the binary never gains a gate, a mandatory step or a language rule. |
 | `path` | the file to change, or the spec to write |
 | `form` | `check`, `gate` or `instruction`. A `gate` is a workflow gate, so its surface is `gate` or `workflow`. |
-| `metric` | a measured scorecard key, or `<map>.<key>` of a by-map. A cost class's metric is a time measure (`hours_by_label`, `gate_hours_by_gate`, `repeated_hours`, `unit_elapsed_hours`, `serial_hours`, `queued_hours`, `chain_hours`, `time_shares`, `gates_share` or `post_merge_gates_share`); a grep-fallbacks class's is `grep_fallbacks` or `grep_fallbacks_by_target`. |
+| `metric` | a measured scorecard key, or `<map>.<key>` of a by-map. A cost class's metric is a time measure (`hours_by_label`, `gate_hours_by_gate`, `repeated_hours`, `checkin_hours`, `unit_elapsed_hours`, `serial_hours`, `queued_hours`, `chain_hours`, `time_shares`, `gates_share` or `post_merge_gates_share`), or a count of the check-in's work, the run notes it works off and what it commits (`checkin_work.<key>`); a grep-fallbacks class's is `grep_fallbacks` or `grep_fallbacks_by_target`. |
 | `predicted_move` | the signed move in the metric's units. A cost proposal lowers its metric by at most the value it holds. |
 | `hours_saved` | the hours per run the change removes, the ranking key; null for a grep-fallbacks class, which ranks last |
 | `also` | optional: `[{metric, predicted_move}]`, the other metrics the change is predicted to move, each named and signed as `metric` and `predicted_move` are. The next file scores each beside the proposal's own metric; the verdict stays the proposal's own. |
@@ -101,13 +118,13 @@ The scheduling label says when the figures are approximate: with no gate verdict
   - The verdict is `kept` when the metric moved in the predicted direction, `reverted` otherwise.
   - The operator undoes a reverted change.
 - **Numbers come only from the script.** The evaluator writes no figure into a measured section and estimates no duration.
-- **Hours are bounded by what the log measured.** A proposal's `hours_saved` is at most its class's measured hours: for a failure class, the sum of its records' `rework_hours`; for a cost class, the hours its metric holds, or for a share, that share of `unit_elapsed_hours`. A grep fallback carries no duration in the log, so a grep-fallbacks proposal's `hours_saved` is null. `check` refuses a proposal over its bound.
+- **Hours are bounded by what the log measured.** A proposal's `hours_saved` is at most its class's measured hours: for a failure class, the sum of its records' `rework_hours`; for a cost class, the hours its metric holds, for a share, that share of `unit_elapsed_hours`, for a `_per_unit` figure, that figure times `criterion_units`, and for a `checkin_work` count, the check-in's implementer hours (`checkin_hours.implementer`), the hours that work cost. A grep fallback carries no duration in the log, so a grep-fallbacks proposal's `hours_saved` is null. `check` refuses a proposal over its bound.
 - **Each kind of scheduling hours is claimed by the one change that removes it.** A class drawn from the scheduling names `serial_hours`, `queued_hours` or `chain_hours`, and `check` bounds its `hours_saved` by the value it holds, as for any cost class. `check` also refuses a claim on hours the change cannot remove:
   - `queued_hours` is time the width bound held a ready unit back, so only a change to the bound claims it: surface `workflow`, path `.rigger/workflow.yml`, and a `change` that names `max_parallel_units`. Its form is `check`, since the driver enforces the bound.
   - `chain_hours` is time every unit not started waited on its needs, so only the planning surface claims it: the planner's decomposition guidance (surface `persona`, path `.rigger/agents/planner.md`) or the spec-writing skills that shape a spec's `needs` (surface `spec-skill`).
   - `serial_hours` is claimed only while `radii_recorded_before_start` is above 0. At 0 no wave applied the radius rule and no radius held a unit back, so `check` refuses any `serial_hours` claim. A spec whose units all change one shared file, or whose units' radii all name one, is a planning or decomposition class, on the `persona` surface (.rigger/agents/planner.md) or the `spec-skill` surface. A radius that names far more files than its unit changed is a capability class, on the `binary` surface.
 - **No class from what the log cannot show.** The evidence lists under `not_shown` what no event records, such as when a session made its first edit or whether it ended by running out of context; a repeat whose hours are null or 0 is no class either.
-- **Unmeasured and self-reported figures stay labelled.** `grounding_share` is always null: nothing in the log marks the end of an agent's orientation, so it is never estimated. `grep_fallbacks` counts only the fallbacks agents reported, and `grep_fallbacks_by_target` groups them by keyword. `relaunched_sessions` counts relaunches the log records, not their cause. Time shares follow the method only when `labels.time_shares` says so; otherwise they are approximate.
+- **Unmeasured and self-reported figures stay labelled.** `grounding_share` is always null: nothing in the log marks the end of an agent's orientation, so it is never estimated. `grep_fallbacks` counts only the fallbacks agents reported, and `grep_fallbacks_by_target` groups them by keyword. `checkin_work`'s note kinds are classed by keyword too, and `unclassed_notes` counts what the rule leaves. `relaunched_sessions` counts relaunches the log records, not their cause. Time shares follow the method only when `labels.time_shares` says so; otherwise they are approximate.
 - **The scorecard and `rigger stats` count differently.** The scorecard's first-pass figure counts criterion units, while `rigger stats` also counts plan units. The script times only fresh gate runs, while `rigger stats` counts cache hits too.
 
 ## Known departure
