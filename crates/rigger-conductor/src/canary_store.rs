@@ -749,6 +749,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         }
     }
 

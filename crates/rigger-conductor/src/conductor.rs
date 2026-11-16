@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
-use crate::config::{AgentDef, Config, RegenerateRule, ReviewStep, Stage};
+use crate::config::{AgentDef, Config, LaterRounds, RegenerateRule, ReviewStep, Stage};
 use crate::config_store;
 use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
@@ -6182,19 +6182,47 @@ impl RunCtx<'_> {
         // before any later step spends a spawn. The adjudicator reads every earlier step's findings
         // from the graph and renders the gating verdict.
         let steps = panel.steps();
+        // WHO A LATER ROUND RE-RUNS (`review.later_rounds`): under `finders`, the members whose
+        // upheld findings sent the unit back and the adjudicator ([`later_round_finders`]), each
+        // spawning under its own step's token, and each step handed only the members that ran;
+        // `None` runs every member. A log that cannot be read runs every member.
+        let finders = match (&round, panel.later_rounds) {
+            (Some(round), LaterRounds::Finders) => self
+                .read_current_run()
+                .ok()
+                .and_then(|events| later_round_finders(&events, &st.name, attempt, round, &steps)),
+            _ => None,
+        };
+        let runs = |token: &String| {
+            finders
+                .as_ref()
+                .is_none_or(|members| members.contains(token))
+        };
         let mut verdict = None;
         for (index, step) in steps.iter().enumerate() {
-            let roster = step_roster(&steps, index, review_step_role);
             let k = step_ordinal(&steps, index);
+            let roster: Vec<String> = step_roster(&steps, index, review_step_role)
+                .into_iter()
+                .filter(runs)
+                .collect();
+            let agents: Vec<String> = step
+                .agents()
+                .iter()
+                .filter(|agent| runs(&review_step_role(step.kind(), agent, k)))
+                .cloned()
+                .collect();
+            if agents.is_empty() {
+                continue;
+            }
             let ran = match step {
                 // Spec 64 c1 round 4: forward the CALLER's any-parked signal (see this
                 // function's doc comment) rather than a throwaway local - `run_stage` reads it
                 // back after `run_single_stage` returns, so the unit's own worktree survives a
                 // lens park even when a co-chunked sibling's genuine error is what this call's
                 // `?` propagates below.
-                ReviewStep::Lenses(ids) => self.run_review_agents_concurrently(
+                ReviewStep::Lenses(_) => self.run_review_agents_concurrently(
                     st,
-                    ids,
+                    &agents,
                     dir,
                     attempt,
                     ordinal,
@@ -15925,15 +15953,15 @@ fn quarantine_branch_name(unit_id: &str, tip: &str) -> String {
 }
 
 /// Every durable [`STATUS_REVIEW_ROUND_START`] mark [`RunCtx::review_round_start_sha`]
-/// stamped for `unit`, in log order, as `(attempt, sha)` - matching on the event's own
+/// stamped for `unit`, in log order, as `(attempt, sha, mark)` - matching on the event's own
 /// `id`/`status`/`attempt` fields rather than trusting a caller's replay key alone, the
 /// read shape [`recorded_adoption`] shares. A mark carrying no sha is skipped.
 fn review_round_starts<'a>(
     events: &'a [Event],
     unit: &'a str,
-) -> impl Iterator<Item = (u64, String)> + 'a {
+) -> impl Iterator<Item = (u64, String, &'a Event)> + 'a {
     unit_status_marks(events, unit, &[STATUS_REVIEW_ROUND_START])
-        .filter_map(|(_, attempt, e)| Some((attempt, e.meta.get(META_WORKTREE_SHA).cloned()?)))
+        .filter_map(|(_, attempt, e)| Some((attempt, e.meta.get(META_WORKTREE_SHA).cloned()?, e)))
 }
 
 /// Every attempt-stamped `UnitStatus` mark `unit` recorded with one of `statuses`, in log
@@ -15967,7 +15995,7 @@ fn unit_status_marks<'a>(
 /// rather than calling this at all.
 fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
     review_round_starts(events, unit)
-        .find_map(|(stamped, sha)| (stamped == u64::from(attempt)).then_some(sha))
+        .find_map(|(stamped, sha, _)| (stamped == u64::from(attempt)).then_some(sha))
 }
 
 /// The session `role`'s latest spawn on `unit` at an attempt before `attempt` ran as, read
@@ -16004,11 +16032,74 @@ fn recorded_session(
 /// verdict sent the unit back to build again. `None` when no review round judged the unit
 /// before `attempt`, or the latest one recorded no sha (a repo-less unit).
 fn round_delta_base(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
-    review_round_starts(events, unit)
-        .filter(|(stamped, _)| *stamped < u64::from(attempt))
-        .max_by_key(|(stamped, _)| *stamped)
-        .map(|(_, sha)| sha)
+    prior_review_round(events, unit, attempt)
+        .map(|(_, sha, _)| sha)
         .filter(|sha| !sha.is_empty())
+}
+
+/// The latest review round that judged `unit` at an attempt before `attempt` - the round whose
+/// verdict sent the unit back to build again - as its [`review_round_starts`] entry.
+fn prior_review_round<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    attempt: u32,
+) -> Option<(u64, String, &'a Event)> {
+    review_round_starts(events, unit)
+        .filter(|(stamped, _, _)| *stamped < u64::from(attempt))
+        .max_by_key(|(stamped, _, _)| *stamped)
+}
+
+/// The role tokens of the members of `steps` a later review `round` of `unit` at `attempt`
+/// re-runs under `later_rounds: finders` ([`LaterRounds::Finders`]): each member that recorded
+/// a finding ([`round_findings`]) the round that sent the unit back upheld, and the adjudicator.
+/// That round's verdict is its reject: the first `UnitFailed` of the unit logged between that
+/// round's start and this one's that carries a review reason, which only a review reject
+/// records. `None`, so every member runs, when that round is not the one `round` reviews from,
+/// when no such reject upheld a finding a member recorded, or when the round's delta reaches a
+/// file none of its REQUIRED items names.
+fn later_round_finders(
+    events: &[Event],
+    unit: &str,
+    attempt: u32,
+    round: &ReviewRound,
+    steps: &[ReviewStep],
+) -> Option<Vec<String>> {
+    let required = |path: &String| round.required.iter().any(|item| item.path == *path);
+    if !round.delta.iter().all(required) {
+        return None;
+    }
+    let (k, base, mark) = prior_review_round(events, unit, attempt)?;
+    if base != round.base {
+        return None;
+    }
+    let until = review_round_starts(events, unit)
+        .find(|(stamped, _, _)| *stamped == u64::from(attempt))
+        .map(|(_, _, e)| e.position);
+    let upheld = events
+        .iter()
+        .filter(|e| e.position > mark.position && until.is_none_or(|end| e.position < end))
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+        .filter_map(Event::decode::<Value>)
+        .filter(|v| v["id"] == unit)
+        .find_map(|v| spawn::Adjudication::parse(v["review_reason"].as_str()?))?
+        .upheld;
+    let found = round_findings(events, unit, u32::try_from(k).ok()?);
+    let finder = |member: &String| {
+        member != ROLE_ADJUDICATOR
+            && found
+                .iter()
+                .any(|f| f.role == *member && upheld.contains(&f.id))
+    };
+    let members = step_roster(steps, steps.len(), review_step_role);
+    if !members.iter().any(finder) {
+        return None;
+    }
+    Some(
+        members
+            .into_iter()
+            .filter(|member| member == ROLE_ADJUDICATOR || finder(member))
+            .collect(),
+    )
 }
 
 /// Whether a round delta's `paths` changed documentation only: at least one path, and every
@@ -25157,6 +25248,7 @@ mod tests {
                     adjudicator: "judge".into(),
                     steps: None,
                     tiers: None,
+                    later_rounds: Default::default(),
                 },
                 ..Default::default()
             },
@@ -27316,6 +27408,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -27776,6 +27869,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -27840,6 +27934,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers,
+            later_rounds: Default::default(),
         }
     }
 
@@ -28418,6 +28513,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -30334,6 +30430,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -30486,6 +30583,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -30551,6 +30649,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "plan".into(),
@@ -30626,6 +30725,7 @@ mod tests {
                     adjudicator: "adjudicator".into(),
                     steps: None,
                     tiers: None,
+                    later_rounds: Default::default(),
                 },
                 ..Default::default()
             },
@@ -31436,6 +31536,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         if let Some(bound) = max_retries {
             cfg.workflow.defaults.max_retries = bound;
@@ -33321,6 +33422,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -33474,6 +33576,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         // NOTE: defaults.max_retries deliberately left unset (0 -> falls back to 3).
         assert_eq!(
@@ -33529,6 +33632,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.defaults.max_retries = 2;
         cfg.workflow.stages.insert(
@@ -33806,6 +33910,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.defaults.max_retries = CAP;
         cfg.workflow.stages.insert(
@@ -34876,6 +34981,7 @@ mod tests {
                         threshold: 5,
                         high_risk_paths: Vec::new(),
                     })),
+                    later_rounds: Default::default(),
                 },
                 ..Default::default()
             },
@@ -35873,6 +35979,7 @@ mod tests {
                 adjudicator: "adj".into(),
                 steps: None,
                 tiers: None,
+                later_rounds: Default::default(),
             };
             let st = Store::open(":memory:").unwrap();
             st.append(
@@ -37380,6 +37487,7 @@ mod tests {
                     adjudicator: "judge".into(),
                     steps: None,
                     tiers: None,
+                    later_rounds: Default::default(),
                 },
                 ..Default::default()
             },
@@ -41354,6 +41462,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -49356,6 +49465,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         // `s` passes its inline gate but the adjudicator ALWAYS rejects, so it remediates
         // to the bound and ESCALATES. It also references the deferred whole-tree gate.
