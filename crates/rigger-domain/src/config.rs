@@ -487,9 +487,10 @@ pub enum LaterRounds {
     /// Every member, as on the unit's first round.
     #[default]
     All,
-    /// The members whose findings the earlier round's verdict upheld, and the adjudicator step;
-    /// every member when the verdict upheld no finding a member recorded, or when the change
-    /// since that round reaches a file none of its REQUIRED items names.
+    /// The members whose findings, recorded in any earlier round of the unit, the earlier
+    /// round's verdict upheld, and the adjudicator step; every member when the verdict upheld no
+    /// finding a member recorded, when that round ran under another review tier, or when the
+    /// change since that round reaches a file none of its REQUIRED items names.
     Finders,
 }
 

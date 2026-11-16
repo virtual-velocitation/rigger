@@ -33,7 +33,7 @@ defaults:
       - adjudicator: z
 ```
 
-A rejected unit is reviewed again after its fix. `later_rounds:` sets which members that later round re-runs: `all`, the default, re-runs every member; `finders` re-runs only the members whose findings the rejecting verdict upheld, plus the adjudicator. Under `finders`, every member still runs when the verdict upheld no member's finding, or when the fix touches a file none of the verdict's required items names. A `tiers:` light panel reads its own `later_rounds:`.
+A rejected unit is reviewed again after its fix. `later_rounds:` sets which members that later round re-runs: `all`, the default, re-runs every member; `finders` re-runs only the members whose findings, from any earlier round, the rejecting verdict upheld, plus the adjudicator. Under `finders`, every member still runs when the verdict upheld no member's finding, when the rejecting round ran under another review tier, or when the fix touches a file none of the verdict's required items names. A `tiers:` light panel reads its own `later_rounds:`.
 
 ## The spec
 
