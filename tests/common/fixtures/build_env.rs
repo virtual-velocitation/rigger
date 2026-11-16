@@ -77,7 +77,7 @@ const fn refused(
 }
 
 /// Every refused `build.env` entry: a name that is not a variable name, each name rigger sets
-/// itself, an unknown placeholder and a stray brace.
+/// itself and one of them in another letter case, an unknown placeholder and a stray brace.
 pub const REFUSED_DECLARATIONS: &[RefusedDeclaration] = &[
     refused(
         "9B",
@@ -118,6 +118,11 @@ pub const REFUSED_DECLARATIONS: &[RefusedDeclaration] = &[
         "RIGGER_SPAWN",
         "lit",
         "build.env: RIGGER_SPAWN is set by rigger itself; declare another name",
+    ),
+    refused(
+        "rigger_spawn",
+        "lit",
+        "build.env: rigger_spawn is set by rigger itself; declare another name",
     ),
     refused(
         "RIGGER_GATE_SOCKET",
