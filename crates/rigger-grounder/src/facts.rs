@@ -2006,6 +2006,8 @@ mod tests {
     /// THE EXTRACTOR PROTOCOL, a session: a started extractor answers a request with its line, its
     /// line ending dropped; one whose output ends, whose answer is not text, or that is gone before
     /// the request is written says why; and one that cannot start in its directory says why.
+    /// Each session then closes within 5 s, the one whose extractor writes on without end after
+    /// its answer included, since closing drops its output before it waits.
     #[cfg(unix)]
     #[test]
     fn a_session_answers_a_request_with_its_line_or_says_why_it_cannot() {
@@ -2013,6 +2015,7 @@ mod tests {
         // (the extractor's run, whether it has ended before the request, its answer or why not)
         let rows = [
             (r#"read -r line; printf '%s\n' "$line""#, false, Ok("ping")),
+            (r#"read -r line; printf 'x\n'; yes"#, false, Ok("x")),
             (r#"read -r line; printf 'pong\r\n'"#, false, Ok("pong")),
             (r#"read -r line; printf 'pong'"#, false, Ok("pong")),
             ("read -r line", false, Err("end of output".to_string())),
@@ -2037,7 +2040,16 @@ mod tests {
                 session.child.wait().expect("wait for the extractor");
             }
             assert_eq!(session.ask("ping"), answer.map(str::to_string), "{run}");
-            session.close();
+            let (closed, close) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                session.close();
+                let _ = closed.send(());
+            });
+            assert_eq!(
+                close.recv_timeout(std::time::Duration::from_secs(5)),
+                Ok(()),
+                "{run}: the session closes"
+            );
         }
         let gone = kept.path().join("gone");
         assert_eq!(
