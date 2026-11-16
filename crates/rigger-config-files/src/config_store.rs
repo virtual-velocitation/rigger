@@ -420,17 +420,7 @@ impl Config {
             .review
             .validate_steps()
             .map_err(|m| err(format!("defaults.{m}")))?;
-        let review = wf
-            .defaults
-            .review
-            .agent_ids()
-            .into_iter()
-            .map(|aid| ("review", aid));
-        let author = wf
-            .defaults
-            .declared_test_author()
-            .map(|aid| ("test_author", aid.to_string()));
-        for (key, aid) in review.chain(author) {
+        for (key, aid) in wf.defaults.agent_references() {
             if !self.agents.contains_key(&aid) {
                 return Err(err(format!(
                     "defaults.{key} references unknown agent {aid:?}"

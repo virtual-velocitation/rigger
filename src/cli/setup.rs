@@ -474,15 +474,16 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
     Ok(true)
 }
 
-/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml: its
-/// `defaults.review` panel's, its stages' and its declared test author
-/// (`defaults.test_author`). Returns an empty set when the file is genuinely ABSENT (the
-/// legitimate empty-repo signal `init_project` seeds the full default fleet on) or parses but
-/// names no agent (its stages, `defaults.review` and `defaults.test_author` are optional); a
-/// PRESENT-but-unparseable file - most importantly one carrying an unrecognized key - is a
-/// real `Err`, never folded into that same empty set. Routed through [`config_store::load_workflow`], the one canonical
-/// `deny_unknown_fields`-honoring parser, rather than a second ad hoc
-/// `serde_yaml::from_str::<Workflow>` that would silently accept what that parser rejects.
+/// Get all agent IDs referenced in the workflow at <root>/.rigger/workflow.yml, as
+/// [`config::Workflow::agent_ids`] enumerates them: its `defaults.review` panel's, its declared
+/// test author (`defaults.test_author`) and its stages'. Returns an empty set when the file is
+/// genuinely ABSENT (the legitimate empty-repo signal `init_project` seeds the full default fleet
+/// on) or parses but names no agent (its stages, `defaults.review` and `defaults.test_author` are
+/// optional); a PRESENT-but-unparseable file - most importantly one carrying an unrecognized key -
+/// is a real `Err`, never folded into that same empty set. Routed through
+/// [`config_store::load_workflow`], the one canonical `deny_unknown_fields`-honoring parser,
+/// rather than a second ad hoc `serde_yaml::from_str::<Workflow>` that would silently accept what
+/// that parser rejects.
 fn get_referenced_agent_ids(
     root: &Path,
 ) -> Result<std::collections::HashSet<String>, Box<dyn std::error::Error>> {
@@ -493,26 +494,9 @@ fn get_referenced_agent_ids(
         return Ok(HashSet::new());
     }
 
-    let workflow = config_store::load_workflow(&workflow_path)?;
-
-    let mut ids = HashSet::new();
-
-    // Add agents from defaults.review
-    for agent_id in workflow.defaults.review.agent_ids() {
-        ids.insert(agent_id);
-    }
-
-    // Add agents from all stages
-    for stage in workflow.stages.values() {
-        for agent_id in stage.agent_ids() {
-            ids.insert(agent_id);
-        }
-    }
-
-    // Add the declared test author, the agent the build seam spawns
-    ids.extend(workflow.defaults.declared_test_author().map(str::to_string));
-
-    Ok(ids)
+    Ok(config_store::load_workflow(&workflow_path)?
+        .agent_ids()
+        .collect())
 }
 
 /// The per-artifact summary lines for a scaffold run: ONE line for each artifact this
@@ -4225,18 +4209,11 @@ mod tests {
     fn scaffold_agents_and_workflow_reference_the_same_canonical_set() {
         use std::collections::BTreeSet;
 
-        // Every agent id a scaffolded workflow references: its review panel's, its stages' and
-        // its declared test author.
+        // Every agent id a scaffolded workflow references.
         let referenced_by = |workflow: &str| -> BTreeSet<String> {
             let wf: config::Workflow =
                 serde_yaml::from_str(workflow).expect("the scaffolded workflow must parse");
-            let mut referenced: BTreeSet<String> =
-                wf.defaults.review.agent_ids().into_iter().collect();
-            for stage in wf.stages.values() {
-                referenced.extend(stage.agent_ids());
-            }
-            referenced.extend(wf.defaults.declared_test_author().map(str::to_string));
-            referenced
+            wf.agent_ids().collect()
         };
         let referenced = referenced_by(&scaffold_workflow(None));
         for (label, _, workflow) in every_rendering() {

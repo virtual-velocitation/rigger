@@ -941,6 +941,16 @@ impl Defaults {
     pub fn declared_test_author(&self) -> Option<&str> {
         Some(self.test_author.as_str()).filter(|id| !id.is_empty())
     }
+
+    /// Every agent the defaults reference, each with the key under `defaults` that names it: the
+    /// review panel's agents (`review`), then the declared test author (`test_author`).
+    pub fn agent_references(&self) -> impl Iterator<Item = (&'static str, String)> + '_ {
+        let review = self.review.agent_ids().into_iter().map(|id| ("review", id));
+        let author = self
+            .declared_test_author()
+            .map(|id| ("test_author", id.to_string()));
+        review.chain(author)
+    }
 }
 
 /// Stage is one node of the workflow DAG.
@@ -1295,6 +1305,15 @@ pub struct Workflow {
 }
 
 impl Workflow {
+    /// Every agent id the workflow references: its defaults' ([`Defaults::agent_references`]),
+    /// then each stage's ([`Stage::agent_ids`]). An id referenced twice comes twice.
+    pub fn agent_ids(&self) -> impl Iterator<Item = String> + '_ {
+        self.defaults
+            .agent_references()
+            .map(|(_, id)| id)
+            .chain(self.stages.values().flat_map(Stage::agent_ids))
+    }
+
     /// The review panel a unit reviews ITSELF with (section 3.2): a stage's own `review` override
     /// when it names a reviewer, otherwise this workflow's `defaults.review`, so an empty panel in
     /// either form inherits the default. Declared once and inherited by every
