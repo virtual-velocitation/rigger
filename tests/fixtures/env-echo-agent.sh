@@ -1,11 +1,12 @@
 #!/bin/sh
 # A fixture "agent" that echoes the build variables it was spawned with, so a test can assert
 # what the agent-spawn injection site (Driver::spawn applying SpawnOpts.env) hands a real
-# subprocess. Each reaches the agent only through SpawnOpts.env: a variable the workflow's
+# subprocess. rigger sets each only through SpawnOpts.env: a variable the workflow's
 # `build.env` declares, resolved at the spawn's site (a `{build_cache}` one over the spawn's unit
-# sibling, and left out for a dir with none), or a pair a test puts there itself. So a test can
-# assert a declared variable reaches a real agent subprocess exactly as it reaches a real gate
-# build, and that rigger sets no undeclared one.
+# sibling, and left out for a dir with none), or a pair a test puts there itself; one the test
+# process already carries reaches the agent unchanged, since the spawn inherits its environment.
+# So a test can assert a declared variable reaches a real agent subprocess exactly as it reaches a
+# real gate build, and that rigger sets no undeclared one.
 echo "RUSTC_WRAPPER=$RUSTC_WRAPPER"
 echo "SCCACHE_DIR=$SCCACHE_DIR"
 echo "CARGO_INCREMENTAL=$CARGO_INCREMENTAL"

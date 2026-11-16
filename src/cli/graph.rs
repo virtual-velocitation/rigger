@@ -306,8 +306,10 @@ fn cmd_graph_lookup(terms: &[String], tests: Tests) -> Res {
 ///   guess among candidates.
 /// - NONE: a one-line not-found note (never an error), mirroring `--around`'s empty result.
 ///
-/// It writes nothing: it reads the projection and the working tree, and a declared extractor's
-/// answer through a session it closes; deterministic for a given tree, graph and extractor.
+/// It writes no record and no file of its own: it reads the projection and the working tree, and
+/// a declared extractor's answer through a session it closes, though its read, as every reader's,
+/// may advance the code store and memo a changed file's facts; deterministic for a given tree,
+/// graph and extractor.
 fn cmd_graph_show(entity: &str, tests: Tests) -> Res {
     let site = Site::here();
     let records = owning_graph_to_read(&site)?;

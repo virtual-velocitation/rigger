@@ -64,7 +64,8 @@ fn version_of(dependencies: &[(String, String)], name: &str) -> String {
 /// `rigger-process` takes, then Windows alone takes `windows-sys` for its power request (and for
 /// its process adapter's reads, the reaper's signal and the gate channel's named pipe), macOS
 /// takes no crate for its IOKit assertion, and Linux takes `zbus` for its logind inhibitor and
-/// `tokio` for the runtime its acquire drives that client on. Every build takes `ring` for the
+/// its desktop portal inhibitor and `tokio` for the runtime each acquire drives its client on.
+/// Every build takes `ring` for the
 /// gate channel's name rule, which names the Unix domain socket and the Windows named pipe alike,
 /// and every Unix build also takes `libc` for the interrupt trigger's signal handler (and, on
 /// macOS, the process adapter's libproc reads), which Windows, with a console handler from

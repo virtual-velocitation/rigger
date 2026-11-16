@@ -406,9 +406,8 @@ where idempotent, mark the owner failed where not). A delegate writing OUTSIDE i
 container is a detected anomaly, never silent residue.
 
 **Scope.** Every class is project-, machine-, or user-scoped. The project world derives
-from the project log; the machine world (dashboard singletons, build-budget slots, the
-shared compilation cache) derives from a machine-scoped substrate. That
-substrate is NOT today's instance registry, whose contract is "never a source of truth,
+from the project log; the machine world (dashboard singletons, build-budget slots) derives
+from a machine-scoped substrate. That substrate is NOT today's instance registry, whose contract is "never a source of truth,
 loss is harmless" and which PRUNES rows as a read side effect: machine-scoped ASSIGNMENT
 moves to a separate daemon-written store in the 0700 root, each assignment proven by a HELD
 flock on the resource's own slot file (forgeable JSON can never grant it), carrying the

@@ -3,7 +3,7 @@
 //! workflow.yml carrying an unrecognized key, never silently reinterpret the parse failure
 //! as the empty-repo signal and re-scaffold the full default agent fleet.
 //!
-//! `get_referenced_agent_ids` (`src/main.rs`) used to parse `workflow.yml` with a bare
+//! `get_referenced_agent_ids` (`src/cli/setup.rs`) used to parse `workflow.yml` with a bare
 //! `serde_yaml::from_str::<Workflow>` instead of the canonical, `deny_unknown_fields`-honoring
 //! `config_store::load_workflow`, and its only caller (`init_project`) folded that parse
 //! error into `.unwrap_or_default()` - the exact same empty `HashSet` a genuinely ABSENT
@@ -12,8 +12,8 @@
 //! made `rigger init`/`rigger setup` silently recreate every default agent file - including
 //! ones an operator had deliberately never referenced, or had deliberately removed - with no
 //! error text anywhere and exit 0. The unit-level fix and its own tests
-//! (`src/main.rs::get_referenced_agent_ids_errors_loudly_on_an_unknown_key_instead_of_returning_empty`,
-//! `src/main.rs::init_project_errors_loudly_on_an_unknown_key_and_does_not_scaffold_agents`)
+//! (`src/cli/setup.rs::get_referenced_agent_ids_errors_loudly_on_an_unknown_key_instead_of_returning_empty`,
+//! `src/cli/setup.rs::init_project_errors_loudly_on_an_unknown_key_and_does_not_scaffold_agents`)
 //! prove the library-level behavior; this file proves it end to end through the compiled
 //! binary, at both entry points the finding named.
 

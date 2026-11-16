@@ -13086,8 +13086,8 @@ fn validate_reports_each_declared_build_variable_then_the_budget() {
 
 /// Spec 102 criterion 2, PERIPHERY: the scaffold text the implementer's in-process unit
 /// tests assert on (`scaffold_workflow_declares_max_parallel_units_two_with_a_sizing_comment`,
-/// `init_project_writes_max_parallel_units_with_its_sizing_comment` in `src/main.rs`, which
-/// call `init_project`/parse the constant directly) is what actually reaches disk THROUGH
+/// `init_project_writes_max_parallel_units_with_its_sizing_comment` in `src/cli/setup.rs`,
+/// which call `init_project`/parse the constant directly) is what actually reaches disk THROUGH
 /// the compiled binary's real CLI wiring (`cmd_init` -> `init_project`), and the scaffolded
 /// `max_parallel_units: 2` key resolves cleanly all the way through `rigger validate`'s real
 /// `config_store::load` -> `Config::validate` path - not merely an in-process
@@ -14868,9 +14868,9 @@ fn setup_gitignores_the_dash_breadcrumbs_and_git_honors_them_end_to_end() {
 /// overwritten" collision criterion 1 exists to prevent. This test runs the real `rigger
 /// setup` under a `GIT_CONFIG_GLOBAL` whose
 /// `core.excludesFile` already ignores `.claude/` and `.rigger/`, and asserts the committed
-/// `.gitignore` STILL holds every line setup writes, in order: the machine-local install, each
-/// class of runtime file (spec 125, criterion 13) and each named runtime file - so the shipped
-/// artifact is machine independent. It is a regression guard against re-introducing a machine-local ignore lookup
+/// `.gitignore` STILL holds every line setup writes, in the order `RUNTIME_IGNORES` lists them
+/// (the machine-local install, then the runtime files by class and by name, spec 125, criterion
+/// 13) - so the shipped artifact is machine independent. It is a regression guard against re-introducing a machine-local ignore lookup
 /// (e.g. `git check-ignore`) that would silently omit the lines.
 #[test]
 fn setup_writes_a_machine_independent_gitignore_under_a_hostile_global_config() {

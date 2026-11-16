@@ -88,9 +88,9 @@ pub trait Runner: Send + Sync {
 
 /// A requested shared-cache guard [`hold_shared_lock`] could not lock, its probe (spec 121
 /// criterion 19): its parent directory could not be created, the guard could not be opened, or
-/// its filesystem refused an advisory lock. An infrastructure fault, not a gate failure: no wait and no rerun changes
-/// a local filesystem's answer, only the operator's fix, so its text names the guard path, the
-/// OS error and that fix.
+/// its filesystem refused an advisory lock. An infrastructure fault, not a gate failure: no wait
+/// and no rerun changes a local filesystem's answer, only the operator's fix, so its text names
+/// the guard path, the OS error and that fix.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error(
     "build cache guard {guard:?} failed its probe: {error}; fix the path or set the project's \
@@ -508,8 +508,8 @@ impl Runner for ExecRunner {
         // command leaves running in the background, or one this process leaves behind when it
         // dies mid-build, keeps the cache excluded. On Windows it lives as long as this process's
         // handle, the gate's run: a child the gate leaves running is outside the exclusion, and
-        // the holder check the reclaim runs before any removal (`reclaim_dead_footprint`) leaves
-        // in place an entry that child holds a file in. A guard that cannot be locked returns
+        // no holder check stands in for it, since the reclaim renames the shared cache whole
+        // once it takes the guard. A guard that cannot be locked returns
         // its [`ProbeFault`] before the command runs, releasing the slot (spec 121 criterion
         // 19), so a gate never builds unguarded into the directory the guard protects nor
         // anywhere else. An empty guard takes no lock: a unit's own build cache is never one

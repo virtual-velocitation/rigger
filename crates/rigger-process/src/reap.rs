@@ -220,7 +220,9 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// The process interface gives every process its OWN parent ([`crate::os_process::parent`]),
 /// never a parent's list of children, so finding descendants means reading every listed
 /// process's parent ONCE up front, grouping by parent into a children-of map, then walking that
-/// map from `root_pid` - never a second, per-level process listing. Matched by PID-TREE
+/// map from `root_pid` - never a listing per level of the walk (on Windows each parent read takes
+/// its own snapshot of the process table, so there the reads cost one snapshot per listed
+/// process). Matched by PID-TREE
 /// membership alone, deliberately NEVER by working directory: a live sibling spawn's own
 /// process can share this same worktree as its cwd without being anywhere in this child's
 /// process tree (`op-104-stop-no-sweep-at-wall-clock-stop`'s sibling-safety guarantee, which

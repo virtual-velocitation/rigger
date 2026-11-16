@@ -4275,8 +4275,8 @@ fn is_build_cache_tombstone(name: &str) -> bool {
 /// [`rigger::gate::hold_shared_lock`] takes, which the gate command's processes inherit through
 /// [`rigger::subprocess::inherit_on_exec`]. On unix it lives while any process the gate started
 /// keeps the inherited descriptor, so this can only succeed when no such build is in flight; on
-/// Windows it lives as long as the gate's run, and a child the gate leaves running is left to
-/// the holder check [`reclaim_dead_footprint`] runs before any removal. On contention it returns
+/// Windows it lives as long as the gate's run, so a child the gate leaves running is outside the
+/// exclusion, and no holder check stands in for it here. On contention it returns
 /// `Ok(BuildCacheReclaim::Busy)` immediately, never queuing (spec 77 Design: "never waiting, so
 /// no build can queue behind the delete" - a prior, now-superseded design proved a queued waiter
 /// can only ever resume into a hole, since an advisory lock never gates a concurrent unlink).
