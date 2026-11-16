@@ -2597,30 +2597,30 @@ const RESUMED_SPAWN: &str = "u105-resume/implementer#1";
 /// What the host's failure text for [`RESUMED_SPAWN`] opens with.
 const PORT_PREFIX: &str = "claude_code driver: \"u105-resume/implementer#1\": ";
 
-/// The port's failure for [`RESUMED_SPAWN`] when a session ended with no result and nothing on
+/// The interface's failure for [`RESUMED_SPAWN`] when a session ended with no result and nothing on
 /// stderr.
 const NO_RESULT_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": the agent \
     stream ended with no result (class unknown; stderr tail: )";
 
-/// The port's failure for [`RESUMED_SPAWN`] when a session ended with no result and the refusal's
+/// The interface's failure for [`RESUMED_SPAWN`] when a session ended with no result and the refusal's
 /// tell on stderr.
 const REFUSED_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": the agent \
     stream ended with no result (class unknown; stderr tail: No conversation found with session \
     ID: sess-prior)";
 
-/// The port's failure for [`RESUMED_SPAWN`] when its `rigger` server reported `failed`.
+/// The interface's failure for [`RESUMED_SPAWN`] when its `rigger` server reported `failed`.
 const SERVER_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": its rigger MCP \
     server reported status \"failed\" at init, not connected - the session was stopped so its \
     task never runs without the rigger tools (class unknown)";
 
-/// The port's failure for [`RESUMED_SPAWN`] when it stayed silent past [`SILENCE_BOUND`].
+/// The interface's failure for [`RESUMED_SPAWN`] when it stayed silent past [`SILENCE_BOUND`].
 const SILENCE_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": spawn \
     \"u105-resume/implementer#1\" stopped: its agent stream stayed silent for 3s (its \
     max_wall_clock bound) with no result - no remediation attempt is charged (the unit's code is \
     not at fault). Re-drive it once the agent/driver is healthy: record a real result with \
     `rigger result u105-resume/implementer#1` (last-write-wins supersedes this liveness fault).";
 
-/// The port's failure for [`RESUMED_SPAWN`] when the host could not read a line.
+/// The interface's failure for [`RESUMED_SPAWN`] when the host could not read a line.
 const UNREADABLE_FAILURE: &str = "claude_code driver: \"u105-resume/implementer#1\": read agent \
     stream: stream did not contain valid UTF-8";
 

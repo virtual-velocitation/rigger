@@ -393,7 +393,7 @@ fn escalate_proposed(
     );
 }
 
-/// The conductor's ports for one run over `repo`: `store`, `driver`, the real gate runner, no
+/// The conductor's interfaces for one run over `repo`: `store`, `driver`, the real gate runner, no
 /// grounder or graph, and the one `criterion`.
 fn deps<'a>(
     store: &'a dyn EventStore,

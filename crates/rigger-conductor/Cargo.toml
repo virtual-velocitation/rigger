@@ -42,7 +42,7 @@ symbols = ["rigger-grounder/symbols"]
 rigger-domain = { path = "../rigger-domain", default-features = false }
 # The adapters the conductor still calls directly (workspace split, ring 3). Each edge points
 # outward and is recorded in tests/boundary_audit.rs EDGE_ALLOWLIST with the lesson naming the
-# port that removes it.
+# interface that removes it.
 rigger-store-sqlite = { path = "../rigger-store-sqlite", default-features = false }
 rigger-process = { path = "../rigger-process", default-features = false }
 rigger-worktree-git = { path = "../rigger-worktree-git", default-features = false }

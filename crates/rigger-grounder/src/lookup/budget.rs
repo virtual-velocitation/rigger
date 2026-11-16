@@ -87,14 +87,11 @@ fn graph_section(out: &mut String, terms: &[&str], answered: &Answered) {
     {
         let _ = writeln!(out, "\n### {term}");
         match answer {
-            TermGraph::Missing { nearest } if nearest.is_empty() => {
-                let _ = writeln!(out, "no entity named {term}; the graph holds no near name");
-            }
             TermGraph::Missing { nearest } => {
                 let _ = writeln!(
                     out,
-                    "no entity named {term}; nearest: {}",
-                    nearest.join(", ")
+                    "no entity named {term}; {}",
+                    super::nearest_line(nearest)
                 );
             }
             TermGraph::Found {

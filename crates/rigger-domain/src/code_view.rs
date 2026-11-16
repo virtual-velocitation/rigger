@@ -223,6 +223,13 @@ pub trait CodeView: Send + Sync {
     fn settled(&self) -> Option<&dyn Settled> {
         None
     }
+    /// The files the view takes from a worktree over the tree its stamp names, in path order,
+    /// each with the content id of the bytes it read there, or none for a file the worktree
+    /// deleted: with the stamp, what names the facts the view answers. None by default, for a
+    /// view of the stamped tree alone.
+    fn overlaid(&self) -> Vec<(String, Option<String>)> {
+        Vec::new()
+    }
 }
 
 /// The proof calls a [`Settled`] read selects.

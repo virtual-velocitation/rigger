@@ -233,7 +233,7 @@ pub type StampLookup<'s> = dyn FnMut(Position) -> Result<Option<SystemTime>, Err
 
 /// The [`PositionSource`] over `stream` of `store`, for a store with no live selection (a
 /// server-backed log, whose live selection is its stream as it stands): the positions the store
-/// port reads in one ordered pass, positions alone ([`EventStore::read_stream_positions`]), in
+/// interface reads in one ordered pass, positions alone ([`EventStore::read_stream_positions`]), in
 /// batches of at most `batch`.
 pub fn stream_positions<'s>(
     store: &'s dyn EventStore,

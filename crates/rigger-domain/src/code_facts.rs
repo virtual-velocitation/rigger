@@ -71,6 +71,67 @@ pub struct Def {
     pub test: bool,
 }
 
+/// A definition as its graph node records it, the one [`Recorded::widest_end`] bounds.
+#[derive(Clone, Copy, Debug)]
+pub struct Recorded<'a> {
+    /// Its leaf, the node's `name`.
+    pub name: &'a str,
+    /// Its id path in its file, the node id's text after the file (spec 119, IDS FOLLOW THE
+    /// LANGUAGE'S PATH); `None` for an id holding no `::`, found by name, kind and line alone.
+    pub path: Option<&'a str>,
+    /// Its kind, a `kind_str` rendering, as the node carries it.
+    pub kind: &'a str,
+    /// Its recorded 1-based line.
+    pub line: u32,
+}
+
+/// A definition as an extraction bounds it: what [`Recorded::widest_end`] reads, from a file's
+/// facts ([`Def`]) or from the extractor's own definitions.
+#[derive(Clone, Copy, Debug)]
+pub struct Bound<'a> {
+    pub name: &'a str,
+    pub path: &'a str,
+    /// Its kind, a `kind_str` rendering.
+    pub kind: &'a str,
+    pub line: u32,
+    pub end_line: u32,
+    pub test: bool,
+}
+
+impl<'a> From<&'a Def> for Bound<'a> {
+    fn from(def: &'a Def) -> Self {
+        Bound {
+            name: &def.leaf,
+            path: &def.local,
+            kind: &def.kind,
+            line: def.line,
+            end_line: def.end_line,
+            test: def.test,
+        }
+    }
+}
+
+impl Recorded<'_> {
+    /// THE ONE EXTENT a recorded definition is bounded by (spec 119, ONE EXTENT): the 1-based,
+    /// inclusive last line of its whole construct, the widest end line among `defs`' production
+    /// definitions - those not test-only, as the graph holds no other - named `name`, of kind
+    /// `kind`, at `line` and, when its `path` is given, at that id path. Matching the kind means a
+    /// field beside a same-named fn, or a variant inside its same-named enum, never widens the
+    /// bound. `None` when no such definition sits at the line.
+    pub fn widest_end<'d>(&self, defs: impl IntoIterator<Item = Bound<'d>>) -> Option<u32> {
+        (defs.into_iter())
+            .filter(|d| {
+                !d.test
+                    && d.name == self.name
+                    && self.path.is_none_or(|path| d.path == path)
+                    && d.kind == self.kind
+                    && d.line == self.line
+            })
+            .map(|d| d.end_line)
+            .max()
+    }
+}
+
 /// One name-reference in a file: the name as written, never a target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {

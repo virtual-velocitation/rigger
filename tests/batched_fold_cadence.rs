@@ -489,7 +489,7 @@ const SILENT: fn(&str) = |_| {};
 
 /// The append-then-fold body of every event but a ledger entry answers a caller of
 /// `append_and_fold` and a caller of the store
-/// port's `append` alike: an empty batch under `Any` appends and folds nothing through either and
+/// interface's `append` alike: an empty batch under `Any` appends and folds nothing through either and
 /// is reported as an absence; an unmet expectation - on an empty batch or not - is the store's
 /// conflict through either, and nothing is appended or folded.
 #[test]

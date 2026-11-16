@@ -17,7 +17,7 @@
 //! emitted at all), populate the unified graph through the public `contextgraph` event API (the
 //! same serialized events a real run folds), drive the public `conductor::run` entry, and assert
 //! on the recorded `BlastRadiusComputed` event. They exercise the new cross-module seam end-to-end:
-//! `grounded_blast_radius` reading the injected `graph` port, tier-filtering the ONE subgraph, and
+//! `grounded_blast_radius` reading the injected `graph` interface, tier-filtering the ONE subgraph, and
 //! the two-view radius reaching the serialized audit.
 //!
 //! The tier filter and the audit fields are always compiled, so these guard the boundary in BOTH
