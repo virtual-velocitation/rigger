@@ -421,43 +421,19 @@ fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, S
     })
 }
 
-/// The def path a walk of `defs` from def path to parent returns to, when one does: the paths are
-/// walked in the order the defs give them, each path stepping to the parent each def of that path
-/// names, and a parent no def is at ends that step. None when the parents form no cycle.
+/// The def path a walk of `defs` from def path to parent returns to, when one does:
+/// [`rigger_domain::cycle::first_cycle`] over the paths in the order the defs give them, each path
+/// stepping to the parent each def of that path names, and a parent no def is at ends that step.
+/// None when the parents form no cycle.
 fn parent_cycle(defs: &[model::Def]) -> Option<&str> {
     let mut parents: HashMap<&str, Vec<&str>> = HashMap::new();
     for def in defs {
         let named = parents.entry(def.path.as_str()).or_default();
         named.extend(def.parent.as_deref());
     }
-    // A path is `false` while the walk is inside it and `true` once every step from it is done.
-    let mut walked: HashMap<&str, bool> = HashMap::new();
-    for start in defs.iter().map(|def| def.path.as_str()) {
-        if walked.contains_key(start) {
-            continue;
-        }
-        walked.insert(start, false);
-        let mut walk = vec![(start, 0)];
-        while let Some(step) = walk.last_mut() {
-            let (at, next) = *step;
-            let Some(&parent) = parents[at].get(next) else {
-                walked.insert(at, true);
-                walk.pop();
-                continue;
-            };
-            step.1 += 1;
-            match walked.get(parent) {
-                Some(false) => return Some(parent),
-                Some(true) => {}
-                None if parents.contains_key(parent) => {
-                    walked.insert(parent, false);
-                    walk.push((parent, 0));
-                }
-                None => {}
-            }
-        }
-    }
-    None
+    rigger_domain::cycle::first_cycle(defs.iter().map(|def| def.path.as_str()), |path| {
+        parents.get(path).into_iter().flatten().copied()
+    })
 }
 
 /// The code store of a project with no git, read from the directory at its root.

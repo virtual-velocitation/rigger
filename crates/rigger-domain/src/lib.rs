@@ -20,6 +20,7 @@ pub mod composed;
 pub mod concepts;
 pub mod config;
 pub mod contextgraph;
+pub mod cycle;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod docs;
 pub mod eventstore;

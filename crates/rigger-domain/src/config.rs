@@ -1842,48 +1842,18 @@ fn is_word_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
-#[derive(Clone, Copy, PartialEq)]
-#[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the store-gated half under core-only
-enum Color {
-    White,
-    Gray,
-    Black,
-}
-
+/// The stage a cycle of `needs` runs through, when one does: [`crate::cycle::first_cycle`] over
+/// the stages in name order, each stepping to the stages it needs; a need no stage is named by
+/// ends its step. None when the stage graph is acyclic.
 #[cfg_attr(all(feature = "core", not(feature = "store")), allow(dead_code))] // only called from the store-gated half under core-only
 pub fn find_cycle(stages: &BTreeMap<String, Stage>) -> Option<String> {
-    fn visit(
-        n: &str,
-        stages: &BTreeMap<String, Stage>,
-        color: &mut HashMap<String, Color>,
-    ) -> Option<String> {
-        color.insert(n.to_string(), Color::Gray);
-        if let Some(st) = stages.get(n) {
-            for m in &st.needs {
-                match color.get(m).copied().unwrap_or(Color::White) {
-                    Color::Gray => return Some(m.clone()),
-                    Color::White => {
-                        if let Some(bad) = visit(m, stages, color) {
-                            return Some(bad);
-                        }
-                    }
-                    Color::Black => {}
-                }
-            }
-        }
-        color.insert(n.to_string(), Color::Black);
-        None
-    }
-
-    let mut color: HashMap<String, Color> = HashMap::new();
-    for name in stages.keys() {
-        if color.get(name).copied().unwrap_or(Color::White) == Color::White {
-            if let Some(bad) = visit(name, stages, &mut color) {
-                return Some(bad);
-            }
-        }
-    }
-    None
+    crate::cycle::first_cycle(stages.keys().map(String::as_str), |name| {
+        stages
+            .get(name)
+            .into_iter()
+            .flat_map(|stage| stage.needs.iter().map(String::as_str))
+    })
+    .map(str::to_string)
 }
 
 #[cfg(test)]
