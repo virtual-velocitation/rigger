@@ -21689,10 +21689,11 @@ mod tests {
         speculation_width: u32,
     }
 
-    /// The settings the conductor resolves, through the same calls a run makes, for the two units
-    /// `cfg`'s fan-out `implement` template yields over criteria A and B: the baseline unit
-    /// serving A, then `u-b`, a planner-proposed unit superseding B's baseline.
-    fn resolved_unit_settings(cfg: &Config) -> [UnitSettings; 2] {
+    /// The settings the conductor resolves, through the same calls a run makes, for the three
+    /// units `cfg`'s fan-out `implement` template yields over criteria A and B: the baseline unit
+    /// serving A, `u-b`, a planner-proposed unit superseding B's baseline, then `u-new`, a
+    /// planner-proposed unit matching no criterion.
+    fn resolved_unit_settings(cfg: &Config) -> [UnitSettings; 3] {
         let (crit_a, crit_b) = (
             "criterion A: the alpha module is implemented",
             "criterion B: the beta module is implemented",
@@ -21703,6 +21704,13 @@ mod tests {
         stages.extend(baseline_units(&template, &criteria, Some("plan")));
         let store = Store::open(":memory:").unwrap();
         append_proposal(&store, "u-b", crit_b, &criterion_stable_id(2, crit_b), None);
+        append_proposal(
+            &store,
+            "u-new",
+            "a sub-unit the planner split out, serving no criterion",
+            "",
+            None,
+        );
         let driver = Stub::new();
         let deps = stub_deps(&store, &driver, criteria);
         let ctx = RunCtx::for_test(cfg, &deps);
@@ -21713,7 +21721,12 @@ mod tests {
             &mut HashSet::new(),
         )
         .unwrap();
-        [(baseline_id(1, crit_a), true), ("u-b".to_string(), false)].map(|(id, baseline)| {
+        [
+            (baseline_id(1, crit_a), true),
+            ("u-b".to_string(), false),
+            ("u-new".to_string(), false),
+        ]
+        .map(|(id, baseline)| {
             let unit = &stages[&id];
             assert_eq!(
                 unit.baseline, baseline,
@@ -21738,8 +21751,9 @@ mod tests {
 
     /// A fan-out template declaring `declared` (a review lens, an attempt bound, an autonomy and a
     /// speculation width, each empty or zero when it declares none), under run defaults that
-    /// differ from every declared value, gives its baseline unit and its planner-proposed unit
-    /// alike the `expected` (lens, attempt bound, paused, speculation width).
+    /// differ from every declared value, gives its baseline unit and both its planner-proposed
+    /// units, the one superseding a baseline and the one matching no criterion, alike the
+    /// `expected` (lens, attempt bound, paused, speculation width).
     fn template_settings_reach_every_unit(
         declared: (&str, u32, &str, u32),
         expected: (&str, u32, bool, u32),
@@ -21765,7 +21779,7 @@ mod tests {
             paused,
             speculation_width,
         };
-        for (unit, got) in ["the baseline", "the proposed"]
+        for (unit, got) in ["the baseline", "the proposed", "the unmatched proposed"]
             .iter()
             .zip(resolved_unit_settings(&cfg))
         {
@@ -21792,13 +21806,13 @@ mod tests {
         /// The template's own speculation width, not `defaults.speculation_width`.
         a_templates_speculation_width_reaches_its_baseline_and_proposed_units:
             template_settings_reach_every_unit(("", 0, "", 3), ("default-lens", 4, false, 3));
-        /// A template declaring none of the four leaves both units on the run defaults.
+        /// A template declaring none of the four leaves every unit on the run defaults.
         a_template_declaring_no_unit_settings_leaves_its_units_on_the_defaults:
             template_settings_reach_every_unit(("", 0, "", 0), ("default-lens", 4, false, 2));
     }
 
     /// This repository's own workflow, whose `implement` template declares none of the four
-    /// settings, gives its baseline and proposed units exactly the defaults it declares: the
+    /// settings, gives its baseline and both proposed units exactly the defaults it declares: the
     /// `defaults.review` panel, 6 attempts, a gate that never pauses, one candidate.
     #[test]
     fn this_repositorys_workflow_gives_its_units_its_defaults() {
@@ -21809,12 +21823,173 @@ mod tests {
             paused: false,
             speculation_width: 1,
         };
-        for (unit, got) in ["the baseline", "the proposed"]
+        for (unit, got) in ["the baseline", "the proposed", "the unmatched proposed"]
             .iter()
             .zip(resolved_unit_settings(&cfg))
         {
             assert_eq!(got, want, "{unit} unit of this repository's workflow");
         }
+    }
+
+    /// The criterion the blocker-line and agent-fallback runs below serve.
+    const ALPHA: &str = "criterion A: the alpha module is implemented";
+
+    /// The gate every attempt fails: `red` exits non-zero.
+    const RED: (&str, &str) = ("red", "false");
+
+    /// A config of `stages` whose run default is 4 attempts and whose `red` gate always fails.
+    fn red_cfg(stages: Vec<Stage>) -> Config {
+        let mut cfg = workflow_cfg(&["planner", "worker"], &[RED], stages);
+        cfg.workflow.defaults.max_retries = 4;
+        cfg
+    }
+
+    /// A fan-out `implement` template after `plan`, gated by `red`, declaring 5 attempts.
+    fn red_template_cfg() -> Config {
+        red_cfg(vec![
+            plan_stage(),
+            Stage {
+                max_retries: 5,
+                ..fan_out_stage("implement", &["plan"], &[RED.0])
+            },
+        ])
+    }
+
+    /// An authored `checkin` stage run by `worker`, gated by `red`, declaring 2 attempts as this
+    /// repository's own `checkin` stage does.
+    fn red_checkin_cfg() -> Config {
+        red_cfg(vec![Stage {
+            name: "checkin".into(),
+            agent: "worker".into(),
+            gates: vec![RED.0.into()],
+            on_pass: "merge".into(),
+            max_retries: 2,
+            ..Default::default()
+        }])
+    }
+
+    /// `cfg`'s run over `criteria` drives `unit` to escalation on its always-failing `red` gate
+    /// after `bound` attempts, and the operator's blocker line for `unit` at its first failure,
+    /// rendered from the log through the shared classifier with the one run-wide
+    /// `defaults.max_retries` a surface holds, names that same `bound`: the line and the
+    /// escalation read one bound.
+    fn a_units_blocker_line_names_the_bound_it_escalates_at(
+        cfg: Config,
+        criteria: &[&str],
+        unit: &str,
+        bound: u32,
+    ) {
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let criteria = criteria.iter().map(|c| c.to_string()).collect();
+        let rs = run_isolated(&cfg, &stub_deps(&st, &driver, criteria)).unwrap();
+        assert_eq!(
+            (rs.units[unit].status, rs.units[unit].attempts),
+            (ledger::Status::Escalated, bound),
+            "{unit} escalates on its red gate after its own bound of attempts"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let first_failure = events
+            .iter()
+            .position(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == unit
+            })
+            .expect("the unit's first failure");
+        let blockers = crate::blocker::from_events(
+            &events[..=first_failure],
+            cfg.workflow.defaults.max_retries,
+        )
+        .unwrap();
+        let prefix = format!("{unit}: ");
+        assert_eq!(
+            crate::blocker::lines(&blockers)
+                .into_iter()
+                .find(|line| line.starts_with(&prefix)),
+            Some(format!("{unit}: reject-recurrence #1/{bound} (gate:red)")),
+            "{unit}'s line after its first failure names the bound it escalates at"
+        );
+    }
+
+    crate::test_cases! {
+        /// A fan-out template's own bound of 5, not the run default of 4.
+        a_template_units_blocker_line_names_the_templates_bound:
+            a_units_blocker_line_names_the_bound_it_escalates_at(
+                red_template_cfg(),
+                &[ALPHA],
+                &baseline_id(1, ALPHA),
+                5,
+            );
+        /// The check-in stage's own bound of 2, not the run default of 4.
+        the_checkin_stages_blocker_line_names_its_own_bound:
+            a_units_blocker_line_names_the_bound_it_escalates_at(
+                red_checkin_cfg(),
+                &[],
+                "checkin",
+                2,
+            );
+    }
+
+    /// The planner proposal `proposal` (a [`proposal_data`] for a run over ALPHA), emitted with
+    /// its `agent` left out and again with it empty, passes the emit guard into the DAG, and the
+    /// fan-out template's agent `worker` implements it: the unit integrates after its
+    /// implementer spawn, never without one.
+    fn a_proposal_naming_no_agent_is_implemented_by_the_templates_agent(proposal: Value) {
+        let unit = proposal["id"].as_str().unwrap().to_string();
+        let without_agent: [(&str, fn(&mut Value)); 2] = [
+            ("left out", |data| {
+                data.as_object_mut().unwrap().remove("agent");
+            }),
+            ("empty", |data| data["agent"] = json!("")),
+        ];
+        for (shape, strip) in without_agent {
+            let mut data = proposal.clone();
+            strip(&mut data);
+            let driver = Stub {
+                emits_by_agent: HashMap::from([(
+                    "planner".to_string(),
+                    vec![(TYPE_UNIT_PROPOSED.to_string(), data)],
+                )]),
+                ..Stub::new()
+            };
+            let st = Store::open(":memory:").unwrap();
+            let deps = stub_deps(&st, &driver, vec![ALPHA.to_string()]);
+            let rs = run_isolated(&supersede_cfg(), &deps)
+                .unwrap_or_else(|e| panic!("a proposal with its agent {shape}: {e}"));
+            assert_eq!(
+                rs.units[&unit].status,
+                ledger::Status::Integrated,
+                "{unit} with its agent {shape}"
+            );
+            assert!(
+                driver
+                    .spawn_ids()
+                    .contains(&spawn_id(&unit, ROLE_IMPLEMENTER, 0)),
+                "the template's agent implements {unit} with its agent {shape}: {:?}",
+                driver.spawn_ids()
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// A proposal superseding ALPHA's baseline: without the fallback, the criterion is left
+        /// with no stage carrying an LLM verifier and the coverage gate halts the run.
+        a_superseding_proposal_naming_no_agent_is_implemented_by_the_templates_agent:
+            a_proposal_naming_no_agent_is_implemented_by_the_templates_agent(proposal_data(
+                "u-a",
+                ALPHA,
+                &criterion_stable_id(1, ALPHA),
+            ));
+        /// A proposal matching no criterion, beside ALPHA's baseline: without the fallback, it
+        /// runs its gates and integrates with no implementer spawn.
+        an_unmatched_proposal_naming_no_agent_is_implemented_by_the_templates_agent:
+            a_proposal_naming_no_agent_is_implemented_by_the_templates_agent(proposal_data(
+                "u-new",
+                "a sub-unit the planner split out, serving no criterion",
+                "",
+            ));
     }
 
     #[test]
