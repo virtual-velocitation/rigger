@@ -227,7 +227,8 @@ fn hold_portal_inhibitor(
 /// standing, until this connection closes, only when it responds [`RESPONSE_SUCCESS`]. The
 /// subscription to the portal's responses is made before the call, so a response sent before
 /// the handle is read is not missed. An error reply refuses the inhibitor, as does any other
-/// response; a connection that closes before the response is no grant either.
+/// response; a connection that closes before the response is no grant either, as zbus ends the
+/// stream of responses with the error that closed it, and the responses end at that error.
 async fn portal_inhibit(bus: &Connection, reason: &str) -> zbus::Result<bool> {
     let rule = MatchRule::builder()
         .msg_type(zbus::message::Type::Signal)
@@ -248,10 +249,9 @@ async fn portal_inhibit(bus: &Connection, reason: &str) -> zbus::Result<bool> {
         .await?
         .body()
         .deserialize()?;
-    while let Some(response) =
+    while let Some(Ok(response)) =
         std::future::poll_fn(|cx| Pin::new(&mut responses).poll_next(cx)).await
     {
-        let response = response?;
         if response.header().path().is_some_and(|path| *path == *handle) {
             let (code, _results): (u32, HashMap<String, OwnedValue>) =
                 response.body().deserialize()?;
