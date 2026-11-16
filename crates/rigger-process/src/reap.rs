@@ -1108,31 +1108,69 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reap_authorized_kills_a_sigterm_ignoring_process_given_an_already_authorized_base() {
-        // [`reap_authorized`] is the termination sequence [`crate::worktree::Worktree::remove`]
-        // calls directly after its OWN git-identity authorization (never through
-        // `is_reapable_base`'s containment gate) - proves it independently performs the same
-        // SIGTERM-then-grace-then-SIGKILL sequence given a bare, pre-canonicalized base.
+    /// [`reap_authorized`] is the termination sequence [`crate::worktree::Worktree::remove`]
+    /// calls directly after its OWN git-identity authorization (never through
+    /// `is_reapable_base`'s containment gate): given a bare, pre-canonicalized base, it asks the
+    /// child `spawn` roots there to exit, waits the grace, then ends what is still rooted there.
+    /// `spawn` gets the base and a marker path outside it. The child must end with `ended.0` as
+    /// its exit code (`None` when a signal ended it) and leave the marker exactly when `ended.1`.
+    fn assert_reap_authorized_ends(spawn: fn(&Path, &Path) -> Child, ended: (Option<i32>, bool)) {
         let root = tempfile::tempdir().unwrap();
-        let base = root.path().canonicalize().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let base = root_path.join("base");
+        std::fs::create_dir(&base).unwrap();
+        let marker = root_path.join("marker");
 
-        let mut inside = sigterm_ignorer_in(&base);
+        let mut inside = spawn(&base, &marker);
         assert!(wait_until(|| processes_rooted_under(&base)
             .iter()
             .any(|(pid, _)| *pid == inside.id())));
 
         reap_authorized(base);
 
-        let inside_died = wait_for_exit(&mut inside);
-        if !inside_died {
+        let mut status = None;
+        wait_until(|| {
+            status = inside.try_wait().ok().flatten();
+            status.is_some()
+        });
+        if status.is_none() {
             cleanup(&mut inside);
         }
-        assert!(
-            inside_died,
-            "reap_authorized must SIGKILL a SIGTERM-ignoring process given an authorized base, \
-             with no containment gate in front of it"
+        assert_eq!(
+            (status.map(|status| status.code()), marker.exists()),
+            (Some(ended.0), ended.1),
+            "reap_authorized ends the child rooted at an authorized base, with no containment \
+             gate in front of it: (its exit code once ended, whether it left the marker)"
         );
+    }
+
+    /// Spawn a long-lived process rooted at `dir` that HANDLES the request to exit: on it, the
+    /// process creates `marker` and exits 0. Answers once the handler is set, which the process
+    /// says by creating `marker`'s sibling `trapped`, so a request sent after this returns is
+    /// never one that arrived before the handler.
+    fn term_handler_in(dir: &Path, marker: &Path) -> Child {
+        let trapped = marker.with_file_name("trapped");
+        let child = StdCommand::new("sh")
+            .arg("-c")
+            .arg("trap 'touch \"$0\"; exit 0' TERM; : > \"$1\"; sleep 300 & wait")
+            .arg(marker)
+            .arg(&trapped)
+            .current_dir(dir)
+            .spawn()
+            .expect("spawn a TERM-handling fixture process");
+        assert!(wait_until(|| trapped.exists()), "the handler is set");
+        child
+    }
+
+    crate::test_cases! {
+        /// A process that ignores the request to exit is ended without asking: a signal ends it,
+        /// and no handler runs.
+        reap_authorized_kills_a_sigterm_ignoring_process_given_an_already_authorized_base:
+            assert_reap_authorized_ends(|dir, _| sigterm_ignorer_in(dir), (None, false));
+        /// The request to exit comes first: a process that handles it runs its handler and exits
+        /// 0 within the grace, before anything ends it without asking.
+        reap_authorized_asks_a_term_handling_process_to_exit_first_given_an_already_authorized_base:
+            assert_reap_authorized_ends(term_handler_in, (Some(0), true));
     }
 
     #[test]
