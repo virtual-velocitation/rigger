@@ -33,9 +33,6 @@ use windows_sys::Win32::System::Threading::{
 
 use crate::win32::wide;
 
-/// The most files one Restart Manager registration call is given.
-const FILES_PER_REGISTRATION: usize = 256;
-
 /// The longest path, in UTF-16 units, a process's image name can have.
 const MAX_IMAGE_NAME: usize = 32_768;
 
@@ -86,15 +83,12 @@ pub(super) fn pids() -> Vec<u32> {
     snapshot().into_iter().map(|(pid, _)| pid).collect()
 }
 
-/// The parent `pid`'s snapshot entry names, trusted only while that parent still opens and
-/// started no later than `pid`: an entry keeps its parent's pid after the parent exits, and
-/// Windows may give that pid to a later process.
+/// The parent `pid`'s snapshot entry names, while [`super::trusts_parent`] trusts it: that parent
+/// still opens and started no later than `pid`.
 pub(super) fn parent(pid: u32) -> Option<u32> {
     let (_, parent) = snapshot().into_iter().find(|&(each, _)| each == pid)?;
     let started = start_time(pid)?;
-    start_time(parent)
-        .is_some_and(|parent_started| parent_started <= started)
-        .then_some(parent)
+    super::trusts_parent(start_time(parent), started).then_some(parent)
 }
 
 /// The creation time `GetProcessTimes` reports, in 100-nanosecond intervals since 1601.
@@ -162,15 +156,16 @@ pub(super) fn is_unexeced_fork_of(_pid: u32, _parent: u32) -> bool {
 /// The owning pid of the first row of IP Helper's IPv4 TCP listener table bound to `port`.
 pub(super) fn listening_pid(port: u16) -> Option<u32> {
     let table = listener_table();
-    let (&count, rows) = table.split_first()?;
-    let words = size_of::<MIB_TCPROW_OWNER_PID>() / size_of::<u32>();
-    let count = (count as usize).min(rows.len() / words);
+    let (&claimed, rows) = table.split_first()?;
+    let row_words = size_of::<MIB_TCPROW_OWNER_PID>() / size_of::<u32>();
+    let count = super::whole_rows(claimed, rows.len(), row_words);
     // SAFETY: the table is a row count followed by its rows, each a `MIB_TCPROW_OWNER_PID` of
-    // `u32` fields and so `u32`-aligned like `rows`, and `count` rows lie inside `rows`.
+    // `u32` fields and so `u32`-aligned like `rows`, and `super::whole_rows` caps `count` at the
+    // whole rows that lie inside `rows`.
     let rows =
         unsafe { std::slice::from_raw_parts(rows.as_ptr().cast::<MIB_TCPROW_OWNER_PID>(), count) };
     rows.iter()
-        .find(|row| u16::from_be(row.dwLocalPort as u16) == port)
+        .find(|row| super::port_of(row.dwLocalPort) == port)
         .map(|row| row.dwOwningPid)
 }
 
@@ -203,8 +198,9 @@ fn listener_table() -> Vec<u32> {
 }
 
 /// The processes the Restart Manager reports holding a regular file in `dir` or inside it, this
-/// process excluded: one session registers every such file, at most [`FILES_PER_REGISTRATION`]
-/// per call, and a failed start, registration or list call answers no holder.
+/// process excluded: one session registers every such file, at most
+/// [`FILES_PER_REGISTRATION`](super::FILES_PER_REGISTRATION) per call
+/// ([`super::registrations`]), and a failed start, registration or list call answers no holder.
 pub(super) fn holders(dir: &Path) -> Vec<u32> {
     let mut files = Vec::new();
     regular_files(dir, &mut files);
@@ -228,7 +224,7 @@ pub(super) fn holders(dir: &Path) -> Vec<u32> {
 /// The pids `session` lists once every one of `files` (NUL-terminated wide paths) is registered
 /// with it.
 fn session_holders(session: u32, files: &[Vec<u16>]) -> Vec<u32> {
-    for chunk in files.chunks(FILES_PER_REGISTRATION) {
+    for chunk in super::registrations(files) {
         let names: Vec<PCWSTR> = chunk.iter().map(|file| file.as_ptr()).collect();
         // SAFETY: `names` holds `names.len()` pointers to NUL-terminated wide paths that outlive
         // the call, and no applications or services are registered.

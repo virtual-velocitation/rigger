@@ -13,6 +13,11 @@
 //! Win32 process, IP Helper and Restart Manager calls);
 //! Windows reports no other process's working directory, run state or open files, so there those
 //! three readers answer absent.
+//!
+//! The rules the macOS and Windows adapters apply to what their OS's calls answer - which parent a
+//! record is trusted to name, how a table's rows, a socket's port and a start time read, whether a
+//! socket listens, how files are batched for registration - are plain functions here, compiled on
+//! every host so every lane's tests drive them.
 
 use std::path::{Path, PathBuf};
 
@@ -230,6 +235,67 @@ pub(crate) fn strip_deleted_suffix(path: &Path) -> PathBuf {
         Some(stripped) => PathBuf::from(stripped),
         None => path.to_path_buf(),
     }
+}
+
+/// Whether the parent a Windows process snapshot names for a process that started at `started`
+/// is still its parent: that parent still opens (`parent_started` is its start time) and started
+/// no later than the child. A snapshot entry keeps its parent's pid after the parent exits, and
+/// Windows may give that pid to a later process.
+#[cfg(any(target_os = "windows", test))]
+fn trusts_parent(parent_started: Option<u64>, started: u64) -> bool {
+    parent_started.is_some_and(|parent_started| parent_started <= started)
+}
+
+/// The rows a table that claims `claimed` rows of `row_words` words each holds in its `words`
+/// words: the claim, capped at the whole rows present, so no row is read past the table's end.
+#[cfg(any(target_os = "windows", test))]
+fn whole_rows(claimed: u32, words: usize, row_words: usize) -> usize {
+    (claimed as usize).min(words / row_words)
+}
+
+/// The port a socket record holds in network byte order in the low 16 bits of a wider field
+/// (Windows's listener-table `dwLocalPort`, macOS's `insi_lport`), whose upper bits carry nothing.
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+fn port_of(raw: u32) -> u16 {
+    u16::from_be(raw as u16)
+}
+
+/// The most files one Windows Restart Manager registration call is given.
+#[cfg(any(target_os = "windows", test))]
+const FILES_PER_REGISTRATION: usize = 256;
+
+/// `files` in the Windows Restart Manager registration calls that register them, each given at
+/// most [`FILES_PER_REGISTRATION`].
+#[cfg(any(target_os = "windows", test))]
+fn registrations<T>(files: &[T]) -> std::slice::Chunks<'_, T> {
+    files.chunks(FILES_PER_REGISTRATION)
+}
+
+/// A macOS process's start time from its BSD info's `pbi_start_tvsec` (`secs`) and
+/// `pbi_start_tvusec` (`micros`), in microseconds since the epoch.
+#[cfg(any(target_os = "macos", test))]
+fn micros_since_epoch(secs: u64, micros: u64) -> u64 {
+    secs * 1_000_000 + micros
+}
+
+/// `TSI_S_LISTEN`: the `tcpsi_state` of a listening macOS TCP socket.
+#[cfg(any(target_os = "macos", test))]
+const TSI_S_LISTEN: std::ffi::c_int = 1;
+
+/// `INI_IPV4`: the `insi_vflag` bit of a macOS IPv4 socket.
+#[cfg(any(target_os = "macos", test))]
+const INI_IPV4: u8 = 0x1;
+
+/// Whether a macOS TCP socket whose `tcpsi_state` is `state`, whose `insi_vflag` is `vflag` and
+/// whose `insi_lport` is `raw_port` listens over IPv4 on `port`.
+#[cfg(any(target_os = "macos", test))]
+fn listens_over_ipv4(
+    state: std::ffi::c_int,
+    vflag: u8,
+    raw_port: std::ffi::c_int,
+    port: u16,
+) -> bool {
+    state == TSI_S_LISTEN && vflag & INI_IPV4 != 0 && port_of(raw_port as u32) == port
 }
 
 #[cfg(test)]
@@ -549,5 +615,165 @@ mod tests {
         );
         go_tx.write_all(b"g").unwrap();
         assert!(spawner.join().unwrap().success());
+    }
+
+    /// A parent a Windows snapshot names is trusted while it still opens and started before its
+    /// child or with it, never once it started after the child (a later process given the dead
+    /// parent's pid) or no longer opens.
+    #[test]
+    fn a_named_parent_is_trusted_only_while_it_opens_and_started_no_later_than_its_child() {
+        let started = 1_000;
+        let rows = [
+            ("started before the child", Some(999), true),
+            ("started with the child", Some(1_000), true),
+            ("started after the child", Some(1_001), false),
+            ("no longer opens", None, false),
+        ];
+        let trusted: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|&(what, parent_started, _)| (what, trusts_parent(parent_started, started)))
+            .collect();
+        let expected: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|&(what, _, trusted)| (what, trusted))
+            .collect();
+        assert_eq!(trusted, expected);
+    }
+
+    /// A table's rows are the rows it claims, capped at the whole rows its words hold: a partial
+    /// row at its end is never a row.
+    #[test]
+    fn a_tables_rows_are_its_claim_capped_at_the_whole_rows_it_holds() {
+        // Six words a row, as Windows's owner-pid TCP table has.
+        let row_words = 6;
+        let rows = [
+            ("claims none", 0, 12, 0),
+            ("claims fewer than it holds", 1, 12, 1),
+            ("claims what it holds", 2, 12, 2),
+            ("claims more than it holds", 3, 12, 2),
+            ("ends in a partial row", 3, 17, 2),
+        ];
+        let held: Vec<(&str, usize)> = rows
+            .iter()
+            .map(|&(what, claimed, words, _)| (what, whole_rows(claimed, words, row_words)))
+            .collect();
+        let expected: Vec<(&str, usize)> = rows
+            .iter()
+            .map(|&(what, _, _, held)| (what, held))
+            .collect();
+        assert_eq!(held, expected);
+    }
+
+    /// A port held in network byte order in a wider field's low 16 bits reads as that port,
+    /// whatever the field's upper bits hold.
+    #[test]
+    fn a_socket_records_port_is_its_low_half_in_network_byte_order() {
+        let network = |port: u16| u32::from(port.to_be());
+        let rows = [
+            (network(8080), 8080),
+            (network(1), 1),
+            (0xDEAD_0000 | network(443), 443),
+        ];
+        let read: Vec<u16> = rows.iter().map(|&(raw, _)| port_of(raw)).collect();
+        assert_eq!(read, rows.map(|(_, port)| port));
+    }
+
+    /// Files are registered with the Restart Manager at most 256 a call: no call for no file,
+    /// one call up to 256, and another from the 257th file on.
+    #[test]
+    fn files_are_registered_at_most_256_a_call() {
+        let rows: [(usize, &[usize]); 5] = [
+            (0, &[]),
+            (1, &[1]),
+            (256, &[256]),
+            (257, &[256, 1]),
+            (513, &[256, 256, 1]),
+        ];
+        let calls: Vec<(usize, Vec<usize>)> = rows
+            .iter()
+            .map(|&(files, _)| {
+                let calls = registrations(&vec![(); files]).map(<[()]>::len).collect();
+                (files, calls)
+            })
+            .collect();
+        let expected: Vec<(usize, Vec<usize>)> = rows
+            .iter()
+            .map(|&(files, calls)| (files, calls.to_vec()))
+            .collect();
+        assert_eq!(calls, expected);
+    }
+
+    /// A macOS start time is its seconds and microseconds read as microseconds since the epoch.
+    #[test]
+    fn a_macos_start_time_is_its_seconds_and_microseconds_in_microseconds() {
+        let rows = [
+            (0, 0, 0),
+            (0, 999_999, 999_999),
+            (2, 3, 2_000_003),
+            (1_700_000_000, 123_456, 1_700_000_000_123_456),
+        ];
+        let read: Vec<u64> = rows
+            .iter()
+            .map(|&(secs, micros, _)| micros_since_epoch(secs, micros))
+            .collect();
+        assert_eq!(read, rows.map(|(_, _, started)| started));
+    }
+
+    /// A macOS TCP socket listens over IPv4 on a port only while it is listening, carries the
+    /// IPv4 flag (alone or beside IPv6's) and is bound to that port. The rows pin that
+    /// conjunction over the flag and state names, not the kernel's values for them.
+    #[test]
+    fn a_macos_socket_listens_over_ipv4_only_when_listening_ipv4_and_on_the_port() {
+        // `INI_IPV6` and `TSI_S_ESTABLISHED`.
+        let (ipv6, established) = (0x2, 4);
+        let port = |port: u16| i32::from(port.to_be());
+        let rows = [
+            (
+                "listening, IPv4, on the port",
+                TSI_S_LISTEN,
+                INI_IPV4,
+                port(8080),
+                true,
+            ),
+            (
+                "listening, IPv4 and IPv6, on the port",
+                TSI_S_LISTEN,
+                INI_IPV4 | ipv6,
+                port(8080),
+                true,
+            ),
+            (
+                "listening, IPv6 alone",
+                TSI_S_LISTEN,
+                ipv6,
+                port(8080),
+                false,
+            ),
+            (
+                "established, IPv4, on the port",
+                established,
+                INI_IPV4,
+                port(8080),
+                false,
+            ),
+            (
+                "listening, IPv4, on another port",
+                TSI_S_LISTEN,
+                INI_IPV4,
+                port(8081),
+                false,
+            ),
+        ];
+        let listens: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|&(what, state, vflag, raw_port, _)| {
+                (what, listens_over_ipv4(state, vflag, raw_port, 8080))
+            })
+            .collect();
+        let expected: Vec<(&str, bool)> = rows
+            .iter()
+            .map(|&(what, _, _, _, listens)| (what, listens))
+            .collect();
+        assert_eq!(listens, expected);
     }
 }

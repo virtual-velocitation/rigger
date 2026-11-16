@@ -26,12 +26,6 @@ const PROC_PIDFDSOCKETINFO: c_int = 3;
 /// `SOCKINFO_TCP`: the `soi_kind` of a TCP socket, whose `soi_proto` holds a [`TcpSockInfo`].
 const SOCKINFO_TCP: c_int = 2;
 
-/// `TSI_S_LISTEN`: the `tcpsi_state` of a listening TCP socket.
-const TSI_S_LISTEN: c_int = 1;
-
-/// `INI_IPV4`: the `insi_vflag` bit of an IPv4 socket.
-const INI_IPV4: u8 = 0x1;
-
 /// `struct proc_fileinfo`, which leads every per-descriptor flavor.
 #[repr(C)]
 struct ProcFileInfo {
@@ -277,9 +271,9 @@ pub(super) fn parent(pid: u32) -> Option<u32> {
     bsd_info(pid).map(|info| info.pbi_ppid)
 }
 
-/// The BSD info's start time, in microseconds since the epoch.
+/// The BSD info's start time, in microseconds since the epoch ([`super::micros_since_epoch`]).
 pub(super) fn start_time(pid: u32) -> Option<u64> {
-    bsd_info(pid).map(|info| info.pbi_start_tvsec * 1_000_000 + info.pbi_start_tvusec)
+    bsd_info(pid).map(|info| super::micros_since_epoch(info.pbi_start_tvsec, info.pbi_start_tvusec))
 }
 
 /// The current directory the vnode path info (`PROC_PIDVNODEPATHINFO`) names.
@@ -360,9 +354,12 @@ fn listens_on(pid: u32, port: u16) -> bool {
             // SAFETY: `soi_kind` names the TCP variant as the one the kernel filled, and every
             // byte pattern is a valid `TcpSockInfo`.
             let tcp = unsafe { info.psi.soi_proto.pri_tcp };
-            tcp.tcpsi_state == TSI_S_LISTEN
-                && tcp.tcpsi_ini.insi_vflag & INI_IPV4 != 0
-                && u16::from_be(tcp.tcpsi_ini.insi_lport as u16) == port
+            super::listens_over_ipv4(
+                tcp.tcpsi_state,
+                tcp.tcpsi_ini.insi_vflag,
+                tcp.tcpsi_ini.insi_lport,
+                port,
+            )
         })
 }
 
