@@ -46,10 +46,10 @@ const BACKOFF: Duration = Duration::from_secs(600);
 /// (`RIGGER_TMPDIR`, then the cache home's `XDG_CACHE_HOME` and the home directory), the state
 /// home that roots the instance registry (`XDG_STATE_HOME`, then the home directory), and the walk
 /// that finds the project's repository and store (`GIT_CEILING_DIRECTORIES`,
-/// `GIT_DISCOVERY_ACROSS_FILESYSTEM`). The home directory ([`rigger_process::home_dir`]) is the
-/// `HOME` variable on unix; elsewhere it is the OS's own, which the relaunched driver inherits. A
-/// driver records each, set or not, and its relaunch sets or removes each on the child as the
-/// driver had it, so the relaunched driver resolves the roots the one that died did.
+/// `GIT_DISCOVERY_ACROSS_FILESYSTEM`), and the home directory ([`rigger_process::home_dir`]) by
+/// the variable it is read from on this OS ([`rigger_process::home::HOME_ENV`]). A driver records
+/// each, set or not, and its relaunch sets or removes each on the child as the driver had it, so
+/// the relaunched driver resolves the roots the one that died did.
 const ROOTS_ENV: [&str; 6] = [
     rigger::worktree::SCRATCH_ROOT_ENV,
     rigger::driver::replay::CACHE_HOME_ENV,

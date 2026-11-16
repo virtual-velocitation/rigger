@@ -5743,10 +5743,13 @@ mod tests {
         );
         assert_eq!(env, env_dir.to_str().unwrap(), "env override beats config");
 
-        // A leading ~/ expands to $HOME (workflow.yml can say ~/.rigger/tmp).
-        if let Ok(home) = std::env::var("HOME") {
+        // A leading ~/ expands to the home directory (workflow.yml can say ~/.rigger/tmp).
+        if let Some(home) = rigger_process::home_dir() {
             let tilde = scratch_root(&repo_path, "~/.rigger-scratch-test", None);
-            assert_eq!(tilde, format!("{home}/.rigger-scratch-test"));
+            assert_eq!(
+                tilde,
+                format!("{}/.rigger-scratch-test", home.to_str().unwrap())
+            );
             let _ = std::fs::remove_dir_all(tilde);
         }
     }

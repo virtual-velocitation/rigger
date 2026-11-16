@@ -61,6 +61,14 @@ mod tests {
             flagged("crates/c/src/lib.rs", "fn f() -> Option<String> {\n    std::env::var(\"HOME\").ok()\n}\n"),
             [("crates/c/src/lib.rs".to_string(), 2)]
         );
+        a_home_read_beside_the_home_read_is_named: assert_eq!(
+            flagged("crates/rigger-process/src/lib.rs", "fn f() {\n    let _ = std::env::var_os(\"HOME\");\n}\n"),
+            [("crates/rigger-process/src/lib.rs".to_string(), 2)]
+        );
+        a_home_read_in_another_home_rs_is_named: assert_eq!(
+            flagged("crates/c/src/home.rs", "fn f() {\n    let _ = std::env::var_os(\"HOME\");\n}\n"),
+            [("crates/c/src/home.rs".to_string(), 2)]
+        );
         a_home_read_in_the_home_read_is_never_named: assert_eq!(
             flagged(HOME_READ, "pub const HOME_ENV: &str = \"HOME\";\n"),
             none()
