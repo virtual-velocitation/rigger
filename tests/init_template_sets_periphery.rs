@@ -10,9 +10,11 @@
 //! it, that a fresh scaffold seeds the `sdet-author` test author its workflow declares and writes
 //! no seed whose id an agent of the project already defines, whatever its file name, that a rerun
 //! writes that seed back only for the test author the workflow declares and no agent defines, that
-//! an agent file that does not parse stops every seed until it is fixed, that a command naming no
-//! template root scaffolds no gate and keeps what an earlier root scaffolded, and that every
-//! argument and template root a command refuses is refused before any write.
+//! an agent file that does not parse stops every seed until it is fixed, that `rigger setup
+//! --agents <dir>` imports a collection's agent in the place of the seed of its id and refuses a
+//! collection that would define an id twice, that a command naming no template root scaffolds no
+//! gate and keeps what an earlier root scaffolded, and that every argument and template root a
+//! command refuses is refused before any write.
 
 use crate::common;
 use common::cli::{build_report_lines, UNDECLARED_BUILD_REPORT};
@@ -619,6 +621,183 @@ fn an_agent_file_that_does_not_parse_stops_every_seed_until_it_is_fixed() {
                 vec!["config valid: 8 agents, 4 stages, 0 gates"]
             ),
             "{verb} once the file is fixed: stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
+}
+
+/// The collection directory, under a project's root, that `rigger setup --agents` imports.
+const COLLECTION: &str = "collection";
+
+/// Writes under `root`'s [`COLLECTION`] each `(file name, id)` of `agents` as an agent defining
+/// that id on the `sonnet` model, so a loaded `sonnet` tells the collection's agent from a seed.
+fn write_collection(root: &Path, agents: &[(&str, &str)]) {
+    for (file, id) in agents {
+        let agent = format!("---\nid: {id}\nmodel: sonnet\n---\nThe collection's agent.\n");
+        write_files(&root.join(COLLECTION), &[(file, agent.as_str())]);
+    }
+}
+
+/// The lines of `out` that report an agent `rigger setup --agents` imported or kept, and the
+/// import's closing count, in printed order.
+fn import_lines(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter(|l| l.starts_with("imported ") || l.starts_with("kept existing "))
+        .collect()
+}
+
+/// Given a project - fresh, or one `rigger setup` scaffolded with no template root whose
+/// `sdet-author.md` the operator has since deleted - and a collection holding an agent whose id a
+/// seed carries, when the operator runs `rigger setup --agents <collection>`, then the collection's
+/// agent is imported in the place of the seed of its id, under another file name or the seed's
+/// own: that seed is neither written nor named, the import reports each file it wrote, and the
+/// project loads with the collection's agent defining that id. A collection file under a seed's
+/// name that defines another id is kept out, reported kept, and that seed is written.
+#[test]
+fn setup_agents_imports_a_collections_agent_in_the_place_of_the_seed_of_its_id() {
+    // (the project before the import: true for one `rigger setup` scaffolded with its
+    // `sdet-author.md` deleted since, false for a fresh one; the collection's agents as (file
+    // name, id); the seed the import keeps from being written; the collection file it keeps out;
+    // the loaded models of `sdet-author` and `planner`).
+    let rows: [(bool, &[(&str, &str)], Option<&str>, Option<&str>, [&str; 2]); 5] = [
+        (
+            false,
+            &[("test-author.md", "sdet-author")],
+            Some("sdet-author.md"),
+            None,
+            ["sonnet", "opus"],
+        ),
+        (
+            false,
+            &[("my-planner.md", "planner")],
+            Some("planner.md"),
+            None,
+            ["opus", "sonnet"],
+        ),
+        (
+            false,
+            &[("sdet-author.md", "sdet-author")],
+            Some("sdet-author.md"),
+            None,
+            ["sonnet", "opus"],
+        ),
+        (
+            false,
+            &[("planner.md", "sdet-author")],
+            None,
+            Some("planner.md"),
+            ["opus", "opus"],
+        ),
+        (
+            true,
+            &[("test-author.md", "sdet-author")],
+            Some("sdet-author.md"),
+            None,
+            ["sonnet", "opus"],
+        ),
+    ];
+    for (rerun, collection, displaced, kept, models) in rows {
+        let dir = temp_project();
+        let root = dir.path();
+        let agents = root.join(".rigger/agents");
+        if rerun {
+            setup_with_no_root(root);
+            std::fs::remove_file(agents.join("sdet-author.md")).unwrap();
+        }
+        write_collection(root, collection);
+
+        let (out, err, ok) = run_rigger(root, &["setup", "--agents", COLLECTION]);
+        let imported: Vec<(&str, &str)> = collection
+            .iter()
+            .copied()
+            .filter(|(file, _)| Some(*file) != kept)
+            .collect();
+        let scaffolded = match (rerun, displaced) {
+            (true, _) => Vec::new(),
+            (false, None) => vec![NO_SET_AGENTS_LINE.to_string()],
+            (false, Some(seed)) => vec![NO_SET_AGENTS_LINE.replacen(&format!("{seed}, "), "", 1)],
+        };
+        let mut reported: Vec<String> = kept
+            .map(|file| format!("kept existing .rigger/agents/{file} (import never overwrites)"))
+            .into_iter()
+            .chain(
+                imported
+                    .iter()
+                    .map(|(file, id)| format!("imported .rigger/agents/{file} (id: {id})")),
+            )
+            .collect();
+        reported.push(format!(
+            "imported {} agent {} from {COLLECTION} into .rigger/agents/ ({} kept - already \
+             present)",
+            imported.len(),
+            if imported.len() == 1 { "file" } else { "files" },
+            usize::from(kept.is_some()),
+        ));
+        let mut listing: Vec<String> = agents_beside("implementer.md")
+            .into_iter()
+            .filter(|file| Some(file.as_str()) != displaced)
+            .chain(imported.iter().map(|(file, _)| file.to_string()))
+            .collect();
+        listing.sort();
+        let cfg = loaded_config(root);
+        assert_eq!(
+            (
+                failure_line(ok, &err),
+                agents_lines(&out),
+                import_lines(&out),
+                sorted_dir_names(&agents),
+                ["sdet-author", "planner"].map(|id| cfg.agents.get(id).map(|a| a.model.as_str())),
+            ),
+            (
+                None,
+                scaffolded.iter().map(String::as_str).collect(),
+                reported.iter().map(String::as_str).collect(),
+                listing,
+                models.map(Some),
+            ),
+            "the collection {collection:?}, after a setup: {rerun}: stdout:\n{out}\nstderr:\n{err}"
+        );
+    }
+}
+
+/// Given a project - fresh, or one `rigger setup` scaffolded with no template root - and a
+/// collection that would leave two agents defining `sdet-author` - two of its own files, or one
+/// beside the project's seed of that id - when the operator runs `rigger setup --agents
+/// <collection>`, then the command fails on the duplicate id and imports nothing: in the fresh
+/// project before any write, leaving no `.rigger/`, and in the scaffolded one keeping exactly the
+/// agents it held.
+#[test]
+fn setup_agents_refuses_a_collection_that_would_define_an_id_twice() {
+    let refusal = refusal_line("config: duplicate agent id \"sdet-author\"");
+    // (the project before the import: true for one `rigger setup` scaffolded, false for a fresh
+    // one; the collection's agents as (file name, id)).
+    let rows: [(bool, &[(&str, &str)]); 2] = [
+        (false, &[("a.md", "sdet-author"), ("b.md", "sdet-author")]),
+        (true, &[("test-author.md", "sdet-author")]),
+    ];
+    for (rerun, collection) in rows {
+        let dir = temp_project();
+        let root = dir.path();
+        if rerun {
+            setup_with_no_root(root);
+        }
+        write_collection(root, collection);
+
+        let (out, err, ok) = run_rigger(root, &["setup", "--agents", COLLECTION]);
+        let agents = root.join(".rigger/agents");
+        assert_eq!(
+            (
+                failure_line(ok, &err),
+                import_lines(&out),
+                root.join(".rigger").exists(),
+                agents.exists().then(|| sorted_dir_names(&agents)),
+            ),
+            (
+                Some(refusal.clone()),
+                Vec::<&str>::new(),
+                rerun,
+                rerun.then(|| agents_beside("implementer.md")),
+            ),
+            "the collection {collection:?}, after a setup: {rerun}: stdout:\n{out}\nstderr:\n{err}"
         );
     }
 }
