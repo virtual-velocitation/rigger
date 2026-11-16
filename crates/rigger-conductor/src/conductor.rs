@@ -855,10 +855,10 @@ impl GreenDigests {
 
 /// The build environment every gate and spawn of `cfg` carries: the workflow's declared
 /// `build.env`, checked by [`gate::BuildEnv::declared`], with `run_base` as
-/// [`crate::spawn::RUN_BASE_ENV`] (empty adds nothing). The one resolution [`RunCtx::build_env`],
-/// [`GateInputs::resolve`] and the canary's review prompt share, so every gate and every spawn
-/// of a run carries the same declaration and run base; its `Err` is the declaration's refusal.
-pub(crate) fn build_env_of(cfg: &Config, run_base: &str) -> Result<gate::BuildEnv, Error> {
+/// [`crate::spawn::RUN_BASE_ENV`] (empty adds nothing). The one resolution [`RunCtx::build_env`]
+/// and [`GateInputs::resolve`] share, so every gate and every spawn of a run carries the same
+/// declaration and run base; its `Err` is the declaration's refusal.
+fn build_env_of(cfg: &Config, run_base: &str) -> Result<gate::BuildEnv, Error> {
     Ok(gate::BuildEnv::declared(&cfg.workflow.build)
         .map_err(Error)?
         .with_var(crate::spawn::RUN_BASE_ENV, run_base))
@@ -7901,9 +7901,9 @@ impl RunCtx<'_> {
             })?
             .clone();
 
-        // The ONE build-environment authority (spec 65): resolved once for the whole
-        // fan-out, not once per lane - every speculation candidate shares the SAME
-        // declared build environment, since none of its variables depend on `lane`.
+        // The ONE build-environment authority (spec 65): read once for the whole fan-out,
+        // not once per lane - every speculation candidate shares the one declaration, and
+        // each lane's spawn and gates resolve it at that lane's own site cache.
         let build_env = self.build_env()?;
 
         // Gap 61: a group re-entered in a LATER process than the one that saw its failure (an
@@ -10604,11 +10604,11 @@ impl RunCtx<'_> {
                 history: Vec::new(),
             };
             // The deferred gate runs in the base repo (the fully integrated tree).
-            // It measures the ONE integrated tree, so it keeps inheriting the
-            // shared build cache (empty target_dir) - a per-unit cache would be
-            // wrong here (Gap 19). It still carries the ONE
-            // build-environment authority's declared build environment (spec 65),
-            // same as every other gate this run's config resolves - and
+            // It measures the ONE integrated tree, so its site cache is the shared
+            // build cache (empty target_dir) - a per-unit cache would be wrong here
+            // (Gap 19). It carries the ONE build-environment authority's declared
+            // build environment (spec 65) resolved at that site cache, as every other
+            // gate this run's config resolves does at its own - and
             // the same machine-wide build budget, so this phase-boundary gate waits
             // for a slot exactly like every inline gate does. It carries
             // `$RIGGER_RUN_BASE` through that same `build_env`, never a second copy.
@@ -34930,7 +34930,7 @@ mod tests {
     #[test]
     fn two_units_gate_environments_never_share_a_target_dir() {
         // Gap 19 (criterion 3): a gate that runs INSIDE a unit's worktree must build into
-        // a unit-keyed CARGO_TARGET_DIR, so two concurrent units' divergent trees never
+        // a unit-keyed build cache, so two concurrent units' divergent trees never
         // share one incremental cache - a compile error a gate surfaces is then always
         // that unit's own, never a neighbour poisoning a shared target. Two independent
         // units each run a gate; the runner captures the target_dir handed to it, and the
@@ -34938,13 +34938,13 @@ mod tests {
         // sibling of that unit's worktree under the run's scratch root - derived the same
         // single-source way production does: the sibling of the unit's worktree dir.
         let (_repo, runner, scratch) = two_unit_gate_runs();
-        assert_one_isolated_dir_per_unit(&runner.targets(), "CARGO_TARGET_DIR", &scratch, |wt| {
+        assert_one_isolated_dir_per_unit(&runner.targets(), "build cache", &scratch, |wt| {
             crate::worktree::unit_cache_sibling(wt).unwrap()
         });
         // spec 77 criterion 5 (BOUNDED SHARED CACHE): a per-unit build (non-empty target)
         // is never at risk from `rigger reset --build-cache` (which only ever touches the
         // bare shared cache), so it must take no shared-cache guard lock at all, and must
-        // never have its own per-unit CARGO_TARGET_DIR overridden by a build_cache_dir
+        // never have its own per-unit build cache overridden by a build_cache_dir
         // (the two are mutually exclusive - see `shared_build_cache_paths`).
         assert!(
             runner.build_cache_guards().iter().all(|g| g.is_empty()),
@@ -41075,7 +41075,7 @@ mod tests {
     struct RecordingRunner {
         /// The gate ids run, in invocation order.
         calls: Mutex<Vec<String>>,
-        /// The CARGO_TARGET_DIR (`target_dir`) handed to each run, in invocation order -
+        /// The site cache (`target_dir`) handed to each run, in invocation order -
         /// lets a test assert two units' gate environments never share a target (Gap 19).
         targets: Mutex<Vec<String>>,
         /// The gate scratch root (`gate_scratch`, exported as `RIGGER_GATE_SCRATCH`) handed to
