@@ -1619,8 +1619,10 @@ mod tests {
     }
 
     /// THE WORKFLOW DECLARES EXTRACTORS, in force: the store `open_store` opens under one
-    /// declaration is in force under it for `store_fingerprint` and for a reader of the head, is
-    /// not in force under another declaration, and is again once the first returns.
+    /// declaration is in force under it for `store_fingerprint` and for a reader of the head, in
+    /// the root or in a worktree whose own workflow declares another (a reader reads the root's
+    /// declaration), is not in force under another declaration at the root, and is again once the
+    /// first returns.
     #[test]
     fn a_store_opened_under_one_declaration_is_not_in_force_under_another() {
         let a = workflow_declaring_extractors("{ zig: { extensions: [zig], run: zig-tags } }");
@@ -1655,6 +1657,15 @@ mod tests {
             head.view.stamp(),
             &stamp,
             "a reader under A reads A's store"
+        );
+        let worktree = project_declaring(Some(&b));
+        let head = DirectoryHead::new(root)
+            .head(worktree.path())
+            .expect("read the head from a worktree declaring B");
+        assert_eq!(
+            head.view.stamp(),
+            &stamp,
+            "a reader in a worktree declaring B reads the root's declaration, A's store"
         );
         write_workflow(root, &b);
         assert_eq!(in_force(), None, "not in force under B");
