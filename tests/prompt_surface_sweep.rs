@@ -95,6 +95,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "landing {unit:?} was refused: local content at {} would be o",
             "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for loca",
             "same-id refine resolves to a criterion its unit does not ser",
+            "approve reused from {key}: tree unchanged since {sha}",
             "conductor invariant violated: fan-out unit '{name}' has an e",
             "conductor invariant violated: fan-out unit '{name}' (an unma",
             "{}: the session ended without handing over (no {AUTHOR_HANDO",
