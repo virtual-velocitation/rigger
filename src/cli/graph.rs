@@ -1,4 +1,5 @@
 use super::*;
+use rigger::code_facts::Recorded;
 use rigger_domain::code_view::{tests_hidden_line, Tests, ViewFilter};
 
 /// The value of a `--tests` option, `raw`: `exclude`, `include` or `only` through the one parser
@@ -412,10 +413,12 @@ fn print_entity_site(
             tree,
             root,
             file,
-            site.line,
-            name.unwrap_or_default(),
-            contextgraph::query::split_id(&site.id).1,
-            &site.kind,
+            Recorded {
+                name: name.unwrap_or_default(),
+                path: contextgraph::query::split_id(&site.id).1,
+                kind: &site.kind,
+                line: site.line,
+            },
             stored_end,
         ),
     };
@@ -538,27 +541,26 @@ enum ShowBody {
 /// single-quote string carrying a lone `{` are all bounded correctly by the parser - including a
 /// signature that itself carries a brace (a struct-destructuring parameter, an `= {}` default) and
 /// a definition that CONTAINS a nested `fn`/item (its extent spans the child, never truncates at
-/// it). The window is `[start, extent]`, clamped by [`SHOW_MAX_BODY_LINES`]; a clamp reports its
-/// omitted-line count so a bounded body is never read as whole. A `stored_end`, the extent the
-/// graph's facts hold for the definition ([`ContextGraph::definition_end`], the same grammar's
-/// bound read when the file was extracted), bounds the body without parsing the file again.
+/// it). The window is `[start, extent]`, `start` the `recorded` definition's line, clamped by
+/// [`SHOW_MAX_BODY_LINES`]; a clamp reports its omitted-line count so a bounded body is never read
+/// as whole. A `stored_end`, the extent the graph's facts hold for the definition
+/// ([`ContextGraph::definition_end`], the bound the same declared extractor or grammar gave when
+/// the file was extracted), bounds the body without extracting the file again.
 ///
 /// Returns [`ShowBody::Note`] - the caller prints it in place of the body, never an error - when the
 /// body cannot be shown honestly: the `start` line is `0` or past end-of-file, `tree` or `root`
-/// is unavailable, the file cannot be read, the tree holds no production definition (one outside test code) of that name and kind
-/// at `id_path`, when one is given, at `start`, or this build has no extraction grammar (the
+/// is unavailable, the file cannot be read, the tree holds no production definition (one outside test code) of the `recorded` name and kind
+/// at its id path, when it has one, at `start`, or this build has no extraction grammar (the
 /// light, `--no-default-features` lane). It never GUESSES a body from a structural
 /// next-definition bound.
 fn definition_body(
     tree: &Result<PathBuf, String>,
     root: &Result<PathBuf, String>,
     file: &str,
-    start: u32,
-    name: &str,
-    id_path: Option<&str>,
-    kind: &str,
+    recorded: Recorded,
     stored_end: Option<u32>,
 ) -> ShowBody {
+    let start = recorded.line;
     // A line of 0 never named a real source line: degrade before any read. (Also covers a
     // reference-only graph entity with no definition site of its own.)
     if start == 0 {
@@ -594,12 +596,17 @@ fn definition_body(
         None => {
             #[cfg(test)]
             tests::EXTENT_LOCATES.with(|n| n.set(n.get() + 1));
-            locate_definition_extent(root, file, &text, start, name, id_path, kind)
+            locate_definition_extent(root, file, &text, recorded)
         }
     };
     let extent_end = match located {
         Ok(end) => end.min(total),
-        Err(why) => return ShowBody::Note(why.note(name, id_path, kind, file, start)),
+        Err(why) => {
+            let Recorded {
+                name, path, kind, ..
+            } = recorded;
+            return ShowBody::Note(why.note(name, path, kind, file, start));
+        }
     };
     // The max window: never dump an unbounded body. A clamp keeps the extent's true end so the
     // caller can announce the omitted lines.
@@ -616,8 +623,8 @@ fn definition_body(
     }
 }
 
-/// The 1-based, inclusive last line of the definition named `name` of kind `kind` at `start`, at
-/// the id path `id_path` when one is given (spec 58; spec 119, ONE EXTENT and IDS FOLLOW THE
+/// The 1-based, inclusive last line of the `recorded` definition, by its name and kind at its line,
+/// at its id path when it has one (spec 58; spec 119, ONE EXTENT and IDS FOLLOW THE
 /// LANGUAGE'S PATH), in `file` holding `source`, read as the code store reads it over the project
 /// at `root` (spec 125, THE EXTRACTOR PROTOCOL): its definitions are those the project's
 /// extractor gives the file
@@ -631,7 +638,7 @@ fn definition_body(
 /// authority, which reads production definitions only, those outside test code.
 ///
 /// Returns the [`Unbounded`] reason - the caller degrades to a note - when no such production
-/// definition sits at `start`, and a worded one when the grammar cannot tag the source. A failed
+/// definition sits at its line, and a worded one when the grammar cannot tag the source. A failed
 /// answer holds no definition, as the code store holds none for that file, and a file neither a
 /// declaration nor a grammar covers holds none: the code view extracts through the same routing,
 /// so it holds no entity there, and the miss is no production definition.
@@ -640,23 +647,13 @@ fn locate_definition_extent(
     root: &Path,
     file: &str,
     source: &str,
-    start: u32,
-    name: &str,
-    id_path: Option<&str>,
-    kind: &str,
+    recorded: Recorded,
 ) -> Result<u32, Unbounded> {
-    use rigger::code_facts::Recorded;
     use rigger::grounder::symbols::extract;
     use rigger_grounder::facts::ProjectExtractor;
     let defs = ProjectExtractor::of(root)
         .defs(file, source)
         .map_err(Unbounded::Note)?;
-    let recorded = Recorded {
-        name,
-        path: id_path,
-        kind,
-        line: start,
-    };
     extract::extent_in(&defs, recorded).ok_or(Unbounded::Missing)
 }
 
@@ -670,10 +667,7 @@ fn locate_definition_extent(
     _root: &Path,
     _file: &str,
     _source: &str,
-    _start: u32,
-    _name: &str,
-    _id_path: Option<&str>,
-    _kind: &str,
+    _recorded: Recorded,
 ) -> Result<u32, Unbounded> {
     Err(Unbounded::Note(
         "the body extent needs the code-extraction grammar; this build was compiled without the `symbols` feature"
@@ -1002,16 +996,13 @@ mod tests {
         ];
         for (case, stored_end, locates, body) in cases {
             EXTENT_LOCATES.with(|n| n.set(0));
-            let read = definition_body(
-                &tree,
-                &tree,
-                "a.rs",
-                1,
-                "alpha",
-                Some("alpha"),
-                "function",
-                stored_end,
-            );
+            let alpha = Recorded {
+                name: "alpha",
+                path: Some("alpha"),
+                kind: "function",
+                line: 1,
+            };
+            let read = definition_body(&tree, &tree, "a.rs", alpha, stored_end);
             let printed = match read {
                 ShowBody::Lines {
                     lines,
@@ -1113,10 +1104,12 @@ mod tests {
                         project.path(),
                         file,
                         text,
-                        line,
-                        "main",
-                        Some("main"),
-                        CODE_KIND_FUNCTION
+                        Recorded {
+                            name: "main",
+                            path: Some("main"),
+                            kind: CODE_KIND_FUNCTION,
+                            line
+                        }
                     )
                     .map_err(|why| why.note(
                         "main",
