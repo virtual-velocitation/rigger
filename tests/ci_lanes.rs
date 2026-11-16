@@ -630,7 +630,10 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
 /// THE CROSS-OS CHECK (spec 125 criterion 12): CI compiles the workspace on Windows and on macOS.
 /// The `cross-os-check` job's `strategy.matrix` is exactly `os: [windows-latest, macos-latest]`,
 /// with no `include` or `exclude` to add or drop a leg, and its `runs-on` is that matrix value, so
-/// each leg runs on its own OS. Its checkout fetches full history. Its one `run:` step runs under
+/// each leg runs on its own OS. Its strategy sets `fail-fast: false`, so a red leg never cancels
+/// the other before that one reports its own errors, and neither the job nor any of its steps
+/// carries an `if` or a `continue-on-error`, so each leg checks and a red one fails the job. Its
+/// checkout fetches full history. Its one `run:` step runs under
 /// `bash` on every runner and, in that step's own shell, exports an empty `RUSTC_WRAPPER` and then
 /// runs `cargo check --workspace`: the empty value overrides `.cargo/config.toml`'s Unix wrapper
 /// script for cargo and every nested cargo it starts. The job's wasm target is pinned once, by
@@ -651,7 +654,28 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
         Some("${{ matrix.os }}"),
         "job `{JOB}` must run on its matrix value, one leg per OS"
     );
+    assert_eq!(
+        job["strategy"]["fail-fast"].as_bool(),
+        Some(false),
+        "job `{JOB}` must set `fail-fast: false`, so a red leg never cancels the other"
+    );
     let steps = job_steps(&wf, JOB);
+    let conditioned: Vec<(usize, &str)> = std::iter::once(job)
+        .chain(steps)
+        .enumerate()
+        .flat_map(|(at, node)| {
+            ["if", "continue-on-error"]
+                .into_iter()
+                .filter(move |key| node.get(key).is_some())
+                .map(move |key| (at, key))
+        })
+        .collect();
+    assert_eq!(
+        conditioned,
+        Vec::<(usize, &str)>::new(),
+        "neither job `{JOB}` (0) nor any of its steps (1 on) may carry an `if` or a \
+         `continue-on-error` (where, key): one lets a leg check nothing, the other a red leg pass"
+    );
     let checkout_depths: Vec<Option<u64>> = steps
         .iter()
         .filter(|step| step_uses(step, "actions/checkout"))
