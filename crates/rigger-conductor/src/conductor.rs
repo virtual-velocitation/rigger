@@ -39951,10 +39951,11 @@ mod tests {
     }
 
     /// The adjudicator is told every finding its unit's round recorded, by id, whatever file it
-    /// names: over the real graph a finding outside the stage's seed, which the graph slice
-    /// leaves out, is listed beside the one the slice carries; a later round's resumed
-    /// adjudicator is sent that round's findings and never an earlier round's; and an
-    /// adjudicator re-driven within its round is told the finding its first spawn recorded.
+    /// names, then each reviewer of its roster that recorded none: over the real graph a finding
+    /// outside the stage's seed, which the graph slice leaves out, is listed beside the one the
+    /// slice carries; a later round's resumed adjudicator is sent that round's findings and
+    /// never an earlier round's; and an adjudicator re-driven within its round is told the
+    /// finding its first spawn recorded.
     #[test]
     fn the_adjudicator_is_told_every_finding_its_round_recorded_whatever_file_it_names() {
         const ALL: &str = "Every finding recorded this round, by id:";
@@ -39972,13 +39973,20 @@ mod tests {
             (
                 "a later round's resumed adjudicator",
                 round_one_adjudicator_resume_task(),
-                &["- lens:lens (g1): ROUND_ONE_finding\n"],
+                &[
+                    "- lens:lens (g1): ROUND_ONE_finding\n",
+                    "- adversary: recorded no finding this round\n",
+                ],
                 &["ROUND_ZERO_finding"],
             ),
             (
                 "an adjudicator re-driven within its round",
                 verdictless_adjudicator_re_drive_prompt(),
-                &["- adjudicator (j1): ADJUDICATOR_finding\n"],
+                &[
+                    "- adjudicator (j1): ADJUDICATOR_finding\n",
+                    "- lens:lens: recorded no finding this round\n",
+                    "- adversary: recorded no finding this round\n",
+                ],
                 &[],
             ),
         ];
@@ -55059,9 +55067,10 @@ mod tests {
     /// Over the placeholder fixture the round's findings block is its registry group on each
     /// branch: a lens is listed only the findings its own role recorded at its unit's round, an
     /// adjudicator every one, each in the order first recorded with a re-recorded id's latest
-    /// text and its reviewer the stamped actor or else its `by`, and either renders nothing when
-    /// it has none to list. A finding of another unit,
-    /// another round, no review step, or with no spawn stamp names no finding of the round.
+    /// text and its reviewer the stamped actor or else its `by`, then each role of its roster
+    /// that recorded none; either renders nothing when it has none to list. A finding of another
+    /// unit, another round, no review step, or with no spawn stamp names no finding of the
+    /// round.
     #[test]
     fn the_round_findings_block_is_its_group_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -55099,10 +55108,16 @@ mod tests {
             recorded(None, "n1", "UNSTAMPED"),
         ];
         let found = round_findings(&run, "u", 1);
+        let roster = [
+            lens.clone(),
+            ROLE_ADVERSARY.to_string(),
+            "lens:silent".into(),
+        ];
+        let silent = |role: &str| fill(&group("ROUND_NO_FINDING"), &[("role", role)]);
         let cases = [
             (
                 "a lens's own findings",
-                round_findings_block(&found, &lens, false),
+                round_findings_block(&found, &lens, false, &roster),
                 format!(
                     "{}- lens:lens (f1): {{latest}}\n",
                     group("ROUND_FINDINGS_YOURS")
@@ -55110,20 +55125,37 @@ mod tests {
             ),
             (
                 "a role that recorded none",
-                round_findings_block(&found, "lens:other", false),
+                round_findings_block(&found, "lens:other", false, &roster),
                 String::new(),
             ),
             (
-                "the adjudicator's every finding",
-                round_findings_block(&found, ROLE_ADJUDICATOR, true),
+                "the adjudicator's every finding, then each silent member of its roster",
+                round_findings_block(&found, ROLE_ADJUDICATOR, true, &roster),
                 format!(
-                    "{}- lens:lens (f1): {{latest}}\n- {{by}} (a1): {{second}}\n",
-                    group("ROUND_FINDINGS_ALL")
+                    "{}- lens:lens (f1): {{latest}}\n- {{by}} (a1): {{second}}\n{}",
+                    group("ROUND_FINDINGS_ALL"),
+                    silent("lens:silent")
                 ),
             ),
             (
-                "a round that recorded none",
-                round_findings_block(&round_findings(&run, "u", 2), ROLE_ADJUDICATOR, true),
+                "a round that recorded none, under a roster",
+                round_findings_block(
+                    &round_findings(&run, "u", 2),
+                    ROLE_ADJUDICATOR,
+                    true,
+                    &roster,
+                ),
+                format!(
+                    "{}{}{}{}",
+                    group("ROUND_FINDINGS_ALL"),
+                    silent(&lens),
+                    silent(ROLE_ADVERSARY),
+                    silent("lens:silent")
+                ),
+            ),
+            (
+                "a round that recorded none, under no roster",
+                round_findings_block(&round_findings(&run, "u", 2), ROLE_ADJUDICATOR, true, &[]),
                 String::new(),
             ),
         ];
