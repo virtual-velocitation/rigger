@@ -2098,8 +2098,10 @@ struct SetSpec {
 /// `implementer_id`, then its `env`. A `gates` text declaring nothing (empty or comments only)
 /// comes back empty. Refuses, naming the set key, a `set.yml` or `gates` text that fails to
 /// parse, a stage list naming a gate id the `gates` text does not declare, an `implementer`
-/// persona that fails to parse, one whose `id` is a [`SCAFFOLD_AGENTS`] seed's, and an `env`
-/// that [`BuildEnv::declared`], the one check of a workflow's `build.env`, refuses.
+/// persona that fails to parse, one whose `id` is a [`SCAFFOLD_AGENTS`] seed's, an `env` that
+/// [`BuildEnv::declared`], the one check of a workflow's `build.env`, refuses, and a set whose
+/// [`scaffold_workflow`] rendering fails to load, so a set `init` would write a workflow from
+/// that no command can read is refused before the first write.
 fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
     let refuse = |why: String| format!("gate template set {}: {why}", set.key);
     let mut spec: SetSpec = serde_yaml::from_str(&set.set).map_err(|e| refuse(e.to_string()))?;
@@ -2133,6 +2135,8 @@ fn parse_template_set(set: &TemplateSet) -> Result<SetSpec, String> {
     if declared.is_empty() {
         spec.gates.clear();
     }
+    config_store::parse_workflow(&scaffold_workflow(Some(&spec)))
+        .map_err(|e| refuse(format!("the workflow it scaffolds fails to load: {e}")))?;
     Ok(spec)
 }
 
@@ -2180,9 +2184,12 @@ fn scaffold_workflow(set: Option<&SetSpec>) -> String {
         )
 }
 
-/// `map` as a one-line YAML flow mapping in name order, `{}` when empty, that loads back as
-/// exactly `map`. Each name is written plain but for the nine spellings YAML reads as null or a
-/// boolean, which are double-quoted; each value is [`yaml_double_quoted`].
+/// `map` as a one-line YAML flow mapping in name order, `{}` when empty. Each name is written
+/// plain but for the nine spellings YAML reads as null or a boolean, which are double-quoted;
+/// each value is [`yaml_double_quoted`]. It loads back as exactly `map` when every name is one
+/// [`BuildEnv::declared`] accepts of at most 1024 characters, the longest key YAML reads plain;
+/// [`parse_template_set`] loads the workflow it renders, so a set holding a longer name is
+/// refused before anything is written.
 fn yaml_flow_map(map: &std::collections::BTreeMap<String, String>) -> String {
     let entries: Vec<String> = map
         .iter()
