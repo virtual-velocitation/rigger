@@ -1,4 +1,4 @@
-//! The agent-host port (workspace split): the `AgentDriver` trait the conductor spawns every
+//! The agent-host interface (workspace split): the `AgentDriver` trait the conductor spawns every
 //! agent through, its per-spawn options, result and error, and the park and failure-class
 //! sentinels that cross it. It names only domain types; the adapters live in `rigger-driver`,
 //! and the root `rigger` crate re-exports every item under its historical `rigger::conductor`
@@ -296,7 +296,7 @@ pub trait AgentDriver: Send + Sync {
 /// the conductor wraps the driver error with stage/agent context (`format!("... {}",
 /// e.0)` keeps the marker as a substring).
 ///
-/// Parking is part of the `AgentDriver` PORT contract, so it lives here beside the
+/// Parking is part of the `AgentDriver` INTERFACE contract, so it lives here beside the
 /// trait: a parking adapter constructs the signal via [`parked_spawn`] and the
 /// conductor recognizes it via [`is_parked`], and the use case never has to name the
 /// adapter to tell a park from a failure.
@@ -318,14 +318,14 @@ pub fn parked_spawn(id: &str) -> Error {
 /// guard refused a record the agent emitted - a payload the fold cannot apply, or an id another
 /// seat holds - so the conductor tells the refusal (a defect in what the agent printed, charged
 /// to the implementer's attempt or re-run once with the refusal in every other author's prompt)
-/// from a spawn fault (an outage, rerun uncharged) without reading the guard's prose. It crosses the `AgentDriver` port inside the spawn's error, as [`PARKED_MARKER`]
+/// from a spawn fault (an outage, rerun uncharged) without reading the guard's prose. It crosses the `AgentDriver` interface inside the spawn's error, as [`PARKED_MARKER`]
 /// does, in the same control-character idiom; [`strip_failure_marker`] drops it before the
 /// text reaches an agent's prompt or the operator.
 pub const EMIT_REFUSED_MARKER: &str = "\u{1}rigger:emit-refused\u{1}";
 
 /// Sentinel heading the message of the [`Error`] a spawn returns for a launch the host closed
 /// `interrupted` ([`launch_interrupted`]): the host decides interrupted once, and the decision
-/// crosses the `AgentDriver` port with its error, in the [`PARKED_MARKER`] idiom, so the held-run
+/// crosses the `AgentDriver` interface with its error, in the [`PARKED_MARKER`] idiom, so the held-run
 /// decorator relaunches on it without reading the hold again. It sits behind the class bracket,
 /// which stays at the head for [`failure_class`]; [`strip_failure_marker`] drops both before the
 /// text reaches an agent's prompt or the operator.
@@ -335,7 +335,7 @@ pub const INTERRUPTED_MARKER: &str = "\u{1}rigger:launch-interrupted\u{1}";
 /// ([`store_fault`]): an infra fault, never the outcome of a launched spawn. The host marks it
 /// once at its spawn boundary and the held-run decorator marks its own hold read, so the
 /// decorator records no result for it (a restart relaunches the spawn) and the conflict resolver
-/// retries it as an infra crash instead of spending a round. It crosses the `AgentDriver` port
+/// retries it as an infra crash instead of spending a round. It crosses the `AgentDriver` interface
 /// inside the spawn's error, in the [`PARKED_MARKER`] control-character idiom;
 /// [`strip_failure_marker`] drops it before the text reaches an agent's prompt or the operator.
 pub const STORE_FAULT_MARKER: &str = "\u{1}rigger:store-fault\u{1}";
@@ -350,7 +350,7 @@ pub fn store_fault(e: Error) -> Error {
 //
 // adj-u104c5 REQUIRED FIX 3 (arch-u104c5-failure-class-belongs-in-conductor-not-driver):
 // lives here, beside `Error`/`AgentDriver`/`PARKED_MARKER`/`is_parked`, rather than in the
-// `driver::claude_code` ADAPTER - a port-crossing sentinel-plus-typed-class pair is exactly
+// `driver::claude_code` ADAPTER - an interface-crossing sentinel-plus-typed-class pair is exactly
 // `PARKED_MARKER`'s own shape, and spec 105's hold controller (every `AgentDriver`
 // implementation, not just this one host) will read this class the same way `is_parked`
 // already reads `PARKED_MARKER`.
@@ -574,7 +574,7 @@ const FAILURE_MARKER: char = '\u{2}';
 /// Build the `Error` a `read_stream` call returns for a session that ended without a
 /// result, carrying `class` ahead of the human-readable `message`. `pub`: `driver::claude_code::Driver`'s own
 /// `classify_no_result` is this crate's one production caller today, on the adapter side
-/// of the port this marker lives on.
+/// of the interface this marker lives on.
 pub fn no_result_error(class: AgentFailure, message: String) -> Error {
     Error(format!("{FAILURE_MARKER}{class}{FAILURE_MARKER}{message}"))
 }

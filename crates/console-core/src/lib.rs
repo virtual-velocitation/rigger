@@ -30,7 +30,8 @@ use rigger_domain::eventstore::Event;
 
 /// One page's whole console session: the accumulated event log (owned so `fold_push` can
 /// append without a caller resending history every call), the configured remediation bound
-/// AS THE CALLER GAVE IT (`0` means "never set" - the exact sentinel `console::fold` ->
+/// AS THE CALLER GAVE IT (the bound a failure carrying no stamped bound reads; `0` means
+/// "never set" - the exact sentinel `console::fold` ->
 /// `blocker::from_events` -> `blocker::effective_max_retries` already resolves to
 /// `safety::MAX_RETRIES` internally), the last computed fold (what `view`/`statusline` answer
 /// from), and an optional loaded graph (`graph_query`'s subject). `thread_local` per THE
@@ -957,7 +958,8 @@ mod dispatch_tests {
     }
 
     /// A `fold_reset` that never sends `max_retries` (the field omitted entirely, `None`
-    /// after parsing) resolves through the ONE remaining authority - `console::fold` ->
+    /// after parsing), over a failure carrying no stamped bound, resolves through the ONE
+    /// remaining authority - `console::fold` ->
     /// `blocker::from_events` -> `blocker::effective_max_retries` mapping the unset `0` this
     /// crate threads through to `safety::MAX_RETRIES` - never a second, locally-minted
     /// fallback constant. Proven by a `Failed` unit's rendered blocker line naming the SAME
@@ -980,7 +982,8 @@ mod dispatch_tests {
 
     /// `FoldResetInput.max_retries`'s `Some(n)` override branch, previously untested
     /// (sdet-u93c2-max-retries-override-untested): a caller-supplied bound is honored end to
-    /// end through `console::fold`/`blocker::classify`, not silently replaced by whatever
+    /// end through `console::fold`/`blocker::classify` for a failure carrying no stamped bound,
+    /// not silently replaced by whatever
     /// `blocker::effective_max_retries` would otherwise pick - proven with a value (7) that
     /// differs from `safety::MAX_RETRIES` (3), so the two paths cannot be confused.
     #[test]

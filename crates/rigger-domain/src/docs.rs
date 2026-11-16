@@ -42,7 +42,8 @@ pub struct DocsContext {
     pub base_ref: String,
     /// The loopback port the always-on dashboard binds first (`dash::DEFAULT_PORT`).
     pub dash_port: u16,
-    /// The bounded-remediation ceiling before a unit escalates (`safety::MAX_RETRIES`).
+    /// The built-in remediation bound a unit escalates at when neither its stage nor
+    /// `defaults` sets `max_retries` (`safety::MAX_RETRIES`).
     pub max_retries: u32,
     /// The verdict value that approves a unit on the result channel, read from the same
     /// definition the integration gate uses (`conductor::VERDICT_APPROVE`).
@@ -184,7 +185,8 @@ fn discipline_body(ctx: &DocsContext) -> String {
          (specs, criteria, decisions, findings, lessons, docs), each section labelled by its \
          source. Three verbs answer the narrower questions you have about the code: `rigger graph \
          --around <file|entity>` (structure: who calls X, and the caller/callee neighborhood), \
-         `rigger graph --show <entity>` (text: an entity's definition site and its body), and \
+         `rigger graph --show <entity>` (text: an entity's definition site and its body, or for a \
+         name no entity carries, the names it is nearest to), and \
          `rigger peers <file>...` (memory: the prior decisions, findings, and lessons about the \
          files). Grep over the project's sources is a fallback worth reporting, not a habit: if the \
          graph could not answer and you fall back to grep, record it with `rigger progress <id> \
@@ -233,7 +235,8 @@ fn discipline_body(ctx: &DocsContext) -> String {
          them, and `rigger reset --derived` DELETES THEM: in one transaction it deletes every \
          derived event of the project's run stream, so no derived event is left behind and \
          events.db shrinks on disk. `rigger setup` runs the same delete itself once the graph it \
-         rebuilds stands in place of the old one. Every other event survives byte-for-byte - \
+         rebuilds stands in place of the old one, and gives a log recorded before the record \
+         index that index; with a run live it does neither and says so. Every other event survives byte-for-byte - \
          lessons, decisions, findings, gate verdicts, and the whole run history `rigger stats` \
          and replay read. It writes nothing to graph.db, so the live graph is unchanged. It \
          reports how many derived events it deleted. Run again on a cleared log it says there is \
@@ -326,8 +329,9 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "An approved unit integrates itself onto the run branch. A human reviews the whole \
          run by opening a pull request FROM the run branch, never by cherry-picking approved \
          units by hand - cherry-picking drops the run's accumulated context and its ordering. \
-         A failing unit is retried under a bounded budget (up to {max} attempts) and then \
-         escalated to a human rather than spinning forever.\n",
+         A failing unit is retried under a bounded budget (its stage's or fan-out template's \
+         own `max_retries`, else `defaults.max_retries`, {max} attempts when neither is set) \
+         and then escalated to a human rather than spinning forever.\n",
         max = ctx.max_retries
     );
 
@@ -1081,9 +1085,9 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
 
 /// Render the `rigger-handle-an-escalation` skill (spec 68, criterion 2): acting on a
 /// unit the loop handed back to a human. Unlike its four siblings, this one DOES
-/// interpolate from `ctx`: the remediation bound it names is [`DocsContext::max_retries`],
-/// the same code-derived fact `using-rigger` interpolates, so the two can never disagree
-/// on what the bound actually is.
+/// interpolate from `ctx`: the built-in remediation bound it names is
+/// [`DocsContext::max_retries`], the same code-derived fact `using-rigger` interpolates, so
+/// the two can never disagree on what the bound is when no key sets it.
 fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
     render_operation_skill(
         "rigger-handle-an-escalation",
@@ -1094,9 +1098,10 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
         &[],
         &[
             &format!(
-                "An escalated unit gave up at the remediation bound (`defaults.max_retries`, {max} \
-                 by default) - the loop will not retry it on its own; it is waiting on a human \
-                 decision. Read the recorded lesson for the CONCRETE final failure - via `rigger \
+                "An escalated unit gave up at its remediation bound - its stage's or fan-out \
+                 template's own `max_retries`, else `defaults.max_retries` ({max} when neither \
+                 is set), the bound its `reject-recurrence #n/max` blocker line showed. The loop \
+                 will not retry it on its own; it is waiting on a human decision. Read the recorded lesson for the CONCRETE final failure - via `rigger \
                  peers` scoped to the unit's files, or the dashboard - rather than guessing: the \
                  escalation lesson carries the actual failing gate or review reason, not a \
                  placeholder, and that reason is the bounded remedy you are about to apply.\n",
@@ -1305,8 +1310,9 @@ fn render_diagnose_churn_skill(ctx: &DocsContext) -> String {
         ],
         "Never blame the model or the panel without having run the finding audit first - a \
          reviewer that is factually correct every single round is not the problem, even when \
-         it rejects the same unit five times in a row. And do not reflexively raise \
-         `defaults.max_retries` to buy another attempt: a bigger budget spent against the \
+         it rejects the same unit five times in a row. And do not reflexively raise the \
+         unit's bound (its stage's or fan-out template's own `max_retries`, else \
+         `defaults.max_retries`) to buy another attempt: a bigger budget spent against the \
          SAME unaudited failure reproduces exactly the failure the audit exists to catch, \
          just more expensively.\n",
         "planning-a-spec owns the churn-signature table and the spec-amendment protocol this \
@@ -2166,6 +2172,43 @@ mod tests {
             out.contains(&ctx.max_retries.to_string()),
             "the escalation skill must interpolate ctx.max_retries, not hard-code a bound"
         );
+    }
+
+    /// How a render names where a unit's remediation bound comes from: the key the conductor
+    /// reads first ([`crate::blocker::stage_max_retries`]).
+    const OWN_BOUND: &str = "its stage's or fan-out template's own `max_retries`";
+
+    /// `render` names a unit's own bound ([`OWN_BOUND`]) and, where it names
+    /// `defaults.max_retries` too, names the unit's own key first, so no reader takes the run
+    /// default for every unit's bound; it also carries each of `also`.
+    fn names_the_units_own_bound(render: fn(&DocsContext) -> String, also: &[&str]) {
+        let out = render(&sentinel_ctx());
+        let own = out
+            .find(OWN_BOUND)
+            .unwrap_or_else(|| panic!("no `{OWN_BOUND}` in:\n{out}"));
+        if let Some(default) = out.find("`defaults.max_retries`") {
+            assert!(
+                own < default,
+                "the run default is named before a unit's own key:\n{out}"
+            );
+        }
+        for text in also {
+            assert!(out.contains(text), "no `{text}` in:\n{out}");
+        }
+    }
+
+    crate::test_cases! {
+        /// The escalation skill also names the blocker line that showed the bound.
+        the_escalation_skill_names_the_units_own_bound: names_the_units_own_bound(
+            render_handle_an_escalation_skill,
+            &["`reject-recurrence #n/max`"],
+        );
+        the_using_rigger_skill_names_the_units_own_bound:
+            names_the_units_own_bound(render_using_rigger_skill, &[]);
+        the_handbook_names_the_units_own_bound:
+            names_the_units_own_bound(render_handbook_discipline, &[]);
+        the_churn_skill_names_the_units_own_bound:
+            names_the_units_own_bound(render_diagnose_churn_skill, &[]);
     }
 
     /// Spec 69, criterion 1 (WATCH SKILLS RENDER TRUE, the headline claim): `rigger-watch-a-run`

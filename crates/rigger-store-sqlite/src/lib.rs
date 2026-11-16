@@ -1,5 +1,5 @@
 //! Rigger's persistence adapters, ring 3 of the workspace: the event-store backends behind the
-//! `EventStore` port, the one SQLite opener every store connection goes through, the write
+//! `EventStore` interface, the one SQLite opener every store connection goes through, the write
 //! halves of the run, spawn and progress vocabularies, and the machine-global instance
 //! registry. They know rusqlite, the filesystem, the domain and the one read of the user's home
 //! directory (`rigger_process::home_dir`); the root `rigger` crate re-exports every module under

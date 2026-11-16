@@ -1,5 +1,5 @@
 //! Rigger's application ring, ring 2 of the workspace: the conductor, the top-level use case
-//! that walks the stage DAG, runs each stage's agent through the `AgentDriver` port and its gates
+//! that walks the stage DAG, runs each stage's agent through the `AgentDriver` interface and its gates
 //! through the gate runner, advances units under the safety rails and emits the event stream the
 //! ledger and the context graph project from. It still names several adapters directly (each
 //! edge recorded in tests/boundary_audit.rs EDGE_ALLOWLIST); the root `rigger` crate re-exports

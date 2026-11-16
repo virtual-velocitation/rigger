@@ -1,5 +1,5 @@
 //! Grounding gives each agent only the context it needs: the locations relevant
-//! to its task. `Grounder` is the port. `Grep` is the self-contained literal
+//! to its task. `Grounder` is the interface. `Grep` is the self-contained literal
 //! grounder; the structural `symbols` grounder (spec 15) is the default, plugging
 //! in behind the same trait.
 

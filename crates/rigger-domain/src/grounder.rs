@@ -1,4 +1,4 @@
-//! The grounding port (workspace split): the `Grounder` trait every grounder implements and the
+//! The grounding interface (workspace split): the `Grounder` trait every grounder implements and the
 //! plain values it returns - a location, a ranked entity row and the two-view blast radius. It
 //! names only these values; the grounders live in `rigger-grounder`, and the root `rigger` crate
 //! re-exports every item under its historical `rigger::grounder` path.

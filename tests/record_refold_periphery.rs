@@ -15,6 +15,7 @@ use crate::common;
 use common::cli::{
     graph_identity, no_progress, pin_identity, read_run_events, rigger_file, run_rigger_envs,
     run_stream_identity, seed_pre_ledger_events, setup_ok, temp_store_project, user_version,
+    with_run_store,
 };
 use common::fixtures::{decision_json, ev_at};
 
@@ -411,5 +412,47 @@ fn migration_deletes_the_derived_rows_once_the_graph_is_swapped_in() {
         ),
         (true, 0, before - derived, true),
         "setup deletes every derived row and only those; stdout: {out}"
+    );
+}
+
+/// Given an event log written before the record index, when the operator runs `rigger setup` with
+/// no run live, then setup gives the log the index and says so, and the record read answers the
+/// decision by its id.
+#[test]
+fn setup_indexes_the_record_ids_of_a_log_from_before_the_record_index() {
+    let dir = temp_store_project();
+    let root = dir.path();
+    pin_identity(root, "proj-index");
+    seed_pre_ledger_events(root, &[a_decision_governing_the_tree_file()]);
+    let events_db = rigger_file(root, "events.db");
+    let holds = || -> bool {
+        (rusqlite::Connection::open(&events_db).unwrap())
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name = 'idx_events_record')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    (rusqlite::Connection::open(&events_db).unwrap())
+        .execute_batch("DROP INDEX idx_events_record")
+        .unwrap();
+    let before = holds();
+    let out = setup_ok(root, &[]);
+    let read = with_run_store(root, |store| {
+        store
+            .read_by_record_id(rigger::conductor::STREAM, &["DecisionMade"], "d-keep")
+            .unwrap()
+            .len()
+    });
+    assert_eq!(
+        (
+            before,
+            holds(),
+            out.contains("rigger setup: indexed the event log's record ids"),
+            read
+        ),
+        (false, true, true, 1),
+        "stdout: {out}"
     );
 }

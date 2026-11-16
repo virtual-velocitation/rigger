@@ -19,7 +19,7 @@ core = ["rigger-domain/core", "rigger-process/core"]
 
 [dependencies]
 rigger-domain = { path = "../rigger-domain", default-features = false }
-# The build-slot budget and the process-spawn port (a same-ring edge).
+# The build-slot budget and the process-spawn interface (a same-ring edge).
 rigger-process = { path = "../rigger-process", default-features = false }
 thiserror = "2"
 

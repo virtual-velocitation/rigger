@@ -24,7 +24,7 @@ What you CANNOT do:
 
 Walk this checklist in order:
 
-1. Read the run file your task names, then docs/evaluation/README.md for the format and the rules. Then read the classes and proposals of the last five run files under docs/evaluation/: reuse an existing slug whenever the cause is the same, so that recurrence is visible.
+1. Read the run file your task names, then docs/evaluation/README.md for the format and the rules. Its scorecard also carries the check-in's hours (`checkin_hours`) and the run notes it worked off beside its commits (`checkin_work`). Then read the classes and proposals of the last five run files under docs/evaluation/: reuse an existing slug whenever the cause is the same, so that recurrence is visible.
 2. Run `sh .rigger/gates/evaluate.sh evidence <run>` through Bash and read the three sources it prints and the run's scheduling:
    - **failures**: rejects with their required items and adjudicator cause, gate failures with their evidence tail, other failures, escalations and deferred gate failures. Each failure carries `rework_hours`: its unit's hours from the failure to the unit's next failure, next merge attempt or integration.
    - **cost**: the run's unit hours by label (`hours_by_label`), by gate (`gates`, `gate_hours_by_gate`), by unit (`units`) and by battery (`batteries`); the repeats the log shows (`repeats`: a post-merge battery over the same tree as the unit's pre-merge battery, a battery re-run after a failure, a gate re-run over an input it already judged); relaunched sessions; and `not_shown`, what the log cannot show.
@@ -42,7 +42,7 @@ Walk this checklist in order:
    - A grep-fallbacks class: lines that searched for the same kind of thing for the same reason. Its evidence is the lines' `progress:<position>` ids. Decide which gap it is. A habit gap is when the graph could answer and the agent did not ask; it targets a persona. A capability gap is when the graph cannot answer that kind of query; it targets the lookup surface, as a `binary` spec.
 4. Write the Diagnosis: one paragraph per class, replacing the `TO BE WRITTEN` line. Open each paragraph with the slug in bold. State the mechanism, the tell that shows it in the log, its count, and the measured hours it cost, with the arithmetic:
    - for a failure class, the sum of its records' `rework_hours`;
-   - for a cost class, the hours its metric holds, as the bundle prints them;
+   - for a cost class, the hours its metric holds, as the bundle prints them (a `_per_unit` figure times `criterion_units`, a `checkin_work` count as `checkin_hours.implementer`);
    - a grep-fallbacks class has no measured hours; say so.
    If the Previous proposal section reads `reverted`, add a paragraph saying the adopted change did not move its metric and name the class it targeted.
    When it lists `also`, the other metrics the adopted change was predicted to move, say for each whether its `actual_move` has the predicted sign.
@@ -62,7 +62,7 @@ Walk this checklist in order:
      - `gate` for a workflow gate: a script under .rigger/gates/ that .rigger/workflow.yml declares, so its surface is `gate` or `workflow`
      - `instruction` for text an agent reads. A persona or spec-skill change is always `instruction`.
    - `metric`: a scorecard key holding a measured number, or `<map>.<key>` of a by-map, for example `gate_fails_by_gate.style-spec`. A key under `unsourced` is never a metric.
-     - A cost class's metric is a time measure: `hours_by_label.<label>`, `gate_hours_by_gate.<gate>`, `repeated_hours.<repeat>`, `unit_elapsed_hours`, `serial_hours`, `queued_hours`, `chain_hours`, `time_shares.<label>`, `gates_share` or `post_merge_gates_share`.
+     - A cost class's metric is a time measure: `hours_by_label.<label>`, `gate_hours_by_gate.<gate>`, `repeated_hours.<repeat>`, `checkin_hours.<key>`, `unit_elapsed_hours`, `serial_hours`, `queued_hours`, `chain_hours`, `time_shares.<label>`, `gates_share` or `post_merge_gates_share`; or a count of the check-in's work, the run notes it works off and what it commits, `checkin_work.<key>`, whose hours are `checkin_hours.implementer`.
      - A grep-fallbacks class's metric is `grep_fallbacks` or `grep_fallbacks_by_target.<target>`.
    - `predicted_move`: signed, in the metric's units, never zero. A cost proposal lowers its metric by at most the value the metric holds.
    - `hours_saved`: a number, or null for a grep-fallbacks class

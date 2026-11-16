@@ -14,8 +14,9 @@
 # test (so it does not source container-env.sh), and sends no process signal.
 #
 # Usage: sh .rigger/gates/evaluate.sh <measure|evidence|check|emit|run> [args]
-#   measure [run] [out]  write the run file from docs/evaluation/TEMPLATE.md: the scorecard, the
-#                        comparison with the baseline and the last five run files, the
+#   measure [run] [out]  write the run file from docs/evaluation/TEMPLATE.md: the scorecard (the
+#                        check-in's hours, the run notes it worked off and its commits among it),
+#                        the comparison with the baseline and the last five run files, the
 #                        scheduling (a row per started unit and the files that put the most unit
 #                        pairs in conflict), and the previous run file's adopted proposal scored
 #                        (its metric, then each metric its `also` lists). Refuses to overwrite a
@@ -57,10 +58,13 @@
 #     form, metric, a non-zero predicted_move or a positive hours_saved; its metric does not name
 #     a measured number in the scorecard (a top-level key, or `<map>.<key>` of a by-map);
 #   - hours_saved exceeds what the log measured for the class: a failure class's rework
-#     (failure_rework_hours of its evidence), a cost class's metric. A cost class's metric is a
-#     time measure its predicted_move lowers by at most its value. A grep-fallbacks class's
-#     metric is grep_fallbacks or grep_fallbacks_by_target.<target>, and its hours_saved is null
-#     (the log holds no duration for a fallback), ranked after every proposal with hours;
+#     (failure_rework_hours of its evidence), a cost class's metric (times criterion_units for a
+#     `_per_unit` figure), or for a count of the check-in's work, the check-in's implementer
+#     hours. A cost class's metric is a time measure, or a count of the check-in's work, the run
+#     notes it works off and what it commits (`checkin_work.<key>`), and its predicted_move lowers
+#     it by at most its value. A grep-fallbacks class's metric is grep_fallbacks or
+#     grep_fallbacks_by_target.<target>, and its hours_saved is null (the log holds no duration
+#     for a fallback), ranked after every proposal with hours;
 #   - a cost proposal claims scheduling hours (live wall hours) its kind cannot remove:
 #     queued_hours other than by a change to the width bound (surface workflow, path
 #     .rigger/workflow.yml, a change naming max_parallel_units), chain_hours other than on the
@@ -135,12 +139,16 @@ INSTRUCTION_SURFACES = ("persona", "spec-skill")
 BY_MAPS = ("failures_by_cause", "reject_items_by_class", "rejects_by_cause",
            "gate_fails_by_gate", "deferred_gate_fails_by_gate", "red_verdicts_by_gate",
            "time_shares", "hours_by_label", "gate_hours_by_gate", "repeated_hours",
-           "grep_fallbacks_by_target", "slot_hours")
+           "grep_fallbacks_by_target", "slot_hours", "checkin_hours", "checkin_work")
 # The metrics a cost class may name: hours by-maps and top-level hours, or shares of unit elapsed
-# time, which the bound on hours_saved converts to hours.
+# time, which the bound on hours_saved converts to hours. A `_per_unit` figure is per criterion
+# unit, which the bound converts to hours through criterion_units. A cost class may also name a
+# count of the check-in's work, the run notes it works off and what it commits: the bound is the
+# hours that work cost, the check-in's implementer hours.
 COST_HOURS = ("hours_by_label", "gate_hours_by_gate", "repeated_hours", "unit_elapsed_hours",
-              "serial_hours", "queued_hours", "chain_hours")
+              "serial_hours", "queued_hours", "chain_hours", "checkin_hours")
 COST_SHARES = ("time_shares", "gates_share", "post_merge_gates_share")
+COST_COUNTS = {"checkin_work": "checkin_hours.implementer"}
 # The scheduling hours only one kind of proposal may claim, each as (that kind, whether a proposal
 # is one). queued_hours is time the width bound held a ready unit back, which only a change to the
 # bound removes; chain_hours is time every unit not started waited on its needs, which only the
@@ -205,6 +213,49 @@ GREP_TARGETS = (
 )
 GREP_GROUPING = ("self-reported, grouped by the first rule a line matches, in the order caller, "
                  "text, symbol, file; a line matching none is unclassified")
+# The run notes the check-in works off: the block its first implementer prompt opens with
+# RUN_NOTES and closes with NOTES_END, a line per carried record, `- <id> (<files>): <summary>`,
+# whose summary runs on over the lines that open with no review finding's id.
+RUN_NOTES = "RUN NOTES:"
+NOTES_END = "Fix every note that is still true"
+NOTE_ITEM = re.compile(r"^- (?P<id>[^\s:]+)(?: \([^)]*\))?: ?(?P<text>.*)$")
+# A carried record is a note when its summary opens so. Its kind is the first NOTE_KINDS rule one
+# of whose words its label (the first parenthesis in its first NOTE_LABEL_SPAN characters) holds,
+# case-sensitive, in order; a finding of the plan critique (an id `<reviewer>-plan...`) is spec
+# text. A first cut by keyword: a note whose label holds no rule's word is unclassed.
+NOTE = re.compile(r"^\s*(?:NOTES?|NON-BLOCKING)")
+NOTE_LABEL = re.compile(r"\(([^)]*)\)")
+NOTE_LABEL_SPAN = 260
+PLAN_FINDING = re.compile(r"^[^-]+-plan")
+NOTE_KINDS = (
+    ("efficiency", ("efficiency",)),
+    ("homes", ("test shape", "test hygiene", "DRY")),
+    ("docs", ("doc", "sentence", "record", "wording")),
+    ("tests", ("test rigor", "test gap", "test coverage", "coverage", "test completeness",
+               "test design")),
+    ("spec", ("spec", "Design")),
+    ("structure", ("open-closed", "dependency inversion", "interface segregation", "YAGNI",
+                   "single responsibility")),
+)
+# The kinds the implementer's hand-over walk lists (.rigger/agents/rust-engineer.md): a branch
+# with no test, a rule, helper, fixture or test shape spelled a second time, a sentence false at
+# head.
+WALK_KINDS = ("tests", "homes", "docs")
+CHECKIN_HOURS = ("the check-in (the unit that joins a stage) in live hours, outages removed: wall "
+                 "from its first UnitStarted to its landing; implementer, its implementer "
+                 "sessions, each SpawnRequested to its SpawnResult, uncapped; each _per_unit "
+                 "figure over criterion_units, the work units the check-in integrated")
+CHECKIN_WORK = ("the run notes the check-in worked off and what it committed: prompt_records, the "
+                "lines of the RUN NOTES block in its first implementer prompt that open with a "
+                "review finding's id; notes, those whose summary opens with NOTE, NOTES or "
+                "NON-BLOCKING; walk_notes, the notes of the kinds the hand-over walk lists "
+                "(walk_notes_tests, a branch with no test; walk_notes_homes, a rule, helper, "
+                "fixture or test shape spelled twice; walk_notes_docs, a sentence false at head), "
+                "classed by keyword: the first NOTE_KINDS rule in evaluate.sh whose word the note's "
+                "label holds, a first cut that leaves unclassed_notes; walk_notes_per_unit over "
+                "criterion_units; commits, the non-merge commits from the last landing before the "
+                "check-in started to its landing, and added_lines, the lines git diff --numstat "
+                "counts added between the two")
 UNIT_HOURS = ("unit hours: a unit's live elapsed time, outages removed; units run in parallel, so "
               "their hours add up past the run's wall time")
 GATE_HOURS = ("each fresh verdict's time since the previous verdict of its battery, or since the "
@@ -461,6 +512,8 @@ class Fold:
         self.first_radius = {}
         self.touched = set()
         self.changed = {}
+        # Each landing that integrated a commit, as (position, unit, commit, seconds), in log order.
+        self.landings = []
 
     # Each unit's events in log order, as (seconds, type, info, position), for the time shares and
     # the cost. A gate verdict belongs to the unit its replay key opens with; a unit's start to the
@@ -522,6 +575,8 @@ class Fold:
             else:
                 self.integrated.add(data.get("id", ""))
                 self.last_landing_ns = at
+            if COMMIT.match(str(data.get("commit") or "")):
+                self.landings.append((pos, data.get("id", ""), data["commit"], at / 1e9))
             # The landing records its files just before its UnitIntegrated, under the landing lock.
             self.first_integrated.setdefault(data.get("id", ""), at / 1e9)
             self.changed.setdefault(data.get("id", ""), set()).update(self.touched)
@@ -634,18 +689,25 @@ def overlap(spans, a, b):
     return sum(max(0, min(b, d) - max(a, c)) for c, d in spans)
 
 
+# One unit's agent sessions as (spawn id, request, result) in seconds, each request paired with its
+# spawn id's next result, from its events in time order.
+def sessions(events):
+    out, requested = [], {}
+    for t, typ, info, _ in events:
+        if typ == "SpawnRequested":
+            requested[info] = t
+        elif typ == "SpawnResult" and info in requested:
+            out.append((info, requested.pop(info), t))
+    return out
+
+
 # One unit's agent sessions and gate batteries, in seconds, from its events in time order (log
 # order on a tie). A gate battery runs from a writer's result to the last fresh (not cache-hit)
 # verdict before the unit's next spawn request; a battery is post-merge when the last of its
 # verdicts that ran a gate (not skipped) is.
 def unit_work(events):
     events = sorted(events, key=lambda event: event[0])
-    spans, requested = [], {}
-    for t, typ, info, _ in events:
-        if typ == "SpawnRequested":
-            requested[info] = t
-        elif typ == "SpawnResult" and info in requested:
-            spans.append((requested.pop(info), t))
+    spans = [(a, b) for _, a, b in sessions(events)]
     batteries = []
 
     def close(current):
@@ -738,6 +800,11 @@ def live(a, b, dead):
 def attempt_of(spawn):
     match = SPAWN_ID.match(spawn or "")
     return int(match["attempt"]) if match else 0
+
+
+def role_of(spawn):
+    match = SPAWN_ID.match(spawn or "")
+    return match["role"] if match else ""
 
 
 # Each commit's tree as the repository resolves it, or None for a commit it cannot resolve.
@@ -884,6 +951,98 @@ def run_work(fold, run):
 def joins_a_stage(fold, unit):
     needs = fold.needs.get(unit)
     return isinstance(needs, list) and any(n not in fold.criterion for n in needs)
+
+
+# ---- the check-in ----
+
+# The records the check-in carried, as [[finding id, summary]], from the RUN NOTES block of
+# `prompt`; [] when the prompt carries none.
+def carried_records(prompt, finding_ids):
+    lines = prompt.splitlines()
+    start = next((i for i, line in enumerate(lines) if line.startswith(RUN_NOTES)), None)
+    records = []
+    for line in lines[start + 1:] if start is not None else []:
+        if line.startswith(NOTES_END):
+            break
+        item = NOTE_ITEM.match(line)
+        if item and item["id"] in finding_ids:
+            records.append([item["id"], item["text"]])
+        elif records:
+            records[-1][1] += "\n" + line
+    return records
+
+
+# A note's kind by NOTE_KINDS, or None when its label holds no rule's word.
+def note_kind(finding, summary):
+    if PLAN_FINDING.match(finding):
+        return "spec"
+    label = NOTE_LABEL.search(summary[:NOTE_LABEL_SPAN])
+    label = label.group(1) if label else ""
+    return next((kind for kind, words in NOTE_KINDS if any(w in label for w in words)), None)
+
+
+# The non-merge commits from `base` to `head` and the lines their diff adds, as git counts them, or
+# (None, None) when either commit does not resolve in this repository.
+def commits_between(base, head):
+    git = ["git", "-C", os.environ["EVALUATE_ROOT"]]
+    try:
+        count = subprocess.run(git + ["rev-list", "--count", "--no-merges", f"{base}..{head}"],
+                               capture_output=True, text=True, check=True).stdout
+        numstat = subprocess.run(git + ["diff", "--numstat", base, head],
+                                 capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None, None
+    added = [row.split("\t")[0] for row in numstat.splitlines()]
+    return int(count), sum(int(a) for a in added if a.isdigit())
+
+
+# The check-in's hours (CHECKIN_HOURS) and the run notes it worked off beside what it committed
+# (CHECKIN_WORK), or (None, None) when no unit that joins a stage landed a commit.
+def checkin_of(fold, dead, criterion_units, stream, lo, hi):
+    landed = {unit: (commit, t) for _, unit, commit, t in fold.landings}
+    unit = next((u for u in fold.first_start if joins_a_stage(fold, u) and u in landed), None)
+    if unit is None:
+        return None, None
+    begun_pos, begun = fold.first_start[unit]
+    head, landed_at = landed[unit]
+    base = next((c for p, u, c, _ in reversed(fold.landings) if p < begun_pos and u != unit), None)
+    events = sorted(fold.timeline.get(unit, []), key=lambda event: event[0])
+    implementer = sum(live(a, b, dead) for spawn, a, b in sessions(events)
+                      if role_of(spawn) == "implementer")
+    first = next((pos for _, typ, info, pos in events
+                  if typ == "SpawnRequested" and role_of(info) == "implementer"), None)
+    con = store()
+    row = con.execute("SELECT data FROM events WHERE stream = ? AND position = ?",
+                      (stream, first)).fetchone() if first is not None else None
+    sql = "SELECT data FROM events WHERE stream = ? AND type = 'ReviewFinding' AND position >= ?"
+    args = [stream, lo]
+    if hi is not None:
+        sql += " AND position < ?"
+        args.append(hi)
+    finding_ids = {str(decode(data).get("id") or "") for (data,) in con.execute(sql, args)}
+    con.close()
+    records = carried_records(str(decode(row[0] if row else None).get("prompt") or ""),
+                              finding_ids)
+    notes = [(finding, summary) for finding, summary in records if NOTE.match(summary)]
+    kinds = Counter(note_kind(finding, summary) for finding, summary in notes)
+    walk = sum(kinds[k] for k in WALK_KINDS)
+    commits, added = commits_between(base, head) if base else (None, None)
+    wall, n = live(begun, landed_at, dead), len(criterion_units)
+    return {
+        "wall": unit_hours(wall),
+        "implementer": unit_hours(implementer),
+        "wall_per_unit": ratio(wall / 3600, n),
+        "implementer_per_unit": ratio(implementer / 3600, n),
+    }, {
+        "prompt_records": len(records),
+        "notes": len(notes),
+        "walk_notes": walk,
+        "walk_notes_per_unit": ratio(walk, n),
+        **{"walk_notes_" + k: kinds[k] for k in WALK_KINDS},
+        "unclassed_notes": kinds[None],
+        "commits": commits,
+        "added_lines": added,
+    }
 
 
 # ---- scheduling ----
@@ -1174,6 +1333,7 @@ def scorecard(fold, run, stream, lo, hi):
     work, dead, outage_source = run_work(fold, run)
     sched, sched_label, _ = scheduling_of(fold, work, dead, outage_source)
     spent = cost(fold, work, dead)
+    checkin_hours, checkin_work = checkin_of(fold, dead, criterion_units, stream, lo, hi)
     grep_lines = grep_fallback_lines(run)
     wall = outage = live_wall = None
     if fold.started_ns is not None and fold.last_landing_ns is not None:
@@ -1253,11 +1413,14 @@ def scorecard(fold, run, stream, lo, hi):
             dict(sorted(Counter(d.get("gate", "") for _, d in fold.deferred).items())),
         "red_verdicts_by_gate": dict(sorted(fold.red_verdicts.items())),
         **sched,
+        "checkin_hours": checkin_hours,
+        "checkin_work": checkin_work,
         "unsourced": UNSOURCED,
         "labels": {"run": state, "time_shares": shares_label, "grep_fallbacks": SELF_REPORTED,
                    "hours_by_label": UNIT_HOURS, "gate_hours_by_gate": GATE_HOURS,
                    "repeated_hours": repeated_label(spent), "failure_rework_hours": REWORK_HOURS,
-                   "grep_fallbacks_by_target": GREP_GROUPING, "scheduling": sched_label},
+                   "grep_fallbacks_by_target": GREP_GROUPING, "scheduling": sched_label,
+                   "checkin_hours": CHECKIN_HOURS, "checkin_work": CHECKIN_WORK},
     }
 
 
@@ -1483,7 +1646,9 @@ def path_of(p):
 
 # The most hours a proposal for class `c` can claim, from measured numbers only: for a failure
 # class, the rework of the failures it lists; for a cost class, the hours its metric holds (a
-# share converted through unit_elapsed_hours). None when the file measures no such bound.
+# share converted through unit_elapsed_hours, a `_per_unit` figure through criterion_units, a
+# count of the check-in's work read as the check-in's implementer hours). None when the file
+# measures no such bound.
 def hours_bound(c, metric, card):
     if c.get("source") == "cost":
         value = metric_value(card, metric)
@@ -1493,6 +1658,11 @@ def hours_bound(c, metric, card):
         if head in COST_SHARES:
             return value * card["unit_elapsed_hours"] if is_number(
                 card.get("unit_elapsed_hours")) else None
+        if head in COST_COUNTS:
+            return metric_value(card, COST_COUNTS[head])
+        if metric.endswith("_per_unit"):
+            return value * card["criterion_units"] if is_number(
+                card.get("criterion_units")) else None
         return value
     rework = card.get("failure_rework_hours")
     if c.get("source") == "failures" and isinstance(rework, dict):
@@ -1547,9 +1717,10 @@ def check_proposal(i, p, slugs, recurring, card, problems):
                                 "metric a scorecard number or a by-map key and each move non-zero")
                 break
     if source == "cost":
-        if head not in COST_HOURS + COST_SHARES:
+        if head not in COST_HOURS + COST_SHARES + tuple(COST_COUNTS):
             problems.append(f"{name}: a cost class's metric is a time measure ("
-                            + ", ".join(COST_HOURS + COST_SHARES) + f"), not {metric!r}")
+                            + ", ".join(COST_HOURS + COST_SHARES) + ") or a count of the "
+                            "check-in's work (" + ", ".join(COST_COUNTS) + f"), not {metric!r}")
         value, move = metric_value(card, metric), p.get("predicted_move")
         if is_number(value) and is_number(move) and not -value <= move < 0:
             problems.append(f"{name}: a cost class's predicted_move lowers its metric by at most "
@@ -1573,8 +1744,10 @@ def check_proposal(i, p, slugs, recurring, card, problems):
         bound = hours_bound(c, metric, card)
         if bound is not None and p["hours_saved"] > round(bound, 3):
             problems.append(f"{name}: hours_saved {p['hours_saved']} exceeds the {round(bound, 3)} "
-                            "h measured for its class (" + ("its metric" if source == "cost" else
-                            "the failure_rework_hours of its evidence") + ")")
+                            "h measured for its class (" + (
+                                "the failure_rework_hours of its evidence" if source != "cost"
+                                else COST_COUNTS[head] if head in COST_COUNTS else "its metric")
+                            + ")")
 
 
 def problems_of(path):

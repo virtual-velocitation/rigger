@@ -1,6 +1,6 @@
 use super::*;
 use rigger_domain::code_view::{Tests, ViewFilter};
-use rigger_domain::composed::Label;
+use rigger_domain::composed::{Label, WholeMemo};
 
 /// Env override (milliseconds) for the self-reap watcher's poll interval (spec 39, criterion 3),
 /// and its production default. The crate's own integration test sets the env small so the
@@ -74,7 +74,8 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // either leaves it empty and the view omits ages (see the resolution below for why an
     // explicit override still resolves without a repo).
     // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
-    // `reject-recurrence` line so the dashboard and `rigger status` agree. Read via the SAME
+    // `reject-recurrence` line whose failure carries no stamped bound, so the dashboard and
+    // `rigger status` agree on it. Read via the SAME
     // shared, validate-independent `scratch_defaults` resolver `cmd_status`/`watch_poll`/
     // `reclaim_spawn_scratch`/`cmd_replay` all use (spec 83 criterion 2, round 3)
     // - never `config::load`, which additionally requires a fully loadable `.rigger/agents/`
@@ -160,12 +161,21 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
         let graph_db = graph_db.clone();
         let identity = identity.clone();
         let registry_dir = registry_dir.clone();
+        // The code halves the dash's own project resolved whole, held for the life of the dash
+        // beside the worktree facts its head reads keep ([`WholeMemo`]): a request of a tree,
+        // worktree files, filter and grain the memo holds resolves no code again, and merges the
+        // log as it stands. A read of another tree drops every held whole; of one tree it holds
+        // [`WholeMemo::BOUND`], dropping the least recently read. An attached instance's read is
+        // never held: its stamps are another store's.
+        let held = WholeMemo::new(WholeMemo::BOUND);
         // The selected instance (spec 50, criterion 3) chooses WHICH store's whole graph is read:
         // the dash's own project by default, an attached instance's LOCAL graph projection when
         // one is selected, or an empty graph for a since-gone selector - never an error.
         move |instance: Option<&str>, tests: Tests, resolution: f64| -> dash::GraphRead {
             match dash_resolve_attach(instance, registry_dir.as_deref()) {
-                DashAttach::Local => dash_read_whole_graph(&graph_db, &identity, tests, resolution),
+                DashAttach::Local => {
+                    dash_read_whole_graph(&graph_db, &identity, tests, resolution, Some(&held))
+                }
                 DashAttach::Instance(inst) => dash_attach_graph(&inst, tests, resolution),
                 DashAttach::Empty => dash::GraphRead {
                     label: Some(unattached(instance)),
@@ -565,27 +575,24 @@ fn dash_read<T>(
     tests: Tests,
     read: impl FnOnce(&dyn ContextGraph) -> Result<T, contextgraph::Error>,
 ) -> Result<(T, Label), String> {
-    dash_open(
-        graph_db,
-        identity,
-        tests,
-        community::DEFAULT_RESOLUTION,
-        |graph| {
-            let answer = read(graph.as_ref())?;
-            Ok((answer, graph.stamp_label()))
-        },
-    )
+    dash_open(graph_db, identity, |reader| {
+        let graph = reader
+            .open_at(ViewFilter { tests }, community::DEFAULT_RESOLUTION)
+            .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
+        let answer =
+            read(graph.as_ref()).map_err(|e| format!("the graph cannot be read: {}", e.0))?;
+        Ok((answer, graph.stamp_label()))
+    })
 }
 
-/// [`dash_read`] with `read` given the open graph itself, to answer and label as it consumes it,
-/// the groupings at `resolution` read beside the stored ones ([`ReadGraph::open_at`]).
+/// What `read` answers of the reader of the record graph at `graph_db`, compared with the
+/// worktree of the checkout whose `.rigger/` holds it ([`ReadGraph`]); the reason, when no graph
+/// was built there or it cannot be opened or read, so the dash states it in place of a graph.
 fn dash_open<T>(
     graph_db: &str,
     identity: &str,
-    tests: Tests,
-    resolution: f64,
-    read: impl FnOnce(Box<dyn ContextGraph + '_>) -> Result<(T, Label), contextgraph::Error>,
-) -> Result<(T, Label), String> {
+    read: impl FnOnce(&ReadGraph) -> Result<T, String>,
+) -> Result<T, String> {
     let path = Path::new(graph_db);
     if !path.exists() {
         return Err(format!("no graph has been built at {graph_db}"));
@@ -599,10 +606,7 @@ fn dash_open<T>(
     let site = Site::of(checkout);
     let read_graph = ReadGraph::new(&records, &site)
         .map_err(|e| format!("the worktree of {graph_db} cannot be read: {e}"))?;
-    let graph = read_graph
-        .open_at(ViewFilter { tests }, resolution)
-        .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
-    read(graph).map_err(|e| format!("the graph cannot be read: {}", e.0))
+    read(&read_graph)
 }
 
 /// What a dash graph read describes: the label of its open, or why it read no graph.
@@ -633,12 +637,17 @@ fn dash_read_whole_graph(
     identity: &str,
     tests: Tests,
     resolution: f64,
+    held: Option<&WholeMemo>,
 ) -> dash::GraphRead {
     let ((graph, withheld, tests_hidden), label) =
-        described(dash_open(graph_db, identity, tests, resolution, |g| {
-            let tests_hidden = g.hidden_tests()?.len();
-            let read = g.into_whole()?;
-            Ok(((read.graph, read.withheld, tests_hidden), read.label))
+        described(dash_open(graph_db, identity, |reader| {
+            let open = reader
+                .open_whole_at(ViewFilter { tests }, resolution, held)
+                .map_err(|e| format!("the graph cannot be opened: {}", e.0))?;
+            let read = open
+                .into_whole()
+                .map_err(|e| format!("the graph cannot be read: {}", e.0))?;
+            Ok(((read.graph, read.withheld, read.tests_hidden), read.label))
         }));
     dash::GraphRead {
         graph,
@@ -882,7 +891,7 @@ fn dash_attach_graph(
         .join("graph.db")
         .to_string_lossy()
         .into_owned();
-    dash_read_whole_graph(&graph_db, &inst.project, tests, resolution)
+    dash_read_whole_graph(&graph_db, &inst.project, tests, resolution, None)
 }
 
 /// `rigger mcp` (spec 92, criterion 4: IN EVERY SESSION'S HAND): the operator's own
@@ -1041,6 +1050,7 @@ mod tests {
             identity,
             Tests::Exclude,
             community::DEFAULT_RESOLUTION,
+            None,
         )
         .graph;
         assert!(
@@ -1187,6 +1197,7 @@ mod tests {
             identity,
             Tests::Exclude,
             community::DEFAULT_RESOLUTION,
+            None,
         )
         .graph;
         assert!(
@@ -1211,6 +1222,7 @@ mod tests {
                 identity,
                 Tests::Exclude,
                 community::DEFAULT_RESOLUTION,
+                None,
             )
             .graph
         };

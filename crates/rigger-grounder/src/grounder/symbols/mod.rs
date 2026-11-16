@@ -29,7 +29,7 @@ pub mod paths;
 #[cfg(feature = "symbols")]
 pub mod registry;
 
-/// The `symbols` grounder (unit 4): the `Grounder` port over the code store's view of the head,
+/// The `symbols` grounder (unit 4): the `Grounder` interface over the code store's view of the head,
 /// ranking a definition-name match above a reference above an incidental prose mention. It is
 /// confined to the `symbols` feature, as the code store's extractor is; `main::select_grounder`
 /// wires it when the feature is built, and `grounder_for` returns a loud error when it is not.

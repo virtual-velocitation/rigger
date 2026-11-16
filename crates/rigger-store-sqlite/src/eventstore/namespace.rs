@@ -1,10 +1,10 @@
-//! Per-project segregation for any EventStore: a single decorator over the port
+//! Per-project segregation for any EventStore: a single decorator over the interface
 //! that prefixes every stream a project writes and scopes every global read and
 //! subscription to that namespace, **stripping the prefix from returned events so
 //! callers see clean stream names**. One backend (a shared SQLite file or a shared
 //! KurrentDB instance) can hold many projects without their streams ever mixing.
 //!
-//! Because it depends only on the port, it is written once and wraps every
+//! Because it depends only on the interface, it is written once and wraps every
 //! backend - dependency inversion buying the single implementation.
 
 use super::{
@@ -39,7 +39,7 @@ impl<'a> std::ops::Deref for Inner<'a> {
 
 impl Namespaced<'static> {
     /// Scope `inner` to the named project, holding it: a scoped store of its own, which a caller
-    /// can hold as the port itself (`Arc<dyn EventStore>`) where no borrow outlives it.
+    /// can hold as the interface itself (`Arc<dyn EventStore>`) where no borrow outlives it.
     pub fn owning(inner: std::sync::Arc<dyn EventStore>, project: &str) -> Self {
         Self::scoping(Inner::Held(inner), project)
     }
@@ -66,7 +66,7 @@ impl<'a> Namespaced<'a> {
     /// It is published because a store-level MAINTENANCE operation has to address a project's
     /// streams without going through the decorator: the delete of the derived events
     /// (`sqlite::Store::delete_derived`) works on the backend directly, since deleting rows and
-    /// reclaiming the file are not port operations. Reading the prefix from here rather than
+    /// reclaiming the file are not interface operations. Reading the prefix from here rather than
     /// re-spelling `proj-<id>-` at the call site is what keeps that maintenance and every
     /// namespaced read and write on ONE SPELLING of the namespace, so a change to the wire form
     /// can never leave a maintenance command addressing streams that no longer exist.
@@ -224,6 +224,18 @@ impl EventStore for Namespaced<'_> {
     fn latest_in_group(&self, stream: &str, group: &str) -> Result<Option<GroupHead>, Error> {
         self.inner.latest_in_group(&self.scoped(stream), group)
     }
+
+    fn read_by_record_id(
+        &self,
+        stream: &str,
+        types: &[&str],
+        id: &str,
+    ) -> Result<Vec<Event>, Error> {
+        let events = self
+            .inner
+            .read_by_record_id(&self.scoped(stream), types, id)?;
+        Ok(self.strip(events))
+    }
 }
 
 /// Wrap a subscription so each delivered event has the namespace prefix stripped
@@ -369,10 +381,10 @@ mod tests {
         crate::eventstore::contract::assert_contract(&scoped);
     }
 
-    /// The owning form is a store of its own, held as the port: it passes the contract, and it
+    /// The owning form is a store of its own, held as the interface: it passes the contract, and it
     /// scopes to the namespace the borrowing form writes, reading its project's events alone.
     #[test]
-    fn the_owning_form_is_held_as_the_port_and_scopes_as_the_borrowing_form() {
+    fn the_owning_form_is_held_as_the_interface_and_scopes_as_the_borrowing_form() {
         use crate::test_support::ev;
         use std::sync::Arc;
         let contract: Arc<dyn EventStore> = Arc::new(Namespaced::owning(

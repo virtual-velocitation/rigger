@@ -69,6 +69,27 @@ impl Lookup for TreeLookup {
     }
 }
 
+/// What `term` is nearest to when [`ContextGraph::locate`] resolves it to nothing, named as the
+/// graph section names it: the ids a case or separator variant, a prefix or a misspelling of it
+/// reaches, else the names sharing its longest prefix, none when the graph holds no near name.
+/// `None` in a build without code extraction, whose graph holds no code entity to be near.
+pub fn nearest(
+    term: &str,
+    graph: &dyn ContextGraph,
+) -> Result<Option<Vec<String>>, crate::contextgraph::Error> {
+    graph::nearest(term.trim(), graph)
+}
+
+/// How a reply names what a term no entity carries is nearest to: `nearest: a, b`, or that the
+/// graph holds no near name.
+pub fn nearest_line(nearest: &[String]) -> String {
+    if nearest.is_empty() {
+        "the graph holds no near name".to_string()
+    } else {
+        format!("nearest: {}", nearest.join(", "))
+    }
+}
+
 /// The non-empty terms of `terms`, trimmed, each once, in the order given.
 fn distinct_terms(terms: &[String]) -> Vec<&str> {
     let mut seen = std::collections::BTreeSet::new();

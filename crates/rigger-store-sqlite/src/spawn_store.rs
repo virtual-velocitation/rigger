@@ -98,7 +98,7 @@ pub fn record_result(store: &dyn EventStore, res: &SpawnResult) -> Result<Positi
 /// approved unit's result on the next replay. Collapsing the check and the write into one
 /// atomic operation closes that window.
 ///
-/// Atomicity rests on the store's optimistic concurrency (the port's only cross-backend
+/// Atomicity rests on the store's optimistic concurrency (the interface's only cross-backend
 /// primitive): read the current run ([`crate::run::read::read_run`], spec 101 - never the
 /// whole log), and if no [`crate::spawn::TYPE_SPAWN_RESULT`] for `res.id` is present, append
 /// under an [`ExpectedRevision`] pinned to the newest revision just read. A concurrent append

@@ -134,11 +134,14 @@ build:
 gates:                      # the project's verification library, referenced by name
   # fmt, clippy and build cover every workspace crate, never the root package alone: a bare
   # `cargo clippy` or `cargo build` here reaches only the root package, so no crate's own code
-  # would be linted or built under any unit (a bare `cargo fmt --check` already walked every
-  # member; `--all` says so). `clippy` lints the default features; `clippy-no-default` lints the
-  # same targets without them, the no-default lane's own lint command (.rigger/gates/lanes.sh), so
-  # a change that stops that lane compiling fails at its unit (the lane gates below say why).
-  fmt:    { run: "cargo fmt --all --check",                              kind: core }
+  # would be linted or built under any unit. `fmt` checks every tracked Rust file by its own
+  # crate's edition, never only the files cargo fmt's module walk reaches: some rustfmt releases
+  # do not walk into a module declared inside `std::cfg_select!`, as the per-OS adapters are
+  # (.rigger/gates/fmt.sh says how). `clippy` lints the default features; `clippy-no-default`
+  # lints the same targets without them, the no-default lane's own lint command
+  # (.rigger/gates/lanes.sh), so a change that stops that lane compiling fails at its unit (the
+  # lane gates below say why).
+  fmt:    { run: "sh .rigger/gates/fmt.sh",                              kind: core }
   clippy: { run: "cargo clippy --workspace --all-targets -- -D warnings", kind: core }
   clippy-no-default:
     run: "cargo clippy --workspace --all-targets --no-default-features -- -D warnings"

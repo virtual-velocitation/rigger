@@ -10,7 +10,7 @@
 //! ended it, and is never probed itself; a `model_not_found` hold is never probed either, its
 //! action being a configuration a probe cannot change.
 //!
-//! The probe itself is a port, [`HoldProbe`], which the agent host implements: what a probe
+//! The probe itself is an interface, [`HoldProbe`], which the agent host implements: what a probe
 //! answers ([`ProbeOutcome`]) is all the hold controller reads of it.
 
 use std::time::{Duration, SystemTime};
@@ -153,7 +153,7 @@ pub enum ProbeOutcome {
     Failed(String),
 }
 
-/// THE HOLD PROBE PORT (spec 105 RELEASE): whether a launch on the hold a probe is owed would
+/// THE HOLD PROBE INTERFACE (spec 105 RELEASE): whether a launch on the hold a probe is owed would
 /// answer now. It writes no store: the hold controller records what the outcome decides.
 pub trait HoldProbe {
     /// Probe the hold `owed` names in the project at `root`, within `owed.delay`.

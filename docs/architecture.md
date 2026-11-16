@@ -303,8 +303,10 @@ an adjudicator step comes at most once and last.
 
 So per unit, over the canonical sequence, the conductor runs: **implement -> the unit's gates -> lenses (parallel) ->
 adversary (if present) -> adjudicator (if present, verdict gates) -> integrate**. Every
-step is optional and they compose; an empty panel runs no per-unit review. Every
-planner-proposed unit inherits `defaults.review` automatically.
+step is optional and they compose; an empty panel runs no per-unit review. Every unit,
+baseline or planner-proposed, takes its fan-out template's `review` block when the template
+declares one, else `defaults.review`; the template's `max_retries`, `autonomy` and
+`speculation_width` reach every unit the same way.
 
 **Risk-tiered review depth (opt-in).** A `review` block may carry an optional `tiers:`
 depth policy to right-size the panel to each unit's *observable* risk - the grounded
@@ -528,7 +530,7 @@ pub struct Filter { pub stream_prefix: Option<String> }
   thread; at Rigger's event volume this is trivial. Backed by bundled `rusqlite`; zero
   external service; one file under `.rigger/`.
 - **`kurrentdb` (the server backend, compiled into every build).** A thin adapter over an
-  event-sourcing server's client, bridging its async gRPC API onto the sync port through a
+  event-sourcing server's client, bridging its async gRPC API onto the sync interface through a
   runtime: `append` -> append-to-stream, `read_all` -> the global read, `subscribe_all` ->
   a filtered catch-up subscription. It connects eagerly and **fails fast on an unreachable
   server**. It carries **no build-time feature flag** - it is always in the binary and
@@ -581,7 +583,7 @@ projection is thrown away and rebuilt from the log at will (event sourcing's sup
 Event streams and the knowledge graph are **scoped to one project by default**, never
 shared. `cargo install` puts the *binary* on a shared PATH, but its *data* is always
 project-local, enforced by **one mechanism for every backend**: a **project namespace
-applied to stream names**, via a single scoping decorator over the `EventStore` port
+applied to stream names**, via a single scoping decorator over the `EventStore` interface
 (`eventstore::namespace::Namespaced`). The decorator prefixes every stream with its
 `proj-<project>-` namespace and scopes every read/subscribe filter to it, so callers use
 plain stream names and never see the namespace. SQLite realizes the filter on the `stream`
@@ -1054,15 +1056,15 @@ structurally.
 A Cargo workspace whose crates sit in Clean Architecture rings, innermost first; a crate
 depends only on crates in its own ring or an inner one, pinned by `tests/boundary_audit.rs`.
 
-- Ring 1, entities and ports: `rigger-domain` holds the entities, the use-case rules and the
-  ports, and knows no file, process, network, clock, store or agent host.
+- Ring 1, entities and interfaces: `rigger-domain` holds the entities, the use-case rules and the
+  interfaces, and knows no file, process, network, clock, store or agent host.
 - Ring 2, application: `rigger-conductor` is the conductor use case that walks the stage DAG,
   runs each stage's agent and gates and emits the event stream.
 - Ring 3, adapters: `rigger-store-sqlite` (the event stores), `rigger-graph-sqlite` (the
   context-graph projector), `rigger-process` (process spawn, the reaper and the build budget),
   `rigger-worktree-git` (per-unit worktrees and landing), `rigger-gates-shell` (the gate
   runner), `rigger-driver` (the agent hosts), `rigger-grounder` (the grounders and the source
-  ingest) and `rigger-config-files` (the operator's `.rigger/` tree) implement the ports.
+  ingest) and `rigger-config-files` (the operator's `.rigger/` tree) implement the interfaces.
 - Ring 4, delivery: `rigger-console` (the console fold shared by `rigger status` and the
   console page), `rigger-dash` (the HTTP dashboard and the MCP server) and `console-core` (the
   console's WebAssembly ABI) present the run.
@@ -1081,7 +1083,7 @@ github.com/virtual-velocitation/rigger
 |-- src/
 |   |-- lib.rs                   the library: re-exports every module
 |   |-- main.rs                  the CLI binary + the store-resolution authority
-|   |-- conductor.rs             the DAG executor + run loop; the AgentDriver port
+|   |-- conductor.rs             the DAG executor + run loop; the AgentDriver interface
 |   |-- eventstore/
 |   |   |-- mod.rs               the EventStore trait + Event/Position/Revision/Filter + redaction
 |   |   |-- sqlite.rs            default adapter (embedded, bundled rusqlite)
@@ -1180,12 +1182,12 @@ Where each responsibility lives, and the design move that keeps it project-agnos
     into every build and selected purely by store resolution (a flag, an environment variable,
     a per-machine secret file, or the committed `store:` choice); the structural grounder is
     a cargo feature.
-  - R8 CLEAN ARCHITECTURE + DI: ports (EventStore/Projection/AgentDriver/Grounder/gate::Runner)
-    are traits; the adapters depend inward; use cases depend only on ports; a single
+  - R8 CLEAN ARCHITECTURE + DI: interfaces (EventStore/Projection/AgentDriver/Grounder/gate::Runner)
+    are traits; the adapters depend inward; use cases depend only on interfaces; a single
     composition root (`src/main.rs` and its `src/cli/` command modules) constructs the concrete adapters and injects them. No
     globals, no module-level singletons, no type building its own dependencies.
   - R9 PROJECT-SCOPED DATA, ONE MECHANISM: event streams and the knowledge graph are segregated
-    per project by a single scoping decorator over the EventStore port, a project namespace
+    per project by a single scoping decorator over the EventStore interface, a project namespace
     applied to stream names, identical for every backend. The shared `cargo install` binary
     never implies shared data; the graph is always a local, per-project projection.
   - R10 ONE STORE-RESOLUTION AUTHORITY: exactly one place decides which backend a command uses,
@@ -1195,7 +1197,7 @@ Where each responsibility lives, and the design move that keeps it project-agnos
 - Consequences: a hardcoded flow, a project-specific concept baked into the core, a mutable
   (non-event-sourced) source of truth, a deleted-not-invalidated fact, a default that requires a
   server/editor, a build-time feature flag for the server backend, a second store-resolution or
-  segregation mechanism, or a use case that depends on a concrete adapter instead of a port are
+  segregation mechanism, or a use case that depends on a concrete adapter instead of an interface are
   defects.
 ```
 

@@ -67,3 +67,9 @@
 # class cannot recur a third time in a different shape.
 mutants.out*/
 .rigger/store
+.rigger/*.db
+.rigger/*.db-wal
+.rigger/*.db-shm
+.rigger/*.db.*
+.rigger/*.lock
+.rigger/*.bak-*
