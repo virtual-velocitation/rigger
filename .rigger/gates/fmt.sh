@@ -13,7 +13,8 @@
 # its own crate's. Here each file takes the edition of the nearest tracked Cargo.toml at or above
 # it that declares a [package]: its `edition = "<year>"`, or 2015, cargo's default, when it
 # declares none. An edition declared in any other form (`edition.workspace = true`) is refused,
-# never guessed, and so is a Rust file that lies in no crate.
+# never guessed, and so is a Rust file that lies in no crate. A manifest is read the same with
+# CRLF line endings, as a Windows checkout may write it.
 #
 # Excluded files: none. Every tracked `.rs` file is standalone Rust; none is an `include!`
 # fragment or a fixture kept unformatted on purpose. Such a file would be excluded by its path,
@@ -33,6 +34,7 @@ crates=$(git ls-files -- Cargo.toml '*/Cargo.toml' | awk '
         crate = 0
         edition = 2015
         while ((getline line < manifest) > 0) {
+            sub(/\r$/, "", line)
             if (line ~ /^[ \t]*\[/) {
                 package = line ~ /^[ \t]*\[[ \t]*package[ \t]*\][ \t]*(#.*)?$/
                 crate = crate || package
