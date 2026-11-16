@@ -53986,6 +53986,279 @@ mod tests {
         }
     }
 
+    /// A changed file of the review packet's fixtures: `path`, renamed from `old` when set, git's
+    /// `status` letter, its line counts (none for a binary file) and its patch section.
+    fn packet_file(
+        path: &str,
+        old: Option<&str>,
+        status: char,
+        lines: Option<(u32, u32)>,
+        patch: &str,
+    ) -> crate::worktree::FileDiff {
+        crate::worktree::FileDiff {
+            path: path.to_string(),
+            old_path: old.map(str::to_string),
+            status,
+            lines,
+            patch: patch.to_string(),
+        }
+    }
+
+    /// Over the placeholder fixture the REVIEW PACKET is its registry groups on each branch: a
+    /// first round's packet whose commits, text, binary and renamed files and hunks fit the
+    /// budget; a later round's packet with no commit, a REQUIRED item's path its delta left
+    /// unchanged and a hunk over the budget, listed as elided; and a packet whose change could
+    /// not be read.
+    #[test]
+    fn the_review_packet_is_its_groups_on_each_branch() {
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let group = |name: &str, slots: &[(&str, &str)]| {
+            fill(&picks.rendered("conductor::ReviewPacket::block", &[name]), slots)
+        };
+        let header = group(
+            "REVIEW_PACKET_HEADER",
+            &[("base", "{base}"), ("head", "{head}")],
+        );
+        let text = packet_file("{a}", None, 'M', Some((1, 2)), "{patch a}\n");
+        let binary = packet_file("{bin}", None, 'A', None, "{patch bin}\n");
+        let renamed = packet_file("{new}", Some("{old}"), 'R', Some((3, 0)), "{patch r}\n");
+        let first = vec![text.clone(), binary.clone(), renamed.clone()];
+        let over = packet_file(
+            "{big}",
+            None,
+            'M',
+            Some((4, 5)),
+            &"x".repeat(PACKET_BUDGET_BYTES + 1),
+        );
+        let packet = |change: Option<PacketChange>, required: &[&str]| {
+            ReviewPacket {
+                base: "{base}".to_string(),
+                head: "{head}".to_string(),
+                change,
+                required: required.iter().map(|s| s.to_string()).collect(),
+            }
+            .block()
+        };
+        let change = |commits: Vec<crate::worktree::CommitLine>,
+                      files: Vec<crate::worktree::FileDiff>,
+                      delta: Vec<crate::worktree::FileDiff>| PacketChange {
+            commits,
+            whole: "{whole}".to_string(),
+            files,
+            delta,
+        };
+        let commit = crate::worktree::CommitLine {
+            sha: "{sha}".to_string(),
+            subject: "{subject}".to_string(),
+        };
+        let cases = [
+            (
+                "a first round's packet under the budget",
+                packet(
+                    Some(change(vec![commit], first.clone(), first.clone())),
+                    &[],
+                ),
+                format!(
+                    "{header}{}{}{}{}{}{}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", "1")]),
+                    group(
+                        "PACKET_COMMITS_ROW",
+                        &[("sha", "{sha}"), ("subject", "{subject}")]
+                    ),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", "3"),
+                            ("added", "4"),
+                            ("removed", "2")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "M"),
+                            ("path", "{a}"),
+                            ("added", "1"),
+                            ("removed", "2")
+                        ]
+                    ),
+                    group(
+                        "PACKET_BINARY_ROW",
+                        &[("status", "A"), ("path", "{bin}")]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "R"),
+                            ("path", "{old} -> {new}"),
+                            ("added", "3"),
+                            ("removed", "0")
+                        ]
+                    ),
+                    group("PACKET_HUNKS_HEADER", &[]),
+                    "{patch a}\n",
+                    "{patch r}\n",
+                ),
+            ),
+            (
+                "a later round's packet with no commit, an unchanged REQUIRED path and an elided hunk",
+                packet(
+                    Some(change(
+                        Vec::new(),
+                        vec![text.clone(), over.clone()],
+                        vec![over.clone()],
+                    )),
+                    &["{req}", "{big}", "{req}"],
+                ),
+                format!(
+                    "{header}{}{}{}{}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", "0")]),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", "2"),
+                            ("added", "5"),
+                            ("removed", "7")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "M"),
+                            ("path", "{a}"),
+                            ("added", "1"),
+                            ("removed", "2")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "M"),
+                            ("path", "{big}"),
+                            ("added", "4"),
+                            ("removed", "5")
+                        ]
+                    ),
+                    group(
+                        "PACKET_REQUIRED_UNCHANGED",
+                        &[("path", "{req}"), ("base", "{base}")]
+                    ),
+                    group(
+                        "PACKET_ELIDED_HEADER",
+                        &[("base", "{base}"), ("head", "{head}")]
+                    ),
+                    group(
+                        "PACKET_ELIDED_ROW",
+                        &[("path", "{big}"), ("added", "4"), ("removed", "5")]
+                    ),
+                ),
+            ),
+            (
+                "a packet whose change could not be read",
+                packet(None, &[]),
+                format!(
+                    "{header}{}",
+                    group("PACKET_UNREADABLE", &[("base", "{base}"), ("head", "{head}")])
+                ),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
+        }
+    }
+
+    /// The packet's hunks: the REQUIRED items' paths first (a rename's old path counts), then
+    /// the rest, each group smallest patch first, kept while under both caps; the first file
+    /// over either cap and every file after it are elided, and a binary file is neither.
+    #[test]
+    fn the_review_packet_keeps_required_hunks_first_then_the_smallest_under_its_caps() {
+        type Row = (
+            &'static str,
+            Vec<crate::worktree::FileDiff>,
+            &'static [&'static str],
+            Vec<String>,
+            Vec<String>,
+        );
+        let sized = |path: &str, bytes: usize| {
+            packet_file(path, None, 'M', Some((1, 1)), &"x".repeat(bytes))
+        };
+        let names = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let half = PACKET_BUDGET_BYTES / 2;
+        let many: Vec<_> = (0..=PACKET_VERBATIM_N)
+            .map(|i| sized(&format!("f{i:03}"), 10))
+            .collect();
+        let many_kept: Vec<String> = (0..PACKET_VERBATIM_N).map(|i| format!("f{i:03}")).collect();
+        let rows: Vec<Row> = vec![
+            (
+                "every hunk fits, smallest first",
+                vec![sized("a", 30), sized("b", 10), sized("c", 20)],
+                &[],
+                names(&["b", "c", "a"]),
+                Vec::new(),
+            ),
+            (
+                "a REQUIRED path leads the smallest",
+                vec![sized("a", 30), sized("b", 10), sized("c", 20)],
+                &["a"],
+                names(&["a", "b", "c"]),
+                Vec::new(),
+            ),
+            (
+                "a rename's old path is a REQUIRED path",
+                vec![
+                    packet_file("n", Some("o"), 'R', Some((1, 1)), &"x".repeat(30)),
+                    sized("b", 10),
+                ],
+                &["o"],
+                names(&["n", "b"]),
+                Vec::new(),
+            ),
+            (
+                "a binary file is neither kept nor elided",
+                vec![packet_file("bin", None, 'A', None, "x"), sized("b", 10)],
+                &[],
+                names(&["b"]),
+                Vec::new(),
+            ),
+            (
+                "the byte cap ends the slice at the first file over it",
+                vec![sized("a", half + 1), sized("b", half), sized("c", 10)],
+                &[],
+                names(&["c", "b"]),
+                names(&["a"]),
+            ),
+            (
+                "a REQUIRED file over the cap elides every file after it",
+                vec![sized("a", PACKET_BUDGET_BYTES + 1), sized("b", 10)],
+                &["a"],
+                Vec::new(),
+                names(&["a", "b"]),
+            ),
+            (
+                "the count cap keeps the first files under it",
+                many,
+                &[],
+                many_kept,
+                names(&[&format!("f{PACKET_VERBATIM_N:03}")]),
+            ),
+        ];
+        for (case, delta, required, kept, elided) in rows {
+            let required = names(required);
+            let (got_kept, got_elided) = packet_hunks(&delta, &required);
+            let paths = |files: Vec<&crate::worktree::FileDiff>| {
+                files.into_iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+            };
+            assert_eq!(
+                (paths(got_kept), paths(got_elided)),
+                (kept, elided),
+                "{case}"
+            );
+        }
+    }
+
     /// Spec 121, criterion 16: over the placeholder fixture the plan-critique prompt and the
     /// re-plan lead are their registry groups concatenated in registry order, on each branch: a
     /// first plan under no cap whose one unit owns no criterion, needs and radius and overlaps
