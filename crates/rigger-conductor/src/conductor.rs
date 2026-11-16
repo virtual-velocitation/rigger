@@ -2239,13 +2239,17 @@ impl PriorFailure {
     }
 
     /// The `UnitFailed` body recording that `unit`'s attempt failed with `cause`, leaving
-    /// `attempts` used: this failure's gate evidence and review reason ride on it, so the
-    /// next attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
-    /// re-enters the unit. The one body every `UnitFailed` writes, whichever path failed.
-    fn failed_body(&self, unit: &str, attempts: u32, cause: &str) -> Value {
+    /// `attempts` used of the `max_retries` it escalates at ([`RunCtx::max_retries_for`] on its
+    /// own stage): this failure's gate evidence and review reason ride on it, so the next
+    /// attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
+    /// re-enters the unit, and the bound rides on it so an operator surface holding only the
+    /// log and the run's defaults shows the bound the unit escalates at. The one body every
+    /// `UnitFailed` writes, whichever path failed.
+    fn failed_body(&self, unit: &str, attempts: u32, max_retries: u32, cause: &str) -> Value {
         json!({
             "id": unit,
             "attempts": attempts,
+            "max_retries": max_retries,
             "cause": cause,
             "gate_evidence": self.gate_evidence,
             "review_reason": self.review_reason,
@@ -3630,7 +3634,7 @@ pub fn run_serving(
             // wave, but a resume whose units are all already terminal schedules no wave, so
             // without this the seeded rollback would never re-drive. On a fresh run (or a resume
             // with nothing pending) the queue is empty and this is a no-op.
-            ctx.drain_compensations(&mut integrated, &mut terminal)?;
+            ctx.drain_compensations(&stages, &mut integrated, &mut terminal)?;
             let frontier = Frontier {
                 critique_gate: gate.as_deref(),
                 fanout_criteria: &fanout_criteria,
@@ -3676,7 +3680,7 @@ pub fn run_serving(
                 // on the run branch and re-entering it into remediation - so the next
                 // `wave_ready` re-schedules it. The forward door stays untouched; this is its
                 // evented reverse gear.
-                ctx.drain_compensations(&mut integrated, &mut terminal)?;
+                ctx.drain_compensations(&stages, &mut integrated, &mut terminal)?;
             }
         }
 
@@ -4569,6 +4573,7 @@ impl RunCtx<'_> {
     /// is nothing to revert.
     fn drain_compensations(
         &self,
+        stages: &BTreeMap<String, Stage>,
         integrated: &mut HashSet<String>,
         terminal: &mut HashSet<String>,
     ) -> Result<(), Error> {
@@ -4626,13 +4631,24 @@ impl RunCtx<'_> {
                 .lock()
                 .unwrap()
                 .insert(comp.target.clone(), attempts);
+            // The bound the re-entered unit escalates at: its own stage's, as its next attempt
+            // reads it (an integrated unit is in the DAG; the run's defaults otherwise).
+            let max_retries = self.max_retries_for(
+                &comp.target,
+                stages.get(&comp.target).unwrap_or(&Stage::default()),
+            );
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
                 // spec 69, criterion 3 (the cause wire): a compensation revert is a
                 // LATER unit's review proving this one wrong - a deferred reject. It
                 // carries no gate evidence or review reason of its own: the
                 // contradiction rides as metadata, which a resume recovers it from.
-                PriorFailure::default().failed_body(&comp.target, attempts, CAUSE_REJECT),
+                PriorFailure::default().failed_body(
+                    &comp.target,
+                    attempts,
+                    max_retries,
+                    CAUSE_REJECT,
+                ),
                 &[
                     (META_COMPENSATED, &compensated),
                     (META_CONTRADICTION, contradiction),
@@ -7145,7 +7161,12 @@ impl RunCtx<'_> {
                     // spec 69, criterion 3: the resumed exhaustive re-assert failing is a
                     // plain gate failure - name the gate. Its evidence rides along (gap 61),
                     // so the later process that re-enters the unit prompts it from the log.
-                    failure.failed_body(&st.name, attempts + 1, &cause),
+                    failure.failed_body(
+                        &st.name,
+                        attempts + 1,
+                        self.max_retries_for(&st.name, st),
+                        &cause,
+                    ),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -7190,7 +7211,12 @@ impl RunCtx<'_> {
                     // went red is a merge conflict, not a plain gate failure. The
                     // merge-break evidence rides along (gap 61), so the later process
                     // that re-enters the unit prompts it from the log.
-                    failure.failed_body(&st.name, attempts + 1, CAUSE_INTEGRATE_CONFLICT),
+                    failure.failed_body(
+                        &st.name,
+                        attempts + 1,
+                        self.max_retries_for(&st.name, st),
+                        CAUSE_INTEGRATE_CONFLICT,
+                    ),
                     &[(META_WORKTREE_SHA, &failed_sha)],
                 )?;
                 return Ok(false);
@@ -7921,7 +7947,8 @@ impl RunCtx<'_> {
                 any_parked.store(false, Ordering::SeqCst);
                 continue;
             }
-            let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
+            let max_retries = self.max_retries_for(&st.name, st);
+            let rem = safety::remediate(attempts, max_retries);
             attempts = rem.attempts;
             // The new attempt's infra reruns, from the log read at entry (none, unless an
             // earlier process already ran it).
@@ -7948,7 +7975,7 @@ impl RunCtx<'_> {
                 // review reject) - never inferred here from the shared evidence. The
                 // failure's specifics ride along (gap 61), so a later process re-entering
                 // the unit prompts it from the log.
-                next.failed_body(&st.name, attempts, &cause),
+                next.failed_body(&st.name, attempts, max_retries, &cause),
                 &[(META_WORKTREE_SHA, &failed_sha)],
             )?;
             if rem.decision == safety::Decision::Escalate {
@@ -8450,7 +8477,12 @@ impl RunCtx<'_> {
             self.emit_keyed_meta(
                 &format!("{}/speculation-lost#{base}", st.name),
                 ledger::TYPE_UNIT_FAILED,
-                failure.failed_body(&st.name, base + width, &cause),
+                failure.failed_body(
+                    &st.name,
+                    base + width,
+                    self.max_retries_for(&st.name, st),
+                    &cause,
+                ),
                 &meta,
             )?;
         }
@@ -8484,7 +8516,12 @@ impl RunCtx<'_> {
             };
             self.emit_meta(
                 ledger::TYPE_UNIT_FAILED,
-                failure.failed_body(&st.name, lane.attempt + 1, CAUSE_INTEGRATE_CONFLICT),
+                failure.failed_body(
+                    &st.name,
+                    lane.attempt + 1,
+                    self.max_retries_for(&st.name, st),
+                    CAUSE_INTEGRATE_CONFLICT,
+                ),
                 &[(META_WORKTREE_SHA, &lane.sha)],
             )?;
         }
@@ -8914,7 +8951,8 @@ impl RunCtx<'_> {
             // duplicate UnitFailed - the bound accumulates from the log, it is never
             // re-counted (finding rf-fanout-replay-dup-unitfailed).
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries_for(&st.name, st));
+            let max_retries = self.max_retries_for(&st.name, st);
+            let rem = safety::remediate(attempts, max_retries);
             attempts = rem.attempts;
             // spec 69, criterion 3 (the cause wire): `approved` means the gates ran and
             // failed (`gate_result` is `Some`); otherwise the adjudicator itself rejected.
@@ -8939,7 +8977,7 @@ impl RunCtx<'_> {
             self.emit_keyed_meta(
                 &failed_key(&st.name, failed_attempt),
                 ledger::TYPE_UNIT_FAILED,
-                failure.failed_body(&st.name, attempts, &cause),
+                failure.failed_body(&st.name, attempts, max_retries, &cause),
                 // The reviewed base-HEAD sha (spec 11, unit 1): a standalone-review reject
                 // pairs with a later approve on the SAME sha for the flip-flop fold.
                 &[(META_WORKTREE_SHA, &worktree::head_sha_of(dir))],
@@ -10119,7 +10157,8 @@ impl RunCtx<'_> {
             // Reject: charge a remediation attempt (replay-keyed on the failing attempt so a
             // replay re-reaching it appends no duplicate); the round head decides what follows.
             let failed_attempt = attempts;
-            let rem = safety::remediate(attempts, self.max_retries_for(&gate_name, gate_st));
+            let max_retries = self.max_retries_for(&gate_name, gate_st);
+            let rem = safety::remediate(attempts, max_retries);
             attempts = rem.attempts;
             let failure = PriorFailure {
                 review_reason: reason.clone(),
@@ -10131,7 +10170,7 @@ impl RunCtx<'_> {
                 // spec 69, criterion 3: the plan-critique gate runs no gates of its
                 // own - every reject here is the adjudicator's, and its reasoning rides
                 // along (gap 61).
-                failure.failed_body(&gate_name, attempts, CAUSE_REJECT),
+                failure.failed_body(&gate_name, attempts, max_retries, CAUSE_REJECT),
             )?;
             rejected = Some(rem.decision);
             prior_reason = reason;
@@ -14032,7 +14071,14 @@ impl RunCtx<'_> {
                 u.id.clone(),
                 Stage {
                     name: u.id,
-                    agent: u.agent,
+                    // A proposal naming no implementer (`agent` is optional on the wire) is
+                    // implemented by the template's agent, as its baseline would be: an empty
+                    // agent would run the unit's gates with no implementer spawn.
+                    agent: if u.agent.is_empty() {
+                        template.agent.clone()
+                    } else {
+                        u.agent
+                    },
                     needs,
                     coverage: u.coverage,
                     // GATE INHERITANCE (spec 103, decided): the template's gates are
@@ -14047,8 +14093,9 @@ impl RunCtx<'_> {
                     // of the same rank this proposal was just ranked by above.
                     episode: u.episode,
                     unmatched_fanout_proposal,
-                    // The rest of the template's inherited shape (its `on_pass` and
-                    // `partition`), on both branches, as a baseline carries it.
+                    // The rest of the template's inherited shape (its `on_pass`,
+                    // `partition`, `review`, `autonomy`, `speculation_width` and
+                    // `max_retries`), on both branches, as a baseline carries it.
                     ..template.clone()
                 },
             );
@@ -22166,6 +22213,316 @@ mod tests {
         }
     }
 
+    /// What the conductor resolves for one implementer unit from the settings a fan-out template
+    /// may declare: its review panel (its debug rendering, so every part of the panel counts),
+    /// its attempt bound, whether its gate pauses for a human, and its speculation width.
+    #[derive(Debug, PartialEq)]
+    struct UnitSettings {
+        review: String,
+        max_retries: u32,
+        paused: bool,
+        speculation_width: u32,
+    }
+
+    /// The settings the conductor resolves, through the same calls a run makes, for the three
+    /// units `cfg`'s fan-out `implement` template yields over criteria A and B: the baseline unit
+    /// serving A, `u-b`, a planner-proposed unit superseding B's baseline, then `u-new`, a
+    /// planner-proposed unit matching no criterion.
+    fn resolved_unit_settings(cfg: &Config) -> [UnitSettings; 3] {
+        let (crit_a, crit_b) = (
+            "criterion A: the alpha module is implemented",
+            "criterion B: the beta module is implemented",
+        );
+        let criteria = vec![crit_a.to_string(), crit_b.to_string()];
+        let mut stages = cfg.workflow.stages.clone();
+        let template = stages.remove("implement").unwrap();
+        stages.extend(baseline_units(&template, &criteria, Some("plan")));
+        let store = Store::open(":memory:").unwrap();
+        append_proposal(&store, "u-b", crit_b, &criterion_stable_id(2, crit_b), None);
+        append_proposal(
+            &store,
+            "u-new",
+            "a sub-unit the planner split out, serving no criterion",
+            "",
+            None,
+        );
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, criteria);
+        let ctx = RunCtx::for_test(cfg, &deps);
+        ctx.harvest_proposed(
+            &mut stages,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        )
+        .unwrap();
+        [
+            (baseline_id(1, crit_a), true),
+            ("u-b".to_string(), false),
+            ("u-new".to_string(), false),
+        ]
+        .map(|(id, baseline)| {
+            let unit = &stages[&id];
+            assert_eq!(
+                unit.baseline, baseline,
+                "{id} must be a baseline: {baseline}"
+            );
+            UnitSettings {
+                review: format!("{:?}", ctx.select_review_panel(unit, &[], false).panel),
+                max_retries: ctx.max_retries_for(&id, unit),
+                paused: ctx.stage_paused_for_review(unit),
+                speculation_width: ctx.effective_speculation_width(unit),
+            }
+        })
+    }
+
+    /// A review panel of the one `lens`.
+    fn panel_of(lens: &str) -> crate::config::ReviewPanel {
+        crate::config::ReviewPanel {
+            lenses: vec![lens.into()],
+            ..Default::default()
+        }
+    }
+
+    /// A fan-out template declaring `declared` (a review lens, an attempt bound, an autonomy and a
+    /// speculation width, each empty or zero when it declares none), under run defaults that
+    /// differ from every declared value, gives its baseline unit and both its planner-proposed
+    /// units, the one superseding a baseline and the one matching no criterion, alike the
+    /// `expected` (lens, attempt bound, paused, speculation width).
+    fn template_settings_reach_every_unit(
+        declared: (&str, u32, &str, u32),
+        expected: (&str, u32, bool, u32),
+    ) {
+        let mut cfg = supersede_cfg();
+        let defaults = &mut cfg.workflow.defaults;
+        defaults.review = panel_of("default-lens");
+        defaults.max_retries = 4;
+        defaults.autonomy = "silent".into();
+        defaults.speculation_width = 2;
+        let template = cfg.workflow.stages.get_mut("implement").unwrap();
+        let (lens, max_retries, autonomy, speculation_width) = declared;
+        if !lens.is_empty() {
+            template.review = panel_of(lens);
+        }
+        template.max_retries = max_retries;
+        template.autonomy = autonomy.into();
+        template.speculation_width = speculation_width;
+        let (lens, max_retries, paused, speculation_width) = expected;
+        let want = UnitSettings {
+            review: format!("{:?}", panel_of(lens)),
+            max_retries,
+            paused,
+            speculation_width,
+        };
+        for (unit, got) in ["the baseline", "the proposed", "the unmatched proposed"]
+            .iter()
+            .zip(resolved_unit_settings(&cfg))
+        {
+            assert_eq!(
+                got, want,
+                "{unit} unit of a template declaring {declared:?}"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// The template's own review panel, not `defaults.review`.
+        a_templates_review_panel_reaches_its_baseline_and_proposed_units:
+            template_settings_reach_every_unit(
+                ("template-lens", 0, "", 0),
+                ("template-lens", 4, false, 2),
+            );
+        /// The template's own attempt bound, not `defaults.max_retries`.
+        a_templates_max_retries_reaches_its_baseline_and_proposed_units:
+            template_settings_reach_every_unit(("", 5, "", 0), ("default-lens", 5, false, 2));
+        /// The template's own autonomy: `manual` pauses each unit's gate for a human.
+        a_templates_autonomy_reaches_its_baseline_and_proposed_units:
+            template_settings_reach_every_unit(("", 0, "manual", 0), ("default-lens", 4, true, 2));
+        /// The template's own speculation width, not `defaults.speculation_width`.
+        a_templates_speculation_width_reaches_its_baseline_and_proposed_units:
+            template_settings_reach_every_unit(("", 0, "", 3), ("default-lens", 4, false, 3));
+        /// A template declaring none of the four leaves every unit on the run defaults.
+        a_template_declaring_no_unit_settings_leaves_its_units_on_the_defaults:
+            template_settings_reach_every_unit(("", 0, "", 0), ("default-lens", 4, false, 2));
+    }
+
+    /// This repository's own workflow, whose `implement` template declares none of the four
+    /// settings, gives its baseline and both proposed units exactly the defaults it declares: the
+    /// `defaults.review` panel, 6 attempts, a gate that never pauses, one candidate.
+    #[test]
+    fn this_repositorys_workflow_gives_its_units_its_defaults() {
+        let cfg = config_store::load("../..").expect("the repo's own .rigger config must load");
+        let want = UnitSettings {
+            review: format!("{:?}", cfg.workflow.defaults.review),
+            max_retries: 6,
+            paused: false,
+            speculation_width: 1,
+        };
+        for (unit, got) in ["the baseline", "the proposed", "the unmatched proposed"]
+            .iter()
+            .zip(resolved_unit_settings(&cfg))
+        {
+            assert_eq!(got, want, "{unit} unit of this repository's workflow");
+        }
+    }
+
+    /// The criterion the blocker-line and agent-fallback runs below serve.
+    const ALPHA: &str = "criterion A: the alpha module is implemented";
+
+    /// The gate every attempt fails: `red` exits non-zero.
+    const RED: (&str, &str) = ("red", "false");
+
+    /// A config of `stages` whose run default is 4 attempts and whose `red` gate always fails.
+    fn red_cfg(stages: Vec<Stage>) -> Config {
+        let mut cfg = workflow_cfg(&["planner", "worker"], &[RED], stages);
+        cfg.workflow.defaults.max_retries = 4;
+        cfg
+    }
+
+    /// A fan-out `implement` template after `plan`, gated by `red`, declaring 5 attempts.
+    fn red_template_cfg() -> Config {
+        red_cfg(vec![
+            plan_stage(),
+            Stage {
+                max_retries: 5,
+                ..fan_out_stage("implement", &["plan"], &[RED.0])
+            },
+        ])
+    }
+
+    /// An authored `checkin` stage run by `worker`, gated by `red`, declaring 2 attempts as this
+    /// repository's own `checkin` stage does.
+    fn red_checkin_cfg() -> Config {
+        red_cfg(vec![Stage {
+            name: "checkin".into(),
+            agent: "worker".into(),
+            gates: vec![RED.0.into()],
+            on_pass: "merge".into(),
+            max_retries: 2,
+            ..Default::default()
+        }])
+    }
+
+    /// `cfg`'s run over `criteria` drives `unit` to escalation on its always-failing `red` gate
+    /// after `bound` attempts, and the operator's blocker line for `unit` at its first failure,
+    /// rendered from the log through the shared classifier with the one run-wide
+    /// `defaults.max_retries` a surface holds, names that same `bound`: the line and the
+    /// escalation read one bound.
+    fn a_units_blocker_line_names_the_bound_it_escalates_at(
+        cfg: Config,
+        criteria: &[&str],
+        unit: &str,
+        bound: u32,
+    ) {
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let criteria = criteria.iter().map(|c| c.to_string()).collect();
+        let rs = run_isolated(&cfg, &stub_deps(&st, &driver, criteria)).unwrap();
+        assert_eq!(
+            (rs.units[unit].status, rs.units[unit].attempts),
+            (ledger::Status::Escalated, bound),
+            "{unit} escalates on its red gate after its own bound of attempts"
+        );
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        let first_failure = events
+            .iter()
+            .position(|e| {
+                e.type_ == ledger::TYPE_UNIT_FAILED
+                    && serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == unit
+            })
+            .expect("the unit's first failure");
+        let blockers = crate::blocker::from_events(
+            &events[..=first_failure],
+            cfg.workflow.defaults.max_retries,
+        )
+        .unwrap();
+        let prefix = format!("{unit}: ");
+        assert_eq!(
+            crate::blocker::lines(&blockers)
+                .into_iter()
+                .find(|line| line.starts_with(&prefix)),
+            Some(format!("{unit}: reject-recurrence #1/{bound} (gate:red)")),
+            "{unit}'s line after its first failure names the bound it escalates at"
+        );
+    }
+
+    crate::test_cases! {
+        /// A fan-out template's own bound of 5, not the run default of 4.
+        a_template_units_blocker_line_names_the_templates_bound:
+            a_units_blocker_line_names_the_bound_it_escalates_at(
+                red_template_cfg(),
+                &[ALPHA],
+                &baseline_id(1, ALPHA),
+                5,
+            );
+        /// The check-in stage's own bound of 2, not the run default of 4.
+        the_checkin_stages_blocker_line_names_its_own_bound:
+            a_units_blocker_line_names_the_bound_it_escalates_at(
+                red_checkin_cfg(),
+                &[],
+                "checkin",
+                2,
+            );
+    }
+
+    /// The planner proposal `proposal` (a [`proposal_data`] for a run over ALPHA), emitted with
+    /// its `agent` left out and again with it empty, passes the emit guard into the DAG, and the
+    /// fan-out template's agent `worker` implements it: the unit integrates after its
+    /// implementer spawn, never without one.
+    fn a_proposal_naming_no_agent_is_implemented_by_the_templates_agent(proposal: Value) {
+        let unit = proposal["id"].as_str().unwrap().to_string();
+        let mut left_out = proposal.clone();
+        left_out.as_object_mut().unwrap().remove("agent");
+        let mut empty = proposal;
+        empty["agent"] = json!("");
+        for (shape, data) in [("left out", left_out), ("empty", empty)] {
+            let driver = Stub {
+                emits_by_agent: HashMap::from([(
+                    "planner".to_string(),
+                    vec![(TYPE_UNIT_PROPOSED.to_string(), data)],
+                )]),
+                ..Stub::new()
+            };
+            let st = Store::open(":memory:").unwrap();
+            let deps = stub_deps(&st, &driver, vec![ALPHA.to_string()]);
+            let rs = run_isolated(&supersede_cfg(), &deps)
+                .unwrap_or_else(|e| panic!("a proposal with its agent {shape}: {e}"));
+            assert_eq!(
+                rs.units[&unit].status,
+                ledger::Status::Integrated,
+                "{unit} with its agent {shape}"
+            );
+            assert!(
+                driver
+                    .spawn_ids()
+                    .contains(&spawn_id(&unit, ROLE_IMPLEMENTER, 0)),
+                "the template's agent implements {unit} with its agent {shape}: {:?}",
+                driver.spawn_ids()
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// A proposal superseding ALPHA's baseline: without the fallback, the criterion is left
+        /// with no stage carrying an LLM verifier and the coverage gate halts the run.
+        a_superseding_proposal_naming_no_agent_is_implemented_by_the_templates_agent:
+            a_proposal_naming_no_agent_is_implemented_by_the_templates_agent(proposal_data(
+                "u-a",
+                ALPHA,
+                &criterion_stable_id(1, ALPHA),
+            ));
+        /// A proposal matching no criterion, beside ALPHA's baseline: without the fallback, it
+        /// runs its gates and integrates with no implementer spawn.
+        an_unmatched_proposal_naming_no_agent_is_implemented_by_the_templates_agent:
+            a_proposal_naming_no_agent_is_implemented_by_the_templates_agent(proposal_data(
+                "u-new",
+                "a sub-unit the planner split out, serving no criterion",
+                "",
+            ));
+    }
+
     #[test]
     fn harvest_proposed_gate_inheritance_survives_a_resumed_window() {
         // spec 103 criterion 1: "a resumed window re-derives the same list." The
@@ -29992,16 +30349,15 @@ mod tests {
     const LANE_0_MERGE_BREAK: &str = "ok: FAIL - lane 0's merge broke the merged tree";
 
     /// The `UnitFailed` `run_speculation` records for that post-merge block on lane 0 of `s`,
-    /// written through the one body builder every failure path writes.
+    /// written through the one body builder every failure path writes, at the built-in bound
+    /// [`spec_cfg`]'s unit escalates at.
     fn lane_0_merge_break() -> Event {
         let blocked = PriorFailure {
             gate_evidence: vec![LANE_0_MERGE_BREAK.into()],
             ..Default::default()
         };
-        Event::new(
-            ledger::TYPE_UNIT_FAILED,
-            serde_json::to_vec(&blocked.failed_body("s", 1, CAUSE_INTEGRATE_CONFLICT)).unwrap(),
-        )
+        let body = blocked.failed_body("s", 1, safety::MAX_RETRIES, CAUSE_INTEGRATE_CONFLICT);
+        Event::new(ledger::TYPE_UNIT_FAILED, serde_json::to_vec(&body).unwrap())
     }
 
     /// A driver under which every speculation lane writes a file and every reviewer approves.

@@ -84,6 +84,14 @@ pub struct Unit {
     /// cause-less prior event (additive, serde-defaulted) - readers default an empty
     /// cause to `"unknown"`, never this projection.
     pub cause: String,
+    /// The most recent `UnitFailed`'s `max_retries`: the attempt bound the conductor escalates
+    /// this unit at, as it resolved it for the unit's own stage when the attempt failed (the
+    /// stage's own key, else `defaults.max_retries`, widened by a resume grant), stamped at the
+    /// branch that failed it so a reader holding only the log and the run's defaults shows the
+    /// same bound. Raw passthrough like `cause`; `0` on a unit that has never failed, or on a
+    /// prior event that predates the field (additive, serde-defaulted), which a reader takes
+    /// as unstamped and resolves from the run's defaults as before.
+    pub max_retries: u32,
     /// The most recent `UnitFailed`'s gate evidence: the compact PASS/FAIL evidence of each
     /// gate that failed that attempt, as `<gate>: <evidence>`. With [`Unit::review_reason`]
     /// it is what the next attempt's prior-failure block is built from, carried in the log so
@@ -668,6 +676,10 @@ struct UnitFailed {
     /// erroring.
     #[serde(default)]
     cause: String,
+    /// The bound the unit escalates at ([`Unit::max_retries`]), additive and serde-defaulted
+    /// like `cause`, so an event that predates it decodes as `0`, unstamped.
+    #[serde(default)]
+    max_retries: u32,
     /// The failure's specifics (gap 61), additive and serde-defaulted like `cause`, so an
     /// event that predates them decodes with neither.
     #[serde(default)]
@@ -756,6 +768,7 @@ impl RunState {
             attempts: 0,
             commit: String::new(),
             cause: String::new(),
+            max_retries: 0,
             gate_evidence: Vec::new(),
             review_reason: String::new(),
             required: Vec::new(),
@@ -807,6 +820,7 @@ impl RunState {
                 u.status = Status::Failed;
                 u.attempts = p.attempts;
                 u.cause = p.cause;
+                u.max_retries = p.max_retries;
                 u.gate_evidence = p.gate_evidence;
                 u.review_reason = p.review_reason;
                 u.required = p.required;
@@ -1218,6 +1232,28 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(r.units["u"].cause, "reject");
+    }
+
+    #[test]
+    fn a_unit_failed_bound_is_folded_from_the_latest_failure_and_an_unstamped_one_reads_zero() {
+        // The bound rides each `UnitFailed` like `cause`: the fold keeps the LATEST failure's
+        // (a resume grant widens it between two failures), and a prior event that predates
+        // the field decodes as 0, the unstamped value a reader resolves from the defaults.
+        let r = project(&[
+            ev(
+                TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":1,"cause":"gate:fmt","max_retries":2}"#,
+            ),
+            ev(
+                TYPE_UNIT_FAILED,
+                r#"{"id":"u","attempts":2,"cause":"gate:fmt","max_retries":4}"#,
+            ),
+        ])
+        .unwrap();
+        assert_eq!(r.units["u"].max_retries, 4);
+
+        let unstamped = project(&[ev(TYPE_UNIT_FAILED, r#"{"id":"u","attempts":1}"#)]).unwrap();
+        assert_eq!(unstamped.units["u"].max_retries, 0);
     }
 
     #[test]

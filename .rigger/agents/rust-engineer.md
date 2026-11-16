@@ -57,7 +57,8 @@ failure comes back as the next round's finding. The no-default lane is linted at
 and its whole suite runs once, at the check-in, on the merged tree. Before you report, run
 from the worktree root, on your committed tree, these and nothing else:
 
-- `cargo fmt --all --check`;
+- `sh .rigger/gates/fmt.sh`, the fmt gate itself, which checks every tracked Rust file by its
+  crate's edition;
 - `cargo clippy --workspace --all-targets -- -D warnings`;
 - the tests you added or changed, on the default lane: `cargo test --test all <module>::` for
   a module of the consolidated `all` executable, `cargo test --test <file>` for a suite

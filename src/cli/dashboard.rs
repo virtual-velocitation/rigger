@@ -74,7 +74,8 @@ pub(crate) fn cmd_dash(args: &[String]) -> Res {
     // either leaves it empty and the view omits ages (see the resolution below for why an
     // explicit override still resolves without a repo).
     // The configured remediation bound (same config) sets the `#n/max` on a current-blocker
-    // `reject-recurrence` line so the dashboard and `rigger status` agree. Read via the SAME
+    // `reject-recurrence` line whose failure carries no stamped bound, so the dashboard and
+    // `rigger status` agree on it. Read via the SAME
     // shared, validate-independent `scratch_defaults` resolver `cmd_status`/`watch_poll`/
     // `reclaim_spawn_scratch`/`cmd_replay` all use (spec 83 criterion 2, round 3)
     // - never `config::load`, which additionally requires a fully loadable `.rigger/agents/`

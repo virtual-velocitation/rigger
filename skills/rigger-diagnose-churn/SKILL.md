@@ -17,7 +17,7 @@ For any OTHER recurring pattern, match the SIGNATURE you found against `planning
 
 ## Anti-move
 
-Never blame the model or the panel without having run the finding audit first - a reviewer that is factually correct every single round is not the problem, even when it rejects the same unit five times in a row. And do not reflexively raise `defaults.max_retries` to buy another attempt: a bigger budget spent against the SAME unaudited failure reproduces exactly the failure the audit exists to catch, just more expensively.
+Never blame the model or the panel without having run the finding audit first - a reviewer that is factually correct every single round is not the problem, even when it rejects the same unit five times in a row. And do not reflexively raise the unit's bound (its stage's or fan-out template's own `max_retries`, else `defaults.max_retries`) to buy another attempt: a bigger budget spent against the SAME unaudited failure reproduces exactly the failure the audit exists to catch, just more expensively.
 
 ## See also
 

@@ -867,8 +867,8 @@ pub struct Defaults {
     pub grounder: String,
     /// The review panel applied to every implementer unit (section 3.2): each
     /// unit runs its own lifecycle and reviews ITSELF with this panel unless its
-    /// stage overrides it with a `review` block. Declared once here, inherited by
-    /// every planner-proposed unit too.
+    /// stage, or the fan-out template it was expanded from, overrides it with a `review`
+    /// block. Declared once here, inherited by every planner-proposed unit too.
     #[serde(default)]
     pub review: ReviewPanel,
     /// The token/spawn circuit-breaker budget (§4.4, §8): the maximum number of
