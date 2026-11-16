@@ -1024,9 +1024,14 @@ mod tests {
 
     /// A launch close `ended` at `revision`, as a stamped event.
     fn closing(ended: &str, revision: Option<Revision>) -> Event {
+        closing_as(ended, "", revision)
+    }
+
+    /// A launch close `ended` under `class` at `revision`, as a stamped event.
+    fn closing_as(ended: &str, class: &str, revision: Option<Revision>) -> Event {
         SpawnLaunched {
             revision,
-            ..SpawnLaunched::closed("u/implementer#0", 0, "s", ended, "")
+            ..SpawnLaunched::closed("u/implementer#0", 0, "s", ended, class)
         }
         .to_stamped_event("run-1")
         .unwrap()
@@ -1112,15 +1117,17 @@ mod tests {
     /// back to the later of the last `completed` close and the last `RunReleased`. A close
     /// stamped equal to the release is behind it, a tie of closes falls to stream order, and an
     /// unstamped close takes the stamp of the last stamped close before it in stream order, so it
-    /// orders first only when no stamped close stands before it.
+    /// orders first only when no stamped close stands before it. A `fault` close the API refused
+    /// (`R`, of an `invalid_request` class) neither counts nor resets.
     #[test]
     fn the_count_of_failed_closes_runs_since_the_later_of_the_last_completed_and_release() {
         const F: &str = ENDED_FAULT;
         const S: &str = ENDED_STOPPED;
         const C: &str = ENDED_COMPLETED;
         const I: &str = ENDED_INTERRUPTED;
+        const R: &str = "a fault close the API refused";
         type Close = (&'static str, Option<Revision>);
-        let rows: [(&str, Vec<Close>, Option<Revision>, usize); 20] = [
+        let rows: [(&str, Vec<Close>, Option<Revision>, usize); 22] = [
             ("no closes", vec![], None, 0),
             ("two faults", vec![(F, Some(1)), (F, Some(1))], None, 2),
             (
@@ -1158,6 +1165,18 @@ mod tests {
                 vec![(F, Some(1)), (I, Some(1)), (F, Some(1))],
                 None,
                 2,
+            ),
+            (
+                "a refused close neither counts nor resets",
+                vec![(F, Some(1)), (R, Some(1)), (F, Some(1))],
+                None,
+                2,
+            ),
+            (
+                "refused closes count nothing",
+                vec![(R, Some(1)), (R, Some(1)), (R, Some(1))],
+                None,
+                0,
             ),
             (
                 "a close stamped below the release",
@@ -1235,7 +1254,10 @@ mod tests {
         for (name, closes, released, expected) in rows {
             let mut events: Vec<Event> = closes
                 .iter()
-                .map(|(ended, revision)| closing(ended, *revision))
+                .map(|(ended, revision)| match *ended {
+                    R => closing_as(F, "invalid_request", *revision),
+                    ended => closing(ended, *revision),
+                })
                 .collect();
             events.push(opened("u/implementer#9", 0));
             events.push(stop_failure("u/implementer#9", "rate_limit"));

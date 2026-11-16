@@ -386,6 +386,9 @@ pub enum Disposition {
     Wait,
     /// The category never holds: the error takes its spawn site's existing path.
     Fault,
+    /// The API refused the request as the conductor built it: the conductor's fault, so the run
+    /// holds for a person and the close counts toward no outage.
+    Rejected,
 }
 
 /// One row of the disposition table: what a category does to the run, the action a hold of it
@@ -727,7 +730,7 @@ mod tests {
     /// category whose probe reads the login first; a name no binary knows faults as `unknown` does.
     #[test]
     fn every_category_maps_to_its_decided_disposition_action_and_person() {
-        use Disposition::{Fault, Hold, Wait};
+        use Disposition::{Fault, Hold, Rejected, Wait};
         let rows: [(&str, Disposition, &str, bool, bool); 14] = [
             ("rate_limit", Wait, RETRIES, false, false),
             ("overloaded", Wait, RETRIES, false, false),
@@ -763,7 +766,7 @@ mod tests {
                 false,
             ),
             ("model_not_found", Hold, MODEL, true, false),
-            ("invalid_request", Fault, "", false, false),
+            ("invalid_request", Rejected, "", false, false),
             ("max_output_tokens", Fault, "", false, false),
             ("unknown", Fault, "", false, false),
             ("a_category_no_binary_knows", Fault, "", false, false),

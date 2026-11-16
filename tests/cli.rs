@@ -4475,7 +4475,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
     let cases = [
         Case {
             name: "a FAULT class on an unheld run",
-            category: "invalid_request",
+            category: "max_output_tokens",
             session: classed_session,
             operator_holds: false,
             ended: "fault",
@@ -4528,7 +4528,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         },
         Case {
             name: "a FAULT class on a held run",
-            category: "invalid_request",
+            category: "max_output_tokens",
             session: classed_session,
             operator_holds: true,
             ended: "interrupted",
@@ -4691,6 +4691,117 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
     }
 }
 
+/// A SPAWN THE API REFUSES HOLDS THE RUN FOR A PERSON: a first launch the API refuses
+/// (`invalid_request`, as it refuses a prompt too long) is the conductor's fault, never an outage:
+/// it reruns nothing, charges the unit no attempt, records no lesson and no result, holds the run
+/// for a person on a fault naming the spawn, its unit and its prompt's size, and ends the driver
+/// non-zero with its record left, so `rigger status` names the hold among what needs a person and
+/// `rigger release` relaunches the run. The run driven again launches the spawn once more and is
+/// done.
+#[cfg(unix)]
+#[test]
+fn a_spawn_the_api_refuses_holds_the_run_for_a_person_until_its_release() {
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let refused = classed_session("invalid_request");
+    let arm = format!(
+        r#"  *"Do the unit."*)
+    if [ -e "$here/refused" ]; then
+        echo "pub fn work() {{}}" > work.rs
+        exit 0
+    fi
+    : > "$here/refused"
+{refused}    ;;
+"#
+    );
+    let (out, err, ok, _fake) = run_on_arms_beside(root, &["run"], scratch.path(), &arm, |_| {});
+    assert!(
+        !ok && err.contains("is held for a person (the API refused spawn solo/implementer#0 ")
+            && err.contains("`rigger release` relaunches it"),
+        "the driver ends non-zero, naming the hold and its release; stdout: {out}\nstderr: {err}"
+    );
+    let first = (
+        "solo/implementer#0".to_string(),
+        0,
+        "fault".to_string(),
+        Some("invalid_request".to_string()),
+    );
+    assert_eq!(
+        closed_launches(root),
+        [first.clone()],
+        "one launch, refused and never rerun; stderr: {err}"
+    );
+    let holds = run_holds(root);
+    let fault = holds.first().map(|h| h.detail.clone()).unwrap_or_default();
+    assert_eq!(
+        holds,
+        [common::fixtures::conductor_fault_hold(&fault)],
+        "one hold for a person, never `api-unstable`; stderr: {err}"
+    );
+    assert!(
+        fault.starts_with("the API refused spawn solo/implementer#0 of unit solo (a prompt of ")
+            && fault.contains(" characters): "),
+        "the hold names the spawn, its unit and its prompt's size: {fault}"
+    );
+    let charged = [
+        rigger::ledger::TYPE_UNIT_FAILED,
+        rigger::contextgraph::TYPE_LESSON_LEARNED,
+        rigger::spawn::TYPE_SPAWN_RESULT,
+    ];
+    assert_eq!(
+        charged.map(|type_| common::cli::run_payloads(root, type_)),
+        charged.map(|_| Vec::<serde_json::Value>::new()),
+        "no attempt charged, no lesson and no result recorded"
+    );
+    let record = common::cli::driver_record(root);
+    assert!(!record.is_empty(), "the ended driver leaves its record");
+    let status = invoke_over_record(root, &record, &["status"], &[]);
+    let needs_you = status.out.split_once("needs you:").map(|(_, after)| after);
+    assert!(
+        needs_you.is_some_and(|after| after.contains("solo/implementer#0"))
+            && status.out.contains("rigger release"),
+        "status names the hold among what needs a person, and `rigger release`; stdout: {}",
+        status.out
+    );
+    let released = invoke_over_record(root, &record, &["release"], &[]);
+    assert_eq!(
+        (released.relaunches, released.err.contains(RELAUNCHED)),
+        (vec![relaunch_line(&record)], true),
+        "`rigger release` relaunches the run; stderr: {}",
+        released.err
+    );
+    let (out, err, ok, _fake) = run_on_arms(
+        root,
+        &["run"],
+        scratch.path(),
+        &sighting_worker_arm("", &[]),
+    );
+    assert!(
+        ok && out.lines().nth(2) == Some("done: every unit integrated"),
+        "the run driven again is done; stdout: {out}\nstderr: {err}"
+    );
+    assert_eq!(
+        closed_launches(root),
+        [
+            first,
+            (
+                "solo/implementer#0".to_string(),
+                1,
+                "completed".to_string(),
+                None
+            ),
+        ],
+        "the refused spawn launches once more and completes; stderr: {err}"
+    );
+    assert_eq!(
+        common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_FAILED),
+        Vec::<serde_json::Value>::new(),
+        "the unit is charged nothing"
+    );
+}
+
 /// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] whose worker is stopped after a second of stream silence.
 const SILENCE_BOUNDED_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nmax_wall_clock: 1\n---\nDo the unit.\n",
@@ -4756,9 +4867,9 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
         Case {
             name: "a classed fault",
             workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
-            session: classed_session("invalid_request"),
-            close: ("fault", Some("invalid_request")),
-            cause: "class invalid_request",
+            session: classed_session("max_output_tokens"),
+            close: ("fault", Some("max_output_tokens")),
+            cause: "class max_output_tokens",
             launches: reran_then_relaunched.clone(),
             holds: vec![unstable.clone()],
             releases: vec!["operator"],
@@ -4953,9 +5064,9 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
         },
         Case {
             name: "the third consecutive fault among closes at once",
-            arm: faulting_at_once_arm("invalid_request"),
+            arm: faulting_at_once_arm("max_output_tokens"),
             hold: worker_hold("api-unstable", "", retries, false),
-            closes: closed_then_launched("fault", "invalid_request"),
+            closes: closed_then_launched("fault", "max_output_tokens"),
             reruns_race_relaunches: true,
             releases: vec!["operator"],
         },

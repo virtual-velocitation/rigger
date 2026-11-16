@@ -47616,6 +47616,24 @@ mod tests {
         );
     }
 
+    /// A PARK IS NO FAULT: a parked spawn's error reaching the conductor's fault hold is returned
+    /// unchanged and holds nothing, since whatever parked the spawn left its own hold standing.
+    #[test]
+    fn a_park_reaching_the_fault_hold_holds_nothing() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        crate::run_store::ensure_started(&deps.folding(), &deps.criteria).unwrap();
+        let returned = held_on_a_fault(&deps, parked_spawn("solo/implementer#0"));
+        assert!(
+            is_parked(&returned),
+            "the park is returned unchanged: {}",
+            returned.0
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(holds_in(&events).is_empty(), "the park holds nothing");
+    }
+
     /// A UNIT WORKTREE THAT CANNOT BE MADE IS THE CONDUCTOR'S FAULT: a `Worktree::create` that
     /// fails at a unit's own path (here a dangling symlink occupying it, which no leftover clear
     /// sees and `git worktree add` refuses as already existing) halts the run naming the fault,
@@ -53852,19 +53870,35 @@ mod tests {
     /// gate stays UNRESOLVED (mid-review) across a step boundary - the resumed-run shape
     /// where the gate's adversary and adjudicator each park across their own pass. Any
     /// implementer (`worker`) spawn is recorded via `calls` before it parks, so a fan-out
-    /// that leaks before the gate resolves is detected even though the worker never runs.
+    /// that leaks before the gate resolves is detected even though the worker never runs. A
+    /// refusing driver ([`ParkingGateDriver::refusing`]) answers every reviewer with the API's
+    /// refusal instead, leaving the park to the decorator over it.
     struct ParkingGateDriver {
         plan_emits: Vec<(String, Value)>,
         calls: Mutex<Vec<String>>,
+        refuses: bool,
     }
     impl ParkingGateDriver {
         fn new(plan_emits: Vec<(String, Value)>) -> Self {
             ParkingGateDriver {
                 plan_emits,
                 calls: Mutex::new(Vec::new()),
+                refuses: false,
+            }
+        }
+
+        /// A driver answering every reviewer with [`REFUSED_PROMPT`] closed `fault` under the
+        /// `invalid_request` class, as the host returns a request the API refused.
+        fn refusing(plan_emits: Vec<(String, Value)>) -> Self {
+            ParkingGateDriver {
+                refuses: true,
+                ..ParkingGateDriver::new(plan_emits)
             }
         }
     }
+
+    /// What the API says of a request it refuses.
+    const REFUSED_PROMPT: &str = "the prompt is too long";
     impl AgentDriver for ParkingGateDriver {
         fn spawn(
             &self,
@@ -53884,10 +53918,75 @@ mod tests {
                     ..Default::default()
                 });
             }
+            if self.refuses {
+                return Err(no_result_error(
+                    AgentFailure::InvalidRequest,
+                    REFUSED_PROMPT.into(),
+                ));
+            }
             // Every reviewer (and any leaked implementer) parks: the gate never renders a
             // verdict, so it stays unresolved (mid-review) across the resume.
             Err(parked_spawn(&opts.id))
         }
+    }
+
+    /// A PLAN-CRITIQUE SPAWN THE API REFUSES HOLDS THE RUN FOR A PERSON: through the run's held
+    /// driver, a gate reviewer the API refuses (`invalid_request`, its prompt too long) parks the
+    /// gate, so the step ends with the fan-out held, no lesson recorded against any unit and no
+    /// attempt charged, the driver saying it parked, and the run held for a person on a fault
+    /// naming the spawn, its unit and its prompt's size.
+    #[test]
+    fn a_plan_critique_spawn_the_api_refuses_holds_the_run_for_a_person() {
+        let st = Store::open(":memory:").unwrap();
+        let inner = ParkingGateDriver::refusing(widget_split());
+        let held = crate::held::HeldDriver::new(&inner, &st, &|| {});
+        critique_step_under(&critique_cfg(), &st, &held).expect("a refused gate spawn parks");
+        assert_eq!(
+            (
+                occurrences(&inner.calls, "adversary"),
+                occurrences(&inner.calls, "worker")
+            ),
+            (1, 0),
+            "one reviewer refused and the fan-out held; calls: {:?}",
+            inner.calls.lock().unwrap()
+        );
+        assert!(held.take_parked(), "the refused spawn parked the step");
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let charged = [
+            contextgraph::TYPE_LESSON_LEARNED,
+            ledger::TYPE_UNIT_FAILED,
+            ledger::TYPE_UNIT_ESCALATED,
+        ];
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| charged.contains(&e.type_.as_str()))
+                .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                .collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "no lesson against any unit and no attempt charged"
+        );
+        let holds = holds_in(&events);
+        let fault = holds
+            .first()
+            .map(|hold| hold.detail.clone())
+            .unwrap_or_default();
+        assert_eq!(
+            holds,
+            [conductor_fault_hold(&fault)],
+            "one hold for a person on the refusal"
+        );
+        assert!(
+            fault.starts_with("the API refused spawn plan-critique/")
+                && fault.contains(" of unit plan-critique (a prompt of ")
+                && fault.ends_with(&format!(" characters): {REFUSED_PROMPT}")),
+            "the fault names the spawn, its unit and its prompt's size: {fault}"
+        );
+        assert_eq!(
+            held.take_rejected_spawn().as_deref(),
+            Some(fault.as_str()),
+            "the driver says the fault it held the run on"
+        );
     }
 
     #[test]

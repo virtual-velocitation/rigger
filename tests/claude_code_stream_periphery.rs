@@ -2180,8 +2180,8 @@ fn hold_cases() -> Vec<HoldCase> {
         },
         HoldCase {
             name: "a session ending of a fault class",
-            lines: vec![init_line(), retry_line("invalid_request")],
-            close: ("fault", Some("invalid_request")),
+            lines: vec![init_line(), retry_line("max_output_tokens")],
+            close: ("fault", Some("max_output_tokens")),
             stamp: Some(1),
             ..HoldCase::default()
         },
@@ -2280,6 +2280,14 @@ fn hold_cases() -> Vec<HoldCase> {
         },
         HoldCase {
             name: "a fault-class ending on an operator hold",
+            lines: vec![init_line(), retry_line("max_output_tokens")],
+            seeded: vec![operator_hold()],
+            close: ("interrupted", Some("max_output_tokens")),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a refused ending on an operator hold",
             lines: vec![init_line(), retry_line("invalid_request")],
             seeded: vec![operator_hold()],
             close: ("interrupted", Some("invalid_request")),
@@ -2296,21 +2304,21 @@ fn hold_cases() -> Vec<HoldCase> {
         },
         HoldCase {
             name: "a fault-class ending on a hold released ahead of it",
-            lines: vec![init_line(), retry_line("invalid_request")],
+            lines: vec![init_line(), retry_line("max_output_tokens")],
             seeded: vec![
                 operator_hold(),
                 common::fixtures::released_event("operator", 0),
             ],
-            close: ("fault", Some("invalid_request")),
+            close: ("fault", Some("max_output_tokens")),
             stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
             name: "a fault-class ending on a host with no hold sink",
-            lines: vec![init_line(), retry_line("invalid_request")],
+            lines: vec![init_line(), retry_line("max_output_tokens")],
             seeded: vec![operator_hold()],
             no_sink: true,
-            close: ("fault", Some("invalid_request")),
+            close: ("fault", Some("max_output_tokens")),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2458,6 +2466,8 @@ fn a_launch_appends_the_holds_the_table_decides_and_closes_where_it_read() {
 enum Step {
     /// A launch ending with no result: a `fault` close of no class.
     Fault,
+    /// A launch the API refused: a `fault` close of the `invalid_request` class.
+    Refused,
     /// A silent launch the wall clock stops: a `stopped` close.
     Stop,
     /// A launch answering: a `completed` close.
@@ -2481,6 +2491,16 @@ impl Fixture {
                     &no_emit,
                 );
                 spawned.expect_err("a session with no result fails its spawn");
+            }
+            Step::Refused => {
+                let o = self.scripted(&spawn, &[init_line(), retry_line("invalid_request")]);
+                let spawned = scripted().spawn(
+                    &wall_clock_bounded(SCRIPTED_WALL_CLOCK_S),
+                    "do the thing",
+                    &o,
+                    &no_emit,
+                );
+                spawned.expect_err("a session the API refused fails its spawn");
             }
             Step::Stop => {
                 let driver = self.held_driver("claude-code-silent-winds-down-on-eof-agent.sh");
@@ -2509,12 +2529,13 @@ impl Fixture {
 
 /// The third consecutive fault or stream-silence stop holds the run `api-unstable`, before the
 /// host returns its error, once per hold: a `completed` close or a `RunReleased` restarts the
-/// count, and a hold released is held again by three more.
+/// count, and a hold released is held again by three more. A launch the API refused is the
+/// conductor's fault, never the API's: it neither counts nor restarts the count.
 #[cfg(unix)]
 #[test]
 fn a_third_consecutive_failed_close_holds_the_run() {
-    use Step::{Completed as C, Fault as F, Release as R, Stop as S};
-    let rows: [(&str, Vec<Step>, usize); 10] = [
+    use Step::{Completed as C, Fault as F, Refused as X, Release as R, Stop as S};
+    let rows: [(&str, Vec<Step>, usize); 13] = [
         ("two faults", vec![F, F], 0),
         ("three faults", vec![F, F, F], 1),
         ("a stop between faults", vec![F, S, F], 1),
@@ -2525,6 +2546,9 @@ fn a_third_consecutive_failed_close_holds_the_run() {
         ("a release restarts it", vec![F, F, F, R, F, F], 1),
         ("three more after a release", vec![F, F, F, R, F, F, F], 2),
         ("a completed close alone", vec![C], 0),
+        ("three refused launches", vec![X, X, X], 0),
+        ("a refused launch between faults", vec![F, X, F], 0),
+        ("a refused launch restarts nothing", vec![F, F, X, F], 1),
     ];
     for (name, steps, expected) in rows {
         let fx = Fixture::started(&[]);

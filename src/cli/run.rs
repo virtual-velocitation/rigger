@@ -1225,7 +1225,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
                 return Err(e.into());
             }
         };
-        if !held.take_parked_on_an_operator_hold() {
+        if !held.take_parked() {
             break rs;
         }
         if !a_hold_for_a_person_stands(&folding) {
