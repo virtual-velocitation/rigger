@@ -169,14 +169,13 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_pipe_name_carries_the_digits_the_unix_socket_name_carries_for_the_same_root() {
+        use crate::test_support::socket_file_name_of;
         use std::os::unix::ffi::OsStrExt;
         let (runtime, repo) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let root = repo.path().canonicalize().unwrap();
         let socket = socket_path_under(runtime.path(), repo.path()).unwrap();
         assert_eq!(
-            pipe_name(root.as_os_str().as_bytes())
-                .strip_prefix(r"\\.\pipe\rigger-gate-")
-                .map(|digits| format!("{digits}.sock")),
+            Some(socket_file_name_of(&pipe_name(root.as_os_str().as_bytes()))),
             socket
                 .file_name()
                 .and_then(|name| name.to_str())

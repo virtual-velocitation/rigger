@@ -116,12 +116,9 @@ fn the_gate_verb_asks_the_socket_named_by_its_projects_pipe_digits_and_two_proje
         let (root, _scratch) = committed_project(&one_gate_workflow("true"));
         let canonical = root.path().canonicalize().unwrap();
         let pipe = rigger::gate_socket::pipe_name(canonical.as_os_str().as_bytes());
-        let digits = pipe
-            .strip_prefix(r"\\.\pipe\rigger-gate-")
-            .unwrap_or_else(|| panic!("{name}: the pipe name carries the pipe prefix: {pipe}"));
         // Only the owner directory comes from the unix path rule; the name is the pipe's digits.
         let owner = rigger::gate_socket::socket_path_under(runtime.path(), root.path()).unwrap();
-        let path = owner.with_file_name(format!("{digits}.sock"));
+        let path = owner.with_file_name(common::fixtures::socket_file_name_of(&pipe));
         let socket = rigger::gate_socket::GateSocket::bind(&path)
             .unwrap_or_else(|e| panic!("{name}: its own socket {} binds: {e}", path.display()));
         let answer = move |request: GateRequest| GateReply::Refused {

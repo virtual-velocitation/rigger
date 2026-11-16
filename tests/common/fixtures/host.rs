@@ -274,3 +274,13 @@ pub fn braced_declaration<'a>(src: &'a str, start_marker: &str) -> &'a str {
     }
     panic!("`{start_marker}` is not brace-balanced");
 }
+
+/// The file name of the unix gate socket that carries the digits of `pipe`, a Windows gate pipe
+/// name as `rigger::gate_socket::pipe_name` gives it: the digits after `\\.\pipe\rigger-gate-`,
+/// then `.sock`. A name without that prefix panics, naming it.
+pub fn socket_file_name_of(pipe: &str) -> String {
+    let digits = pipe
+        .strip_prefix(r"\\.\pipe\rigger-gate-")
+        .unwrap_or_else(|| panic!("the pipe name carries the pipe prefix: {pipe}"));
+    format!("{digits}.sock")
+}
