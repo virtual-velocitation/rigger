@@ -260,11 +260,12 @@ pub fn unfenced(cmd: &mut Command) -> &mut Command {
 
 /// The variable that selects how a rigger invocation registers a run's relaunch at login: its
 /// `record:<path>` value appends a `register <key> <program> <args...>` or `unregister <key>`
-/// line to `<path>` in place of writing the host's login-start entry.
+/// line to `<path>` in place of writing the host's login-start entry, and lists the entries
+/// those lines leave standing in place of the host's.
 pub use rigger::login_start::LOGIN_START_ENV;
 
 /// The file the login-start registrations of this test's rigger invocations are recorded in
-/// ([`unfenced`]), so no rigger a test runs registers with the host's login facility.
+/// ([`unfenced`]), so no rigger a test runs registers with, or sweeps, the host's login facility.
 pub fn login_start_record() -> PathBuf {
     test_cache_home().join("login-start")
 }
