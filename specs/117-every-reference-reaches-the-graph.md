@@ -1,295 +1,411 @@
 # 117 - Every reference reaches the graph
 
-**Goal:** the knowledge graph is the lookup surface every persona uses; a question it cannot answer
-becomes a grep. Every production definition is a node at its nested id, but nothing connects them
-except calls: no edge says which fn reads a const, which code names a type or who re-exports it, a
-`mod x;` never reaches the file it declares, and no doc comment is kept, so `show` of a const says
-where it is and never who uses it or what it means. This spec stages each reference a grammar can
-tell from a local as a row that is an edge while exactly one definition answers it, lists a file's
-unanswered names, links each module declaration to its file and keeps every doc comment.
+**Goal:** a lookup about a reference is answered by the graph. Today the code store resolves calls
+and three Rust-only reference kinds, so the graph cannot say which code reads a field, matches a
+variant, implements a trait, passes a function by name or calls through a type's path, and it
+keeps no doc comment (Notes, observed). Agents then grep. The evaluation of run 050ed244
+(`docs/evaluation/20261106-0135-050ed244.md`, read by the rules of `docs/evaluation/README.md`)
+counts 56 `grep_fallbacks`: 21 under `grep_fallbacks_by_target.caller`, and 5 lines in the class
+`non-call-reference-absent-from-graph` (evidence `progress:46777`, `progress:47202`,
+`progress:45456`, `progress:59611`, `progress:45982`: sites that read a constant, assign a field
+or match an error kind). This spec moves two figures in the next evaluation of a run on its
+finished tree: that class falls to at most 1 line (`progress:59611` matches an error kind of the
+standard library, which names no project definition and stays the text scan's), and
+`grep_fallbacks_by_target.caller` falls below 21.
 
 ## Design
 
-**REFERENCES, decided here.** `SymRef` and `EdgeInferred` each gain OPTIONAL `ref_kind` (absent = a call, folded as today), `SymRef.ref_kind` taking `type`, `const` and `use` only and `module` existing on `EdgeInferred` alone, from criterion 3, extracted for Rust only: every other
-language's references are its existing categories, folded and counted as today. A reference the test filter drops (`!r.is_test`, `events.rs:273`), or one in a dev-only file, emits no `type`, `const` or `use` event, as the base already gives every reference (`is_dev_only`'s early return, `events.rs:221-223`), criterion 6's clause pinning it for the tagged ones. Kinds: a CONST READ, an identifier or the final identifier of the WHOLE expression path in expression position, never a prefix (a macro token tree stages nothing and a pattern no const read, accepted) spelled `^[A-Z][A-Z0-9_]*$` (the `non_upper_case_globals` naming,
-the one per-file fact telling a const from a local), naming no enclosing generic parameter (`IO::read()`'s `IO` excluded; a unit struct `X` read staging an unresolvable `const` row, and `impl Foo<Bar>`'s `Bar` and `T::Output`'s `Output` staging `type` rows, accepted); a TYPE
-REFERENCE, a `type_identifier` (in a pattern too: `Foo { .. } =>` stages a `type` row), or the final identifier of a `scoped_identifier`'s `path` in
-expression position when it begins with an uppercase letter (the `non_camel_case_types` naming; the
-shape `registry.rs:46` matches in a call, `Store::open()`, and `Kind::Constant`), that is not a definition's own name, not an impl header's self type, not an enclosing generic parameter, nor an impl header's trait, staged only by the impl rule below; a `scoped_identifier` in pattern position (the unit pattern `Kind::Constant =>`, the tuple-struct pattern `Enum::Variant(x) =>`) stages the `type` row of its path's final uppercase identifier exactly as in expression position; in type position a `scoped_type_identifier`'s `path` stages nothing, its `name` staging by the `type_identifier` rule alone (`a::B` and `Outer::Inner` as types each stage one row, of `B` and `Inner`), and a `use` declaration's paths stage by the USE rule alone, never by this one; a struct literal's name (`Foo { a: 1 }`) stages a `type` row, as the pattern `Foo { .. }` does; in a struct literal or pattern whose name is a `scoped_type_identifier` (tree-sitter-rust's `path` and `name` fields), when the final identifier of `path` begins with an uppercase letter (`Enum::Variant { .. }`) that identifier stages the `type` row and the `type_identifier` rule does not apply to that `name`, so the literal or pattern stages exactly one row, of the path's final identifier, else (`module::Type { .. }`) `name` stages it as for `Foo { .. }`; a USE, each imported leaf of a `use` (`use a::b as c` references `b`, and a later `c` in type position stages a `type` row of leaf `c`, unresolved or resolved to an unrelated lone `c`, accepted by name; a glob stages nothing; a `self` leaf names the module before it, and one whose preceding segment is `crate`, `super` or `self` stages nothing; a name reached only through a glob stages its ordinary `type` row), a `pub use` included, its `from` the caller path only (`SymRef.enclosing`, the file at top level); a MODULE row, one per `mod x;` (criterion 3's). `Self`, the names of ONE pinned
-constant, `extract::RUST_PRELUDE` in rigger-grounder, the pinned names, the 2021 prelude's types, traits and variants at HEAD's toolchain 1.95.0 (`library/std/src/prelude/v1.rs:13-186`,
-`library/core/src/prelude/v1.rs:13-58`, plus 2021's `TryFrom`, `TryInto`, `FromIterator`) and the derive-macro names `Debug` and `Hash`, the constant's spelling governing: `Copy`,
-`Send`, `Sized`, `Sync`, `Unpin`, `Drop`, `Fn`, `FnMut`, `FnOnce`, `AsyncFn`, `AsyncFnMut`,
-`AsyncFnOnce`, `Clone`, `Eq`, `Ord`, `PartialEq`, `PartialOrd`, `AsMut`, `AsRef`, `From`, `Into`,
-`Default`, `Debug`, `Hash`, `DoubleEndedIterator`, `ExactSizeIterator`, `Extend`, `IntoIterator`,
-`Iterator`, `Option`, `Some`, `None`, `Result`, `Ok`, `Err`, `ToOwned`, `Box`, `String`,
-`ToString`, `Vec`, `TryFrom`, `TryInto`, `FromIterator`, a path rooted at `std`, `core` or `alloc`, a leaf the same file imports through a `use` rooted at `std`, `core` or `alloc` (`use std::collections::HashMap;` then `HashMap`, a per-file fact `extract` reads off the file's `use` declarations, a std alias excluded by its alias name, `use std::io::Error as IoError;` then `IoError`) a path whose root is a leaf the file imports from `std`, `core` or `alloc` (`use std::fmt;` then `fmt::Display`) and a primitive-qualified const (`u32::MAX`) stage nothing, a project definition named as a `RUST_PRELUDE` entry getting no row, accepted by name; another external leaf equal to exactly one project definition resolves to it, accepted. A path-qualified external name whose leaf the file itself defines lands on that definition at `extracted`, accepted by name, path-aware disambiguation staying OUT OF SCOPE. Each folds as `REFERENCES` from its
-`SymRef.enclosing` caller path (the file at top level); the trait of `impl Trait for Type` is a
-`type` row staged from the impl header, `from` the self type's path only when exactly one surviving definition in the file has that leaf, else the impl path, resolved and retired like any row, beside today's two impl edges. A row whose resolved target is its own `from` (a recursive type naming itself) writes a self-loop `REFERENCES`, accepted by name as a recursive call's `CALLS` is today (the call arm, `sqlite.rs:2872-2881`), neither excluded nor listed unresolved. A tagged `SymRef` is ordered in `fs.refs` after the untagged one of the same name and site, so the impl header's `type` row follows today's untagged impl-header reference. Every existing
-reference category keeps its fold and its count exactly as today, C#'s `@reference.class` and
-`@reference.interface` captures (`registry.rs:110-124`) and Go's upstream query's
-(`tree_sitter_go::TAGS_QUERY`, `registry.rs:357-360`) included; `reference_degree` (`model.rs:299-306`), `name_occurrence_map`, `scored_hits`, `ground_ranked` and `blast_radius` (`grounder.rs:629`) count only references with no `ref_kind`, so no commonness, ranking or radius moves (a type's users joining the grounder's `blast_radius` is a separate behaviour, Notes). `proof_events` emits only call references (no `ref_kind`), so `proofs` and spec 86's card counts stand. Extraction and this isolation are criterion 6's, landing first: on its tree a `ref_kind` event runs its `fresh` head and folds nothing else, never a `CALLS` edge or a placeholder, and criterion 1 adds the `refs` fold. No new rel: which fns read a const, which
-code names a type and who re-exports it are `REFERENCES` neighbourhoods. Const reads outside Rust,
-imports outside Rust and variant or field uses are OUT OF SCOPE: no per-file fact tells them from a
-local; an all-caps variant read (`Op::ADD`, `Foo::MAX`) stages a `const` row that resolves like any `const` row (`extracted` same-file, `inferred` project-wide) and is otherwise unresolved, both accepted by name. Of spec 116's kinds, whose definer-only window a spec adding reference patterns for a kind narrows when it lands (116's Global constraints), this spec's patterns cover Rust's `constant` and `static` (a const read, a `use`) and `type` and `trait` (a type reference, a `use`), criterion 6 owning each pattern and criterion 1 its resolution (KIND CANDIDATES), and their window narrows through the graph arm alone, `blast_radius` counting no `ref_kind` reference, to the reach the `confidence_tier_radius` row below states; Rust's `variant`, `field`, `declaration` and `extern crate` `module`, and every kind of Go, C#, JS, TS and Python, stay definer-only with no spec named for them, a `use` row resolving to a variant or module reaching its importer alone, accepted.
+**CAPTURES.** `compile` keeps each `@reference.<kind>` capture's suffix, where today it folds all
+into a call: `call` and `send` stay `MentionKind::Call`; `class`, `type` and `interface` become
+`Tagged("type")`; `implementation` becomes `Tagged("impl")`; `constant` becomes `Tagged("const")`;
+`field` becomes `Tagged("field")`; `import` becomes `Tagged("use")`. A `@qualifier.path` or
+`@qualifier.member` capture in the same match is read into `SymRef.qualifier: Option<Qualifier>`
+(`name`, and whether the qualifier is a path or a member access). A `@reference.class` capture on
+one of the registry entry's `constructors` node kinds (`new_expression` for TypeScript, TSX
+and JavaScript, `object_creation_expression` for C#) stays a call, so a proof still credits `new T()`.
+The facts layer writes `Mention.name` as `<qualifier>::<leaf>` for a path and
+`<qualifier>.<leaf>` for a member access, and as `leaf` without a qualifier; `leaf` is always the
+bare leaf, so the IDX_NAME postings stay keyed by leaf. The symbols model's counts read
+`FileSymbols::calls`, whose `SymRef.name` stays the leaf, so a type use leaves them in every
+language as it does in Rust today. `Symbols::radius` takes its referencer files from call and
+`impl` mentions, so an implementing file stays in a trait's blast radius; reference degree,
+commonness and scoring count calls alone. When a reference capture's `@name` node has named children, `tags_in` takes the text of its
+last named leaf descendant outside the entry's `type_arguments` node kinds (`type_arguments` for
+TypeScript, TSX and Go, `type_argument_list` for C#) as the leaf, and the text before it, its
+trailing `.` or `::` dropped, as a member or path qualifier when no `@qualifier` capture gives
+one: `Ns.IShape` gives `IShape` qualified `Ns`, `List<IShape>` gives `List`, and the row's
+type-position patterns stage each type argument. No `Mention.leaf` holds `::`, `.`, `<` or `>`.
+Criterion 19's Python file stages its base-class `impl` mention through a fixture tags query;
+`PYTHON_TAGS` stays criterion 28's. In an extractor test, a reference "named `Q::L`" is a
+`SymRef` with qualifier `Q` and name `L`, read before the facts layer's dedupe.
 
-**STAGED REFERENCES, decided here.** A staged reference and a module row create NO placeholder: the
-graph models the project, and std and crate names are not in the code; call placeholders stay. Each mechanism owns its own no-node rule: the event arm writing no node for a `ref_kind` event beyond its head's file node (criterion 6's), batch-end resolution of a `refs` row writing no node (criterion 1's) and module resolution of a `CONTAINS` row writing no node (criterion 3's). The
-fold runs in path order, so each is STAGED in ONE `refs` table (project, identity, generation, `from`, leaf, `ref_kind`, lang, position, resolved target), a SET keyed (project, identity, generation, `from`, leaf, `ref_kind`), so two reads of one leaf in one fn are one row and
-every twin's rows stage under the one caller; `from` is stored as the full alias-resolved node id (`resolve_in_tx`, `sqlite.rs:2823`), a later alias change leaving staged `from` values as written until the identity's next generation and a resolved row's target and edge as settled until a trigger batch or that generation, accepted by name, so a FILE'S ROWS are those whose `from` is its id or lies in its `<file>::` range, and same-file compares a candidate's file with that file; a row whose `from` an alias already maps outside its staging file at staging is a FILE'S ROW of the file its canonical `from` names, listed there and in that file's `unresolved`, its drop and batch-end settlement still by its staging identity (the `refs` key's identity), accepted by name beside the alias-change acceptance; `position` is the entry's log position, which 107's `fold_entry` behind `apply_generation` gives every event of its batch. A `ref_kind` event carrying `fresh` first runs the structural head exactly as a call event does (`supersede_file_edges`, the file node created as a call event's head creates it today, `ensure_node(.., KIND_FILE, ..)`, `sqlite.rs:2855`, and stamped with `lang` and `partial`, and `file_doc` from criterion 4), then stages, so a `use`-only file gains its file node on tree 6, through `fold_new` too; the head runs wherever a call event's head runs today, `fold_new` and an empty identity included, only the staging being confined to the resolved branch below (criterion 6's head): `apply_generation`'s resolved branch stages the batch's `ref_kind` events itself after each event's `fold`, and `fold_event`'s arm only runs the head, the call site being the discriminator. Rows stage, drop and settle ONLY inside 107's `apply_generation` resolved branch (`fold_entry` behind `apply_generation`: the whole batch, one position, one transaction); a `ref_kind` event or a definition trigger reaching `fold_new` stages and settles nothing, an accepted difference for unmigrated keyed derived batches, and criterion 1's fold fixtures fold through `apply_generation`. Staging is per BATCH: the DROP runs in that resolved branch before its first event's `fold`, so before `advance_generation` and `fold_event` (`sqlite.rs:1975-1976`), deleting every `refs` row of the batch's project and the entry's identity not at the entry's generation, rows only: their edges retire in `advance_generation` through spec 101's `settle_edge`, the one retirer (a deleted file's no-bytes batch included; a re-recording returns before it, and a first generation has no row to drop). A same-generation batch never reaches staging, being 107's re-recording, which folds nothing; every event upserts on the set key, which serves duplicate events inside one batch only. A LIVE row is one at its identity's current generation in its project; the drop, every live-row read and batch-end settlement are scoped to the batch's project, as every other ledger keys on project (`sqlite.rs:59-73`). A row is an edge only while resolved (its leaf read by spec 119's `node_leaf_sql()`, its kinds by KIND CANDIDATES): exactly one same-file candidate of its leaf, else exactly one in the project of
-the row's own language (the symbols model's per-language scope, `model.rs:295-298`), else
-unresolved (none or several, never a guess). RESOLUTION SETTLES ONCE PER BATCH: `fold` retires
-every node a prior generation asserted after a batch's FIRST event and the batch re-asserts the kept
-ones (`sqlite.rs:1974-1981`, `:2063-2090`, through `settle_node` -> `undo_what_resolved_against` -> `definition_retired`,
-`:2158`, `:2165-2176`), so a retire inside a batch is no retirement for a row. A row resolves ONLY at a batch's end: at the end of the resolved branch, after its last event's `fold` and before `relabel_owed_communities` runs there, so a row edge's relabel debt (`add_edge`, `:4413`) is paid in the same fold, over every
-row the batch staged and every live row of any file naming a leaf the batch's prior or new
-generation defines (its identity's `node_assertions` at both generations, `:63-67`) or, for a module
-row, a candidate path gaining or losing graph kind `file` in the batch, against the batch's final
-definition set; a `ref_kind` event with an empty identity stages and settles no `refs` row (criterion 1's), its `fresh` head still running (criterion 6's); neither the definition arm's convergences (`:2774-2799`) nor `definition_retired` (`:2269-2297`) touch a row. A ROW'S EDGE is one an `edge_assertions` entry names, a call twin having none: `definition_retired`'s demotion (`:2270-2282`) and the definition arm's tier upgrade (`:2775-2781`) each exclude it (observed on a hand-built call edge and a row edge onto one target, a second definition of the leaf retiring elsewhere, both definitions call targets, to which spec 116 confines the demotion (`call_target_sql`) and the upgrade (`defines`): the call edge demoted, the row's not), and the one-writer check below reads that absence on the call twin. A re-resolution compares before it writes: a row resolving to its current
-target leaves the edge and its dates untouched. An edge's `source` is its staging batch's log position; a row's first resolution, and every resolution after a retirement, opens its valid-time at the RESOLVING batch's event time (the asserter's `at`), continued only by `assert_link`'s prior-generation revival (`:4471-4494`, valid-time kept, `source` moved), no generation time being stored; same-file edges are `extracted`, project-wide `inferred`. Walk: criterion 1's dated edge observes `source`, the staging batch's position, and valid-time separately at the resolving batch; the staging file re-extracted with the reference kept continues the edge, valid-time kept and `source`
-moved; the target file edited with the definition kept leaves the edge; edited with it removed
-stamps the edge's `valid_to` at the batch's event; removed, then restored in a later batch, writes a
-NEW edge row at the restoring batch (the gap); two staging files' rows settle independently, each
-edge under its own staging identity; a file-level `use` beside a same-file call in one generation, the call removed in the next with the `use` kept, gets a NEW edge row (the row asserted nothing while the call held the pair, so nothing revives), accepted by name, as does the reverse, a `use` alone in one generation and a same-file call added in the next, the call arm writing a new row, both holding alike for a cross-file call whose twin targets the leaf's placeholder (the one-writer check below); staging file A before defining file B: B's batch end resolves
-A's row and writes the edge under A's identity; B before A: A's batch end resolves the row, the same
-edge. ONE RETIRER: an edge a `refs` row resolved (a staged `REFERENCES`, a module-row `CONTAINS`) is
-asserted under the staging row's identity and generation in `edge_assertions` (`:69-73`, keyed by
-identity and edge) as `assert_link` records a design link (`:4451-4516`), `assert_link` taking the
-tier (design links pass `extracted`), so spec 101's `settle_edge` (`:4426-4448`) retires it at that
-identity's next generation, and a re-resolution away from its target never stamps directly: when no other live row of that identity still resolves to the same (from, target, rel, tier) it deletes the identity's `edge_assertions` entry for it and lets `settle_edge` stamp at the batch's event time when no live assertion remains, otherwise it changes nothing; it calls `settle_edge` only for an edge whose `edge_assertions` entry of the row's identity it has just deleted, so a row that asserted nothing changes no edge, so `count_prunable`'s rule (an edge no
-assertion names, `:773-778`) prunes it past the boundary (criterion 1's). `assert_link`'s in-place revival (`:4471-4494`) reopens only an
-edge the identity's PRIOR generation asserted, and the edge never enters `detached_attachments`,
-which only `attach` and `detach_attachments` write (`:2465`, `:2307`, for `IN_COMMUNITY` and
-`REALIZES`), so `ensure_node`'s revive (`:4247-4259`) never reopens it: a target restored within one
-staging generation gets a NEW edge row, and the staging batch's end deletes each prior-generation `edge_assertions` entry of its identity naming a row's edge (a `REFERENCES` or module `CONTAINS` the `refs` arm asserted) that no row of the new generation re-asserted at that batch end, a design link's prior-generation entry keeping the base's `advance_generation` boundary (`sqlite.rs:2025-2033`), so only the staging batch itself can revive. `settle_edge` (`:4426-4448`), at its stamp in `advance_generation` and on a re-resolution away, and `assert_link`'s in-place revival (criterion 1's) owe `owe_relabel_of` for both endpoints of a row's `REFERENCES` edge in the same fold, the module `CONTAINS` excluded as it is for `add_edge`. A file-level row's edge, retired at its row's next generation, coincides with `supersede_file_edges`' `from_id = file` arm (`:3307`), and a module row's `CONTAINS` from a `mod` node with the `<file>::` range arm spec 119's criterion 9 widens it to, at the same `fresh` head, so either retirer gives one graph; a resolved row whose (from, target, `REFERENCES`) a
-live call edge already holds, at any tier, writes nothing, no edge and no `edge_assertions` entry, the call arm's
-edge (`sqlite.rs:2872-2881`) being that pair's one writer (criterion 1's); the check also counts a live call-arm `REFERENCES` from the same `from` to `placeholder_id(file, leaf)` (`query.rs:214`) for the row's leaf, the target the call arm writes when its file holds no one candidate (`sqlite.rs:2862-2871`), so a file-level row whose leaf the same file calls writes nothing whether the call landed on a same-file definition or on the placeholder, the placeholder edge being the pair's one edge and reaching the definer by its leaf as every placeholder does (spec 119's THE LEAF KEYS RESOLUTION), the row's resolved target kept in its `refs` row, so `Coupling::from_graph` and `one_hop_degree` count the pair once; the "same `from`" is the file node, a fn-level row never sharing a `from` with a call twin, whose `from` is the file; a call twin's tier changing, by `definition_retired`'s demotion or the definition arm's upgrade, never re-settles a row, the pair's tier being the call twin's, the call arm its one writer, and the pair's target the call twin's too: a row whose own-language resolution names a definer the placeholder does not fold onto (a leaf with one definer in the row's language and another in a different language, `canon` and `reference_tier` counting call-target definers project-wide in every language) couples to the placeholder as the call itself does, its resolved target kept in its `refs` row, accepted by name. Two identities aliased to one canonical `from` (a call from the second merging into the first's live row edge, retired at the first's next generation) are accepted by name beside the alias-change acceptance.  A cross-file edge's valid-time and
-gaps follow the resolved entries of its target's identity, an accepted difference beside spec 107's
-list: an unresolved superseded entry of the defining file, or two files' entries folded out of log order, moves them, never the edge's existence; under 107's listed instances (two entries of one generation, entries of one identity folded out of log order) `refs.position` and an edge's `source` may differ between the incremental graph and a rebuild, accepted. Every production reader of `REL_REFERENCES`, from a literal search of `crates/*/src` and `src` (`#[cfg(test)]` excluded), every edge walker a row edge reaches, from a literal search of the same trees for `.edges`, `FROM edges` and `JOIN edges` (50 functions at 41d78bfc, each in the table or the list below it), and the kept `CONTAINS` readers for a module row's edge from its declaring node to a file node, given one disposition, criterion 1 owning the reference rows and criterion 3 the module rows:
+**NEW TAGS.** `REF_KIND_FIELD` (a member read or written without a call), `REF_KIND_VARIANT` (an
+enum variant named outside a call) and `REF_KIND_IMPL` (a trait or type an implementation header
+names) join `REF_KIND_TYPE`, `REF_KIND_CONST`, `REF_KIND_USE` and `REF_KIND_MODULE`.
 
-| Reader (41d78bfc) | Disposition |
+**RUST REFERENCES.** `rust_references` and `extract` stage, in expression and pattern position
+(a path in type position stages by the type rule alone):
+
+- Const read: an identifier matching `^[A-Z][A-Z0-9_]*$`, or a scoped path whose leaf holds no
+  lowercase letter (`Self::MAX`, `Mode::RO`); and a format string's inline capture, read from the
+  format-string argument when it is a string literal: the first argument of `format!`, `print!`,
+  `println!`, `eprint!`, `eprintln!`, `panic!`, `format_args!`, `unreachable!`, `todo!`,
+  `unimplemented!`; the second of `write!`, `writeln!`, `assert!`, `debug_assert!`; the third of
+  `assert_eq!`, `assert_ne!`, `debug_assert_eq!`, `debug_assert_ne!`. `{{` and `}}` escapes and
+  names bound as named arguments are skipped; a width or precision `NAME$` capture counts.
+- Variant: a scoped path outside a call whose qualifier and leaf start uppercase and whose leaf
+  holds a lowercase letter (`InstallOutcome::AlreadyCurrent`, `Located::Many(c) =>`); a call
+  `Hop::Frontier(cs)` stays a call. The path `E::V` of a struct literal or struct pattern
+  (`Kind::RejectRecurrence { n } =>`) whose two segments start uppercase and whose leaf holds a
+  lowercase letter is in expression or pattern position: it stages a `variant` mention of `V`
+  qualified `E`, replacing today's `type` row of `E`, and each field it names a `field` mention
+  qualified `V`.
+- Function value: a scoped path with a lowercase leaf outside a call (`.map(Store::open)`), and a
+  bare identifier passed as a call's argument (`.map(entity_block)`) that starts lowercase, that
+  `excluded` does not hold and that no binding in scope binds (a parameter, `let`, `if let`,
+  `while let`, match arm, `for` or closure parameter pattern), are `MentionKind::Call` at their
+  sites; in a re-parsed token tree the scope is the invocation's.
+- Field: `x.f` read or assigned without a call, with a member qualifier only when the receiver
+  node is exactly `self`; `T { f }` in a literal or pattern, with path qualifier `T`.
+- Impl header: every impl block stages an `impl` mention of its self type, and `impl Tr for T`
+  one of `Tr` as well, generics stripped, enclosed by the impl definition itself; they replace the
+  call rows of `block.targets` and the trait `type` row that `impl_from` encloses by the self
+  type today.
+- Qualifier: a path's segment before the leaf when it starts uppercase, generics and turbofish
+  stripped (`Memo::<K>::new` gives `Memo`); a qualified-self path `<T as Tr>::f` gives `Tr`;
+  `Self::f` gives the enclosing impl's self type, generics stripped, and inside a trait body the
+trait; a call or field whose receiver
+  node is exactly `self` gives a member qualifier: the self type in `impl T` and `impl Tr for T`,
+  the trait in a trait's default method. `self.a.f()` and any other receiver chain, a lowercase
+  segment (`paths::module_dir`), an enclosing generic parameter and a `Self` whose self type is
+  excluded write no qualifier. An alias qualifier (`use a::B as C; C::f()`) is written as `B`. A
+  qualifier that `excluded` holds (a prelude name, a standard-library import or alias, a
+  standard-library-rooted path) stages no mention, and so does a path whose root segment
+  `excluded` holds, whatever the case of its other segments, or a primitive type (`u32::MAX`).
+- Tuple index: `x.0` stages no mention.
+
+**OTHER LANGUAGES.** Each registry entry's tags query stages, through CAPTURES:
+
+| Language | Const read | Type use | Impl header | Field | Qualifier | Doc |
+|---|---|---|---|---|---|---|
+| Python | an `^[A-Z][A-Z0-9_]*$` name read | an annotation's capitalised names | base classes | `x.f` not called | member, the capitalised name before `.f` | the docstring, dedented; the module docstring for the file |
+| Go | out of scope | every type identifier in type position | no such syntax | `x.f` not called | out of scope | the query's `@doc` capture |
+| TypeScript | an `^[A-Z][A-Z0-9_]*$` identifier read | every `type_identifier` in type position | `implements`, `extends` | `x.f` not called | member, the capitalised name before `.f` | the query's `@doc` capture |
+| JavaScript | an `^[A-Z][A-Z0-9_]*$` identifier read | no such syntax | `extends` | `x.f` not called | member, the capitalised name before `.f` | the query's `@doc` capture |
+| C# | a member read, as field | every `identifier` or `generic_name` in a parameter, property, return, local, field, generic argument, array element, nullable, cast, `is`, `as` or `typeof` type | the base list, as `@reference.implementation` alone | `x.f` not called, read or assigned | member, the capitalised name before `.f` | the `///` block directly above, XML tags removed |
+
+A Go constant is spelled as any local, so no per-file fact tells a read of one from a read of a
+variable. An import outside Rust names a module the extractor cannot place without the language's
+module resolution, and a bare member read in C# is a member or a local only by the enclosing
+type's members and the method's bindings; both are out of scope, and the later uses of an
+imported name stage as calls, types and fields. A function passed by name is staged in Rust alone:
+no evaluation line names one outside Rust, and the text scan answers it.
+
+**MACRO TOKEN TREES.** The Rust extractor re-parses each macro invocation's token tree with the
+same grammar, first wrapped as a call's argument list, then as items; the first parse with no
+error node contributes its definitions, calls and tagged references at their file positions (the
+wrapper's prefix length subtracted on the first line only). A token tree neither parse accepts
+contributes those of every subtree of its argument-list parse that holds no error node (a
+`json!({"k": f(x)})` gives the call `f`). The re-parse recurses into nested invocations. A
+re-parsed definition takes its enclosing definition, path parent and test flag from the
+invocation's node, and a re-parsed reference stages with the invocation's context: the file's
+`use` list for `excluded` and the alias rule, the invocation's enclosing generic parameters,
+bindings, and impl or trait for `Self` and `self`. A `macro_rules!` body is a template, no site of a reference, and contributes
+nothing.
+
+**ONE TAGGED MENTION PER SITE KIND.** The facts layer keeps one tagged mention per (enclosing
+definition, name, tag, test flag), at its first line; calls stay one per site, since a proof's
+evidence lists each call line. `x.f` and `T { f }` in one function are two mentions, their names
+differing.
+
+**DOC FACTS.** `model::Def` and `FileSymbols` gain `doc: Option<(u32, u32)>`, serde-defaulted
+and omitted when `None`; `code_facts` copies it into `Def.doc` and `FileFacts.doc`. A span is the
+1-based inclusive lines from the first doc line to the last. In Rust a doc line is `///`, a
+`/** */` block or a name-value `#[doc = "..."]`; every other attribute, `#[doc(..)]` included,
+and plain `//` lines between them, stay in the span and are dropped by `doc_text`; `//!`, `/*! */`
+and `#![doc = ".."]` form the file span. `tags_in` reads a `@doc` capture in a definition's
+match into that definition's span, for every language; a language unit writes only its query's
+`@doc` patterns. From the facts format unit on, the upstream `@doc` patterns the Go, JavaScript,
+TypeScript and TSX queries already hold give those languages their spans, and that unit re-pins
+their rows. The text is never stored: `Extract::doc_text(lang, raw)` turns the span's
+raw lines into text, splitting on `\n` with a trailing `\r` dropped and dropping every line with
+no doc marker; every line inside a `/** */` or `/*! */` block is a doc line, the opener, the
+closer and one leading `*` stripped; for a language with no rule it returns the lines trimmed. The span costs two
+integers per row; the text would add about 5 MB to a 9.7 MB snapshot that every read loads and
+checks whole.
+
+**MODULE ROOTS AT READ.** `ModuleDecl` gains `as_root`, `as_child` and `path_attr`, replacing
+`candidates`. `as_root` places the module as a crate root or `mod.rs` file declares it, `as_child`
+as any other file does, an inline module's components and its `#[path]` placed by the same two
+rules; for a `mod.rs`, `lib.rs` or `main.rs` file both lists are equal. A file is reached when it
+is the chosen target of another file's declaration, resolved from the crate roots down, the first
+declaration in path order winning. `module_target` uses `as_root` when the declaring file is
+reached by no declaration or by one with `path_attr`, and `as_child` otherwise.
+
+**RESOLVER AT READ.** The resolver in `resolve.rs` decides every edge when the view is read, as
+today, comparing names only. A Tagged mention resolves through `tagged` with
+`reference_candidate_kinds`: `field` to field, property, constant, static and variant; `const`
+adds variant; `variant` to variant; `impl` to type and trait. Every tagged link is a REFERENCES link, so an impl header is
+never a call. A qualified mention narrows its candidates to the definitions whose parent's leaf
+equals the qualifier or whose parent encloses an `impl` mention of that name. Exactly one narrowed
+candidate is an EXTRACTED edge in any file; several give a call the placeholder keyed by (file,
+qualified name), whose down-hop is the narrowed set, and a tagged mention no edge, whatever files
+they sit in. Every placeholder reader outside `resolve.rs` (`composed`'s `resolve_down_hop`,
+`callers_of`, `bound_leaf`, `id_binds_leaf` and `Indexed`'s leaf index, and near's members and
+`State::leaf_nodes`) binds a qualified placeholder by its leaf and takes its candidates from the
+resolver's narrowed down-hop, never by leaf alone. None: a path qualifier that names a project definition (a product type or trait in
+the mention's language) falls back to the unqualified rule; a path qualifier that names none makes
+no link and no unresolved entry; a member qualifier falls back to the unqualified rule. An
+unqualified `field` mention, and a member-qualified one falling back, resolves to field and
+property kinds alone and skips the same-file step: one candidate in the view is an INFERRED
+edge, several give no edge; a constant, static or variant is reached by a `field` mention only
+through a qualified mention's narrowed set. A qualified placeholder's leaf is the text after its
+last `::` or `.`. Proofs (`proof`, `call_edge`'s test fallback,
+`proving_calls`) narrow by the same rule, and `resettle`'s dirty set adds every qualified mention
+whose qualifier equals the leaf of a definition, or the name of an `impl` mention, in a differing
+or flipped file. `near.rs`'s `State::landing` also folds every code file holding a qualified call
+mention of one of the id's leaves. Each unit whose change alters settled output moves
+`SETTLED_GENERATION` and re-pins its golden on its own tree. `Edge` keeps its shape; a reference's
+kind is read from its mention; `--around` and the dash draw the new links through their existing
+REFERENCES rendering.
+
+**READERS.** `Resolver::referrers(id)` lists, from the IDX_NAME postings of `id`'s leaf
+(`mentions_named`), every mention whose own rule's candidate set (after narrowing, the pool and
+the kinds) holds `id`: the enclosing definition's site, the label, the line, and `?` when the
+mention gave `id` no single edge; a mention with no enclosing definition lists its file node's
+site. The label follows the mention's tag:
+
+| Tag | Label |
 |---|---|
-| `referenced_not_called`'s referencing leg (`sqlite.rs:3898-3907`) | REPLACED: its file is `split_id`'s file half of `from_id`, so a row edge from a fn names the fn's file, never the fn |
-| `definition_retired` (`:2269-2297`), the definition arm's tier upgrade (`:2775-2792`) | KEPT, each excluding a row's edge, one an `edge_assertions` entry names (above) |
-| the call arm's `REFERENCES` twin (`:2872-2881`) | KEPT, the pair's one writer, on a same-file definition or the leaf's placeholder (above) |
-| `supersede_file_edges` (`:3300-3316`) | KEPT, retiring a file-level row's edge at the `fresh` head (above) |
-| `relabel_owed_communities`' label (`:2381-2391`), `add_edge`'s relabel debt (`:4413`) and the same debt at `settle_edge`'s stamp and `assert_link`'s in-place revival, `Coupling::from_graph` (`community.rs:159`), for a reference row's edge | take it as a coupling as they take a call's twin, accepted: a type's user couples to it, both endpoints owed their relabel whenever the edge is added, stamped or revived; a file-level row deferring to its file's call twin (above) adds no edge, so the pair couples once |
-| `relabel_owed_communities`' label degree (`sqlite.rs:2377-2380`) and `add_edge`'s relabel debt (`:4413`), for a module row's edge | EXCLUDED by the same `file`-target test `Coupling::from_graph` applies: a declaration is not coupling |
-| the console map's typed edges (`console/map.rs:381`, its legend `:1196`) | KEPT: a row edge between two mapped entities drawn as `references` |
-| `Projector::subgraph`'s live-edge walk (`sqlite.rs:1759-1764`) | ACCEPTED GROWTH: it walks a row edge as any live edge, so a seeded subgraph reaches a type's users and a module's file |
-| `confidence_tier_radius` and `files_reachable` (`conductor.rs:13160-13171`, `:13200-13217`) | ACCEPTED GROWTH: an `inferred` file-level row edge (a top-level `use`) puts every file importing a seed file's types into `safe`, a same-file `extracted` one into `precise`, a fn-level row reaching the reading fn but not its file within `BLAST_RADIUS_GRAPH_DEPTH` (2, the subgraph holding no `CONTAINS` from a file three hops out), and, the walk being undirected, co-users of any type a seed file names join `safe` within the subgraph depth, accepted by name; `files_reachable` skips a `CONTAINS` whose target is a `file` node, as `Coupling::from_graph` does (a declaration is not coupling), but `confidence_tier_radius` runs it over `Projector::subgraph(seed, BLAST_RADIUS_GRAPH_DEPTH)`, whose live-edge walk (the row above, ACCEPTED GROWTH) crosses the module `CONTAINS`, so a module file the subgraph reaches through its declaration joins `safe` by the subgraph's other edges one hop earlier than without it, accepted by name |
-| `Coupling::from_graph`'s coupling filter (`community.rs:159-160`), for a module row's `mod`-to-`file` `CONTAINS` | EXCLUDED: a declaration is not coupling, so the filter skips a `CONTAINS` whose target is a `file` node |
-| `retired_code_entity_count` (`sqlite.rs:950-968`), for either row's edge | UNAFFECTED: inside `apply_generation` a row edge on a retiring definition retires at the same batch end, and outside it under the `fold_new` accepted difference; it counts `code-entity` nodes only (`n.kind = ?1`, `KIND_CODE_ENTITY`) and reads a retired `CONTAINS` only into the counted node, so a module edge's `file` target is never counted, and a `mod` node the live edge keeps out of the count is one its file still declares |
-| the console map's typed edges (`console/map.rs:381`), for a module row's edge | ACCEPTED: drawn as a typed `contains` edge |
-| spec 119's member readers (`query::member_file`, `member_sql()`, `member_set`), for either row's edge | UNAFFECTED: membership reads no edge |
-| `one_hop_degree` (`sqlite.rs:3346-3356`, read by `site_of` at `:925`) and spec 119's `around` merged-graph degree | ACCEPTED GROWTH: a degree counts every live incident edge, so a referenced const, type or trait gains degree, a file-level row deferring to its file's call twin (STAGED REFERENCES) adding none, so the pair counts once; and a module `CONTAINS`, ACCEPTED GROWTH: a `mod` node and its module file node each gain one degree |
-| `Projector::migrate_project` (`sqlite.rs:849-898`) | REPLACED: re-keys `refs` in criterion 7's one transaction (A MIGRATED PROJECT STAYS LIVE), so no row escapes the identity's drop or the project-scoped reads |
-| `query::neighborhood` and `neighborhood_of` (`query.rs:1005-1083`) and its in-neighbourhood degree (`:1087-1110`), the dash's reach | ACCEPTED GROWTH, for a reference row's edge and a module `CONTAINS`: the dash neighbourhood is navigational, as the console map is, so it walks either as any live edge and counts it in its degree |
-| `write_code_neighborhood` (`conductor.rs:13067-13116`) | ACCEPTED GROWTH: the grown subgraph lists those users' definitions in the prompt's code neighbourhood; a module `CONTAINS` keys its file map by a file node, which no definition reads |
+| call | `called by` |
+| `const` | `reads` |
+| `type` | `type use` |
+| `impl` | `implemented by` |
+| `field` | `field use` |
+| `variant` | `variant use` |
+| `use` | `imported by` |
+| `module` | `declared by` |
 
-The walker search's other hits, each one disposition: UNAFFECTED, reading only rels no row edge carries (`CALLS`, `IN_COMMUNITY`, `REALIZES`, `ABOUT`, `GOVERNS`, `SUPERSEDES`, the design-intent, intent and recency rels): `calls_out`, `callers_direct`, `callers_via_bare`, the dash's `calls_view` over them, `detach_attachments`, `retire_grain`, `owe_relabel_of`, `community_label`, `query::Buckets::new`, `explain`, `node_rationale`, `memory_rail_of`, the console map's `argued_about_in_review`, `build_graph_view`, `write_design_intent`, `concepts::intent_layer`, `recency_by_own_edge`; KEPT, retiring and pruning a row edge as any asserted edge (ONE RETIRER): `advance_generation`, `count_prunable`, `prune_in`, `assert_link`, `fold_event`'s writes; ACCEPTED GROWTH, reading a row edge as any live edge of a loaded `Graph`: `Projector::whole`, `contextgraph::around`, the console's `op_graph_load`, the MCP `tool_graph`, `print_around_subgraph`'s edge lines, the console map's `degree_map`, `capped_neighbors`, `frame` and `bridges_between_districts`, the dash's `reproject`, `reproject_derived` and `reproject_files`, `query::clustered_overview`, `cluster_detail`, `whole_graph_degree` and `path`, the conductor's `write_capped_section`.
+`ContextGraph` gains `referrers(id, tests)`, test mentions hidden unless tests are shown, and
+`doc(&Node) -> Option<String>`. `Composed` answers `doc` through a domain `SourceLines` interface,
+which the store's code half implements over the caller's worktree, and `Extract::doc_text`; a span
+past the file's end, or a file the read cannot open, gives no doc. `EntitySite` gains
+`doc_comment` and `referrers`, filled by `Composed::locate` for a code entity and for a file node;
+`site_fields` gives a `doc_comment` entry after `SITE_ATTRS` and, after `unresolved`, one
+`referenced by <label>` entry per label holding at most 50 sites joined by `LIST_SEP`, then
+`(+N more)`, so `print_entity_site` (`--show`) and the MCP show's `site_object` change no line.
+The lookup's `answer` fills `Entity`'s doc and per-label referrers through the same two methods,
+and `entity_block` replaces `referenced in` with one line per label under the lookup's existing
+caps, plus the doc's first line under the site line. The sidecar's sites carry no doc and no
+referrers, and `--around` prints no doc.
 
+**OVERLAY.** A file the caller's worktree changes is re-extracted by the overlay as today, so its
+new mentions, doc spans and module lists answer that worktree's reads and no other's; the overlay
+gains no rule.
 
-**A MIGRATED PROJECT STAYS LIVE, decided here.** A `migrate_project` that moved `edges` and `nodes` alone would leave the other project-keyed tables under the old project, so a migrated identity would have no current generation there: its assertions not live, its next batch a first generation (`advance_generation`, `:2049-2056`) and `settle_edge` never retiring what its prior generation asserted. `Projector::migrate_project` (`sqlite.rs:849-898`) re-keys every table carrying a `project` column in ONE transaction, the instance read at f7f001d5 (`sqlite.rs:36-98`) being `nodes`, `edges`, `generations`, `node_assertions`, `edge_assertions`, `proofs`, `retired_nodes`, `detached_attachments` and `relabel_owed` (criterion 7's), and `refs` from criterion 1, skipping any listed table absent from the file (an owed store, opened as it stands), as GENERATIONS says for `refs`, `nodes` and `edges` always held; none is left, `aliases`, `applied`, `rebuild_cursor` and `rebuild_run_closure` carrying no `project`. A listed table present without its `project` column is skipped the same way, `nodes` and `edges` included, a `graph.db` folded before spec 28 being such an owed store, its rows refolded under the current identity by the rebuild it owes; `migrate_project` answers `Ok(0)` on it. The absent-table skip is criterion 7's one generic mechanism, which `refs` rides once it joins the list; criterion 1 owns only `refs` joining the re-keyed list, its owed-store clause observing that skip over a store with no `refs`. A store the old binary already migrated keeps its old-project rows, `migrate_project_identity` calling `migrate_project` only on a `Rename` (`src/cli/mod.rs:1074-1105`) and `PROJECTION_VERSION` staying 3, accepted by name; spec 118's version-4 rebuild (its criterion 3) folds a fresh shadow from the log under the current project and swaps it in (`Projector::rebuild`, `sqlite.rs:456-493`), so none survives it.
+**SNAPSHOT FORMAT.** `snapshot::VERSION` becomes 5: the DEFS and FILES rows gain the doc span,
+an absent span written `0,0` and read back as `None`; the MODULES rows gain the two lists and
+`path_attr`. A version-4 snapshot fails `Container::parse` and is read as absent, so the next
+advance rebuilds from empty, and `FACTS_GENERATION` moves, so the overlay's memo, keyed by the
+fingerprint, misses and re-extracts.
 
-**A MODULE ROW REACHES ITS FILE, decided here.** A MODULE ROW (criterion 3's) is a second fold arm
-over the same table and generation drop with its own rel (`CONTAINS`), candidates and trigger. It
-carries its candidates (the `#[path]` override, else `<module_dir>[/<inline chain>]/x.rs` and
-`.../x/mod.rs`) joined by `\n` in its `leaf` column, the event's `name`, so the set key tells cfg-twin declarations with different candidates apart, no leaf-keyed read (STAGED REFERENCES' leaf resolution and leaf trigger, the unresolved listing) reading a module row (a declaration with no candidate, `events.rs:631-643`, `:659-668`,
-emits no row, and a `mod x;` in dev-only code stages none by the batch flag `lower_file` passes, the row being lowered only from a `module` `Def` that survives the test filter, so a `#[cfg(test)] mod x;` stages none in any file), lowered from the `module` `Def` at `extract_events` through `module_candidates(declaring path, Def)` with no `SymRef` persisted for it (criterion 3's), `from` the node at the declaration's path whatever kind won (a `mod x;` beside `fn x` being one node, spec 119's ONE PATH, ONE EVENT; cfg-twin `mod x;` declarations with different candidates staging two rows and two edges from it; both accepted), and resolves to the first candidate holding a live node of graph kind `file` ("first candidate" in every criterion meaning the first candidate holding a `file` node, never the first in the list), each candidate compared after `resolve_in_tx` (alias-resolved, as `from` is), settled at the end of every batch in
-which a resolved candidate path gains or loses that kind (created, retired, or `settle_node`'s kind change to
-a knowledge-held kind and back, `sqlite.rs:2129-2140`); it creates no node, each file node staying
-held by its own identity, so the declaring file folding before or after its target ends on one edge,
-and a target with no definition, reference or file doc (no file node) leaves the row unresolved,
-accepted; a target restored within one staging generation gets a NEW edge row (the gap); a later alias change leaves a module row's resolution as settled until a trigger batch or the identity's next generation, accepted by name. Its `CONTAINS` edge is `extracted`, the resolution being the language's module rule as spec 119's path scheme is, and `files_reachable` (`conductor.rs:13200-13217`) skips a `CONTAINS` whose target is a `file` node as `Coupling::from_graph` does (a declaration is not coupling), while the depth-2 subgraph the radius filters (`Projector::subgraph`, ACCEPTED GROWTH above) walks the module edge as any live edge, so the module file may enter the subgraph through its declaration and join `safe` by the edges among the reached ids, accepted by name (criterion 3's). The candidates are criterion 8's `module_candidates`, the row only reusing them; the dev-only inline-mod target is criterion 8's, excluded from criterion 3.
-
-**A DEV-ONLY INLINE MOD'S TARGET IS DEV-ONLY, decided here.** The candidates come from ONE pure function of (declaring path, `Def`), `symbols::events::module_candidates` (criterion 8's), which the index-backed `resolve_out_of_line_target` (`symbols/events.rs:735-774`, `idx.files().contains_key`, `:757-773`) calls, so the batch stays a pure function of one file; its convention branch gains the enclosing inline-mod chain the `#[path]` branch applies (`:740-748`), so `mod outer { mod x; }` names `outer/x.rs` as rustc does. 107's `excluded` set follows, ranking staying outside the out-of-line set as spec 116 has it (its OUT OF SCOPE), so `mod outer { #[cfg(test)] mod x; }`'s `outer/x.rs` turns dev-only and its live production nodes retire by 107's generation rule (CONSTRAINTS WALK).
-
-**UNRESOLVED REFERENCES ARE A READ, decided here.** No count is stored: a file's unresolved
-references are a READ-TIME query, criterion 2's whole, over its live rows (FILE'S ROWS, STAGED REFERENCES) whose `ref_kind` is `type`, `const` or `use` with no resolved target, a leaf listed only when no live row of the same `from` and leaf resolves (a module row is never
-listed), read by the projector's site read (`site_of`, `sqlite.rs:924-927`, after spec 119's `contextgraph::entity_site`) onto a new
-`EntitySite.unresolved` for a `file` node only, as the sorted distinct leaves, the operator's list
-of names to disambiguate or to define, an external crate's type included, accepted; so no other
-file's batch rewrites anything of the staging file's. `site_fields` gains the entry `unresolved`, appended after `partial`, its value the leaves joined by ONE list separator, `contextgraph::LIST_SEP` (`, `), defined here, which every later list-valued entry reuses by name, spec 118 adopting it for its `fixtures`, `proves` and `proven by` when it lands, an empty list giving no entry and the CLI `--around` printing no `unresolved` line for it; `show` prints `  unresolved <leaves>` and the CLI `--around` prints `  unresolved <count>` after the queried node's line and its doc line, in `site_fields`' order (doc first): `cmd_graph` resolves the query once through the port's `Projection::resolve` (`contextgraph.rs:920`) and hands that canonical id to `contextgraph::around`, `locate` and `print_around_subgraph`, "the queried id" here and in DOC COMMENTS meaning that canonical id, and makes ONE `site_of` read of it (through `Projection::locate`'s exact step, beside its `contextgraph::around` call, `src/cli/graph.rs:50-53`) and hands that `EntitySite`'s unresolved leaves to `print_around_subgraph`, criterion 4 adding its doc to the same one read, the `unresolved` line absent for a bare-leaf query by construction (it fills for a queried file node only, and a bare leaf locates no file node), the count printing under the queried node's line wherever it sorts, the no-second-read rule binding neighbours only, while the MCP `around` carries spec 119's `entity_site` fields alone, its criterion 4 standing (criterion 2's). When `Projection::resolve` answers `None` (a bare leaf, or a path no node holds yet), the queried id is the raw query string, which `contextgraph::around`, `locate` and `print_around_subgraph` take unchanged, as the base hands its raw query to `contextgraph::around` and `print_around_subgraph` (`src/cli/graph.rs:51-53`).
-
-**DOC COMMENTS, decided here.** A definition's doc comment is its node's `doc` attr: markers removed
-per line (`///`, `//!`, `/** */`, `/*! */`, `/* */` and `*` leaders, `#[doc = ".."]`'s string, Python's docstring
-quotes), lines joined by `\n`, trailing whitespace and leading and trailing blank lines dropped.
-Rust outer `///`, `/** */` and `#[doc]` above the item, inner `//!` for the enclosing inline mod, Rust's inner block `/*! */` being a doc wherever `//!` is; Go
-the `//` block above, a `/* */` block directly above a declaration being its doc as the `//` block is; C# `///`; JS and TS the `/** */` block above; Python the body's leading string. A C# `///` doc is its text with the XML tags removed (the `<summary>` content), decided at extraction. A non-literal `doc` attribute (`include_str!`, `cfg_attr`) gives no doc. A Python docstring's continuation lines are dedented by their common indentation (PEP 257's convention). A doc block is the comment run ending on the line directly above the item or its leading attributes, decorators or `export` wrapper, a blank line breaking it in every language but Rust. In Rust only `///`, `/** */` and `#[doc]` belong to an outer doc run; a plain `//` or `/* */` comment between the run and the item is skipped, like an attribute item. A doc empty after stripping is absent, the next twin's applying; attribute items between a doc and its item are skipped (`/// x` above `#[derive(..)]` above `struct S` documents `S`); an inline mod's outer `///` and inner `//!` join, outer first, by `\n`.
-Of definitions sharing a path that survive `extract_events`' test filter, the doc is the lowest-line twin's that has one; a dev-only twin's doc lands nowhere. A file's own doc is
-the file node's `doc`: Rust its inner `//!`, `/*! */` and `#![doc = ".."]`, Python its module docstring; Go
-none on the file, its package comment being the `package_clause` module definition's doc already;
-C#, JS and TS none, since a leading comment directly above the first definition is that
-definition's doc and any other is a header (a licence), not a doc. It is persisted as
-`FileSymbols.file_doc` by `extract` and carried as OPTIONAL `file_doc` on the batch's structural
-`fresh` event only; a production file's empty boundary carrying it creates its file node, the empty-name sentinel running `ensure_node(.., KIND_FILE, ..)` only when the event carries `file_doc` (criterion 4's) and returning before it otherwise as today (`sqlite.rs:2846-2848`), a dev-only file's never; `for_extraction` (`symbols/events.rs:35-46`) hollows it to absent with the rest of an
-out-of-line `#[cfg(test)]` target's `fs`, observed at `lower_file` (criterion 4's). A dropped `doc`
-is retracted by spec 101's generation rule, as any key a newer generation of the same identity no
-longer asserts (`record_assertion`, `settle_node`, `remove_attr_keys`, `sqlite.rs:4287-4362`); no
-null is written, and each such node is asserted by its own file's batch alone. The `doc` entry
-`site_fields` prints for a knowledge node prints a code node's alike, `show` printing it whole, and
-every `Graph` load cuts a `code-entity` or `file` node's `doc` to its first line, a knowledge node's staying whole, through ONE domain function, `contextgraph::doc_first_line(&str)` (criterion 4's), which `Projector::subgraph` and `Projector::whole` apply to `code-entity` and `file` nodes at load, the MCP `around` carrying the result on every node through spec 119's `entity_site`; the CLI `--around` (`print_around_subgraph`) applies it to the `doc` of `cmd_graph`'s one `site_of` read (UNRESOLVED REFERENCES ARE A READ) for every kind, printing one `  doc <line>` line after its node line, so a knowledge node's prints one line too, and only when `locate` answers `Located::One` whose id is the queried id byte for byte, a bare-leaf query printing none (criterion 4's); the queried node keeps the base's place in `print_around_subgraph` (`src/cli/graph.rs:128-153`), whether a queried decision past the governance cap prints at all being the base's behaviour. Every `Node`-returning projector read, CUT or WHOLE (criterion 4's): `Projector::whole` and `Projector::subgraph` CUT; `layered_call_walk`'s nodes (`sqlite.rs:1192`, through `node_row`), which `contextgraph::around` merges into its `Graph`, CUT; `referenced_not_called`'s file nodes (`:3924`) CUT; `locate`'s exact read into `site_of` (`:887`, `:901`) WHOLE, `show` printing it whole; `node_row`'s other calls (`:1147`, `:2444`, `:3886`) existence checks reading no doc. Cost, at
-41d78bfc: 1,921,748 bytes of production `///` and `//!` text in `crates/*/src` and `src` (25,320 lines, marker and
-one space stripped, `#[cfg(test)]` excluded; 2,524,792 over every `.rs` file in `crates/` and `src/`, test code included, which makes no node).
-
-**GENERATIONS.** `GRAMMAR_TAGS_VERSION` becomes `ts-tags-v5` (from spec 119's `ts-tags-v4`) at criterion 4, the last index change, which `ref_kind` (6), the persisted `Def.doc` and `FileSymbols.file_doc` (4) ride (no interim binary is installed), so the prior index loads as absent and re-extracts, the bump's observable a persisted `ts-tags-v4` index loading as absent in `symbols/store.rs`'s tests (criterion 4's). On trees 6 to 3 every extraction assertion builds its index in-process and none loads a persisted one. `PROJECTION_VERSION` stays at spec 119's 3, resting on the incremental half: an already-folded entry's facts stand in the incremental graph, and at a rebuild a pre-117 entry whose batch this binary no longer reproduces folds nothing (107's WHAT A REBUILD REPRODUCES) and returns at the next ingest, which is why the operator steps run `rigger graph build` after `rigger setup`; the
-`refs` table, which the projection open creates in an older store as `migrate_indexes` adds an index, opens empty and fills as the next ingest re-records each batch gaining a row or a doc (107), a batch this binary reproduces keeping its entry. A file that owes its rebuild opens as it stands, no schema step (the base's `Projector::open`, `sqlite.rs:380-388`), so its `refs` is absent until the rebuild's one transaction brings the schema up; the two `refs` readers that reach such a file treat an absent `refs` table as empty: `site_of`'s unresolved read (criterion 2's), since `cmd_graph` answers on an owed graph as 107's read surfaces do, and `migrate_project`'s `refs` re-key (criterion 1's), since `migrate_project_identity` (`src/cli/mod.rs:1064-1105`) calls it with no owed check. After landing the operator runs `rigger setup`, `rigger graph build`, `rigger graph communities` and `rigger graph concepts`, the last two re-deriving communities and concepts over the reference rows' coupling; expected then: at most 166 module `CONTAINS` edges (every `mod x;` in `crates/` and `src/` at 41d78bfc), and
-`REFERENCES` read off the build. Its size, estimated by a literal search at 41d78bfc of production `.rs` files (`crates/*/src` and `src`, `#[cfg(test)]` and line comments excluded) for the names of the 451 types, enums and traits they define: 6,608 mentions across the 116 files searched, the five most mentioned `Error` (877 in 54 files, six definers, so its rows stay unresolved), `Event` (485 in 49), `Position` (149 in 22), `Node` (124 in 13) and `EventStore` (121 in 28), each of the last four with one definer, so a seed file defining `Event` puts up to 49 files into `safe` and its subgraph; that growth is accepted by name with no cutoff.
-
-**UNIT ORDER AND BASE, decided here.** Launched on rigger-run after spec 119 lands (spec 116's kinds,
-and spec 119's nested ids, `Def.path`, `SymRef.enclosing` as a caller path, `node_leaf_sql()`, `entity_site`, `site_fields` and KIND CANDIDATES, are preconditions), the binary is
-refreshed and the store is migrated. The canonical-seed change (`cmd_graph`'s resolve through `Projection::resolve`) exists only to define the queried id for criteria 2 and 4, the raw query string when `Projection::resolve` answers `None` (UNRESOLVED REFERENCES ARE A READ), and has no other owner. Criteria land 6, 7, 8, then 1 to 5, in this sequence; the dependencies are the pairs below (6, 7 and 8, appended without renumbering, land first as spec 118's criterion 11 lands second); ARTIFACT
-OWNERSHIP (Notes) gives every artifact one owner, which is its first production caller's criterion,
-and the landing simulation is read off it: no criterion's assertion touches an artifact whose owner
-lands after it. 107's batch and rebuild tests compute their generation through the binary (no test holds a literal `@<hash>` key), so a batch-changing criterion (3, 4, 6, 8) edits none of them. LANDING TREES (Notes) names the tree each criterion is red on and the tree it is green on. A criterion changing a signature, payload
-or struct adapts every caller and constructor in its unit. The audit gate holds because each
-function lands with its first production caller. The staged-reference side is two criteria, each under the planner's 3,000-added-line cap (UNIT SIZE, Notes): 6 extracts the tagged references and isolates every calls-only consumer, and 1 stages and resolves them in `refs`. The
-unresolved read (2) is a read over 1's table and its `site_fields` entry. The module row (3) is a
-second arm over 1's table and drop, with its own rel, candidates and trigger, so 1's and 2's trees
-hold whole staging without it. Pairs read off the table, each "yes": 6 before 1 (1 folds 6's `ref_kind` events); 7 before 1 (1's rows need a migrated identity's generations live); 8 before 3 (3's candidates are 8's `module_candidates`); 1 before 2 (2 reads 1's `refs` columns, writing its `module` rows directly); 1 before 3 (3 stages in 1's table); 2 before 4 (4's doc line reads 2's one `site_of` read); 6 before 4 (4's `file_doc` rides 6's head). Spec 118 lands after this spec and adopts `contextgraph::LIST_SEP` itself; no criterion here touches a 118 entry.
-
-**CONSTRAINTS WALK, decided.**
-- *Empty:* a production file with no reference stages no row.
-- *Repeated:* an unchanged file re-records nothing (107 row 3); a same-generation entry is 107's re-recording and stages nothing.
-- *Reverted:* A, B, A records three entries (107) and ends on A's rows and docs.
-- *DROPPED:* a definition removed retires by the generation rule and rows naming it lose their edge,
-  a restored one gaining a new edge row; a removed doc comment removes `doc`; a removed `mod x;`
-  drops its row and edge. A file gone without a no-bytes batch keeps its definitions and rows until spec 118's whole-tree walk retires it, a moved name staying unresolved until then, accepted by name.
-- *Fold order:* no fold order changes an edge's existence or tier, nor its `source` outside 107's listed instances; valid-time and those instances follow the accepted difference (STAGED REFERENCES).
-- *Concurrent ingests:* two sinks folding one file meet 107's re-recording rows; rows change with
-  the generation in one transaction.
-- *Crash-resume:* each batch folds in one transaction; a rebuild resumes as 107 decided.
-- *Cold start:* staging lives in `graph.db`; an in-memory pending-reference set is NOT an
-  implementation of STAGED REFERENCES.
-- *Existing data:* an already-folded entry's facts stand in the incremental graph, and at a rebuild a pre-117 entry whose batch this binary no longer reproduces folds nothing (107) and returns at the next ingest (GENERATIONS); a file reached only as an
-  inline-mod `#[cfg(test)] mod x;` target, production before criterion 8, re-records at the next
-  ingest under its dev-only flag and its production nodes retire by the generation rule (107); a path leaving the `excluded` set (the base's `<module_dir>/x.rs` for `mod outer { #[cfg(test)] mod x; }`) re-records under its production flag at the next ingest and its nodes return (107's rule).
-
-**STATE PLACEMENT.** `refs` rows and resolved edges are `graph.db` projections of the ledger and the
-tree, every row keyed by its project, staging identity and generation; the batch is a pure function of one file's bytes and flag (107); `refs` is fold state in the rebuild comparison surface, equal after a rebuild outside 107's listed instances, every column a function of the folded entries and `position` the entry's log position, which 107's rebuild folds unchanged (`fold_entry` behind `apply_generation` giving each batch event its entry's position); the projector (`rigger-graph-sqlite`, seeing only `rigger-domain` and `rigger-store-sqlite`) keys on `refs` and payload columns, never `is_dev_only` or 107's `excluded`.
-
-## Notes (non-criteria)
-
-ARTIFACT OWNERSHIP. Owner = the criterion of the artifact's first production caller (for a field,
-table or constant, its first production reader or writer); "-" = not retired.
-
-| Artifact | Owner | First production caller | Tree it first exists on | Retired by |
-| --- | --- | --- | --- | --- |
-| `SymRef.ref_kind`, `EdgeInferred.ref_kind`, a `ref_kind` event's `fresh` head creating the file node and its folding nothing else before 1 | 6 | `extract`, `extract_events`, the reference fold arm | criterion 6 | - |
-| `extract::RUST_PRELUDE` and the `Self`/std exclusions, the `std`-, `core`- and `alloc`-imported leaves and their aliases | 6 | `extract` | criterion 6 | - |
-| reference patterns, the `impl Trait for Type` trait row | 6 | `extract` | criterion 6 | - |
-| the tagged-reference test and dev-only filter (`!r.is_test`, a dev-only file) over `type`, `const` and `use` references | 6 | `extract_events` | criterion 6 | - |
-| the module row's production from the `module` `Def` through `module_candidates` and its dev-only filter, the batch's flag | 3 | `extract_events` | criterion 3 | - |
-| `refs` table and its columns, the alias-resolved `from`, the set key and its within-batch upsert, the resolved-branch drop deleting rows only, per-language candidates, generation keying, resolution, dating, tiers, the one-retirer rule, the `edge_assertions` discriminator excluding row edges from `definition_retired`'s demotion and the upgrade, `referenced_not_called`'s file half, batch-end reference resolution writing no node | 1 | the reference fold arm | criterion 1 | - |
-| a `refs` row re-keyed by `migrate_project` with its edges, owned by 1 because the `refs` table is | 1 | `migrate_project_identity` (`src/cli/mod.rs:1064`) | criterion 1 | - |
-| staging (creating no file node, the head's, 6's), the drop and batch-end settlement in `apply_generation`'s resolved branch only, compare-before-write, the call edge as one writer, `edge_assertions` deletion when no row of the identity still resolves, the batch-end deletion of a prior-generation entry no new row re-asserted, `assert_link`'s tier parameter, the relabel debt of a row edge's stamp and revival | 1 | the end of `apply_generation`, `settle_edge`, `assert_link` | criterion 1 | - |
-| the event arm writing no node for a `ref_kind` event beyond its head's file node | 6 | the reference fold arm | criterion 6 | - |
-| non-call KIND CANDIDATES | 1 | the reference fold arm | criterion 1 | - |
-| calls-only filter in `name_occurrence_map`, `scored_hits`, `ground_ranked` | 6 | those functions | criterion 6 | - |
-| `reference_degree` and `blast_radius` counting only rows with no `ref_kind` | 6 | `blast_radius`, `ground_ranked` | criterion 6 | - |
-| `proof_events` limited to calls | 6 | `lower_file` | criterion 6 | - |
-| `EntitySite.unresolved`, the unresolved query in `site_of`, its `site_fields` entry, `contextgraph::LIST_SEP`, the CLI `--around` count from `cmd_graph`'s one `site_of` read, `cmd_graph`'s resolve of the query through `Projection::resolve` and its canonical seed | 2 | `site_of`, `site_fields`, `cmd_graph`, `print_around_subgraph` | criterion 2 | - |
-| the module row's `CONTAINS` arm and its `extracted` tier, `Coupling::from_graph`, `files_reachable`, `relabel_owed_communities`' label degree and `add_edge`'s relabel debt skipping a `CONTAINS` to a `file` node, live-file-node resolution settled at batch end, module resolution writing no node | 3 | the reference fold arm | criterion 3 | - |
-| `symbols::events::module_candidates` and its inline-mod chain in the convention branch | 8 | `resolve_out_of_line_target` | criterion 8 | - |
-| the `excluded` set's change, an inline-mod `#[cfg(test)] mod x;` target turning dev-only, its live production nodes retiring | 8 | `resolve_out_of_line_target` | criterion 8 | - |
-| `Projector::migrate_project` re-keying `nodes`, `edges`, `generations`, `node_assertions`, `edge_assertions`, `proofs`, `retired_nodes`, `detached_attachments` and `relabel_owed` in one transaction, skipping a table absent from the file | 7 | `migrate_project_identity` (`src/cli/mod.rs:1064`) | criterion 7 | - |
-| `Def.doc`, `doc`, `file_doc`, `FileSymbols.file_doc`, the per-language file-doc rule over the test filter's survivors, `for_extraction` hollowing `file_doc` | 4 | `extract`, the fold arms, the empty-name sentinel | criterion 4 | - |
-| `GRAMMAR_TAGS_VERSION` `ts-tags-v5`, a persisted `ts-tags-v4` index loading as absent | 4 | `SymbolIndex::is_current` | criterion 4 | - |
-| `contextgraph::doc_first_line`, applied at load to `code-entity` and `file` docs only, every `Node`-returning read CUT or WHOLE | 4 | `Projector::subgraph`, `Projector::whole`, `layered_call_walk`, `referenced_not_called` | criterion 4 | - |
-| the CLI `--around` doc line and its suppression for a bare-leaf query, `doc_first_line` over the `doc` of `cmd_graph`'s one `site_of` read; the empty-doc, attribute-skip and outer-then-inner rules | 4 | `print_around_subgraph` | criterion 4 | - |
-
-UNIT SIZE (added lines, code and tests, estimated as 107 did): 6 ~700 (patterns ~120, payloads ~50, extraction exclusions ~200, grounder filter ~60, tests ~270); 7 ~150; 8 ~200; 1 ~1,050 (`refs` fold and resolution ~400, tests ~650); 2
-~250; 3 ~300; 4 ~600. Every unit is under the 3,000-line cap.
-
-KIND CANDIDATES. `type`: `type`, `trait`. `const`: `constant`, `static`. `use`: every code-entity
-kind in spec 116's KINDS except `method`, `field`, `property` and `declaration`, the kinds a `use` cannot import. `module`: `file` nodes.
-
-PAYLOADS. `CodeEntityExtracted { .., doc?, file_doc? }`; `EdgeInferred { .., ref_kind?, file_doc? }`:
-`type`, `const` and `use` stage `REFERENCES` rows, `module` one `CONTAINS` row whose `name` is its
-candidates joined by `\n`, every row's `leaf` column holding the event's `name`; any other value folds nothing. Spec 118 owns any `refs` column, key part or `ref_kind` value beyond the four decided here. `SymRef { .., ref_kind? }`.
-`Def { .., doc? }`; `FileSymbols { .., file_doc? }`. Every payload field is serde-defaulted and
-omitted when absent.
-
-OUT OF SCOPE. Call placeholders and the file-level `REFERENCES` of calls. A type's users joining the grounder's `blast_radius` is a separate behaviour, not this spec's. Path-aware
-disambiguation (`use a::Foo` vs `b::Foo`): several definers leave a row unresolved.
-
-TEST DISPOSITIONS.
-
-| Test | First broken by | Disposition |
-|---|---|---|
-| fold-level and `tests/cli.rs` graph tests over real Rust extraction pinning an edge count or set, spec 116's and 119's among them | 1 | re-pinned with the rows' `REFERENCES` edges, the asserted behaviour unchanged |
-| `reference_degree`, `scored_hits`, `ground_ranked` and `blast_radius` tests | 6 | none moves: they count calls only |
-| spec 86's card and `proofs` tests | 6 | kept: `proof_events` emits calls only |
-| fold-level and `tests/cli.rs` tests pinning a node count over a `use`-only production file | 6 | re-pinned: its `ref_kind` head creates its file node |
-| `tests/cli.rs`, `tests/graph_show_*` and MCP `show` and `around` tests pinning a degree over real Rust extraction | 1 | re-pinned with the row edges' degree |
-| extraction tests selecting a Rust `SymRef` by name (`extract.rs:1867-1876`, `:1834`) | 6 | re-pinned to select the one with no `ref_kind` |
-| `show` and MCP `show` tests over a `file` node comparing its whole entry set | 2 | none found: a search at 1775b728 of the 45 tests calling `--show` or the MCP `show` finds no query naming a `file` node, so none gains the `unresolved` entry |
-| tests pinning `out_of_line_test_module_files` over an inline-mod `mod x;` | 8 | re-pinned: `mod outer { #[cfg(test)] mod x; }` excludes `outer/x.rs` |
-| fold-level and `tests/cli.rs` graph tests over real Rust extraction pinning an edge count or set | 3 | re-pinned: a fixture's `mod x;` gains its module `CONTAINS`; no fixture pins a degree on a `mod` or module file node (a search at 1775b728 of the 75 tests naming `degree` for a `mod x;` in their body or in a fixture file they load finds none) |
-| fold-level and `tests/cli.rs` tests pinning a node count over a definition-less production file holding `//!` | 4 | re-pinned: its `//!` creates its file node |
-| fold-level and `tests/cli.rs` tests pinning an edge count or degree over a `mod x;` whose target is a `//!`-only file | 4 | none found: a search at 1775b728 of every test fn's string literals (15 holding a `mod x;`) finds no literal of `//!` lines alone, and none of the 395 committed `.rs` files is `//!`-only |
-| `tests/graph_show_*` and MCP show tests over a documented definition | 4 | re-pinned with the `doc` entry |
-| 107's batch, rebuild and sink tests | - | kept: each computes its generation through the binary |
-
-LANDING TREES. Each criterion's assertions are red on the tree before it and green on its own; no
-earlier criterion asserts the opposite value of the same observable.
-
-| Criterion | Red on (why) | Green on |
-|---|---|---|
-| 6 extraction and isolation | 0, the base (no `ref_kind`: a const read, a type name and a `use` emit no tagged event) | 6 |
-| 7 migrated project | 6 (`migrate_project` moves `edges` and `nodes` alone, a migrated identity's generations and assertions left under the old project) | 7 |
-| 8 dev-only inline-mod target | 7 (`mod outer { #[cfg(test)] mod x; }` leaves `outer/x.rs` production) | 8 |
-| 1 staged references | 8 (no `refs` table: a `ref_kind` event makes no edge) | 1 |
-| 2 unresolved read | 1 (no `EntitySite.unresolved`, no `unresolved` entry or count) | 2 |
-| 3 module row | 2 (a `mod x;` stages no row and reaches no file) | 3 |
-| 4 doc comments | 3 (no `doc` or `file_doc`, no cut at load, a persisted `ts-tags-v4` index loading as current) | 4 |
-| 5 lanes | - | 5 |
+**PER-LANGUAGE GENERATIONS.** Each registry entry, TSX included, has one tags generation: a
+string literal that a `macro_rules!` macro of its own names, expanded by both the entry's const
+and `GRAMMAR_TAGS_VERSION`'s `concat!`; a generation table lists the consts, and a test holds
+`GRAMMAR_TAGS_VERSION` equal to the table's consts joined in table order. Its readers in
+`grounder.rs` stand. Every addition to the TypeScript entry's query also goes to the TSX
+entry's. The registry golden and the facts golden in `facts.rs` each
+pin one (language, generation, digest over that language's fixtures) row per registry entry, and the
+facts golden keeps one (`FACTS_GENERATION`, digest) row over its design, rationale and workflow
+fixtures with its coverage checks. A unit changing one language's extraction moves that
+language's generation and re-pins its rows alone; a change to the conversion, design or workflow
+rules moves `FACTS_GENERATION` and re-pins that row.
 
 ## Global constraints
 
-- Hyphens, never em or en dashes, ASCII only, in every added line.
-- A line citation names the symbol at the tree it was read on (f7f001d5, on `rigger-run`); the
-  symbol name governs, the line being a pointer only.
-- No new event type; no new dependency.
-- Every lane `.rigger/gates/lanes.sh` runs green (fmt, clippy -D warnings, test).
-- The planner's batch order is UNIT ORDER's sequence (6, 7, 8, then 1 to 5), never checkbox position.
-- No binary of trees 6 to 3 is installed, so the `ts-tags-v5` bump at criterion 4 re-extracts every index an installed binary loads.
-- Every batch is a pure function of one file's path, bytes and flag; every rebuild deterministic
-  (107).
-- The light lane compiles no extraction (`symbols/mod.rs:20-28`): every `symbols/` and grounder clause of 1, 3, 4, 6 and 8 and every `tests/cli.rs` clause (each `#[cfg(feature = "symbols")]`) asserts in the default lane; the `contextgraph/sqlite.rs` clauses of 1-4, 6 and 7 and 2's MCP clause fold or render hand-built input in the default and light lanes, and criterion 3's `conductor.rs` clause (`files_reachable`, compiled under `any(feature = "store", not(feature = "core"))`) reads a hand-built `Graph` in those two lanes; the core lane, compiling none of `contextgraph/sqlite.rs`, `conductor.rs` and the MCP server (`any(feature = "store", not(feature = "core"))`) and running no root-crate test, holds only criterion 3's `community.rs` clause.
-- Criterion 4's `contextgraph/sqlite.rs` clauses `///` alone giving no `doc` and a doc above `#[derive(..)]` documenting the item fold a hand-built event carrying no `doc`, or the item's `doc`, and prove the fold's handling of it; the extraction rule itself, which `extract` decides, is pinned by the same criterion's `symbols/events.rs` fixture clause.
+- Language and process agnostic: every language rule sits behind the extractor interface
+  (`Extract`, the registry's per-language entries); the resolver and the readers name no
+  language.
+- Cross-platform: `SourceLines` opens a worktree file by its path through the standard library
+  only.
+- Nothing in production code is omitted from the graph; test code is in the graph and hidden by
+  default, its referrers included.
+- Every lookup and show answers relative to the caller's worktree.
+- No external system: everything lives in the owned code store.
+- A declared extractor's answer may carry `qualifier`, `doc` and the `field`, `variant` and
+  `impl` ref kinds, each serde-optional.
+- The unit changing a fact rewrites the section of `docs/architecture-addendum-the-code-store.md`
+  stating it, in the same commit: section 4.1 (the leaf), 4.5 (the snapshot rows), 6.2 (the
+  resolver rules) and 6.4 (the budget table). Each unit rewrites, in the files it touches, every
+  citation of spec 117's earlier criteria or blocks to this text (`paths.rs`'s to MODULE ROOTS AT
+  READ, `contextgraph.rs`'s to READERS, `extract.rs`'s to RUST REFERENCES).
+- Each unit that changes the code view's answer over `tests/common/fixtures/resolver_tree.rs` adds
+  a DEPARTURES row in `crates/rigger-grounder/tests/code_view_golden.rs` naming its rule;
+  `code_view.golden` is unchanged.
+- Read budgets, measured by `tests/read_budgets.rs` on the release binary: `rigger graph
+  --around` and `--show` under 50 ms; `rigger graph --lookup` under 250 ms; the dash `/api/graph`
+  overview under 150 ms by default, under 300 ms with `tests=include` and under 300 ms at a
+  non-default resolution.
+- Each unit whose added or dropped mentions change a pinned golden re-pins it on its own tree.
+- Hyphens, not em dashes. Both feature lanes green.
 
 ## Done when
 
-- [ ] a test proves STAGED REFERENCES REACH THE GRAPH: a fn reading a const, a field naming a type and a `use` each become a staged row whose edge lives only while one candidate resolves it, in any fold order,
-  asserted in `symbols/events.rs`'s tests through the fold and `contextgraph/sqlite.rs`'s over
-  hand-built rows: a re-recorded batch staging nothing, two reads of one leaf in one fn leaving one row,  a rebuild from the log leaving `refs` row for row equal, a file-level `use`
-  beside a same-file call writing one edge, two candidates or none leaving the row unresolved with
-  no edge, an edge's `source` its staging batch's position and its valid-time opened at the resolving batch's event time, a same-file candidate taken before a project one and another language's never, a same-file edge `extracted`, batch-end resolution writing no node for an unresolved row,  a row whose `from` is an alias stored at the canonical id, a `ref_kind` event folded through `fold_new` or with an empty identity staging nothing, two staging files' rows settling independently, the resolving batch's fold paying the row edge's relabel debt, a target file edited with the definition kept
-  leaving the edge and its dates untouched, the definition removed stamping `valid_to` and restored
-  in a later batch writing a new edge row, a new generation dropping old rows, two projects staging one relative file keeping separate rows and one's batch dropping none of the other's, a deleted file's no-bytes batch dropping its rows and retiring their edges, a row re-resolving away with no other live row of its identity on the pair leaving its edge prunable, a row that asserted nothing, its pair held by a call edge, re-resolving away leaving the call edge live, a file-level `use a::Error;` beside a type-position `Error` whose `use` row unresolves leaving the edge live, a store opened without `refs` gaining it empty, a `refs` row moving with its edges under `migrate_project` and an owed store with no `refs` table migrating the tables it holds, and the staging file
-  re-extracted with the reference kept continuing the edge's valid-time, a dropped reference's two endpoints owed their relabel at the batch's end, a prior-generation entry no new-generation row re-asserted gone at the batch's end, a definition of a row's target leaf retiring elsewhere leaving the row's edge not demoted where a call edge on the same target is, and `referenced_not_called` listing a fn-level row's file, never the fn. This criterion
-  OWNS what ARTIFACT OWNERSHIP gives criterion 1; module rows are criterion 3's and extraction criterion 6's, NOT this one's.
-- [ ] a test proves A FILE'S UNRESOLVED REFERENCES ARE A READ: `site_of` fills a `file` node's `EntitySite.unresolved` with the sorted distinct leaves of its live `type`, `const` and `use` rows that resolve to nothing,
-  asserted in `contextgraph/sqlite.rs`'s tests over hand-built rows and rows the test writes into
-  `refs` directly: two fns reading one unresolved leaf listed once, a resolved row and a non-file
-  node listing nothing, an unresolved `module` row not listed, an owed store with no `refs` table listing nothing; and in `tests/cli.rs` and the MCP server's tests, `show` printing the leaves joined by `contextgraph::LIST_SEP` after the `partial` entry and no entry for an empty list, the CLI `--around` their count for the queried node only, no line for an empty list, an alias-path query printing the canonical id's node line and `unresolved` line, and the MCP `around` no `unresolved` key. This criterion OWNS what ARTIFACT OWNERSHIP gives criterion
-  2; the rows are criterion 1's, NOT this one's.
-- [ ] a test proves A MODULE ROW REACHES ITS FILE: a `mod x;` becomes a staged row whose `CONTAINS` edge from the `mod` node lives while its first candidate's `file` node exists, in any fold order,
-  asserted in `symbols/events.rs`'s tests through the fold and `contextgraph/sqlite.rs`'s over
-  hand-built rows: a `#[path]` override, `x.rs`, `x/mod.rs` and `mod outer { mod x; }`, each asserting only that the row resolves to the first candidate holding a `file` node, the candidates' spelling being `module_candidates`' (criterion 8's), a target with no file node leaving the row unresolved, the target folded before and after the declaring one ending on one
-  edge, retired and restored leaving a gap, the edge `extracted`, a `mod x;` in dev-only code staging none, module resolution writing no node, and a `mod` node's community label degree counting no module `CONTAINS` and the edge owing no relabel; and in `community.rs`'s tests `Coupling::from_graph` coupling no `mod` to its module's file, and in `conductor.rs`'s tests `files_reachable` reaching no file through a module `CONTAINS`. This criterion
-  OWNS what ARTIFACT OWNERSHIP gives criterion 3; the table and drop are criterion 1's and `module_candidates` with the dev-only inline-mod target criterion 8's, NOT this one's.
-- [ ] a test proves DOC COMMENTS LAND ON NODES: a definition's doc comment is its node's `doc` attr and a file's own doc the file node's,
-  asserted in `symbols/events.rs`'s tests through the fold over a fixture per language (an
-  out-of-line `#[cfg(test)]` target carrying `//!` lowered by `lower_file` with no `file_doc`, an inline mod's outer and inner docs joined outer first, a blank line breaking a Go doc block, of two documented twins the lower-line one's doc kept, a dev-only file's `//!` creating no file node), in
-  `contextgraph/sqlite.rs`'s over hand-built events (`Projector::whole` loading each code node's `doc` cut to its first line and a decision's whole, a caller the `around` callers walk adds carrying its cut `doc`, `///` alone giving no `doc` and a doc above `#[derive(..)]` documenting the item, `referenced_not_called`'s file nodes cut), and in `tests/cli.rs` (`show` printing the whole doc, `around` its first line, a documented definition queried by bare leaf printing no doc line), with
-  a removed comment removing the attr, `#[doc = ".."]`, `/** */`, `/*! */` and a Go `/* */` block read and a definition-less production file's `//!` creating its file node; and in `symbols/store.rs`'s tests a persisted `ts-tags-v4` index loading as absent. This criterion OWNS what ARTIFACT OWNERSHIP gives
-  criterion 4; the renderer is spec 119's, NOT this one's.
-- [ ] every lane `.rigger/gates/lanes.sh` runs green (fmt, clippy, test). This criterion OWNS only the lanes over the integrated result.
-- [ ] a test proves REFERENCES ARE EXTRACTED AND ISOLATED: `extract` tags a Rust const read, type reference and `use` with its `ref_kind`, and every calls-only consumer and `proof_events` skip each one,
-  asserted in `symbols/`' and the grounder's tests over extraction: locals, generics, const generics, an impl header's self type, `Self`, every `RUST_PRELUDE` name, `std::` names, `u32::MAX`, a `use std::collections::HashMap;` leaf and `IoError` after `use std::io::Error as IoError;` emitting no `ref_kind` event, a `type`, `const` or `use` reference inside a `#[cfg(test)]` region and one in a dev-only file emitting no `ref_kind` event, `impl Trait for Type` emitting one `type` event from the self type's path, or from the impl's when the file defines the self type other than once, a struct literal `Foo { a: 1 }` emitting one `type` event of leaf `Foo`, `Enum::Variant { a: 1 }` and the pattern `Enum::Variant { .. }` each one of leaf `Enum`, `Enum::Variant(x) =>` and `Kind::Constant =>` each emitting one `type` event of leaf `Enum` and `Kind`, and `module::Type { a: 1 }` one of leaf `Type`, and `reference_degree`, `blast_radius`, `name_occurrence_map`, `scored_hits`, `ground_ranked` and `proofs` unchanged over a fixture holding each kind; and in `contextgraph/sqlite.rs`'s tests over hand-built events the event arm writing no `CALLS` edge and no node beyond the head's file node for a `ref_kind` event, a `use`-only file's head event superseding its prior structural edges, and a `use`-only file gaining its file node. This criterion OWNS what ARTIFACT OWNERSHIP gives criterion 6; the `refs` fold is criterion 1's, NOT this one's.
-- [ ] a test proves A MIGRATED PROJECT STAYS LIVE: `Projector::migrate_project` re-keys every project-keyed table in one transaction, so a migrated identity keeps its current generation,
-  asserted in `contextgraph/sqlite.rs`'s tests over hand-built events: after a migration every row of `nodes`, `edges`, `generations`, `node_assertions`, `edge_assertions`, `proofs`, `retired_nodes`, `detached_attachments` and `relabel_owed` under the new project and none under the old, the identity's next generation retiring a node and an edge its prior generation asserted, a second migration moving nothing, and an owed store holding only `nodes` and `edges` moving both with no error. This criterion OWNS what ARTIFACT OWNERSHIP gives criterion 7; `refs` moving is criterion 1's, NOT this one's.
-- [ ] a test proves A DEV-ONLY INLINE MOD'S TARGET IS DEV-ONLY: `mod outer { #[cfg(test)] mod x; }` makes `outer/x.rs` dev-only through `module_candidates`, its live production nodes retiring,
-  asserted in `symbols/events.rs`'s tests: `module_candidates` over a `#[path]` override, `x.rs`, `x/mod.rs` and `mod outer { mod x; }`, `out_of_line_test_module_files` holding `outer/x.rs`, and `outer/x.rs` folded as production then re-recorded under its dev-only flag retiring its production nodes. This criterion OWNS what ARTIFACT OWNERSHIP gives criterion 8; the module row is criterion 3's, NOT this one's.
+- [ ] a test in `crates/rigger-domain/src/resolve.rs` proves A QUALIFIED CALL NARROWS ITS CANDIDATES: over hand-built facts, `FactsView::new` written in another file resolves EXTRACTED to `FactsView`'s `new`.
+  This criterion OWNS the narrowing in `call` and `tagged`.
+- [ ] a test in `crates/rigger-domain/src/resolve.rs` proves SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE: `CodeView.file` written in a trait default method of `CodeView`, with two implementations one of which shares the file, goes to the placeholder keyed by the qualified name, whose down-hop is both, and `Composed`'s call walk lists both as its callees and the caller under each.
+  This criterion OWNS the qualified placeholder key, its down-hop and every placeholder reader outside `resolve.rs`.
+- [ ] a test in `crates/rigger-domain/src/resolve.rs` proves A QUALIFIER NAMING NO DEFINITION: `AtomicU64::new` beside a project `Cursor::new` makes no link and no unresolved entry, and `Request.GetClientIp` resolves by the unqualified rule.
+  This criterion OWNS the path and member fallbacks.
+- [ ] a test in `crates/rigger-domain/src/resolve.rs` proves A QUALIFIED PROOF RESETTLES: adding in another file a second `impl Cursor` holding `new` moves the proof of a test's `Cursor::new()` from the first `new` to none, and `resettle`'s settled bytes equal a full settle's there, after a differing file that only adds `struct AtomicU64` beside a test's `AtomicU64::new()`, and after one that only renames an `impl` mention over unchanged method ids.
+  This criterion OWNS the proof narrowing, the `resettle` dirty set and the `SETTLED_GENERATION` move.
+- [ ] a test in `crates/rigger-domain/src/resolve.rs` proves THE NEW TAGS RESOLVE AS REFERENCES: hand-built `variant` and `impl` mentions resolve to a variant and a trait, each a REFERENCES link and never CALLS.
+  This criterion OWNS `REF_KIND_FIELD`, `REF_KIND_VARIANT`, `REF_KIND_IMPL`, their candidate kinds and the `EdgeInferred` ref-kind doc comment.
+- [ ] a test in `crates/rigger-domain/src/resolve.rs` proves AN UNQUALIFIED FIELD USE NEVER PREFERS ITS FILE: `x.lang` beside one same-file `lang` field and one in another file gives no edge, and beside one `lang` field in another file gives an INFERRED edge.
+  This criterion OWNS the unqualified field rule.
+- [ ] a test in `crates/rigger-domain/src/near.rs` proves NEAR FOLDS QUALIFIED CALLERS: `--around FactsView::new` over a near view lists the cross-file `FactsView::new` caller the whole view draws.
+  This criterion OWNS the `State::landing` fold and its module doc.
+- [ ] a test in `crates/rigger-store/src/code/snapshot.rs` proves DOC SPANS AND MODULE LISTS SURVIVE A SNAPSHOT: facts carrying `Def.doc`, `FileFacts.doc`, an absent span and a `ModuleDecl` with distinct `as_root` and `as_child` lists and `path_attr` read back equal at `VERSION` 5.
+  This criterion OWNS the facts fields in `code_facts.rs`, the snapshot rows and `VERSION`.
+- [ ] a test in `crates/rigger-store/src/code/advance.rs` proves A VERSION-4 STORE REBUILDS: a store holding a version-4 snapshot opens as absent and its next advance writes a version-5 snapshot from empty.
+  This criterion OWNS that test only.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves RUST DOC SPANS ARE EXTRACTED: a definition under `///` lines with `#[doc(hidden)]` between them gets the span from its first to its last doc line, a file opening with `//!` lines gets its file span, and a fixture query's `@doc` capture gives its definition the captured span.
+  This criterion OWNS the Rust doc rule, the `@doc` read in `tags_in`, the `model::Def` and `FileSymbols` spans and their copy in `code_facts`.
+- [ ] a test in `crates/rigger-grounder/src/facts.rs` proves THE DOC TEXT IS STRIPPED: `FactsExtractor::doc_text` turns a Rust span's raw lines, `\r\n` endings and a `#[doc(hidden)]` line included, into the comment text alone.
+  This criterion OWNS `Extract::doc_text`.
+- [ ] a test in `crates/rigger-domain/src/resolve.rs` proves A MODULE ROOT IS DECIDED AT READ: `module_target` reaches `src/bin/x.rs` from `mod x;` in `src/bin/tool.rs`, `p/z.rs` from `mod z;` in a file `src/lib.rs` loads by `#[path = "p/y.rs"]`, and `src/code/advance.rs` from `mod advance;` in a reached `src/code/mod.rs`.
+  This criterion OWNS `module_target`'s list choice and reach rule.
+- [ ] the table `module_candidates_name_the_candidates_of_each_tabled_declaration_in_order` in `crates/rigger-grounder/src/grounder/symbols/paths.rs` proves EACH DECLARATION HAS BOTH LISTS: each row pins an (`as_root`, `as_child`) pair, with rows for a bin root's `mod x;`, a `#[path]`-loaded file's `mod z;` and `mod a { #[path = "b.rs"] mod b; }` in `src/m.rs`.
+  This criterion OWNS `module_dir`, `module_candidates` and `path_attr` extraction.
+- [ ] the registry golden in `crates/rigger-grounder/src/grounder/symbols/registry.rs` and the facts golden in `crates/rigger-grounder/src/facts.rs` prove EACH LANGUAGE PINS ITS OWN ROWS: each pins one (language, tags generation, digest) row per language, the facts golden one (`FACTS_GENERATION`, digest) row besides, and `GRAMMAR_TAGS_VERSION`'s `concat!` output equals the table's consts joined in table order.
+  This criterion OWNS the generation macros and consts, the table and both goldens' rows.
+- [ ] a test in `crates/rigger-grounder/src/facts.rs` proves ONE TAGGED MENTION PER SITE KIND: a function reading one constant three times yields one `Tagged("const")` mention at the first line, and three calls to one function yield three call mentions.
+  This criterion OWNS the dedupe in `FactsExtractor`.
+- [ ] a test in `crates/rigger-grounder/src/facts.rs` proves EVERY CAPTURE KEEPS ITS SUFFIX: a fixture query's `@reference.class`, `@reference.implementation`, `@reference.constant`, `@reference.field` and `@reference.import` captures yield `type`, `impl`, `const`, `field` and `use` mentions, and `@reference.call` a call.
+  This criterion OWNS the change to `Capture::Reference` in `compile`.
+- [ ] a test in `crates/rigger-grounder/src/facts.rs` proves A CONSTRUCTOR STAYS A CALL: a TypeScript, a TSX, a JavaScript and a C# `new Square()` each yield a call mention.
+  This criterion OWNS the `constructors` field and its four entries.
+- [ ] a test in `crates/rigger-grounder/src/facts.rs` proves A QUALIFIER CAPTURE NAMES THE MENTION: a fixture query's `@qualifier.path` and `@qualifier.member` yield mentions named `Shape::area` and `Shape.area` whose `leaf` is `area`, and a `@name` over `Ns.IShape` and over `List<IShape>` yields leaves `IShape` and `List`.
+  This criterion OWNS `SymRef.qualifier`, `Qualifier`, the leaf split, the `type_arguments` field and the facts layer's name write.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/grounder.rs` proves AN IMPLEMENTING FILE STAYS IN THE BLAST RADIUS: under a fixture tags query, a Python file whose class names `Shape` as its base, and nothing else of `Shape`, is among `Shape`'s radius referencer files, and `Shape`'s reference degree counts no `impl` mention.
+  This criterion OWNS `Symbols::radius`'s read of `impl` mentions.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves MACRO TOKEN TREES ARE READ: a call inside `vec![..]`, a constant inside `assert_eq!(..)`, a call inside `json!({"k": f(x)})` and a `static` inside `thread_local!` yield a call, a const, a call and a definition at their lines, and a `macro_rules!` body yields nothing.
+  This criterion OWNS the token-tree re-parse.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves RUST WRITES THE QUALIFIER: `Store::open()`, `Self::new()` inside `impl<T> Store<T>` and `self.file()` inside `trait CodeView` yield calls named `Store::open`, `Store::new` and `CodeView.file`, and `self.inner.open()` and `paths::module_dir()` yield no qualifier.
+  This criterion OWNS the Rust qualifier rule.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves AN EXCLUDED QUALIFIER STAGES NOTHING: with `use std::io::Cursor;`, `Cursor::new(x)` and `assert_eq!(c, Cursor::new(v))` yield no mention, and with `use a::B as C;`, `C::f()` yields a call named `B::f`.
+  This criterion OWNS the qualifier's pass through `excluded` and the alias rule.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves RUST STAGES FUNCTION VALUES: `.map(entity_block)` and `.map(Store::open)` yield calls named `entity_block` and `Store::open`, and `.map(x)` with `x` a parameter and `Err(e) => Err(e)` yield none.
+  This criterion OWNS the function-value rule.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves RUST STAGES FIELD USES: `opts.system_prompt = x`, `SpawnOpts { system_prompt }` and `self.root` inside `impl Store` yield `field` references named `system_prompt`, `SpawnOpts::system_prompt` and `Store.root`, and `opts.run()` yields none.
+  This criterion OWNS the Rust field rule.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves RUST STAGES VARIANT USES: `InstallOutcome::AlreadyCurrent` in an expression and `Located::Many(c) =>` in a pattern yield `variant` references, `Kind::RejectRecurrence { n } =>` yields a `variant` mention named `Kind::RejectRecurrence` and a `field` mention named `RejectRecurrence::n` and no `type` mention, `Hop::Frontier(cs)` stays a call, and `-> Self::Target` yields none.
+  This criterion OWNS the Rust variant rule.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves RUST TAGS IMPL HEADERS: `impl<T> CodeView for FactsView<T>` yields `impl` mentions of `CodeView` and `FactsView` enclosed by the impl, and `impl FactsView` one of `FactsView`, with no call and no `type` mention.
+  This criterion OWNS the impl-header rule in `extract`, `block.targets` and `impl_from`.
+- [ ] a test in `crates/rigger-grounder/src/grounder/symbols/extract.rs` proves RUST READS PATTERN AND FORMAT CONSTANTS: `REF_KIND_TYPE =>`, `format!("{TEMP}")` and `assert_eq!(a, b, "{LIMIT}")` yield `const` references of `REF_KIND_TYPE`, `TEMP` and `LIMIT`, and `format!("{temp}")`, `format!("{{TEMP}}")` and `assert_eq!(out, "{TEMP}")` yield none.
+  This criterion OWNS the const-read and format-capture rules.
+- [ ] a table test in `crates/rigger-grounder/tests/facts_python.rs` proves PYTHON STAGES ITS ROW: a constant read, an annotation, a base class, `x.f`, `Shape.area()` and a docstring yield `const`, `type`, `impl` and `field` mentions, a call named `Shape.area` and a doc span.
+  This criterion OWNS `PYTHON_TAGS` and Python's doc rule.
+- [ ] a table test in `crates/rigger-grounder/tests/facts_go.rs` proves GO STAGES ITS ROW: a parameter type yields a `type` mention and no call, `x.f` not called yields a `field` mention, and a `//` block above a function yields its doc span.
+  This criterion OWNS `GO_TAGS`.
+- [ ] a table test in `crates/rigger-grounder/tests/facts_typescript_javascript.rs` proves TYPESCRIPT AND JAVASCRIPT STAGE THEIR ROWS: in TypeScript `IShape[]`, `implements IShape` and a constant read yield `type`, `impl` and `const` mentions; in JavaScript `extends Base`, `x.f` and `Square.make()` yield an `impl` mention, a `field` mention and a call named `Square.make`; a `/** */` block yields a doc span in both.
+  This criterion OWNS the TypeScript and JavaScript registry entries' queries.
+- [ ] a table test in `crates/rigger-grounder/tests/facts_csharp.rs` proves C# STAGES ITS ROW: `class Square : IShape`, `void Draw(List<IShape> s)`, `Square.SIDES`, `s.Side = 2` and a `///` block yield one `impl` mention, a `type` mention, a `field` mention named `Square.SIDES`, a `field` mention named `Side` and a doc span read back without its XML tags.
+  This criterion OWNS `CSHARP_TAGS` and C#'s doc rule.
+- [ ] a test in `tests/graph_honesty_label_cli.rs` proves THE LOOKUP NAMES REFERRERS BY KIND: through the binary, a documented constant read by two functions prints a `reads:` line naming both and the doc's first line under its site line, and a type named in a signature prints a `type use:` line naming that function.
+  This criterion OWNS `Resolver::referrers`, `ContextGraph::referrers`, `answer`'s fill and `entity_block`.
+- [ ] a table test in `crates/rigger-grounder/src/lookup/tests.rs` proves EVERY TAG HAS ITS LABEL: one row per tag in the label table prints its label, and a row with more referrers than the cap prints the `(+N more)` tail.
+  This criterion OWNS the label table.
+- [ ] a test in `tests/graph_honesty_label_cli.rs` proves A TEST REFERRER IS HIDDEN BY DEFAULT: a constant read by a product function and a test function lists the test function only under `--tests include`.
+  This criterion OWNS the tests filter on `ContextGraph::referrers`.
+- [ ] a test in `tests/graph_honesty_label_cli.rs` proves AN AMBIGUOUS REFERRER IS MARKED: a constant `LIMIT` defined in two files and read in a third lists the reading function with `?` under each constant's `reads:` line.
+  This criterion OWNS the `?` mark.
+- [ ] a test in `tests/graph_honesty_label_cli.rs` proves SHOW PRINTS THE DOC AND THE REFERRERS: `rigger graph --show` of a documented constant prints its stripped doc and a `referenced by reads` entry, and of a file opening with `//!` lines prints the file's doc.
+  This criterion OWNS `ContextGraph::doc`, `SourceLines`, the `EntitySite` fields and their `site_fields` entries.
+- [ ] a test in `crates/rigger-dash/src/mcpserver.rs` proves THE MCP SHOW CARRIES THE DOC AND THE REFERRERS: the `rigger_graph` tool's `show` of a documented constant answers `doc_comment` and `referenced by reads` keys.
+  This criterion OWNS that test only.
+- [ ] a test in `tests/graph_honesty_label_cli.rs` proves THE OVERLAY CARRIES NEW REFERENCES: an uncommitted edit adding a constant read in one worktree shows that referrer in a lookup from that worktree and not in a lookup from a second worktree at the same head.
+  This criterion OWNS that test only.
+- [ ] `tests/read_budgets.rs`, run with `RIGGER_READ_BUDGETS=1`, proves THE READ BUDGETS HOLD: it clones HEAD into `.rigger/tmp/agent-scratch`, builds the release binary once, runs `rigger graph build`, starts the dash on an ephemeral port, and measures each read of the Global constraints' budgets as the median of five runs after one warm-up; a drop guard removes the clone and stops the dash it started on every exit path.
+  This criterion OWNS the test, its `[[test]]` entry in `Cargo.toml` and any read-path change a missed budget requires; the gates do not run it, so the unit's evidence carries the measured figures.
+
+## Notes
+
+**Units.** Seven units; the planner keeps these lines.
+
+| Unit | Criteria | Needs | Estimated added lines |
+|---|---|---|---|
+| resolver | 1 to 7 | none | 2,300 |
+| facts format | 8 to 19 | resolver | 2,800 |
+| Rust references | 20 to 27 | facts format | 2,850 |
+| Python and Go | 28, 29 | facts format | 1,000 |
+| TypeScript, JavaScript and C# | 30, 31 | facts format | 1,300 |
+| readers | 32 to 38 | facts format | 1,900 |
+| budgets | 39 | Rust references, Python and Go, TypeScript JavaScript and C#, readers | 400 |
+
+The longest chain is four units: resolver, facts format, Rust references, budgets. One unit
+starts at once; four run side by side once facts format lands. Facts format needs resolver
+because both move `SETTLED_GENERATION` and its pinned digest (criteria 4 and 12). The language
+units and readers use only facts format's captures, fields and qualifier write; a language's
+query row and its doc rule are one concern per non-Rust language.
+
+**Landing order.** Each extractor unit moves only its language's generation and rows (criterion
+14); the rows sit one per line, so a merge that meets two units' adjacent rows keeps both. Each
+language's table test is a file of its own, so the parallel extractor units share no test file.
+Readers' fixtures read constants and type uses, which stage before Rust references lands.
+
+**Goal figures.** The two Goal figures are the next evaluation's to read and no unit's to prove.
+
+**Mention growth.** At 26942c67 the snapshot holds 43,174 product mentions (30,711 calls, 12,463
+tagged; 32,395 distinct per enclosing, name and kind) against the 34,301 the budgets were set at.
+Production sources hold about 18,500 member-access sites against about 102,000 call sites;
+members, macro arguments, function values and variants are estimated to add 15,000 to 25,000
+product mentions after the dedupe. At 26942c67 the installed binary answers `--around` in about
+20 ms and `--lookup` in 200 to 240 ms, the text and prose scans included; referrers read one
+leaf's postings, so their cost does not grow with the store.
+
+**Evidence to criteria.** The class's five lines: constant reads (criteria 20, 27, 32), field
+assignments (criteria 24, 32), a variant match (criteria 25, 32); `progress:59611` names
+`ErrorKind::NotFound`, a standard-library variant, which no criterion reaches. The caller target's
+lines move with criteria 1, 7, 20, 21 and 23 (calls through paths, macro arguments and function
+values).
+
+**Observed at 26942c67.**
+
+| Kind | Answered | Evidence |
+|---|---|---|
+| Const read in an expression | partly | `rust_references` REFERENCES `REF_KIND_TYPE`; `GREP_GUARD_MESSAGE` referenced in `guard.rs`; `attention_kind_rank::ORDER` referenced in `ledger.rs`; a read inside `vec![CODE_KIND_TYPE, CODE_KIND_TRAIT]` or a match arm `REF_KIND_TYPE =>` gives none |
+| Static read | partly | `GO_TAGS` referenced from `registry.rs`; `format.rs::TEMP_SEQ`, read only inside `format!`, has none; the `thread_local!` static `CONSOLE` is no definition |
+| Type in a signature, field or body | yes | `MentionKind`, `ModuleDecl`, `ReviewRound` referenced from fns, fields and files |
+| Trait implemented | wrong rel | `impl CodeView for FactsView` CALLS `CodeView`; `CodeView` called by `impl Runner for ExecRunner`; `SpawnOpts` called by `impl SpawnOpts` |
+| Re-export | as a plain import | `conductor`, `META_REPLAY_KEY` and `TYPE_BLAST_RADIUS_COMPUTED` are referenced in `conductor.rs` by its `pub use`, as by a `use` |
+| `mod` declaration to its file | partly | `lib.rs::code_facts` CONTAINS `code_facts.rs`; `build.rs` reaches `build/gitsemver.rs`; a bin root's `mod x;`, a `#[path]`-loaded file's children and an inline module's `#[path]` miss |
+| Macro use | yes, as a call | `agent.rs` CALLS `error_from_display` |
+| Call or read inside macro arguments | no | `code_view.rs::tests::def`, called three times inside `vec![]`; `site_object`, called three times inside `json!({..})`; `TEMP_SEQ` inside `format!` |
+| Function passed by name | no | `entity_block` (passed to `map` in `budget.rs`) and `base_type_identifier` (passed to `filter_map` in `extract.rs`) have no caller |
+| Path or receiver call | wrong edges | `TEMP_SEQ` CALLS `Cursor::new` (written `AtomicU64::new`); `CodeView::modules` CALLS `<FactsView as CodeView>::file` alone (written `self.file()`); `FactsView::new` CALLS itself |
+| Field read or assignment | no | `system_prompt`, `Entity.referenced_in` and the four `tests_hidden` fields are nodes with no referencing site |
+| Enum variant use | partly | a tuple-variant construction is a call (`Hop::Frontier` called by `hop`, `Located::Many` called by `locate`); the pattern `Located::Many(cands) =>` in `mcpserver.rs` and the unit variant `InstallOutcome::AlreadyCurrent` reach the enum or nothing |
+| Doc comment | no | `Def` and `FileFacts` hold no doc; `--show REF_KIND_TYPE` prints none |
+| Python | calls only | a class constructor call; no constant read, annotation or base class |
+| Go | wrong rel | the type use in `Build` CALLS `Shape`; no doc |
+| TypeScript, JavaScript | wrong rel | an interface use is a call; the constant `SIDES` has no referrer; no doc |
+| C# | wrong rel | `class Square : IShape` CALLS `IShape`; `Square.SIDES` has no referrer; no doc |
+
+A `pub use` stays an import, listed as `imported by`: a path through it resolves by its leaf, so
+no re-export node is added.
+
+**Issues.**
+
+| Issue | Disposition | Reason |
+|---|---|---|
+| #120 | criteria 2, 21 | a trait default method's `self.file()` still lands on the same-file implementation |
+| #115 | criterion 20 | macro token trees stage nothing today |
+| #110 | criteria 12, 13 | the three shapes miss today |
+| #43 | criteria 6, 24, 32 | field definitions are nodes, their uses are not |
+| #40 | fixed | the per-commit snapshot answers `--show src/conductor.rs::critique_gate_name` with "no such entity" |
+| #34 | fixed | `git_commit_all` is a test node with its callers, hidden by default |
+| #70 | fixed | `settle_node` no longer exists |
+| #42 | fixed by the overlay; criterion 38 covers the new facts | an uncommitted helper is found from its worktree today |
+| #38 | out of scope | a call-by-argument query is no reference kind; the lookup's text scan answers it |

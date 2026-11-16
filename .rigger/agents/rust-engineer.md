@@ -105,7 +105,31 @@ the code under test turns it red:
 - Pin every boundary from both sides: for a `<` at a threshold, one test just below, one at,
   one just above, so `<=`, `==` and `>` all fail. Every arithmetic operator gets an input
   where `+`/`-` and `*`/`/` produce different outputs.
-- Exercise both arms of every condition and every early return, including the arm taken on
-  the empty, zero, absent or repeated input.
+- Exercise both arms of every condition and every early return, as your walk's Branches list
+  names them.
 - For a bounded buffer, a retry count or a timeout, test the exact bound: the element that
   fits and the one that does not; the attempt that is allowed and the one that is refused.
+
+## The hand-over walk
+
+This project's persona asks for exactly one hand-over record, the walk, over the built-in rule
+that hand-over checks owe no record; no other record of a search, a witness or a check is owed.
+
+Before you report, on your committed tree, walk your unit's own diff,
+`git diff $(git merge-base rigger-run HEAD)..HEAD`, and only that diff: the walk is no audit of
+the tree around it, and its first line names the range it covers and says so. Emit it with the
+rigger_emit tool as the DecisionMade `<unit>-walk` (`<unit>` as your spawn id names it),
+governing the files the diff changes; a later round emits the same id again, written for its new
+head. The reviewers read it beside your diff. You have not handed over until the record holds
+three lists, each true against the diff at head:
+
+- Branches: each branch or refusal the diff adds, the arm taken on the empty, zero, absent or
+  repeated input included, with the test that drives it, or "none" and why.
+- Homes: each rule, helper, fixture or test shape the diff adds, with the lookup you ran for an
+  existing home of it (`rigger graph --lookup <term>`, its tests filter set to include for test
+  code, or `rigger peers <file>`) and what came back.
+- Sentences: each doc comment, handbook or README sentence the diff touches or makes false, at
+  its `file:line`, reread against head.
+
+A list with nothing in it says "none". The check-in, whose prompt carries the run's notes, owes
+no walk.
