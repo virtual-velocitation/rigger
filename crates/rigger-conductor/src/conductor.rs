@@ -22507,7 +22507,9 @@ mod tests {
         );
 
         // Review tiers judge against the same criterion text.
-        let review = ctx.build_review_prompt(&unit, "", "lens", None).unwrap();
+        let review = ctx
+            .build_review_prompt(&unit, "", "lens", None, "")
+            .unwrap();
         assert!(
             review.starts_with(header) && review.contains(verbatim),
             "a review prompt must carry the unit's task block; prompt was:\n{review}"
@@ -31235,9 +31237,11 @@ mod tests {
     }
 
     /// A later review round reviews what changed since the round that sent the unit back,
-    /// and the items that round required: every tier's round-1 prompt names the round-0 sha
-    /// its delta is read from, the `git diff` that is its scope, and each REQUIRED item, which
-    /// the round-1 implementer was also handed as its REQUIRED list. Round 0 carries none.
+    /// and the items that round required: every tier's round-1 prompt carries the REVIEW
+    /// PACKET of the change from the round-0 sha to the sha round 1 judges - the whole unit's
+    /// files, and the hunks of the delta alone - and each REQUIRED item, which the round-1
+    /// implementer was also handed as its REQUIRED list. Round 0's packet reads the unit's whole
+    /// change from its fork point, and carries no REQUIRED item.
     #[test]
     fn the_round_two_review_prompt_carries_the_prior_required_list_and_the_delta_base() {
         let (rs, events, driver) = run_review_rounds(&[
@@ -31247,19 +31251,51 @@ mod tests {
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
         let base = recorded_review_round_start_sha(&events, "implement", 0)
             .expect("round 0 stamps the sha it judged");
+        let head = recorded_review_round_start_sha(&events, "implement", 1)
+            .expect("round 1 stamps the sha it judged");
         let item = "- feature.rs: close the unscoped read";
+        let (feature_hunk, fix_hunk) = (
+            "diff --git a/feature.rs b/feature.rs",
+            "diff --git a/fix1.rs b/fix1.rs",
+        );
         for agent in ["lens", "adversary", "adj"] {
             let prompts = driver.prompts_for(agent);
             assert_eq!(prompts.len(), 2, "{agent} reviews both rounds");
             assert!(
-                !prompts[0].contains(item) && !prompts[0].contains("..HEAD"),
-                "{agent}'s first round has no earlier round to read a delta from:\n{}",
+                !prompts[0].contains(item),
+                "{agent}'s first round has no earlier round's REQUIRED list:\n{}",
                 prompts[0]
             );
-            for needle in [&format!("git diff {base}..HEAD"), "fix1.rs", item] {
+            for needle in [
+                format!("..{base}\n"),
+                "A feature.rs (+1 -0)".into(),
+                format!("{feature_hunk}\n"),
+                "+work\n".into(),
+            ] {
                 assert!(
-                    prompts[1].contains(needle),
+                    prompts[0].contains("REVIEW PACKET: git diff ") && prompts[0].contains(&needle),
+                    "{agent}'s first-round packet must carry {needle:?}:\n{}",
+                    prompts[0]
+                );
+            }
+            for needle in [
+                format!("REVIEW PACKET: git diff {base}..{head}"),
+                "A feature.rs (+1 -0)".into(),
+                "A fix1.rs (+1 -0)".into(),
+                fix_hunk.into(),
+                item.into(),
+            ] {
+                assert!(
+                    prompts[1].contains(&needle),
                     "{agent}'s second round must carry {needle:?}:\n{}",
+                    prompts[1]
+                );
+            }
+            for absent in [feature_hunk.to_string(), format!("{base}..HEAD")] {
+                assert!(
+                    !prompts[1].contains(&absent),
+                    "{agent}'s second round carries the delta's hunks alone, never \
+                     {absent:?}:\n{}",
                     prompts[1]
                 );
             }
@@ -31684,11 +31720,11 @@ mod tests {
     /// A RE-ATTEMPT CONTINUES EACH ROLE'S SESSION: every spawn of the first round starts fresh,
     /// and after the reject every role's spawn on the next round resumes the session its
     /// round-0 spawn ran as, sent only what changed - the implementer the prior-failure block
-    /// with its REQUIRED list, the sdet-author the delta, each review tier the round's delta
-    /// and REQUIRED list - never the criterion it already holds.
+    /// with its REQUIRED list, the sdet-author the delta, each review tier the round's REVIEW
+    /// PACKET, delta and REQUIRED list - never the criterion it already holds.
     #[test]
     fn a_later_round_resumes_each_roles_session_with_what_changed_alone() {
-        let (rs, _, driver) = run_session_rounds(&[
+        let (rs, events, driver) = run_session_rounds(&[
             (adjudicator_at(0, 0), REJECT_FEATURE),
             (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
         ]);
@@ -31728,6 +31764,20 @@ mod tests {
             implementer.contains(item) && implementer.contains("do not start over"),
             "the implementer is sent its prior-failure block:\n{implementer}"
         );
+        let range = [0, 1].map(|attempt| {
+            recorded_review_round_start_sha(&events, "implement", attempt)
+                .expect("each round stamps the sha it judged")
+        });
+        let header = format!("REVIEW PACKET: git diff {}..{}", range[0], range[1]);
+        for role in ["lens:lens", ROLE_ADVERSARY, ROLE_ADJUDICATOR] {
+            let (_, task) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every review tier");
+            assert!(
+                task.contains(&header) && task.contains("diff --git a/fix1.rs b/fix1.rs"),
+                "{role}'s resumed session is sent the round's packet:\n{task}"
+            );
+        }
     }
 
     /// A list repeating the lens kind and the adversary kind, one agent in both adversary steps,
@@ -35393,6 +35443,109 @@ mod tests {
                     want,
                     "base_tip {base_tip:?}: every gate must carry the run base exactly when \
                      the run recorded one: {env:?}"
+                );
+            }
+        }
+    }
+
+    /// A CHECK-IN REVIEWS THE WHOLE RUN: the check-in's review packet reads from the run's
+    /// recorded base, so it lists the unit's landed `slice.rs` beside its own `sweep.rs`, while
+    /// a unit's packet reads from the unit's fork point and lists its own change alone. A run
+    /// that recorded no base reads the check-in from its own fork point, past the landed unit.
+    #[test]
+    fn a_check_in_packet_reads_the_whole_run_from_the_run_base() {
+        let criterion = "the slice lands";
+        let unit = unit_slug(1, criterion);
+        for recorded in [true, false] {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let base_tip = git_head(&repo_path);
+            let mut cfg = fan_out_checkin_cfg("ok", "ok");
+            for id in ["lens", "adversary", "adj"] {
+                cfg.agents.insert(id.into(), agent(id));
+            }
+            cfg.workflow.defaults.review = config::ReviewPanel {
+                lenses: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+                steps: None,
+                tiers: None,
+            };
+            let st = Store::open(":memory:").unwrap();
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({
+                        "run": "check-in-packet",
+                        "criteria": [criterion],
+                        "base_tip": if recorded { base_tip.as_str() } else { "" },
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            let driver = Stub {
+                output: "reviewed the diff".into(),
+                output_by_agent: [("adj".to_string(), r#"{"verdict":"approve"}"#.to_string())]
+                    .into_iter()
+                    .collect(),
+                write_files_by_spawn_id: [
+                    (
+                        spawn_id(&unit, ROLE_IMPLEMENTER, 0),
+                        vec!["slice.rs".into()],
+                    ),
+                    (
+                        spawn_id("checkin", ROLE_IMPLEMENTER, 0),
+                        vec!["sweep.rs".into()],
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                ..Stub::new()
+            };
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &driver, vec![criterion.to_string()])
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_eq!(rs.units["checkin"].status, ledger::Status::Integrated);
+            let events = st
+                .read_all(0, Direction::Forward, &Filter::default())
+                .unwrap();
+            let head = |name: &str| {
+                recorded_review_round_start_sha(&events, name, 0)
+                    .unwrap_or_else(|| panic!("{name}'s review round stamps the sha it judged"))
+            };
+            let lens = driver.prompts_for("lens");
+            assert_eq!(
+                lens.len(),
+                2,
+                "the lens reviews the unit, then the check-in"
+            );
+            let (unit_prompt, checkin_prompt) = (&lens[0], &lens[1]);
+            let unit_range = format!("REVIEW PACKET: git diff {base_tip}..{}", head(&unit));
+            assert!(
+                unit_prompt.contains(&unit_range)
+                    && unit_prompt.contains("A slice.rs (+1 -0)")
+                    && !unit_prompt.contains("sweep.rs"),
+                "recorded {recorded}: the unit's packet reads its own change from its fork \
+                 point:\n{unit_prompt}"
+            );
+            let checkin_range = format!("REVIEW PACKET: git diff {base_tip}..{}", head("checkin"));
+            for (needle, present) in [
+                (checkin_range.as_str(), recorded),
+                ("A slice.rs (+1 -0)", recorded),
+                ("diff --git a/slice.rs b/slice.rs", recorded),
+                ("A sweep.rs (+1 -0)", true),
+                ("diff --git a/sweep.rs b/sweep.rs", true),
+            ] {
+                assert_eq!(
+                    checkin_prompt.contains(needle),
+                    present,
+                    "recorded {recorded}: the check-in's packet carries {needle:?} exactly when \
+                     {present}:\n{checkin_prompt}"
                 );
             }
         }
@@ -54014,7 +54167,10 @@ mod tests {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
         let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
         let group = |name: &str, slots: &[(&str, &str)]| {
-            fill(&picks.rendered("conductor::ReviewPacket::block", &[name]), slots)
+            fill(
+                &picks.rendered("conductor::ReviewPacket::block", &[name]),
+                slots,
+            )
         };
         let header = group(
             "REVIEW_PACKET_HEADER",
@@ -54249,7 +54405,10 @@ mod tests {
             let required = names(required);
             let (got_kept, got_elided) = packet_hunks(&delta, &required);
             let paths = |files: Vec<&crate::worktree::FileDiff>| {
-                files.into_iter().map(|f| f.path.clone()).collect::<Vec<_>>()
+                files
+                    .into_iter()
+                    .map(|f| f.path.clone())
+                    .collect::<Vec<_>>()
             };
             assert_eq!(
                 (paths(got_kept), paths(got_elided)),
