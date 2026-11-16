@@ -185,6 +185,14 @@ where
     FakeBus { end, calls }
 }
 
+/// The bus's own end of the connection a client makes to the fake bus [`FakeBus::end`] hands it
+/// from, once the client connects within 5 seconds; a panic with the message `connects` when it
+/// never does, so a client that never connects fails its test instead of hanging it.
+pub fn connected_end(end: &mpsc::Receiver<UnixStream>, connects: &str) -> UnixStream {
+    end.recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or_else(|_| panic!("{connects}"))
+}
+
 /// The client's end of the connection whose bus end is `end`: open, or closed once the client
 /// closed it, having read all the bus sent it (an orderly end) or not (the kernel resets the
 /// bus's end then, as a client closing with a signal or a reply still unread does). The probe

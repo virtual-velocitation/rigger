@@ -14,14 +14,13 @@
 mod keep_awake_fixtures;
 
 use keep_awake_fixtures::{
-    client_end, fake_bus, logind_inhibit, pending, portal_inhibit, private_bus, Answer, Call,
-    FakeBus, LogindInhibit, PortalInhibit,
+    client_end, connected_end, fake_bus, logind_inhibit, pending, portal_inhibit, private_bus,
+    Answer, Call, FakeBus, LogindInhibit, PortalInhibit,
 };
 use rigger_domain::sleep_hold::SleepHold;
 use rigger_process::keep_awake::OsSleepHold;
 use std::io::ErrorKind;
 use std::os::unix::net::UnixListener;
-use std::time::Duration;
 
 /// The reason every acquire of this test gives.
 const REASON: &str = "the rigger-process graphical-session test";
@@ -118,9 +117,10 @@ fn the_acquire_asks_the_desktop_portal_exactly_when_the_environment_names_a_disp
         let answered = held.as_ref().err().cloned();
         let (probe, calls): (Box<dyn Fn() -> String>, _) = match portal {
             Ok(FakeBus { end, calls }) => {
-                let end = end
-                    .recv_timeout(Duration::from_secs(5))
-                    .unwrap_or_else(|_| panic!("{what}: the acquire connects to the session bus"));
+                let end = connected_end(
+                    &end,
+                    &format!("{what}: the acquire connects to the session bus"),
+                );
                 (Box::new(move || client_end(&end)), Some(calls))
             }
             Err(listener) => (Box::new(move || waiting(&listener)), None),

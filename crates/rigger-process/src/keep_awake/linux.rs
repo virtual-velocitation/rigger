@@ -314,8 +314,8 @@ fn unavailable(error: zbus::Error) -> Unavailable {
 mod tests {
     use super::{acquire_on, graphical_session, no_system_bus, unavailable};
     use crate::test_support::{
-        client_end, fake_bus, logind_inhibit, pending, portal_inhibit, private_bus, Answer, Call,
-        FakeBus, LogindInhibit, PortalInhibit,
+        client_end, connected_end, fake_bus, logind_inhibit, pending, portal_inhibit, private_bus,
+        Answer, Call, FakeBus, LogindInhibit, PortalInhibit,
     };
     use rigger_domain::sleep_hold::Unavailable;
     use std::ffi::OsStr;
@@ -444,7 +444,10 @@ mod tests {
             let answered = held.as_ref().err().cloned();
             let (end, calls) = match portal {
                 Some(FakeBus { end, calls }) => (
-                    Some(end.recv().expect("the adapter connects to the portal")),
+                    Some(connected_end(
+                        &end,
+                        &format!("{what}: the adapter connects to the portal"),
+                    )),
                     Some(calls),
                 ),
                 None => (None, None),
