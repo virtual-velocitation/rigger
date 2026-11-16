@@ -83,8 +83,8 @@ fn graphical_session(wayland_display: Option<&OsStr>, display: Option<&OsStr>) -
 
 /// Take the inhibitor over the connection `bus` builds, answering unavailable, timed out, once
 /// `deadline` passes wherever the acquire then stands: connecting, authenticating or awaiting
-/// logind's answer. The connection runs on a current-thread runtime of this acquire's own, which
-/// the calling thread drives; the connection and the reply drop inside it, and the runtime is
+/// logind's answer. The connection runs on a [`bus_runtime`] of this acquire's own, which the
+/// calling thread drives; the connection and the reply drop inside it, and the runtime is
 /// shut down before this returns, so the descriptor the guard holds is the one copy the process
 /// keeps. The shutdown joins every thread the runtime started, waiting no longer than what
 /// remains of `deadline`: past it, a thread still running, one blocked in a connect the deadline
@@ -105,10 +105,7 @@ fn acquire_on(
     deadline: Duration,
 ) -> Result<SleepGuard, Unavailable> {
     let started = Instant::now();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| unavailable(e.into()))?;
+    let runtime = bus_runtime().map_err(|e| unavailable(e.into()))?;
     let taken = runtime.block_on(async {
         let inhibitor = async {
             let bus = bus.build().await.map_err(no_system_bus)?;
@@ -138,6 +135,16 @@ fn acquire_on(
     }))
 }
 
+/// The runtime each bus connection of this adapter runs on: a current-thread one, with its I/O and
+/// time drivers, that keeps no idle thread, so the blocking thread zbus's unix connect runs on ends
+/// with its connect instead of idling beside the thread that drives the runtime.
+fn bus_runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .thread_keep_alive(Duration::ZERO)
+        .build()
+}
+
 /// The desktop portal's inhibitor: the thread holding the session-bus connection it lives on, and
 /// the sender whose drop tells that thread to close the connection.
 struct PortalInhibitor {
@@ -149,9 +156,8 @@ impl PortalInhibitor {
     /// Ask the portal for its inhibitor over the connection `session` builds, on a thread of its
     /// own, answering within `within`: the inhibitor when the portal grants it (see
     /// [`portal_inhibit`]), none when no thread starts, no connection opens, or the portal refuses
-    /// or does not answer in time. The thread drives that connection on a current-thread runtime
-    /// of its own that keeps no idle thread, so the blocking thread connecting runs on ends with
-    /// its connect. When the portal grants, the thread keeps the connection, and the runtime with
+    /// or does not answer in time. The thread drives that connection on a [`bus_runtime`] of its
+    /// own. When the portal grants, the thread keeps the connection, and the runtime with
     /// it, until [`PortalInhibitor::release`]; otherwise it drops both before this returns, so a
     /// refusal, a request that responds no grant or none in time leaves no connection standing.
     fn take(session: Builder<'static>, reason: &str, within: Duration) -> Option<Self> {
@@ -189,11 +195,7 @@ fn hold_portal_inhibitor(
     released: &mpsc::Receiver<()>,
 ) {
     let started = Instant::now();
-    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .thread_keep_alive(Duration::ZERO)
-        .build()
-    else {
+    let Ok(runtime) = bus_runtime() else {
         return;
     };
     let held = runtime.block_on(async {
