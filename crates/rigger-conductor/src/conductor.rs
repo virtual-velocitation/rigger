@@ -380,6 +380,25 @@ fn review_round_start_key(unit: &str, attempt: u32) -> String {
     format!("{unit}/review-round-start#{attempt}")
 }
 
+/// The replay key of the `reviewed` status an approve records for `unit` at `attempt` (a
+/// speculation winner's at its lane, a review gate's at its own attempt).
+fn reviewed_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/reviewed#{attempt}")
+}
+
+/// The replay key of the [`STATUS_REVIEW_TIER`] mark a depth policy's routing records for `unit`
+/// at `attempt` ([`RunCtx::log_review_tier`]).
+fn review_tier_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/review-tier#{attempt}")
+}
+
+/// The event of `run` logged under the replay key `key`, if any: a keyed emit appends once, so
+/// there is at most one.
+fn logged_under<'a>(run: &'a [Event], key: &str) -> Option<&'a Event> {
+    run.iter()
+        .find(|e| e.meta.get(META_REPLAY_KEY).is_some_and(|k| k == key))
+}
+
 /// The replay key of the `UnitFailed` a review reject records for `unit` at its failing
 /// `attempt` (the review stage's and the plan-critique gate's), so a replay re-reaching the
 /// recorded reject appends no duplicate; the plan-critique spec-defect stop
@@ -3766,12 +3785,8 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
 fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
     let earlier = s.checked_sub(2)?;
     let stopping = s - 1;
-    let keyed = |key: String| {
-        run.iter()
-            .find(|e| e.meta.get(META_REPLAY_KEY) == Some(&key))
-    };
     let spec_ambiguity = |k: u32| {
-        keyed(failed_key(gate, k))
+        logged_under(run, &failed_key(gate, k))
             .and_then(Event::decode::<Value>)
             .and_then(|v| spawn::Adjudication::parse(v.get("review_reason")?.as_str()?))
             .filter(spawn::Adjudication::is_spec_ambiguity)
@@ -3786,7 +3801,7 @@ fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spa
     };
     spec_ambiguity(earlier)?;
     let adjudication = spec_ambiguity(stopping)?;
-    let completed = keyed(spec_defect_escalated_key(gate, stopping)).is_some();
+    let completed = logged_under(run, &spec_defect_escalated_key(gate, stopping)).is_some();
     (re_planned(stopping) && !re_planned(s) && !completed).then_some(adjudication)
 }
 
@@ -5705,7 +5720,7 @@ impl RunCtx<'_> {
         routing: &TierRouting,
     ) -> Result<(), Error> {
         self.emit_keyed(
-            &format!("{}/review-tier#{attempt}", st.name),
+            &review_tier_key(&st.name, attempt),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
@@ -5986,6 +6001,51 @@ impl RunCtx<'_> {
         Some((base, paths))
     }
 
+    /// AN UNCHANGED TREE KEEPS ITS APPROVE: when a later review `round` of `unit` at `attempt`
+    /// judges the very tree the round it reviews from approved ([`reusable_approve`]), record
+    /// that approve again as this attempt's `reviewed` status and return it, spawning no
+    /// reviewer. Its evidence names the approve it reuses and the sha that round judged
+    /// ([`approve_reused`]) above that approve's own evidence; it carries that round's
+    /// adjudicator model and this round's start sha, `round_start_sha`. `None`, so the whole
+    /// panel runs, when there is no such approve or the log cannot be read. The outcome names no
+    /// compensation target: the round that rendered the verdict queued its own.
+    fn reuse_approve(
+        &self,
+        unit: &str,
+        attempt: u32,
+        round: &ReviewRound,
+        tier: Option<&str>,
+        wt: Option<&Worktree>,
+        round_start_sha: &str,
+    ) -> Result<Option<ReviewOutcome>, Error> {
+        let Ok(events) = self.read_current_run() else {
+            return Ok(None);
+        };
+        let Some((key, approve)) = reusable_approve(&events, unit, attempt, round, tier) else {
+            return Ok(None);
+        };
+        let prior = approve
+            .decode::<Value>()
+            .and_then(|v| v["evidence"]["review"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        let reason = format!("{}\n{prior}", approve_reused(&key, &round.base));
+        if let Some(w) = wt {
+            w.ensure_present()?;
+        }
+        let model = |name: &str| approve.meta.get(name).cloned().unwrap_or_default();
+        self.emit_keyed_meta(
+            &reviewed_key(unit, attempt),
+            ledger::TYPE_UNIT_STATUS,
+            json!({"id": unit, "status": "reviewed", "evidence": review_evidence(&reason)}),
+            &[
+                (META_MODEL_ALIAS, &model(META_MODEL_ALIAS)),
+                (META_MODEL_RESOLVED, &model(META_MODEL_RESOLVED)),
+                (META_WORKTREE_SHA, round_start_sha),
+            ],
+        )?;
+        Ok(Some(ReviewOutcome::approved(reason)))
+    }
+
     /// THE REVIEW PACKET of the round that judges `head`, its round-start sha, in the unit
     /// worktree `wt` ([`ReviewPacket::block`]): the commits and hunks from the base of `round`,
     /// the round that sent the unit back, or on a first round from the unit's fork point, beside
@@ -6104,7 +6164,9 @@ impl RunCtx<'_> {
     /// `prior_required` is the REQUIRED list this attempt's implementer was handed. On a LATER
     /// review round - one whose unit an earlier round of the same branch judged
     /// ([`Self::round_delta`]) - every step reviews the delta since that round against it
-    /// ([`ReviewRound`]); a reject's own REQUIRED list rides back on the outcome.
+    /// ([`ReviewRound`]); a reject's own REQUIRED list rides back on the outcome. A later round
+    /// whose tree is the one that earlier round approved reuses the approve and runs no step
+    /// ([`Self::reuse_approve`]).
     // Each argument is a distinct, already-documented review input (stage, worktree dir,
     // attempt, the two routing/deferral flags, the blast-radius view, the caller's
     // any-parked out-param, the unit worktree object itself for the ensure-on-park
@@ -6165,6 +6227,18 @@ impl RunCtx<'_> {
                 required: prior_required.to_vec(),
                 audit: audit_id(&st.name, attempt),
             });
+        // AN UNCHANGED TREE KEEPS ITS APPROVE: a later round judging the tree the round it
+        // reviews from approved reuses that approve and spawns no reviewer
+        // ([`Self::reuse_approve`]). Speculation defers its `reviewed` status to the winning
+        // lane, so a candidate always runs the panel.
+        if let Some(round) = round.as_ref().filter(|_| !defer_reviewed) {
+            let tier = routing.policy.then_some(routing.tier);
+            if let Some(reused) =
+                self.reuse_approve(&st.name, attempt, round, tier, wt, &round_start_sha)?
+            {
+                return Ok(reused);
+            }
+        }
         // THE REVIEW PACKET every step reads: the change this round judges, read from git once,
         // here, when the round starts.
         let packet = self.review_packet(st, wt, &round_start_sha, round.as_ref());
@@ -6329,7 +6403,7 @@ impl RunCtx<'_> {
             // (spec 04, criterion 4). It is the adjudicator SPAWN's unit event, so it
             // carries the adjudicator's requested alias and resolved id (spec 05 line 52).
             self.emit_keyed_meta(
-                &format!("{}/reviewed#{attempt}", st.name),
+                &reviewed_key(&st.name, attempt),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -8500,7 +8574,7 @@ impl RunCtx<'_> {
         let steps = self.cfg.workflow.effective_review_panel(st).steps();
         if let Some(adjudicator) = step_adjudicator(&steps) {
             self.emit_keyed_meta(
-                &format!("{}/reviewed#{attempt}", st.name),
+                &reviewed_key(&st.name, attempt),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -8808,7 +8882,7 @@ impl RunCtx<'_> {
                 // reviewers/gates all replayed; keying `reviewed` skips the duplicate and
                 // lets `UnitIntegrated` (terminal, never re-scheduled) land exactly once.
                 self.emit_keyed_meta(
-                    &format!("{}/reviewed#{attempts}", st.name),
+                    &reviewed_key(&st.name, attempts),
                     ledger::TYPE_UNIT_STATUS,
                     json!({
                         "id": st.name,
@@ -10018,7 +10092,7 @@ impl RunCtx<'_> {
                 // and record it terminal + integrated so the main loop never re-runs it and
                 // the fan-out units that need it become ready.
                 self.emit_keyed_meta(
-                    &format!("{gate_name}/reviewed#{attempts}"),
+                    &reviewed_key(&gate_name, attempts),
                     ledger::TYPE_UNIT_STATUS,
                     json!({
                         "id": gate_name,
@@ -14726,6 +14800,13 @@ fn rejects_without_required(output: &str) -> bool {
 /// the operator. The verdict text follows it.
 const CONVERGED: &str = "converged";
 
+/// The first line of the `reviewed` evidence of a later round that reused the approve recorded
+/// under `key` ([`RunCtx::reuse_approve`]) of the tree at `sha`, which it judged again unchanged.
+/// The reused verdict's own evidence follows it.
+fn approve_reused(key: &str, sha: &str) -> String {
+    format!("approve reused from {key}: tree unchanged since {sha}")
+}
+
 /// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by its
 /// [`PATTERN_LABEL`] line, the trimmed shape and then `record`, the block's record sentence:
 /// the one rendering the implementer's prior-failure block and a later round's review block
@@ -16049,6 +16130,76 @@ fn prior_review_round<'a>(
         .max_by_key(|(stamped, _, _)| *stamped)
 }
 
+/// The earlier review round a later `round` of `unit` at `attempt` reviews from, as its attempt
+/// and start mark: the [`prior_review_round`], when its start sha is `round`'s base.
+fn round_reviewed_from<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    attempt: u32,
+    round: &ReviewRound,
+) -> Option<(u64, &'a Event)> {
+    prior_review_round(events, unit, attempt)
+        .filter(|(_, base, _)| *base == round.base)
+        .map(|(k, _, mark)| (k, mark))
+}
+
+/// The bodies of `unit`'s `UnitFailed` events logged after the event `after` and before the
+/// start of its review round at `attempt`, or to the log's end when that round has not started:
+/// what sent the unit back between an earlier round and this one.
+fn failures_since<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    after: &'a Event,
+    attempt: u32,
+) -> impl Iterator<Item = Value> + 'a {
+    let until = review_round_starts(events, unit)
+        .find(|(stamped, _, _)| *stamped == u64::from(attempt))
+        .map(|(_, _, e)| e.position);
+    events
+        .iter()
+        .filter(move |e| e.position > after.position && until.is_none_or(|end| e.position < end))
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+        .filter_map(Event::decode::<Value>)
+        .filter(move |v| v["id"] == unit)
+}
+
+/// The approve a later review `round` of `unit` at `attempt` reuses
+/// ([`RunCtx::reuse_approve`]), as its replay key and event: the `reviewed` status of the round
+/// `round` reviews from, when that round approved the very tree this one judges. Every
+/// condition must hold, so reuse fails closed: the round's delta is empty, so the tree is the
+/// one the earlier round judged; that round's approve records its start sha as the sha it
+/// judged; it recorded the review tier `tier` this round routes to (`None` for both with no
+/// depth policy); and what sent the unit back since is one or more merges the post-merge gates
+/// blocked ([`CAUSE_INTEGRATE_CONFLICT`]), never a reject, which condemns the approve.
+fn reusable_approve<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    attempt: u32,
+    round: &ReviewRound,
+    tier: Option<&str>,
+) -> Option<(String, &'a Event)> {
+    if !round.delta.is_empty() {
+        return None;
+    }
+    let (k, _) = round_reviewed_from(events, unit, attempt, round)?;
+    let k = u32::try_from(k).ok()?;
+    let key = reviewed_key(unit, k);
+    let approve = logged_under(events, &key).filter(|e| {
+        e.type_ == ledger::TYPE_UNIT_STATUS
+            && e.meta.get(META_WORKTREE_SHA) == Some(&round.base)
+            && e.decode::<Value>()
+                .is_some_and(|v| v["id"] == unit && v["status"] == "reviewed")
+    })?;
+    let recorded = logged_under(events, &review_tier_key(unit, k))
+        .and_then(Event::decode::<Value>)
+        .and_then(|v| v["evidence"]["review-tier"].as_str().map(str::to_string));
+    let blocked: Vec<bool> = failures_since(events, unit, approve, attempt)
+        .map(|v| v["cause"] == CAUSE_INTEGRATE_CONFLICT)
+        .collect();
+    let sent_back_by_blocked_merges = !blocked.is_empty() && blocked.iter().all(|b| *b);
+    (recorded.as_deref() == tier && sent_back_by_blocked_merges).then_some((key, approve))
+}
+
 /// The role tokens of the members of `steps` a later review `round` of `unit` at `attempt`
 /// re-runs under `later_rounds: finders` ([`LaterRounds::Finders`]): each member that recorded
 /// a finding ([`round_findings`]) the round that sent the unit back upheld, and the adjudicator.
@@ -16068,19 +16219,8 @@ fn later_round_finders(
     if !round.delta.iter().all(required) {
         return None;
     }
-    let (k, base, mark) = prior_review_round(events, unit, attempt)?;
-    if base != round.base {
-        return None;
-    }
-    let until = review_round_starts(events, unit)
-        .find(|(stamped, _, _)| *stamped == u64::from(attempt))
-        .map(|(_, _, e)| e.position);
-    let upheld = events
-        .iter()
-        .filter(|e| e.position > mark.position && until.is_none_or(|end| e.position < end))
-        .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
-        .filter_map(Event::decode::<Value>)
-        .filter(|v| v["id"] == unit)
+    let (k, mark) = round_reviewed_from(events, unit, attempt, round)?;
+    let upheld = failures_since(events, unit, mark, attempt)
         .find_map(|v| spawn::Adjudication::parse(v["review_reason"].as_str()?))?
         .upheld;
     let found = round_findings(events, unit, u32::try_from(k).ok()?);
