@@ -9863,14 +9863,15 @@ impl RunCtx<'_> {
             // judges cross-unit OWNERSHIP (rule 7) and open DISPOSITIONS (rule 8), which
             // per-unit review cannot see.
             let radii = self.dag_unit_blast_radii(stages, &gate_name, integrated, terminal);
-            let conflicts = blast_radius_conflicts(&radii);
-            let serialized = conflicts
+            let overlap = DagOverlap::new(stages, &radii);
+            let serialized = overlap
+                .pairs
                 .iter()
                 .all(|(a, other, _)| self.partition_holds_apart(stages, a, other));
             let prompt = build_dag_critique_prompt(
                 stages,
                 &radii,
-                &conflicts,
+                &overlap,
                 serialized,
                 &prior_reason,
                 self.re_plan_proposed(plan_name, attempts)?,
@@ -14238,7 +14239,7 @@ fn render_plan_protocol(cap: Option<u32>, implementer: &str, criteria: &[String]
 fn build_dag_critique_prompt(
     stages: &BTreeMap<String, Stage>,
     radii: &[(String, Vec<String>)],
-    conflicts: &[(String, String, Vec<String>)],
+    overlap: &DagOverlap,
     serialized: bool,
     prior_reason: &str,
     revised: bool,
@@ -14274,7 +14275,7 @@ fn build_dag_critique_prompt(
         let radius = if files.is_empty() {
             DAG_NO_RADIUS.to_string()
         } else {
-            files.join(", ")
+            overlap.file_list(files).0
         };
         b.push_str(&fill(
             DAG_UNIT_ROW,
@@ -14286,21 +14287,7 @@ fn build_dag_critique_prompt(
             ],
         ));
     }
-    if conflicts.is_empty() {
-        b.push_str(DAG_OVERLAP_DISJOINT);
-    } else {
-        b.push_str(if serialized {
-            DAG_OVERLAP_HEADER
-        } else {
-            DAG_OVERLAP_UNSERIALIZED_HEADER
-        });
-        for (a, other, shared) in conflicts {
-            b.push_str(&fill(
-                DAG_OVERLAP_ROW,
-                &[("a", a), ("other", other), ("shared", &shared.join(", "))],
-            ));
-        }
-    }
+    b.push_str(&overlap.block(serialized, DAG_OVERLAP_BUDGET_BYTES).0);
     // The verdict paragraph and its cause contract (spec 112, criterion 5): the gate stops
     // the run on a `spec-ambiguity` reject a re-plan did not clear, so the cause must tell
     // a defect in a criterion's own text from one a re-plan can fix.
@@ -14312,6 +14299,48 @@ fn build_dag_critique_prompt(
         ],
     ));
     b
+}
+
+/// The plan critique's byte budget for its overlap block.
+const DAG_OVERLAP_BUDGET_BYTES: usize = 64 * 1024;
+
+/// The rule-6 overlap the plan critique shows over the critiqued units' blast radii.
+struct DagOverlap {
+    /// The pairs `(a, other, shared)` the overlap block lists.
+    pairs: Vec<(String, String, Vec<String>)>,
+}
+
+impl DagOverlap {
+    /// The overlap of `radii`.
+    fn new(_stages: &BTreeMap<String, Stage>, radii: &[(String, Vec<String>)]) -> Self {
+        DagOverlap {
+            pairs: blast_radius_conflicts(radii),
+        }
+    }
+
+    /// `files` as one file list, and whether it left any out.
+    fn file_list(&self, files: &[String]) -> (String, bool) {
+        (files.join(", "), false)
+    }
+
+    /// The overlap block under `budget_bytes`, and whether it left any file or pair out.
+    fn block(&self, serialized: bool, _budget_bytes: usize) -> (String, bool) {
+        if self.pairs.is_empty() {
+            return (DAG_OVERLAP_DISJOINT.to_string(), false);
+        }
+        let mut b = String::from(if serialized {
+            DAG_OVERLAP_HEADER
+        } else {
+            DAG_OVERLAP_UNSERIALIZED_HEADER
+        });
+        for (a, other, shared) in &self.pairs {
+            b.push_str(&fill(
+                DAG_OVERLAP_ROW,
+                &[("a", a), ("other", other), ("shared", &shared.join(", "))],
+            ));
+        }
+        (b, false)
+    }
 }
 
 /// The lead a re-plan's prompt opens with, ahead of the planner's own prompt: the plan
@@ -51901,6 +51930,221 @@ mod tests {
         }
     }
 
+    /// One proposed unit of a plan-critique test: its `(name, criterion, needs, blast radius)`.
+    type Proposed<'a> = (&'a str, &'a str, &'a [&'a str], &'a [&'a str]);
+
+    /// The stages and the blast radii, in `units`' order, of the proposed `units`.
+    fn proposed_dag(units: &[Proposed]) -> (BTreeMap<String, Stage>, Vec<(String, Vec<String>)>) {
+        let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let stages = units
+            .iter()
+            .map(|(name, coverage, needs, _)| {
+                let stage = Stage {
+                    name: name.to_string(),
+                    coverage: coverage.to_string(),
+                    needs: strings(needs),
+                    ..Stage::default()
+                };
+                (name.to_string(), stage)
+            })
+            .collect();
+        let radii = units
+            .iter()
+            .map(|(name, _, _, radius)| (name.to_string(), strings(radius)))
+            .collect();
+        (stages, radii)
+    }
+
+    /// Rule 6's overlap block lists each pair of proposed units that share a file and run side
+    /// by side, and no pair `needs` orders, directly or through other units. A file in the blast
+    /// radius of more than half of the units, and of at least three, stands once in one common
+    /// row and out of the pair rows. Each pair row counts its shared files and names at most
+    /// three, those the fewest units hold first. The block stays under its byte budget by
+    /// eliding the pairs that share the fewest files, counted in one row. The flag says whether
+    /// any file or pair was left out.
+    #[test]
+    fn the_overlap_block_lists_each_side_by_side_pair_once_within_its_bounds() {
+        const SIDE_BY_SIDE: &str = "\nBlast-radius overlap (informational - `partition: \
+             by-blast-radius` is not in force for these units, so units sharing a file run side \
+             by side unless one `needs` the other, directly or through other units; only the \
+             pairs that run side by side are listed):\n";
+        const ORDERED: &str = "\nBlast-radius overlap (informational): every two proposed \
+             units that share a file are ordered by `needs`, directly or through other units, so \
+             no two of them run side by side.\n";
+        const AB_ROW: &str = "- units `u-a` and `u-b` both touch 2 file(s): a.rs, b.rs\n";
+        const ELIDED: &str = "- (+1 more side-by-side pair(s), sharing the fewest files, \
+             elided to keep this prompt under budget)\n";
+        let wide = usize::MAX;
+        let table: [(&str, &[Proposed], usize, String, bool); 7] = [
+            (
+                "no two units share a file",
+                &[("u-a", "", &[], &["a.rs"]), ("u-b", "", &[], &["b.rs"])],
+                wide,
+                DAG_DISJOINT_OVERLAP.to_string(),
+                false,
+            ),
+            (
+                "two side-by-side units share one file",
+                &[
+                    ("u-a", "", &[], &["a.rs"]),
+                    ("u-b", "", &[], &["a.rs", "b.rs"]),
+                ],
+                wide,
+                format!("{SIDE_BY_SIDE}- units `u-a` and `u-b` both touch 1 file(s): a.rs\n"),
+                false,
+            ),
+            (
+                "a pair `needs` orders through another unit gets no row",
+                &[
+                    ("u-a", "", &[], &["x.rs"]),
+                    ("u-b", "", &["u-a"], &["y.rs"]),
+                    ("u-c", "", &["u-b"], &["x.rs"]),
+                    ("u-d", "", &[], &["y.rs"]),
+                ],
+                wide,
+                format!("{SIDE_BY_SIDE}- units `u-b` and `u-d` both touch 1 file(s): y.rs\n"),
+                false,
+            ),
+            (
+                "every sharing pair is ordered by `needs`",
+                &[
+                    ("u-a", "", &[], &["a.rs"]),
+                    ("u-b", "", &["u-a"], &["a.rs"]),
+                ],
+                wide,
+                ORDERED.to_string(),
+                false,
+            ),
+            (
+                "a file most units hold is listed once",
+                &[
+                    ("u-a", "", &[], &["a.rs", "common.rs"]),
+                    ("u-b", "", &[], &["a.rs", "common.rs"]),
+                    ("u-c", "", &[], &["common.rs"]),
+                ],
+                wide,
+                format!(
+                    "{SIDE_BY_SIDE}- in the blast radius of 3 or more of the 3 proposed units, so \
+                     left out of the pair rows below: 1 file(s): common.rs\n- units `u-a` and \
+                     `u-b` both touch 1 file(s): a.rs\n- units `u-a` and `u-c` both touch only \
+                     files the common row lists\n- units `u-b` and `u-c` both touch only files \
+                     the common row lists\n"
+                ),
+                false,
+            ),
+            (
+                "a pair over the per-row cap counts the rest",
+                &[
+                    ("u-a", "", &[], &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]),
+                    ("u-b", "", &[], &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]),
+                    ("u-c", "", &[], &["a.rs"]),
+                    ("u-d", "", &[], &["d1.rs"]),
+                    ("u-e", "", &[], &["e1.rs"]),
+                    ("u-f", "", &[], &["f1.rs"]),
+                ],
+                wide,
+                format!(
+                    "{SIDE_BY_SIDE}- units `u-a` and `u-b` both touch 5 file(s): b.rs, c.rs, d.rs \
+                     (+2 more)\n- units `u-a` and `u-c` both touch 1 file(s): a.rs\n- units `u-b` \
+                     and `u-c` both touch 1 file(s): a.rs\n"
+                ),
+                true,
+            ),
+            (
+                "a block over its budget elides the pairs sharing the fewest files",
+                &[
+                    ("u-c", "", &[], &["c.rs"]),
+                    ("u-d", "", &[], &["c.rs"]),
+                    ("u-a", "", &[], &["a.rs", "b.rs"]),
+                    ("u-b", "", &[], &["a.rs", "b.rs"]),
+                ],
+                SIDE_BY_SIDE.len() + AB_ROW.len() + ELIDED.len(),
+                format!("{SIDE_BY_SIDE}{AB_ROW}{ELIDED}"),
+                true,
+            ),
+        ];
+        for (case, units, budget, expected, left_out) in table {
+            let (stages, radii) = proposed_dag(units);
+            assert_eq!(
+                DagOverlap::new(&stages, &radii).block(false, budget),
+                (expected, left_out),
+                "{case}"
+            );
+        }
+    }
+
+    /// A unit row's blast radius is its file count and at most three of its files, those the
+    /// fewest proposed units hold first, the rest counted; the flag says whether any was left
+    /// out.
+    #[test]
+    fn a_unit_row_names_its_blast_radius_as_a_count_and_its_most_specific_files() {
+        let (stages, radii) = proposed_dag(&[
+            ("u-a", "", &[], &["a.rs"]),
+            ("u-b", "", &[], &["a.rs", "b.rs", "c.rs", "d.rs", "e.rs"]),
+            ("u-c", "", &[], &["b.rs", "c.rs"]),
+            ("u-d", "", &[], &["c.rs"]),
+        ]);
+        let overlap = DagOverlap::new(&stages, &radii);
+        let table = [
+            ("u-a", "1 file(s): a.rs", false),
+            ("u-c", "2 file(s): b.rs, c.rs", false),
+            ("u-b", "5 file(s): d.rs, e.rs, a.rs (+2 more)", true),
+        ];
+        for (unit, list, left_out) in table {
+            let (_, files) = radii.iter().find(|(name, _)| name == unit).unwrap();
+            assert_eq!(
+                overlap.file_list(files),
+                (list.to_string(), left_out),
+                "{unit}"
+            );
+        }
+    }
+
+    /// A plan of 41 units running side by side, each holding 300 files of which 150 every unit
+    /// holds, renders its plan-critique prompt under 200,000 chars with every unit row, eliding
+    /// the side-by-side pairs over the overlap budget in one counted row.
+    #[test]
+    fn a_wide_plan_renders_its_critique_prompt_under_the_bound() {
+        let file = |dir: &str, n: usize| {
+            format!("crates/rigger-grounder/src/grounder/symbols/{dir}/file_{n:03}.rs")
+        };
+        let criterion = "the extractor records each symbol's documentation span. ".repeat(11);
+        let names: Vec<String> = (0..41).map(|i| format!("s117-c{i:02}")).collect();
+        let files: Vec<Vec<String>> = (0..41)
+            .map(|i| {
+                (0..150)
+                    .map(|c| file("common", c))
+                    .chain((0..150).map(|j| file("own", (i * 11 + j) % 450)))
+                    .collect()
+            })
+            .collect();
+        let radius: Vec<Vec<&str>> = files
+            .iter()
+            .map(|f| f.iter().map(String::as_str).collect())
+            .collect();
+        let none: &[&str] = &[];
+        let units: Vec<Proposed> = names
+            .iter()
+            .zip(&radius)
+            .map(|(name, radius)| (name.as_str(), criterion.as_str(), none, radius.as_slice()))
+            .collect();
+        let (stages, radii) = proposed_dag(&units);
+        let overlap = DagOverlap::new(&stages, &radii);
+        let prompt = build_dag_critique_prompt(&stages, &radii, &overlap, false, "", false, None);
+        assert_eq!(
+            (
+                prompt.len() < 200_000,
+                prompt.matches("`: criterion=").count(),
+                prompt
+                    .matches("elided to keep this prompt under budget")
+                    .count()
+            ),
+            (true, 41, 1),
+            "the prompt is {} chars",
+            prompt.len()
+        );
+    }
+
     /// The unit size cap is declared: `defaults.max_unit_added_lines` states the cap's one
     /// sentence, its number the key's, in the planner's plan protocol and in the DAG critique
     /// prompt, whose cause contract then names a unit over the size cap among the defects a
@@ -54362,25 +54606,14 @@ mod tests {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
         let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
         let dag = |names: &[&str]| picks.rendered("conductor::build_dag_critique_prompt", names);
-        let strings = |items: &[&str]| items.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let critique = |coverage: &str,
-                        needs: &[&str],
-                        radius: &[&str],
-                        conflicts: &[(String, String, Vec<String>)],
-                        serialized: bool,
-                        prior: &str,
-                        revised: bool,
-                        cap: Option<u32>| {
-            let stage = Stage {
-                name: "{name}".to_string(),
-                coverage: coverage.to_string(),
-                needs: strings(needs),
-                ..Stage::default()
+        let critique =
+            |units: &[Proposed], serialized: bool, prior: &str, revised: bool, cap: Option<u32>| {
+                let (stages, radii) = proposed_dag(units);
+                let overlap = DagOverlap::new(&stages, &radii);
+                build_dag_critique_prompt(
+                    &stages, &radii, &overlap, serialized, prior, revised, cap,
+                )
             };
-            let stages = BTreeMap::from([("{name}".to_string(), stage)]);
-            let radii = [("{name}".to_string(), strings(radius))];
-            build_dag_critique_prompt(&stages, &radii, conflicts, serialized, prior, revised, cap)
-        };
         let contract = |size_cap_cause: &str| {
             fill(
                 &dag(&["DAG_CRITIQUE_CONTRACT"]),
@@ -54390,26 +54623,31 @@ mod tests {
                 ],
             )
         };
-        let overlap = [(
-            "{a}".to_string(),
-            "{other}".to_string(),
-            strings(&["{s}", "{t}"]),
-        )];
+        let unit_rows = |names: &[&str], slots: &[(&str, &str)]| {
+            names
+                .iter()
+                .map(|name| {
+                    fill(
+                        &dag(&["DAG_UNIT_ROW"]),
+                        &[&[("name", *name)], slots].concat(),
+                    )
+                })
+                .collect::<String>()
+        };
+        let bare = [
+            ("criterion", dag(&["DAG_NO_CRITERION"])),
+            ("needs", dag(&["DAG_NO_NEEDS"])),
+            ("radius", dag(&["DAG_NO_RADIUS"])),
+        ];
+        let bare = bare.each_ref().map(|(slot, text)| (*slot, text.as_str()));
         let cases = [
             (
                 "a first plan",
-                critique("  ", &[], &[], &[], true, "  ", false, None),
+                critique(&[("{name}", "  ", &[], &[])], true, "  ", false, None),
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
-                    fill(
-                        &dag(&["DAG_UNIT_ROW"]),
-                        &[
-                            ("criterion", &dag(&["DAG_NO_CRITERION"])),
-                            ("needs", &dag(&["DAG_NO_NEEDS"])),
-                            ("radius", &dag(&["DAG_NO_RADIUS"])),
-                        ]
-                    ),
+                    unit_rows(&["{name}"], &bare),
                     dag(&["DAG_OVERLAP_DISJOINT"]),
                     contract("")
                 ),
@@ -54417,10 +54655,7 @@ mod tests {
             (
                 "a first plan whose criterion holds a quote and a backslash",
                 critique(
-                    r#" keep "a\b" whole "#,
-                    &[],
-                    &[],
-                    &[],
+                    &[("{name}", r#" keep "a\b" whole "#, &[], &[])],
                     true,
                     "",
                     false,
@@ -54429,13 +54664,9 @@ mod tests {
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
-                    fill(
-                        &dag(&["DAG_UNIT_ROW"]),
-                        &[
-                            ("criterion", r#"keep \"a\\b\" whole"#),
-                            ("needs", &dag(&["DAG_NO_NEEDS"])),
-                            ("radius", &dag(&["DAG_NO_RADIUS"])),
-                        ]
+                    unit_rows(
+                        &["{name}"],
+                        &[("criterion", r#"keep \"a\\b\" whole"#), bare[1], bare[2]]
                     ),
                     dag(&["DAG_OVERLAP_DISJOINT"]),
                     contract("")
@@ -54444,26 +54675,27 @@ mod tests {
             (
                 "a re-plan under a cap",
                 critique(
-                    "{criterion}",
-                    &["{x}", "{y}"],
-                    &["{p}", "{q}"],
-                    &overlap,
+                    &[
+                        ("{a}", "{criterion}", &["{x}", "{y}"], &["{s}", "{t}"]),
+                        ("{other}", "{criterion}", &["{x}", "{y}"], &["{s}", "{t}"]),
+                    ],
                     true,
                     "{prior_reason}",
                     true,
                     Some(7),
                 ),
                 format!(
-                    "{}{}\n\n{}{}{}",
+                    "{}{}\n\n{}{}{}{}",
                     dag(&[
                         "DAG_PRIOR_REJECT",
                         "DAG_REVISED_SINCE_REJECT",
                         "DAG_CRITIQUE_OPENER"
                     ]),
                     fill(&dag(&["UNIT_SIZE_CAP"]), &[("cap", "7")]),
-                    fill(
-                        &dag(&["DAG_UNITS_HEADER", "DAG_UNIT_ROW"]),
-                        &[("needs", "{x}, {y}"), ("radius", "{p}, {q}")]
+                    dag(&["DAG_UNITS_HEADER"]),
+                    unit_rows(
+                        &["{a}", "{other}"],
+                        &[("needs", "{x}, {y}"), ("radius", "{s}, {t}")]
                     ),
                     fill(
                         &dag(&["DAG_OVERLAP_HEADER", "DAG_OVERLAP_ROW"]),
@@ -54475,10 +54707,10 @@ mod tests {
             (
                 "a first plan whose overlap the partition rule does not serialize",
                 critique(
-                    "{criterion}",
-                    &[],
-                    &["{p}"],
-                    &overlap,
+                    &[
+                        ("{a}", "{criterion}", &[], &["{s}", "{t}"]),
+                        ("{other}", "{criterion}", &[], &["{s}", "{t}"]),
+                    ],
                     false,
                     "",
                     false,
@@ -54487,10 +54719,7 @@ mod tests {
                 format!(
                     "{}{}{}{}",
                     dag(&["DAG_CRITIQUE_OPENER", "DAG_UNITS_HEADER"]),
-                    fill(
-                        &dag(&["DAG_UNIT_ROW"]),
-                        &[("needs", &dag(&["DAG_NO_NEEDS"])), ("radius", "{p}")]
-                    ),
+                    unit_rows(&["{a}", "{other}"], &[bare[1], ("radius", "{s}, {t}")]),
                     fill(
                         &dag(&["DAG_OVERLAP_UNSERIALIZED_HEADER", "DAG_OVERLAP_ROW"]),
                         &[("shared", "{s}, {t}")]
@@ -54500,7 +54729,13 @@ mod tests {
             ),
             (
                 "a re-review no re-plan proposed for",
-                critique("  ", &[], &[], &[], true, "{prior_reason}", false, None),
+                critique(
+                    &[("{name}", "  ", &[], &[])],
+                    true,
+                    "{prior_reason}",
+                    false,
+                    None,
+                ),
                 format!(
                     "{}{}{}{}",
                     dag(&[
@@ -54509,14 +54744,7 @@ mod tests {
                         "DAG_CRITIQUE_OPENER",
                         "DAG_UNITS_HEADER"
                     ]),
-                    fill(
-                        &dag(&["DAG_UNIT_ROW"]),
-                        &[
-                            ("criterion", &dag(&["DAG_NO_CRITERION"])),
-                            ("needs", &dag(&["DAG_NO_NEEDS"])),
-                            ("radius", &dag(&["DAG_NO_RADIUS"])),
-                        ]
-                    ),
+                    unit_rows(&["{name}"], &bare),
                     dag(&["DAG_OVERLAP_DISJOINT"]),
                     contract("")
                 ),
