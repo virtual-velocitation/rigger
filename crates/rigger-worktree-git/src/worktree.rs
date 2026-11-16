@@ -829,11 +829,7 @@ impl Worktree {
     /// refuses while a resolution staged with the merge's markers still in it does. The index
     /// is read, not the worktree, because it is what the finalize commit takes.
     fn markers_the_merge_introduced(&self) -> Result<Vec<String>, Error> {
-        let staged: Vec<String> = git(&self.dir, &["diff", "--cached", "--name-only", "-z"])?
-            .split('\0')
-            .filter(|path| !path.is_empty())
-            .map(str::to_string)
-            .collect();
+        let staged = nul_paths(&git(&self.dir, &["diff", "--cached", "--name-only", "-z"])?);
         let in_index = self.conflict_markers_present(ScanAt::Index, &staged)?;
         let mut hit: Vec<String> = in_index.iter().map(|(path, _)| path.clone()).collect();
         hit.dedup();
@@ -922,12 +918,22 @@ impl Worktree {
         Ok(tree(a)? == tree(b)?)
     }
 
-    /// Every commit reachable from `to` and not from `from`, oldest first.
+    /// Every commit reachable from `to` and not from `from`, oldest first, one row each: with
+    /// no signature check and no colour a user's config may set, so no line but a commit's
+    /// own reaches the rows.
     pub fn commits_between(&self, from: &str, to: &str) -> Result<Vec<CommitLine>, Error> {
         let range = format!("{from}..{to}");
         let out = git_stdout(
             &self.dir,
-            &["log", "--reverse", "--format=%h %s", &range, "--"],
+            &[
+                "log",
+                "--no-show-signature",
+                "--no-color",
+                "--reverse",
+                "--format=%h %s",
+                &range,
+                "--",
+            ],
         )?;
         Ok(out
             .lines()
@@ -940,21 +946,17 @@ impl Worktree {
     }
 
     /// The diff between `from` and this worktree's current `HEAD`, name-only, sorted and
-    /// de-duplicated, in the [`DiffMode`] the caller names: runs one `git diff --name-only
+    /// de-duplicated, in the [`DiffMode`] the caller names: runs one `git diff --name-only -z
     /// <range>` and parses its output, so the two diff MODES (merge-base-anchored three-dot
-    /// vs a direct two-dot tree comparison) never drift the line-parsing logic apart.
+    /// vs a direct two-dot tree comparison) never drift the parsing logic apart. Each path is
+    /// spelled as git stores it ([`nul_paths`]), as [`Self::diff_files`] reads it, never
+    /// C-quoted.
     pub fn diff_names(&self, from: &str, mode: DiffMode) -> Result<Vec<String>, Error> {
         let range = match mode {
             DiffMode::MergeBase => format!("{from}...HEAD"),
             DiffMode::Direct => format!("{from}..HEAD"),
         };
-        let out = git(&self.dir, &["diff", "--name-only", &range])?;
-        let mut paths: Vec<String> = out
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect();
+        let mut paths = nul_paths(&git(&self.dir, &["diff", "--name-only", "-z", &range])?);
         paths.sort();
         paths.dedup();
         Ok(paths)
@@ -2706,6 +2708,14 @@ fn git_failed(args: &[&str], said: &str) -> Error {
     Error(format!("git {}: {said}", args.join(" ")))
 }
 
+/// The paths a `git diff --name-only -z` wrote, in its order, each spelled as git stores it.
+fn nul_paths(out: &str) -> Vec<String> {
+    out.split('\0')
+        .filter(|path| !path.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// The `(status, path before, path)` of each entry `git diff --name-status -z` wrote, in its
 /// order: a rename or copy names both its paths. None when the output ends inside an entry.
 fn name_status_entries(out: &str) -> Option<Vec<(char, Option<String>, String)>> {
@@ -2744,7 +2754,8 @@ fn numstat_lines(out: &str) -> Vec<Option<(u32, u32)>> {
 }
 
 /// The files one diff changed, sorted by path, from its three reads: its `--name-status -z`
-/// `statuses`, its `--numstat -z` `counts` and its `-U3` `patch`. None when the reads disagree.
+/// `statuses`, its `--numstat -z` `counts` and its `-U3` `patch`. None when the reads disagree:
+/// a count or a patch section too many or too few for the entries the statuses list.
 fn file_diffs(statuses: &str, counts: &str, patch: &str) -> Option<Vec<FileDiff>> {
     let counts = numstat_lines(counts);
     let mut sections = patch_sections(patch).into_iter();
@@ -2752,7 +2763,11 @@ fn file_diffs(statuses: &str, counts: &str, patch: &str) -> Option<Vec<FileDiff>
     for (status, old_path, path) in name_status_entries(statuses)? {
         // git writes a change between a file and a symlink as a deletion and a creation.
         let parts = if status == 'T' { 2 } else { 1 };
-        let patch: String = sections.by_ref().take(parts).collect();
+        let own: Vec<&str> = sections.by_ref().take(parts).collect();
+        if own.len() != parts {
+            return None;
+        }
+        let patch = own.concat();
         let lines = *counts.get(files.len())?;
         files.push(FileDiff {
             path,
@@ -2811,13 +2826,8 @@ pub fn uncommitted_paths(dir: &str) -> Result<Vec<String>, Error> {
 /// Every path `dir`'s tree changed since `commit`: the paths commits made after it touch, then
 /// the [`uncommitted_paths`], sorted, each once.
 pub fn paths_changed_since(dir: &str, commit: &str) -> Result<Vec<String>, Error> {
-    let committed = git(dir, &["diff", "--name-only", "-z", commit, "HEAD"])?;
-    let mut paths: Vec<String> = committed
-        .split('\0')
-        .filter(|p| !p.is_empty())
-        .map(String::from)
-        .chain(uncommitted_paths(dir)?)
-        .collect();
+    let mut paths = nul_paths(&git(dir, &["diff", "--name-only", "-z", commit, "HEAD"])?);
+    paths.extend(uncommitted_paths(dir)?);
     paths.sort();
     paths.dedup();
     Ok(paths)
