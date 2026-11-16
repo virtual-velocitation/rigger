@@ -4874,7 +4874,9 @@ mod tests {
         let (gone, made) = ("diff --git a/l b/l\n-was\n", "diff --git a/l b/l\n+now\n");
         let both = format!("{a}{b}");
         let type_change = format!("{gone}{made}");
-        let cases: [(&str, &str, &str, &str, Option<Vec<FileDiff>>); 12] = [
+        // (case, statuses, counts, patch, the files they make)
+        type Row<'a> = (&'a str, &'a str, &'a str, &'a str, Option<Vec<FileDiff>>);
+        let cases: [Row; 12] = [
             ("no change", "", "", "", Some(Vec::new())),
             (
                 "one modified file",
@@ -5019,7 +5021,9 @@ mod tests {
         git_commit_all(wt_path.to_str().unwrap(), "endings");
 
         let files = wt.diff_files(&fork, "HEAD").unwrap();
-        let read: Vec<(&str, Option<(u32, u32)>, bool)> = files
+        // (path, its line counts, whether its patch holds its own ending)
+        type Read<'a> = (&'a str, Option<(u32, u32)>, bool);
+        let read: Vec<Read> = files
             .iter()
             .map(|f| {
                 let holds = match f.path.as_str() {

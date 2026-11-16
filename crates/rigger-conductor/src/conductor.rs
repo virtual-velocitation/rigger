@@ -33008,9 +33008,9 @@ mod tests {
     /// WHO A LATER ROUND RE-RUNS, READ FROM THE LOG: round 2 of unit `u` reviews from round 1,
     /// whose reject upheld the row's ids after rounds 0 and 1 recorded the row's findings. A
     /// member is a finder when any earlier round recorded an upheld id under its role, so the
-    /// owner of a finding still open since round 0 re-runs though it recorded nothing in round
-    /// 1. Every member runs when round 1 recorded a review tier other than the one round 2 routes
-    /// to, or when no upheld id is one a member recorded.
+    /// owner of a finding still open since round 0 re-runs though it recorded nothing in
+    /// round 1. Every member runs when round 1 recorded a review tier other than the one
+    /// round 2 routes to, or when no upheld id is one a member recorded.
     #[test]
     fn a_later_round_counts_as_finders_the_members_any_earlier_round_upheld() {
         let (lens, other) = (lens_role("lens"), lens_role("other"));
@@ -33101,12 +33101,12 @@ mod tests {
                     status(
                         json!({"id": "u", "status": STATUS_REVIEW_ROUND_START, "attempt": attempt}),
                     )
-                    .with_meta(META_WORKTREE_SHA, &format!("sha{attempt}")),
+                    .with_meta(META_WORKTREE_SHA, format!("sha{attempt}")),
                 );
                 if let Some(tier) = row.recorded.filter(|_| attempt == 1) {
                     log.push(
                         status(json!({"id": "u", "status": STATUS_REVIEW_TIER, "evidence": {"review-tier": tier}}))
-                            .with_meta(META_REPLAY_KEY, &review_tier_key("u", attempt)),
+                            .with_meta(META_REPLAY_KEY, review_tier_key("u", attempt)),
                     );
                 }
                 for (_, role, id) in row.found.iter().filter(|(at, _, _)| *at == attempt) {
@@ -33118,7 +33118,7 @@ mod tests {
                             )
                             .unwrap(),
                         )
-                        .with_meta(META_SPAWN, &spawn_id("u", role, attempt)),
+                        .with_meta(META_SPAWN, spawn_id("u", role, attempt)),
                     );
                 }
                 let reject = json!({
@@ -56999,7 +56999,7 @@ mod tests {
                 contextgraph::TYPE_REVIEW_FINDING,
                 serde_json::to_vec(&json!({"id": id, "summary": summary, "by": by})).unwrap(),
             )
-            .with_meta(META_SPAWN, &spawn_id("u", &lens_role("lens"), 1));
+            .with_meta(META_SPAWN, spawn_id("u", &lens_role("lens"), 1));
             match actor {
                 Some(actor) => e.with_meta(contextgraph::META_ACTOR, actor),
                 None => e,
