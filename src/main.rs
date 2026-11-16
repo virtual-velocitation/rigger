@@ -412,8 +412,8 @@ mid-run relaunches the run at the next login; the\n                             
 driver removes it as it ends, a login owing no\n                                   \
 relaunch removes it. Nothing is registered without it\n  \
 --at-login <root>                what that entry runs: relaunch the run of the project\n                                   \
-at <root> if its driver died, else remove the entry.\n                                   \
-Takes no other argument\n  \
+at <root> if its driver died, removing the entry once\n                                   \
+no relaunch is owed. Takes no other argument\n  \
 --adopt <run>                    adopt that run and no other: refuse, recording\n                                   \
 nothing, when the start would adopt another or begin a\n                                   \
 new one. What a relaunch after a driver died passes\n\n\

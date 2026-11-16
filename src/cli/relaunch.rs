@@ -6,8 +6,8 @@
 //! checks it too (below). A record whose lock no driver
 //! holds is a driver that died, by a crash, a forced end, a hangup or a reboot, and the check
 //! relaunches it by adoption, in the background, through the binary it recorded and with the
-//! variables its roots resolve from set as it had them ([`ROOTS_ENV`]), as a hand
-//! `rigger run <spec> --base <ref>` would. A driver that ran on a credential ([`CREDENTIALS_ENV`])
+//! variables its roots and its tools' search path resolve from set as it had them
+//! ([`ROOTS_ENV`]), as a hand `rigger run <spec> --base <ref>` would. A driver that ran on a credential ([`CREDENTIALS_ENV`])
 //! is relaunched only by a check whose environment sets it too. The relaunched driver's stdout and stderr go to one
 //! file under the store (`.rigger/driver.out`, [`DRIVER_OUTPUT_FILE`]), what it would have said on
 //! the operator's terminal; each relaunch overwrites it and `rigger reset --runs` removes it once no driver holds the step

@@ -1029,7 +1029,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
             &format!(
                 "A `rigger run` driver that died needs no hand relaunch. {stop} The relaunch \
                  adopts the run in the background, resolving the store, scratch and state roots \
-                 the dead driver resolved, and says so in one line on stderr, naming its \
+                 the dead driver resolved and finding its tools on the search path (`PATH`) it \
+                 had, and says so in one line on stderr, naming its \
                  pid and the file its output goes to (`.rigger/driver.out`, which `rigger status` \
                  names while it holds what a relaunched driver said before it ended, and a driver \
                  started by hand removes). `rigger \
