@@ -319,7 +319,11 @@ fn discipline_body(ctx: &DocsContext) -> String {
          refuses, recording nothing, when no run is live: none has started, or the current run \
          is done. `rigger release` ends the current run's hold, whichever \
          writer declared it, an outage hold included, so the next launch goes at once instead of \
-         after the next probe. With no hold open it records nothing and says so. {stop}\n",
+         after the next probe. With no hold open it records nothing and says so. A fault of the \
+         conductor's own that ends a run's drive, a spawn the API refused included, holds the \
+         run for you too, naming the fault, and its driver exits non-zero: `rigger status` lists \
+         the hold under what needs you, and once the fault is fixed `rigger release` relaunches \
+         the run. {stop}\n",
         stop = DRIVER_STOP_RULE
     );
 
@@ -1039,9 +1043,12 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  names while it holds what a relaunched driver said before it ended, and a driver \
                  started by hand removes). `rigger \
                  watch` relaunches nothing: it names the dead driver and `rigger status` as what \
-                 brings it back, and under an operator hold it reports the run held and names \
-                 `rigger release`. A driver that returned is never relaunched, save one that parked on an \
-                 operator hold, which `rigger release` relaunches. A \
+                 brings it back, and under a hold for a person, an operator hold or the \
+                 conductor's fault hold, it reports the run held and names `rigger release`. A \
+                 driver that returned is never relaunched, save one that ended with its run held \
+                 for a person, which `rigger release` relaunches: one that parked on an operator \
+                 hold, and one that ended on a fault of the conductor's own, a spawn the API \
+                 refused included, which holds the run naming the fault and exits non-zero. A \
                  driver that dies again within ten minutes of its relaunch, a relaunch that never \
                  started, or one whose recorded binary no longer exists is left stopped, and the \
                  line names the command that relaunches it by hand. A driver that gave its agents \
@@ -1055,8 +1062,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  with no session opened: the entry runs `rigger run --at-login <project root>`, \
                  which relaunches a dead driver as `rigger status` would and removes the entry \
                  once no relaunch is owed. A driver that ends on its own or is refused removes \
-                 its entry as it empties its record, save one parked on an operator hold, whose \
-                 entry stands with its record; a run started without the flag registers nothing, \
+                 its entry as it empties its record, save one that ended with its run held for a \
+                 person, whose entry stands with its record; a run started without the flag registers nothing, \
                  and a login removes the entry an earlier launch of it left. A login also removes \
                  the entry of a project on a volume not mounted at that login; its run comes back \
                  by the usual relaunch at the next session start or `rigger status`, and registers \
@@ -1092,7 +1099,11 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              the start of a new run and a `rigger run` run reaching done. A release with no hold \
              open records nothing and says so. A hold outlives its driver: no check relaunches a \
              held run, a relaunched driver that finds an operator hold parks its next launch and \
-             ends, and `rigger release` relaunches the run.\n",
+             ends, and `rigger release` relaunches the run. A fault of the conductor's own that \
+             ends its drive (a plan landing that fails, a unit worktree it cannot make, a spawn \
+             the API refuses) holds the run for a person the same way, naming the fault: \
+             `rigger status` lists it under what needs you, the driver exits non-zero, and once \
+             the fault is fixed `rigger release` relaunches the run.\n",
         ],
         "Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \

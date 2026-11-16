@@ -1129,7 +1129,8 @@ impl Driver<'_> {
     /// The holds follow the close and come before the `Error` returns: an ending of a class whose
     /// row holds or waits sights that class ([`Driver::sight_ending`]), then a `fault` close counts
     /// the failed closes ([`Driver::sight_unstable`]), which an `interrupted` close never enters. A
-    /// class whose row faults holds nothing on its own, so it takes its spawn site's existing path.
+    /// class whose row faults or rejects holds nothing on its own, so it takes its spawn site's
+    /// existing path, the held run's decorator holding the run on a rejected one.
     fn fault(
         &self,
         opts: &SpawnOpts,
