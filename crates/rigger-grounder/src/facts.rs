@@ -1719,7 +1719,8 @@ mod tests {
     /// THE EXTRACTOR PROTOCOL, the answer: over a request for `a.zig`, an answer holding defs and
     /// refs within the text's lines - the last one more than the `\n` the text holds - gives them
     /// and its partial flag as written; every answer the protocol refuses gives the exact why:
-    /// one that does not parse, that is for another path, that is an error, that lacks a list, a
+    /// one that does not parse, that is for another path, that is an error - its text quoted, a
+    /// line break or terminal escape in it escaped - that lacks a list, a
     /// def or ref outside the lines or with an empty name, a def with an empty path, an end line
     /// outside its line and the last, or an out-of-line module field, a ref kind other than
     /// `const`, `type` and `use`, and a cycle among the def paths through their parents.
@@ -1839,12 +1840,17 @@ mod tests {
             (
                 TEXT,
                 r#"{"path":"a.zig","error":"no parser"}"#.into(),
-                refused("the answer is an error: no parser"),
+                refused(r#"the answer is an error: "no parser""#),
             ),
             (
                 TEXT,
                 r#"{"path":"a.zig","error":"no parser","defs":[],"refs":[]}"#.into(),
-                refused("the answer is an error: no parser"),
+                refused(r#"the answer is an error: "no parser""#),
+            ),
+            (
+                TEXT,
+                r#"{"path":"a.zig","error":"no\nparser\u001b[31m"}"#.into(),
+                refused(r#"the answer is an error: "no\nparser\u{1b}[31m""#),
             ),
             (
                 TEXT,

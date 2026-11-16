@@ -194,8 +194,9 @@ fn graph_build_grounds_each_committed_declared_file_from_one_session() {
 }
 
 /// Given a committed repository declaring the stub for `zig`, when the operator builds the graph,
-/// each file the stub answers with an error, with another file's path, with two defs each naming
-/// the other its parent, or not at all is said on stderr with why, holds its identity facts and no
+/// each file the stub answers with an error (quoted, so its line break says no second line), with
+/// another file's path, with two defs each naming the other its parent, or not at all is said on
+/// stderr with why on one line, holds its identity facts and no
 /// definitions, and closes the session, so the next file starts a new one in the root, while the
 /// file the stub answers well holds its definition. Built again, nothing changed asks nothing; a
 /// committed change asks that file alone; and a changed declaration asks every file - each of them
@@ -212,8 +213,8 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
         (
             "src/a.zig",
             "a\n",
-            Some(r#"{"path":"src/a.zig","error":"no parser"}"#.into()),
-            Some("the answer is an error: no parser"),
+            Some(r#"{"path":"src/a.zig","error":"no\nparser"}"#.into()),
+            Some(r#"the answer is an error: "no\nparser""#),
         ),
         (
             "src/b.zig",
@@ -572,7 +573,7 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
                 "  lang rust",
                 r#"  (no production definition named "two" at path "two" of kind function at line 1 of src/two.rs)"#,
             ],
-            err: "rigger: extractor rust: src/two.rs: the answer is an error: no parser\n",
+            err: "rigger: extractor rust: src/two.rs: the answer is an error: \"no parser\"\n",
             asked: vec![request_for("src/two.rs", TWO_RS)],
         },
         ShowCase {
