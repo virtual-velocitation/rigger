@@ -2815,7 +2815,8 @@ const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
 /// requested shared-cache guard failed its probe, so the runner returned a
 /// [`gate::ProbeFault`] and ran nothing. A local filesystem answer that no wait and no rerun
 /// changes, only the operator's fix, so it is a halt over [`HALT_MARKERS`], never the F3
-/// infra rerun and never the run's hold.
+/// infra rerun and never the self-retrying hold: the hold it leaves is the one for a person
+/// ([`held_on_a_fault`]).
 const PROBE_FAULT_MARKER: &str = "\u{1}rigger:probe-fault\u{1}";
 
 /// The error a gate runner's [`gate::ProbeFault`] travels as: its text, which names the guard
@@ -3136,7 +3137,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
 /// made when it started (signed verdicts), and, when `channel` is given, answering each
 /// `rigger gate <id>` request it carries for as long as the run drives, spawns included
 /// ([`RunCtx::answer_gate_request`]). The channel is closed when the run returns, however it
-/// returns.
+/// returns. A drive of a begun run that fails holds the run for a person first
+/// ([`held_on_a_fault`]).
 pub fn run_serving(
     cfg: &Config,
     deps: &Deps,
@@ -3152,7 +3154,36 @@ pub fn run_serving(
     // and appends nothing. The run id then rides every event this process emits. A minted
     // boundary is folded like every other event the run appends.
     let run_id = crate::run_store::ensure_started(&deps.folding(), &deps.criteria)?;
+    drive(cfg, deps, verdict_key, channel, run_id).map_err(|e| held_on_a_fault(deps, e))
+}
 
+/// THE CONDUCTOR'S FAULT HOLD: hold the run for a person on `e`, a fault of the conductor's own
+/// that ended the run's drive, before the drive returns it
+/// ([`crate::run_store::hold_on_a_fault`], the fault's text with its class marker stripped), so
+/// `rigger status` and `rigger watch` name it among what needs a person and `rigger release`
+/// continues the run. It is the one home of every error a begun run's drive returns: each
+/// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, a
+/// refused landing, an outage past the infra limit, a failed guard probe) and every other. A
+/// hold it cannot write is said through [`Deps::log`]; `e` is returned unchanged either way.
+fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
+    let fault = strip_failure_marker(&e);
+    if let Err(write) = crate::run_store::hold_on_a_fault(&deps.folding(), &fault) {
+        (deps.log)(&format!(
+            "rigger run: the run was not held on its fault ({write}): {fault}"
+        ));
+    }
+    e
+}
+
+/// [`run_serving`]'s drive of `run_id`, the run it began or adopted: the resume by replay, the
+/// waves, the deferred gates and the run's settled state.
+fn drive(
+    cfg: &Config,
+    deps: &Deps,
+    verdict_key: VerdictKey,
+    channel: Option<&dyn GateChannel>,
+    run_id: String,
+) -> Result<RunState, Error> {
     // Resume by replay (§4.2): seed integrated/terminal from the existing log so a
     // crashed or re-run conductor skips work that already landed instead of
     // re-spawning every agent from scratch. Only the CURRENT run's slice is folded

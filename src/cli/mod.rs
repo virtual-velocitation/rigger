@@ -3796,11 +3796,12 @@ fn watch_poll_over(
         .map(|s| s.trim().to_string())
         .is_some_and(|attempted_run| !attempted_run.is_empty() && attempted_run == run_id);
 
-    // An operator hold on the run is its stop: `watch` reports it held, never its driver dead.
-    // Folded from the run this poll already read, which holds the run's hold events.
+    // A hold for a person on the run, the operator's or the conductor's, is its stop: `watch`
+    // reports it held, never its driver dead. Folded from the run this poll already read, which
+    // holds the run's hold events.
     let mut held = RunState::new();
     runscope::read::fold_holds(&mut held, &run_events)?;
-    let operator_held = held.hold.is_some_and(|hold| hold.operator);
+    let held_for_a_person = held.hold.is_some_and(|hold| hold.manual);
 
     let inputs = watch::WatchInputs {
         run_events: &run_events,
@@ -3808,7 +3809,7 @@ fn watch_poll_over(
         last_event_at,
         step_lock_free,
         driver_record_left,
-        operator_held,
+        held_for_a_person,
         wave_liveness_ages: &wave_liveness_ages,
         dash,
         run_started_at,

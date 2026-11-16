@@ -99,6 +99,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "conductor invariant violated: fan-out unit '{name}' (an unma",
             "{}: the session ended without handing over (no {AUTHOR_HANDO",
             "rigger: the run landed a definition change; re-pinned run {}",
+            "rigger run: the run was not held on its fault ({write}): {fa",
         ],
     ),
     (

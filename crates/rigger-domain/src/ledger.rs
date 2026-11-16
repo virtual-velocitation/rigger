@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::eventstore::{Event, Revision};
 use crate::run::{
-    RunHeld, RunReleased, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+    RunHeld, RunReleased, HOLD_BY_CONDUCTOR, HOLD_BY_OPERATOR, TYPE_RUN_HELD, TYPE_RUN_RELEASED,
+    TYPE_RUN_STARTED,
 };
 
 /// Status of a unit of work, over its lifecycle
@@ -232,8 +233,10 @@ pub struct RunState {
 pub struct Hold {
     /// When the hold started: the valid time of its first `RunHeld` in log order.
     pub since: SystemTime,
-    /// Whether this is an operator hold: any of its `RunHeld` events is by the operator.
-    pub operator: bool,
+    /// Whether only `rigger release` ends this hold: any of its `RunHeld` events is by the
+    /// operator, or by the conductor on a fault of its own that ended the run's drive. No probe
+    /// releases it, no sighting moves it and no checking verb relaunches its run.
+    pub manual: bool,
     /// Its latest `RunHeld`, whose cause is the hold's cause.
     pub latest: RunHeld,
     /// The run-stream revision of [`Hold::latest`]: a probe of the hold releases it only while
@@ -248,7 +251,9 @@ impl Hold {
         let latest: RunHeld = serde_json::from_slice(&e.data)?;
         Ok(Hold {
             since: open.as_ref().map_or(e.valid_from, |hold| hold.since),
-            operator: open.is_some_and(|hold| hold.operator) || latest.by == HOLD_BY_OPERATOR,
+            manual: open.is_some_and(|hold| hold.manual)
+                || latest.by == HOLD_BY_OPERATOR
+                || latest.by == HOLD_BY_CONDUCTOR,
             latest,
             revision: e.revision,
         })
@@ -256,12 +261,10 @@ impl Hold {
 
     /// Whether the host or probe `RunHeld` `body` says anything to the hold `open` (`None` when
     /// the run is unheld): the one transition rule a sighting and a failed probe append by. On an
-    /// unheld run it holds the run, whatever its cause; on an operator hold, on a hold of its own
+    /// unheld run it holds the run, whatever its cause; on a manual hold, on a hold of its own
     /// cause and as a cause needing no person it says nothing; otherwise it moves the hold's cause.
     pub fn moved_by(open: Option<&Hold>, body: &RunHeld) -> bool {
-        open.is_none_or(|hold| {
-            !hold.operator && body.needs_person && hold.latest.cause != body.cause
-        })
+        open.is_none_or(|hold| !hold.manual && body.needs_person && hold.latest.cause != body.cause)
     }
 
     /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`, or its
@@ -1482,8 +1485,8 @@ mod tests {
 
     /// THE EVENTS: a run is held while a `RunHeld` has no later `RunReleased`, over the current
     /// run's slice. The hold starts at its earliest `RunHeld` since the last `RunReleased`, its
-    /// cause and its revision are its latest's, and it is an operator hold when any of its
-    /// `RunHeld` events is by the operator. Each row folds as every production reader does,
+    /// cause and its revision are its latest's, and it is a manual hold when any of its
+    /// `RunHeld` events is by the operator or the conductor. Each row folds as every production reader does,
     /// `project` over the slice, each event at its index's revision.
     #[test]
     fn the_open_hold_folds_from_the_current_run_by_the_rules_of_the_events() {
@@ -1510,6 +1513,14 @@ mod tests {
             by: "operator".to_string(),
             model: String::new(),
         };
+        let conductor = RunHeld {
+            cause: "conductor-fault".to_string(),
+            detail: "worktree: the path already exists".to_string(),
+            action: "worktree: the path already exists".to_string(),
+            needs_person: true,
+            by: "conductor".to_string(),
+            model: String::new(),
+        };
         let held =
             |body: &RunHeld, secs: u64| (TYPE_RUN_HELD, serde_json::to_string(body).unwrap(), secs);
         let released = |secs: u64| {
@@ -1517,10 +1528,10 @@ mod tests {
             (TYPE_RUN_RELEASED, body, secs)
         };
         let started = |secs: u64| (TYPE_RUN_STARTED, r#"{"run":"r2"}"#.to_string(), secs);
-        let open = |secs: u64, operator: bool, latest: &RunHeld, revision: i64| {
+        let open = |secs: u64, manual: bool, latest: &RunHeld, revision: i64| {
             Some(Hold {
                 since: UNIX_EPOCH + Duration::from_secs(secs),
-                operator,
+                manual,
                 latest: latest.clone(),
                 revision,
             })
@@ -1565,6 +1576,11 @@ mod tests {
             (
                 "a host RunHeld after an operator one stays an operator hold",
                 vec![held(&operator, 5), held(&host, 9)],
+                open(5, true, &host, 1),
+            ),
+            (
+                "a conductor RunHeld is a manual hold, and a host one after it leaves it so",
+                vec![held(&conductor, 5), held(&host, 9)],
                 open(5, true, &host, 1),
             ),
             (
@@ -1748,7 +1764,7 @@ mod tests {
         ] {
             let hold = Hold {
                 since: UNIX_EPOCH,
-                operator: cause == "operator",
+                manual: cause == "operator",
                 latest: RunHeld {
                     cause: cause.to_string(),
                     action: action.to_string(),
@@ -1765,9 +1781,9 @@ mod tests {
     /// person, and otherwise moves the hold's cause.
     #[test]
     fn a_held_moves_an_open_hold_only_to_another_person_needing_cause() {
-        let open = |cause: &str, operator: bool| Hold {
+        let open = |cause: &str, manual: bool| Hold {
             since: UNIX_EPOCH,
-            operator,
+            manual,
             latest: RunHeld {
                 cause: cause.to_string(),
                 needs_person: true,

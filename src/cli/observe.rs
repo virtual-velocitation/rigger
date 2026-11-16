@@ -633,9 +633,9 @@ mod tests {
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
         let now = UNIX_EPOCH + Duration::from_secs(10_000);
         let ago = |millis: u64| now - Duration::from_millis(millis);
-        let hold = |cause: &str, operator: bool, since: SystemTime| ledger::Hold {
+        let hold = |cause: &str, manual: bool, since: SystemTime| ledger::Hold {
             since,
-            operator,
+            manual,
             latest: runscope::RunHeld {
                 cause: cause.to_string(),
                 action: "wait it out".to_string(),

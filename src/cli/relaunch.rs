@@ -518,7 +518,7 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
         now: now_secs(),
         released,
         in_main_checkout: &|| main_worktree_or_refuse(site, "").is_ok(),
-        operator_holds: &|run| operator_holds(site, run),
+        held_for_a_person: &|run| held_for_a_person(site, run),
         credentials: credentials_had(None),
     };
     let said = launcher().map_or_else(Some, |launcher| revive(&dir, &check, launcher.as_ref()));
@@ -527,16 +527,16 @@ pub(crate) fn relaunch_a_dead_driver(site: &Site, released: bool) {
     }
 }
 
-/// Whether an operator hold stands on `run`, the current run of the project at `site`. A store
-/// that cannot be read answers no hold: the relaunched driver reads the hold again as it adopts
-/// the run and parks on an operator hold it finds.
-fn operator_holds(site: &Site, run: &str) -> bool {
+/// Whether a hold for a person, the operator's or the conductor's, stands on `run`, the current run
+/// of the project at `site`. A store that cannot be read answers no hold: the relaunched driver
+/// reads the hold again as it adopts the run and parks on such a hold it finds.
+fn held_for_a_person(site: &Site, run: &str) -> bool {
     require_store_dir_in(site)
         .and_then(|(loc, selection)| {
             over_the_run_store_at(&loc, &selection, |store| {
                 let current = runscope::read::read_current_run_id(store, conductor::STREAM)?;
                 let hold = runscope::read::read_current_hold(store, conductor::STREAM)?;
-                Ok(current.as_deref() == Some(run) && hold.is_some_and(|hold| hold.operator))
+                Ok(current.as_deref() == Some(run) && hold.is_some_and(|hold| hold.manual))
             })
         })
         .unwrap_or(false)
@@ -544,19 +544,19 @@ fn operator_holds(site: &Site, run: &str) -> bool {
 
 /// What one check reads beside the step lock: the time it runs at, whether it follows the
 /// operator's `rigger release`, whether it was invoked from the project's main checkout, whether
-/// an operator hold stands on a run, and which credentials its own environment sets.
+/// a hold for a person stands on a run, and which credentials its own environment sets.
 struct Check<'a> {
     now: u64,
     released: bool,
     in_main_checkout: &'a dyn Fn() -> bool,
-    operator_holds: &'a dyn Fn(&str) -> bool,
+    held_for_a_person: &'a dyn Fn(&str) -> bool,
     credentials: BTreeSet<String>,
 }
 
 /// Relaunch the driver whose record the step lock under `dir` holds when no driver holds that
 /// lock, as `check` reads it, through `launcher`: the line to say, `None` when there is nothing to
 /// say. Every failure to read the lock is read as nothing to do. A check invoked from a linked
-/// worktree, and a run an operator hold stands on, leave the record as it is: the hold is the
+/// worktree, and a run a hold for a person stands on, leave the record as it is: the hold is the
 /// run's stop. A check that follows the operator's release relaunches a driver that died soon
 /// after its own relaunch too, since the operator asked for it. A driver that ran on a
 /// credential is relaunched only from an environment that sets it too, and is otherwise left as
@@ -588,9 +588,9 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
             return None;
         }
     };
-    if (check.operator_holds)(&record.run) {
+    if (check.held_for_a_person)(&record.run) {
         return Some(format!(
-            "rigger: run {} is held by the operator and no driver is alive for it; `rigger \
+            "rigger: run {} is held for a person and no driver is alive for it; `rigger \
              release` relaunches it",
             record.run
         ));
@@ -836,7 +836,7 @@ mod tests {
                 now: now_secs(),
                 released: false,
                 in_main_checkout: &|| true,
-                operator_holds: &|_| false,
+                held_for_a_person: &|_| false,
                 credentials: BTreeSet::new(),
             };
             let keeper = EnvKeeper::default();
@@ -883,7 +883,7 @@ mod tests {
             now: now_secs(),
             released: false,
             in_main_checkout: &|| true,
-            operator_holds: &|_| false,
+            held_for_a_person: &|_| false,
             credentials: BTreeSet::new(),
         };
         let keeper = EnvKeeper::default();
@@ -930,7 +930,7 @@ mod tests {
                 now: now_secs(),
                 released: false,
                 in_main_checkout: &|| true,
-                operator_holds: &|_| false,
+                held_for_a_person: &|_| false,
                 credentials: BTreeSet::new(),
             };
             let said = revive(dir.path(), &check, &EnvKeeper::default()).unwrap_or_default();

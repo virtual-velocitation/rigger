@@ -4833,7 +4833,9 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
         );
         assert!(
             halt.detail.contains(case.cause)
-                && halt.detail.contains("past the failure taxonomy's infra limit"),
+                && halt
+                    .detail
+                    .contains("past the failure taxonomy's infra limit"),
             "{name}: the hold names the halt: {halt:?}"
         );
         assert_eq!(run_releases(root), case.releases, "{name}: the releases");
@@ -6706,7 +6708,21 @@ fn a_restarted_supervisor_launches_nothing_until_the_hold_it_finds_is_released()
         ],
         &format!("stderr: {err}"),
     );
-    assert_eq!(run_holds(root).len(), 6, "each launch's hold");
+    let launches = ["billing_error"; 3];
+    assert_eq!(
+        run_holds(root)
+            .iter()
+            .map(|hold| hold.cause.as_str())
+            .collect::<Vec<_>>(),
+        [
+            &launches[..],
+            &["conductor-fault"],
+            &launches[..],
+            &["conductor-fault"]
+        ]
+        .concat(),
+        "each launch's hold, then each halt's hold for a person"
+    );
     assert_eq!(run_releases(root), ["operator"; 5], "the releases");
 }
 
@@ -16490,6 +16506,11 @@ fn hold_on_a_conductor_fault(root: &Path) {
     );
 }
 
+/// One case of [`an_operator_hold_stops_a_run_for_good_until_its_release`]: its name, the hold,
+/// whether the hold lands before the death, whether the dead driver was itself a relaunch made just
+/// now, and what `rigger status` says of the hold.
+type PersonHoldCase = (&'static str, fn(&Path), bool, bool, &'static str);
+
 /// A HOLD FOR A PERSON IS THE STOP: a run its operator held, or the conductor held on a fault of
 /// its own, whether the hold came before its driver's death or after it, a relaunched driver that
 /// died at once included, is relaunched by no invocation, and its record is left as it was, until
@@ -16497,9 +16518,7 @@ fn hold_on_a_conductor_fault(root: &Path) {
 /// `rigger release` as what continues the run, and `rigger watch` reports it.
 #[test]
 fn an_operator_hold_stops_a_run_for_good_until_its_release() {
-    // Each row: its name, the hold, whether the hold lands before the death, whether the dead
-    // driver was itself a relaunch made just now, and what `rigger status` says of the hold.
-    let rows: [(&str, fn(&Path), bool, bool, &str); 4] = [
+    let rows: [PersonHoldCase; 4] = [
         (
             "a hold, then the death",
             hold_the_run,

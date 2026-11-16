@@ -126,7 +126,7 @@ impl<'a> HeldDriver<'a> {
             })?;
             match hold {
                 None => return Ok(()),
-                Some(hold) if hold.operator && self.parks_on_an_operator_hold => {
+                Some(hold) if hold.manual && self.parks_on_an_operator_hold => {
                     self.parked.store(true, Ordering::SeqCst);
                     return Err(parked_spawn(id));
                 }

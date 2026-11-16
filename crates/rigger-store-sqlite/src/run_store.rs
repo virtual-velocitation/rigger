@@ -13,7 +13,7 @@
 
 use std::time::SystemTime;
 
-use rigger_domain::agent::{cause_row, OPERATOR};
+use rigger_domain::agent::{cause_row, CONDUCTOR_FAULT, OPERATOR};
 use rigger_domain::ledger::{project, Hold, RunState};
 
 use crate::contextgraph::TYPE_DECISION_MADE;
@@ -24,7 +24,7 @@ use crate::retention::PERCEPTION_TYPES;
 use crate::run::read::{fold_holds, read_run, read_run_at_head, HOLD_TYPES};
 use crate::run::{
     adopted_run, current_run, current_run_id, effective_definition, RunHeld, RunReleased, RunStart,
-    RunStarted, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION,
+    RunStarted, HOLD_BY_CONDUCTOR, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION,
     META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
@@ -321,6 +321,30 @@ pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(),
     .map(drop)
 }
 
+/// Hold the current run for a person on a fault of the conductor's own that ended its drive
+/// (`fault`, its text): one `RunHeld {by: conductor}` of cause `conductor-fault`, the fault on one
+/// line as its detail and its action, carrying the open hold's latest model forward. It lands over
+/// any open hold, an operator hold included, since the fault is news to whoever releases it; a
+/// hold whose latest `RunHeld` already names this same fault takes nothing, so a relaunch meeting
+/// the fault again adds no second hold.
+pub fn hold_on_a_fault(store: &dyn EventStore, fault: &str) -> Result<(), Error> {
+    let line = fault.split_whitespace().collect::<Vec<_>>().join(" ");
+    append_on_hold(store, TYPE_RUN_HELD, |hold| {
+        let model = hold.map_or("", |hold| hold.latest.model.as_str());
+        let body = RunHeld {
+            action: line.clone(),
+            ..held_by(CONDUCTOR_FAULT, &line, HOLD_BY_CONDUCTOR, model)
+        };
+        let named = hold.is_some_and(|hold| {
+            hold.latest.cause == body.cause && hold.latest.detail == body.detail
+        });
+        (!named)
+            .then(|| serialized(TYPE_RUN_HELD, body.to_event()))
+            .transpose()
+    })
+    .map(drop)
+}
+
 /// The `RunHeld` of `cause` written by `by`, its action and need for a person read from the
 /// cause's row of the disposition table.
 fn held_by(cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
@@ -517,7 +541,8 @@ mod tests {
     use crate::run::TYPE_RUN_RELEASED;
     use crate::run::{current_run_base, current_run_base_tip, current_run_id};
     use crate::run::{
-        RunHeld, RunReleased, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, TYPE_RUN_HELD,
+        RunHeld, RunReleased, HOLD_BY_CONDUCTOR, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE,
+        TYPE_RUN_HELD,
     };
     use crate::test_support::{
         ev, insert_pre_ledger_rows, payloads_of_type, seed_one_shot_fixture, types_of, LandsBehind,
@@ -599,13 +624,13 @@ mod tests {
     /// THE SIGHTINGS' TRANSITIONS (spec 105): a first sighting appends one `RunHeld` carrying the
     /// table's action and person, its detail and its model; a repeated one appends nothing; a
     /// differing person-needing one appends one; a differing one that needs no person appends
-    /// nothing; an operator hold, however late a host hold landed on it, takes none; and a
-    /// released hold, or one standing before the current run's boundary, is no hold.
+    /// nothing; an operator or a conductor hold, however late a host hold landed on it, takes
+    /// none; and a released hold, or one standing before the current run's boundary, is no hold.
     #[test]
     fn a_sighting_appends_only_what_the_open_hold_leaves_it_to_say() {
         let login = || host_hold("authentication_failed", LOGIN, true);
         let billing = || host_hold("billing_error", "fix the account's billing", true);
-        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 11] = [
+        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 12] = [
             (
                 "a first sighting of a hold class",
                 vec![],
@@ -673,6 +698,12 @@ mod tests {
                 None,
             ),
             (
+                "a conductor hold",
+                vec![held(CONDUCTOR_FAULT, HOLD_BY_CONDUCTOR, "")],
+                "authentication_failed",
+                None,
+            ),
+            (
                 "a released hold",
                 vec![held("authentication_failed", HOLD_BY_HOST, ""), released()],
                 "authentication_failed",
@@ -683,6 +714,70 @@ mod tests {
             let store = run_holding(log);
             let before = holds(&store);
             record_hold_sighting(&store, &sighting(cause)).unwrap();
+            let mut after = holds(&store);
+            let appended = after.split_off(before.len());
+            assert_eq!(after, before, "{name}: the holds already on the stream");
+            assert_eq!(appended, Vec::from_iter(expected), "{name}");
+        }
+    }
+
+    /// The fault [`hold_on_a_fault`] is handed, spread over lines as an error's text can be.
+    const FAULT: &str = "worktree: git worktree add\n   failed: the path already exists";
+
+    /// The `RunHeld` the conductor appends for [`FAULT`] on a hold whose latest model was `model`.
+    fn fault_hold(detail: &str, model: &str) -> RunHeld {
+        RunHeld {
+            cause: CONDUCTOR_FAULT.to_string(),
+            detail: detail.to_string(),
+            action: detail.to_string(),
+            needs_person: true,
+            by: HOLD_BY_CONDUCTOR.to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    /// A CONDUCTOR FAULT HOLDS THE RUN ONCE: on an unheld run and over any open hold, an operator
+    /// hold included, it appends one person-needing `RunHeld {by: conductor}` naming the fault on
+    /// one line and carrying the hold's model; on a hold whose latest `RunHeld` already names the
+    /// same fault it appends nothing, while a different fault, or a released hold of the same
+    /// one, takes a new hold.
+    #[test]
+    fn a_conductor_fault_holds_the_run_once_over_any_hold() {
+        const LINE: &str = "worktree: git worktree add failed: the path already exists";
+        let named = |detail: &str| fault_hold(detail, "").to_event().unwrap();
+        let rows: [(&str, Vec<Event>, Option<RunHeld>); 7] = [
+            ("an unheld run", vec![], Some(fault_hold(LINE, ""))),
+            (
+                "an operator hold",
+                vec![held(OPERATOR, HOLD_BY_OPERATOR, "opus")],
+                Some(fault_hold(LINE, "opus")),
+            ),
+            (
+                "a host hold the run retries by itself",
+                vec![held(API_UNSTABLE, HOLD_BY_HOST, "sonnet")],
+                Some(fault_hold(LINE, "sonnet")),
+            ),
+            ("a hold naming the same fault", vec![named(LINE)], None),
+            (
+                "a host hold landed on a hold naming the same fault",
+                vec![named(LINE), held(API_UNSTABLE, HOLD_BY_HOST, "")],
+                Some(fault_hold(LINE, "")),
+            ),
+            (
+                "a hold naming another fault",
+                vec![named("plan landing failed")],
+                Some(fault_hold(LINE, "")),
+            ),
+            (
+                "a released hold naming the same fault",
+                vec![named(LINE), released()],
+                Some(fault_hold(LINE, "")),
+            ),
+        ];
+        for (name, log, expected) in rows {
+            let store = run_holding(log);
+            let before = holds(&store);
+            hold_on_a_fault(&store, FAULT).unwrap();
             let mut after = holds(&store);
             let appended = after.split_off(before.len());
             assert_eq!(after, before, "{name}: the holds already on the stream");

@@ -134,9 +134,10 @@ pub const DEAD_DRIVER_QUIET_BOUND: Duration = Duration::from_secs(3600);
 pub const DRIVER_RECORD_LEFT: &str = "its driver died and left its record in the step lock; \
      `rigger status` relaunches it";
 
-/// What `rigger watch` says of a run an operator hold stands on while no driver holds the step
-/// lock: its driver parked on the hold and ended, or ended while it stood, a stop on purpose.
-pub const OPERATOR_HELD: &str = "held by the operator, and no driver runs it; `rigger release` \
+/// What `rigger watch` says of a run a hold for a person stands on while no driver holds the step
+/// lock, the operator's hold or the conductor's on a fault of its own: its driver parked on the
+/// hold and ended, or ended while it stood, a stop that waits on a person.
+pub const HELD_FOR_A_PERSON: &str = "held for a person, and no driver runs it; `rigger release` \
      relaunches it";
 
 /// The dead-driver conjunction's HEARTBEAT-STALE bound (spec 69 Design: "every
@@ -149,7 +150,7 @@ pub const DEFAULT_INTERVAL_SECS: u64 = 180;
 
 /// The closed set of anomaly signals the watchdog reports. The five [`SKILL_SIGNAL_NAMES`]
 /// signals are named BY THE SAME STRING `rigger-watch-a-run` uses (see [`Signal::name`]);
-/// [`Signal::SpecDefect`], [`Signal::OperatorHold`], [`Signal::StoreIntegrity`] and
+/// [`Signal::SpecDefect`], [`Signal::PersonHold`], [`Signal::StoreIntegrity`] and
 /// [`Signal::CiRed`] are the automation's own additions beyond the skill's five-signal human skim (module doc).
 /// Declared in the spec's own listed order, a stopped gate directly after the escalated
 /// blockers as the attention wire ranks it, so a derived [`Ord`] sorts anomalies in that order.
@@ -161,9 +162,9 @@ pub enum Signal {
     /// [`Signal::Escalated`].
     SpecDefect,
     DeadDriver,
-    /// An operator hold stands on the run and no driver runs it, reported in place of
-    /// [`Signal::DeadDriver`]: the hold is the run's stop.
-    OperatorHold,
+    /// A hold for a person, the operator's or the conductor's, stands on the run and no driver
+    /// runs it, reported in place of [`Signal::DeadDriver`]: the hold is the run's stop.
+    PersonHold,
     DashNotServing,
     RejectRecurrence,
     FrontierStall,
@@ -191,7 +192,7 @@ impl Signal {
             Signal::Escalated => SKILL_SIGNAL_NAMES[0],
             Signal::SpecDefect => "spec defect",
             Signal::DeadDriver => SKILL_SIGNAL_NAMES[1],
-            Signal::OperatorHold => "operator hold",
+            Signal::PersonHold => "hold for a person",
             Signal::DashNotServing => SKILL_SIGNAL_NAMES[2],
             Signal::RejectRecurrence => SKILL_SIGNAL_NAMES[3],
             Signal::FrontierStall => SKILL_SIGNAL_NAMES[4],
@@ -214,7 +215,7 @@ impl Signal {
             Signal::Escalated => "rigger-handle-an-escalation",
             Signal::SpecDefect => "amend the spec and relaunch",
             Signal::DeadDriver => "rigger-resume-a-run",
-            Signal::OperatorHold => "rigger release",
+            Signal::PersonHold => "rigger release",
             Signal::DashNotServing => "rigger-restore-the-dash",
             Signal::RejectRecurrence => "rigger-diagnose-churn",
             Signal::FrontierStall => {
@@ -352,8 +353,9 @@ pub struct WatchInputs<'a> {
     /// Whether the step lock holds a driver's record: with the lock free, a driver that died and
     /// left it, which `rigger status` relaunches (or `rigger release`, under an operator hold).
     pub driver_record_left: bool,
-    /// Whether an operator hold (`rigger hold`) stands on the run.
-    pub operator_held: bool,
+    /// Whether a hold for a person stands on the run: the operator's (`rigger hold`), or the
+    /// conductor's on a fault of its own that ended the run's drive.
+    pub held_for_a_person: bool,
     /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY PARKED
     /// frontier, on wall clock: unlike `rigger status`'s, no open hold is subtracted. Empty when
     /// nothing is parked, which reads as "every heartbeat stale" vacuously.
@@ -558,12 +560,12 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
             .all(|age| Duration::from_secs(*age) > DEAD_DRIVER_HEARTBEAT_BOUND);
         let dead = (inputs.step_lock_free && inputs.driver_record_left)
             || (quiet && inputs.step_lock_free && every_heartbeat_stale);
-        if dead && inputs.operator_held {
+        if dead && inputs.held_for_a_person {
             out.push(Anomaly {
-                signal: Signal::OperatorHold,
+                signal: Signal::PersonHold,
                 subject: "run".to_string(),
                 magnitude: 0,
-                detail: OPERATOR_HELD.to_string(),
+                detail: HELD_FOR_A_PERSON.to_string(),
             });
         } else if inputs.step_lock_free && inputs.driver_record_left {
             out.push(Anomaly {
@@ -753,7 +755,7 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: ages,
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -970,7 +972,7 @@ mod tests {
             last_event_at: Some(now - Duration::from_secs(4000)),
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &ages,
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1017,14 +1019,14 @@ mod tests {
                 true,
                 true,
                 now,
-                Some((Signal::OperatorHold, OPERATOR_HELD)),
+                Some((Signal::PersonHold, HELD_FOR_A_PERSON)),
             ),
             (
                 true,
                 false,
                 true,
                 hour_quiet,
-                Some((Signal::OperatorHold, OPERATOR_HELD)),
+                Some((Signal::PersonHold, HELD_FOR_A_PERSON)),
             ),
             (false, true, true, now, None),
         ];
@@ -1033,12 +1035,12 @@ mod tests {
                 last_event_at: Some(last),
                 step_lock_free: free,
                 driver_record_left: left,
-                operator_held: held,
+                held_for_a_person: held,
                 ..empty_inputs(&open, &ages)
             };
             let detail: Vec<(Signal, String)> = detect(&inputs)
                 .into_iter()
-                .filter(|a| matches!(a.signal, Signal::DeadDriver | Signal::OperatorHold))
+                .filter(|a| matches!(a.signal, Signal::DeadDriver | Signal::PersonHold))
                 .map(|a| (a.signal, a.detail))
                 .collect();
             assert_eq!(
@@ -1077,7 +1079,7 @@ mod tests {
             // A step or a run holds the lock - not dead, just slow.
             step_lock_free: false,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1148,7 +1150,7 @@ mod tests {
             last_event_at: Some(now - Duration::from_secs(999_999)),
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1198,14 +1200,14 @@ mod tests {
                 landed_a.to_vec(),
                 false,
                 true,
-                vec![Signal::OperatorHold],
+                vec![Signal::PersonHold],
             ),
             (
                 "an owed unit not yet started, its driver record left, under an operator hold",
                 landed_a.to_vec(),
                 true,
                 true,
-                vec![Signal::OperatorHold],
+                vec![Signal::PersonHold],
             ),
             (
                 "every owed unit landed",
@@ -1230,7 +1232,7 @@ mod tests {
                 last_event_at: Some(now - Duration::from_secs(999_999)),
                 now,
                 driver_record_left: left,
-                operator_held: held,
+                held_for_a_person: held,
                 ..empty_inputs(&events, &ages)
             };
             assert_eq!(
@@ -1260,7 +1262,7 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotServing {
                 pid: None,
@@ -1451,7 +1453,7 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash,
             run_started_at: None,
@@ -1483,7 +1485,7 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotServing {
                 pid: Some(424_242),
@@ -1534,7 +1536,7 @@ mod tests {
                 last_event_at: None,
                 step_lock_free: true,
                 driver_record_left: false,
-                operator_held: false,
+                held_for_a_person: false,
                 wave_liveness_ages: &ages,
                 dash: DashProbe::NotServing {
                     pid: Some(424_242),
@@ -1634,7 +1636,7 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1668,7 +1670,7 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1783,7 +1785,7 @@ mod tests {
             last_event_at: run_events.last().map(|e| e.recorded_at),
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
+            held_for_a_person: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,

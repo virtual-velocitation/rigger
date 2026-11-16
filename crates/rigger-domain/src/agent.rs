@@ -417,6 +417,10 @@ pub const API_UNSTABLE: &str = "api-unstable";
 /// The cause of the hold `rigger hold` appends: the operator holds the run, giving a reason.
 pub const OPERATOR: &str = "operator";
 
+/// The cause of the hold the conductor appends on a fault of its own that ends the run's drive:
+/// the fault, not a unit's work, stopped the run, and a person fixes it, then releases the run.
+pub const CONDUCTOR_FAULT: &str = "conductor-fault";
+
 /// The action of a hold that clears without anyone: a wait-class category's and `api-unstable`'s.
 const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
 
@@ -444,9 +448,10 @@ const fn holds(action: &'static str) -> DispositionRow {
     }
 }
 
-/// The disposition table's row for a hold's `cause`: `api-unstable`'s, `operator`'s, or the
-/// category's. The `operator` row needs a person and names no action: no row can hold a per-hold
-/// reason, so `rigger hold`'s append puts its reason in the action over the row's.
+/// The disposition table's row for a hold's `cause`: `api-unstable`'s, `operator`'s,
+/// `conductor-fault`'s, or the category's. The `operator` and `conductor-fault` rows need a person
+/// and name no action: no row can hold a per-hold reason, so `rigger hold`'s append puts its
+/// reason in the action over the row's, and the conductor's append puts its fault there.
 pub fn cause_row(cause: &str) -> DispositionRow {
     match cause {
         API_UNSTABLE => DispositionRow {
@@ -455,7 +460,7 @@ pub fn cause_row(cause: &str) -> DispositionRow {
             needs_person: false,
             credential: false,
         },
-        OPERATOR => holds(""),
+        OPERATOR | CONDUCTOR_FAULT => holds(""),
         category => AgentFailure::from_category(category).row(),
     }
 }
@@ -782,9 +787,10 @@ mod tests {
         }
     }
 
-    /// A hold's `cause` reads its row from the one table, the two causes no category names
-    /// included: `api-unstable` needs no person and the run retries by itself; `operator` needs a
-    /// person and names no action, `rigger hold`'s reason standing in for it.
+    /// A hold's `cause` reads its row from the one table, the three causes no category names
+    /// included: `api-unstable` needs no person and the run retries by itself; `operator` and
+    /// `conductor-fault` need a person and name no action, `rigger hold`'s reason or the
+    /// conductor's fault standing in for it.
     #[test]
     fn a_holds_cause_reads_the_table_api_unstable_and_operator_included() {
         let rows = [
@@ -799,6 +805,15 @@ mod tests {
             ),
             (
                 "operator",
+                DispositionRow {
+                    disposition: Disposition::Hold,
+                    action: "",
+                    needs_person: true,
+                    credential: false,
+                },
+            ),
+            (
+                "conductor-fault",
                 DispositionRow {
                     disposition: Disposition::Hold,
                     action: "",

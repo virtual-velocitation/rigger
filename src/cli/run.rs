@@ -1195,12 +1195,14 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let channel = socket
         .as_ref()
         .map(|s| s as &dyn rigger::gate_channel::GateChannel);
-    // A driver that parked a launch on an operator hold drives again once the hold is gone, since
-    // a release while it still runs relaunches nothing; it ends only while the hold stands. Each
-    // drive holds a verdict key of its own, as a relaunched driver would.
+    // A driver that parked a launch on a hold for a person drives again once the hold is gone,
+    // since a release while it still runs relaunches nothing; it ends only while the hold stands.
+    // A drive that failed under such a hold, the conductor's own fault hold included, leaves its
+    // record for `rigger release` the same way. Each drive holds a verdict key of its own, as a
+    // relaunched driver would.
     let rs = loop {
         let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
-        let rs = beating(
+        let driven = beating(
             &store,
             &progress,
             rigger::progress::SUPERVISOR_BEAT_INTERVAL,
@@ -1209,16 +1211,29 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
                     conductor::run_serving(&cfg, &deps, verdict_key, channel)
                 })
             },
-        )?;
+        );
+        let rs = match driven {
+            Ok(rs) => rs,
+            Err(e) => {
+                if let Some(reason) = held_for_a_person(&folding) {
+                    step_record.leave_for_release();
+                    stderr_line(&format!(
+                        "{command}: run {run} is held for a person ({reason}), so this driver \
+                         ended; `rigger release` relaunches it"
+                    ));
+                }
+                return Err(e.into());
+            }
+        };
         if !held.take_parked_on_an_operator_hold() {
             break rs;
         }
-        if !an_operator_hold_stands(&folding) {
+        if !a_hold_for_a_person_stands(&folding) {
             continue;
         }
         step_record.leave_for_release();
         stderr_line(&format!(
-            "{command}: run {run} is held by the operator, so this driver parked its next launch \
+            "{command}: run {run} is held for a person, so this driver parked its next launch \
              and ended; `rigger release` relaunches it"
         ));
         break rs;
@@ -1345,11 +1360,22 @@ fn reclaim_orphans_at_start(
     }
 }
 
-/// Whether an operator hold stands on the current run in `store`: true when the read fails, since
-/// a run not proved free of one launches nothing.
-fn an_operator_hold_stands(store: &dyn EventStore) -> bool {
+/// Whether a hold for a person, the operator's or the conductor's, stands on the current run in
+/// `store`: true when the read fails, since a run not proved free of one launches nothing.
+fn a_hold_for_a_person_stands(store: &dyn EventStore) -> bool {
     runscope::read::read_current_hold(store, conductor::STREAM)
-        .map_or(true, |hold| hold.is_some_and(|hold| hold.operator))
+        .map_or(true, |hold| hold.is_some_and(|hold| hold.manual))
+}
+
+/// The reason of the hold for a person standing on the current run in `store`, the operator's or
+/// the conductor's; `None` with none standing or a read that fails, since only a hold read leaves
+/// a failed driver's record for `rigger release`.
+fn held_for_a_person(store: &dyn EventStore) -> Option<String> {
+    runscope::read::read_current_hold(store, conductor::STREAM)
+        .ok()
+        .flatten()
+        .filter(|hold| hold.manual)
+        .map(|hold| hold.reason())
 }
 
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
