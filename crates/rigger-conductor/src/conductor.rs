@@ -2385,7 +2385,7 @@ pub(crate) fn is_store_fault(e: &Error) -> bool {
 
 /// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`],
-/// [`LAND_REFUSED_MARKER`] or [`PROBE_FAULT_MARKER`], each a halt's signal,
+/// [`LAND_REFUSED_MARKER`], [`PROBE_FAULT_MARKER`] or [`WORKTREE_MARKER`], each a halt's signal,
 /// [`EMIT_REFUSED_MARKER`], the emit guard's
 /// refusal of a record the spawn emitted, [`INTERRUPTED_MARKER`], the host's interrupted
 /// close, or [`STORE_FAULT_MARKER`], a store read failing before the launch) rather than a plain
@@ -2825,18 +2825,33 @@ fn probe_fault_halt(fault: gate::ProbeFault) -> Error {
     marked(PROBE_FAULT_MARKER, fault)
 }
 
+/// The sentinel a WORKTREE THE CONDUCTOR CANNOT MAKE embeds in its error ([`create_worktree`]): a
+/// `git worktree add` the conductor ran for a unit, a review or a post-merge re-gate failed, so
+/// the stage never started. A fault of the conductor's own scratch and git state, never of the
+/// unit's code, so it is a halt over [`HALT_MARKERS`]: no lesson names the unit, and it is
+/// charged no attempt.
+const WORKTREE_MARKER: &str = "\u{1}rigger:worktree\u{1}";
+
+/// THE CONDUCTOR'S WORKTREE: [`Worktree::create`] of `dir` on `branch` in `repo` under `scratch`,
+/// its failure marked with [`WORKTREE_MARKER`]. Every worktree the conductor makes is made here.
+fn create_worktree(repo: &str, dir: &str, branch: &str, scratch: &str) -> Result<Worktree, Error> {
+    Worktree::create(repo, dir, branch, scratch)
+        .map_err(|e| marked(WORKTREE_MARKER, Error::from(e).0))
+}
+
 /// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
 /// each marks an infrastructure or configuration fault that halts the step loudly, with the
 /// marker stripped from the operator's message, while charging the unit no attempt (no
 /// `UnitFailed`, no `UnitEscalated`) and recording no per-unit lesson that would misattribute
 /// the fault to the unit. A new halt joins this list; it never grows an arm of its own.
-const HALT_MARKERS: [&str; 6] = [
+const HALT_MARKERS: [&str; 7] = [
     DEGENERATE_MARKER,
     MISMATCH_MARKER,
     PLAN_LANDING_MARKER,
     LAND_REFUSED_MARKER,
     INFRA_MARKER,
     PROBE_FAULT_MARKER,
+    WORKTREE_MARKER,
 ];
 
 /// `e` with every [`HALT_MARKERS`] sentinel stripped: the operator's message a halt reaches
@@ -3163,7 +3178,8 @@ pub fn run_serving(
 /// `rigger status` and `rigger watch` name it among what needs a person and `rigger release`
 /// continues the run. It is the one home of every error a begun run's drive returns: each
 /// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, a
-/// refused landing, an outage past the infra limit, a failed guard probe) and every other. A
+/// refused landing, an outage past the infra limit, a failed guard probe, a worktree it could not
+/// make) and every other. A
 /// hold it cannot write is said through [`Deps::log`]; `e` is returned unchanged either way.
 fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
     let fault = strip_failure_marker(&e);
@@ -5413,7 +5429,8 @@ impl RunCtx<'_> {
             // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
             // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
             // landing refused by the run checkout's local changes, a unit's infra reruns
-            // past the taxonomy's infra limit, a gate's failed guard probe) - is an infrastructure or configuration
+            // past the taxonomy's infra limit, a gate's failed guard probe, a worktree the
+            // conductor could not make) - is an infrastructure or configuration
             // fault, not the unit's failure. ONE arm for all of them: propagate the loud
             // halt as the wave's error with the recognition marker stripped (so the
             // operator's message stays clean), emit NO per-unit lesson here (it would
@@ -7902,14 +7919,14 @@ impl RunCtx<'_> {
         let dir = unit_worktree_dir(&scratch, &st.name);
         let branch = unit_branch(&st.name);
         if lane == 0 {
-            return Ok(Worktree::create(&self.deps.repo, &dir, &branch, &scratch)?);
+            return create_worktree(&self.deps.repo, &dir, &branch, &scratch);
         }
-        Ok(Worktree::create(
+        create_worktree(
             &self.deps.repo,
             &format!("{dir}-spec{lane}"),
             &format!("{branch}-spec{lane}"),
             &scratch,
-        )?)
+        )
     }
 
     /// First-green-wins speculation (spec 13, unit 3). A unit class declaring
@@ -11456,7 +11473,7 @@ impl RunCtx<'_> {
             // path (`Worktree::create` erred before returning a live worktree), so only
             // the branch needs reaping here - the dir-and-branch pair `run_gates`'s own
             // cleanup reaps below is for the LATER window, once a real `pm_wt` exists.
-            let create_result = Worktree::create(&self.deps.repo, &pm_dir, &pm_branch, &scratch);
+            let create_result = create_worktree(&self.deps.repo, &pm_dir, &pm_branch, &scratch);
             if create_result.is_err() {
                 let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             }
@@ -13437,7 +13454,7 @@ impl RunCtx<'_> {
             &self.cfg.workflow.defaults.workdir,
         );
         let dir = unit_worktree_dir(&scratch, &st.name);
-        let wt = Worktree::create(&self.deps.repo, &dir, &unit_branch(&st.name), &scratch)?;
+        let wt = create_worktree(&self.deps.repo, &dir, &unit_branch(&st.name), &scratch)?;
         Ok(Some(wt))
     }
 
@@ -13473,7 +13490,7 @@ impl RunCtx<'_> {
         // (adv-u4det-review-adopt-staleness). This is the opposite of the unit worktree,
         // whose durable branch is exactly what `create` reuses.
         Worktree::discard(&self.deps.repo, &dir, &branch, &scratch)?;
-        let wt = Worktree::create(&self.deps.repo, &dir, &branch, &scratch)?;
+        let wt = create_worktree(&self.deps.repo, &dir, &branch, &scratch)?;
         Ok(Some(wt))
     }
 
