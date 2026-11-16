@@ -32038,6 +32038,150 @@ mod tests {
         }
     }
 
+    /// One row of [`a_later_round_re_runs_the_members_its_later_rounds_key_names`]: the panel's
+    /// `later_rounds` value (`None` leaves the key out), the findings round 0's spawns recorded
+    /// as (role, id), the ids round 0's reject upheld, the file its one REQUIRED item names, and
+    /// the members round 1 runs before its adjudicator, in step order.
+    struct LaterRoundsRow {
+        name: &'static str,
+        later_rounds: Option<&'static str>,
+        found: Vec<(String, &'static str)>,
+        upheld: Vec<&'static str>,
+        required: &'static str,
+        runs: Vec<String>,
+    }
+
+    /// WHO A LATER ROUND RE-RUNS: round 0's adjudicator rejects after its members recorded the
+    /// row's findings, upholding some and requiring one fix, and round 1's implementer writes
+    /// `fix1.rs`. `later_rounds: all`, the default, re-runs every member; `finders` re-runs only
+    /// the members whose upheld findings sent the unit back - every member when no upheld id is
+    /// one a member recorded, or when the delta reaches a file no REQUIRED item names. The
+    /// adjudicator runs every round, its roster the members that ran.
+    #[test]
+    fn a_later_round_re_runs_the_members_its_later_rounds_key_names() {
+        let (lens, other) = (lens_role("lens"), lens_role("other"));
+        let every = vec![lens.clone(), other.clone(), ROLE_ADVERSARY.to_string()];
+        let rows = [
+            LaterRoundsRow {
+                name: "the key left out re-runs every member",
+                later_rounds: None,
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "fix1.rs",
+                runs: every.clone(),
+            },
+            LaterRoundsRow {
+                name: "all re-runs every member",
+                later_rounds: Some("all"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "fix1.rs",
+                runs: every.clone(),
+            },
+            LaterRoundsRow {
+                name: "finders re-runs the lens whose finding was upheld",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1"), (other.clone(), "o-1")],
+                upheld: vec!["f-1"],
+                required: "fix1.rs",
+                runs: vec![lens.clone()],
+            },
+            LaterRoundsRow {
+                name: "finders re-runs the adversary whose finding was upheld",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1"), (ROLE_ADVERSARY.to_string(), "a-1")],
+                upheld: vec!["a-1"],
+                required: "fix1.rs",
+                runs: vec![ROLE_ADVERSARY.to_string()],
+            },
+            LaterRoundsRow {
+                name: "an upheld id no member recorded re-runs every member",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["ghost"],
+                required: "fix1.rs",
+                runs: every.clone(),
+            },
+            LaterRoundsRow {
+                name: "a delta past the required files re-runs every member",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "feature.rs",
+                runs: every.clone(),
+            },
+        ];
+        for row in rows {
+            let mut panel = json!({
+                "lenses": ["lens", "other"],
+                "adversary": "adversary",
+                "adjudicator": "adj",
+            });
+            if let Some(value) = row.later_rounds {
+                panel["later_rounds"] = json!(value);
+            }
+            let mut cfg = per_unit_panel_cfg(None);
+            cfg.agents.insert("other".into(), agent("other"));
+            cfg.workflow.defaults.review = serde_json::from_value(panel).expect("a map panel");
+            let reject = json!({
+                "verdict": "reject",
+                "upheld": row.upheld,
+                "required": [{"finding": "close it", "path": row.required, "correctness": true}],
+            })
+            .to_string();
+            let mut emits: HashMap<String, Emits> = HashMap::new();
+            for (role, id) in &row.found {
+                emits
+                    .entry(spawn_id("implement", role, 0))
+                    .or_default()
+                    .push(finding(id, "a defect", "feature.rs"));
+            }
+            let driver = Stub {
+                emits_by_spawn_id: emits,
+                ..session_stub(&[
+                    (adjudicator_at(0, 0), reject.as_str()),
+                    (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+                ])
+            };
+            let repo = temp_git_project_with_commit();
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo.path().to_str().unwrap().to_string(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_eq!(
+                rs.units["implement"].status,
+                ledger::Status::Integrated,
+                "{}",
+                row.name
+            );
+            let mut reviewed: Vec<String> = driver
+                .spawn_ids()
+                .into_iter()
+                .filter(|id| {
+                    spawn::attempt_of(id) == 1
+                        && spawn::review_step_of(spawn::spawn_role(id)).is_some()
+                })
+                .collect();
+            reviewed.sort();
+            let mut expected: Vec<String> = row
+                .runs
+                .iter()
+                .chain([&ROLE_ADJUDICATOR.to_string()])
+                .map(|role| spawn_id("implement", role, 1))
+                .collect();
+            expected.sort();
+            assert_eq!(reviewed, expected, "{}: round 1's spawns", row.name);
+            assert_eq!(
+                cached(&driver.reviews_by_spawn_id, &adjudicator_at(1, 0)),
+                Some(row.runs.clone()),
+                "{}: the adjudicator's roster is the members that ran",
+                row.name
+            );
+        }
+    }
+
     /// A list repeating the lens kind and the adversary kind, one agent in both adversary steps,
     /// the adjudicator step last: every shape a step token tells apart.
     fn repeated_kind_panel() -> config::ReviewPanel {
