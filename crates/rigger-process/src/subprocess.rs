@@ -11,20 +11,21 @@
 //! the arguments, the environment, the stdio and how the child is waited on, and a child is only
 //! ever ended through its own spawning handle.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A fresh command for `program`, inheriting this process's environment, working directory
 /// and stdio exactly as [`Command::new`] does. On Windows a program name holding no path
-/// separator is spawned at the path [`find_executable`] resolves it to over `PATH`, and as
-/// given when that resolves nothing; elsewhere `program` goes to [`Command::new`] unchanged.
+/// separator is spawned at the path [`find_executable`] resolves it to over
+/// [`SearchPath::ambient`], and as given when that resolves nothing; elsewhere `program` goes
+/// to [`Command::new`] unchanged.
 pub fn command(program: impl AsRef<OsStr>) -> Command {
     let program = program.as_ref();
     let resolved = if cfg!(windows) {
         program
             .to_str()
-            .and_then(|name| find_executable(&std::env::var_os("PATH").unwrap_or_default(), name))
+            .and_then(|name| find_executable(&SearchPath::ambient(), name))
     } else {
         None
     };
@@ -34,26 +35,47 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     }
 }
 
-/// The first executable regular file named `bin` inside a directory of `path_var` (a
-/// PATH-style, platform-separator-joined directory list from [`std::env::split_paths`]),
-/// checked in listed order. An empty or relative component is skipped, so every path
-/// answered is absolute. `bin` is a file name: one holding a path separator (`/`, and on
-/// Windows `\` too) names no file in a directory and finds nothing, and an empty one joins to
-/// the directory itself, which is no regular file. Each directory is tried with `bin` alone,
-/// and on Windows with each of [`pathext_candidates`] of `bin` over the environment's
-/// `PATHEXT` in turn, an unset `PATHEXT` reading as empty. Symlinks are followed (through
-/// [`is_executable_file`]'s `std::fs::metadata`), and a found symlink is answered at its own
-/// path.
-pub fn find_executable(path_var: &OsStr, bin: &str) -> Option<PathBuf> {
+/// Where a program name is looked up: `dirs`, a `PATH`-style directory list joined by the
+/// platform's separator, and `pathext`, a `PATHEXT`-style list of `;`-separated extensions,
+/// which only a Windows lookup reads.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SearchPath {
+    pub dirs: OsString,
+    pub pathext: String,
+}
+
+impl SearchPath {
+    /// This process's own `PATH` and `PATHEXT`, an unset one reading as empty: the one read of
+    /// the ambient search path, which a lookup that is handed no search path of its own goes
+    /// through.
+    pub fn ambient() -> Self {
+        Self {
+            dirs: std::env::var_os("PATH").unwrap_or_default(),
+            pathext: std::env::var("PATHEXT").unwrap_or_default(),
+        }
+    }
+}
+
+/// The first executable regular file named `bin` inside a directory of `search`'s `dirs` (split
+/// by [`std::env::split_paths`]), checked in listed order. An empty or relative component is
+/// skipped, so every path answered is absolute. `bin` is a file name: one holding a path
+/// separator (`/`, and on Windows `\` too) names no file in a directory and finds nothing, and an
+/// empty one joins to the directory itself, which is no regular file. Each directory is tried
+/// with `bin` alone, except on Windows, where it is tried instead with each of
+/// [`pathext_candidates`] of `bin` over `search`'s `pathext` in turn: a `bin` with no extension
+/// is never tried bare there, and an empty `pathext` leaves such a `bin` no candidate at all.
+/// Symlinks are followed (through [`is_executable_file`]'s `std::fs::metadata`), and a found
+/// symlink is answered at its own path.
+pub fn find_executable(search: &SearchPath, bin: &str) -> Option<PathBuf> {
     if bin.contains(|c| c == '/' || (cfg!(windows) && c == '\\')) {
         return None;
     }
     let candidates = if cfg!(windows) {
-        pathext_candidates(bin, &std::env::var("PATHEXT").unwrap_or_default())
+        pathext_candidates(bin, &search.pathext)
     } else {
         vec![bin.to_string()]
     };
-    std::env::split_paths(path_var)
+    std::env::split_paths(&search.dirs)
         .filter(|dir| dir.is_absolute())
         .flat_map(|dir| candidates.iter().map(move |name| dir.join(name)))
         .find(|candidate| is_executable_file(candidate))

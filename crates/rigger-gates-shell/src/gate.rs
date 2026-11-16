@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::process::Command;
 
 use crate::budget::BuildBudget;
-use crate::subprocess::{find_executable, inherit_on_exec, session_dir, shell_command};
+use crate::subprocess::{find_executable, inherit_on_exec, session_dir, shell_command, SearchPath};
 
 pub use rigger_domain::gate::*;
 
@@ -355,13 +355,13 @@ pub struct RequirementUnavailable {
     pub requirement: String,
 }
 
-/// The one requirement resolver (PATH as a value, and on Windows the environment's `PATHEXT`):
-/// every entry of every declared gate, in gate-id order and then list order, as written - a name
-/// listed twice resolves twice - each looked up through [`find_executable`]. The first entry that resolves to
+/// The one requirement resolver (the search path as a value): every entry of every declared
+/// gate, in gate-id order and then list order, as written - a name listed twice resolves twice -
+/// each looked up over `search` through [`find_executable`]. The first entry that resolves to
 /// nothing is the `Err`, so the success value holds resolved entries only.
 pub fn resolve_requirements(
     gates: &BTreeMap<String, rigger_domain::config::Gate>,
-    path_var: &std::ffi::OsStr,
+    search: &SearchPath,
 ) -> Result<Vec<GateRequirements>, RequirementUnavailable> {
     gates
         .iter()
@@ -370,7 +370,7 @@ pub fn resolve_requirements(
                 .requires
                 .iter()
                 .map(|name| {
-                    find_executable(path_var, name)
+                    find_executable(search, name)
                         .map(|at| ResolvedRequirement {
                             name: name.clone(),
                             at,
@@ -389,12 +389,12 @@ pub fn resolve_requirements(
         .collect()
 }
 
-/// The ambient-PATH edge of [`resolve_requirements`]: reads the real `PATH` once, here.
-/// `Config::validate` calls it last, once per validating load.
+/// The ambient edge of [`resolve_requirements`]: reads the real search path once, here,
+/// through [`SearchPath::ambient`]. `Config::validate` calls it last, once per validating load.
 pub fn resolve_requirements_on_path(
     gates: &BTreeMap<String, rigger_domain::config::Gate>,
 ) -> Result<Vec<GateRequirements>, RequirementUnavailable> {
-    resolve_requirements(gates, &std::env::var_os("PATH").unwrap_or_default())
+    resolve_requirements(gates, &SearchPath::ambient())
 }
 
 /// The env var [`ExecRunner::run`] pins to fence a gate's store resolution (spec 70
@@ -1675,8 +1675,12 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         path
     }
 
-    fn path_var(dirs: &[&std::path::Path]) -> std::ffi::OsString {
-        std::env::join_paths(dirs.iter().copied()).expect("join synthetic PATH")
+    /// A search path over `dirs`, in order, with no `PATHEXT`.
+    fn search_over(dirs: &[&std::path::Path]) -> SearchPath {
+        SearchPath {
+            dirs: std::env::join_paths(dirs.iter().copied()).expect("join synthetic PATH"),
+            ..SearchPath::default()
+        }
     }
 
     /// A gates map of `(gate id, requires)` pairs, every gate's command `true`.
@@ -1721,7 +1725,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             ("lint", &["tool-a"]),
         ]);
         assert_eq!(
-            resolve_requirements(&gates, &path_var(&[dir.path()])),
+            resolve_requirements(&gates, &search_over(&[dir.path()])),
             Ok(vec![
                 GateRequirements {
                     gate: "build".into(),
@@ -1747,7 +1751,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     #[test]
     fn resolve_requirements_of_no_gates_is_empty() {
         assert_eq!(
-            resolve_requirements(&gates_requiring(&[]), &path_var(&[])),
+            resolve_requirements(&gates_requiring(&[]), &search_over(&[])),
             Ok(vec![])
         );
     }
@@ -1761,7 +1765,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let only_in_second = write_executable(second.path(), "late-tool");
         let gates = gates_requiring(&[("sweep", &["tool", "late-tool"])]);
         assert_eq!(
-            resolve_requirements(&gates, &path_var(&[first.path(), second.path()])),
+            resolve_requirements(&gates, &search_over(&[first.path(), second.path()])),
             Ok(vec![GateRequirements {
                 gate: "sweep".into(),
                 requires: vec![
@@ -1781,7 +1785,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             ("alpha", &["present"]),
             ("beta", &["present", "missing-b1", "missing-b2"]),
         ]);
-        let err = resolve_requirements(&gates, &path_var(&[dir.path()]))
+        let err = resolve_requirements(&gates, &search_over(&[dir.path()]))
             .expect_err("a missing requirement refuses");
         assert_eq!(err, unavailable("beta", "missing-b1"));
         assert_eq!(
@@ -1795,7 +1799,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
     fn assert_requirement_missing(dir: &std::path::Path, name: &str, why: &str) {
         let gates = gates_requiring(&[("sweep", &[name])]);
         assert_eq!(
-            resolve_requirements(&gates, &path_var(&[dir])),
+            resolve_requirements(&gates, &search_over(&[dir])),
             Err(unavailable("sweep", name)),
             "{why}"
         );
@@ -1853,7 +1857,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         std::os::unix::fs::symlink(&target, &link).expect("symlink");
         let gates = gates_requiring(&[("sweep", &["tool"])]);
         assert_eq!(
-            resolve_requirements(&gates, &path_var(&[link_dir.path()])),
+            resolve_requirements(&gates, &search_over(&[link_dir.path()])),
             Ok(vec![GateRequirements {
                 gate: "sweep".into(),
                 requires: vec![resolved("tool", &link)],
@@ -1902,7 +1906,10 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
             "precondition: the stub is reachable through an empty component"
         );
         let absolute = tempfile::tempdir().expect("tempdir");
-        let path = std::ffi::OsString::from(format!("{}:", absolute.path().display()));
+        let path = SearchPath {
+            dirs: format!("{}:", absolute.path().display()).into(),
+            ..SearchPath::default()
+        };
         let gates = gates_requiring(&[("sweep", &[name.as_str()])]);
         assert_eq!(
             resolve_requirements(&gates, &path),
@@ -1931,14 +1938,20 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let (_dir, relative) = relative_dir_holding("tool");
         let gates = gates_requiring(&[("sweep", &["tool"])]);
         assert_eq!(
-            resolve_requirements(&gates, std::ffi::OsStr::new(&relative)),
+            resolve_requirements(
+                &gates,
+                &SearchPath {
+                    dirs: relative.into(),
+                    ..SearchPath::default()
+                }
+            ),
             Err(unavailable("sweep", "tool"))
         );
     }
 
     #[test]
     fn resolve_requirements_on_path_resolves_against_the_ambient_path() {
-        let ambient = std::env::var_os("PATH").unwrap_or_default();
+        let ambient = SearchPath::ambient();
         let nothing = gates_requiring(&[("sweep", &[])]);
         assert_eq!(
             resolve_requirements_on_path(&nothing),
