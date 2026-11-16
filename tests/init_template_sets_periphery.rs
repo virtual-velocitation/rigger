@@ -25,7 +25,7 @@ use common::fixtures::{
     agents_beside, dir_snapshot, sdet_author_seed, sorted_dir_names, stage_agents, write_files,
     LANGUAGE_NEUTRAL_IMPLEMENTER,
 };
-use common::fixtures::{RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
+use common::fixtures::{build_declaring, RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
 use common::repo::{collect_files, repo_root};
 use std::path::Path;
 
@@ -1434,15 +1434,7 @@ fn a_fresh_scaffold_declares_its_template_sets_build_environment() {
                 ok,
                 build_report_lines(&out),
             ),
-            (
-                1,
-                declared
-                    .iter()
-                    .map(|(name, value)| (name.to_string(), value.to_string()))
-                    .collect::<std::collections::BTreeMap<_, _>>(),
-                true,
-                report.to_vec(),
-            ),
+            (1, build_declaring(declared, 0).env, true, report.to_vec()),
             "{label}: the written `build.env`, the variables it loads declaring, and validate's \
              build lines; workflow:\n{workflow}\nstdout:\n{out}\nstderr:\n{err}"
         );

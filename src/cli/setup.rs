@@ -2511,8 +2511,8 @@ mod tests {
         CRITIQUE_METHOD, DOC_ONLY_ROUND_RULE, FAN_OUT_HEADING, GROUNDING_METHOD, HAND_OVER_HEADING,
         LOOKUP_METHOD, ONE_PASS_HEADING, WHEN_YOU_REVIEW, WHEN_YOU_REVIEW_HEADING,
     };
+    use crate::test_support::{build_declaring, RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
     use crate::test_support::{production_boundary, production_files};
-    use crate::test_support::{RUST_SET_ENV, RUST_SET_ENV_WRITTEN};
 
     rigger::test_cases! {
         /// `rigger setup` deletes what an earlier setup installed for an in-session driver rigger
@@ -5066,15 +5066,7 @@ mod tests {
                     written.matches("\nbuild:").count(),
                     cfg.workflow.build.env,
                 ),
-                (
-                    gate_set,
-                    1,
-                    1,
-                    declared
-                        .iter()
-                        .map(|(name, value)| (name.to_string(), value.to_string()))
-                        .collect::<std::collections::BTreeMap<_, _>>(),
-                ),
+                (gate_set, 1, 1, build_declaring(declared, 0).env),
                 "{label}: the written workflow declares the set's environment once, under its \
                  comment:\n{written}"
             );
