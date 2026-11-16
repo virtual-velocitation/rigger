@@ -6566,8 +6566,9 @@ mod tests {
         assert_section_belongs_to(HEADING, &["sdet.md"]);
         let flat = rigger::wave::normalize_ws(&committed_persona("sdet.md"));
         for wanted in [
-            "Read the unit's test hunks in the REVIEW PACKET beside the Done-when criteria the \
-             unit owns, and read each file it lists under ELIDED before you judge that file.",
+            "Read the unit's test hunks beside the Done-when criteria the unit owns: from the \
+             REVIEW PACKET when your prompt carries one, reading each file it lists under ELIDED \
+             before you judge that file, and from the change under review itself otherwise.",
             "A behaviour a criterion names that no test of the unit drives, or that a test drives \
              without an assertion a wrong change would break, is the missing test the review \
              rule blocks on: name the criterion, the behaviour and the test that would prove it.",
@@ -6627,9 +6628,9 @@ mod tests {
              bends a principle and breaks nothing, a note.",
             "A fact the unit's production delta spells a second time - a constant, list, closure \
              or predicate the tree already states - is a DRY finding raised as a note, citing \
-             both spellings' `file:line`: you read the unit's production hunks for it from the \
-             REVIEW PACKET, and no author record, the hand-over walk included, stands in for \
-             that read.",
+             both spellings' `file:line`: you read the unit's production hunks for it yourself, \
+             from the REVIEW PACKET when your prompt carries one, and no author record, the \
+             hand-over walk included, stands in for that read.",
         ] {
             assert!(
                 flat.contains(wanted),
@@ -6653,10 +6654,12 @@ mod tests {
         }
     }
 
-    /// The adjudicator's Constraints Recheck walks each of the spec's constraints over the REVIEW
-    /// PACKET its prompt carries, and leaves to their gates the mechanical checks the recheck once
-    /// ran by hand: no em dash is the `style` gate's and no new event type the
-    /// `no-new-event-type` gate's, so the recheck runs no standing item of its own.
+    /// The adjudicator's Constraints Recheck walks each of the spec's constraints over the change
+    /// under review - the REVIEW PACKET when its prompt carries one - and leaves to their gates the
+    /// mechanical checks the recheck once ran by hand: no em dash is the `style` gate's and no new
+    /// event type the `no-new-event-type` gate's, so the recheck runs no standing item of its own.
+    /// An event type that gate cannot see, a literal or a const of another name, is wrong code the
+    /// adjudicator rejects on its own line.
     #[test]
     fn the_adjudicator_rechecks_the_spec_constraints_over_the_packet_and_leaves_the_rest_to_gates()
     {
@@ -6664,8 +6667,12 @@ mod tests {
         for wanted in [
             "do not re-run what the gates already prove (fmt, clippy, build, test, style, \
              no-new-event-type).",
-            "For each listed constraint, walk the REVIEW PACKET, and each file it lists under \
-             ELIDED, and record an explicit pass or fail",
+            "For each listed constraint, walk the change under review - the REVIEW PACKET and \
+             each file it lists under ELIDED, when your prompt carries one - and record an \
+             explicit pass or fail",
+            "An event type the `no-new-event-type` gate cannot see - a string literal passed \
+             where an event type goes, or one held in a const not named `TYPE_<NAME>` - is wrong \
+             code whatever the spec says: a REJECT citing its file:line.",
         ] {
             assert!(flat.contains(wanted), "adjudicator.md must say {wanted:?}");
         }
