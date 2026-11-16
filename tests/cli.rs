@@ -4730,7 +4730,7 @@ fn a_spawn_the_api_refuses_holds_the_run_for_a_person_until_its_release() {
     );
     assert_eq!(
         closed_launches(root),
-        [first.clone()],
+        std::slice::from_ref(&first),
         "one launch, refused and never rerun; stderr: {err}"
     );
     let holds = run_holds(root);
