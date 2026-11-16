@@ -21,10 +21,15 @@
 #     destroyed the operator's whole desktop session seven-plus times; the review panel approved
 #     each site because nothing mechanical forbade it. Now something does.
 #   no-new-event-type: the event log's vocabulary stays closed. An event type is a
-#     `const TYPE_<NAME>: &str` in src/ or crates/; one the diff declares and does not also
-#     remove (a move between files) FAILS, naming it. A new fact rides an existing event type,
+#     `const TYPE_<NAME>: &str` in src/ or crates/, and its value is its name in the log. A
+#     declaration the diff adds passes when the base tree, or the lines the diff removes, already
+#     declare its value (a move, a rename, a second declaration) or the type it re-exports;
+#     one with any other value FAILS as a new event type, and a new value for an existing name
+#     FAILS as a re-valued one, naming it either way. A new fact rides an existing event type,
 #     as a status or a meta key, so every reader of the log, an older store's included, already
-#     knows its type. Test suites may declare their own.
+#     knows its type. In-crate test modules are covered like any other code; only the
+#     integration suites under tests/ may declare their own. An event type no `TYPE_` const
+#     names (a literal, a const of another name) is the review panel's to find.
 #
 # Usage: sh .rigger/gates/content.sh <style|no-os-kill|no-new-event-type> [base]
 # Which diff is checked is the caller's stage, and both forms take a three-dot diff to HEAD:
@@ -64,10 +69,29 @@ removed() {
     git diff "$base"...HEAD -- "$@" | grep "^-" | grep -v "^--- "
 }
 
-# The event type names (the `TYPE_<NAME>` of each `const TYPE_<NAME>: &`) on the lines read from
-# stdin, one per line, sorted and unique.
-event_types() {
-    grep -oE "const TYPE_[A-Z0-9_]+: &" | sed -e "s/^const //" -e "s/: &\$//" | sort -u
+# Each event type declaration (a `const TYPE_<NAME>: &`) on the lines read from stdin, one per line
+# as `TYPE_<NAME>`, a tab, and its value: the string literal it is declared as, quotes kept; for
+# any other right-hand side, such as a re-export, the `TYPE_` name it reads; or nothing when the
+# line holds neither.
+declarations() {
+    awk '{
+        if (!match($0, /const TYPE_[A-Z0-9_]+: &/)) next
+        name = substr($0, RSTART + 6, RLENGTH - 9)
+        rest = substr($0, RSTART + RLENGTH)
+        value = ""
+        if (match(rest, /=[ \t]*"[^"]*"/)) {
+            value = substr(rest, RSTART, RLENGTH)
+            sub(/^=[ \t]*/, "", value)
+        } else if (match(rest, /TYPE_[A-Z0-9_]+/)) {
+            value = substr(rest, RSTART, RLENGTH)
+        }
+        print name "\t" value
+    }'
+}
+
+# The lines read from stdin, sorted, unique and joined with ", ".
+joined() {
+    sort -u | awk '{ printf "%s%s", (NR > 1 ? ", " : ""), $0 }'
 }
 
 case "$check" in
@@ -101,15 +125,44 @@ no-os-kill)
     fi
     ;;
 no-new-event-type)
-    gone=$(removed src crates | event_types)
-    new=""
-    for name in $(added src crates | event_types); do
-        printf '%s\n' "$gone" | grep -qxF "$name" || new="$new${new:+, }$name"
-    done
+    # Each declaration the diff adds, judged against every one the base tree holds or the diff
+    # removes: a literal value must be one already declared, and one already declared for its
+    # name when the name is known; any other right-hand side must re-export a known type, or the
+    # name itself must be known. A literal that passes makes its name known to a re-export.
+    verdicts=$({
+        {
+            git grep --no-color -h -E "const TYPE_[A-Z0-9_]+: &" "$base" -- src crates
+            removed src crates
+        } | declarations | awk '{ print "known\t" $0 }'
+        added src crates | declarations | awk '{ print "added\t" $0 }'
+    } | awk -F '\t' '
+        $1 == "known" {
+            names[$2] = 1
+            if ($3 ~ /^"/) { values[$3] = 1; valued[$2 "\t" $3] = 1; literal[$2] = 1 }
+            next
+        }
+        { n++; name[n] = $2; value[n] = $3 }
+        END {
+            for (i = 1; i <= n; i++) {
+                if (value[i] !~ /^"/) continue
+                if (literal[name[i]] && !valued[name[i] "\t" value[i]]) print "revalued\t" name[i]
+                else if (!values[value[i]]) print "new\t" name[i]
+                else names[name[i]] = 1
+            }
+            for (i = 1; i <= n; i++) {
+                if (value[i] ~ /^"/ || names[name[i]] || (value[i] != "" && names[value[i]])) continue
+                print "new\t" name[i]
+            }
+        }')
+    new=$(printf '%s\n' "$verdicts" | awk -F '\t' '$1 == "new" { print $2 }' | joined)
+    revalued=$(printf '%s\n' "$verdicts" | awk -F '\t' '$1 == "revalued" { print $2 }' | joined)
     if [ -n "$new" ]; then
         echo "no-new-event-type gate FAILED: the diff declares a new event type ($new); carry the fact on an existing event type, as a status or a meta key"
-        exit 1
     fi
+    if [ -n "$revalued" ]; then
+        echo "no-new-event-type gate FAILED: the diff changes the value of an existing event type ($revalued); every log already written names it by its value, so keep the value"
+    fi
+    if [ -n "$new$revalued" ]; then exit 1; fi
     ;;
 *)
     echo "usage: sh .rigger/gates/content.sh <style|no-os-kill|no-new-event-type> [base]" >&2
