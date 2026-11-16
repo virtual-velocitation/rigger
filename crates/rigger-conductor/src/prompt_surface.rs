@@ -420,7 +420,7 @@ pub const DAG_CRITIQUE_OPENER: &str = "You are the plan-critique gate. Review th
 pub const DAG_UNITS_HEADER: &str = "Proposed units:\n";
 
 /// FRAMING: one proposed unit's row: its `{name}`, its escaped `{criterion}`, its `{needs}` and
-/// its blast `{radius}`.
+/// its blast `{radius}`, a [`DAG_FILE_LIST`].
 pub const DAG_UNIT_ROW: &str =
     "- `{name}`: criterion=\"{criterion}\"; needs=[{needs}]; blast radius=[{radius}]\n";
 
@@ -433,24 +433,62 @@ pub const DAG_NO_NEEDS: &str = "none";
 /// FRAMING: what fills a unit row's `{radius}` when no file was grounded.
 pub const DAG_NO_RADIUS: &str = "(none grounded)";
 
+/// FRAMING: a list of files: their `{count}`, the `{files}` it names and `{more}`, which holds
+/// [`DAG_FILES_MORE`] when it names fewer files than it counts, else nothing.
+pub const DAG_FILE_LIST: &str = "{count} file(s): {files}{more}";
+
+/// FRAMING: how many files, `{rest}`, a [`DAG_FILE_LIST`] counts and does not name.
+pub const DAG_FILES_MORE: &str = " (+{rest} more)";
+
 /// FRAMING: the overlap line printed only when no two units share a file.
 pub const DAG_OVERLAP_DISJOINT: &str = "\nBlast-radius overlap (informational): every proposed \
      unit has a DISJOINT blast radius.\n";
 
-/// FRAMING: the overlap header printed when two units share a file and `partition:
-/// by-blast-radius` is in force for each unit of every overlapping pair.
-pub const DAG_OVERLAP_HEADER: &str = "\nBlast-radius overlap (informational - the partitioner \
-     serializes these into sequential batches):\n";
+/// FRAMING: the overlap line printed when two units share a file and `needs` orders every two
+/// units that do.
+pub const DAG_OVERLAP_ORDERED: &str = "\nBlast-radius overlap (informational): every two \
+     proposed units that share a file are ordered by `needs`, directly or through other units, so \
+     no two of them run side by side.\n";
 
-/// FRAMING: the overlap header printed instead of [`DAG_OVERLAP_HEADER`] when two units share a
-/// file and `partition: by-blast-radius` is not in force for each of them.
+/// FRAMING: the overlap header printed when two units that share a file run side by side and
+/// `partition: by-blast-radius` is in force for each unit of every such pair.
+pub const DAG_OVERLAP_HEADER: &str = "\nBlast-radius overlap (informational - the partitioner \
+     serializes these into sequential batches; a pair ordered by `needs`, directly or through \
+     other units, is not listed):\n";
+
+/// FRAMING: the overlap header printed instead of [`DAG_OVERLAP_HEADER`] when `partition:
+/// by-blast-radius` is not in force for each unit of every such pair.
 pub const DAG_OVERLAP_UNSERIALIZED_HEADER: &str = "\nBlast-radius overlap (informational - \
      `partition: by-blast-radius` is not in force for these units, so units sharing a file run \
-     side by side unless one `needs` the other):\n";
+     side by side unless one `needs` the other, directly or through other units; only the pairs \
+     that run side by side are listed):\n";
 
-/// FRAMING: one conflicting pair, units `{a}` and `{other}` and the files `{shared}` they both
-/// touch.
-pub const DAG_OVERLAP_ROW: &str = "- units `{a}` and `{other}` both touch: {shared}\n";
+/// FRAMING: the one row of the files in the blast radius of `{least}` or more of the plan's
+/// `{units}` proposed units, a [`DAG_FILE_LIST`] in `{files}`, which the pair rows leave out.
+pub const DAG_OVERLAP_COMMON_ROW: &str = "- in the blast radius of {least} or more of the {units} \
+     proposed units, so left out of the pair rows below: {files}\n";
+
+/// FRAMING: one pair of units that share a file and run side by side, `{a}` and `{other}`, and
+/// what they both touch, `{shared}`: a [`DAG_FILE_LIST`] of the files outside the common row, or
+/// [`DAG_OVERLAP_ONLY_COMMON`].
+pub const DAG_OVERLAP_ROW: &str = "- units `{a}` and `{other}` both touch {shared}\n";
+
+/// FRAMING: what fills a pair row's `{shared}` when the pair shares only files the common row
+/// lists.
+pub const DAG_OVERLAP_ONLY_COMMON: &str = "only files the common row lists";
+
+/// FRAMING: the row counting the `{elided}` side-by-side pairs the overlap block's byte budget
+/// leaves out.
+pub const DAG_OVERLAP_ELIDED: &str = "- (+{elided} more side-by-side pair(s), sharing the fewest \
+     files, elided to keep this prompt under budget)\n";
+
+/// FRAMING: how to read what the plan critique's file lists, each naming at most `{named}` files,
+/// and its overlap block leave out, printed only when they leave any out; [`LOOKUP_VERBS`]
+/// follows.
+pub const DAG_OVERLAP_RECOVERY: &str = "\nEach file list above names at most {named} files, those \
+     the fewest proposed units hold first, and counts the rest. A unit's blast radius is grounded \
+     from its criterion, so read the files a list leaves out, or the overlap of an elided pair, by \
+     looking up that criterion's terms or a named file through the knowledge graph's lookup verbs: ";
 
 /// CONTRACT: the verdict line and the cause contract a plan critique's reject follows,
 /// `{spec_ambiguity}` holding the spec-ambiguity cause and `{size_cap_cause}`
@@ -598,10 +636,18 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             DAG_NO_CRITERION,
             DAG_NO_NEEDS,
             DAG_NO_RADIUS,
+            DAG_FILE_LIST,
+            DAG_FILES_MORE,
             DAG_OVERLAP_DISJOINT,
+            DAG_OVERLAP_ORDERED,
             DAG_OVERLAP_HEADER,
             DAG_OVERLAP_UNSERIALIZED_HEADER,
+            DAG_OVERLAP_COMMON_ROW,
             DAG_OVERLAP_ROW,
+            DAG_OVERLAP_ONLY_COMMON,
+            DAG_OVERLAP_ELIDED,
+            DAG_OVERLAP_RECOVERY,
+            LOOKUP_VERBS,
             DAG_CRITIQUE_CONTRACT,
             DAG_SIZE_CAP_CAUSE,
         ],
@@ -663,11 +709,18 @@ mod tests {
         ("CONFLICT_RESOLUTION", "FRAMING"),
         ("DAG_CRITIQUE_CONTRACT", "CONTRACT"),
         ("DAG_CRITIQUE_OPENER", "FRAMING"),
+        ("DAG_FILES_MORE", "FRAMING"),
+        ("DAG_FILE_LIST", "FRAMING"),
         ("DAG_NO_CRITERION", "FRAMING"),
         ("DAG_NO_NEEDS", "FRAMING"),
         ("DAG_NO_RADIUS", "FRAMING"),
+        ("DAG_OVERLAP_COMMON_ROW", "FRAMING"),
         ("DAG_OVERLAP_DISJOINT", "FRAMING"),
+        ("DAG_OVERLAP_ELIDED", "FRAMING"),
         ("DAG_OVERLAP_HEADER", "FRAMING"),
+        ("DAG_OVERLAP_ONLY_COMMON", "FRAMING"),
+        ("DAG_OVERLAP_ORDERED", "FRAMING"),
+        ("DAG_OVERLAP_RECOVERY", "FRAMING"),
         ("DAG_OVERLAP_ROW", "FRAMING"),
         ("DAG_OVERLAP_UNSERIALIZED_HEADER", "FRAMING"),
         ("DAG_PRIOR_REJECT", "FRAMING"),
