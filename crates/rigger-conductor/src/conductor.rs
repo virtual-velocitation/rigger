@@ -21677,6 +21677,145 @@ mod tests {
         }
     }
 
+    /// What the conductor resolves for one implementer unit from the settings a fan-out template
+    /// may declare: its review panel (its debug rendering, so every part of the panel counts),
+    /// its attempt bound, whether its gate pauses for a human, and its speculation width.
+    #[derive(Debug, PartialEq)]
+    struct UnitSettings {
+        review: String,
+        max_retries: u32,
+        paused: bool,
+        speculation_width: u32,
+    }
+
+    /// The settings the conductor resolves, through the same calls a run makes, for the two units
+    /// `cfg`'s fan-out `implement` template yields over criteria A and B: the baseline unit
+    /// serving A, then `u-b`, a planner-proposed unit superseding B's baseline.
+    fn resolved_unit_settings(cfg: &Config) -> [UnitSettings; 2] {
+        let (crit_a, crit_b) = (
+            "criterion A: the alpha module is implemented",
+            "criterion B: the beta module is implemented",
+        );
+        let criteria = vec![crit_a.to_string(), crit_b.to_string()];
+        let mut stages = cfg.workflow.stages.clone();
+        let template = stages.remove("implement").unwrap();
+        stages.extend(baseline_units(&template, &criteria, Some("plan")));
+        let store = Store::open(":memory:").unwrap();
+        append_proposal(&store, "u-b", crit_b, &criterion_stable_id(2, crit_b), None);
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, criteria);
+        let ctx = RunCtx::for_test(cfg, &deps);
+        ctx.harvest_proposed(
+            &mut stages,
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+            &mut HashSet::new(),
+        )
+        .unwrap();
+        [(baseline_id(1, crit_a), true), ("u-b".to_string(), false)].map(|(id, baseline)| {
+            let unit = &stages[&id];
+            assert_eq!(
+                unit.baseline, baseline,
+                "{id} must be a baseline: {baseline}"
+            );
+            UnitSettings {
+                review: format!("{:?}", ctx.select_review_panel(unit, &[], false).panel),
+                max_retries: ctx.max_retries_for(&id, unit),
+                paused: ctx.stage_paused_for_review(unit),
+                speculation_width: ctx.effective_speculation_width(unit),
+            }
+        })
+    }
+
+    /// A review panel of the one `lens`.
+    fn panel_of(lens: &str) -> crate::config::ReviewPanel {
+        crate::config::ReviewPanel {
+            lenses: vec![lens.into()],
+            ..Default::default()
+        }
+    }
+
+    /// A fan-out template declaring `declared` (a review lens, an attempt bound, an autonomy and a
+    /// speculation width, each empty or zero when it declares none), under run defaults that
+    /// differ from every declared value, gives its baseline unit and its planner-proposed unit
+    /// alike the `expected` (lens, attempt bound, paused, speculation width).
+    fn template_settings_reach_every_unit(
+        declared: (&str, u32, &str, u32),
+        expected: (&str, u32, bool, u32),
+    ) {
+        let mut cfg = supersede_cfg();
+        let defaults = &mut cfg.workflow.defaults;
+        defaults.review = panel_of("default-lens");
+        defaults.max_retries = 4;
+        defaults.autonomy = "silent".into();
+        defaults.speculation_width = 2;
+        let template = cfg.workflow.stages.get_mut("implement").unwrap();
+        let (lens, max_retries, autonomy, speculation_width) = declared;
+        if !lens.is_empty() {
+            template.review = panel_of(lens);
+        }
+        template.max_retries = max_retries;
+        template.autonomy = autonomy.into();
+        template.speculation_width = speculation_width;
+        let (lens, max_retries, paused, speculation_width) = expected;
+        let want = UnitSettings {
+            review: format!("{:?}", panel_of(lens)),
+            max_retries,
+            paused,
+            speculation_width,
+        };
+        for (unit, got) in ["the baseline", "the proposed"]
+            .iter()
+            .zip(resolved_unit_settings(&cfg))
+        {
+            assert_eq!(
+                got, want,
+                "{unit} unit of a template declaring {declared:?}"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        /// The template's own review panel, not `defaults.review`.
+        a_templates_review_panel_reaches_its_baseline_and_proposed_units:
+            template_settings_reach_every_unit(
+                ("template-lens", 0, "", 0),
+                ("template-lens", 4, false, 2),
+            );
+        /// The template's own attempt bound, not `defaults.max_retries`.
+        a_templates_max_retries_reaches_its_baseline_and_proposed_units:
+            template_settings_reach_every_unit(("", 5, "", 0), ("default-lens", 5, false, 2));
+        /// The template's own autonomy: `manual` pauses each unit's gate for a human.
+        a_templates_autonomy_reaches_its_baseline_and_proposed_units:
+            template_settings_reach_every_unit(("", 0, "manual", 0), ("default-lens", 4, true, 2));
+        /// The template's own speculation width, not `defaults.speculation_width`.
+        a_templates_speculation_width_reaches_its_baseline_and_proposed_units:
+            template_settings_reach_every_unit(("", 0, "", 3), ("default-lens", 4, false, 3));
+        /// A template declaring none of the four leaves both units on the run defaults.
+        a_template_declaring_no_unit_settings_leaves_its_units_on_the_defaults:
+            template_settings_reach_every_unit(("", 0, "", 0), ("default-lens", 4, false, 2));
+    }
+
+    /// This repository's own workflow, whose `implement` template declares none of the four
+    /// settings, gives its baseline and proposed units exactly the defaults it declares: the
+    /// `defaults.review` panel, 6 attempts, a gate that never pauses, one candidate.
+    #[test]
+    fn this_repositorys_workflow_gives_its_units_its_defaults() {
+        let cfg = config_store::load("../..").expect("the repo's own .rigger config must load");
+        let want = UnitSettings {
+            review: format!("{:?}", cfg.workflow.defaults.review),
+            max_retries: 6,
+            paused: false,
+            speculation_width: 1,
+        };
+        for (unit, got) in ["the baseline", "the proposed"]
+            .iter()
+            .zip(resolved_unit_settings(&cfg))
+        {
+            assert_eq!(got, want, "{unit} unit of this repository's workflow");
+        }
+    }
+
     #[test]
     fn harvest_proposed_gate_inheritance_survives_a_resumed_window() {
         // spec 103 criterion 1: "a resumed window re-derives the same list." The
