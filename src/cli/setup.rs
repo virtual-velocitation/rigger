@@ -832,14 +832,12 @@ impl CodeStoreOpened {
 pub(crate) fn open_project_code_store(
     mode: rigger_store::code::Mode,
 ) -> Result<Option<CodeStoreOpened>, String> {
-    use rigger_domain::code_view::CodeView;
     let site = Site::here();
     let store = project_code_store(&site)?;
     let tree = site.tree()?;
-    let before = store.in_force()?;
     let opened = store.open(mode)?;
     Ok(Some(CodeStoreOpened {
-        moved: before.as_ref() != Some(opened.view.stamp()),
+        moved: opened.moved,
         behind: opened.behind.as_ref().map(ToString::to_string),
         stamp_line: Box::new(move || format!("code store: {}", store.label(&opened, &tree))),
     }))

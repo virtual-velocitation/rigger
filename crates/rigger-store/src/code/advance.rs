@@ -433,12 +433,17 @@ impl fmt::Display for Behind {
     }
 }
 
-/// The snapshot a caller reads, the head it was asked for, and why the two differ when they do.
+/// The snapshot a caller reads, the head it was asked for, why the two differ when they do, and
+/// whether the open moved the snapshot in force.
 pub struct Opened {
     pub view: Snapshot,
     pub head: Tip,
     /// None when the view describes the head.
     pub behind: Option<Behind>,
+    /// Whether the view is another snapshot than the one in force when the open first read the
+    /// store: the store advanced to the head, from another tip or from none, by this open or by
+    /// the writer whose lock it waited on.
+    pub moved: bool,
 }
 
 /// The view of the head of the project at `root`, advancing the store first when the snapshot
@@ -503,6 +508,7 @@ pub(crate) fn open_current_in(
                 view,
                 head,
                 behind: None,
+                moved: false,
             });
         }
         other => other,
@@ -514,6 +520,7 @@ pub(crate) fn open_current_in(
                 view,
                 head,
                 behind: None,
+                moved: false,
             })
         }
         other => other,
@@ -529,16 +536,20 @@ pub(crate) fn open_current_in(
         Ok(None) => Err(Behind::AdvanceInFlight),
         Err(e) => Err(Behind::CannotWrite(e)),
     };
+    // The snapshot read first was none or described another tip than the head, so an advanced
+    // view, which describes the head, is always another snapshot.
     match (advanced, current) {
         (Ok(view), _) => Ok(Opened {
             view,
             head,
             behind: None,
+            moved: true,
         }),
         (Err(behind), Some(view)) => Ok(Opened {
             view,
             head,
             behind: Some(behind),
+            moved: false,
         }),
         (Err(behind), None) => Err(behind.to_string()),
     }
@@ -548,6 +559,7 @@ pub(crate) fn open_current_in(
 mod tests {
     use super::*;
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
+    use crate::code::DirTreeSource;
     use crate::format::{Container, WriteLock};
     use rigger_domain::code_facts::FileFacts;
     use rigger_domain::code_view::{CodeView, Groupings};
@@ -1549,7 +1561,8 @@ mod tests {
     }
 
     /// A snapshot the source says the checkout is still at answers without the source being
-    /// asked for its head; once the checkout moves, the head is asked and the store advances.
+    /// asked for its head, and without moving; once the checkout moves, the head is asked and the
+    /// store advances, moving the snapshot in force as the first open from none did.
     #[test]
     fn a_snapshot_the_checkout_is_still_at_answers_without_asking_the_head() {
         let root = tempfile::tempdir().unwrap();
@@ -1558,13 +1571,20 @@ mod tests {
         let (extract, group) = (ToyExtract::new(FP), CountingGroup::default());
         let first = source.commit("c1", A);
         let opened = open_current_in(&store, &source, &extract, &group, Mode::Read).unwrap();
-        assert_eq!((opened.head, source.heads_asked()), (first.clone(), 1));
+        assert_eq!(
+            (opened.head, opened.moved, source.heads_asked()),
+            (first.clone(), true, 1)
+        );
         let again = open_current_in(&store, &source, &extract, &group, Mode::Read).unwrap();
         assert_eq!(
             (&again.head, again.view.stamp().tip.clone()),
             (&first, first.clone())
         );
         assert!(again.behind.is_none());
+        assert!(
+            !again.moved,
+            "the snapshot still at the checkout stays in force"
+        );
         assert_eq!(
             source.heads_asked(),
             1,
@@ -1573,8 +1593,30 @@ mod tests {
         let second = source.commit("c2", B);
         let moved = open_current_in(&store, &source, &extract, &group, Mode::Read).unwrap();
         assert_eq!(
-            (moved.view.stamp().tip.clone(), source.heads_asked()),
-            (second, 2)
+            (
+                moved.view.stamp().tip.clone(),
+                moved.moved,
+                source.heads_asked()
+            ),
+            (second, true, 2)
+        );
+    }
+
+    /// A source that cannot say the checkout is still at a tip (a directory's, which keeps the
+    /// trait's answer) is asked for its head, and a snapshot describing that head answers without
+    /// moving: only the first open, from none, moves the snapshot in force.
+    #[test]
+    fn a_snapshot_describing_the_head_answers_without_moving() {
+        let (store_root, project) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(project.path().join("a.rs"), "def alpha\n").unwrap();
+        let store = Store::new(store_root.path());
+        let source = DirTreeSource::new(project.path());
+        let (extract, group) = (ToyExtract::new(FP), CountingGroup::default());
+        let first = open_current_in(&store, &source, &extract, &group, Mode::Read).unwrap();
+        let again = open_current_in(&store, &source, &extract, &group, Mode::Read).unwrap();
+        assert_eq!(
+            (first.moved, again.moved, again.view.stamp()),
+            (true, false, first.view.stamp())
         );
     }
 
@@ -1726,7 +1768,7 @@ mod tests {
     }
 
     /// Each row: the mode, whether another writer holds the lock, whether writes fail, and the
-    /// stamp and label the reader answers with.
+    /// stamp and label the reader answers with, and whether the open moved the snapshot in force.
     #[test]
     fn open_current_falls_back_to_the_labelled_stamp_when_it_cannot_write() {
         let in_flight = Some(Behind::AdvanceInFlight);
@@ -1739,6 +1781,7 @@ mod tests {
                 false,
                 "c1",
                 in_flight,
+                false,
             ),
             (
                 "a reader on a read-only store",
@@ -1747,6 +1790,7 @@ mod tests {
                 true,
                 "c1",
                 cannot.clone(),
+                false,
             ),
             (
                 "a writer on a read-only store",
@@ -1755,6 +1799,7 @@ mod tests {
                 true,
                 "c1",
                 cannot,
+                false,
             ),
             (
                 "a reader with the lock free",
@@ -1763,6 +1808,7 @@ mod tests {
                 false,
                 "c2",
                 None,
+                true,
             ),
             (
                 "a writer with the lock free",
@@ -1771,9 +1817,10 @@ mod tests {
                 false,
                 "c2",
                 None,
+                true,
             ),
         ];
-        for (name, mode, held, read_only, answered, behind) in cases {
+        for (name, mode, held, read_only, answered, behind, moved) in cases {
             let root = tempfile::tempdir().unwrap();
             let source = MemSource::default();
             let group = CountingGroup::default();
@@ -1800,6 +1847,7 @@ mod tests {
                 "{name}: the stamp answered from"
             );
             assert_eq!(opened.head, head, "{name}: head");
+            assert_eq!(opened.moved, moved, "{name}: moved");
             let label = match opened.behind {
                 Some(Behind::CannotWrite(e)) if e.contains("read-only") => {
                     Some(Behind::CannotWrite("read-only".into()))
