@@ -22,6 +22,7 @@ use common::cli::{
     cargo_project, failure_line, loaded_config, refusal_line, run_rigger, run_rigger_ok,
     temp_project, wall_clock_advisory_lines,
 };
+use common::cli::{config_valid_lines, fresh_scaffold_valid_line};
 use common::fixtures::REFUSED_DECLARATIONS;
 use common::fixtures::{
     agents_beside, dir_snapshot, sdet_author_seed, sorted_dir_names, stage_agents, write_files,
@@ -314,9 +315,7 @@ fn init_matching_no_set_prints_the_no_set_line_and_writes_a_gateless_workflow() 
         "rigger validate accepts the no-set scaffold; stderr:\n{warned}"
     );
     assert!(
-        validated
-            .lines()
-            .any(|l| l == "config valid: 7 agents, 4 stages, 0 gates"),
+        validated.lines().any(|l| l == fresh_scaffold_valid_line(0)),
         "stdout:\n{validated}"
     );
     assert!(
@@ -372,13 +371,6 @@ fn fresh_scaffolds() -> [FreshScaffold; 4] {
             5,
         ),
     ]
-}
-
-/// The `config valid:` lines of `rigger validate`'s stdout `out`.
-fn config_valid_lines(out: &str) -> Vec<&str> {
-    out.lines()
-        .filter(|l| l.starts_with("config valid:"))
-        .collect()
 }
 
 /// Given a fresh project, when the operator runs `rigger setup` naming no template root, `rigger
@@ -482,7 +474,7 @@ fn a_fresh_scaffold_seeds_the_test_author_it_declares_and_keeps_a_projects_own()
                     Some("sdet-author"),
                     models.map(Some),
                     true,
-                    vec![format!("config valid: 7 agents, 4 stages, {gates} gates").as_str()],
+                    vec![fresh_scaffold_valid_line(gates).as_str()],
                 ),
                 "{label}, the project's own agent {own:?}: stdout:\n{out}\nstderr:\n{err}"
             );
@@ -979,9 +971,7 @@ fn init_rerun_on_a_rust_project_writes_back_only_a_deleted_set_file() {
 
     let validated = run_rigger_ok(dir.path(), &["validate"]);
     assert!(
-        validated
-            .lines()
-            .any(|l| l == "config valid: 7 agents, 4 stages, 5 gates"),
+        validated.lines().any(|l| l == fresh_scaffold_valid_line(5)),
         "stdout:\n{validated}"
     );
 }

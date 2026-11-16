@@ -2645,6 +2645,18 @@ pub fn build_report_lines(stdout: &str) -> Vec<&str> {
 /// none declared, then the default budget of 4.
 pub const UNDECLARED_BUILD_REPORT: &[&str] = &["build env: none declared", "build budget: 4"];
 
+/// The `config valid:` lines of `stdout`, what `rigger validate` printed there, in order.
+pub fn config_valid_lines(stdout: &str) -> Vec<&str> {
+    lines_where(stdout, |line| line.starts_with("config valid:"))
+}
+
+/// The `config valid:` line `rigger validate` prints over a fresh scaffold whose workflow
+/// declares `gates` gates: its seven agents, the six role seeds and the `sdet-author` test author,
+/// and its four stages.
+pub fn fresh_scaffold_valid_line(gates: usize) -> String {
+    format!("config valid: 7 agents, 4 stages, {gates} gates")
+}
+
 /// The lines of `text` that `keep` admits, in order: the one picker of the lines a command
 /// printed that a test compares.
 pub fn lines_where(text: &str, keep: impl Fn(&str) -> bool) -> Vec<&str> {

@@ -1510,15 +1510,15 @@ fn a_stage_of_no_steps_inherits_the_default_list_and_a_stage_list_replaces_it() 
 fn a_workflow_rigger_init_renders_validates_as_the_canonical_sequence_with_or_without_gates() {
     let template = repo_root();
     for (project, summary) in [
-        (temp_project(), "config valid: 7 agents, 4 stages, 0 gates"),
-        (cargo_project(), "config valid: 7 agents, 4 stages, 5 gates"),
+        (temp_project(), common::cli::fresh_scaffold_valid_line(0)),
+        (cargo_project(), common::cli::fresh_scaffold_valid_line(5)),
     ] {
         run_rigger_ok(
             project.path(),
             &["init", "--template", template.to_str().unwrap()],
         );
         let out = run_rigger_ok(project.path(), &["validate"]);
-        assert_eq!(out.lines().nth(1), Some(summary));
+        assert_eq!(out.lines().nth(1), Some(summary.as_str()));
         assert_eq!(
             loaded_config(project.path())
                 .workflow

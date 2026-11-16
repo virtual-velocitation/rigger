@@ -13476,11 +13476,11 @@ fn validate_warns_when_a_gating_roles_bound_resolves_to_zero() {
         });
         assert_eq!(
             (
-                out.lines().find(|line| line.starts_with("config valid")),
+                common::cli::config_valid_lines(&out),
                 common::cli::wall_clock_advisory_lines(&err),
             ),
             (
-                Some("config valid: 7 agents, 4 stages, 0 gates"),
+                vec![common::cli::fresh_scaffold_valid_line(0).as_str()],
                 named
                     .then(|| common::fixtures::wall_clock_advisory_naming("\"adjudicator\""))
                     .iter()
