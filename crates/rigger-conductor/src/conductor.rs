@@ -47599,6 +47599,68 @@ mod tests {
         );
     }
 
+    /// A UNIT WORKTREE THAT CANNOT BE MADE IS THE CONDUCTOR'S FAULT: a `Worktree::create` that
+    /// fails at a unit's own path (here a dangling symlink occupying it, which no leftover clear
+    /// sees and `git worktree add` refuses as already existing) halts the run naming the fault,
+    /// records no lesson against the unit, charges it no attempt, and holds the run for a person.
+    #[test]
+    #[cfg(unix)]
+    fn a_unit_worktree_that_cannot_be_made_halts_with_no_lesson_and_holds_the_run() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "unit-a");
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &dir).unwrap();
+
+        let Err(err) = run_isolated(&cfg, &deps) else {
+            panic!("a unit worktree that cannot be made halts the run");
+        };
+        let _ = std::fs::remove_file(&dir);
+        assert!(
+            err.0.contains("already exists") && !err.0.contains('\u{1}'),
+            "the halt names git's refusal, its marker stripped: {}",
+            err.0
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let charged = [
+            contextgraph::TYPE_LESSON_LEARNED,
+            ledger::TYPE_UNIT_FAILED,
+            ledger::TYPE_UNIT_ESCALATED,
+        ];
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| charged.contains(&e.type_.as_str()))
+                .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                .collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "no lesson against the unit and no attempt charged"
+        );
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&err.0)],
+            "the fault holds the run for a person, naming it"
+        );
+    }
+
     #[test]
     fn conflict_regenerate_pending_from_log_re_derives_the_union_keyed_by_unit_and_attempt() {
         // spec 88, criterion 1, round 2 (crash-resume recovery for adv-u88c1r1-crash-resume-
