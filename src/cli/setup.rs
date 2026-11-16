@@ -4045,10 +4045,17 @@ mod tests {
     /// project's own `.gitignore` ignores each file rigger writes at run time by the line naming
     /// its class, and none of the project's configuration, which stays tracked. Each row is a
     /// path and the `.gitignore` pattern git reports ignoring it, as written, or `None` for a
-    /// path no rule ignores.
+    /// path no rule ignores. The scratch fallback's and the playbook pool's rows are built from
+    /// the names the code that writes them reads, so renaming either directory turns its row red.
     #[test]
     fn a_new_project_ignores_riggers_runtime_files_by_class_and_keeps_its_configuration() {
-        let rows: [(&str, Option<&str>); 26] = [
+        let scratch = format!(
+            "{RIGGER_DIR}/{}",
+            rigger::worktree::REPOSITORY_SCRATCH_SUBDIR
+        );
+        let pool = format!("{RIGGER_DIR}/{}", rigger::playbooks::POOL_SUBDIR);
+        let (in_scratch, in_pool) = (format!("{scratch}/x"), format!("{pool}/x"));
+        let rows: [(&str, Option<&str>); 27] = [
             (".claude/settings.json", Some(".claude")),
             (".rigger/events.db", Some(".rigger/*.db")),
             (".rigger/events.db-wal", Some(".rigger/*.db-wal")),
@@ -4058,14 +4065,15 @@ mod tests {
             (".rigger/progress.db", Some(".rigger/*.db")),
             (".rigger/step.lock", Some(".rigger/*.lock")),
             (".rigger/store/x", Some(".rigger/store")),
-            (".rigger/tmp/x", Some(".rigger/tmp")),
-            (".rigger/playbooks/x", Some(".rigger/playbooks")),
+            (&in_scratch, Some(&scratch)),
+            (&in_pool, Some(&pool)),
             (".rigger/dash.url", Some(".rigger/dash.url")),
             (".rigger/dash.marker", Some(".rigger/dash.marker")),
             (".rigger/dash.attempt", Some(".rigger/dash.attempt")),
             (".rigger/driver.out", Some(".rigger/driver.out")),
             (".rigger/store.conn", Some(".rigger/store.conn")),
             (".rigger/events.db.bak-x", Some(".rigger/*.bak-*")),
+            (".rigger/events.db.bak", Some(".rigger/*.db.*")),
             (".rigger/graph.db.rebuild", Some(".rigger/*.db.*")),
             (".rigger/graph.db.rebuild-wal", Some(".rigger/*.db.*")),
             (".rigger/graph.db.pruned", Some(".rigger/*.db.*")),

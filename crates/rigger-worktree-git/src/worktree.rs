@@ -2850,6 +2850,10 @@ pub fn scratch_root_path(repo: &str, configured: &str, env_override: Option<&str
     )
 }
 
+/// The directory under the repository's `.rigger/` that holds the scratch root when there is no
+/// cache home to key it on ([`scratch_root_path`]'s homeless degrade): `<repo>/.rigger/tmp`.
+pub const REPOSITORY_SCRATCH_SUBDIR: &str = "tmp";
+
 /// [`scratch_root_path`] with the caller's own `XDG_CACHE_HOME` value and home directory as
 /// plain arguments - the pure resolver both [`scratch_root_path`] and [`scratch_root_with`]
 /// share.
@@ -2880,7 +2884,7 @@ pub fn scratch_root_path_with(
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_else(|| {
                     format!(
-                        "{}/{RIGGER_DIR}/tmp",
+                        "{}/{RIGGER_DIR}/{REPOSITORY_SCRATCH_SUBDIR}",
                         if repo.is_empty() { "." } else { repo }
                     )
                 }),
