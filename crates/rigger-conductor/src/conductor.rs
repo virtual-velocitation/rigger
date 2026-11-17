@@ -840,11 +840,13 @@ impl GreenDigests {
     /// Read the GateVerdicts appended to `store`'s run stream since the last join and admit them.
     fn join(&self, store: &dyn EventStore, key: &VerdictKey) -> Result<(), Error> {
         let mut joined_to = self.joined_to.lock().unwrap();
-        let fresh = store.read_stream_typed(
-            STREAM,
-            *joined_to,
-            crate::eventstore::TypeSelection::Only(&[contextgraph::TYPE_GATE_VERDICT]),
-        )?;
+        let fresh = store
+            .read_stream_typed(
+                STREAM,
+                *joined_to,
+                crate::eventstore::TypeSelection::Only(&[contextgraph::TYPE_GATE_VERDICT]),
+            )
+            .map_err(infra_fault)?;
         if let Some(last) = fresh.last() {
             *joined_to = last.revision + 1;
         }
@@ -2905,9 +2907,10 @@ fn without_halt_markers(e: Error) -> Error {
 const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
 
 /// `fault` as an infra halt ([`INFRA_MARKER`]): the isolation guard refusing a reviewer's or a
-/// conflict resolver's working directory, or the run branch moving under every landing pass.
-/// Its text, the marker stripped, is the text the fault had unmarked, so the run's fault hold
-/// reads the same detail.
+/// conflict resolver's working directory, the run branch moving under every landing pass, or
+/// the store failing a read or a write of the run, or holding a record of it the run cannot
+/// read. Its text, the marker stripped, is the text the fault had unmarked, so the run's fault
+/// hold reads the same detail.
 fn infra_fault(fault: impl std::fmt::Display) -> Error {
     marked(INFRA_MARKER, fault)
 }
@@ -4282,7 +4285,9 @@ impl RunCtx<'_> {
                 &self.run_id,
                 &before,
                 &after,
-            )? {
+            )
+            .map_err(infra_fault)?
+            {
                 (self.deps.log)(&format!(
                     "rigger: the run landed a definition change; re-pinned run {} from {before} \
                      to {after}",
@@ -4319,9 +4324,9 @@ impl RunCtx<'_> {
         // [`crate::eventstore::Appended::one`], the same authority every other single-event
         // append in the codebase asks, and surfaces as the lost write it is.
         let what = format!("the {} of this run on {STREAM:?}", ev.type_);
-        Ok(self
-            .append_and_fold_batch(std::slice::from_ref(&ev))?
-            .one(&what)?)
+        self.append_and_fold_batch(std::slice::from_ref(&ev))?
+            .one(&what)
+            .map_err(infra_fault)
     }
 
     /// The conductor's batched event-mutation authority: append a whole slice of already-built
@@ -4349,11 +4354,10 @@ impl RunCtx<'_> {
         // it could not make is said through the injected log, never swallowed. A run wired to no
         // graph - an offline replay's isolated re-drive - folds nothing by design and has nothing
         // to say. Both are the one folding store's, which every other writer of a verb uses too.
-        Ok(self.deps.folding().append(
-            STREAM,
-            crate::eventstore::ExpectedRevision::Any,
-            &stamped,
-        )?)
+        self.deps
+            .folding()
+            .append(STREAM, crate::eventstore::ExpectedRevision::Any, &stamped)
+            .map_err(infra_fault)
     }
 
     /// `event` as this run appends it: stamped with the run id, or as it is when the run id is
@@ -4398,7 +4402,9 @@ impl RunCtx<'_> {
     /// lands nothing, and the refusal is the callback's error, so it is the spawn's, marked
     /// with [`EMIT_REFUSED_MARKER`]: the implementer's attempt is charged with it, and every
     /// other author's spawn re-runs once told why ([`rerun_once_on_refusal`]); neither is rerun
-    /// as infra.
+    /// as infra. A store fault appending it reaches the spawn as its text alone, its
+    /// [`infra_fault`] marker stripped: the agent and the driver read the store's words, and the
+    /// spawn's failure is handled as the driver's own error.
     fn emit_agent(
         &self,
         type_: &str,
@@ -4408,7 +4414,9 @@ impl RunCtx<'_> {
         let ev = event_with_meta(type_, payload, stamps)?;
         (self.deps.check_emit)(self.deps.store, STREAM, &ev)
             .map_err(|refusal| Error(format!("{EMIT_REFUSED_MARKER}{refusal}")))?;
-        self.append_and_fold(ev).map(|_| ())
+        self.append_and_fold(ev)
+            .map(|_| ())
+            .map_err(without_halt_markers)
     }
 
     /// Emit an event IDEMPOTENTLY under a deterministic replay `key` (spec 04, criterion
@@ -4481,7 +4489,7 @@ impl RunCtx<'_> {
         }
         let written = self.append_and_fold_batch(&fresh)?.written();
         if written != fresh.len() {
-            return Err(Error(format!(
+            return Err(infra_fault(format!(
                 "{} of {} keyed events of this run were not recorded on {STREAM:?}",
                 fresh.len() - written,
                 fresh.len()
@@ -4733,7 +4741,9 @@ impl RunCtx<'_> {
     /// own events from its boundary - never the whole log. The one read every run-scoped fold of
     /// this context takes.
     fn read_current_run(&self) -> Result<Vec<Event>, Error> {
-        Ok(crate::run::read::read_current_run(self.deps.store, STREAM)?.0)
+        crate::run::read::read_current_run(self.deps.store, STREAM)
+            .map(|(events, _)| events)
+            .map_err(infra_fault)
     }
 
     /// The missed handover of author spawn `id`'s `result`, naming the author `who`, when it did
@@ -4760,7 +4770,8 @@ impl RunCtx<'_> {
                 spawn::TYPE_SPAWN_REQUESTED,
                 spawn::TYPE_SPAWN_RESULT,
             ],
-        )?;
+        )
+        .map_err(infra_fault)?;
         let recorded = spawn::recorded_request_lenient(&events, id);
         if author_handed_over(result, recorded.as_ref().map(|req| req.prompt.as_str())) {
             return Ok(None);
@@ -5052,7 +5063,9 @@ impl RunCtx<'_> {
     /// run drives on beside it.
     fn answer_gate_request(&self, request: GateRequest) -> GateReply {
         self.gate_request(&request)
-            .unwrap_or_else(|e| GateReply::Refused { reason: e.0 })
+            .unwrap_or_else(|e| GateReply::Refused {
+                reason: without_halt_markers(e).0,
+            })
     }
 
     /// [`answer_gate_request`](RunCtx::answer_gate_request), its refusal as the error.
@@ -7273,7 +7286,7 @@ impl RunCtx<'_> {
                 // with the notes the run's review upheld, read from the log at stage entry. A
                 // later attempt answers its gates, as every stage's does.
                 if attempts == 0 && is_check_in(st, &self.cfg.workflow.stages) {
-                    let notes = run_notes(&events).map_err(|e| Error(e.to_string()))?;
+                    let notes = run_notes(&events).map_err(infra_fault)?;
                     prompt.push_str(&notes_block(&notes));
                 }
                 // An implementer is an author: its prompt and its resumed task end with the
@@ -9481,7 +9494,7 @@ impl RunCtx<'_> {
     fn review_spawn_errored(&self, id: &str) -> Result<bool, Error> {
         let events = self.read_current_run()?;
         Ok(spawn::result_of(&events, id)
-            .map_err(|e| Error(e.to_string()))?
+            .map_err(infra_fault)?
             .is_some_and(|res| res.is_error() && !res.is_liveness_fault()))
     }
 
@@ -9546,7 +9559,7 @@ impl RunCtx<'_> {
         // in-process observation stands.
         let events = self.read_current_run()?;
         let replayed = spawn::result_of(&events, id)
-            .map_err(|e| Error(e.to_string()))?
+            .map_err(infra_fault)?
             .is_some();
         Ok(!replayed)
     }
@@ -13081,11 +13094,14 @@ impl RunCtx<'_> {
     /// history the cross-run criterion reads ([`prior_criterion_unit`], [`recorded_adoption`],
     /// [`landed_criterion_unit`]) fold, and never a prior run's other events (spec 101).
     fn read_lifecycle(&self) -> Result<Vec<Event>, Error> {
-        Ok(self.deps.store.read_stream_typed(
-            STREAM,
-            0,
-            crate::eventstore::TypeSelection::Only(&crate::run::read::ADOPTION_TYPES),
-        )?)
+        self.deps
+            .store
+            .read_stream_typed(
+                STREAM,
+                0,
+                crate::eventstore::TypeSelection::Only(&crate::run::read::ADOPTION_TYPES),
+            )
+            .map_err(infra_fault)
     }
 
     /// Land stage `st` with no spawn when an earlier run of this run's spec already integrated
@@ -48281,24 +48297,46 @@ mod tests {
     }
 
     /// AN INFRASTRUCTURE FAILURE NAMES NO UNIT: a failure of the run's infrastructure that ends a
-    /// stage - a standalone review stage's lens crashing, which no infra retry reruns - halts the
-    /// run with the failure's text as it was, records no lesson against the unit, charges no
-    /// attempt, and holds the run naming it.
+    /// stage - the store refusing a record of the run, or a standalone review stage's lens
+    /// crashing, which no infra retry reruns - halts the run with the failure's text as it was,
+    /// records no lesson against the unit, charges no attempt, and holds the run naming it.
     #[test]
     fn an_infrastructure_failure_halts_with_no_lesson_and_holds_the_run() {
         #[derive(Debug, Clone, Copy)]
         enum Failure {
+            /// The store refuses the unit's `verified` status.
+            StoreFault,
             /// The standalone review stage's one lens crashes.
             ReviewCrash,
         }
+        const VERIFIED: &str = r#""status":"verified""#;
         // Each row: the failure, and the text the run halts with.
-        let cases = [(
-            Failure::ReviewCrash,
-            r#"stage "review" lens "lens": simulated mid-spawn crash"#.to_string(),
-        )];
+        let cases = [
+            (
+                Failure::StoreFault,
+                crate::eventstore::Error::Backend(format!(
+                    "simulated store failure appending an event containing {VERIFIED:?}"
+                ))
+                .to_string(),
+            ),
+            (
+                Failure::ReviewCrash,
+                r#"stage "review" lens "lens": simulated mid-spawn crash"#.to_string(),
+            ),
+        ];
         for (failure, fault) in cases {
             // The run's result and the store its log is read from.
             let (halted, log) = match failure {
+                Failure::StoreFault => {
+                    let real = Store::open(":memory:").unwrap();
+                    let store = FailingStore {
+                        inner: &real,
+                        fail_containing: VERIFIED,
+                    };
+                    let driver = Stub::answering(r#"{"verdict":"approve"}"#);
+                    let deps = stub_deps(&store, &driver, Vec::new());
+                    (run_isolated(&per_unit_panel_cfg(None), &deps), real)
+                }
                 Failure::ReviewCrash => {
                     let driver = Stub {
                         fail_spawn_ids: review_lens_ids(&["lens"]),
