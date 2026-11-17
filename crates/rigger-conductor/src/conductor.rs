@@ -54765,6 +54765,68 @@ mod tests {
         );
     }
 
+    /// A PLAN-CRITIQUE HALT REACHES THE OPERATOR UNMARKED: a gate adjudicator that returns only
+    /// empty output, or that twice exits with no verdict line, halts the run at the gate before
+    /// any unit is implemented - the halt naming the reviewer and carrying no halt marker, no
+    /// lesson recorded, no attempt charged, and the run held for a person on the halt's text.
+    #[test]
+    fn a_plan_critique_halt_reaches_the_operator_unmarked_and_holds_the_run() {
+        for (row, judge, names, spawns) in [
+            (
+                "degenerate",
+                "  \n ",
+                "stage \"plan-critique\" adjudicator \"judge\" returned empty",
+                3,
+            ),
+            (
+                "verdictless",
+                WAITING_NARRATION,
+                "stage \"plan-critique\" adjudicator \"judge\": the reviewer exited with no \
+                 verdict line",
+                2,
+            ),
+        ] {
+            let st = Store::open(":memory:").unwrap();
+            let driver = Stub {
+                emits_by_agent: HashMap::from([("planner".to_string(), widget_split())]),
+                output_by_agent: HashMap::from([
+                    ("adversary".to_string(), "reviewed the dag".to_string()),
+                    ("judge".to_string(), judge.to_string()),
+                ]),
+                ..Stub::new()
+            };
+            let Err(err) = critique_step_under(&critique_cfg(), &st, &driver) else {
+                panic!("{row}: the gate's halt halts the run");
+            };
+            assert!(
+                err.0.starts_with(names) && HALT_MARKERS.iter().all(|m| !err.0.contains(m)),
+                "{row}: the halt names its reviewer and carries no marker: {:?}",
+                err.0
+            );
+            assert_eq!(
+                (
+                    occurrences(&driver.call_order, "judge"),
+                    occurrences(&driver.call_order, "worker")
+                ),
+                (spawns, 0),
+                "{row}: the adjudicator's spawns, and no unit implemented"
+            );
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert!(
+                !charged_an_attempt(&events)
+                    && !events
+                        .iter()
+                        .any(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED),
+                "{row}: no attempt charged and no lesson recorded"
+            );
+            assert_eq!(
+                holds_in(&events),
+                [conductor_fault_hold(&err.0)],
+                "{row}: the run is held for a person on the halt's text"
+            );
+        }
+    }
+
     #[test]
     fn a_resumed_step_holds_the_fan_out_while_the_plan_critique_gate_is_mid_review() {
         // The OTHER held arm (spec 10, done-when 1): a gate parked MID-REVIEW - the
