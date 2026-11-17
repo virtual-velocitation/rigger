@@ -2101,4 +2101,89 @@ mod tests {
             }
         }
     }
+
+    /// NEAR FOLDS QUALIFIED CALLERS (spec 117, RESOLVER AT READ): a call written `Q::leaf` whose
+    /// qualifier keeps one candidate lands on it EXTRACTED from any file, so `--around` that
+    /// candidate ([`crate::contextgraph::around`]) over a neighbourhood ([`Composed::near`])
+    /// answers what it answers over the whole graph ([`Composed::new`]), the caller in another
+    /// file included. Each row, over the resolver's narrowing fixture: what the answer shows, the
+    /// filter, the seed and the `CALLS` edges into it the whole graph draws, the product caller
+    /// `Composed::open` of `FactsView::new` and the test caller `opens` of `FactsView::files`,
+    /// beside `Composed::open`, whose `CodeView::files` keeps it among several candidates and is
+    /// walked up through their placeholder.
+    #[test]
+    fn near_folds_qualified_callers() {
+        use crate::contextgraph::{around, REL_CALLS, TIER_EXTRACTED};
+        use crate::resolve::tests::narrowing_fixture;
+        use crate::test_support::edge;
+        let view = narrowing_fixture();
+        let records = Indexed::default();
+        let honesty = || Honesty {
+            worktree: "wt".into(),
+            compared: Compared::Overlaid(0),
+            behind: None,
+        };
+        let (new, open) = (
+            "src/code_view.rs::FactsView::new",
+            "src/composed.rs::Composed::open",
+        );
+        let (files, opens) = ("src/code_view.rs::FactsView::files", "tests/open.rs::opens");
+        let cases = [
+            (
+                "a product caller in another file",
+                Tests::Exclude,
+                new,
+                vec![edge(open, new, REL_CALLS, TIER_EXTRACTED)],
+            ),
+            (
+                "a product caller in another file, tests shown",
+                Tests::Include,
+                new,
+                vec![edge(open, new, REL_CALLS, TIER_EXTRACTED)],
+            ),
+            (
+                "a product caller of a product definition, neither shown with tests alone",
+                Tests::Only,
+                new,
+                vec![],
+            ),
+            (
+                "a test caller in another file hidden, a caller through a placeholder shown",
+                Tests::Exclude,
+                files,
+                vec![edge(open, files, REL_CALLS, TIER_INFERRED)],
+            ),
+            (
+                "a test caller in another file, tests shown",
+                Tests::Include,
+                files,
+                vec![
+                    edge(opens, files, REL_CALLS, TIER_EXTRACTED),
+                    edge(open, files, REL_CALLS, TIER_INFERRED),
+                ],
+            ),
+            (
+                "a test caller in another file, tests alone",
+                Tests::Only,
+                files,
+                vec![edge(opens, files, REL_CALLS, TIER_EXTRACTED)],
+            ),
+        ];
+        for (shows, tests, seed, want) in cases {
+            let filter = ViewFilter { tests };
+            let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
+            let near = Composed::near(&records, &view, filter, honesty()).unwrap();
+            let seed = [seed.to_string()];
+            let at = format!("{tests:?} {}: {shows}", seed[0]);
+            let drawn = around(&whole, &seed, 2).unwrap();
+            let callers: Vec<Edge> = (drawn.graph.edges.iter())
+                .filter(|e| e.rel == REL_CALLS && e.to == seed[0])
+                .cloned()
+                .collect();
+            same!(callers, want, "whole {at}");
+            let got = around(&near, &seed, 2).unwrap();
+            same!(got.graph, drawn.graph, "near {at}");
+            assert_eq!(got.tests_hidden, drawn.tests_hidden, "near {at}");
+        }
+    }
 }
