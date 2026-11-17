@@ -91,8 +91,9 @@
 //! recycled pid can never reach upward into the process tree running rigger itself.
 
 use crate::os_process;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// How long a well-behaved process is given to exit on SIGTERM before it is SIGKILLed.
 /// Short: teardown is on the hot path (every unit worktree removal), and a process that
@@ -247,12 +248,19 @@ fn descendants_of(root_pid: u32) -> Vec<Identity> {
 }
 
 /// The descendants of `root_pid` in `table`, children before grandchildren and each generation in
-/// the table's order: empty when the table does not list `root_pid`. A process is kept only if it
-/// started no earlier than the parent it names, because a Windows entry keeps a dead parent's pid
-/// and Windows may give that pid to a later process; a process failing that test is no descendant,
-/// and nor is anything below it. `seen` (the root included) ends the walk on a cycle, which the
-/// OS's own parent/child relationship should never produce but the walk must survive.
-fn descendants_in(table: &[os_process::Entry], root_pid: u32) -> Vec<Identity> {
+/// the table's order ([`generations_in`]).
+pub(crate) fn descendants_in(table: &[os_process::Entry], root_pid: u32) -> Vec<Identity> {
+    generations_in(table, root_pid).concat()
+}
+
+/// The descendants of `root_pid` in `table`, one list per generation, its children first, each
+/// generation in the table's order: empty when the table does not list `root_pid`. A process is
+/// kept only if it started no earlier than the parent it names, because a Windows entry keeps a
+/// dead parent's pid and Windows may give that pid to a later process; a process failing that test
+/// is no descendant, and nor is anything below it. `seen` (the root included) ends the walk on a
+/// cycle, which the OS's own parent/child relationship should never produce but the walk must
+/// survive.
+fn generations_in(table: &[os_process::Entry], root_pid: u32) -> Vec<Vec<Identity>> {
     let Some(root) = table.iter().find(|entry| entry.pid == root_pid) else {
         return Vec::new();
     };
@@ -260,22 +268,30 @@ fn descendants_in(table: &[os_process::Entry], root_pid: u32) -> Vec<Identity> {
     for entry in table {
         children_of.entry(entry.parent).or_default().push(entry);
     }
-    let mut out = Vec::new();
+    let mut generations = Vec::new();
     let mut seen: HashSet<u32> = HashSet::from([root_pid]);
-    let mut frontier = VecDeque::from([root]);
-    while let Some(parent) = frontier.pop_front() {
-        for &kid in children_of.get(&parent.pid).into_iter().flatten() {
-            if kid.start < parent.start || !seen.insert(kid.pid) {
-                continue;
+    let mut parents = vec![root];
+    while !parents.is_empty() {
+        let mut generation = Vec::new();
+        let mut next = Vec::new();
+        for parent in parents {
+            for &kid in children_of.get(&parent.pid).into_iter().flatten() {
+                if kid.start < parent.start || !seen.insert(kid.pid) {
+                    continue;
+                }
+                generation.push(Identity {
+                    pid: kid.pid,
+                    start: kid.start,
+                });
+                next.push(kid);
             }
-            out.push(Identity {
-                pid: kid.pid,
-                start: kid.start,
-            });
-            frontier.push_back(kid);
         }
+        if !generation.is_empty() {
+            generations.push(generation);
+        }
+        parents = next;
     }
-    out
+    generations
 }
 
 /// Whether `pid` is EVER eligible to be signalled by the reaper, independent of cwd/base:
@@ -355,16 +371,8 @@ enum Signal {
     /// End the process without asking (`SIGKILL` on unix).
     Hard,
     /// Freeze the process (`SIGSTOP` on unix).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the ends that send it land next")
-    )]
     Stop,
     /// Let a frozen process run again (`SIGCONT` on unix).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the ends that send it land next")
-    )]
     Resume,
 }
 
@@ -400,7 +408,8 @@ fn os_call(signal: Signal, pid: u32) -> Option<OsCall> {
             let signal = match signal {
                 Signal::Term => rustix::process::Signal::TERM,
                 Signal::Hard => rustix::process::Signal::KILL,
-                Signal::Stop | Signal::Resume => return None,
+                Signal::Stop => rustix::process::Signal::STOP,
+                Signal::Resume => rustix::process::Signal::CONT,
             };
             Some((rpid, signal))
         }
@@ -460,7 +469,21 @@ fn send_signal(signal: Signal, pid: u32) {
 
 /// How long an end waits for what it froze to stop and for what it ended to be gone, all its
 /// generations together.
-pub const END_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+pub const END_BOUND: Duration = Duration::from_secs(5);
+
+/// How often an end reads again what it froze or ended.
+const POLL: Duration = Duration::from_millis(10);
+
+/// The least time an end gives each generation, and the main, to be gone once [`END_BOUND`] is
+/// spent, so a generation that comes after a slow one is still confirmed.
+const FLOOR: Duration = Duration::from_millis(100);
+
+/// How many parent links [`chain_reaches`] reads before it answers that the chain does not reach.
+const CHAIN_STEPS: usize = 4096;
+
+/// Whether this OS freezes a process ([`Signal::Stop`]); where it does not, an end ends a tree
+/// without freezing it first, and confirms no freeze.
+const FREEZES: bool = cfg!(unix);
 
 /// A process an end left running, or never signalled.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -471,6 +494,17 @@ pub struct Leftover {
     pub program: String,
     /// Whether it is still frozen: the end froze it, could not end it, and could not resume it.
     pub stopped: bool,
+}
+
+impl Leftover {
+    /// `pid` as a leftover, named by its command as it reads now.
+    fn of(pid: u32, stopped: bool) -> Leftover {
+        Leftover {
+            pid,
+            program: os_process::command(pid),
+            stopped,
+        }
+    }
 }
 
 /// What an end left: `residue`, the processes it signalled that are still running past
@@ -484,10 +518,18 @@ pub struct EndReport {
     pub skipped: Vec<Leftover>,
 }
 
+impl EndReport {
+    /// Report `pid` as found and never signalled, once.
+    fn skip(&mut self, pid: u32) {
+        if !self.skipped.iter().any(|leftover| leftover.pid == pid) {
+            self.skipped.push(Leftover::of(pid, false));
+        }
+    }
+}
+
 /// The two OS facilities an end uses, so a test can add a stranger to the table it walks or keep
 /// one signal from landing. The checks every signal passes first read the live OS and are never
 /// part of this.
-#[expect(dead_code, reason = "the ends that call it land next")]
 trait EndOs {
     /// The process table ([`crate::os_process::table`]).
     fn table(&mut self) -> Vec<os_process::Entry>;
@@ -508,19 +550,126 @@ impl EndOs for LiveOs {
     }
 }
 
-/// Whether `pid`'s live parent chain reaches `root`.
-#[expect(dead_code, reason = "the ends that call it land next")]
+/// Whether `pid`'s live parent chain ([`crate::os_process::parent`]) reaches `root`.
 fn chain_reaches(pid: u32, root: u32) -> bool {
     chain_reaches_with(pid, root, os_process::parent)
 }
 
-/// [`chain_reaches`] over the parent reader `parent`.
+/// [`chain_reaches`] over the parent reader `parent`: whether a parent of `pid`, or a parent of
+/// one of those, is `root`, read at most [`CHAIN_STEPS`] links up. The walk stops at pid 1 or 0
+/// and at a parent it cannot read, answering that the chain does not reach; a `root` of 1 or 0 is
+/// never reached, and nor is `pid` itself, since no process is its own descendant.
 fn chain_reaches_with(pid: u32, root: u32, parent: impl Fn(u32) -> Option<u32>) -> bool {
-    let _ = (pid, root, parent);
-    todo!("the chain check")
+    if root <= 1 {
+        return false;
+    }
+    let mut current = pid;
+    for _ in 0..CHAIN_STEPS {
+        match parent(current) {
+            Some(next) if next == root => return true,
+            Some(next) if next > 1 => current = next,
+            _ => return false,
+        }
+    }
+    false
 }
 
-/// End the process tree under the held child `main`.
+/// The tree an end signals into: its root, and this process and its ancestors, which no end ever
+/// signals.
+struct Tree {
+    root: u32,
+    self_pid: u32,
+    self_ancestors: HashSet<u32>,
+}
+
+impl Tree {
+    /// The tree under `root`, as this process signals into it.
+    fn rooted_at(root: u32) -> Tree {
+        let self_pid = std::process::id();
+        Tree {
+            root,
+            self_pid,
+            self_ancestors: ancestor_pids(self_pid),
+        }
+    }
+
+    /// Send `signal` to `target` through `os`, only if, read right now, `target`'s parent chain
+    /// still reaches the root ([`chain_reaches`]) and its pid still names the process the walk
+    /// found ([`toctou_still_same_process`]). Answers whether it was sent: a process that fails
+    /// either check is never signalled.
+    fn send(&self, os: &mut impl EndOs, signal: Signal, target: &Identity) -> bool {
+        let holds = chain_reaches(target.pid, self.root)
+            && toctou_still_same_process(target, self.self_pid, &self.self_ancestors);
+        if holds {
+            os.send(signal, target.pid);
+        }
+        holds
+    }
+
+    /// Walk the root's descendants in `os`'s table and send `signal` to each through
+    /// [`Tree::send`], reporting skipped each one it refuses, once, and never sending again to one
+    /// already reported. Answers the walk.
+    fn signal_walk(
+        &self,
+        os: &mut impl EndOs,
+        report: &mut EndReport,
+        signal: Signal,
+    ) -> Vec<Identity> {
+        let walk = descendants_in(&os.table(), self.root);
+        for target in &walk {
+            let skipped = report.skipped.iter().any(|left| left.pid == target.pid);
+            if !skipped && !self.send(os, signal, target) {
+                report.skip(target.pid);
+            }
+        }
+        walk
+    }
+}
+
+/// Whether `target` is still running: its pid still names it and it has not exited. A process
+/// that has exited and is not yet reaped has closed every descriptor it held.
+fn running(target: &Identity) -> bool {
+    still_started(target.pid, target.start) && os_process::state(target.pid) != Some('Z')
+}
+
+/// Whether `pid` is frozen, has exited, or is gone.
+fn frozen_or_gone(pid: u32) -> bool {
+    matches!(os_process::state(pid), Some('T' | 't' | 'Z') | None)
+}
+
+/// Reads `done` every [`POLL`] until it holds or `deadline` passes; whether it held.
+fn poll_until(deadline: Instant, mut done: impl FnMut() -> bool) -> bool {
+    loop {
+        if done() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(POLL);
+    }
+}
+
+/// End the process tree under the held child `main`, which this process spawned and has not yet
+/// reaped. `remembered` are the processes a watch of the tree saw while it ran.
+///
+/// The main is frozen first, then every process the walk ([`generations_in`]) finds under it,
+/// parents before children, walking again until a walk finds nothing new or the bound passes, so a
+/// member that is never frozen (an OS with no freeze) cannot keep the end walking: a frozen process
+/// can neither fork nor exit, so every parent chain stays whole while the end runs. Every process
+/// the end froze is then ended one generation at a time, by its depth when it was frozen, the
+/// deepest first, each confirmed gone before its parents are ended, and the main last, reaped
+/// through its handle. No process is asked to exit first: one that exited on asking would leave
+/// its children to an ancestor outside the tree, where no chain reaches them.
+///
+/// Every signal to a process other than the main passes [`Tree::send`]'s checks; the main is
+/// signalled through the pid its unreaped handle keeps its own. A process the checks refuse, and
+/// a remembered one still running outside the tree, is reported skipped and never signalled. A
+/// process still running past [`END_BOUND`] is resumed and reported as residue. One the checks
+/// refuse once frozen, whose parent exited unfrozen and left it outside the tree, is reported
+/// still frozen: no signal leaves the tree, a resume among them. A main that has already exited
+/// is reaped and nothing is signalled: what it left has a parent outside the tree, and its pid may
+/// name another process.
 pub fn end_watched(main: &mut std::process::Child, remembered: &[Identity]) -> EndReport {
     end_watched_with(&mut LiveOs, main, remembered, END_BOUND)
 }
@@ -530,13 +679,93 @@ fn end_watched_with(
     os: &mut impl EndOs,
     main: &mut std::process::Child,
     remembered: &[Identity],
-    bound: std::time::Duration,
+    bound: Duration,
 ) -> EndReport {
-    let _ = (os, main, remembered, bound);
-    todo!("the watched end")
+    let mut report = EndReport::default();
+    let deadline = Instant::now() + bound;
+    if !matches!(main.try_wait(), Ok(None)) {
+        for target in remembered {
+            if running(target) {
+                report.skip(target.pid);
+            }
+        }
+        return report;
+    }
+    let main_pid = main.id();
+    let tree = Tree::rooted_at(main_pid);
+    os.send(Signal::Stop, main_pid);
+    if FREEZES {
+        poll_until(deadline, || frozen_or_gone(main_pid));
+    }
+    let mut frozen: HashSet<Identity> = HashSet::new();
+    let mut by_depth: Vec<Vec<Identity>> = Vec::new();
+    loop {
+        let mut new = Vec::new();
+        for (depth, generation) in generations_in(&os.table(), main_pid).iter().enumerate() {
+            for target in generation {
+                let skipped = report.skipped.iter().any(|left| left.pid == target.pid);
+                if frozen.contains(target) || skipped {
+                    continue;
+                }
+                if tree.send(os, Signal::Stop, target) {
+                    frozen.insert(*target);
+                    if by_depth.len() <= depth {
+                        by_depth.resize_with(depth + 1, Vec::new);
+                    }
+                    by_depth[depth].push(*target);
+                    new.push(target.pid);
+                } else {
+                    report.skip(target.pid);
+                }
+            }
+        }
+        if new.is_empty() || Instant::now() >= deadline {
+            break;
+        }
+        if FREEZES {
+            poll_until(deadline, || new.iter().all(|&pid| frozen_or_gone(pid)));
+        }
+    }
+    for generation in by_depth.iter().rev() {
+        let mut ended = Vec::new();
+        for target in generation {
+            if tree.send(os, Signal::Hard, target) {
+                ended.push(*target);
+            } else if running(target) {
+                report.residue.push(Leftover::of(target.pid, FREEZES));
+            }
+        }
+        let generation_deadline = deadline.max(Instant::now() + FLOOR);
+        poll_until(generation_deadline, || !ended.iter().any(running));
+        for target in ended.iter().filter(|target| running(target)) {
+            let resumed = tree.send(os, Signal::Resume, target);
+            report
+                .residue
+                .push(Leftover::of(target.pid, FREEZES && !resumed));
+        }
+    }
+    if matches!(main.try_wait(), Ok(None)) {
+        os.send(Signal::Hard, main_pid);
+    }
+    let main_deadline = deadline.max(Instant::now() + FLOOR);
+    if !poll_until(main_deadline, || !matches!(main.try_wait(), Ok(None))) {
+        os.send(Signal::Resume, main_pid);
+        report.residue.push(Leftover::of(main_pid, false));
+    }
+    for target in remembered {
+        if !frozen.contains(target) && running(target) {
+            report.skip(target.pid);
+        }
+    }
+    report
 }
 
-/// End every descendant of this process.
+/// End every descendant of this process: the keeper's end, where every orphan of the tree it
+/// keeps reparents to it, so every descendant's parent chain reaches it. `graceful` first asks
+/// each to exit and waits up to [`GRACE`] for them; then each one a walk finds is ended, walking
+/// again until `children_left` answers that no child is left, or [`END_BOUND`] passes, when what
+/// is still running is reported as residue. Every signal passes [`Tree::send`]'s checks; a process
+/// they refuse is reported skipped and never signalled.
 pub fn end_own_descendants(graceful: bool, children_left: impl FnMut() -> bool) -> EndReport {
     end_descendants_with(
         &mut LiveOs,
@@ -552,11 +781,30 @@ fn end_descendants_with(
     os: &mut impl EndOs,
     root: u32,
     graceful: bool,
-    children_left: impl FnMut() -> bool,
-    bound: std::time::Duration,
+    mut children_left: impl FnMut() -> bool,
+    bound: Duration,
 ) -> EndReport {
-    let _ = (os, root, graceful, children_left, bound);
-    todo!("the end of a root's own descendants")
+    let mut report = EndReport::default();
+    let deadline = Instant::now() + bound;
+    let tree = Tree::rooted_at(root);
+    if graceful {
+        tree.signal_walk(os, &mut report, Signal::Term);
+        let grace_end = Instant::now() + GRACE;
+        poll_until(grace_end, || !children_left());
+    }
+    while children_left() {
+        let walk = tree.signal_walk(os, &mut report, Signal::Hard);
+        if Instant::now() >= deadline {
+            for target in walk.iter().filter(|target| running(target)) {
+                if !report.skipped.iter().any(|left| left.pid == target.pid) {
+                    report.residue.push(Leftover::of(target.pid, false));
+                }
+            }
+            break;
+        }
+        std::thread::sleep(POLL);
+    }
+    report
 }
 
 /// An OPAQUE snapshot of a process's descendants, taken by [`snapshot_descendants`] and
@@ -1888,8 +2136,10 @@ mod tests {
                 os_process::state(deepest)
             );
             assert!(
-                crate::test_support::wait_until(|| !still_started(middle, middle_start)),
-                "its parent is ended"
+                crate::test_support::wait_until(|| !still_started(middle, middle_start)
+                    || os_process::state(middle) == Some('Z')),
+                "its parent is ended: gone, or exited and left unreaped by a pid 1 that reaps \
+                 no orphan"
             );
             assert!(
                 matches!(main.try_wait(), Ok(Some(_))),

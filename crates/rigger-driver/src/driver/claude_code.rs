@@ -68,7 +68,7 @@ fn next_wait(
 }
 
 /// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
-/// stdout-reader threads, right after `reaped_child::ReapedChild::drop` reaps the one child this
+/// stdout-reader threads, right after `child_tree::ReapedChild::drop` reaps the one child this
 /// function held - a dedicated diagnostic-drain bound, DELIBERATELY NEVER
 /// [`Driver::stop_grace`] (adj-u104stop-r4-verdict-reject REQUIRED FIX,
 /// `op-104-stop-ordinary-path-drain-bound`): `stop_grace` is THE STOP's own wait for a
@@ -515,7 +515,7 @@ impl Driver<'_> {
     /// this reader cannot parse is never silently lost - it still lands liveness, the
     /// transcript file, AND a progress line (below), just no structured record.
     ///
-    /// Every exit reaps the child through ONE mechanism, [`crate::reaped_child::ReapedChild`] -
+    /// Every exit reaps the child through ONE mechanism, [`crate::child_tree::ReapedChild`] -
     /// the SAME guard the dashboard's own supervised child uses (adj-u104-stream round-3
     /// REQUIRED FIX 2: a second, hand-rolled Drop-based reap guard duplicated that exact
     /// concern; deleted in favor of reusing the canonical one, per this codebase's
@@ -532,7 +532,7 @@ impl Driver<'_> {
     /// pipe is not proof it has exited - real post-output teardown (flushing telemetry,
     /// releasing a lock) can still be running - so THIS function tracks that one exit
     /// shape (`ended_via_break` below) and, on a clean EOF ONLY, blocks on the child's own
-    /// handle (`reaper.child_mut().wait()`, no signal) BEFORE the trailing `drop(reaper)`,
+    /// handle (`reaper.wait()`, no signal) BEFORE the trailing `drop(reaper)`,
     /// so that teardown always finishes on its own first. Every other exit path (missing
     /// stdout pipe, a read error before any result, the post-result-read-error `break`
     /// below, a `record_result_unless_ended` failure) is unchanged: straight to the
@@ -571,7 +571,7 @@ impl Driver<'_> {
     /// STOP (spec 104 criterion 6): stdout is likewise read on its OWN thread (the SAME
     /// stderr-deadlock reasoning applies to it too - this function must never itself sit
     /// blocked in `BufReader::lines()` with no way to notice silence), forwarding each
-    /// line ([`crate::reaped_child::line_channel`], disconnecting on a clean EOF) over a channel
+    /// line ([`crate::child_tree::line_channel`], disconnecting on a clean EOF) over a channel
     /// this function drains with
     /// `recv_timeout`, so `max_wall_clock` (0 = unbounded, [`crate::config::AgentDef`]'s
     /// own resolved bound) can be enforced against STREAM SILENCE - the session's silent time
@@ -634,32 +634,29 @@ impl Driver<'_> {
             resumed_from: &launch.resumed_from,
             model: &launch.model,
         };
-        let mut reaper = crate::reaped_child::ReapedChild::new(launch.child);
+        let mut reaper = crate::child_tree::ReapedChild::new(launch.child);
 
-        let stdout = reaper.child_mut().stdout.take().ok_or_else(|| {
+        let stdout = reaper.take_stdout().ok_or_else(|| {
             Error(format!(
                 "claude_code driver: {:?}: launch carried no stdout pipe",
                 opts.id
             ))
         })?;
         let stderr_drain = reaper
-            .child_mut()
-            .stderr
-            .take()
+            .take_stderr()
             .map(|stderr| std::thread::spawn(move || drain_child_stderr_tail(stderr)));
         // THE STOP watchdog needs a way to notice silence while blocked reading stdout,
         // so stdout is read on its own thread too (see the doc above) and forwarded here
         // over a channel this loop drains with a timeout instead of `BufRead::lines`'s
         // own unbounded blocking iterator.
-        let (line_rx, stdout_reader) = crate::reaped_child::line_channel(stdout);
+        let (line_rx, stdout_reader) = crate::child_tree::line_channel(stdout);
         // The first message goes on its own thread as well (see the doc above), which holds the
         // session's input until the host closes it.
         let (input_open, close) = std::sync::mpsc::channel();
         let message = launch.message;
-        let input =
-            reaper.child_mut().stdin.take().map(|stdin| {
-                std::thread::spawn(move || write_first_message(stdin, &message, close))
-            });
+        let input = reaper
+            .take_stdin()
+            .map(|stdin| std::thread::spawn(move || write_first_message(stdin, &message, close)));
         let mut pipes = Pipes {
             input_open: Some(input_open),
             input,
@@ -781,7 +778,7 @@ impl Driver<'_> {
                     // that has exited while a descendant still holds the stdout pipe will
                     // never send EOF, so its exit ends the read here as a session with no
                     // result (classified below); a live child keeps its turn.
-                    if matches!(reaper.child_mut().try_wait(), Ok(Some(_))) {
+                    if matches!(reaper.try_wait(), Ok(Some(_))) {
                         break;
                     }
                     continue;
@@ -983,7 +980,7 @@ impl Driver<'_> {
         if !ended_via_break {
             // Its input closes first, so a session still reading it sees the end and exits.
             pipes.close_input();
-            let _ = reaper.child_mut().wait();
+            let _ = reaper.wait();
         }
 
         // Reap through the ONE canonical mechanism, on every exit path alike (a clean
@@ -1321,7 +1318,7 @@ impl Driver<'_> {
     /// running with its tools and without rigger's (2026-09-28 probe: the whole task ran).
     fn stop_for_launch_fault(
         &self,
-        reaper: crate::reaped_child::ReapedChild,
+        reaper: crate::child_tree::ReapedChild,
         pipes: Pipes,
         opts: &SpawnOpts,
         id: LaunchId,
@@ -1393,7 +1390,7 @@ impl Driver<'_> {
     /// ([`Driver::session_gone`]), and on any other the same line and ending as here.
     fn stop_for_wall_clock_silence(
         &self,
-        reaper: crate::reaped_child::ReapedChild,
+        reaper: crate::child_tree::ReapedChild,
         pipes: Pipes,
         opts: &SpawnOpts,
         id: LaunchId,
@@ -1458,7 +1455,7 @@ impl Driver<'_> {
     /// caller's own record.
     fn stop_session(
         &self,
-        mut reaper: crate::reaped_child::ReapedChild,
+        mut reaper: crate::child_tree::ReapedChild,
         mut pipes: Pipes,
         opts: &SpawnOpts,
         grace: std::time::Duration,
@@ -1477,7 +1474,7 @@ impl Driver<'_> {
         // too late for exactly the well-behaved case the grace wait below exists for - a
         // session that notices its input closed and winds down entirely on its own,
         // orphaning whatever it forked before reap::end_child ever gets a chance to look.
-        let descendants = crate::reap::snapshot_descendants(reaper.child_mut().id());
+        let descendants = crate::reap::snapshot_descendants(reaper.id());
 
         // "waits a grace period" (`grace`: self.stop_grace at a silence expiry - 30s in
         // production, an injected shorter one in a test proving the full sequence): poll
@@ -1492,7 +1489,7 @@ impl Driver<'_> {
             .saturating_duration_since(std::time::Instant::now())
             .is_zero()
         {
-            if matches!(reaper.child_mut().try_wait(), Ok(Some(_))) {
+            if matches!(reaper.try_wait(), Ok(Some(_))) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1505,7 +1502,7 @@ impl Driver<'_> {
         // above regardless (round-4 fix) - a process the session forked but never `exec`'d,
         // so it is reaped too rather than merely outliving the one handle this function
         // ever held, whether the session itself needed signalling or wound down on its own.
-        crate::reap::end_child(reaper.child_mut(), descendants);
+        reaper.end_from_snapshot(descendants);
 
         // That descendant walk is matched by PID-TREE membership alone, deliberately NEVER
         // by cwd - NO worktree-wide sweep here: this spawn's worktree can be shared, right now, by a live
@@ -1827,8 +1824,8 @@ impl HoldProbe for Driver<'_> {
             .stderr(Stdio::null())
             .spawn();
         if let Ok(child) = spawned {
-            let mut canary = crate::reaped_child::ReapedChild::new(child);
-            let mut input = canary.child_mut().stdin.take();
+            let mut canary = crate::child_tree::ReapedChild::new(child);
+            let mut input = canary.take_stdin();
             if let Some(stdin) = input.as_mut() {
                 let _ = writeln!(stdin, "{}", first_user_message(CANARY_TASK));
             }

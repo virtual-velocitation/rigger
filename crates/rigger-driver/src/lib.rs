@@ -17,9 +17,6 @@ pub mod liveness;
 /// The driver's prompt texts (spec 121): the progress frame, the report verbs and the resume
 /// note, each one const whose doc comment opens with its class.
 pub mod prompt_surface;
-/// The supervised child-process guard: a dropped guard kills and reaps its child.
-#[cfg(any(feature = "store", not(feature = "core")))]
-pub mod reaped_child;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod sidecar;
 
@@ -33,7 +30,7 @@ use rigger_domain::retention;
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_domain::{agent, failure, hold_probe, ledger, progress, run};
 #[cfg(any(feature = "store", not(feature = "core")))]
-use rigger_process::{reap, subprocess};
+use rigger_process::{child_tree, reap, subprocess};
 #[cfg(any(feature = "store", not(feature = "core")))]
 use rigger_store_sqlite::{progress_store, run_store, spawn_store};
 #[cfg(any(feature = "store", not(feature = "core")))]

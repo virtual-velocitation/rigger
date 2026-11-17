@@ -1,11 +1,83 @@
 //! A process tree started through one handle and ended through it: the session a host spawns, and
 //! every process that session starts.
+//!
+//! A host spawns a session through [`TreeCommand`] and holds the [`ReapedChild`] it answers. The
+//! handle reads and waits on the session's main process as a [`Child`] does, and ends what the
+//! session started in one of two ways: [`ReapedChild::end`] ends the whole tree, and
+//! [`ReapedChild::release`] lets it go and ends nothing. A handle dropped without a release is
+//! ended, on a normal scope exit and on an unwinding panic alike, so a driver that crashes leaves
+//! no session running behind it.
+//!
+//! How a tree is held is the host's explicit choice ([`Containment`]). A watched tree
+//! ([`Containment::Watch`]) is held through its main process: a watcher thread walks the main's
+//! descendants while it runs and remembers each one it finds, waking on a fork or an exit where the
+//! OS reports one (a kqueue on macOS) and on a timer elsewhere, and the end
+//! ([`crate::reap::end_watched`]) freezes the tree, ends it deepest first and reports what it
+//! could not reach: a remembered process that left the tree, whose parent chain no longer reaches
+//! the main, is reported and never signalled. Every signal goes through the reaper
+//! ([`crate::reap`]), the one place this crate signals a process.
 
+use crate::reap::{self, Identity};
 pub use crate::reap::{EndReport, Leftover};
+use crate::{os_process, subprocess};
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io;
 use std::path::PathBuf;
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+// The one spelling of the OS set for a watcher's wake: macOS wakes the watcher when a process it
+// watches forks or exits, and every other OS binds the inline `timed` wake in the `_` arm.
+std::cfg_select! {
+    target_os = "macos" => {
+        mod macos;
+        use macos::{Stopper, Wake};
+    }
+    _ => {
+        /// The wake of an OS that reports no fork: the watcher walks again each time its wait
+        /// times out.
+        mod timed {
+            use std::io;
+            use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
+            use std::time::Duration;
+
+            /// What a watcher waits on: the stop alone.
+            pub(super) struct Wake {
+                stopped: Receiver<()>,
+            }
+
+            /// The watcher's stop: dropping it ends the watcher's next wait.
+            pub(super) struct Stopper {
+                _sender: Sender<()>,
+            }
+
+            impl Wake {
+                /// A wake and the stop that ends it.
+                pub(super) fn new() -> io::Result<(Wake, Stopper)> {
+                    let (sender, stopped) = channel();
+                    Ok((Wake { stopped }, Stopper { _sender: sender }))
+                }
+
+                /// Watches `pid` for a fork or an exit, which this wake cannot.
+                pub(super) fn watch(&mut self, _pid: u32) {}
+
+                /// Waits up to `timeout`; false once the stop is dropped.
+                pub(super) fn wait(&mut self, timeout: Duration) -> bool {
+                    !matches!(
+                        self.stopped.recv_timeout(timeout),
+                        Err(RecvTimeoutError::Disconnected)
+                    )
+                }
+            }
+        }
+        use timed::{Stopper, Wake};
+    }
+}
+
+/// How long a watcher waits for a wake before it walks its tree again.
+const TICK: Duration = Duration::from_millis(250);
 
 /// How a tree is contained.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,16 +97,24 @@ pub enum Why {
     Chosen,
 }
 
-/// A command whose process starts a contained tree.
+/// A command whose process starts a contained tree: the command's own process is the tree's main,
+/// and every process it starts is the tree's.
 pub struct TreeCommand {
     command: Command,
 }
 
 impl TreeCommand {
-    /// A command for `program`, contained as `how`.
+    /// A command for `program` ([`crate::subprocess::command`]), contained as `how`.
     pub fn new(program: impl AsRef<OsStr>, how: &Containment) -> io::Result<TreeCommand> {
-        let _ = (program.as_ref(), how);
-        todo!("the contained command")
+        match how {
+            Containment::Watch(_) => Ok(TreeCommand {
+                command: subprocess::command(program),
+            }),
+            Containment::Keeper(_) | Containment::Job => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("containment {how:?} is not available"),
+            )),
+        }
     }
 
     /// The command, for its arguments, environment, directory and streams.
@@ -42,43 +122,215 @@ impl TreeCommand {
         &mut self.command
     }
 
-    /// Starts the tree.
-    pub fn spawn(self) -> io::Result<ReapedChild> {
-        todo!("the contained spawn")
+    /// Starts the tree, and its watcher.
+    pub fn spawn(mut self) -> io::Result<ReapedChild> {
+        let (wake, stopper) = Wake::new()?;
+        let main = self.command.spawn()?;
+        let start = os_process::start_time(main.id());
+        let mut tree = ReapedChild::new(main);
+        if let Some(start) = start {
+            let main = Identity {
+                pid: tree.id(),
+                start,
+            };
+            tree.watcher = Some(Watcher::start(main, wake, stopper)?);
+        }
+        Ok(tree)
     }
 }
 
-/// The handle a tree is ended through.
+/// The handle a tree is ended through: its main process, and the watcher of a watched tree.
+///
+/// Dropping the handle without [`ReapedChild::release`] ends the tree ([`ReapedChild::end`]). That
+/// runs on a normal scope exit and on an unwinding panic alike, so neither a finishing driver nor a
+/// crashing one leaves the tree running. A driver that ends with neither (an abort, an exit that
+/// skips unwinding, an outside signal) runs no drop; a child that must not outlive it is bound to
+/// it by a pipe the handle holds as well, as the auto-started dash is to its stdin.
 pub struct ReapedChild {
-    child: Child,
+    main: Child,
+    watcher: Option<Watcher>,
+    released: bool,
 }
 
 impl ReapedChild {
-    /// Adopts `child`.
+    /// Adopts `child`, already spawned, as the main of a tree no watcher has seen: the end finds
+    /// what it started by its own walk. The caller owns the spawn; this handle owns the end.
     pub fn new(child: Child) -> ReapedChild {
-        let _ = child;
-        todo!("the adopted handle")
+        ReapedChild {
+            main: child,
+            watcher: None,
+            released: false,
+        }
     }
 
     /// The main process's pid.
     pub fn id(&self) -> u32 {
-        self.child.id()
+        self.main.id()
     }
 
-    /// The main process's exit status, once it has exited.
+    /// The main process's input, once: taking it and dropping it closes the main's input.
+    pub fn take_stdin(&mut self) -> Option<ChildStdin> {
+        self.main.stdin.take()
+    }
+
+    /// The main process's output, once.
+    pub fn take_stdout(&mut self) -> Option<ChildStdout> {
+        self.main.stdout.take()
+    }
+
+    /// The main process's error output, once.
+    pub fn take_stderr(&mut self) -> Option<ChildStderr> {
+        self.main.stderr.take()
+    }
+
+    /// The main process's exit status, once it has exited, reaping it then.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.child.try_wait()
+        self.main.try_wait()
     }
 
-    /// Ends the tree.
+    /// Waits for the main process to exit, sending it nothing, and reaps it.
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        self.main.wait()
+    }
+
+    /// Hand each line of the main process's output to `each` until the process ends the stream,
+    /// `each` breaks, a line is no text or `deadline` passes, whichever comes first: a process that
+    /// answers nothing holds this read no longer than `deadline`. A main with no output pipe hands
+    /// over nothing. The tree is left running; the handle's end or drop still ends it.
+    pub fn read_lines_until(
+        &mut self,
+        deadline: std::time::Instant,
+        mut each: impl FnMut(&str) -> std::ops::ControlFlow<()>,
+    ) {
+        let Some(stdout) = self.main.stdout.take() else {
+            return;
+        };
+        let (lines, _reader) = line_channel(stdout);
+        while let Ok(Ok(line)) =
+            lines.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+        {
+            if each(&line).is_break() {
+                return;
+            }
+        }
+    }
+
+    /// Ends the tree ([`crate::reap::end_watched`]) and reaps its main, answering what the end left
+    /// running and what it found outside the tree and never signalled. The watcher stops first,
+    /// and the processes it remembered are the end's own.
     pub fn end(&mut self) -> EndReport {
-        todo!("the end")
+        let remembered = self.watcher.take().map(Watcher::stop).unwrap_or_default();
+        reap::end_watched(&mut self.main, &remembered)
     }
 
-    /// Lets the tree go.
-    pub fn release(self) {
-        todo!("the release")
+    /// Lets the tree go: ends nothing, and reaps the main if it has exited.
+    pub fn release(mut self) {
+        self.released = true;
+        if let Some(watcher) = self.watcher.take() {
+            watcher.stop();
+        }
+        let _ = self.main.try_wait();
     }
+
+    /// Ends the main process, and the descendants `descendants` snapshotted before it was asked to
+    /// exit ([`crate::reap::end_child`]): the stop's end until the stop ends the tree through
+    /// [`ReapedChild::end`].
+    #[doc(hidden)]
+    pub fn end_from_snapshot(&mut self, descendants: reap::DescendantSnapshot) {
+        reap::end_child(&mut self.main, descendants);
+    }
+}
+
+impl Drop for ReapedChild {
+    fn drop(&mut self) {
+        if !self.released {
+            self.end();
+        }
+    }
+}
+
+/// A watched tree's watcher: a thread that walks the main's descendants and remembers each one,
+/// until it is stopped or the main is gone.
+struct Watcher {
+    stopper: Stopper,
+    thread: JoinHandle<Vec<Identity>>,
+}
+
+impl Watcher {
+    /// Starts watching the tree under `main`, waking through `wake` until `stopper` is dropped.
+    fn start(main: Identity, wake: Wake, stopper: Stopper) -> io::Result<Watcher> {
+        let thread = std::thread::Builder::new()
+            .name("rigger-tree-watch".to_string())
+            .spawn(move || watch(main, wake))?;
+        Ok(Watcher { stopper, thread })
+    }
+
+    /// Stops the watcher and answers every process it remembered.
+    fn stop(self) -> Vec<Identity> {
+        drop(self.stopper);
+        self.thread.join().unwrap_or_default()
+    }
+}
+
+/// The watcher's walk: while `main` runs, each wake reads the process table once and remembers
+/// every descendant of the main, and every descendant of a process it remembered that has left
+/// the tree, forgetting each remembered process that has exited. Answers what it remembered when
+/// `wake` is stopped or the main is gone.
+fn watch(main: Identity, mut wake: Wake) -> Vec<Identity> {
+    let mut remembered: HashSet<Identity> = HashSet::new();
+    wake.watch(main.pid);
+    loop {
+        let table = os_process::table();
+        let live: HashSet<Identity> = table
+            .iter()
+            .map(|entry| Identity {
+                pid: entry.pid,
+                start: entry.start,
+            })
+            .collect();
+        if !live.contains(&main) {
+            break;
+        }
+        remembered.retain(|identity| live.contains(identity));
+        let mut found: HashSet<Identity> =
+            reap::descendants_in(&table, main.pid).into_iter().collect();
+        let left: Vec<Identity> = remembered.difference(&found).copied().collect();
+        for identity in left {
+            found.extend(reap::descendants_in(&table, identity.pid));
+        }
+        for identity in found {
+            if remembered.insert(identity) {
+                wake.watch(identity.pid);
+            }
+        }
+        if !wake.wait(TICK) {
+            break;
+        }
+    }
+    remembered.into_iter().collect()
+}
+
+/// A stream (a child's stdout or stderr) read line by line on its own thread and forwarded over a
+/// channel, so its reader can wait on a line with a timeout where `BufRead::lines` alone would
+/// block until the child writes. Each line arrives as `BufRead::lines` yields it, a read error
+/// included, and the receiver disconnects at the stream's end. The thread ends there or once
+/// the receiver is gone; its handle is the caller's to join or to leave.
+pub fn line_channel(
+    stream: impl std::io::Read + Send + 'static,
+) -> (
+    std::sync::mpsc::Receiver<std::io::Result<String>>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::BufRead;
+    let (line_tx, line_rx) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stream).lines() {
+            if line_tx.send(line).is_err() {
+                return; // the reader is gone; nothing left to feed.
+            }
+        }
+    });
+    (line_rx, reader)
 }
 
 #[cfg(all(test, unix))]
@@ -203,5 +455,169 @@ mod tests {
             Some(9),
             "the main is ended hard"
         );
+    }
+}
+
+#[cfg(test)]
+mod supervised_lifecycle {
+    //! Spec 19b, unit 3: a dropped handle ends its tree, so a normally-finishing OR crashing
+    //! agent leaves no orphaned `rigger` process. The standalone-`rigger dash` proof the
+    //! criterion names lives in `tests/cli.rs` (it needs the compiled binary); this hermetic test
+    //! proves the SAME [`ReapedChild`] discipline generically, on a stand-in child on the CRASH
+    //! path.
+    use super::ReapedChild;
+    use std::time::Duration;
+
+    /// A real long-lived child that would outlive the test unless it is reaped. Its
+    /// stdout is piped and never written to, so a reader on it blocks until the child
+    /// EXITS (the child's write end closes -> EOF). That is a std-only, race-free "is
+    /// it still alive?" probe that needs no `libc` (unavailable in the light lane).
+    fn spawn_blocking_child() -> (std::process::Child, std::process::ChildStdout) {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn a long-lived child");
+        let out = child.stdout.take().expect("child stdout is piped");
+        (child, out)
+    }
+
+    /// Watch a child's piped stdout on a helper thread: a `recv` that BLOCKS means the
+    /// child is still alive (its write end is open); a `recv` that yields `0` means the
+    /// child exited and its stdout reached EOF - i.e. it was reaped.
+    fn watch_for_exit(mut out: std::process::ChildStdout) -> std::sync::mpsc::Receiver<usize> {
+        use std::io::Read;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 1];
+            let n = out.read(&mut buf).unwrap_or(0);
+            let _ = tx.send(n);
+        });
+        rx
+    }
+
+    #[test]
+    fn reaped_child_reaps_even_when_the_driver_panics() {
+        let (child, out) = spawn_blocking_child();
+        let exited = watch_for_exit(out);
+
+        // A CRASHING driver (a panicking agent) still unwinds through the guard's Drop,
+        // so the child is reaped on the crash path exactly as on the clean path.
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = ReapedChild::new(child);
+            panic!("the driving agent crashed");
+        }));
+        assert!(panicked.is_err(), "the closure was expected to panic");
+
+        let n = exited
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a panic-unwound ReapedChild did not reap its process");
+        assert_eq!(n, 0, "a reaped child's stdout should be at EOF");
+    }
+}
+
+#[cfg(test)]
+mod bounded_read {
+    //! [`ReapedChild::read_lines_until`]: a read of the child's stdout that hands each line over
+    //! until the child ends it, the reader breaks, a line is no text or the deadline passes,
+    //! whichever comes first, so a child that answers nothing holds its reader no longer than the
+    //! deadline.
+    use super::ReapedChild;
+    use std::ops::ControlFlow;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    /// One row of the table below.
+    type Row<'a> = (
+        &'a str,
+        &'a str,
+        bool,
+        Duration,
+        Option<&'a str>,
+        &'a [&'a str],
+        (Duration, Duration),
+    );
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_ends_at_the_end_of_the_stream_a_break_a_line_that_is_no_text_or_the_deadline() {
+        let long = Duration::from_secs(5);
+        let short = Duration::from_millis(600);
+        let early = (Duration::ZERO, Duration::from_secs(2));
+        let at_the_bound = (short, short + Duration::from_millis(1500));
+        // (name, the child's shell, its stdout piped, the bound, the line the reader breaks at,
+        // the lines read, elapsed from and below)
+        let rows: [Row; 5] = [
+            (
+                "a child that ends",
+                "printf 'a\\nb\\n'",
+                true,
+                long,
+                None,
+                &["a", "b"],
+                early,
+            ),
+            (
+                "a child still running at the deadline",
+                "printf 'a\\nb\\n'; exec sleep 3",
+                true,
+                short,
+                None,
+                &["a", "b"],
+                at_the_bound,
+            ),
+            (
+                "a reader that breaks",
+                "printf 'a\\nb\\n'; exec sleep 3",
+                true,
+                long,
+                Some("a"),
+                &["a"],
+                early,
+            ),
+            (
+                "a line that is no text",
+                "printf 'a\\n\\377\\nb\\n'; exec sleep 3",
+                true,
+                long,
+                None,
+                &["a"],
+                early,
+            ),
+            (
+                "a child with no stdout pipe",
+                "exec sleep 3",
+                false,
+                long,
+                None,
+                &[],
+                early,
+            ),
+        ];
+        for (name, script, piped, bound, break_at, expected, (from, below)) in rows {
+            let child = Command::new("sh")
+                .args(["-c", script])
+                .stdout(if piped { Stdio::piped() } else { Stdio::null() })
+                .spawn()
+                .unwrap();
+            let mut child = ReapedChild::new(child);
+            let mut read = Vec::new();
+            let started = Instant::now();
+            child.read_lines_until(started + bound, |line| {
+                read.push(line.to_string());
+                if Some(line) == break_at {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            });
+            let elapsed = started.elapsed();
+            assert_eq!(read, expected, "{name}");
+            assert!(
+                from <= elapsed && elapsed < below,
+                "{name}: the read ended after {elapsed:?}, outside {from:?}..{below:?}"
+            );
+        }
     }
 }

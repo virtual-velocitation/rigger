@@ -68,8 +68,9 @@ use crate::progress::{self, AgentActivity};
 use crate::{blocker, ledger, metrics, run, spawn};
 use rigger_domain::code_view::Tests;
 use rigger_domain::composed::Label;
-/// The supervised child-process guard, re-exported from `rigger-driver` under its historical path.
-pub use rigger_driver::reaped_child::ReapedChild;
+/// The handle a child's process tree is ended through, re-exported from `rigger-process` under its
+/// historical path.
+pub use rigger_process::child_tree::ReapedChild;
 
 /// The single-file page, embedded at compile time (vanilla HTML/CSS/JS, no build step).
 /// [`STATE_PLACEHOLDER`] is substituted with `null` for live serving (the page polls the
