@@ -16704,6 +16704,7 @@ mod tests {
     use crate::test_support::repo_review_panel;
     use crate::test_support::run_git;
     use crate::test_support::run_isolated;
+    use crate::test_support::strand_worktree_at;
     use crate::test_support::temp_git_project_with_commit;
     use crate::test_support::test_spawn_host;
     use crate::test_support::trimmed_stdout;
@@ -18468,11 +18469,10 @@ mod tests {
         /// deleting_worktree`, but at the review-TIER spawn boundary `run_reviewer`
         /// owns instead of the gate boundary.
         delete_dir_by_agent: std::collections::HashSet<String>,
-        /// Per-agent id: THIS agent's own spawn replaces `opts.dir` with a dangling symlink,
-        /// right before returning success - a path that no leftover clear sees and that
-        /// `git worktree add` refuses as already existing, so the re-assert after the spawn
-        /// cannot restore the worktree.
-        dangle_dir_by_agent: std::collections::HashSet<String>,
+        /// Per-agent id: THIS agent's own spawn leaves `opts.dir` a missing but locked worktree
+        /// ([`strand_worktree_at`]), right before returning success, so the re-assert after the
+        /// spawn cannot restore the worktree.
+        strand_dir_by_agent: std::collections::HashSet<String>,
         /// Per-agent id: THIS agent's own spawn leaves `opts.dir`'s index locked, right before
         /// returning success - as a git killed mid-write leaves it - so the next git step that
         /// writes that worktree's index is refused.
@@ -18571,7 +18571,7 @@ mod tests {
                 call_order: Mutex::new(Vec::new()),
                 targets_by_agent: Mutex::new(HashMap::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
-                dangle_dir_by_agent: std::collections::HashSet::new(),
+                strand_dir_by_agent: std::collections::HashSet::new(),
                 lock_index_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
                 commits_by_agent: HashMap::new(),
@@ -18825,10 +18825,8 @@ mod tests {
             if !opts.dir.is_empty() && self.delete_dir_by_agent.contains(&a.id) {
                 let _ = std::fs::remove_dir_all(&opts.dir);
             }
-            #[cfg(unix)]
-            if !opts.dir.is_empty() && self.dangle_dir_by_agent.contains(&a.id) {
-                let _ = std::fs::remove_dir_all(&opts.dir);
-                std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &opts.dir).unwrap();
+            if !opts.dir.is_empty() && self.strand_dir_by_agent.contains(&a.id) {
+                assert!(strand_worktree_at(&opts.dir, &opts.dir));
             }
             if !opts.dir.is_empty() && self.lock_index_by_agent.contains(&a.id) {
                 let git_dir = run_git(&opts.dir, &["rev-parse", "--absolute-git-dir"]);
@@ -47961,27 +47959,23 @@ mod tests {
         // round-2 fix) ever ran - they are both called on `pm_wt`. The just-created
         // `rigger/postmerge/<unit>-<attempt>` branch ref leaked permanently.
         //
-        // Forced here via a DANGLING SYMLINK planted at the deterministic `pm_dir` path
-        // before the run starts: `Path::exists` follows symlinks and reports `false` for a
-        // dangling one, so `Worktree::discard` (which only clears a dir that `exists()`)
-        // and `Worktree::create`'s own leftover-dir check both skip it, letting
-        // `create_branch_at` succeed exactly as in the real leak window - but the dangling
-        // symlink still OCCUPIES that path, so the adopt-path `git worktree add <pm_dir>
-        // <pm_branch>` that follows hard-fails with "already exists" (verified: this is a
-        // deterministic filesystem property, not a race). This reproduces the exact
+        // Forced here via a MISSING BUT LOCKED worktree registered at the deterministic
+        // `pm_dir` path before the run starts ([`strand_worktree_at`]): nothing sits at the
+        // path, so `Worktree::discard` and `Worktree::create`'s own leftover clear find nothing
+        // to remove, and no prune clears a locked registration, letting `create_branch_at`
+        // succeed exactly as in the real leak window - but the adopt-path `git worktree add
+        // <pm_dir> <pm_branch>` that follows is refused (a deterministic property of git's
+        // worktree registry, not a race). This reproduces the exact
         // create_branch_at-succeeds-then-create-fails window the leak lived in, driving the
         // real `crate::worktree::Worktree::create_branch_at`/`create` functions through the
         // conductor's own call site, never a probe copy.
         let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap();
         let store = Store::open(":memory:").unwrap();
         assert_postmerge_err_reaps_its_branch(
-            repo.path().to_str().unwrap(),
+            repo_path,
             &store,
-            |pm_dir| {
-                std::os::unix::fs::symlink("/nonexistent-adv-u103c7-r3-target", pm_dir).expect(
-                    "plant the dangling symlink that occupies pm_dir without `exists()`-ing",
-                )
-            },
+            |pm_dir| assert!(strand_worktree_at(repo_path, pm_dir)),
             "a genuine post-merge worktree-create infra Err must propagate out of run(), \
              never be swallowed as a passing/failing gate verdict",
         );
@@ -48043,10 +48037,10 @@ mod tests {
     fn a_refused_git_step_halts_with_no_lesson_and_holds_the_run() {
         #[derive(Debug, Clone, Copy)]
         enum Step {
-            /// A dangling symlink occupies the unit's path, which no leftover clear sees and
-            /// `git worktree add` refuses as already existing.
+            /// A missing but locked worktree is registered at the unit's path, which no leftover
+            /// clear or prune removes and `git worktree add` refuses.
             Make,
-            /// The lens's own spawn leaves a dangling symlink at the unit's worktree path, so the
+            /// The lens's own spawn leaves the unit's worktree missing but locked, so the
             /// re-assert before the next review tier is refused the same way.
             Reassert,
             /// The post-merge re-gate's throwaway branch is checked out in another worktree, so
@@ -48078,8 +48072,8 @@ mod tests {
         }
         // Each row: the step git refuses, and the text of the refusal the halt names.
         let cases = [
-            (Step::Make, "already exists"),
-            (Step::Reassert, "already exists"),
+            (Step::Make, "missing but locked"),
+            (Step::Reassert, "missing but locked"),
             (Step::Discard, "branch -D"),
             (Step::SeedBranch, "exists; cannot create"),
             (Step::Checkpoint, "add -A"),
@@ -48136,7 +48130,7 @@ mod tests {
                     ("lens".to_string(), "reviewed: no blocker".to_string()),
                     ("adversary".to_string(), "tried and failed".to_string()),
                 ]),
-                dangle_dir_by_agent: matches!(step, Step::Reassert)
+                strand_dir_by_agent: matches!(step, Step::Reassert)
                     .then(|| "lens".to_string())
                     .into_iter()
                     .collect(),
@@ -48151,11 +48145,7 @@ mod tests {
                 ..stub_deps(&store, &driver, Vec::new())
             };
             let planted = match step {
-                Step::Make => {
-                    std::fs::create_dir_all(&scratch).unwrap();
-                    std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &unit_dir)
-                        .is_ok()
-                }
+                Step::Make => strand_worktree_at(&repo_path, &unit_dir),
                 Step::Reassert => true,
                 Step::Discard => {
                     let held = elsewhere.path().join("held");
@@ -48207,7 +48197,6 @@ mod tests {
             assert!(planted, "{step:?}: precondition: the refusal is planted");
 
             let halted = run_isolated(&cfg, &deps);
-            let _ = std::fs::remove_file(&unit_dir);
 
             let Err(err) = halted else {
                 panic!("{step:?}: a refused git step halts the run");
