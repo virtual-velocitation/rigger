@@ -13,7 +13,7 @@
 //! | held reference | a tagged reference whose node already references the target, or the placeholder of its leaf from that node, keyed by the leaf or by a call's qualified name, writes no edge |
 //! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
-//! | proof | a test call: one same-file product call-target candidate, else one in the view |
+//! | proof | a test call its qualifier narrows, among every call-target candidate, test ones too: the one it keeps when that one is product, and none when it is test, it keeps several, or its qualifier makes it no link; any other test call: the one same-file call-target candidate when it is product and none when it is test, else one same-file product call-target candidate, else one in the view |
 //! | duplicate id, kind precedence | one entity per id, its kind, line and `CONTAINS` parent by [`definition_precedence`] |
 //! | test-ness | a definition's test mark, a Test-scope file, or a file in the test-module closure; any node in such a file, whatever fact names it, and any link onto one |
 //! | design link, workflow relation | the node kinds and relations an intent fact may name |
@@ -47,7 +47,7 @@ use crate::contextgraph::{
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
 /// one is computed anew. A golden test pins it beside a digest of the rows over a fixture, so a
 /// change that is not bumped fails there.
-pub const SETTLED_GENERATION: u64 = 3;
+pub const SETTLED_GENERATION: u64 = 4;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -255,6 +255,12 @@ fn one_here_else_one_anywhere<'c, 'v>(
         (_, [one]) => Some((*one, false)),
         _ => None,
     }
+}
+
+/// Whether a mention of `kind` is `impl`-tagged: it names a trait or type in an implementation's
+/// header.
+fn is_impl(kind: &MentionKind) -> bool {
+    matches!(kind, MentionKind::Tagged(tag) if tag == REF_KIND_IMPL)
 }
 
 /// The qualifier of a mention written `name` whose leaf is `leaf`: the text before its last
@@ -592,8 +598,6 @@ impl<'v> Resolver<'v> {
         if let Some(held) = self.parents.borrow().get(&key) {
             return Arc::clone(held);
         }
-        let is_impl =
-            |kind: &MentionKind| matches!(kind, MentionKind::Tagged(tag) if tag == REF_KIND_IMPL);
         let mut parents = Parents {
             own: (self.view.defs_named(qualifier))
                 .map(|d| (d.file.path, d.index))
@@ -719,16 +723,23 @@ impl<'v> Resolver<'v> {
         })
     }
 
-    /// The proof rule: the product definition a test call to `leaf` from `file` proves. A call
-    /// from a `file` holding one call target of `leaf` proves that definition when it is product
-    /// and none when it is test, so an unqualified test call's edge and its proof name one
-    /// definition; any other call proves the one product call target in `file`, else the one in
-    /// the view. It reads the leaf alone: no qualifier narrows a proof.
-    pub(crate) fn proof(&self, file: &str, leaf: &str) -> Option<String> {
+    /// The proof rule: the product definition a test call written `name` to `leaf` from `file`,
+    /// in `lang`, proves. Its qualifier narrows every call target of `leaf`, test ones too, as
+    /// the call rule narrows a test call ([`Self::narrowed`]): the call proves the one it keeps
+    /// when that one is product, and none when it is test, it keeps several, or its qualifier
+    /// makes the call no link. Any other call, one the unqualified rule takes, from a `file`
+    /// holding one call target of `leaf` proves that definition when it is product and none when
+    /// it is test, and otherwise the one product call target in `file`, else the one in the view.
+    /// So a test call's edge and its proof name one definition, or the proof none.
+    pub(crate) fn proof(&self, file: &str, lang: &str, name: &str, leaf: &str) -> Option<String> {
         let candidates = self.candidates(leaf);
-        let mut here = candidates
-            .iter()
-            .filter(|c| c.file == file && Pool::All.calls(c));
+        let calls = candidates.iter().filter(|c| Pool::All.calls(c));
+        match self.narrowed(lang, name, leaf, Pool::All, calls.clone())? {
+            Hop::One(one) => return (!one.test).then(|| one.id.clone()),
+            Hop::Frontier(_) => return None,
+            Hop::Terminal => {}
+        }
+        let mut here = calls.filter(|c| c.file == file);
         if let (Some(one), None) = (here.next(), here.next()) {
             return (!one.test).then(|| one.id.clone());
         }
@@ -743,11 +754,11 @@ impl<'v> Resolver<'v> {
     /// `lang`, lands, and its tier. A product call, and a test call the call rule resolves
     /// EXTRACTED, take the call rule. A test call the call rule sends to a placeholder lands,
     /// INFERRED, on the definition the proof rule credits with it, so a test's call edge and its
-    /// proof name one definition; on the placeholder when the proof rule credits none. INFERRED
-    /// even when that definition is in `file`, where the call rule found no one target: a
-    /// same-file test definition of the leaf contested it, or the call's qualifier narrowed it
-    /// to several. None when the call rule makes the call no link, a test call too, though the
-    /// proof rule, which reads the leaf alone, may still credit a definition with it.
+    /// proof name one definition; on the placeholder when the proof rule credits none, as it
+    /// credits none for a call its qualifier narrows to several. INFERRED even when that
+    /// definition is in `file`, where the call rule found no one target: a same-file test
+    /// definition of the leaf contested it. None when the call rule makes the call no link, a
+    /// test call too, which the proof rule then credits to no definition either.
     fn call_edge(
         &self,
         file: &str,
@@ -761,7 +772,7 @@ impl<'v> Resolver<'v> {
             return Some((to, tier));
         }
         Some(
-            self.proof(file, leaf)
+            self.proof(file, lang, name, leaf)
                 .map_or((to, tier), |id| (id, TIER_INFERRED)),
         )
     }
@@ -769,6 +780,15 @@ impl<'v> Resolver<'v> {
     /// Whether `m`, a mention in `facts`, is test code.
     pub(crate) fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
         self.is_test(m.test, &facts.path)
+    }
+
+    /// The test calls of `facts`: its call mentions that are test code, in source order.
+    fn test_calls<'a>(
+        &'a self,
+        facts: &'a FileFacts,
+    ) -> impl Iterator<Item = &'a Mention> + use<'a, 'v> {
+        (facts.mentions.iter())
+            .filter(move |m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
     }
 
     /// Whether a fact in `path` that its own mark calls test code when `marked` is test code: by
@@ -988,12 +1008,9 @@ impl<'v> Resolver<'v> {
     pub fn file_proofs(&self, facts: &FileFacts) -> Vec<ProofCall> {
         let path = facts.path.as_str();
         let test_entity = self.test_entity_of(facts);
-        facts
-            .mentions
-            .iter()
-            .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
+        self.test_calls(facts)
             .filter_map(|m| {
-                let target = self.proof(path, &m.leaf)?;
+                let target = self.proof(path, &facts.lang, &m.name, &m.leaf)?;
                 Some(ProofCall {
                     target,
                     caller: test_entity(m.enclosing),
@@ -1102,17 +1119,20 @@ impl<'v> Resolver<'v> {
     }
 
     /// The test calls to `leaf` in code files that the proof rule credits to `id`, read from the
-    /// mentions of `leaf` alone. The rule credits a call by its file and leaf, so each file is
-    /// asked once.
+    /// mentions of `leaf` alone. The rule credits a call by its file and its name as written, so
+    /// each pair is asked once.
     pub(crate) fn proving_calls<'s>(
         &'s self,
         id: &'s str,
         leaf: &'s str,
     ) -> impl Iterator<Item = MentionRef<'v>> + 's {
-        let mut credits: FxHashMap<&'v str, bool> = FxHashMap::default();
+        let mut credits: FxHashMap<(&'v str, &'v str), bool> = FxHashMap::default();
         self.test_calls_named(leaf).filter(move |m| {
-            *(credits.entry(m.file.path))
-                .or_insert_with(|| self.proof(m.file.path, leaf).as_deref() == Some(id))
+            *(credits.entry((m.file.path, m.name))).or_insert_with(|| {
+                self.proof(m.file.path, m.file.lang, m.name, leaf)
+                    .as_deref()
+                    == Some(id)
+            })
         })
     }
 
@@ -1155,9 +1175,7 @@ impl<'v> Resolver<'v> {
         let test_entity = self.test_entity_of(facts);
         let mut keys: FxHashMap<&str, Vec<String>> = FxHashMap::default();
         let mut calls = Vec::new();
-        for m in (facts.mentions.iter())
-            .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
-        {
+        for m in self.test_calls(facts) {
             let filed = (keys.entry(&m.name))
                 .or_insert_with(|| self.placeholder_keys(path, &facts.lang, &m.name, &m.leaf));
             if filed.is_empty() {
@@ -1293,10 +1311,15 @@ impl<'v> Resolver<'v> {
 /// The rows a store settles ([`Settled`]) for `view`, which holds `base`'s facts but for the
 /// files at `differing`, from the rows `base` settled: what settling `view` whole computes,
 /// re-settling only where a difference reaches. Its test files are `view`'s test-module closure.
-/// Its proof calls are `base`'s but for those in a file that differs, flipped test-ness or makes a
-/// test call to a leaf whose product call targets ([`Resolver::proof`]'s candidates) differ,
-/// which are read from `view`. Only a definition in a file that differs or flipped can move a
-/// leaf's targets, so no other proof call can change.
+/// Its proof calls are `base`'s but for those in a file a difference reaches, which are read from
+/// `view`: a file that differs or flipped test-ness; one that makes a test call to a leaf whose
+/// call targets ([`Resolver::proof`]'s candidates, product and test) differ; and one that makes a
+/// test call whose qualifier ([`qualifier`]) is the leaf of a definition or of an `impl` mention
+/// in either version of a file that differs or flipped, or a name an implementation's header
+/// holds beside such a definition's leaf, since what a qualifier keeps ([`Resolver::narrowed`])
+/// moves with its definitions, its implementations and the traits they name. Only a file that
+/// differs or flipped holds a definition or an `impl` mention that moved, so no other proof call
+/// can change.
 pub fn resettle(
     base: &dyn CodeView,
     view: &dyn CodeView,
@@ -1305,27 +1328,43 @@ pub fn resettle(
     let (was, now) = (Resolver::new(base), Resolver::new(view));
     let flipped = (was.test_files.symmetric_difference(&now.test_files)).copied();
     let reached: BTreeSet<&str> = differing.iter().copied().chain(flipped).collect();
-    let mut leaves = BTreeSet::new();
+    let (mut leaves, mut qualifiers) = (BTreeSet::new(), BTreeSet::new());
     for path in &reached {
         for facts in [base.file(path), view.file(path)].into_iter().flatten() {
             leaves.extend(facts.defs.iter().map(|d| d.leaf.clone()));
+            let impls = facts.mentions.iter().filter(|m| is_impl(&m.kind));
+            qualifiers.extend(impls.map(|m| m.leaf.clone()));
         }
     }
-    let targets = |r: &Resolver, leaf: &str| -> Vec<String> {
+    // A trait a reached file gains, loses or flips moves what each name an implementation's
+    // header holds beside it keeps, wherever that implementation is.
+    for leaf in &leaves {
+        for m in view.mentions_named(leaf).filter(|m| is_impl(&m.kind)) {
+            let header = |n: &&Mention| n.enclosing == m.enclosing && is_impl(&n.kind);
+            if let Some(facts) = view.file(m.file.path) {
+                qualifiers.extend(facts.mentions.iter().filter(header).map(|n| n.leaf.clone()));
+            }
+        }
+    }
+    qualifiers.extend(leaves.iter().cloned());
+    let targets = |r: &Resolver, leaf: &str| -> Vec<(String, bool)> {
         let candidates = r.candidates(leaf);
-        let calls = candidates.iter().filter(|c| Pool::Product.calls(c));
-        calls.map(|c| c.id.clone()).collect()
+        let calls = candidates.iter().filter(|c| Pool::All.calls(c));
+        calls.map(|c| (c.id.clone(), c.test)).collect()
     };
     let mut redo: BTreeSet<String> = reached.iter().map(|p| p.to_string()).collect();
     for leaf in leaves
         .iter()
         .filter(|l| targets(&was, l) != targets(&now, l))
     {
-        for m in view.mentions_named(leaf) {
-            let test = now.is_test(m.test, m.file.path);
-            if m.file.half == Half::Code && m.kind == MentionKind::Call && test {
-                redo.insert(m.file.path.to_string());
-            }
+        redo.extend(now.test_calls_named(leaf).map(|m| m.file.path.to_string()));
+    }
+    let qualified =
+        |m: &Mention| qualifier(&m.name, &m.leaf).is_some_and(|q| qualifiers.contains(q));
+    for &path in &now.code_files {
+        let facts = view.file(path);
+        if facts.is_some_and(|facts| now.test_calls(&facts).any(qualified)) {
+            redo.insert(path.to_string());
         }
     }
     let redone = |c: &ProofCall| c.file().is_some_and(|file| redo.contains(file));
