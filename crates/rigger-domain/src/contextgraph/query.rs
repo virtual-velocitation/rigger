@@ -259,7 +259,7 @@ pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
 /// than at a `.`, a member qualifier (`S.field`, `a::b.c`); false when it holds neither. The
 /// resolver reads it for a qualifier that keeps no candidate (spec 117, RESOLVER AT READ).
 pub(crate) fn is_path_qualified(path: &str) -> bool {
-    (path.strip_suffix(path_leaf(path))).is_some_and(|head| head.ends_with(PATH_SEPARATOR))
+    path[..path.len() - path_leaf(path).len()].ends_with(PATH_SEPARATOR)
 }
 
 /// The ONE join of a code-entity id (spec 119), the inverse of [`split_id`]: `<file>::<rest>`,
