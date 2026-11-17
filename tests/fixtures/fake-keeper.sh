@@ -11,7 +11,9 @@
 # reading its control descriptor, as a keeper that does not end its tree within its bound does.
 #
 # The status descriptor is written through /proc, since dash, a common /bin/sh, accepts no
-# descriptor above 9 in a redirection.
+# descriptor above 9 in a redirection. The keeper's descriptors arrive by whatever number the
+# driver's pipes had, which may be 8 or 9, the numbers witness.sh opens its FIFOs over, so `deaf`
+# sources witness.sh in a subshell of its own: the keeper's shell keeps both descriptors.
 #
 # A checked-in executable fixture (never written at test time), so no concurrent test's fork+exec
 # can inherit a write descriptor to it.
@@ -24,12 +26,14 @@ lost)
     printf 'spawned %s\n' "$RIGGER_TEST_MAIN" >"$status"
     ;;
 deaf)
-    self=$(readlink "$0") || self=$0
-    . "$(dirname "$self")/witness.sh"
     printf 'spawned %s\n' "$$" >"$status"
-    holder
-    up
-    held
+    self=$(readlink "$0") || self=$0
+    (
+        . "$(dirname "$self")/witness.sh"
+        holder
+        up
+        held
+    )
     ;;
 *)
     echo "fake-keeper: unknown mode: $RIGGER_TEST_KEEPER" >&2
