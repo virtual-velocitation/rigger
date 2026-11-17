@@ -949,6 +949,7 @@ mod tests {
     /// test, so the two near-identical setups collapse onto ONE implementation. Returns the escaping symlink's own
     /// path and the `TempDir` guard the caller must keep alive for its target to still
     /// exist.
+    #[cfg(unix)]
     fn escaping_symlink(repo: &FakeRepo) -> (tempfile::TempDir, PathBuf) {
         let outside = tempfile::tempdir().unwrap();
         let real_outside_target = outside.path().join("real-target");
@@ -959,6 +960,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn is_reapable_base_refuses_a_gone_leaf_beneath_a_symlink_that_escapes_the_root() {
         // Leniency for a missing LEAF must never defeat the EXISTING symlink-escape guard:
         // when an ancestor component that DOES exist is a symlink escaping the root, the
@@ -981,6 +983,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn is_reapable_base_refuses_a_symlink_under_the_authorized_root_that_escapes_it() {
         let repo = FakeRepo::new();
         let (_outside, link) = escaping_symlink(&repo);
