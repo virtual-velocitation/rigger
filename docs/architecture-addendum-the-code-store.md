@@ -803,7 +803,7 @@ call), and REFERENCES from F.
 
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
-| qualified mention | Mention `Call` or `Tagged(k)` in file F written `Q::leaf` or `Q.leaf` | the candidates the call or tagged-reference rule below reads whose parent is a definition whose leaf is `Q`, an `impl`-kind definition enclosing an `impl` mention of `Q`, or a trait an `impl` mention such an implementation encloses names: exactly one, in any file | EXTRACTED edge to that definition |
+| qualified mention | Mention `Call` or `Tagged(k)` in file F written `Q::leaf` or `Q.leaf` | the candidates the call or tagged-reference rule below reads whose parent is a definition whose leaf is `Q`, an `impl`-kind definition enclosing an `impl` mention of `Q` (a product one for a product mention), or a trait an `impl` mention such an implementation encloses names: exactly one, in any file | EXTRACTED edge to that definition |
 | | | several | a call: INFERRED edge to the definition the proof rule credits a test mention to, else to the placeholder `F::%<leaf>`; a tagged reference: no edge |
 | | | none | the call or tagged-reference rule below |
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |

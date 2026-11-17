@@ -5,7 +5,7 @@
 //!
 //! | Rule | Resolution |
 //! |---|---|
-//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates whose parent is a definition named `Q`, an implementation whose header names `Q`, or a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule |
+//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates whose parent is a definition named `Q`, an implementation whose header names `Q` (a product one for a product mention), or a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule |
 //! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
 //! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
@@ -101,7 +101,7 @@ pub fn hop<T>(mut candidates: Vec<T>) -> Hop<T> {
 
 /// Which candidates a mention resolves against: a product mention the product ones, a test
 /// mention all of them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pool {
     Product,
     All,
@@ -117,13 +117,15 @@ impl Pool {
         }
     }
 
-    fn admits(self, c: &Candidate) -> bool {
-        self == Pool::All || !c.test
+    /// Whether a mention from this pool may resolve against a definition that is test code
+    /// when `test`.
+    fn admits(self, test: bool) -> bool {
+        self == Pool::All || !test
     }
 
     /// Whether a call from this pool may land on `c`: the pool admits it and it is a call target.
     fn calls(self, c: &Candidate) -> bool {
-        self.admits(c) && is_call_target(Some(c.kind))
+        self.admits(c.test) && is_call_target(Some(c.kind))
     }
 }
 
@@ -357,9 +359,9 @@ pub struct Resolver<'v> {
     test_files: FxHashSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
     candidates: RefCell<FxHashMap<String, Arc<Vec<Candidate<'v>>>>>,
-    /// The parent definitions of each qualifier asked for ([`Self::parents`]), gathered once per
-    /// resolver.
-    parents: RefCell<FxHashMap<String, Arc<Parents<'v>>>>,
+    /// The parent definitions of each qualifier asked for in each pool ([`Self::parents`]),
+    /// gathered once per resolver.
+    parents: RefCell<FxHashMap<(String, Pool), Arc<Parents<'v>>>>,
     /// The test calls that prove a product definition, walked once per resolver.
     proof_calls: std::cell::OnceCell<Vec<ProofCall>>,
 }
@@ -490,19 +492,21 @@ impl<'v> Resolver<'v> {
             .collect()
     }
 
-    /// The candidates a mention written `name` to `leaf` keeps by its qualifier ([`qualifier`]):
-    /// those whose parent in their file is one of the qualifier's [`Self::parents`]. Terminal when
-    /// the mention is unqualified or its qualifier keeps none, so the unqualified rule takes it.
+    /// The candidates a mention written `name` to `leaf`, from `pool`, keeps by its qualifier
+    /// ([`qualifier`]): those whose parent in their file is one of the qualifier's
+    /// [`Self::parents`] in `pool`. Terminal when the mention is unqualified or its qualifier
+    /// keeps none, so the unqualified rule takes it.
     fn narrowed<'c>(
         &self,
         name: &str,
         leaf: &str,
+        pool: Pool,
         candidates: impl Iterator<Item = &'c Candidate<'v>>,
     ) -> Hop<&'c Candidate<'v>> {
         let Some(qualifier) = qualifier(name, leaf) else {
             return Hop::Terminal;
         };
-        let parents = self.parents(qualifier);
+        let parents = self.parents(qualifier, pool);
         hop(candidates
             .filter(|c| c.parent.is_some_and(|p| parents.contains(&(c.file, p))))
             .collect())
@@ -513,10 +517,13 @@ impl<'v> Resolver<'v> {
     /// enclosing an `impl`-tagged mention of it, so `T::new` reaches the methods of `impl T`; and
     /// every trait an `impl`-tagged mention such an implementation encloses names, so `T::m`
     /// reaches a trait's method through `impl Tr for T`. A definition of another kind enclosing
-    /// an `impl` mention of it, a class naming its base, adds nothing. Gathered once per
-    /// qualifier, by name alone in every language, as the call rule reads.
-    fn parents(&self, qualifier: &str) -> Arc<Parents<'v>> {
-        if let Some(held) = self.parents.borrow().get(qualifier) {
+    /// an `impl` mention of it, a class naming its base, adds nothing; nor does an implementation
+    /// that is test code when `pool` does not admit it ([`Pool::admits`]), so a test
+    /// implementation changes no product edge. Gathered once per qualifier and pool, by name
+    /// alone in every language, as the call rule reads.
+    fn parents(&self, qualifier: &str, pool: Pool) -> Arc<Parents<'v>> {
+        let key = (qualifier.to_string(), pool);
+        if let Some(held) = self.parents.borrow().get(&key) {
             return Arc::clone(held);
         }
         let is_impl =
@@ -536,7 +543,10 @@ impl<'v> Resolver<'v> {
             let Some(facts) = &facts else {
                 continue;
             };
-            if (facts.defs.get(at as usize)).is_none_or(|d| d.kind != CODE_KIND_IMPL) {
+            let admitted = |d: &Def| {
+                d.kind == CODE_KIND_IMPL && pool.admits(self.is_test(d.test, m.file.path))
+            };
+            if !(facts.defs.get(at as usize)).is_some_and(admitted) {
                 continue;
             }
             parents.insert((m.file.path, at));
@@ -551,9 +561,7 @@ impl<'v> Resolver<'v> {
             }
         }
         let parents = Arc::new(parents);
-        self.parents
-            .borrow_mut()
-            .insert(qualifier.to_string(), Arc::clone(&parents));
+        self.parents.borrow_mut().insert(key, Arc::clone(&parents));
         parents
     }
 
@@ -565,7 +573,7 @@ impl<'v> Resolver<'v> {
     fn call(&self, file: &str, name: &str, leaf: &str, pool: Pool) -> (String, &'static str) {
         let candidates = self.candidates(leaf);
         let in_pool = candidates.iter().filter(|c| pool.calls(c));
-        match self.narrowed(name, leaf, in_pool.clone()) {
+        match self.narrowed(name, leaf, pool, in_pool.clone()) {
             Hop::One(one) => return (one.id.clone(), TIER_EXTRACTED),
             Hop::Frontier(_) => return (placeholder_id(file, leaf), TIER_INFERRED),
             Hop::Terminal => {}
@@ -608,9 +616,9 @@ impl<'v> Resolver<'v> {
         let candidates = self.candidates(leaf);
         let targets: Vec<&Candidate> = candidates
             .iter()
-            .filter(|c| pool.admits(c) && c.lang == lang && kinds.contains(&c.kind))
+            .filter(|c| pool.admits(c.test) && c.lang == lang && kinds.contains(&c.kind))
             .collect();
-        match self.narrowed(name, leaf, targets.iter().copied()) {
+        match self.narrowed(name, leaf, pool, targets.iter().copied()) {
             Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
             Hop::Frontier(_) => return None,
             Hop::Terminal => {}
