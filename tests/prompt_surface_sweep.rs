@@ -67,7 +67,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "{} of {} keyed events of this run were not recorded on {STRE",
             "{reason}; to continue, amend the spec or the workflow until ",
             "a running stage always reports before the wave ends",
-            "stage {name:?} failed in its wave: {msg}",
             "{role} {agent_id:?} would run in the main repo checkout (emp",
             "{role} {agent_id:?} would run directly in the main repo chec",
             "stage {:?} references unknown {role} {agent_id:?}",
@@ -94,7 +93,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "stage {:?} references unknown agent {:?}",
             "the code store was not advanced to the landed merge ({e}); t",
             "landing {unit:?} was refused: local content at {} would be o",
-            "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for loca",
+            "{LAND_REFUSED_MARKER}{CONTENT_REFUSAL_MARKER}unit {unit:?}: ",
             "same-id refine resolves to a criterion its unit does not ser",
             "conductor invariant violated: fan-out unit '{name}' has an e",
             "conductor invariant violated: fan-out unit '{name}' (an unma",
@@ -129,7 +128,7 @@ const ALLOW_LIST: &[Allowed] = &[
     (
         "crates/rigger-conductor/src/held.rs",
         OperatorMessage,
-        &["the API refused spawn {} of unit {} (a prompt of {} characte"],
+        &["the API refused spawn {} of unit {}\na prompt of {} character"],
     ),
     (
         "crates/rigger-dash/src/mcpserver.rs",
@@ -169,6 +168,9 @@ const ALLOW_LIST: &[Allowed] = &[
             "{PARKED_MARKER} spawn {id:?} parked: nothing serves it in-pr",
             "refresh the cloud provider's credentials",
             "fix the agent's configured model, restart rigger run with --",
+            "the orchestrator's fix did not hold: a person decides, then ",
+            "a person holds this run: they read the fault, decide, then r",
+            "read the fault rigger status prints under this hold, fix its",
         ],
     ),
     (
