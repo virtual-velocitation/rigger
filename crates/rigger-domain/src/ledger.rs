@@ -260,11 +260,13 @@ impl Hold {
     }
 
     /// Whether the host or probe `RunHeld` `body` says anything to the hold `open` (`None` when
-    /// the run is unheld): the one transition rule a sighting and a failed probe append by. On an
-    /// unheld run it holds the run, whatever its cause; on a manual hold, on a hold of its own
-    /// cause and as a cause needing no person it says nothing; otherwise it moves the hold's cause.
-    pub fn moved_by(open: Option<&Hold>, body: &RunHeld) -> bool {
-        open.is_none_or(|hold| !hold.manual && body.needs_person && hold.latest.cause != body.cause)
+    /// the run is unheld), `asks` saying whether its cause asks someone to act (its row's `asks`:
+    /// it needs a person, or it is for the orchestrator): the one transition rule a sighting and a
+    /// failed probe append by. On an unheld run it holds the run, whatever its cause; on a manual
+    /// hold, on a hold of its own cause and as a cause asking no one it says nothing; otherwise it
+    /// moves the hold's cause.
+    pub fn moved_by(open: Option<&Hold>, body: &RunHeld, asks: bool) -> bool {
+        open.is_none_or(|hold| !hold.manual && asks && hold.latest.cause != body.cause)
     }
 
     /// What the hold reads as to a person, `<cause> - <action>` of its latest `RunHeld`, or its
@@ -1859,10 +1861,11 @@ mod tests {
     }
 
     /// THE HOLD TRANSITION RULE: a host or probe `RunHeld` holds an unheld run whatever its cause,
-    /// says nothing to an operator hold, to a hold of its own cause or as a cause needing no
-    /// person, and otherwise moves the hold's cause.
+    /// says nothing to an operator hold, to a hold of its own cause or as a cause asking no one,
+    /// and otherwise moves the hold's cause: to a person's cause, or to the orchestrator's from an
+    /// outage hold a probe would never end on it.
     #[test]
-    fn a_held_moves_an_open_hold_only_to_another_person_needing_cause() {
+    fn a_held_moves_an_open_hold_only_to_another_cause_asking_someone() {
         let open = |cause: &str, manual: bool| Hold {
             since: UNIX_EPOCH,
             manual,
@@ -1873,39 +1876,49 @@ mod tests {
             },
             revision: 0,
         };
-        let held = |cause: &str, needs_person: bool| RunHeld {
+        let held = |cause: &str| RunHeld {
             cause: cause.to_string(),
-            needs_person,
             ..RunHeld::default()
         };
-        for (hold, body, moves, case) in [
-            (None, held("rate_limit", false), true, "no hold"),
+        for (hold, body, asks, moves, case) in [
+            (None, held("rate_limit"), false, true, "no hold"),
             (
                 Some(open("operator", true)),
-                held("auth", true),
+                held("auth"),
+                true,
                 false,
                 "an operator hold",
             ),
             (
                 Some(open("auth", false)),
-                held("auth", true),
+                held("auth"),
+                true,
                 false,
                 "the same cause",
             ),
             (
                 Some(open("auth", false)),
-                held("billing", true),
+                held("billing"),
+                true,
                 true,
                 "a differing person-needing cause",
             ),
             (
+                Some(open("rate_limit", false)),
+                held("model_not_found"),
+                true,
+                true,
+                "a differing cause for the orchestrator",
+            ),
+            (
                 Some(open("auth", false)),
-                held("rate_limit", false),
+                held("rate_limit"),
                 false,
-                "a differing cause needing no person",
+                false,
+                "a differing cause asking no one",
             ),
         ] {
-            assert_eq!(Hold::moved_by(hold.as_ref(), &body), moves, "{case}");
+            assert_eq!(Hold::moved_by(hold.as_ref(), &body, asks), moves, "{case}");
         }
     }
 }

@@ -289,87 +289,100 @@ pub struct HoldSighting<'a> {
 }
 
 /// Record `sighting` as a `RunHeld {by: host}`, its action and need for a person read from the
-/// cause's row, when the hold it reads leaves it something to say: with no hold open, it holds
-/// the run; on an operator hold, it appends nothing; on a hold of the same cause, or on a
-/// sighting whose category needs no person, it appends nothing; otherwise the run's cause moves
-/// to the new person-needing category.
+/// cause's row as [`sighted`] escalates it, when the hold it reads leaves it something to say:
+/// with no hold open, it holds the run; on an operator hold, it appends nothing; on a hold of the
+/// same cause, or on a sighting whose category asks no one, it appends nothing; otherwise the
+/// run's cause moves to the new category.
 pub fn record_hold_sighting(store: &dyn EventStore, sighting: &HoldSighting) -> Result<(), Error> {
-    let body = held_by(
-        sighting.cause,
-        sighting.detail,
-        HOLD_BY_HOST,
-        sighting.model,
-    );
-    let held = serialized(TYPE_RUN_HELD, body.to_event())?;
-    append_on_hold(store, TYPE_RUN_HELD, |hold| {
-        Ok(Hold::moved_by(hold, &body).then(|| held.clone()))
+    append_on_hold(store, TYPE_RUN_HELD, |read| {
+        sighted(
+            read,
+            sighting.cause,
+            sighting.detail,
+            HOLD_BY_HOST,
+            sighting.model,
+        )
+        .map(|body| serialized(TYPE_RUN_HELD, body.to_event()))
+        .transpose()
     })
     .map(drop)
 }
 
 /// Record a failed probe's `category` (the last `api_retry` category of the canary's stream) as a
 /// `RunHeld {by: probe}` whose detail is the category, carrying the hold's latest model forward,
-/// when it moves the open hold's cause: on a hold of the same cause, on a category that needs no
-/// person, on an operator hold and on an unheld run it appends nothing (spec 105 RELEASE).
+/// when it moves the open hold's cause ([`sighted`]): on a hold of the same cause, on a category
+/// that asks no one, on an operator hold and on an unheld run it appends nothing (spec 105
+/// RELEASE).
 pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(), Error> {
-    append_on_hold(store, TYPE_RUN_HELD, |hold| {
-        hold.map(|hold| {
-            let body = held_by(category, category, HOLD_BY_PROBE, &hold.latest.model);
-            (hold, body)
-        })
-        .filter(|(hold, body)| Hold::moved_by(Some(hold), body))
-        .map(|(_, body)| serialized(TYPE_RUN_HELD, body.to_event()))
-        .transpose()
+    append_on_hold(store, TYPE_RUN_HELD, |read| {
+        read.open
+            .as_ref()
+            .and_then(|hold| sighted(read, category, category, HOLD_BY_PROBE, &hold.latest.model))
+            .map(|body| serialized(TYPE_RUN_HELD, body.to_event()))
+            .transpose()
     })
     .map(drop)
+}
+
+/// The `RunHeld` of `cause` by `by` a host sighting or a failed probe appends over `read`, `None`
+/// when it says nothing to the open hold ([`Hold::moved_by`], asked by the cause's row's
+/// [`DispositionRow::asks`]). Its row is the cause's as [`escalated`] holds it: a category recurs
+/// when the hold the run last released held it on the same cause, since a category names its
+/// fault whichever line sighted it.
+fn sighted(read: &HoldRead, cause: &str, detail: &str, by: &str, model: &str) -> Option<RunHeld> {
+    let row = cause_row(cause);
+    let recurred = read
+        .released
+        .as_ref()
+        .is_some_and(|hold| hold.latest.cause == cause);
+    let open = read.open.as_ref();
+    let body = held_on(escalated(row, recurred, open), cause, detail, by, model);
+    Hold::moved_by(open, &body, row.asks()).then_some(body)
 }
 
 /// Hold the current run on a fault of the conductor's own that ended its drive (`fault`, its
 /// text; spec 105): one `RunHeld {by: conductor}` of cause `conductor-fault`, the fault's lines as
 /// its detail ([`fault_detail`]), carrying the open hold's latest model forward. The hold is for
-/// the orchestrator, the cause's row, save where a person decides: the hold the run last released
-/// named the same fault ([`RunHeld::same_fault`]), so the orchestrator's fix did not hold
-/// ([`FAULT_RECURRED`]), or the hold open now already waits on a person
-/// ([`FAULT_ON_A_PERSONS_HOLD`]). It lands over any open hold, an operator hold included, since the
-/// fault is news to whoever releases it; an open hold whose latest `RunHeld` already names the same
-/// fault takes nothing, so a relaunch meeting the fault again adds no second hold. Decided inside
-/// the compare-and-append ([`append_at_head`]) over the current run's hold events, its released
-/// holds included.
+/// the orchestrator, the cause's row as [`escalated`] holds it, a fault recurring when the hold the
+/// run last released named the same fault ([`RunHeld::same_fault`]). It lands over any open hold,
+/// an operator hold included, since the fault is news to whoever releases it; an open hold whose
+/// latest `RunHeld` already names the same fault takes nothing, so a relaunch meeting the fault
+/// again adds no second hold.
 pub fn hold_on_a_fault(store: &dyn EventStore, fault: &str) -> Result<(), Error> {
     let detail = fault_detail(fault);
-    let mut read_so_far: Vec<Event> = Vec::new();
-    append_at_head(
-        store,
-        TypeSelection::Only(&HOLD_TYPES),
-        TYPE_RUN_HELD,
-        |read| {
-            accumulate(&mut read_so_far, read);
-            let events = current_run(&read_so_far);
-            let mut state = RunState::new();
-            fold_holds(&mut state, events)?;
-            let open = state.hold.as_ref();
-            let model = open.map_or("", |hold| hold.latest.model.as_str());
-            let held = held_by(CONDUCTOR_FAULT, &detail, HOLD_BY_CONDUCTOR, model);
-            if open.is_some_and(|hold| hold.latest.same_fault(&held)) {
-                return Ok(None);
-            }
-            let released = holds(events)
-                .into_iter()
-                .rev()
-                .find(|span| span.release.is_some())
-                .and_then(|span| span.hold);
-            let row = if released.is_some_and(|hold| hold.latest.same_fault(&held)) {
-                FAULT_RECURRED
-            } else if open.is_some_and(|hold| hold.latest.needs_person) {
-                FAULT_ON_A_PERSONS_HOLD
-            } else {
-                return serialized(TYPE_RUN_HELD, held.to_event()).map(Some);
-            };
-            let body = held_on(row, CONDUCTOR_FAULT, &detail, HOLD_BY_CONDUCTOR, model);
-            serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
-        },
-    )
+    append_on_hold(store, TYPE_RUN_HELD, |read| {
+        let open = read.open.as_ref();
+        let model = open.map_or("", |hold| hold.latest.model.as_str());
+        let held = held_by(CONDUCTOR_FAULT, &detail, HOLD_BY_CONDUCTOR, model);
+        if open.is_some_and(|hold| hold.latest.same_fault(&held)) {
+            return Ok(None);
+        }
+        let recurred = read
+            .released
+            .as_ref()
+            .is_some_and(|hold| hold.latest.same_fault(&held));
+        let row = escalated(cause_row(CONDUCTOR_FAULT), recurred, open);
+        let body = held_on(row, CONDUCTOR_FAULT, &detail, HOLD_BY_CONDUCTOR, model);
+        serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
+    })
     .map(drop)
+}
+
+/// The row a hold of `row`'s cause stands on (spec 105): `row` itself, save that a hold for the
+/// orchestrator ([`DispositionRow::for_orchestrator`]) is held for a person where `recurred`, the
+/// hold the run last released holding it on the same fault, says the orchestrator's fix did not
+/// hold ([`FAULT_RECURRED`]), or where the hold open now (`open`) already waits on a person
+/// ([`FAULT_ON_A_PERSONS_HOLD`]).
+fn escalated(row: DispositionRow, recurred: bool, open: Option<&Hold>) -> DispositionRow {
+    if !row.for_orchestrator() {
+        row
+    } else if recurred {
+        FAULT_RECURRED
+    } else if open.is_some_and(|hold| hold.latest.needs_person) {
+        FAULT_ON_A_PERSONS_HOLD
+    } else {
+        row
+    }
 }
 
 /// The `RunHeld` of `cause` written by `by`, its action and need for a person read from the
@@ -468,8 +481,11 @@ pub fn hold_by_operator(
 /// host, `rigger release`'s by the operator (spec 105). With no hold open it appends nothing.
 /// Answers whether it appended.
 pub fn release_hold(store: &dyn EventStore, by: &str, now: SystemTime) -> Result<bool, Error> {
-    append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
-        hold.map(|hold| released_by(by, hold, now)).transpose()
+    append_on_hold(store, TYPE_RUN_RELEASED, |read| {
+        read.open
+            .as_ref()
+            .map(|hold| released_by(by, hold, now))
+            .transpose()
     })
 }
 
@@ -482,8 +498,10 @@ pub fn release_probed_hold(
     probed: Revision,
     now: SystemTime,
 ) -> Result<(), Error> {
-    append_on_hold(store, TYPE_RUN_RELEASED, |hold| {
-        hold.filter(|hold| hold.revision == probed)
+    append_on_hold(store, TYPE_RUN_RELEASED, |read| {
+        read.open
+            .as_ref()
+            .filter(|hold| hold.revision == probed)
             .map(|hold| released_by(HOLD_BY_PROBE, hold, now))
             .transpose()
     })
@@ -539,22 +557,43 @@ pub(crate) fn append_at_head(
     }
 }
 
+/// The current run's hold as one read of [`append_on_hold`] folds it.
+struct HoldRead {
+    /// The hold open now, `None` when the run is unheld.
+    open: Option<Hold>,
+    /// The hold the run last released, `None` when it released none or that hold's `RunHeld`
+    /// does not decode.
+    released: Option<Hold>,
+}
+
 /// Append what `decide` makes of the current run's hold through [`append_at_head`], the hold
-/// folded by [`fold_holds`] from the run's slice and forward through the [`HOLD_TYPES`] that
-/// land behind it: every `RunHeld` and `RunReleased` but the operator's hold goes through here
-/// (spec 105), so a concurrent writer's hold or release is never missed; [`hold_by_operator`]
-/// folds the whole run behind its read through [`append_at_head`] itself, to decide liveness
-/// too. `what` names the event type for the store's report of an append it did not write.
-/// Answers whether it appended: `false` when `decide` left it nothing to say.
+/// read ([`HoldRead`]) from the run's slice and forward through the [`HOLD_TYPES`] that land
+/// behind it, the open hold folded by [`fold_holds`] and the released one read by [`holds`]:
+/// every `RunHeld` and `RunReleased` but the operator's hold goes through here (spec 105), so a
+/// concurrent writer's hold or release is never missed; [`hold_by_operator`] folds the whole run
+/// behind its read through [`append_at_head`] itself, to decide liveness too. `what` names the
+/// event type for the store's report of an append it did not write. Answers whether it appended:
+/// `false` when `decide` left it nothing to say.
 fn append_on_hold(
     store: &dyn EventStore,
     what: &str,
-    decide: impl Fn(Option<&Hold>) -> Result<Option<Event>, Error>,
+    decide: impl Fn(&HoldRead) -> Result<Option<Event>, Error>,
 ) -> Result<bool, Error> {
-    let mut state = RunState::new();
+    let mut read_so_far: Vec<Event> = Vec::new();
     append_at_head(store, TypeSelection::Only(&HOLD_TYPES), what, |read| {
-        fold_holds(&mut state, read)?;
-        decide(state.hold.as_ref())
+        accumulate(&mut read_so_far, read);
+        let events = current_run(&read_so_far);
+        let mut state = RunState::new();
+        fold_holds(&mut state, events)?;
+        let released = holds(events)
+            .into_iter()
+            .rev()
+            .find(|span| span.release.is_some())
+            .and_then(|span| span.hold);
+        decide(&HoldRead {
+            open: state.hold,
+            released,
+        })
     })
     .map(|appended| appended.is_some())
 }
@@ -591,6 +630,8 @@ mod tests {
 
     const LOGIN: &str = "run claude auth login";
     const RETRIES: &str = "none, the run retries by itself";
+    const MODEL: &str = "fix the agent's configured model, restart rigger run with \
+                         --rebase-definition, then run rigger release";
 
     /// A `RunHeld` event of `cause` by `by` naming `model`, as a writer of the hold left it on the
     /// stream.
@@ -599,6 +640,18 @@ mod tests {
             cause: cause.to_string(),
             by: by.to_string(),
             model: model.to_string(),
+            ..RunHeld::default()
+        };
+        body.to_event().unwrap()
+    }
+
+    /// A `RunHeld` event of `cause` by the host that needs a person, as a sighting of a
+    /// person's category left it on the stream.
+    fn held_for_a_person(cause: &str) -> Event {
+        let body = RunHeld {
+            cause: cause.to_string(),
+            needs_person: true,
+            by: HOLD_BY_HOST.to_string(),
             ..RunHeld::default()
         };
         body.to_event().unwrap()
@@ -660,14 +713,22 @@ mod tests {
 
     /// THE SIGHTINGS' TRANSITIONS (spec 105): a first sighting appends one `RunHeld` carrying the
     /// table's action and person, its detail and its model; a repeated one appends nothing; a
-    /// differing person-needing one appends one; a differing one that needs no person appends
-    /// nothing; an operator or a conductor hold, however late a host hold landed on it, takes
-    /// none; and a released hold, or one standing before the current run's boundary, is no hold.
+    /// differing one asking someone (a person's, or `model_not_found`, the orchestrator's) appends
+    /// one; a differing one asking no one appends nothing; an operator or a conductor hold, however
+    /// late a host hold landed on it, takes none; and a released hold, or one standing before the
+    /// current run's boundary, is no hold. `model_not_found` is held for the orchestrator, save
+    /// for a person where the hold the run last released held it on the same cause, so the
+    /// orchestrator's fix did not hold, or where the open hold already waits on a person; an
+    /// outage sighted again after its release is held as at first.
     #[test]
     fn a_sighting_appends_only_what_the_open_hold_leaves_it_to_say() {
         let login = || host_hold("authentication_failed", LOGIN, true);
         let billing = || host_hold("billing_error", "fix the account's billing", true);
-        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 12] = [
+        let model = || host_hold("model_not_found", MODEL, false);
+        let model_for_a_person =
+            |row: DispositionRow| host_hold("model_not_found", row.action, true);
+        let unseen = || held("model_not_found", HOLD_BY_HOST, "");
+        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 19] = [
             (
                 "a first sighting of a hold class",
                 vec![],
@@ -745,6 +806,53 @@ mod tests {
                 vec![held("authentication_failed", HOLD_BY_HOST, ""), released()],
                 "authentication_failed",
                 Some(login()),
+            ),
+            (
+                "a first sighting of model_not_found",
+                vec![],
+                "model_not_found",
+                Some(model()),
+            ),
+            (
+                "model_not_found on an outage hold",
+                vec![held("rate_limit", HOLD_BY_HOST, "")],
+                "model_not_found",
+                Some(model()),
+            ),
+            (
+                "model_not_found on a hold waiting on a person",
+                vec![held_for_a_person("authentication_failed")],
+                "model_not_found",
+                Some(model_for_a_person(FAULT_ON_A_PERSONS_HOLD)),
+            ),
+            (
+                "model_not_found after a released model_not_found hold",
+                vec![unseen(), released()],
+                "model_not_found",
+                Some(model_for_a_person(FAULT_RECURRED)),
+            ),
+            (
+                "model_not_found after a released model_not_found hold, then a released other",
+                vec![
+                    unseen(),
+                    released(),
+                    held("rate_limit", HOLD_BY_HOST, ""),
+                    released(),
+                ],
+                "model_not_found",
+                Some(model()),
+            ),
+            (
+                "a person's category on a model_not_found hold",
+                vec![unseen()],
+                "billing_error",
+                Some(billing()),
+            ),
+            (
+                "an outage sighted after its own released hold",
+                vec![held("rate_limit", HOLD_BY_HOST, ""), released()],
+                "rate_limit",
+                Some(host_hold("rate_limit", RETRIES, false)),
             ),
         ];
         for (name, log, cause, expected) in rows {
@@ -1075,11 +1183,12 @@ mod tests {
     }
 
     /// A FAILED PROBE UPGRADES (spec 105 RELEASE, THE EVENTS): a failed canary's category that
-    /// needs a person and differs from the open hold's cause appends one `RunHeld {by: probe}`,
-    /// its detail the category, carrying the hold's latest model forward; any other category, an
-    /// operator hold and a run no hold stands on take nothing.
+    /// asks someone (a person's, or `model_not_found`, the orchestrator's, no probe ever ending
+    /// it) and differs from the open hold's cause appends one `RunHeld {by: probe}`, its detail
+    /// the category, carrying the hold's latest model forward; any other category, an operator
+    /// hold and a run no hold stands on take nothing.
     #[test]
-    fn a_failed_probe_upgrades_only_a_differing_person_needing_cause() {
+    fn a_failed_probe_upgrades_only_a_differing_cause_asking_someone() {
         let billing = |model: &str| RunHeld {
             cause: "billing_error".to_string(),
             detail: "billing_error".to_string(),
@@ -1089,7 +1198,15 @@ mod tests {
             model: model.to_string(),
         };
         let cloud = || held("cloud_credential_error", HOLD_BY_HOST, "opus");
-        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 9] = [
+        let model = |action: &str, needs_person, model: &str| RunHeld {
+            cause: "model_not_found".to_string(),
+            detail: "model_not_found".to_string(),
+            action: action.to_string(),
+            needs_person,
+            by: HOLD_BY_PROBE.to_string(),
+            model: model.to_string(),
+        };
+        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 12] = [
             ("no hold", vec![], "billing_error", None),
             (
                 "a released hold",
@@ -1133,6 +1250,28 @@ mod tests {
                 vec![held("cloud_credential_error", HOLD_BY_HOST, "")],
                 "billing_error",
                 Some(billing("")),
+            ),
+            (
+                "model_not_found on an outage hold",
+                vec![held("rate_limit", HOLD_BY_HOST, "opus")],
+                "model_not_found",
+                Some(model(MODEL, false, "opus")),
+            ),
+            (
+                "model_not_found on a hold waiting on a person",
+                vec![held_for_a_person("cloud_credential_error")],
+                "model_not_found",
+                Some(model(FAULT_ON_A_PERSONS_HOLD.action, true, "")),
+            ),
+            (
+                "model_not_found on an outage after a released model_not_found hold",
+                vec![
+                    held("model_not_found", HOLD_BY_HOST, "opus"),
+                    released(),
+                    held("rate_limit", HOLD_BY_HOST, "opus"),
+                ],
+                "model_not_found",
+                Some(model(FAULT_RECURRED.action, true, "opus")),
             ),
         ];
         for (name, log, category, expected) in rows {

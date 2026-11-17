@@ -402,6 +402,9 @@ pub struct DispositionRow {
     /// Whether a probe of a hold of this cause reads the login (`claude auth status`) before
     /// its canary: a logged-out answer is the cause itself, so no canary runs.
     pub credential: bool,
+    /// Whether a probe can release a hold of this cause (spec 105 RELEASE): `false` for a cause
+    /// whose hold only `rigger release` ends and for a category that never holds.
+    pub probed: bool,
 }
 
 impl DispositionRow {
@@ -409,6 +412,19 @@ impl DispositionRow {
     /// rather than failing its spawn as a fault or a rejected row does.
     pub fn waits(&self) -> bool {
         matches!(self.disposition, Disposition::Hold | Disposition::Wait)
+    }
+
+    /// Whether a hold of this row is for the orchestrator first (spec 105): it holds, needs no
+    /// person and no probe ends it, so the orchestrator's fix and its `rigger release` do, and
+    /// the same fault again after a release goes to a person ([`FAULT_RECURRED`]).
+    pub fn for_orchestrator(&self) -> bool {
+        self.disposition == Disposition::Hold && !self.needs_person && !self.probed
+    }
+
+    /// Whether a hold of this row asks someone to act: it needs a person or it is for the
+    /// orchestrator ([`DispositionRow::for_orchestrator`]). Only such a cause moves an open hold.
+    pub fn asks(&self) -> bool {
+        self.needs_person || self.for_orchestrator()
     }
 }
 
@@ -426,16 +442,17 @@ pub const OPERATOR: &str = "operator";
 /// for a person instead.
 pub const CONDUCTOR_FAULT: &str = "conductor-fault";
 
-/// A conductor-fault hold for a person: the hold its run last released named the same fault
-/// ([`crate::run::RunHeld::same_fault`]), so the orchestrator's fix did not hold.
+/// A hold for the orchestrator ([`DispositionRow::for_orchestrator`]) held for a person instead:
+/// the hold its run last released held it on the same fault, so the orchestrator's fix did not
+/// hold.
 pub const FAULT_RECURRED: DispositionRow = DispositionRow {
     action: "the orchestrator's fix did not hold: a person decides, then runs rigger release",
     needs_person: true,
     ..CONDUCTOR_FAULT_ROW
 };
 
-/// A conductor-fault hold for a person: it landed on an open hold that already waits on one, an
-/// operator hold, so its release stays theirs.
+/// A hold for the orchestrator held for a person instead: it landed on an open hold that already
+/// waits on one, so its release stays theirs.
 pub const FAULT_ON_A_PERSONS_HOLD: DispositionRow = DispositionRow {
     action: "a person holds this run: they read the fault, decide, then run rigger release",
     needs_person: true,
@@ -443,14 +460,22 @@ pub const FAULT_ON_A_PERSONS_HOLD: DispositionRow = DispositionRow {
 };
 
 /// The conductor-fault row: held for the orchestrator, which reads the fault `rigger status`
-/// prints under the hold, fixes its cause and releases the run; no probe ends it.
-const CONDUCTOR_FAULT_ROW: DispositionRow = DispositionRow {
-    disposition: Disposition::Hold,
-    action: "read the fault rigger status prints under this hold, fix its cause at the root, then \
-             run rigger release",
-    needs_person: false,
-    credential: false,
-};
+/// prints under the hold, fixes its cause and releases the run.
+const CONDUCTOR_FAULT_ROW: DispositionRow = for_the_orchestrator(
+    "read the fault rigger status prints under this hold, fix its cause at the root, then run \
+     rigger release",
+);
+
+/// The row of a hold for the orchestrator naming `action`: no person first, no probe ends it.
+const fn for_the_orchestrator(action: &'static str) -> DispositionRow {
+    DispositionRow {
+        disposition: Disposition::Hold,
+        action,
+        needs_person: false,
+        credential: false,
+        probed: false,
+    }
+}
 
 /// The action of a hold that clears without anyone: a wait-class category's and `api-unstable`'s.
 const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
@@ -460,6 +485,7 @@ const WAITS: DispositionRow = DispositionRow {
     action: RETRIES_BY_ITSELF,
     needs_person: false,
     credential: false,
+    probed: true,
 };
 
 const FAULTS: DispositionRow = DispositionRow {
@@ -467,6 +493,7 @@ const FAULTS: DispositionRow = DispositionRow {
     action: "",
     needs_person: false,
     credential: false,
+    probed: false,
 };
 
 const REJECTED: DispositionRow = DispositionRow {
@@ -474,29 +501,33 @@ const REJECTED: DispositionRow = DispositionRow {
     ..FAULTS
 };
 
-/// The row a hold of `action` reads, every category that holds on sight needing a person.
+/// The row a hold of `action` reads that a person resolves first, a probe ending it once their
+/// act has cleared its cause.
 const fn holds(action: &'static str) -> DispositionRow {
     DispositionRow {
         disposition: Disposition::Hold,
         action,
         needs_person: true,
         credential: false,
+        probed: true,
     }
 }
 
 /// The disposition table's row for a hold's `cause`: `api-unstable`'s, `operator`'s,
-/// `conductor-fault`'s, or the category's. The `operator` row needs a person and names no action:
-/// no row can hold a per-hold reason, so `rigger hold`'s append puts its reason in the action over
-/// the row's. The `conductor-fault` row is held for the orchestrator, the fault its detail.
+/// `conductor-fault`'s, or the category's. The `operator` row needs a person, names no action and
+/// is never probed: no row can hold a per-hold reason, so `rigger hold`'s append puts its reason
+/// in the action over the row's. The `conductor-fault` row is held for the orchestrator, the fault
+/// its detail.
 pub fn cause_row(cause: &str) -> DispositionRow {
     match cause {
         API_UNSTABLE => DispositionRow {
             disposition: Disposition::Hold,
-            action: RETRIES_BY_ITSELF,
-            needs_person: false,
-            credential: false,
+            ..WAITS
         },
-        OPERATOR => holds(""),
+        OPERATOR => DispositionRow {
+            probed: false,
+            ..holds("")
+        },
         CONDUCTOR_FAULT => CONDUCTOR_FAULT_ROW,
         category => AgentFailure::from_category(category).row(),
     }
@@ -576,7 +607,7 @@ impl AgentFailure {
             AgentFailure::BillingError => holds("fix the account's billing"),
             AgentFailure::AccountOnHold => holds("resolve the account's hold"),
             AgentFailure::VerificationRequired => holds("complete the account's verification"),
-            AgentFailure::ModelNotFound => holds(
+            AgentFailure::ModelNotFound => for_the_orchestrator(
                 "fix the agent's configured model, restart rigger run with --rebase-definition, \
                  then run rigger release",
             ),
@@ -765,23 +796,25 @@ mod tests {
     }
 
     /// THE DISPOSITION TABLE (spec 105): every category, by its wire name, maps to the disposition,
-    /// the action and the need for a person decided for it, and whether it is a credential
-    /// category whose probe reads the login first; a name no binary knows faults as `unknown` does.
+    /// the action and the need for a person decided for it, whether it is a credential category
+    /// whose probe reads the login first and whether a probe ends its hold; a name no binary knows
+    /// faults as `unknown` does. `model_not_found` alone is for the orchestrator first.
     #[test]
     fn every_category_maps_to_its_decided_disposition_action_and_person() {
         use Disposition::{Fault, Hold, Rejected, Wait};
-        let rows: [(&str, Disposition, &str, bool, bool); 14] = [
-            ("rate_limit", Wait, RETRIES, false, false),
-            ("overloaded", Wait, RETRIES, false, false),
-            ("server_error", Wait, RETRIES, false, false),
-            ("authentication_failed", Hold, LOGIN, true, true),
-            ("oauth_org_not_allowed", Hold, LOGIN, true, true),
+        let rows: [(&str, Disposition, &str, bool, bool, bool); 14] = [
+            ("rate_limit", Wait, RETRIES, false, false, true),
+            ("overloaded", Wait, RETRIES, false, false, true),
+            ("server_error", Wait, RETRIES, false, false, true),
+            ("authentication_failed", Hold, LOGIN, true, true, true),
+            ("oauth_org_not_allowed", Hold, LOGIN, true, true, true),
             (
                 "cloud_credential_error",
                 Hold,
                 "refresh the cloud provider's credentials",
                 true,
                 false,
+                true,
             ),
             (
                 "billing_error",
@@ -789,6 +822,7 @@ mod tests {
                 "fix the account's billing",
                 true,
                 false,
+                true,
             ),
             (
                 "account_on_hold",
@@ -796,6 +830,7 @@ mod tests {
                 "resolve the account's hold",
                 true,
                 false,
+                true,
             ),
             (
                 "verification_required",
@@ -803,19 +838,21 @@ mod tests {
                 "complete the account's verification",
                 true,
                 false,
+                true,
             ),
-            ("model_not_found", Hold, MODEL, true, false),
-            ("invalid_request", Rejected, "", false, false),
-            ("max_output_tokens", Fault, "", false, false),
-            ("unknown", Fault, "", false, false),
-            ("a_category_no_binary_knows", Fault, "", false, false),
+            ("model_not_found", Hold, MODEL, false, false, false),
+            ("invalid_request", Rejected, "", false, false, false),
+            ("max_output_tokens", Fault, "", false, false, false),
+            ("unknown", Fault, "", false, false, false),
+            ("a_category_no_binary_knows", Fault, "", false, false, false),
         ];
-        for (category, disposition, action, needs_person, credential) in rows {
+        for (category, disposition, action, needs_person, credential, probed) in rows {
             let row = DispositionRow {
                 disposition,
                 action,
                 needs_person,
                 credential,
+                probed,
             };
             assert_eq!(
                 AgentFailure::from_category(category).row(),
@@ -831,9 +868,9 @@ mod tests {
 
     /// A hold's `cause` reads its row from the one table, the three causes no category names
     /// included: `api-unstable` needs no person and the run retries by itself; `operator` needs a
-    /// person and names no action, `rigger hold`'s reason standing in for it; `conductor-fault`
-    /// is held for the orchestrator, its action what the orchestrator does, and its two rows for
-    /// a person name why a person decides.
+    /// person, names no action, `rigger hold`'s reason standing in for it, and no probe ends it;
+    /// `conductor-fault` is held for the orchestrator, its action what the orchestrator does, and
+    /// its two rows for a person name why a person decides.
     #[test]
     fn a_holds_cause_reads_the_table_api_unstable_and_operator_included() {
         let rows = [
@@ -844,6 +881,7 @@ mod tests {
                     action: RETRIES,
                     needs_person: false,
                     credential: false,
+                    probed: true,
                 },
             ),
             (
@@ -853,6 +891,7 @@ mod tests {
                     action: "",
                     needs_person: true,
                     credential: false,
+                    probed: false,
                 },
             ),
             (
@@ -863,6 +902,7 @@ mod tests {
                              at the root, then run rigger release",
                     needs_person: false,
                     credential: false,
+                    probed: false,
                 },
             ),
             (
@@ -880,6 +920,7 @@ mod tests {
             action,
             needs_person: true,
             credential: false,
+            probed: false,
         };
         assert_eq!(
             [FAULT_RECURRED, FAULT_ON_A_PERSONS_HOLD],
@@ -892,7 +933,38 @@ mod tests {
                     "a person holds this run: they read the fault, decide, then run rigger release"
                 ),
             ],
-            "a conductor fault's rows for a person"
+            "a hold for the orchestrator's rows for a person"
+        );
+    }
+
+    /// WHO A HOLD ASKS (spec 105): a cause is for the orchestrator first when it holds, needs no
+    /// person and no probe ends it, `conductor-fault` and `model_not_found`; it asks someone to act
+    /// when it needs a person or is for the orchestrator; an outage, `api-unstable` and a category
+    /// that never holds ask no one.
+    #[test]
+    fn a_hold_is_for_the_orchestrator_when_it_needs_no_person_and_no_probe_ends_it() {
+        let rows: [(&str, bool, bool); 9] = [
+            ("conductor-fault", true, true),
+            ("model_not_found", true, true),
+            ("operator", false, true),
+            ("authentication_failed", false, true),
+            ("billing_error", false, true),
+            ("rate_limit", false, false),
+            ("api-unstable", false, false),
+            ("invalid_request", false, false),
+            ("unknown", false, false),
+        ];
+        for (cause, for_orchestrator, asks) in rows {
+            let row = cause_row(cause);
+            assert_eq!(
+                (row.for_orchestrator(), row.asks()),
+                (for_orchestrator, asks),
+                "{cause}"
+            );
+        }
+        assert!(
+            !FAULT_RECURRED.for_orchestrator() && FAULT_RECURRED.asks(),
+            "a recurred fault's row asks a person"
         );
     }
 

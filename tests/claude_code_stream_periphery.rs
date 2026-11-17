@@ -2072,7 +2072,7 @@ fn hold_cases() -> Vec<HoldCase> {
     let model_action =
         "fix the agent's configured model, restart rigger run with --rebase-definition, then run \
          rigger release";
-    let model_ending = host_hold("model_not_found", "", model_action, true, "");
+    let model_ending = host_hold("model_not_found", "", model_action, false, "");
     let wait_ending = host_hold("rate_limit", "", RETRIES_BY_ITSELF, false, "");
     vec![
         HoldCase {

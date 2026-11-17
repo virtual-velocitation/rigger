@@ -7,15 +7,16 @@
 //! hold and every hold behind it that a quick re-hold continued: a hold released and held again
 //! within 600 s keeps its probes' count, so a hold the host re-declares straight after a probe
 //! released it does not start over at 60 s. A manual hold, the operator's or the conductor's on a
-//! fault of its own, breaks the chain, since a person ends it, and is never probed itself; a `model_not_found` hold is never probed either, its
-//! action being a configuration a probe cannot change.
+//! fault of its own, breaks the chain, since `rigger release` ends it, and is never probed itself;
+//! a `model_not_found` hold is never probed either, its action being a configuration a probe
+//! cannot change.
 //!
 //! The probe itself is an interface, [`HoldProbe`], which the agent host implements: what a probe
 //! answers ([`ProbeOutcome`]) is all the hold controller reads of it.
 
 use std::time::{Duration, SystemTime};
 
-use crate::agent::{cause_row, AgentFailure};
+use crate::agent::cause_row;
 use crate::eventstore::{Event, Revision};
 use crate::ledger::{holds, Hold, HoldSpan};
 use crate::progress::{decoded_progress, AgentProgress};
@@ -70,10 +71,12 @@ impl OwedProbe {
 }
 
 /// Whether a probe can release `hold`: neither a manual hold (the operator's or the conductor's)
-/// nor a `model_not_found` hold, the two [`owed_probe`] owes no probe, so `rigger status` says only of a probed hold that the run
+/// nor a hold whose cause is for the orchestrator
+/// ([`crate::agent::DispositionRow::for_orchestrator`]), a `model_not_found` hold, the two
+/// [`owed_probe`] owes no probe, so `rigger status` says only of a probed hold that the run
 /// resumes by itself.
 pub fn is_probed(hold: &Hold) -> bool {
-    !hold.manual && hold.latest.cause != AgentFailure::ModelNotFound.as_str()
+    !hold.manual && !cause_row(&hold.latest.cause).for_orchestrator()
 }
 
 /// The probe the run's open hold is owed at `now`, read from the current run's events
@@ -149,7 +152,8 @@ pub enum ProbeOutcome {
     /// canary ran: a person must log in.
     LoggedOut,
     /// The canary did not answer, or its first result carried an error: the category of the
-    /// last `api_retry` line ahead of its first result, [`AgentFailure::Unknown`]'s with none.
+    /// last `api_retry` line ahead of its first result,
+    /// [`crate::agent::AgentFailure::Unknown`]'s with none.
     Failed(String),
 }
 

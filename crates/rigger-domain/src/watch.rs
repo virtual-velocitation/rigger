@@ -157,10 +157,11 @@ pub enum Signal {
     SpecDefect,
     DeadDriver,
     /// An open hold no probe ends ([`hold_probe::is_probed`]) whose latest `RunHeld` needs no
-    /// person: the conductor's on a fault of its own, held for the orchestrator to resolve.
+    /// person: the conductor's on a fault of its own or a `model_not_found` hold, held for the
+    /// orchestrator to resolve.
     OrchestratorHold,
-    /// An open hold no probe ends whose latest `RunHeld` needs a person: the operator's, a
-    /// conductor fault that recurred after a release, or a `model_not_found` hold.
+    /// An open hold no probe ends whose latest `RunHeld` needs a person: the operator's, or a hold
+    /// for the orchestrator whose fault recurred after a release or that landed on a person's hold.
     PersonHold,
     DashNotServing,
     RejectRecurrence,
@@ -802,10 +803,10 @@ mod tests {
     }
 
     /// EVERY OPEN HOLD NO PROBE ENDS IS PUSHED TO THE ORCHESTRATOR (spec 105): a conductor fault's
-    /// hold is reported for the orchestrator, naming its cause, its detail's first line and its
-    /// action, the response `rigger-resume-a-run`; a recurred fault's, an operator's and a
-    /// `model_not_found` hold for a person; a hold a probe ends, a released hold and an unheld
-    /// run report none. Each hold the run takes re-alerts, a release then a different fault
+    /// and a `model_not_found` hold are reported for the orchestrator, naming the cause, the
+    /// detail's first line and the action, the response `rigger-resume-a-run`; a recurred fault's
+    /// and an operator's hold for a person; a hold a probe ends, a released hold and an unheld run
+    /// report none. Each hold the run takes re-alerts, a release then a different fault
     /// included, while one standing hold alerts once.
     #[test]
     fn every_open_hold_no_probe_ends_is_reported_for_whoever_resolves_it() {
@@ -846,7 +847,7 @@ mod tests {
         let person_line = |told: &str| {
             format!("hold for a person: run - {told} (respond: a person decides, then runs rigger release)")
         };
-        let rows: [(&str, Vec<Event>, Vec<String>); 8] = [
+        let rows: [(&str, Vec<Event>, Vec<String>); 9] = [
             (
                 "a conductor fault",
                 vec![fault(DETAIL)],
@@ -867,6 +868,15 @@ mod tests {
             ),
             (
                 "a model_not_found hold",
+                vec![host("model_not_found", false)],
+                vec![
+                    "hold for the orchestrator: run - model_not_found: the line - act (respond: \
+                     rigger-resume-a-run)"
+                        .to_string(),
+                ],
+            ),
+            (
+                "a model_not_found hold that recurred",
                 vec![host("model_not_found", true)],
                 vec![person_line("model_not_found: the line - act")],
             ),
