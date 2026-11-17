@@ -1530,8 +1530,10 @@ pub fn branch_exists(repo: &str, branch: &str) -> bool {
     branch_present(repo, branch).unwrap_or(false)
 }
 
-/// Whether local branch `branch` exists in `repo`, read fail-closed ([`ref_present`]).
-fn branch_present(repo: &str, branch: &str) -> Result<bool, Error> {
+/// Whether local branch `branch` exists in `repo`, read fail-closed ([`ref_present`]): the
+/// conductor decides adopting, quarantining or deleting a unit's branch on this answer, so a read
+/// git cannot answer is an error, never a no.
+pub fn branch_present(repo: &str, branch: &str) -> Result<bool, Error> {
     ref_present(repo, &format!("refs/heads/{branch}"))
 }
 
@@ -2677,7 +2679,19 @@ pub fn paths_changed_since(dir: &str, commit: &str) -> Result<Vec<String>, Error
 /// Whether commit `ancestor` is in `descendant`'s history (either names any rev) in the
 /// repository at `dir`; `false` when it is not, or when git cannot tell.
 pub fn is_ancestor(dir: &str, ancestor: &str, descendant: &str) -> bool {
-    run_git(dir, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+    in_history(dir, ancestor, descendant).unwrap_or(false)
+}
+
+/// Whether commit `ancestor` is in `descendant`'s history in the repository at `dir`, read
+/// fail-closed: `Ok(false)` only when git answers that it is not, and an error when git cannot
+/// answer (a rev it cannot resolve, no repository at `dir`, git ending any other way), so a
+/// caller that deletes a branch whose history the descendant holds never reads a failed read as
+/// an answer.
+pub fn in_history(dir: &str, ancestor: &str, descendant: &str) -> Result<bool, Error> {
+    let args = ["merge-base", "--is-ancestor", ancestor, descendant];
+    finish_git_query(start_git(dir, &args))
+        .map(|answer| answer.is_some())
+        .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
 }
 
 /// Which of a git run's streams its answer holds.
