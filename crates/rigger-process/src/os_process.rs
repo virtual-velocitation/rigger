@@ -1,7 +1,7 @@
 //! The process interface (spec 125, criterion 9): the one place rigger reads a fact about a
 //! running process - which processes exist, a process's parent, start time, working directory,
-//! command line, run state and open files, which process listens on a TCP port, and which
-//! processes hold a directory. Each fact is a function here, answered by the native adapter of
+//! command line, run state and open files, which process listens on a TCP port, which
+//! processes hold a directory, and the path that execs this process's own image. Each fact is a function here, answered by the native adapter of
 //! the OS the binary is built for; the reaper ([`crate::reap`]), the holder check
 //! ([`crate::holders`]) and the dash read processes through these functions alone. Read-only:
 //! nothing here signals a process.
