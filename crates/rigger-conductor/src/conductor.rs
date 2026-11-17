@@ -5238,7 +5238,9 @@ impl RunCtx<'_> {
     /// gap is a spec defect, so emit a SpecDefect event with the reason, then halt by
     /// returning the error (the conductor never silently deviates around a gap). The error
     /// adds what a person does about it, since it is the run's fault hold's text
-    /// ([`held_on_a_fault`]) and the hold stands until `rigger release`.
+    /// ([`held_on_a_fault`]). The way on is a new `rigger run`, never `rigger release` alone: an
+    /// amended spec's criteria begin a new run and an amended workflow drifts the pinned
+    /// definition, and the release's relaunch adopts the held run as pinned, refusing both.
     fn check_coverage_or_flag(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -5248,7 +5250,8 @@ impl RunCtx<'_> {
             self.emit(TYPE_SPEC_DEFECT, json!({"reason": reason}))?;
             return Err(Error(format!(
                 "{reason}; to continue, amend the spec or the workflow until a stage with an \
-                 LLM verifier covers every criterion, then `rigger release`"
+                 LLM verifier covers every criterion, then start `rigger run` again, with \
+                 `--rebase-definition` after a workflow change"
             )));
         }
         Ok(())
