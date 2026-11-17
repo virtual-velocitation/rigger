@@ -18411,6 +18411,11 @@ mod tests {
         /// deleting_worktree`, but at the review-TIER spawn boundary `run_reviewer`
         /// owns instead of the gate boundary.
         delete_dir_by_agent: std::collections::HashSet<String>,
+        /// Per-agent id: THIS agent's own spawn replaces `opts.dir` with a dangling symlink,
+        /// right before returning success - a path that no leftover clear sees and that
+        /// `git worktree add` refuses as already existing, so the re-assert after the spawn
+        /// cannot restore the worktree.
+        dangle_dir_by_agent: std::collections::HashSet<String>,
         /// Per-agent id, in spawn order: whether `opts.dir` already existed on disk at
         /// the moment THIS spawn began - recorded before `delete_dir_by_agent`'s own
         /// side effect (if any) runs for this same spawn. Lets a test prove a LATER
@@ -18505,6 +18510,7 @@ mod tests {
                 call_order: Mutex::new(Vec::new()),
                 targets_by_agent: Mutex::new(HashMap::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
+                dangle_dir_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
                 commits_by_agent: HashMap::new(),
                 read_file_by_agent: HashMap::new(),
@@ -18756,6 +18762,12 @@ mod tests {
             // THIS spawn returns.
             if !opts.dir.is_empty() && self.delete_dir_by_agent.contains(&a.id) {
                 let _ = std::fs::remove_dir_all(&opts.dir);
+            }
+            #[cfg(unix)]
+            if !opts.dir.is_empty() && self.dangle_dir_by_agent.contains(&a.id) {
+                let _ = std::fs::remove_dir_all(&opts.dir);
+                std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &opts.dir)
+                    .unwrap();
             }
             let mut output = self
                 .output_by_spawn_id
@@ -47882,66 +47894,136 @@ mod tests {
         assert!(holds_in(&events).is_empty(), "the park holds nothing");
     }
 
-    /// A UNIT WORKTREE THAT CANNOT BE MADE IS THE CONDUCTOR'S FAULT: a `Worktree::create` that
-    /// fails at a unit's own path (here a dangling symlink occupying it, which no leftover clear
-    /// sees and `git worktree add` refuses as already existing) halts the run naming the fault,
-    /// records no lesson against the unit, charges it no attempt, and holds the run for a person.
+    /// A WORKTREE STEP GIT REFUSES IS THE CONDUCTOR'S FAULT: whichever kind of worktree step the
+    /// conductor takes is refused - making a unit's worktree, re-asserting it before a later step,
+    /// discarding a throwaway one, seeding a throwaway branch - the run halts naming git's
+    /// refusal, records no lesson against the unit, charges it no attempt, and is held for a
+    /// person.
     #[test]
     #[cfg(unix)]
-    fn a_unit_worktree_that_cannot_be_made_halts_with_no_lesson_and_holds_the_run() {
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let store = Store::open(":memory:").unwrap();
-        let mut cfg = Config::default();
-        cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.stages.insert(
-            "unit-a".into(),
-            Stage {
-                name: "unit-a".into(),
-                agent: "worker".into(),
-                on_pass: "merge".into(),
-                ..Default::default()
-            },
-        );
-        let driver = Stub::new();
-        let deps = Deps {
-            repo: repo_path.clone(),
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let dir = unit_worktree_dir(&scratch, "unit-a");
-        std::fs::create_dir_all(&scratch).unwrap();
-        std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &dir).unwrap();
-
-        let Err(err) = run_isolated(&cfg, &deps) else {
-            panic!("a unit worktree that cannot be made halts the run");
-        };
-        let _ = std::fs::remove_file(&dir);
-        assert!(
-            err.0.contains("already exists") && !err.0.contains('\u{1}'),
-            "the halt names git's refusal, its marker stripped: {}",
-            err.0
-        );
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        let charged = [
-            contextgraph::TYPE_LESSON_LEARNED,
-            ledger::TYPE_UNIT_FAILED,
-            ledger::TYPE_UNIT_ESCALATED,
+    fn a_worktree_step_git_refuses_halts_with_no_lesson_and_holds_the_run() {
+        #[derive(Debug, Clone, Copy)]
+        enum Step {
+            /// A dangling symlink occupies the unit's path, which no leftover clear sees and
+            /// `git worktree add` refuses as already existing.
+            Make,
+            /// The lens's own spawn leaves a dangling symlink at the unit's worktree path, so the
+            /// re-assert before the next review tier is refused the same way.
+            Reassert,
+            /// The post-merge re-gate's throwaway branch is checked out in another worktree, so
+            /// discarding it is refused.
+            Discard,
+            /// A ref under the post-merge re-gate's throwaway branch name holds its namespace,
+            /// so seeding that branch is refused.
+            SeedBranch,
+        }
+        // Each row: the step git refuses, and the text of the refusal the halt names.
+        let cases = [
+            (Step::Make, "already exists"),
+            (Step::Reassert, "already exists"),
+            (Step::Discard, "branch -D"),
+            (Step::SeedBranch, "exists; cannot create"),
         ];
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| charged.contains(&e.type_.as_str()))
-                .map(|e| String::from_utf8_lossy(&e.data).to_string())
-                .collect::<Vec<_>>(),
-            Vec::<String>::new(),
-            "no lesson against the unit and no attempt charged"
-        );
-        assert_eq!(
-            holds_in(&events),
-            [conductor_fault_hold(&err.0)],
-            "the fault holds the run for a person, naming it"
-        );
+        for (step, refusal) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let elsewhere = tempfile::tempdir().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let mut cfg = Config::default();
+            for id in ["worker", "lens", "adversary", "judge"] {
+                cfg.agents.insert(id.into(), agent(id));
+            }
+            cfg.workflow.gates.insert("g".into(), gate_def("true"));
+            cfg.workflow.stages.insert(
+                "unit-a".into(),
+                Stage {
+                    name: "unit-a".into(),
+                    agent: "worker".into(),
+                    gates: vec!["g".into()],
+                    on_pass: "merge".into(),
+                    review: crate::config::ReviewPanel {
+                        lenses: vec!["lens".into()],
+                        adversary: "adversary".into(),
+                        adjudicator: "judge".into(),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            let driver = Stub {
+                write_file: Some("f.txt".into()),
+                output_by_agent: HashMap::from([
+                    ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                    ("lens".to_string(), "reviewed: no blocker".to_string()),
+                    ("adversary".to_string(), "tried and failed".to_string()),
+                ]),
+                dangle_dir_by_agent: matches!(step, Step::Reassert)
+                    .then(|| "lens".to_string())
+                    .into_iter()
+                    .collect(),
+                ..Stub::new()
+            };
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let unit_dir = unit_worktree_dir(&scratch, "unit-a");
+            let (_, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
+            let planted = match step {
+                Step::Make => {
+                    std::fs::create_dir_all(&scratch).unwrap();
+                    std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &unit_dir)
+                        .is_ok()
+                }
+                Step::Reassert => true,
+                Step::Discard => {
+                    let held = elsewhere.path().join("held");
+                    run_git(
+                        &repo_path,
+                        &["worktree", "add", "-b", &pm_branch, held.to_str().unwrap()],
+                    )
+                    .status
+                    .success()
+                }
+                Step::SeedBranch => run_git(&repo_path, &["branch", &format!("{pm_branch}/held")])
+                    .status
+                    .success(),
+            };
+            assert!(planted, "{step:?}: precondition: the refusal is planted");
+
+            let halted = run_isolated(&cfg, &deps);
+            let _ = std::fs::remove_file(&unit_dir);
+
+            let Err(err) = halted else {
+                panic!("{step:?}: a worktree step git refuses halts the run");
+            };
+            assert!(
+                err.0.contains(refusal) && !err.0.contains('\u{1}'),
+                "{step:?}: the halt names git's refusal, its marker stripped: {}",
+                err.0
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let charged = [
+                contextgraph::TYPE_LESSON_LEARNED,
+                ledger::TYPE_UNIT_FAILED,
+                ledger::TYPE_UNIT_ESCALATED,
+            ];
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| charged.contains(&e.type_.as_str()))
+                    .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                    .collect::<Vec<_>>(),
+                Vec::<String>::new(),
+                "{step:?}: no lesson against the unit and no attempt charged"
+            );
+            assert_eq!(
+                holds_in(&events),
+                [conductor_fault_hold(&err.0)],
+                "{step:?}: the fault holds the run for a person, naming it"
+            );
+        }
     }
 
     #[test]
