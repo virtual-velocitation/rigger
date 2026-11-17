@@ -436,11 +436,8 @@ impl Contain for Pipes {
         } = *self;
         let (mut keeper, records, first) = start(command, keeper_ends, status)?;
         if let Some(Record::Spawned(main)) = first {
-            return Ok(ReapedChild {
-                child: keeper,
-                hold: Box::new(Kept::new(main, records, control)),
-                released: false,
-            });
+            let kept = Kept::new(main, records, control);
+            return Ok(ReapedChild::holding(keeper, Box::new(kept)));
         }
         settle(&mut keeper);
         Err(match first {

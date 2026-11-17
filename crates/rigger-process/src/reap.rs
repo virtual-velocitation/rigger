@@ -73,7 +73,8 @@
 //! [`std::process::Child`] handle to goes through [`send_signal`], whose unix arm is
 //! `rustix::process::kill_process` - never a shell-out to `kill(1)`, never `libc::kill`, never
 //! a process-group (negative pid) target - whose Windows arm opens the one pid for termination
-//! and ends it, and whose arm for any other OS sends nothing.
+//! and ends it, and whose arm for any other OS sends nothing. On Windows a job object this process
+//! created is ended through `end_job` alone, the one site of the job end.
 //! `rustix::process::Pid::from_raw` accepts negative raw values (it rejects only zero), so
 //! [`send_signal`] and [`is_signal_eligible`] each carry their OWN explicit `pid > 1` guard
 //! rather than leaning on the type to refuse one. `default-features = false` + `std` +
@@ -825,6 +826,109 @@ fn end_descendants_with(
         std::thread::sleep(POLL);
     }
     report
+}
+
+std::cfg_select! {
+    target_os = "windows" => {
+        /// End the job object `job`, which this process created and alone holds, and every process
+        /// in it, the held child `main` among them: the job end's ONE sanctioned site
+        /// (`TerminateJobObject`, the `no-os-kill` gate). The count of the job's processes still
+        /// running is read until none is left or [`END_BOUND`] passes, when each process the job
+        /// still lists is reported as residue; then the main is reaped and the handle closed. The
+        /// kernel names a job's members, so no member is found by a walk, and none is signalled
+        /// one at a time.
+        pub fn end_job(
+            job: std::os::windows::io::OwnedHandle,
+            main: &mut std::process::Child,
+        ) -> EndReport {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::JobObjects::TerminateJobObject;
+            let handle = job.as_raw_handle();
+            let mut report = EndReport::default();
+            // SAFETY: the handle is a job this process created and still holds; the call takes
+            // no pointer.
+            unsafe { TerminateJobObject(handle, 1) };
+            if poll_until(Instant::now() + END_BOUND, || job_active(handle) == Some(0)) {
+                let _ = main.wait();
+            } else {
+                report.residue = job_pids(handle)
+                    .into_iter()
+                    .map(|pid| Leftover::of(pid, false))
+                    .collect();
+                let _ = main.try_wait();
+            }
+            drop(job);
+            report
+        }
+
+        /// How many processes the job `job` holds that are still running, or `None` when it
+        /// cannot be read.
+        fn job_active(job: windows_sys::Win32::Foundation::HANDLE) -> Option<u32> {
+            use windows_sys::Win32::Foundation::FALSE;
+            use windows_sys::Win32::System::JobObjects::{
+                JobObjectBasicAccountingInformation, QueryInformationJobObject,
+                JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
+            };
+            let mut counts = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+            // SAFETY: `counts` is the writable structure the information class names, of the size
+            // given, and no returned length is asked for.
+            let read = unsafe {
+                QueryInformationJobObject(
+                    job,
+                    JobObjectBasicAccountingInformation,
+                    (&raw mut counts).cast(),
+                    size_of::<JOBOBJECT_BASIC_ACCOUNTING_INFORMATION>() as u32,
+                    std::ptr::null_mut(),
+                )
+            } != FALSE;
+            read.then_some(counts.ActiveProcesses)
+        }
+
+        /// The pid of each process the job `job` holds, its nested jobs' among them; empty when
+        /// the list cannot be read. A list too short for the job is grown to the count the call
+        /// reports and read again, a few times at most.
+        fn job_pids(job: windows_sys::Win32::Foundation::HANDLE) -> Vec<u32> {
+            use windows_sys::Win32::Foundation::FALSE;
+            use windows_sys::Win32::System::JobObjects::{
+                JobObjectBasicProcessIdList, QueryInformationJobObject,
+                JOBOBJECT_BASIC_PROCESS_ID_LIST,
+            };
+            // The list is two counts and then one word per pid: `header` words come before the
+            // first pid.
+            let header = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
+                / size_of::<usize>();
+            let mut room = 64;
+            for _ in 0..4 {
+                let mut list = vec![0usize; header + room];
+                // SAFETY: `list` is the given number of writable bytes, aligned as the structure
+                // is, and no returned length is asked for.
+                let read = unsafe {
+                    QueryInformationJobObject(
+                        job,
+                        JobObjectBasicProcessIdList,
+                        list.as_mut_ptr().cast(),
+                        (list.len() * size_of::<usize>()) as u32,
+                        std::ptr::null_mut(),
+                    )
+                } != FALSE;
+                // SAFETY: `list` holds at least the structure's counts and its first pid, and is
+                // aligned for it.
+                let counts =
+                    unsafe { list.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>().read() };
+                let assigned = counts.NumberOfAssignedProcesses as usize;
+                if read {
+                    let listed = (counts.NumberOfProcessIdsInList as usize).min(room);
+                    return list[header..header + listed].iter().map(|&pid| pid as u32).collect();
+                }
+                if assigned <= room {
+                    return Vec::new();
+                }
+                room = assigned;
+            }
+            Vec::new()
+        }
+    }
+    _ => {}
 }
 
 /// An OPAQUE snapshot of a process's descendants, taken by [`snapshot_descendants`] and

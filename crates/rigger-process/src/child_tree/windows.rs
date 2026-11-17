@@ -1,0 +1,330 @@
+//! The Windows containment: a job object this process creates and alone holds, which the tree's
+//! main joins before it runs. Every process a job member starts is in the job and in every job
+//! the job sits in (MS, `AssignProcessToJobObject`), so every process the tree starts is in it,
+//! and none can leave it by asking: the job allows no breakaway, and a breakaway request under a
+//! job that allows none fails the start it asks for. The job ends every process in it when its
+//! last handle closes (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), so a driver that dies leaves nothing
+//! of the tree running. The main is created suspended, joins the job, and is then resumed, so it
+//! starts nothing before it is in the job. The handle's end ends the job
+//! ([`crate::reap::end_job`]); its release clears the limit, then closes the handle, ending
+//! nothing.
+//!
+//! A job that cannot be created, or a main that cannot join one, leaves that launch watched, and
+//! the handle says why ([`ReapedChild::fallback`]): the main is still suspended, so its watcher
+//! starts before it runs.
+
+use super::{Contain, Containment, Hold, ReapedChild, Why};
+use crate::reap::{self, EndReport};
+use crate::{subprocess, whole_line};
+use std::ffi::OsStr;
+use std::io;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::os::windows::process::CommandExt;
+use std::path::Path;
+use std::process::{Child, Command};
+use std::ptr::null;
+
+use windows_sys::Win32::Foundation::{FALSE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+};
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+use windows_sys::Win32::System::Threading::{
+    OpenThread, ResumeThread, CREATE_SUSPENDED, THREAD_SUSPEND_RESUME,
+};
+
+/// The containment a tree is held in here: a job, once one can be created and limited, and a
+/// watch naming why otherwise.
+pub(super) fn detect(_keeper: &Path) -> Containment {
+    match Job::new() {
+        Ok(_) => Containment::Job,
+        Err(error) => Containment::Watch(Why::JobFailed(error.to_string())),
+    }
+}
+
+/// A command for `program` held as `how`: a job's command creates its main suspended. An error
+/// for any other containment, which this OS holds no tree as.
+pub(super) fn held(how: &Containment, program: &OsStr) -> io::Result<(Command, Box<dyn Contain>)> {
+    if *how != Containment::Job {
+        return Err(super::unavailable(how));
+    }
+    let mut command = subprocess::command(program);
+    command.creation_flags(CREATE_SUSPENDED);
+    Ok((command, Box::new(JobStart)))
+}
+
+/// No keeper runs here, so this process serves none.
+pub(super) fn serve_if_asked() {}
+
+/// A jobbed tree's start.
+struct JobStart;
+
+impl Contain for JobStart {
+    /// Creates the main suspended, puts it in a new job, then resumes it. A job that cannot be
+    /// created or joined leaves the main watched, the watcher started before the main runs. A
+    /// main that cannot be resumed is ended, with its job, through the handle's drop, and its
+    /// start answers the error.
+    fn spawn(self: Box<Self>, mut command: Command) -> io::Result<ReapedChild> {
+        let mut tree = ReapedChild::new(command.spawn()?);
+        let joined = match Job::new() {
+            Ok(job) => job
+                .assign(&tree.child)
+                .map(|()| job)
+                .map_err(|error| format!("the session's main could not join its job: {error}")),
+            Err(error) => Err(format!("no job could be created: {error}")),
+        };
+        match joined {
+            Ok(job) => tree.hold = Box::new(Jobbed(Some(job))),
+            Err(why) => {
+                tree.watch()?;
+                tree.fallback = Some(Why::JobFailed(why));
+            }
+        }
+        resume(tree.child.id())?;
+        Ok(tree)
+    }
+}
+
+/// A job object this process created and alone holds: it is created with no security attributes,
+/// so no child inherits its handle.
+struct Job(OwnedHandle);
+
+impl Job {
+    /// A new, unnamed job that ends every process in it when its handle closes.
+    fn new() -> io::Result<Job> {
+        // SAFETY: both pointers are null (no attributes, no name), as the call allows, and it
+        // answers a null handle on failure.
+        let handle = unsafe { CreateJobObjectW(null(), null()) };
+        if handle.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the handle is a valid one the call just answered, owned by nothing else.
+        let job = Job(unsafe { OwnedHandle::from_raw_handle(handle) });
+        job.limit(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)?;
+        Ok(job)
+    }
+
+    /// Sets the job's limit flags to `flags`, every other limit unset.
+    fn limit(&self, flags: JOB_OBJECT_LIMIT) -> io::Result<()> {
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = flags;
+        // SAFETY: the handle is the job this value holds, and `limits` is the readable structure
+        // the information class names, of the size given.
+        let set = unsafe {
+            SetInformationJobObject(
+                self.0.as_raw_handle(),
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        } != FALSE;
+        if set {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Puts `main`, created suspended, in the job.
+    fn assign(&self, main: &Child) -> io::Result<()> {
+        // SAFETY: both handles are open: the job this value holds, and the main's, which its
+        // `Child` holds.
+        let assigned =
+            unsafe { AssignProcessToJobObject(self.0.as_raw_handle(), main.as_raw_handle()) }
+                != FALSE;
+        if assigned {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Lets the job go: clears its limit, so closing its handle ends nothing, then closes it. A
+    /// limit that cannot be cleared is said, since the close then ends what still runs in the
+    /// job.
+    fn release(self, main: u32) {
+        if let Err(error) = self.limit(0) {
+            whole_line::say(format_args!(
+                "rigger: the job of session {main} could not be let go ({error}); closing it ends \
+                 what still runs in it"
+            ));
+        }
+    }
+}
+
+/// Resumes each thread of the suspended process `pid`, found in a ToolHelp thread snapshot: no
+/// stable std call answers a spawned process's thread. A process with no thread found, or one
+/// that cannot be resumed, answers an error.
+fn resume(pid: u32) -> io::Result<()> {
+    // SAFETY: the call takes no pointer and answers `INVALID_HANDLE_VALUE` on failure.
+    let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the handle is a valid one the call just answered, owned by nothing else.
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(handle) };
+    let mut entry = THREADENTRY32 {
+        dwSize: size_of::<THREADENTRY32>() as u32,
+        ..Default::default()
+    };
+    let mut resumed = 0;
+    // SAFETY: `entry` is a writable `THREADENTRY32` whose `dwSize` names its size, as the call
+    // requires.
+    let mut more = unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) } != FALSE;
+    while more {
+        if entry.th32OwnerProcessID == pid {
+            resume_thread(entry.th32ThreadID)?;
+            resumed += 1;
+        }
+        // SAFETY: as for `Thread32First`.
+        more = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) } != FALSE;
+    }
+    if resumed == 0 {
+        return Err(io::Error::other(format!(
+            "no thread of the session's main {pid} was found to resume"
+        )));
+    }
+    Ok(())
+}
+
+/// Resumes the thread `id`.
+fn resume_thread(id: u32) -> io::Result<()> {
+    // SAFETY: the call takes no pointer and answers a null handle on failure.
+    let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, FALSE, id) };
+    if handle.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the handle is a valid one the call just answered, owned by nothing else.
+    let thread = unsafe { OwnedHandle::from_raw_handle(handle) };
+    // SAFETY: the handle is open with the suspend-resume right the call needs.
+    if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// A jobbed tree: the handle's process is the main, and the job, until the end or the release
+/// takes it, holds every process the tree starts.
+struct Jobbed(Option<Job>);
+
+impl Hold for Jobbed {
+    /// Ends the job and every process in it ([`crate::reap::end_job`]); an end after the first
+    /// ends nothing.
+    fn end(&mut self, main: &mut Child) -> EndReport {
+        self.0
+            .take()
+            .map(|job| reap::end_job(job.0, main))
+            .unwrap_or_default()
+    }
+
+    /// Lets the job go ([`Job::release`]) and reaps the main if it has exited.
+    fn release(&mut self, main: &mut Child) {
+        if let Some(job) = self.0.take() {
+            job.release(main.id());
+        }
+        let _ = main.try_wait();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{line_channel, TreeCommand};
+    use super::*;
+    use std::process::Stdio;
+    use std::sync::mpsc::{Receiver, RecvTimeoutError};
+    use std::time::{Duration, Instant};
+
+    /// How long a row waits for a line, or for the stream's end.
+    const BOUND: Duration = Duration::from_secs(10);
+
+    /// `cmd /c <script>`, started as a jobbed tree, and the lines of its output, a pipe every
+    /// process the script starts inherits.
+    fn jobbed(script: &str) -> (ReapedChild, Receiver<io::Result<String>>) {
+        let mut command = TreeCommand::new("cmd", &Containment::Job).expect("a jobbed command");
+        command
+            .command_mut()
+            .raw_arg(format!("/c {script}"))
+            .stdout(Stdio::piped());
+        let mut tree = command.spawn().expect("spawn the jobbed tree");
+        assert_eq!(tree.fallback(), None, "the tree is held in a job");
+        let (lines, _reader) = line_channel(tree.take_stdout().expect("the output pipe"));
+        (tree, lines)
+    }
+
+    /// Reads `lines` until one contains `text`; whether one did within [`BOUND`].
+    fn read_until(lines: &Receiver<io::Result<String>>, text: &str) -> bool {
+        let deadline = Instant::now() + BOUND;
+        while let Ok(Ok(line)) =
+            lines.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            if line.contains(text) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Whether every process holding the pipe behind `lines` is gone within [`BOUND`]: the stream
+    /// ends only once none holds it.
+    fn ends(lines: &Receiver<io::Result<String>>) -> bool {
+        let deadline = Instant::now() + BOUND;
+        loop {
+            match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(_) => {}
+                Err(RecvTimeoutError::Disconnected) => return true,
+                Err(RecvTimeoutError::Timeout) => return false,
+            }
+        }
+    }
+
+    #[test]
+    fn this_os_holds_a_tree_in_a_job() {
+        assert_eq!(
+            Containment::detect(Path::new("no keeper runs here")),
+            Containment::Job
+        );
+    }
+
+    // A ping names its address in each line it writes, in any language, so a line with the
+    // address in it proves the background ping is up and holds the pipe.
+    #[test]
+    fn a_jobbed_end_ends_what_its_main_started() {
+        let (mut tree, lines) =
+            jobbed("start /b ping -n 60 127.0.0.1 & echo up& ping -n 60 127.0.0.1 >NUL");
+        assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
+
+        let report = tree.end();
+
+        assert_eq!(report, EndReport::default());
+        assert!(ends(&lines), "nothing the tree started holds its output");
+    }
+
+    // The ping replies once a second, so two replies read after the lines already sent are drained
+    // were written after the release, by a ping the release left running.
+    #[test]
+    fn a_released_jobbed_tree_leaves_what_its_main_started_running() {
+        let (mut tree, lines) = jobbed("start /b ping -n 8 127.0.0.1 & echo up");
+        assert!(read_until(&lines, "up"), "the main is up");
+        let deadline = Instant::now() + BOUND;
+        while matches!(tree.try_wait(), Ok(None)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            matches!(tree.try_wait(), Ok(Some(_))),
+            "the main exits on its own"
+        );
+
+        tree.release();
+
+        while lines.try_recv().is_ok() {}
+        assert!(
+            read_until(&lines, "127.0.0.1") && read_until(&lines, "127.0.0.1"),
+            "the background ping writes on after the release"
+        );
+        assert!(ends(&lines), "the background ping ends on its own");
+    }
+}

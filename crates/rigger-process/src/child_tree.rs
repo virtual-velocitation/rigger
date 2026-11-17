@@ -18,9 +18,11 @@
 //! held by a keeper process, this executable run again, which spawns the main and is the child
 //! subreaper of everything the tree starts, so no process of the tree leaves it by orphaning
 //! itself; the handle's process is the keeper, and the handle answers the main's pid and the
-//! status the keeper reports for it. [`Containment::detect`] answers the containment this OS gives
-//! a tree. Every signal goes through the reaper ([`crate::reap`]), the one place this crate
-//! signals a process.
+//! status the keeper reports for it. A jobbed tree ([`Containment::Job`], on Windows) is held in a
+//! job object this process creates and alone holds, which the main joins before it runs, so every
+//! process the tree starts is in the job and none can leave it. [`Containment::detect`] answers
+//! the containment this OS gives a tree. Every signal, and the end of a job, goes through the
+//! reaper ([`crate::reap`]), the one place this crate ends a process.
 
 use crate::reap::{self, Identity};
 pub use crate::reap::{EndReport, Leftover};
@@ -81,12 +83,16 @@ std::cfg_select! {
     }
 }
 
-// The one spelling of the OS set for a held tree: Linux holds a tree in a keeper process, and
-// every other OS watches it, naming why.
+// The one spelling of the OS set for a held tree: Linux holds a tree in a keeper process, Windows
+// in a job object, and every other OS watches it, naming why.
 std::cfg_select! {
     target_os = "linux" => {
         mod linux;
         use linux::{detect, held, serve_if_asked};
+    }
+    target_os = "windows" => {
+        mod windows;
+        use windows::{detect, held, serve_if_asked};
     }
     _ => {
         /// The containment a tree is held in here: a watch, naming why, whatever the keeper.
@@ -147,7 +153,8 @@ pub enum Containment {
 
 impl Containment {
     /// The containment this OS gives a tree whose keeper would be `keeper`: on Linux the keeper,
-    /// once `keeper` answers its probe, and a watch naming why otherwise.
+    /// once `keeper` answers its probe; on Windows a job, once one can be created; and a watch
+    /// naming why otherwise.
     pub fn detect(keeper: &Path) -> Containment {
         detect(keeper)
     }
@@ -180,7 +187,8 @@ pub struct TreeCommand {
 impl TreeCommand {
     /// A command for `program` ([`crate::subprocess::command`]), contained as `how`. A kept tree's
     /// command runs the keeper, whose arguments after `program` are the main's and whose
-    /// environment, directory and streams the main inherits. An error where this OS holds no tree
+    /// environment, directory and streams the main inherits; a jobbed tree's command starts its
+    /// main suspended, so it runs only once it is in the job. An error where this OS holds no tree
     /// as `how`.
     pub fn new(program: impl AsRef<OsStr>, how: &Containment) -> io::Result<TreeCommand> {
         let (command, contain): (Command, Box<dyn Contain>) = match how {
@@ -190,7 +198,9 @@ impl TreeCommand {
         Ok(TreeCommand { command, contain })
     }
 
-    /// The command, for its arguments, environment, directory and streams.
+    /// The command, for its arguments, environment, directory and streams. On Windows its creation
+    /// flags are the containment's: a jobbed tree's command is created suspended, and setting them
+    /// again would start the main before it is in the job.
     pub fn command_mut(&mut self) -> &mut Command {
         &mut self.command
     }
@@ -213,30 +223,28 @@ struct Watch;
 
 impl Contain for Watch {
     fn spawn(self: Box<Self>, mut command: Command) -> io::Result<ReapedChild> {
-        let (wake, stopper) = Wake::new()?;
-        let main = command.spawn()?;
-        let start = os_process::start_time(main.id());
-        let mut tree = ReapedChild::new(main);
-        if let Some(start) = start {
-            let main = Identity {
-                pid: tree.id(),
-                start,
-            };
-            tree.hold = Box::new(Watched(Some(Watcher::start(main, wake, stopper)?)));
-        }
+        let mut tree = ReapedChild::new(command.spawn()?);
+        tree.watch()?;
         Ok(tree)
     }
 }
 
-/// How a handle holds its tree, given the process the handle spawned: the main of a watched tree,
-/// and the keeper of a kept one.
+/// How a handle holds its tree, given the process the handle spawned: the main of a watched or a
+/// jobbed tree, and the keeper of a kept one. A hold whose process is the main reads and waits on
+/// that process itself, as each method's default does.
 trait Hold: Send {
     /// The main process's pid.
-    fn id(&self, child: &Child) -> u32;
+    fn id(&self, child: &Child) -> u32 {
+        child.id()
+    }
     /// The main process's exit status, once it has exited.
-    fn try_wait(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>>;
+    fn try_wait(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>> {
+        child.try_wait()
+    }
     /// Waits for the main process to exit, sending it nothing.
-    fn wait(&mut self, child: &mut Child) -> io::Result<ExitStatus>;
+    fn wait(&mut self, child: &mut Child) -> io::Result<ExitStatus> {
+        child.wait()
+    }
     /// Ends the tree, answering what the end left running and what it never signalled.
     fn end(&mut self, child: &mut Child) -> EndReport;
     /// Lets the tree go, ending nothing.
@@ -247,18 +255,6 @@ trait Hold: Send {
 struct Watched(Option<Watcher>);
 
 impl Hold for Watched {
-    fn id(&self, main: &Child) -> u32 {
-        main.id()
-    }
-
-    fn try_wait(&mut self, main: &mut Child) -> io::Result<Option<ExitStatus>> {
-        main.try_wait()
-    }
-
-    fn wait(&mut self, main: &mut Child) -> io::Result<ExitStatus> {
-        main.wait()
-    }
-
     /// Stops the watcher, then ends the tree ([`crate::reap::end_watched`]), the processes the
     /// watcher remembered among the end's own.
     fn end(&mut self, main: &mut Child) -> EndReport {
@@ -286,17 +282,44 @@ pub struct ReapedChild {
     child: Child,
     hold: Box<dyn Hold>,
     released: bool,
+    fallback: Option<Why>,
 }
 
 impl ReapedChild {
     /// Adopts `child`, already spawned, as the main of a tree no watcher has seen: the end finds
     /// what it started by its own walk. The caller owns the spawn; this handle owns the end.
     pub fn new(child: Child) -> ReapedChild {
+        ReapedChild::holding(child, Box::new(Watched(None)))
+    }
+
+    /// The handle to the tree `hold` holds, whose process is `child`.
+    fn holding(child: Child, hold: Box<dyn Hold>) -> ReapedChild {
         ReapedChild {
             child,
-            hold: Box::new(Watched(None)),
+            hold,
             released: false,
+            fallback: None,
         }
+    }
+
+    /// Starts a watcher on this tree's main, which this handle then holds the tree through. A main
+    /// whose start time cannot be read is left to the end's own walk.
+    fn watch(&mut self) -> io::Result<()> {
+        let pid = self.child.id();
+        let Some(start) = os_process::start_time(pid) else {
+            return Ok(());
+        };
+        let (wake, stopper) = Wake::new()?;
+        let main = Identity { pid, start };
+        self.hold = Box::new(Watched(Some(Watcher::start(main, wake, stopper)?)));
+        Ok(())
+    }
+
+    /// Why this tree is watched though its command named another containment, when its launch
+    /// fell back to a watch: on Windows, a job that could not be created, or a main that could not
+    /// join one. The host says so in a progress line.
+    pub fn fallback(&self) -> Option<&Why> {
+        self.fallback.as_ref()
     }
 
     /// The main process's pid.
