@@ -1914,6 +1914,8 @@ mod tests {
         Out(&'static str, Vec<Edge>),
         /// [`Neighbors::leaf_nodes`] of the leaf: its nodes' ids, in order.
         Leaf(&'static str, &'static [&'static str]),
+        /// [`CodeHalf::placeholder_callers`] of the leaf: the hidden test callers, in order.
+        Callers(&'static str, &'static [&'static str]),
     }
 
     /// A QUALIFIER NAMING NO DEFINITION reaches the reads of both code halves (spec 117, RESOLVER
@@ -1923,7 +1925,11 @@ mod tests {
     /// `AtomicU64::fetch_add`, `ErrorKind::NotFound`), from product and test code alike, and
     /// with what the unqualified rule gives a member qualifier
     /// (`Request.GetClientIp`, `Request.Missing`, `Models.Shape`) and a path qualifier naming a
-    /// product type (`Gauge::load`).
+    /// product type (`Gauge::load`). A path qualifier that keeps a candidate links it whatever
+    /// it names (the test call `FakeStore::open`). Both halves hide the same test caller behind
+    /// the placeholder of a test call whose path qualifier names a product type
+    /// (`Gauge::unload`), and none behind one naming only another language's type
+    /// (`Atomic::unload`).
     #[test]
     fn a_qualifier_naming_no_definition_reaches_neither_half_and_a_member_one_falls_back() {
         use crate::contextgraph::{REL_CALLS, REL_CONTAINS, REL_REFERENCES, TIER_EXTRACTED};
@@ -1933,7 +1939,7 @@ mod tests {
         let handle = "src/handler.cs::Handler.Handle";
         let get_client_ip = "src/handler.cs::%GetClientIp";
         // (what the answer shows, the filter, the read and its whole answer)
-        let cases: [(&str, Tests, Read); 9] = [
+        let cases: [(&str, Tests, Read); 11] = [
             (
                 "no call lands on the project definition of a path qualifier's leaf",
                 Tests::Exclude,
@@ -1975,6 +1981,25 @@ mod tests {
                         TIER_INFERRED,
                     )],
                 ),
+            ),
+            (
+                "a test call whose path qualifier, a test type, keeps that type's own method",
+                Tests::Include,
+                Read::Out(
+                    "tests/store.rs::opens",
+                    vec![edge(
+                        "tests/store.rs::opens",
+                        "tests/support.rs::FakeStore::open",
+                        REL_CALLS,
+                        TIER_EXTRACTED,
+                    )],
+                ),
+            ),
+            (
+                "a test call whose path qualifier names a product type hides its caller behind a \
+                 placeholder, one whose qualifier names only another language's type none",
+                Tests::Exclude,
+                Read::Callers("unload", &["tests/gauge.rs::drains"]),
             ),
             (
                 "a member qualifier naming none binds its leaf's placeholder",
@@ -2041,13 +2066,16 @@ mod tests {
         for (shows, tests, read) in &cases {
             let filter = ViewFilter { tests: *tests };
             let (whole, near) = (Whole::new(&view, filter), Near::new(&view, filter));
-            for (half, graph) in [("whole", &whole as &dyn Neighbors), ("near", &near)] {
+            for (half, graph) in [("whole", &whole as &dyn CodeHalf), ("near", &near)] {
                 let at = format!("{half} {tests:?}: {shows}");
                 match read {
                     Read::Incoming(id, want) => same!(graph.incoming(id).unwrap(), want, "{at}"),
                     Read::Out(id, want) => same!(graph.out(id).unwrap(), want, "{at}"),
                     Read::Leaf(leaf, want) => {
                         assert_eq!(ids(graph.leaf_nodes(leaf).unwrap()), *want, "{at}")
+                    }
+                    Read::Callers(leaf, want) => {
+                        assert_eq!(graph.placeholder_callers(leaf), *want, "{at}")
                     }
                 }
             }
