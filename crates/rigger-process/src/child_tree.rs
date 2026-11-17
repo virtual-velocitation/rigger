@@ -129,6 +129,7 @@ pub enum Why {
 /// and every process it starts is the tree's.
 pub struct TreeCommand {
     command: Command,
+    contain: Box<dyn Contain>,
 }
 
 impl TreeCommand {
@@ -137,6 +138,7 @@ impl TreeCommand {
         match how {
             Containment::Watch(_) => Ok(TreeCommand {
                 command: subprocess::command(program),
+                contain: Box::new(Watch),
             }),
             Containment::Keeper(_) | Containment::Job => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -150,10 +152,26 @@ impl TreeCommand {
         &mut self.command
     }
 
-    /// Starts the tree, and its watcher.
-    pub fn spawn(mut self) -> io::Result<ReapedChild> {
+    /// Starts the tree, contained as the command was made.
+    pub fn spawn(self) -> io::Result<ReapedChild> {
+        self.contain.spawn(self.command)
+    }
+}
+
+/// How a tree is started: a containment spawns the command it was made with and answers the
+/// handle that holds what it started.
+trait Contain: Send {
+    /// Spawns `command` and answers the handle its tree is held through.
+    fn spawn(self: Box<Self>, command: Command) -> io::Result<ReapedChild>;
+}
+
+/// A watched tree's start: the command's process is the main, and a watcher walks its tree.
+struct Watch;
+
+impl Contain for Watch {
+    fn spawn(self: Box<Self>, mut command: Command) -> io::Result<ReapedChild> {
         let (wake, stopper) = Wake::new()?;
-        let main = self.command.spawn()?;
+        let main = command.spawn()?;
         let start = os_process::start_time(main.id());
         let mut tree = ReapedChild::new(main);
         if let Some(start) = start {
@@ -161,13 +179,60 @@ impl TreeCommand {
                 pid: tree.id(),
                 start,
             };
-            tree.watcher = Some(Watcher::start(main, wake, stopper)?);
+            tree.hold = Box::new(Watched(Some(Watcher::start(main, wake, stopper)?)));
         }
         Ok(tree)
     }
 }
 
-/// The handle a tree is ended through: its main process, and the watcher of a watched tree.
+/// How a handle holds its tree, given the process the handle spawned: the main of a watched tree,
+/// and the keeper of a kept one.
+trait Hold: Send {
+    /// The main process's pid.
+    fn id(&self, child: &Child) -> u32;
+    /// The main process's exit status, once it has exited.
+    fn try_wait(&mut self, child: &mut Child) -> io::Result<Option<ExitStatus>>;
+    /// Waits for the main process to exit, sending it nothing.
+    fn wait(&mut self, child: &mut Child) -> io::Result<ExitStatus>;
+    /// Ends the tree, answering what the end left running and what it never signalled.
+    fn end(&mut self, child: &mut Child) -> EndReport;
+    /// Lets the tree go, ending nothing.
+    fn release(&mut self, child: &mut Child);
+}
+
+/// A watched tree, held through its main process, and its watcher where it has one.
+struct Watched(Option<Watcher>);
+
+impl Hold for Watched {
+    fn id(&self, main: &Child) -> u32 {
+        main.id()
+    }
+
+    fn try_wait(&mut self, main: &mut Child) -> io::Result<Option<ExitStatus>> {
+        main.try_wait()
+    }
+
+    fn wait(&mut self, main: &mut Child) -> io::Result<ExitStatus> {
+        main.wait()
+    }
+
+    /// Stops the watcher, then ends the tree ([`crate::reap::end_watched`]), the processes the
+    /// watcher remembered among the end's own.
+    fn end(&mut self, main: &mut Child) -> EndReport {
+        let remembered = self.0.take().map(Watcher::stop).unwrap_or_default();
+        reap::end_watched(main, &remembered)
+    }
+
+    /// Stops the watcher and reaps the main if it has exited.
+    fn release(&mut self, main: &mut Child) {
+        if let Some(watcher) = self.0.take() {
+            watcher.stop();
+        }
+        let _ = main.try_wait();
+    }
+}
+
+/// The handle a tree is ended through: the process it spawned, and how it holds the tree.
 ///
 /// Dropping the handle without [`ReapedChild::release`] ends the tree ([`ReapedChild::end`]). That
 /// runs on a normal scope exit and on an unwinding panic alike, so neither a finishing driver nor a
@@ -175,8 +240,8 @@ impl TreeCommand {
 /// skips unwinding, an outside signal) runs no drop; a child that must not outlive it is bound to
 /// it by a pipe the handle holds as well, as the auto-started dash is to its stdin.
 pub struct ReapedChild {
-    main: Child,
-    watcher: Option<Watcher>,
+    child: Child,
+    hold: Box<dyn Hold>,
     released: bool,
 }
 
@@ -185,40 +250,40 @@ impl ReapedChild {
     /// what it started by its own walk. The caller owns the spawn; this handle owns the end.
     pub fn new(child: Child) -> ReapedChild {
         ReapedChild {
-            main: child,
-            watcher: None,
+            child,
+            hold: Box::new(Watched(None)),
             released: false,
         }
     }
 
     /// The main process's pid.
     pub fn id(&self) -> u32 {
-        self.main.id()
+        self.hold.id(&self.child)
     }
 
     /// The main process's input, once: taking it and dropping it closes the main's input.
     pub fn take_stdin(&mut self) -> Option<ChildStdin> {
-        self.main.stdin.take()
+        self.child.stdin.take()
     }
 
     /// The main process's output, once.
     pub fn take_stdout(&mut self) -> Option<ChildStdout> {
-        self.main.stdout.take()
+        self.child.stdout.take()
     }
 
     /// The main process's error output, once.
     pub fn take_stderr(&mut self) -> Option<ChildStderr> {
-        self.main.stderr.take()
+        self.child.stderr.take()
     }
 
     /// The main process's exit status, once it has exited, reaping it then.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.main.try_wait()
+        self.hold.try_wait(&mut self.child)
     }
 
     /// Waits for the main process to exit, sending it nothing, and reaps it.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
-        self.main.wait()
+        self.hold.wait(&mut self.child)
     }
 
     /// Hand each line of the main process's output to `each` until the process ends the stream,
@@ -230,7 +295,7 @@ impl ReapedChild {
         deadline: std::time::Instant,
         mut each: impl FnMut(&str) -> std::ops::ControlFlow<()>,
     ) {
-        let Some(stdout) = self.main.stdout.take() else {
+        let Some(stdout) = self.child.stdout.take() else {
             return;
         };
         let (lines, _reader) = line_channel(stdout);
@@ -243,21 +308,17 @@ impl ReapedChild {
         }
     }
 
-    /// Ends the tree ([`crate::reap::end_watched`]) and reaps its main, answering what the end left
-    /// running and what it found outside the tree and never signalled. The watcher stops first,
-    /// and the processes it remembered are the end's own.
+    /// Ends the tree and reaps its main, answering what the end left running and what it found
+    /// outside the tree and never signalled. A watched tree's watcher stops first, and the
+    /// processes it remembered are the end's own ([`crate::reap::end_watched`]).
     pub fn end(&mut self) -> EndReport {
-        let remembered = self.watcher.take().map(Watcher::stop).unwrap_or_default();
-        reap::end_watched(&mut self.main, &remembered)
+        self.hold.end(&mut self.child)
     }
 
     /// Lets the tree go: ends nothing, and reaps the main if it has exited.
     pub fn release(mut self) {
         self.released = true;
-        if let Some(watcher) = self.watcher.take() {
-            watcher.stop();
-        }
-        let _ = self.main.try_wait();
+        self.hold.release(&mut self.child);
     }
 
     /// Ends the main process, and the descendants `descendants` snapshotted before it was asked to
@@ -265,7 +326,7 @@ impl ReapedChild {
     /// [`ReapedChild::end`].
     #[doc(hidden)]
     pub fn end_from_snapshot(&mut self, descendants: reap::DescendantSnapshot) {
-        reap::end_child(&mut self.main, descendants);
+        reap::end_child(&mut self.child, descendants);
     }
 }
 
