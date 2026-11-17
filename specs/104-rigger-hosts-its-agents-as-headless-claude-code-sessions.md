@@ -72,9 +72,11 @@ FAILURE CLASS, decided: `AgentFailure` is Claude Code's error category: `rate_li
 `invalid_request`, `max_output_tokens`, `unknown`. A session that ends without a `result`
 takes its class from, in order: the record written by the `StopFailure` hook (one hook entry
 per category, `rigger hook stop-failure --spawn <id> --class <category>`), the last
-`api_retry.error`, else `unknown`. The port returns the class as data. Every class is
-API-side: the failure charges no remediation attempt, the spawn is relaunched at most twice,
-then the run halts naming the class and the spawn.
+`api_retry.error`, else `unknown`. The port returns the class as data. Every class but
+`invalid_request` is API-side: the failure charges no remediation attempt, the spawn is
+relaunched at most twice, then the run halts naming the class and the spawn. `invalid_request`
+is the API refusing the request as the conductor built it, the conductor's fault: it charges no
+attempt, is never relaunched and holds the run for a person (spec 105).
 
 STOP, decided: the host enforces `max_wall_clock` against stream silence. Expiry closes the
 session's input, waits 30 s, then ends the child through the sanctioned lifecycle helper
@@ -133,9 +135,9 @@ The workflow script, the shim and `rigger step` are untouched; spec 106 retires 
   naming the root, and the host injects it as the `PreToolUse` hook for
   `Edit|Write|NotebookEdit`. This criterion OWNS the guard command and its injection.
 - [ ] a test proves A FAILURE HAS A CLASS: a session ending without a result yields the class
-  from the `StopFailure` record, else the last `api_retry` category, else `unknown`; the
-  failure charges no remediation attempt, relaunches the spawn at most twice, then halts the
-  run naming the class. This criterion OWNS the class, its sources and the bound; the hold is
+  from the `StopFailure` record, else the last `api_retry` category, else `unknown`; a
+  failure of an API-side class charges no remediation attempt, relaunches the spawn at most
+  twice, then halts the run naming the class. This criterion OWNS the class, its sources and the bound; the hold is
   spec 105's, NOT this one's.
 - [ ] a test proves STOP IS CLEAN: a wall-clock expiry closes the session's input, waits the
   grace, then ends the child through the sanctioned lifecycle helper, and a supervisor start

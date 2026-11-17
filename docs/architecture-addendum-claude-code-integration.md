@@ -167,7 +167,7 @@ own handle. Never a pid, a group or a shell-out.
 
 ### 5.1 Classes and dispositions
 
-The classes are Claude Code's own error categories; rigger adds two causes it observes
+The classes are Claude Code's own error categories; rigger adds three causes it observes
 itself.
 
 | Category | Disposition | Released when |
@@ -176,8 +176,10 @@ itself.
 | `billing_error`, `account_on_hold`, `verification_required` | HOLD on first sight | a canary turn succeeds |
 | `model_not_found` | HOLD on first sight, naming the model | a canary turn on that model succeeds |
 | `rate_limit`, `overloaded`, `server_error` | WAIT while Claude Code retries; HOLD when a session dies of it | a canary turn succeeds; a known reset time is honored |
-| `invalid_request`, `max_output_tokens`, `unknown` | FAULT: the error takes its spawn site's existing error path unchanged, so at the implementer it reruns uncharged under the infra limit and a spawn past that limit halts the run naming its class | - |
-| three consecutive FAULTs across the run | HOLD `api-unstable` | a canary turn succeeds |
+| `invalid_request` | REJECTED on first sight: the API refused the request as the conductor built it, the conductor's fault, so the run holds `conductor-fault` naming the spawn, its unit and its prompt's size, and the spawn parks with nothing recorded and no attempt charged | `rigger release` |
+| `max_output_tokens`, `unknown` | FAULT: the error takes its spawn site's existing error path unchanged, so at the implementer it reruns uncharged under the infra limit and a spawn past that limit halts the run naming its class, which holds `conductor-fault` | - |
+| three consecutive FAULTs across the run, a REJECTED close counting toward none | HOLD `api-unstable` | a canary turn succeeds |
+| a conductor fault: any error but a park that ends the run's drive, a halt or a REJECTED spawn included | HOLD `conductor-fault` for a person, its action the fault's text | `rigger release` |
 | host suspended, supervisor absent | an implicit hold interval (5.3) | the supervisor is alive |
 | operator | `rigger hold --reason <text>` | `rigger release` |
 
@@ -185,6 +187,7 @@ itself.
 
 ```
              first hold-class category | session death by a wait-class | 3 FAULTs | rigger hold
+                                              | a conductor fault, a REJECTED spawn included
   RUNNING ----------------------------------------------------------------------------> HELD
      ^                RunHeld {cause, detail, action, needs_person, by, model}           |
      |                                                                                   |
