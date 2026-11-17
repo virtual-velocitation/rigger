@@ -158,7 +158,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::common;
-use common::fixtures::bare_deps;
+use common::fixtures::{bare_deps, conductor_fault_hold, holds_in};
 use common::git::git_ok;
 
 use rigger::conductor::{
@@ -2000,10 +2000,11 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
 /// returns `Err` (proven at the real boundary, never by calling the private function
 /// directly), the retry's own `UnitStarted` must never be written (the `?` fires inside
 /// `start_and_run_stage`, strictly BEFORE its `UnitStarted` emit - so a crash-resumed retry
-/// never sees a half-recorded unit either), and the wave's ordinary generic-error arm must
-/// still leave its usual durable lesson naming the failed stage - the failure stays legible
-/// in the log exactly like any other stage error, never a swallowed failure invisible to the
-/// operator.
+/// never sees a half-recorded unit either), and the failed read halts as every git step on a
+/// unit's branch that git refuses does: no lesson against the retry unit, whose work did not
+/// cause it, and the run held for a person on the halt's text, which names the ref that no
+/// longer resolves - the failure stays legible in the log, never a swallowed failure invisible
+/// to the operator.
 #[test]
 fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh()
 {
@@ -2097,14 +2098,14 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
     // `RunState` (the `Ok` type) does not implement `Debug`, so `expect_err` cannot be
     // used here - match explicitly instead (as `tests/common/real_gate_run.rs`'s `refused_run`
     // does).
-    match run(&fresh_run_cfg("true", repo.path()), &deps3) {
-        Err(_) => {}
+    let err = match run(&fresh_run_cfg("true", repo.path()), &deps3) {
+        Err(err) => err,
         Ok(_) => panic!(
             "a durably-recorded quarantine ref that no longer resolves must hard-error, \
              never silently degrade to Ok(None) and start the retry fresh - discarding the \
              harness's own record that real reviewed history exists"
         ),
-    }
+    };
 
     let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
     assert!(
@@ -2122,10 +2123,10 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
          an already-started unit"
     );
     // The whole-stream fold also carries RUN 1's own unrelated escalation lesson - match
-    // on the retry stage's own name, never just "some LessonLearned exists somewhere in
-    // the log", so this proves the failure was attributed to the right unit.
+    // on the retry stage's own name, never just "no LessonLearned exists anywhere in the
+    // log", so this proves the failure was attributed to no unit.
     assert!(
-        events.iter().any(|e| {
+        !events.iter().any(|e| {
             if e.type_ != contextgraph::TYPE_LESSON_LEARNED {
                 return false;
             }
@@ -2137,9 +2138,18 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
                 .unwrap_or_default()
                 .contains(retry_slug)
         }),
-        "the wave's ordinary generic-error arm must still leave its usual durable lesson \
-         naming the failing stage - this failure must stay legible in the log exactly like \
-         any other stage error, never a swallowed failure invisible to the operator"
+        "a git step on the unit's branch that git refused records no lesson against the \
+         retry unit"
+    );
+    assert!(
+        err.0.contains(&quarantine_branch),
+        "the halt names the ref that no longer resolves: {}",
+        err.0
+    );
+    assert_eq!(
+        holds_in(&events),
+        [conductor_fault_hold(&err.0)],
+        "the run is held for a person on the halt's text"
     );
     assert!(
         !repo.path().join("run3-own-work.txt").exists(),
