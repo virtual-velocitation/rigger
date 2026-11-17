@@ -1905,4 +1905,152 @@ mod tests {
             assert!(passes.contains(&place), "settled {settled}: {passes:?}");
         }
     }
+
+    /// A read of a code half and its whole answer.
+    enum Read {
+        /// [`Neighbors::incoming`] at the id: its edges, in order.
+        Incoming(&'static str, Vec<Edge>),
+        /// [`Neighbors::out`] at the id: its edges, in order.
+        Out(&'static str, Vec<Edge>),
+        /// [`Neighbors::leaf_nodes`] of the leaf: its nodes' ids, in order.
+        Leaf(&'static str, &'static [&'static str]),
+    }
+
+    /// A QUALIFIER NAMING NO DEFINITION reaches the reads of both code halves (spec 117, RESOLVER
+    /// AT READ): over the resolver's qualifier fixture, the whole graph and a neighbourhood
+    /// answer each read with no node or edge of a path-qualified mention whose qualifier names
+    /// no definition (`AtomicU64::new` beside the project's `Cursor::new`,
+    /// `AtomicU64::fetch_add`, `cache::load`, `ErrorKind::NotFound`), from product and test code
+    /// alike, and with what the unqualified rule gives a member qualifier
+    /// (`Request.GetClientIp`, `Request.Missing`, `Models.Shape`) and a path qualifier naming a
+    /// product type (`Gauge::load`).
+    #[test]
+    fn a_qualifier_naming_no_definition_reaches_neither_half_and_a_member_one_falls_back() {
+        use crate::contextgraph::{REL_CALLS, REL_CONTAINS, REL_REFERENCES, TIER_EXTRACTED};
+        use crate::resolve::tests::qualifier_fixture;
+        use crate::test_support::edge;
+        let view = qualifier_fixture();
+        let handle = "src/handler.cs::Handler.Handle";
+        let get_client_ip = "src/handler.cs::%GetClientIp";
+        // (what the answer shows, the filter, the read and its whole answer)
+        let cases: [(&str, Tests, Read); 9] = [
+            (
+                "no call lands on the project definition of a path qualifier's leaf",
+                Tests::Exclude,
+                Read::Incoming(
+                    "src/cursor.rs::Cursor::new",
+                    vec![edge(
+                        "src/cursor.rs::Cursor",
+                        "src/cursor.rs::Cursor::new",
+                        REL_CONTAINS,
+                        TIER_EXTRACTED,
+                    )],
+                ),
+            ),
+            (
+                "a leaf binds no placeholder of a path qualifier naming none",
+                Tests::Exclude,
+                Read::Leaf("new", &["src/cursor.rs::Cursor::new"]),
+            ),
+            (
+                "a path qualifier naming none past a leaf nothing defines makes no edge",
+                Tests::Exclude,
+                Read::Out("src/seq.rs::next", vec![]),
+            ),
+            (
+                "a leaf nothing defines binds no placeholder, from product or test code",
+                Tests::Include,
+                Read::Leaf("fetch_add", &[]),
+            ),
+            (
+                "a path qualifier naming a product type keeps the unqualified rule, and one \
+                 named by a module, a C++ type, a test type or none makes no edge",
+                Tests::Exclude,
+                Read::Out(
+                    "src/app.rs::main",
+                    vec![edge(
+                        "src/app.rs::main",
+                        "src/app.rs::%load",
+                        REL_CALLS,
+                        TIER_INFERRED,
+                    )],
+                ),
+            ),
+            (
+                "a member qualifier naming none binds its leaf's placeholder",
+                Tests::Exclude,
+                Read::Leaf(
+                    "GetClientIp",
+                    &[
+                        "src/handler.cs::%GetClientIp",
+                        "src/http.cs::HttpExtensions.GetClientIp",
+                    ],
+                ),
+            ),
+            (
+                "a member qualifier naming none calls its leaf's placeholder",
+                Tests::Exclude,
+                Read::Incoming(
+                    get_client_ip,
+                    vec![
+                        edge(
+                            "src/handler.cs",
+                            get_client_ip,
+                            REL_REFERENCES,
+                            TIER_INFERRED,
+                        ),
+                        edge(handle, get_client_ip, REL_CALLS, TIER_INFERRED),
+                    ],
+                ),
+            ),
+            (
+                "member qualifiers naming none keep the unqualified rule, a call or a reference",
+                Tests::Exclude,
+                Read::Out(
+                    handle,
+                    vec![
+                        edge(handle, get_client_ip, REL_CALLS, TIER_INFERRED),
+                        edge(
+                            handle,
+                            "src/handler.cs::%Missing",
+                            REL_CALLS,
+                            TIER_AMBIGUOUS,
+                        ),
+                        edge(handle, "src/http.cs::Shape", REL_REFERENCES, TIER_INFERRED),
+                    ],
+                ),
+            ),
+            (
+                "a member-qualified type reference naming none lands on its one type",
+                Tests::Exclude,
+                Read::Incoming(
+                    "src/http.cs::Shape",
+                    vec![
+                        edge(handle, "src/http.cs::Shape", REL_REFERENCES, TIER_INFERRED),
+                        edge(
+                            "src/http.cs",
+                            "src/http.cs::Shape",
+                            REL_CONTAINS,
+                            TIER_EXTRACTED,
+                        ),
+                    ],
+                ),
+            ),
+        ];
+        let ids = |nodes: Vec<Node>| nodes.into_iter().map(|n| n.id).collect::<Vec<_>>();
+        for (shows, tests, read) in &cases {
+            let filter = ViewFilter { tests: *tests };
+            let (whole, near) = (Whole::new(&view, filter), Near::new(&view, filter));
+            for (half, graph) in [("whole", &whole as &dyn Neighbors), ("near", &near)] {
+                let at = format!("{half} {tests:?}: {shows}");
+                match read {
+                    Read::Incoming(id, want) => same!(graph.incoming(id).unwrap(), want, "{at}"),
+                    Read::Out(id, want) => same!(graph.out(id).unwrap(), want, "{at}"),
+                    Read::Leaf(leaf, want) => {
+                        assert_eq!(ids(graph.leaf_nodes(leaf).unwrap()), *want, "{at}")
+                    }
+                }
+            }
+        }
+    }
 }

@@ -2763,19 +2763,13 @@ pub(crate) mod tests {
         );
     }
 
-    /// A QUALIFIER NAMING NO DEFINITION (spec 117, RESOLVER AT READ): when a qualified mention's
-    /// qualifier keeps no candidate of its rule ([`Resolver::narrowed`]), a member qualifier
-    /// (`Q.leaf`) takes the unqualified rule, as does a path qualifier (`Q::leaf`) naming a
-    /// product type or trait in the mention's language; any other path qualifier makes no link
-    /// and no placeholder. So `AtomicU64::new` beside the project's `Cursor::new`, in its file or
-    /// another, and `AtomicU64::fetch_add`, which nothing defines, land nowhere, a test call past
-    /// its proof too; so do `cache::load`, `Atomic::load` and `Fake::load`, their qualifier named
-    /// only by a module, a C++ type or a test type, from product and test code alike, and the
-    /// variant reference `ErrorKind::NotFound`. `Gauge::load`, `Meter::load`,
-    /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape` keep the
-    /// unqualified rule.
-    #[test]
-    fn a_qualifier_naming_no_definition_makes_no_link_and_a_member_qualifier_falls_back() {
+    /// A tree of qualified mentions whose qualifiers keep no candidate of their rule:
+    /// `AtomicU64::new` beside the project's `Cursor::new`, in its file and another, and
+    /// `AtomicU64::fetch_add`, which nothing defines, from product and test code; `load`
+    /// qualified by a module, a C++ type, a test type, a product type and a product trait, and
+    /// the variant reference `ErrorKind::NotFound`; and the C# member qualifiers
+    /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape`.
+    pub(crate) fn qualifier_fixture() -> FactsView {
         let cursor = code(
             "src/cursor.rs",
             "rust",
@@ -2904,12 +2898,28 @@ pub(crate) mod tests {
                 ),
             ],
         );
-        let view = FactsView::new(
+        FactsView::new(
             stamp(),
             vec![
                 cursor, seq, seq_test, loader, atomic, fake, app, app_test, http, handler,
             ],
-        );
+        )
+    }
+
+    /// A QUALIFIER NAMING NO DEFINITION (spec 117, RESOLVER AT READ): when a qualified mention's
+    /// qualifier keeps no candidate of its rule ([`Resolver::narrowed`]), a member qualifier
+    /// (`Q.leaf`) takes the unqualified rule, as does a path qualifier (`Q::leaf`) naming a
+    /// product type or trait in the mention's language; any other path qualifier makes no link
+    /// and no placeholder. So `AtomicU64::new` beside the project's `Cursor::new`, in its file or
+    /// another, and `AtomicU64::fetch_add`, which nothing defines, land nowhere, a test call past
+    /// its proof too; so do `cache::load`, `Atomic::load` and `Fake::load`, their qualifier named
+    /// only by a module, a C++ type or a test type, from product and test code alike, and the
+    /// variant reference `ErrorKind::NotFound`. `Gauge::load`, `Meter::load`,
+    /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape` keep the
+    /// unqualified rule.
+    #[test]
+    fn a_qualifier_naming_no_definition_makes_no_link_and_a_member_qualifier_falls_back() {
+        let view = qualifier_fixture();
         let r = Resolver::new(&view);
         // (what the answer shows, the question, the whole answer)
         let cases: [(&str, Ask, &[&str]); 9] = [
