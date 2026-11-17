@@ -8,17 +8,20 @@
 # `deaf` starts a holder and stays until the test releases it (tests/fixtures/witness.sh), never
 # reading its control descriptor, as a keeper that does not end its tree within its bound does.
 #
+# The status descriptor is written through /proc, since dash, a common /bin/sh, accepts no
+# descriptor above 9 in a redirection.
+#
 # A checked-in executable fixture (never written at test time), so no concurrent test's fork+exec
 # can inherit a write descriptor to it.
-status=$1
+status=/proc/$$/fd/$1
 case "$RIGGER_TEST_KEEPER" in
 gone)
-    printf 'spawned %s\n' "$$" >&"$status"
+    printf 'spawned %s\n' "$$" >"$status"
     ;;
 deaf)
     self=$(readlink "$0") || self=$0
     . "$(dirname "$self")/witness.sh"
-    printf 'spawned %s\n' "$$" >&"$status"
+    printf 'spawned %s\n' "$$" >"$status"
     holder
     up
     held
