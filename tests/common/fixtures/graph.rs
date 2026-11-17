@@ -342,31 +342,66 @@ pub fn planted_file(
     }
 }
 
-/// `file` with each `(enclosing, leaf)` of `uses` added as a `use` of `leaf` on line 1, inside the
-/// definition named `enclosing`, or at file level when that is empty: a reference that calls
-/// nothing.
-pub fn with_uses(
+/// `file` with each `(enclosing, leaf)` of `refs` added as a mention of `leaf` tagged `tag` on
+/// line 1, inside the definition named `enclosing`, or at file level when that is empty: a
+/// reference that calls nothing.
+pub fn with_tagged(
     mut file: rigger::code_facts::FileFacts,
-    uses: &[(&str, &str)],
+    tag: &str,
+    refs: &[(&str, &str)],
 ) -> rigger::code_facts::FileFacts {
     use rigger::code_facts::{Mention, MentionKind};
-    use rigger::contextgraph::REF_KIND_USE;
-    for (enclosing, leaf) in uses {
+    for (enclosing, leaf) in refs {
         let enclosing = (!enclosing.is_empty()).then(|| {
             let at = file.defs.iter().position(|d| d.leaf == *enclosing);
-            at.unwrap_or_else(|| panic!("{}: no definition {enclosing} holds a use", file.path))
-                as u32
+            at.unwrap_or_else(|| {
+                panic!(
+                    "{}: no definition {enclosing} holds a {tag} reference",
+                    file.path
+                )
+            }) as u32
         });
         file.mentions.push(Mention {
             enclosing,
             name: leaf.to_string(),
             leaf: leaf.to_string(),
-            kind: MentionKind::Tagged(REF_KIND_USE.to_string()),
+            kind: MentionKind::Tagged(tag.to_string()),
             line: 1,
             test: false,
         });
     }
     file
+}
+
+/// `file` with each `(enclosing, leaf)` of `uses` added as a `use` of `leaf` ([`with_tagged`]).
+pub fn with_uses(
+    file: rigger::code_facts::FileFacts,
+    uses: &[(&str, &str)],
+) -> rigger::code_facts::FileFacts {
+    with_tagged(file, rigger::contextgraph::REF_KIND_USE, uses)
+}
+
+/// Define `leaf` of `kind` at `line` of `file`, nested in the definition named `parent`: a member
+/// whose local name is the parent's local name, `::` and `leaf`, as its extractor reads it.
+pub fn define_member(
+    file: &mut rigger::code_facts::FileFacts,
+    parent: &str,
+    leaf: &str,
+    kind: &str,
+    line: u32,
+) {
+    let at = file.defs.iter().position(|d| d.leaf == parent);
+    let at = at.unwrap_or_else(|| panic!("{}: no definition {parent} holds {leaf}", file.path));
+    let local = format!("{}::{leaf}", file.defs[at].local);
+    file.defs.push(rigger::code_facts::Def {
+        local,
+        leaf: leaf.to_string(),
+        kind: kind.to_string(),
+        line,
+        end_line: line,
+        parent: Some(at as u32),
+        test: false,
+    });
 }
 
 /// A planted tree: the files a test's code view holds, each built up as its extractor would read

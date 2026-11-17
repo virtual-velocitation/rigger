@@ -229,13 +229,27 @@ pub fn leaf_of(id: &str) -> Option<&str> {
     split_id(id).1?.strip_prefix(PLACEHOLDER_SIGIL)
 }
 
-/// The leaf a path query names (spec 119, A BARE SHOW FINDS A LEAF OR PATH): the text after its
-/// last `::` or `.`, the whole text when it holds neither (`T::new` and `a.rs::T::new` give `new`,
-/// `S.field` gives `field`). The show lookup's path form and the grounder's symbol of a
-/// path-shaped term both read it.
+/// The leaf a path query names (spec 119, A BARE SHOW FINDS A LEAF OR PATH): [`split_path`]'s
+/// leaf, the text after its last `::` or `.`, the whole text when it holds neither (`T::new` and
+/// `a.rs::T::new` give `new`, `S.field` gives `field`). The show lookup's path form and the
+/// grounder's symbol of a path-shaped term both read it.
 pub fn path_leaf(path: &str) -> &str {
-    let tail = path.rsplit_once("::").map_or(path, |(_, leaf)| leaf);
-    tail.rsplit_once('.').map_or(tail, |(_, leaf)| leaf)
+    split_path(path).1
+}
+
+/// A path cut at its last `::` or `.` into its qualifier and its leaf: the text before that
+/// separator, none when the path holds neither, and the text after it, the whole path when it
+/// holds neither (`a::b.c` gives `a::b` and `c`, `new` gives none and `new`). The one cut of a
+/// path: [`path_leaf`] reads its leaf, and the resolver a qualified mention's qualifier (spec
+/// 117, RESOLVER AT READ).
+pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
+    let (head, tail) = path
+        .rsplit_once("::")
+        .map_or((None, path), |(head, tail)| (Some(head), tail));
+    match tail.rsplit_once('.') {
+        Some((_, leaf)) => (Some(&path[..path.len() - leaf.len() - 1]), leaf),
+        None => (head, tail),
+    }
 }
 
 /// The ONE join of a code-entity id (spec 119), the inverse of [`split_id`]: `<file>::<rest>`,
@@ -2852,20 +2866,25 @@ mod leaf_tests {
 
     #[test]
     fn a_path_query_is_looked_up_by_the_text_after_its_last_separator() {
-        assert_eq!(
-            [
-                "T::new",
-                "S.field",
-                "a::b.c",
-                "a.b::c",
-                "a.rs::T::new",
-                "new",
-                "T::%",
-                "T::"
-            ]
-            .map(path_leaf),
-            ["new", "field", "c", "c", "new", "new", "%", ""]
-        );
+        // (the path, its qualifier, its leaf)
+        let cases = [
+            ("T::new", Some("T"), "new"),
+            ("S.field", Some("S"), "field"),
+            ("a::b.c", Some("a::b"), "c"),
+            ("a.b::c", Some("a.b"), "c"),
+            ("a.rs::T::new", Some("a.rs::T"), "new"),
+            ("new", None, "new"),
+            ("T::%", Some("T"), "%"),
+            ("T::", Some("T"), ""),
+            ("::x", Some(""), "x"),
+        ];
+        for (path, qualifier, leaf) in cases {
+            assert_eq!(
+                (split_path(path), path_leaf(path)),
+                ((qualifier, leaf), leaf),
+                "{path}"
+            );
+        }
     }
 
     #[test]
