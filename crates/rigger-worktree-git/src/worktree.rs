@@ -536,7 +536,7 @@ impl Worktree {
         // loses the race; see `repo_admin_lock`'s doc comment).
         let repo_lock = repo_admin_lock(repo);
         let _repo_guard = repo_lock.lock().unwrap();
-        if std::path::Path::new(dir).exists() {
+        if occupant(dir)?.is_some() {
             clear_worktree_dir(repo, dir, authorized_root)?;
         } else {
             // No dir to clear, but a killed process may still leave a dangling admin entry.
@@ -2293,6 +2293,12 @@ fn registration_for(repo: &str, branch: &str) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
+/// What sits at `dir`, read from the path's own entry and never by following a link, so a link -
+/// dangling or not - is itself what sits there ([`metadata_at`]).
+fn occupant(dir: &str) -> Result<Option<std::fs::Metadata>, Error> {
+    metadata_at(dir, std::fs::symlink_metadata(dir))
+}
+
 /// What `read`, a metadata read of `path`, answers: `None` when nothing is there, the metadata
 /// when something is, and an error naming `path` when the filesystem cannot answer, never a no.
 /// The read is [`std::fs::symlink_metadata`] for the path's own entry, a link being itself, or
@@ -2334,12 +2340,25 @@ fn metadata_at(
 ///
 /// An empty `repo` names no repository to deregister `dir` from, so this fails before it reaps
 /// or removes anything: git's refusal of that path is never read as "nothing is registered here".
+///
+/// A symlink at `dir` is removed as a link and nothing else: what it names - a directory, another
+/// registered worktree, nothing at all - is never reaped, deregistered or removed, since `git
+/// worktree remove --force` given a link removes the worktree the link names. A Unix link is
+/// unlinked like a file; a Windows directory link, which the file call refuses, is removed as a
+/// directory entry, which removes the link alone.
 fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
     if repo.is_empty() {
         return Err(Error(format!(
             "clear worktree dir {dir}: {}",
             crate::subprocess::NO_REPOSITORY
         )));
+    }
+    if occupant(dir)?.is_some_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(dir)
+            .or_else(|_| std::fs::remove_dir(dir))
+            .map_err(|e| Error(format!("remove the link at {dir}: {e}")))?;
+        git(repo, &["worktree", "prune"])?;
+        return Ok(());
     }
     reap_dir_before_removal(dir, authorized_root);
     if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
@@ -2353,10 +2372,11 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
 }
 
 /// Clear a leftover sitting at `dir`, the path a worktree is about to be added at, through
-/// [`clear_worktree_dir`]: a plain directory, or a registration git still tracks there. Nothing
-/// at `dir` is a no-op. CALLER-LOCKED, as [`clear_worktree_dir`] is.
+/// [`clear_worktree_dir`]: a plain directory, a registration git still tracks there, or a link.
+/// Nothing at `dir` ([`occupant`]) is a no-op, and a read the filesystem cannot answer is an
+/// error. CALLER-LOCKED, as [`clear_worktree_dir`] is.
 fn clear_leftover_at(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
-    if std::path::Path::new(dir).exists() {
+    if occupant(dir)?.is_some() {
         clear_worktree_dir(repo, dir, authorized_root)?;
     }
     Ok(())
