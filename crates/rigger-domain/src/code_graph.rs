@@ -19,7 +19,7 @@ use crate::contextgraph::query::{leaf_of, split_path};
 use crate::contextgraph::{
     Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, TIER_EXTRACTED,
 };
-use crate::resolve::{Entity, Hop, IntentLink, IntentNode, Pool, ProofCall, Resolver};
+use crate::resolve::{Entity, IntentLink, IntentNode, Pool, ProofCall, Resolver};
 
 /// The attribute naming the file a design or workflow node's facts came from.
 pub(crate) const DOC_ATTR: &str = "doc";
@@ -318,17 +318,14 @@ impl<'v> CodeGraph<'v> {
         calls
     }
 
-    /// The candidate ids, in id order, the down-hop of `id` keeps ([`Resolver::down_hop`]) in the
-    /// pool the filter shows, the test definitions too when tests are shown, when `id` is a
-    /// placeholder keyed by a qualified name; none for any other id.
+    /// The candidate ids the down-hop of `id` keeps ([`Resolver::down_hop`]) in the pool the
+    /// filter shows, the test definitions too when tests are shown, when `id` is a placeholder
+    /// keyed by a qualified name; none for any other id.
     pub fn down_hop(&self, id: &str) -> Option<Vec<String>> {
         split_path(leaf_of(id)?).0?;
         let pool = Pool::of(self.filter.tests != Tests::Exclude);
-        Some(match self.resolver.down_hop(id, pool)? {
-            Hop::Terminal => Vec::new(),
-            Hop::One(c) => vec![c.id],
-            Hop::Frontier(cs) => cs.into_iter().map(|c| c.id).collect(),
-        })
+        let kept = self.resolver.down_hop(id, pool)?.into_vec();
+        Some(kept.into_iter().map(|c| c.id).collect())
     }
 
     /// The file node, entities, placeholders and edges of the code file `facts`, asserted to `b`.

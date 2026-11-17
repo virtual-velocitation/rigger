@@ -90,6 +90,17 @@ pub enum Hop<T> {
     Frontier(Vec<T>),
 }
 
+impl<T> Hop<T> {
+    /// The candidates the hop holds: none for a terminal, else the one or the frontier's.
+    pub fn into_vec(self) -> Vec<T> {
+        match self {
+            Hop::Terminal => Vec::new(),
+            Hop::One(c) => vec![c],
+            Hop::Frontier(cs) => cs,
+        }
+    }
+}
+
 /// The one "exactly one" decision the rules take over a candidate set.
 pub fn hop<T>(mut candidates: Vec<T>) -> Hop<T> {
     match candidates.len() {
@@ -1127,11 +1138,10 @@ impl<'v> Resolver<'v> {
         match leaf_of(&to) {
             None => Vec::new(),
             Some(written) if written == leaf => vec![leaf.to_string()],
-            Some(_) => match self.down_hop(&to, Pool::All) {
-                Some(Hop::One(c)) => vec![c.id],
-                Some(Hop::Frontier(cs)) => cs.into_iter().map(|c| c.id).collect(),
-                Some(Hop::Terminal) | None => Vec::new(),
-            },
+            Some(_) => (self.down_hop(&to, Pool::All).into_iter())
+                .flat_map(Hop::into_vec)
+                .map(|c| c.id)
+                .collect(),
         }
     }
 
@@ -1230,11 +1240,8 @@ impl<'v> Resolver<'v> {
             .collect();
         let reaches = |l: &Link| {
             l.to == id
-                || match self.down_hop(&l.to, Pool::of(l.test)) {
-                    Some(Hop::One(c)) => c.id == id,
-                    Some(Hop::Frontier(cs)) => cs.iter().any(|c| c.id == id),
-                    Some(Hop::Terminal) | None => false,
-                }
+                || (self.down_hop(&l.to, Pool::of(l.test)))
+                    .is_some_and(|h| h.into_vec().iter().any(|c| c.id == id))
         };
         files
             .into_iter()
