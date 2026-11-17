@@ -2302,6 +2302,127 @@ pub(crate) mod tests {
         );
     }
 
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ) without letting a
+    /// test definition change a product edge: an implementation that is test code, by its own
+    /// mark (`Keeper`'s) or by its file's scope (`Holder`'s), is a parent of a test mention's
+    /// qualifier alone. So a product call to `Keeper::area` or `Holder::area`, and a product
+    /// `const` reference to `Keeper::SIDES`, keep the unqualified rule, while the same test
+    /// mentions reach `Shape::area` and `Shape::SIDES` through the test `impl Shape for ...`.
+    /// One resolver answers the product file first, so a parent set held for the qualifier alone
+    /// would hand the test mentions the product answer.
+    #[test]
+    fn a_test_implementation_narrows_test_mentions_alone() {
+        let qualified_call =
+            |name: &str, line, test| qualified(MentionKind::Call, name, Some(0), line, test);
+        let qualified_const = |name: &str, line, test| {
+            qualified(
+                MentionKind::Tagged("const".into()),
+                name,
+                Some(0),
+                line,
+                test,
+            )
+        };
+        let shape = code(
+            "src/shape.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Shape", "trait", 1, None, false),
+                def("Shape::area", "method", 2, Some(0), false),
+                def("Shape::SIDES", "constant", 3, Some(0), false),
+            ],
+            vec![],
+        );
+        let keep = code(
+            "src/keep.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Keeper", "type", 1, None, false),
+                def("impl Shape for Keeper", "impl", 4, None, true),
+            ],
+            vec![
+                tagged("impl", "Shape", Some(1), 4),
+                tagged("impl", "Keeper", Some(1), 4),
+            ],
+        );
+        let holder = code(
+            "src/holder.rs",
+            "rust",
+            Scope::Product,
+            vec![def("Holder", "type", 1, None, false)],
+            vec![],
+        );
+        let holder_test = code(
+            "tests/holder.rs",
+            "rust",
+            Scope::Test,
+            vec![def("impl Shape for Holder", "impl", 1, None, false)],
+            vec![
+                tagged("impl", "Shape", Some(0), 1),
+                tagged("impl", "Holder", Some(0), 1),
+            ],
+        );
+        let user = code(
+            "src/user.rs",
+            "rust",
+            Scope::Product,
+            vec![def("run", "function", 1, None, false)],
+            vec![
+                qualified_call("Keeper::area", 2, false),
+                qualified_call("Holder::area", 3, false),
+                qualified_const("Keeper::SIDES", 4, false),
+            ],
+        );
+        let user_test = code(
+            "tests/user.rs",
+            "rust",
+            Scope::Test,
+            vec![def("checks", "function", 1, None, true)],
+            vec![
+                qualified_call("Keeper::area", 2, true),
+                qualified_call("Holder::area", 3, true),
+                qualified_const("Keeper::SIDES", 4, true),
+            ],
+        );
+        let view = FactsView::new(
+            stamp(),
+            vec![shape, keep, holder, holder_test, user, user_test],
+        );
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let cases: [(&str, Ask, &[&str]); 2] = [
+            (
+                "a product mention keeps the unqualified rule past a test implementation",
+                Ask::Links("src/user.rs", false),
+                &[
+                    "src/user.rs::run -CALLS/inferred-> src/user.rs::%area",
+                    "src/user.rs -REFERENCES/inferred-> src/user.rs::%area",
+                    "src/user.rs::run -CALLS/inferred-> src/user.rs::%area",
+                    "src/user.rs -REFERENCES/inferred-> src/user.rs::%area",
+                    "src/user.rs::run -REFERENCES/inferred-> src/shape.rs::Shape::SIDES",
+                    "src/user.rs -CONTAINS/extracted-> src/user.rs::run",
+                ],
+            ),
+            (
+                "a test mention reaches the trait a test implementation names",
+                Ask::Links("tests/user.rs", true),
+                &[
+                    "tests/user.rs::checks -CALLS/extracted-> src/shape.rs::Shape::area",
+                    "tests/user.rs -REFERENCES/extracted-> src/shape.rs::Shape::area",
+                    "tests/user.rs::checks -CALLS/extracted-> src/shape.rs::Shape::area",
+                    "tests/user.rs -REFERENCES/extracted-> src/shape.rs::Shape::area",
+                    "tests/user.rs::checks -REFERENCES/extracted-> src/shape.rs::Shape::SIDES",
+                    "tests/user.rs -CONTAINS/extracted-> tests/user.rs::checks",
+                ],
+            ),
+        ];
+        for (shows, ask, want) in cases {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+    }
+
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {
