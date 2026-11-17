@@ -18855,7 +18855,9 @@ mod tests {
     }
 
     /// Running `cfg` over `criteria` - one of which it leaves uncovered - with a driver that
-    /// proposes nothing must be refused (`why`); returns the log the refused run left.
+    /// proposes nothing must be refused (`why`), naming the gap, and held for a person on that
+    /// refusal's own text, so `rigger status` names the uncovered criterion; returns the log the
+    /// refused run left.
     fn uncovered_run_log(cfg: Config, criteria: &[&str], why: &str) -> Vec<Event> {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
@@ -18864,9 +18866,24 @@ mod tests {
             &driver,
             criteria.iter().map(|c| c.to_string()).collect(),
         );
-        assert!(run_isolated(&cfg, &deps).is_err(), "{why}");
-        st.read_all(0, Direction::Forward, &Filter::default())
-            .unwrap()
+        let Err(err) = run_isolated(&cfg, &deps) else {
+            panic!("{why}");
+        };
+        let events = st
+            .read_all(0, Direction::Forward, &Filter::default())
+            .unwrap();
+        assert!(
+            err.0
+                .starts_with("coverage gap - no stage with an LLM verifier covers: "),
+            "{why}: the refusal names the gap: {}",
+            err.0
+        );
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&err.0)],
+            "{why}: the refusal holds the run for a person on its own text"
+        );
+        events
     }
 
     /// A stage run by agent `a` that covers only "criterion one".
@@ -53787,6 +53804,7 @@ mod tests {
                     .iter()
                     .map(|lesson| lesson["summary"].clone())
                     .collect::<Vec<_>>(),
+                holds_in(&log),
             ),
             (
                 critique_round_spawns(2),
@@ -53794,9 +53812,11 @@ mod tests {
                 Some(stop_halt().as_str()),
                 vec![json!({"id": "plan-critique", "reason": stop_halt()})],
                 vec![json!(stop_lesson())],
+                Vec::new(),
             ),
             "the stop wins the round head: its three records once each, its halt, the gate's one \
-             escalation, and no escalated-after lesson"
+             escalation, no escalated-after lesson, and no conductor-fault hold, since a stop is \
+             a settled run and no fault of the conductor's"
         );
     }
 
