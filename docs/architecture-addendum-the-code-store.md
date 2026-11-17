@@ -793,19 +793,23 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 - **A test mention** produces a proof under every filter. Under `include` and `only` it also
   produces the edges of the call and reference rules, resolved against all candidates, product
   and test. That gives test-to-test and test-to-product CALLS and REFERENCES edges, all marked
-  `test`. A test call the call rule resolves to no EXTRACTED edge lands on the definition its
-  proof credits, so an unqualified test call's edge and the proof it adds name one definition.
-  Under `exclude` it produces no edge.
+  `test`. A test call the call rule sends to a placeholder lands on the definition its proof
+  credits, so an unqualified test call's edge and the proof it adds name one definition. A test
+  call the qualified-mention rule gives no edge makes none, though the proof rule, which reads the
+  leaf alone, may still credit a definition with it (spec 117, RESOLVER AT READ). Under `exclude`
+  it produces no edge.
 
 A call in file F yields two edges to the one target the call rule below resolves: CALLS from its
 enclosing definition, or from F when the call sits outside every definition (a module-level
-call), and REFERENCES from F.
+call), and REFERENCES from F. A call the qualified-mention rule gives no edge yields neither.
 
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
 | qualified mention | Mention `Call` or `Tagged(k)` in file F written `Q::leaf` or `Q.leaf` | the candidates the call or tagged-reference rule below reads whose parent is a definition whose leaf is `Q` or an `impl`-kind definition enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait an `impl` mention such an implementation encloses names: exactly one, in any file | EXTRACTED edge to that definition |
 | | | several | a call: INFERRED edge to the definition the proof rule credits a test mention to, else to the placeholder `F::%<leaf>`; a tagged reference: no edge |
-| | | none | the call or tagged-reference rule below |
+| | | none, under a member qualifier `Q.leaf` | the call or tagged-reference rule below |
+| | | none, under a path qualifier `Q::leaf` where `Q` is the leaf of a product `type` or `trait` definition in F's language | the call or tagged-reference rule below |
+| | | none, under any other path qualifier | no edge and no placeholder; not counted as unresolved (spec 117, RESOLVER AT READ) |
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
 | | | otherwise, a test mention the proof rule credits to a definition | INFERRED edge to that definition |
 | | | otherwise | edge to the placeholder `F::%<leaf>`: INFERRED if any candidate exists anywhere, AMBIGUOUS if none |
