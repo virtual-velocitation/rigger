@@ -76,7 +76,8 @@ per category, `rigger hook stop-failure --spawn <id> --class <category>`), the l
 `invalid_request` is API-side: the failure charges no remediation attempt, the spawn is
 relaunched at most twice, then the run halts naming the class and the spawn. `invalid_request`
 is the API refusing the request as the conductor built it, the conductor's fault: it charges no
-attempt, is never relaunched and holds the run for a person (spec 105).
+attempt, is never relaunched and holds the run for the orchestrator, for a person once the same
+refusal holds it again after a release (spec 105, ESCALATION).
 
 STOP, decided: the host enforces `max_wall_clock` against stream silence. Expiry closes the
 session's input, waits 30 s, then ends the child through the sanctioned lifecycle helper
