@@ -18455,6 +18455,10 @@ mod tests {
         /// `git worktree add` refuses as already existing, so the re-assert after the spawn
         /// cannot restore the worktree.
         dangle_dir_by_agent: std::collections::HashSet<String>,
+        /// Per-agent id: THIS agent's own spawn leaves `opts.dir`'s index locked, right before
+        /// returning success - as a git killed mid-write leaves it - so the next git step that
+        /// writes that worktree's index is refused.
+        lock_index_by_agent: std::collections::HashSet<String>,
         /// Per-agent id, in spawn order: whether `opts.dir` already existed on disk at
         /// the moment THIS spawn began - recorded before `delete_dir_by_agent`'s own
         /// side effect (if any) runs for this same spawn. Lets a test prove a LATER
@@ -18550,6 +18554,7 @@ mod tests {
                 targets_by_agent: Mutex::new(HashMap::new()),
                 delete_dir_by_agent: std::collections::HashSet::new(),
                 dangle_dir_by_agent: std::collections::HashSet::new(),
+                lock_index_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
                 commits_by_agent: HashMap::new(),
                 read_file_by_agent: HashMap::new(),
@@ -18806,6 +18811,11 @@ mod tests {
             if !opts.dir.is_empty() && self.dangle_dir_by_agent.contains(&a.id) {
                 let _ = std::fs::remove_dir_all(&opts.dir);
                 std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &opts.dir).unwrap();
+            }
+            if !opts.dir.is_empty() && self.lock_index_by_agent.contains(&a.id) {
+                let git_dir = run_git(&opts.dir, &["rev-parse", "--absolute-git-dir"]);
+                let git_dir = String::from_utf8_lossy(&git_dir.stdout).trim().to_string();
+                std::fs::write(Path::new(&git_dir).join("index.lock"), "").unwrap();
             }
             let mut output = self
                 .output_by_spawn_id
@@ -48006,9 +48016,10 @@ mod tests {
 
     /// A WORKTREE STEP GIT REFUSES IS THE CONDUCTOR'S FAULT: whichever kind of worktree step the
     /// conductor takes is refused - making a unit's worktree, re-asserting it before a later step,
-    /// discarding a throwaway one, seeding a throwaway branch - the run halts naming git's
-    /// refusal, records no lesson against the unit, charges it no attempt, and is held for a
-    /// person.
+    /// discarding a throwaway one, seeding a throwaway branch, committing an attempt's
+    /// checkpoint, landing on the run branch, rolling a unit's branch back, reading a branch's
+    /// tip, deleting a branch - the run halts naming git's refusal, records no lesson against the
+    /// unit, charges it no attempt, and is held for a person.
     #[test]
     #[cfg(unix)]
     fn a_worktree_step_git_refuses_halts_with_no_lesson_and_holds_the_run() {
@@ -48026,6 +48037,22 @@ mod tests {
             /// A ref under the post-merge re-gate's throwaway branch name holds its namespace,
             /// so seeding that branch is refused.
             SeedBranch,
+            /// The worker leaves its worktree's index locked, so committing the attempt's
+            /// checkpoint is refused.
+            Checkpoint,
+            /// The gate leaves the main checkout's index locked, so landing the unit on the run
+            /// branch is refused.
+            Land,
+            /// The gate moves the run branch, so the post-merge re-gate runs on a real merge; it
+            /// fails there and leaves the unit's worktree index locked, so rolling the unit's
+            /// branch back off the merge is refused.
+            BranchReset,
+            /// A prior run's unit served the criterion and its record names a quarantined
+            /// branch that is gone, so reading that branch's tip to adopt it is refused.
+            BranchTip,
+            /// The unit's branch was started for another criterion, HEAD holds its tip, and it is
+            /// checked out in another worktree, so deleting it is refused.
+            BranchDelete,
         }
         // Each row: the step git refuses, and the text of the refusal the halt names.
         let cases = [
@@ -48033,22 +48060,41 @@ mod tests {
             (Step::Reassert, "already exists"),
             (Step::Discard, "branch -D"),
             (Step::SeedBranch, "exists; cannot create"),
+            (Step::Checkpoint, "add -A"),
+            (Step::Land, "merge --ff-only"),
+            (Step::BranchReset, "reset --hard"),
+            (Step::BranchTip, "unknown revision"),
+            (Step::BranchDelete, "cannot delete branch"),
         ];
         for (step, refusal) in cases {
             let repo = temp_git_project_with_commit();
             let repo_path = repo.path().to_str().unwrap().to_string();
             let elsewhere = tempfile::tempdir().unwrap();
             let store = Store::open(":memory:").unwrap();
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let unit_dir = unit_worktree_dir(&scratch, "unit-a");
+            let (_, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
+            let gate = match step {
+                Step::Land => format!("touch '{repo_path}/.git/index.lock'"),
+                Step::BranchReset => format!(
+                    "if [ \"$(git rev-parse --abbrev-ref HEAD)\" = '{pm_branch}' ]; then \
+                     touch \"$(git -C '{unit_dir}' rev-parse --absolute-git-dir)/index.lock\"; \
+                     exit 1; fi; [ -e '{repo_path}/op.txt' ] || {{ echo op > '{repo_path}/op.txt' \
+                     && git -C '{repo_path}' add op.txt && git -C '{repo_path}' commit -qm op; }}"
+                ),
+                _ => "true".to_string(),
+            };
             let mut cfg = Config::default();
             for id in ["worker", "lens", "adversary", "judge"] {
                 cfg.agents.insert(id.into(), agent(id));
             }
-            cfg.workflow.gates.insert("g".into(), gate_def("true"));
+            cfg.workflow.gates.insert("g".into(), gate_def(&gate));
             cfg.workflow.stages.insert(
                 "unit-a".into(),
                 Stage {
                     name: "unit-a".into(),
                     agent: "worker".into(),
+                    criterion_id: "c1".into(),
                     gates: vec!["g".into()],
                     on_pass: "merge".into(),
                     review: crate::config::ReviewPanel {
@@ -48071,15 +48117,16 @@ mod tests {
                     .then(|| "lens".to_string())
                     .into_iter()
                     .collect(),
+                lock_index_by_agent: matches!(step, Step::Checkpoint)
+                    .then(|| "worker".to_string())
+                    .into_iter()
+                    .collect(),
                 ..Stub::new()
             };
             let deps = Deps {
                 repo: repo_path.clone(),
                 ..stub_deps(&store, &driver, Vec::new())
             };
-            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-            let unit_dir = unit_worktree_dir(&scratch, "unit-a");
-            let (_, pm_branch) = Throwaway::POSTMERGE.dir_and_branch(&scratch, "unit-a", 0);
             let planted = match step {
                 Step::Make => {
                     std::fs::create_dir_all(&scratch).unwrap();
@@ -48099,6 +48146,38 @@ mod tests {
                 Step::SeedBranch => run_git(&repo_path, &["branch", &format!("{pm_branch}/held")])
                     .status
                     .success(),
+                Step::Checkpoint | Step::Land | Step::BranchReset => true,
+                Step::BranchTip => {
+                    let quarantined = Event::new(
+                        ledger::TYPE_UNIT_STATUS,
+                        serde_json::to_vec(&json!({
+                            "id": "unit-old",
+                            "status": STATUS_BRANCH_QUARANTINED,
+                            "criterion_id": "c1",
+                            "spec": "",
+                            "quarantined_to": {"branch": "rigger/orphaned/unit-old-gone"},
+                        }))
+                        .unwrap(),
+                    );
+                    let prior = [started_with_criterion("unit-old", "c1"), quarantined];
+                    seed_events_in_run(&store, &["prior"], &prior);
+                    true
+                }
+                Step::BranchDelete => {
+                    seed_events_in_run(
+                        &store,
+                        &["prior"],
+                        &[started_with_criterion("unit-a", "c0")],
+                    );
+                    let held = elsewhere.path().join("held");
+                    let branch = unit_branch("unit-a");
+                    run_git(
+                        &repo_path,
+                        &["worktree", "add", "-b", &branch, held.to_str().unwrap()],
+                    )
+                    .status
+                    .success()
+                }
             };
             assert!(planted, "{step:?}: precondition: the refusal is planted");
 
