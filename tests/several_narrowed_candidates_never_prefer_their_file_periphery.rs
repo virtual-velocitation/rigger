@@ -7,23 +7,28 @@
 //! (`Composed::new`) and the one a lookup reads (`Composed::near`), where several placeholders of
 //! one leaf meet:
 //!
-//!  - the call walk down, where each placeholder is a frontier of what its own qualifier keeps;
+//!  - the call walk down, where each placeholder is a frontier of what its own qualifier keeps,
+//!    in the product pool and, with tests shown, in the test pool beside it;
 //!  - the call walk up, where a definition's callers are those whose placeholder keeps it, each
 //!    under its own placeholder's frontier, beside an unqualified caller of the leaf;
-//!  - the hidden test callers, filed under the candidates a test call's qualifier keeps.
+//!  - the hidden test callers, filed under the candidates a test call's qualifier keeps;
+//!  - the files lens over a half's whole graph, which binds each placeholder by its leaf over the
+//!    candidates it carries, whole and re-grained.
 
 use crate::common;
 
 use common::fixtures::{
     call_edge_pairs, call_frontiers, call_node_ids, call_walk, define_member, facts_view,
-    matching_honesty, owned_ids, planted_file, with_calls, with_tagged,
+    matching_honesty, one_community_graph, owned_ids, planted_file, with_calls, with_tagged,
+    ONE_COMMUNITY,
 };
+use common::lens::files_lens_rows;
 use rigger::code_facts::FileFacts;
 use rigger::code_view::{FactsView, Tests, ViewFilter};
 use rigger::composed::{Composed, Indexed};
 use rigger::contextgraph::{
-    ContextGraph, Direction, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD, CODE_KIND_TRAIT,
-    CODE_KIND_TYPE, REF_KIND_IMPL,
+    ContextGraph, Direction, Graph, Node, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD,
+    CODE_KIND_TRAIT, CODE_KIND_TYPE, REF_KIND_IMPL,
 };
 
 /// `CodeView`'s default method, which calls `CodeView.file`.
@@ -50,6 +55,41 @@ const LISTING: &str = "src/report.rs::listing";
 const CHECKS: &str = "tests/report.rs::checks";
 /// The test implementation `Fake`'s `file`, implementing `Archive`.
 const FAKE_FILE: &str = "tests/report.rs::Fake::file";
+/// The test calling `Archive.file` from a file holding no definition of `file`.
+const AUDIT: &str = "tests/audit.rs::audit";
+
+/// What `CodeView.file` keeps: both implementations of `CodeView`.
+const CODE_VIEWS: &[&str] = &[FACTS_VIEW_FILE, SNAPSHOT_FILE];
+/// What `Archive.file` keeps in the product pool: the product implementations of `Archive`.
+const ARCHIVES: &[&str] = &[TARBALL_FILE, ZIP_FILE];
+/// What `Archive.file` keeps with tests shown: every implementation of `Archive`.
+const ARCHIVES_SHOWN: &[&str] = &[TARBALL_FILE, ZIP_FILE, FAKE_FILE];
+/// What `Mirror.file` keeps in the product pool: both traits' default methods.
+const MIRRORS: &[&str] = &[LOCAL_FILE, REMOTE_FILE];
+/// What `Mirror.file` keeps with tests shown: the test type's own `file` beside them.
+const MIRRORS_SHOWN: &[&str] = &[LOCAL_FILE, REMOTE_FILE, TEST_MIRROR_FILE];
+/// Every product definition of `file`, in id order.
+const EVERY: &[&str] = &[
+    TARBALL_FILE,
+    ZIP_FILE,
+    FACTS_VIEW_FILE,
+    LOCAL_FILE,
+    REMOTE_FILE,
+    SNAPSHOT_FILE,
+    STORE_FILE,
+];
+/// Every definition of `file`, test ones included, in id order.
+const EVERY_SHOWN: &[&str] = &[
+    TARBALL_FILE,
+    ZIP_FILE,
+    FACTS_VIEW_FILE,
+    LOCAL_FILE,
+    REMOTE_FILE,
+    SNAPSHOT_FILE,
+    STORE_FILE,
+    FAKE_FILE,
+    TEST_MIRROR_FILE,
+];
 /// The test type `Mirror`'s own `file`: what a `Mirror.file` call keeps in the test pool, where
 /// the product `Mirror` holds no `file` of its own and the call keeps its traits' methods.
 const TEST_MIRROR_FILE: &str = "tests/report.rs::Mirror::file";
@@ -77,7 +117,9 @@ fn implementing(mut file: FileFacts, trait_name: &str, types: &[&str]) -> FileFa
 ///  - `src/report.rs` holds `summary`, calling `CodeView.file`, `Archive.file` and `Mirror.file`,
 ///    and `listing`, calling `file` unqualified;
 ///  - `tests/report.rs` holds the test `checks`, calling `Archive.file`, beside the test
-///    implementation `Fake` of `Archive` and the test type `Mirror` with its own `file`.
+///    implementation `Fake` of `Archive` and the test type `Mirror` with its own `file`;
+///  - `tests/audit.rs` holds the test `audit`, calling `Archive.file` from a file holding no
+///    definition of `file`.
 ///
 /// Each implementation of `CodeView` and `Archive` holds its own `file`.
 fn several_traits_sharing_a_leaf() -> FactsView {
@@ -159,8 +201,10 @@ fn several_traits_sharing_a_leaf() -> FactsView {
     define_member(&mut checks, "Mirror", "file", CODE_KIND_METHOD, 4);
     let checks = with_calls(checks, &[("checks", "Archive.file", "file")]);
     let checks = implementing(checks, "Archive", &["Fake"]);
+    let audit = planted_file("tests/audit.rs", &[("audit", CODE_KIND_FUNCTION)], &[], &[]);
+    let audit = with_calls(audit, &[("audit", "Archive.file", "file")]);
     facts_view(vec![
-        code_view, snapshot, archive, store, mirror, report, checks,
+        code_view, snapshot, archive, store, mirror, report, checks, audit,
     ])
 }
 
@@ -201,31 +245,8 @@ type Walk<'a> = (
 fn each_placeholder_of_a_leaf_reaches_what_its_own_qualifier_keeps_on_either_half() {
     let records = Indexed::default();
     let view = several_traits_sharing_a_leaf();
-    let code_view: &[&str] = &[FACTS_VIEW_FILE, SNAPSHOT_FILE];
-    let archive: &[&str] = &[TARBALL_FILE, ZIP_FILE];
-    let mirror: &[&str] = &[LOCAL_FILE, REMOTE_FILE];
-    let every: &[&str] = &[
-        TARBALL_FILE,
-        ZIP_FILE,
-        FACTS_VIEW_FILE,
-        LOCAL_FILE,
-        REMOTE_FILE,
-        SNAPSHOT_FILE,
-        STORE_FILE,
-    ];
-    let archive_shown: &[&str] = &[TARBALL_FILE, ZIP_FILE, FAKE_FILE];
-    let mirror_shown: &[&str] = &[LOCAL_FILE, REMOTE_FILE, TEST_MIRROR_FILE];
-    let every_shown: &[&str] = &[
-        TARBALL_FILE,
-        ZIP_FILE,
-        FACTS_VIEW_FILE,
-        LOCAL_FILE,
-        REMOTE_FILE,
-        SNAPSHOT_FILE,
-        STORE_FILE,
-        FAKE_FILE,
-        TEST_MIRROR_FILE,
-    ];
+    let (code_view, archive, mirror, every) = (CODE_VIEWS, ARCHIVES, MIRRORS, EVERY);
+    let (archive_shown, mirror_shown, every_shown) = (ARCHIVES_SHOWN, MIRRORS_SHOWN, EVERY_SHOWN);
     let walks: [Walk; 13] = [
         (
             "the trait's method calling `CodeView.file`: both implementations, the one in its \
@@ -383,15 +404,17 @@ fn each_placeholder_of_a_leaf_reaches_what_its_own_qualifier_keeps_on_either_hal
             Tests::Include,
             FAKE_FILE,
             Direction::Up,
-            &[LISTING, SUMMARY, FAKE_FILE, CHECKS],
+            &[LISTING, SUMMARY, AUDIT, FAKE_FILE, CHECKS],
             &[
                 (LISTING, every_shown),
                 (SUMMARY, archive_shown),
+                (AUDIT, archive_shown),
                 (CHECKS, archive_shown),
             ],
             &[
                 (LISTING, FAKE_FILE),
                 (SUMMARY, FAKE_FILE),
+                (AUDIT, FAKE_FILE),
                 (CHECKS, FAKE_FILE),
             ],
         ),
@@ -429,17 +452,18 @@ fn each_placeholder_of_a_leaf_reaches_what_its_own_qualifier_keeps_on_either_hal
 }
 
 /// GIVEN the tree of [`several_traits_sharing_a_leaf`] and no records, with tests hidden, WHEN each
-/// definition of `file` asks for its hidden test callers on either code half, THEN the test
-/// calling `Archive.file` is the hidden caller of each product implementation of `Archive` and
-/// of no other definition of the leaf.
+/// definition of `file` asks for its hidden test callers on either code half, THEN the tests
+/// calling `Archive.file`, from the test implementation's file and from a file holding none, are
+/// the hidden callers of each product implementation of `Archive` and of no other definition of
+/// the leaf.
 #[test]
 fn a_hidden_test_call_is_filed_under_what_its_own_qualifier_keeps_on_either_half() {
     let records = Indexed::default();
     let view = several_traits_sharing_a_leaf();
     // (the definition, its hidden test callers)
     let cases: [(&str, &[&str]); 7] = [
-        (TARBALL_FILE, &[CHECKS]),
-        (ZIP_FILE, &[CHECKS]),
+        (TARBALL_FILE, &[AUDIT, CHECKS]),
+        (ZIP_FILE, &[AUDIT, CHECKS]),
         (FACTS_VIEW_FILE, &[]),
         (SNAPSHOT_FILE, &[]),
         (STORE_FILE, &[]),
@@ -450,6 +474,158 @@ fn a_hidden_test_call_is_filed_under_what_its_own_qualifier_keeps_on_either_half
         for (id, want) in cases {
             let hidden = graph.hidden_placeholder_callers(&[id.to_string()]);
             assert_eq!(hidden.unwrap(), want, "{half}: {id}");
+        }
+    }
+}
+
+/// Whether `node` is a placeholder: its id holds `::%`.
+fn is_placeholder(node: &Node) -> bool {
+    node.id.contains("::%")
+}
+
+/// `whole`, a code half's whole graph, with its placeholders ([`is_placeholder`]) made the members
+/// of [`ONE_COMMUNITY`]: the subject the files lens re-grains.
+fn placeholders_in_one_community(whole: Graph) -> Graph {
+    let (placeholders, rest): (Vec<Node>, Vec<Node>) =
+        (whole.nodes.into_iter()).partition(is_placeholder);
+    let mut graph = one_community_graph(ONE_COMMUNITY, placeholders);
+    graph.nodes.extend(rest);
+    graph.edges.extend(whole.edges);
+    graph
+}
+
+/// The `candidates` attribute a placeholder whose down-hop keeps `ids` carries: present, their
+/// JSON array.
+fn carried(ids: &[&str]) -> Option<String> {
+    let quoted: Vec<String> = ids.iter().map(|id| format!("\"{id}\"")).collect();
+    Some(format!("[{}]", quoted.join(",")))
+}
+
+/// One filter's reading of the placeholders: what the reading shows, the tests shown, each
+/// placeholder with the `candidates` it carries, and the files lens rows ([`files_lens_rows`]) of
+/// the community of them.
+type Carried<'a> = (&'a str, Tests, Vec<(&'a str, Option<String>)>, Vec<String>);
+
+/// GIVEN the tree of [`several_traits_sharing_a_leaf`] and no records, composed under each tests
+/// filter by either code half, WHEN the files lens folds the half's whole graph and re-grains the
+/// community of its placeholders, THEN each placeholder keyed by a qualified name carries the ids
+/// its down-hop keeps as its `candidates`, and the lens binds it by its leaf over those alone:
+/// several shown are a frontier of them, never every definition of the leaf, nor counted under any
+/// file; one shown folds under its file, carrying its caller's edge there; the unqualified
+/// placeholder carries none and is a frontier of every shown definition of the leaf.
+#[test]
+fn the_files_lens_binds_each_qualified_placeholder_over_the_down_hop_it_carries() {
+    let records = Indexed::default();
+    let view = several_traits_sharing_a_leaf();
+    let (described, code_view) = (
+        "src/code_view.rs::%CodeView.file",
+        "src/report.rs::%CodeView.file",
+    );
+    let (archive, mirror, file) = (
+        "src/report.rs::%Archive.file",
+        "src/report.rs::%Mirror.file",
+        "src/report.rs::%file",
+    );
+    let (audit, checks) = (
+        "tests/audit.rs::%Archive.file",
+        "tests/report.rs::%Archive.file",
+    );
+    let row = |text: &str| text.to_string();
+    let frontier = |id: &str, cands: &[&str]| format!("concept {id} <- {cands:?}");
+    let cases: [Carried; 3] = [
+        (
+            "tests hidden: each qualified placeholder a frontier of what its qualifier keeps in \
+             the product pool, the unqualified one of every product definition",
+            Tests::Exclude,
+            vec![
+                (described, carried(CODE_VIEWS)),
+                (archive, carried(ARCHIVES)),
+                (code_view, carried(CODE_VIEWS)),
+                (mirror, carried(MIRRORS)),
+                (file, None),
+            ],
+            vec![
+                row("whole src/archive.rs 5"),
+                row("whole src/code_view.rs 4"),
+                row("whole src/mirror.rs 7"),
+                row("whole src/report.rs 2"),
+                row("whole src/snapshot.rs 2"),
+                row("whole src/store.rs 2"),
+                row("whole src/code_view.rs -- src/snapshot.rs 1"),
+                frontier(described, CODE_VIEWS),
+                frontier(archive, ARCHIVES),
+                frontier(code_view, CODE_VIEWS),
+                frontier(mirror, MIRRORS),
+                frontier(file, EVERY),
+            ],
+        ),
+        (
+            "tests shown: each qualified placeholder a frontier of what its qualifier keeps in \
+             the test pool beside the product pool, the unqualified one of every definition",
+            Tests::Include,
+            vec![
+                (described, carried(CODE_VIEWS)),
+                (archive, carried(ARCHIVES_SHOWN)),
+                (code_view, carried(CODE_VIEWS)),
+                (mirror, carried(MIRRORS_SHOWN)),
+                (file, None),
+                (audit, carried(ARCHIVES_SHOWN)),
+                (checks, carried(ARCHIVES_SHOWN)),
+            ],
+            vec![
+                row("whole src/archive.rs 5"),
+                row("whole src/code_view.rs 4"),
+                row("whole src/mirror.rs 7"),
+                row("whole src/report.rs 2"),
+                row("whole src/snapshot.rs 2"),
+                row("whole src/store.rs 2"),
+                row("whole tests/audit.rs 1"),
+                row("whole tests/report.rs 5"),
+                row("whole src/archive.rs -- tests/report.rs 1"),
+                row("whole src/code_view.rs -- src/snapshot.rs 1"),
+                frontier(described, CODE_VIEWS),
+                frontier(archive, ARCHIVES_SHOWN),
+                frontier(code_view, CODE_VIEWS),
+                frontier(mirror, MIRRORS_SHOWN),
+                frontier(file, EVERY_SHOWN),
+                frontier(audit, ARCHIVES_SHOWN),
+                frontier(checks, ARCHIVES_SHOWN),
+            ],
+        ),
+        (
+            "only tests shown: each test placeholder carrying every implementation keeps the one \
+             shown, never the test type `Mirror`'s own `file`, and folds under its file, the \
+             call from a file holding none coupling the two files",
+            Tests::Only,
+            vec![
+                (audit, carried(ARCHIVES_SHOWN)),
+                (checks, carried(ARCHIVES_SHOWN)),
+            ],
+            vec![
+                row("whole src/archive.rs 1"),
+                row("whole tests/audit.rs 1"),
+                row("whole tests/report.rs 5"),
+                row("whole src/archive.rs -- tests/report.rs 1"),
+                row("whole tests/audit.rs -- tests/report.rs 1"),
+                row("concept tests/report.rs 2"),
+            ],
+        ),
+    ];
+    for (shows, tests, placeholders, rows) in cases {
+        for (half, composed) in halves(&records, &view, tests) {
+            let graph = placeholders_in_one_community(composed.whole().unwrap());
+            let read: Vec<(&str, Option<String>)> = (graph.nodes.iter())
+                .filter(|n| is_placeholder(n))
+                .map(|n| (n.id.as_str(), n.attrs.get("candidates").cloned()))
+                .collect();
+            assert_eq!(
+                (
+                    read,
+                    files_lens_rows(&graph, ONE_COMMUNITY, placeholders.len())
+                ),
+                (placeholders.clone(), rows.clone()),
+                "{half}: {shows}"
+            );
         }
     }
 }
