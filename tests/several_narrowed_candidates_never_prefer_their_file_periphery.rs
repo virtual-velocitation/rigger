@@ -168,7 +168,15 @@ fn each_placeholder_of_a_leaf_reaches_what_its_own_qualifier_keeps_on_either_hal
         STORE_FILE,
     ];
     let archive_shown: &[&str] = &[TARBALL_FILE, ZIP_FILE, FAKE_FILE];
-    let walks: [Walk; 8] = [
+    let every_shown: &[&str] = &[
+        TARBALL_FILE,
+        ZIP_FILE,
+        FACTS_VIEW_FILE,
+        SNAPSHOT_FILE,
+        STORE_FILE,
+        FAKE_FILE,
+    ];
+    let walks: [Walk; 9] = [
         (
             "the trait's method calling `CodeView.file`: both implementations, the one in its \
              own file among them",
@@ -270,6 +278,25 @@ fn each_placeholder_of_a_leaf_reaches_what_its_own_qualifier_keeps_on_either_hal
             &["tests/report.rs::%Archive.file", CHECKS],
             &[("tests/report.rs::%Archive.file", archive_shown)],
             &[(CHECKS, "tests/report.rs::%Archive.file")],
+        ),
+        (
+            "the callers of the test implementation, tests shown: each `Archive.file` caller, \
+             product and test, under its placeholder's frontier of every implementation, the \
+             unqualified one under every definition",
+            Tests::Include,
+            FAKE_FILE,
+            Direction::Up,
+            &[LISTING, SUMMARY, FAKE_FILE, CHECKS],
+            &[
+                (LISTING, every_shown),
+                (SUMMARY, archive_shown),
+                (CHECKS, archive_shown),
+            ],
+            &[
+                (LISTING, FAKE_FILE),
+                (SUMMARY, FAKE_FILE),
+                (CHECKS, FAKE_FILE),
+            ],
         ),
     ];
     for (shows, tests, seed, direction, nodes, frontiers, edges) in walks {
