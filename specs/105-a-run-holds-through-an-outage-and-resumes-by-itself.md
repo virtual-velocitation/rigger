@@ -163,6 +163,18 @@ latest `RunHeld` of the hold the run last released is the same fault; else
 `FAULT_ON_A_PERSONS_HOLD`, needing a person, action `a person holds this run: they read the
 fault, decide, then run rigger release`, when the open hold's latest `RunHeld` needs a person;
 else the `conductor-fault` row. A different fault after a release is the orchestrator's again.
+A step git refused over a unit's own work after its session ended (a checkpoint commit, the
+merge of the run branch into its worktree, or the conflict-marker guard's refusal of the commit)
+charges the attempt it ended, a `UnitFailed` of cause `git-refused` whose evidence is the
+refusal, keeps the unit's worktree, and holds `conductor-fault` through
+`run_store::hold_on_refused_unit_work` under the action `git refused a unit's own work, the
+refusal in the fault rigger status prints under this hold: rigger release retries the unit with
+it; fix the tree first only if the fault shows no agent session can change it`. Its first line
+names the attempt, so each attempt's refusal is a different fault and the unit's retry bound,
+not FAULT_RECURRED, decides when the unit escalates; a release relaunches the run, which
+launches the unit's next attempt with the refusal in its prompt. A refusal on the operator's
+regenerable paths, a landing's and a plan landing's are no attempt of a unit's and hold the
+`conductor-fault` row.
 A `model_not_found` sighting or failed probe takes the same rows (`run_store::sighted`), the same
 fault for it being the same `cause`, since its `detail` is whichever line sighted it.
 No probe ends any of them. A `conductor-fault` `RunHeld` recorded before this rule, its fault in

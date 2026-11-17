@@ -324,9 +324,12 @@ fn discipline_body(ctx: &DocsContext) -> String {
          refused included, holds the run for the orchestrator, the session that launched the \
          run and watches it, naming the fault, and its driver exits non-zero: `rigger watch` \
          reports the hold, `rigger status` prints the fault under it, and once the cause is \
-         fixed at its root `rigger release` relaunches the run. A `model_not_found` hold is the \
-         orchestrator's too. When the same fault holds the run again after that release, the \
-         hold is for a person, and `rigger status` lists it under what needs you. {stop}\n",
+         fixed at its root `rigger release` relaunches the run. When a unit's checkpoint commit or \
+         the merge of the run branch into its worktree is refused, the attempt that step ended is \
+         charged and the release retries the unit, its next attempt told the refusal. A \
+         `model_not_found` hold is the orchestrator's too. When the same fault holds the run \
+         again after that release, the hold is for a person, and `rigger status` lists it under \
+         what needs you. {stop}\n",
         stop = DRIVER_STOP_RULE
     );
 
@@ -1118,6 +1121,14 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              the same first line of the fault, or `model_not_found` again), your fix did not hold and the hold is now for a \
              person: `rigger status` lists it under what needs you, so stop and tell them exactly \
              what you tried. A different fault after a release is yours to resolve again.\n",
+            "A hold whose fault begins `unit \"<name>\" attempt <n> was refused:` is the one a \
+             release itself resolves: that unit's checkpoint commit or the merge of the run branch \
+             into its worktree was refused, the refused attempt is charged to the unit, and \
+             `rigger release` launches its next attempt, the refusal in that attempt's prompt \
+             and the work the refused tree held still in its worktree. Fix the \
+             tree first only if the fault shows no agent session can change it. Each attempt's \
+             refusal is its own fault, so the unit's retry bound, not a recurrence, decides when \
+             the unit escalates.\n",
         ],
         "Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \

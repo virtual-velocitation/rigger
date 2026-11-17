@@ -21,6 +21,8 @@ A run that is HELD, not dead, launches nothing until the hold ends, and its driv
 
 A hold for a conductor fault, a refused request or a `model_not_found` is YOURS to resolve first, as the orchestrator, the session that launched the run and watches it: `rigger watch` reports it as a hold for the orchestrator, and `rigger status` prints the fault under it. Read that fault. Fix its cause at the root, and never weaken a guard, a gate or a criterion to get past it. Then run `rigger release`, which relaunches the run. If the same fault holds the run again after your release (the same cause and the same first line of the fault, or `model_not_found` again), your fix did not hold and the hold is now for a person: `rigger status` lists it under what needs you, so stop and tell them exactly what you tried. A different fault after a release is yours to resolve again.
 
+A hold whose fault begins `unit "<name>" attempt <n> was refused:` is the one a release itself resolves: that unit's checkpoint commit or the merge of the run branch into its worktree was refused, the refused attempt is charged to the unit, and `rigger release` launches its next attempt, the refusal in that attempt's prompt and the work the refused tree held still in its worktree. Fix the tree first only if the fault shows no agent session can change it. Each attempt's refusal is its own fault, so the unit's retry bound, not a recurrence, decides when the unit escalates.
+
 ## Anti-move
 
 Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the adoptable state your relaunch would otherwise have continued from, in exchange for nothing - reserve it for the genuinely wedged-terminal case above.
