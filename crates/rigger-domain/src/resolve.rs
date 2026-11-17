@@ -532,11 +532,12 @@ impl<'v> Resolver<'v> {
     /// `impl`-kind definition) enclosing an `impl`-tagged mention of it, so `T::new` reaches the
     /// methods of `impl T` and `T::m` the `m` that `impl Tr for T` defines. Its traits: every
     /// trait an `impl`-tagged mention such an implementation encloses names, so `T::m` reaches
-    /// a trait's `m` through `impl Tr for T` when `T` and its implementations define none. A
-    /// definition of another kind enclosing an `impl` mention of it, a class naming its base,
-    /// adds nothing; nor does an implementation that is test code when `pool` does not admit it
-    /// ([`Pool::admits`]), so a test implementation changes no product edge. Gathered once per
-    /// qualifier and pool, by name alone in every language, as the call rule reads.
+    /// a trait's `m` through `impl Tr for T` when [`Self::narrowed`] keeps no candidate of the
+    /// mention's rule under `T` or its implementations. A definition of another kind enclosing
+    /// an `impl` mention of it, a class naming its base, adds nothing; nor does an
+    /// implementation that is test code when `pool` does not admit it ([`Pool::admits`]), so a
+    /// test implementation changes no product edge. Gathered once per qualifier and pool, by name
+    /// alone in every language, as the call rule reads.
     fn parents(&self, qualifier: &str, pool: Pool) -> Arc<Parents<'v>> {
         let key = (qualifier.to_string(), pool);
         if let Some(held) = self.parents.borrow().get(&key) {
@@ -2035,8 +2036,8 @@ pub(crate) mod tests {
     }
 
     /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ): a call or a tagged
-    /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates of its leaf whose parent is
-    /// a definition named `Q` or an implementation enclosing an `impl` mention of `Q`, else,
+    /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates its rule reads whose parent
+    /// is a definition named `Q` or an implementation enclosing an `impl` mention of `Q`, else,
     /// when none is, those whose parent is a trait such an implementation names (`FactsView`'s
     /// `stamp`). One kept candidate takes the edge EXTRACTED in any file, over a
     /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
