@@ -225,21 +225,25 @@ fn view_stamp(tree: &str, fingerprint: u64, seq: u64) -> rigger::code_facts::Sta
     }
 }
 
+/// What a reader knows of a worktree that matches the tree its view describes.
+pub fn matching_honesty() -> rigger::composed::Honesty {
+    rigger::composed::Honesty {
+        worktree: "the worktree".to_string(),
+        compared: rigger::code_view::Compared::Overlaid(0),
+        behind: None,
+    }
+}
+
 /// The record half `records` composed with `view`, read from a worktree that matches its tree.
 pub fn view_graph<'r>(
     records: &'r dyn rigger::contextgraph::Neighbors,
     view: &dyn rigger::code_view::CodeView,
 ) -> rigger::composed::Composed<'r> {
-    let honesty = rigger::composed::Honesty {
-        worktree: "the worktree".to_string(),
-        compared: rigger::code_view::Compared::Overlaid(0),
-        behind: None,
-    };
     rigger::composed::Composed::new(
         records,
         view,
         rigger::code_view::ViewFilter::default(),
-        honesty,
+        matching_honesty(),
     )
     .expect("a view composes")
 }
@@ -342,35 +346,56 @@ pub fn planted_file(
     }
 }
 
-/// `file` with each `(enclosing, leaf)` of `refs` added as a mention of `leaf` tagged `tag` on
-/// line 1, inside the definition named `enclosing`, or at file level when that is empty: a
-/// reference that calls nothing.
-pub fn with_tagged(
+/// `file` with each `(enclosing, name, leaf)` of `mentions` added as a mention of `kind` written
+/// `name`, of the leaf `leaf`, on line 1, inside the definition named `enclosing`, or at file
+/// level when that is empty.
+fn with_mentions(
     mut file: rigger::code_facts::FileFacts,
-    tag: &str,
-    refs: &[(&str, &str)],
+    kind: rigger::code_facts::MentionKind,
+    mentions: &[(&str, &str, &str)],
 ) -> rigger::code_facts::FileFacts {
-    use rigger::code_facts::{Mention, MentionKind};
-    for (enclosing, leaf) in refs {
+    for (enclosing, name, leaf) in mentions {
         let enclosing = (!enclosing.is_empty()).then(|| {
             let at = file.defs.iter().position(|d| d.leaf == *enclosing);
             at.unwrap_or_else(|| {
                 panic!(
-                    "{}: no definition {enclosing} holds a {tag} reference",
+                    "{}: no definition {enclosing} holds a {kind:?} mention",
                     file.path
                 )
             }) as u32
         });
-        file.mentions.push(Mention {
+        file.mentions.push(rigger::code_facts::Mention {
             enclosing,
-            name: leaf.to_string(),
+            name: name.to_string(),
             leaf: leaf.to_string(),
-            kind: MentionKind::Tagged(tag.to_string()),
+            kind: kind.clone(),
             line: 1,
             test: false,
         });
     }
     file
+}
+
+/// `file` with each `(enclosing, leaf)` of `refs` added as a mention of `leaf` tagged `tag`
+/// ([`with_mentions`]): a reference that calls nothing.
+pub fn with_tagged(
+    file: rigger::code_facts::FileFacts,
+    tag: &str,
+    refs: &[(&str, &str)],
+) -> rigger::code_facts::FileFacts {
+    let refs: Vec<(&str, &str, &str)> = refs.iter().map(|(at, leaf)| (*at, *leaf, *leaf)).collect();
+    let kind = rigger::code_facts::MentionKind::Tagged(tag.to_string());
+    with_mentions(file, kind, &refs)
+}
+
+/// `file` with each `(enclosing, name, leaf)` of `calls` added as a call written `name` of the
+/// leaf `leaf` ([`with_mentions`]): a call whose written name may carry a qualifier, as
+/// `CodeView.file` does.
+pub fn with_calls(
+    file: rigger::code_facts::FileFacts,
+    calls: &[(&str, &str, &str)],
+) -> rigger::code_facts::FileFacts {
+    with_mentions(file, rigger::code_facts::MentionKind::Call, calls)
 }
 
 /// `file` with each `(enclosing, leaf)` of `uses` added as a `use` of `leaf` ([`with_tagged`]).

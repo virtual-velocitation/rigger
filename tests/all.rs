@@ -229,6 +229,7 @@ mod rust_definitions_are_nodes_periphery;
 mod scaffold_grounder_resolves;
 mod scratch_workdir_config;
 mod scratch_workdir_isolation_leak_guard_periphery;
+mod several_narrowed_candidates_never_prefer_their_file_periphery;
 mod shared_node_takes_one_kind_periphery;
 mod spawn_recorded_lenient_periphery;
 mod spawn_scratch_reap_authorized_root_periphery;
