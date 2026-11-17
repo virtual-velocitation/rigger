@@ -793,7 +793,7 @@ Which definitions a mention may resolve to depends on whether the mention is tes
 - **A test mention** produces a proof under every filter. Under `include` and `only` it also
   produces the edges of the call and reference rules, resolved against all candidates, product
   and test. That gives test-to-test and test-to-product CALLS and REFERENCES edges, all marked
-  `test`. A test call the call rule cannot resolve in its own file lands on the definition its
+  `test`. A test call the call rule resolves to no EXTRACTED edge lands on the definition its
   proof credits, so a shown test's call edge and the proof it adds name one definition. Under
   `exclude` it produces no edge.
 
@@ -803,6 +803,9 @@ call), and REFERENCES from F.
 
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
+| qualified mention | Mention `Call` or `Tagged(k)` in file F written `Q::leaf` or `Q.leaf` | the candidates the call or tagged-reference rule below reads whose parent is a definition whose leaf is `Q`, an `impl`-kind definition enclosing an `impl` mention of `Q`, or a trait an `impl` mention such an implementation encloses names: exactly one, in any file | EXTRACTED edge to that definition |
+| | | several | a call: INFERRED edge to the definition the proof rule credits a test mention to, else to the placeholder `F::%<leaf>`; a tagged reference: no edge |
+| | | none | the call or tagged-reference rule below |
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
 | | | otherwise, a test mention the proof rule credits to a definition | INFERRED edge to that definition |
 | | | otherwise | edge to the placeholder `F::%<leaf>`: INFERRED if any candidate exists anywhere, AMBIGUOUS if none |
