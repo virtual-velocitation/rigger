@@ -1590,7 +1590,8 @@ mod tests {
 
     #[test]
     fn an_entity_is_labelled_by_its_node_leaf_else_by_its_id() {
-        // Spec 119 criterion 1: a placeholder by its leaf less one sigil, a file by its id.
+        // Spec 119 criterion 1: a placeholder by its leaf less one sigil, a file by its id; spec
+        // 117: a placeholder keyed by a qualified name by the text after its qualifier.
         let bare = |id: &str, kind: &str| Node {
             id: id.to_string(),
             kind: kind.to_string(),
@@ -1600,10 +1601,11 @@ mod tests {
             [
                 entity_label(&bare("b.rs::%new", KIND_CODE_ENTITY)),
                 entity_label(&bare("b.rs::%%x", KIND_CODE_ENTITY)),
+                entity_label(&bare("b.rs::%T.new", KIND_CODE_ENTITY)),
                 entity_label(&bare("src/a.rs", "file")),
                 entity_label(&code_node("a.rs::T::new", "new", "function")),
             ],
-            ["new", "%x", "src/a.rs", "new"]
+            ["new", "%x", "new", "src/a.rs", "new"]
         );
     }
 
