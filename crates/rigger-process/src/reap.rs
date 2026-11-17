@@ -343,45 +343,97 @@ fn signal_descendant_if_unchanged(
     }
 }
 
-/// The two ways the reaper ends a process: [`Signal::Term`] asks it to exit, and
-/// [`Signal::Hard`] ends it without asking. Windows has no request to exit that an arbitrary
-/// process can catch, so there both end the process at once.
-#[derive(Clone, Copy)]
+/// What the reaper sends a process: [`Signal::Term`] asks it to exit, [`Signal::Hard`] ends it
+/// without asking, [`Signal::Stop`] freezes it where it stands, so it can neither exit nor fork
+/// until it is ended or [`Signal::Resume`]d. Windows has no request to exit that an arbitrary
+/// process can catch, so there both ending kinds end the process at once, and it has no freeze, so
+/// there the other two send nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Signal {
     /// Ask the process to exit (`SIGTERM` on unix).
     Term,
     /// End the process without asking (`SIGKILL` on unix).
     Hard,
+    /// Freeze the process (`SIGSTOP` on unix).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the ends that send it land next")
+    )]
+    Stop,
+    /// Let a frozen process run again (`SIGCONT` on unix).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the ends that send it land next")
+    )]
+    Resume,
+}
+
+std::cfg_select! {
+    unix => {
+        /// The one OS call a signal becomes: the target, already checked, and the unix signal.
+        type OsCall = (rustix::process::Pid, rustix::process::Signal);
+    }
+    target_os = "windows" => {
+        /// The one OS call a signal becomes: the pid to open for termination and end.
+        type OsCall = u32;
+    }
+    _ => {
+        /// No OS call: this OS sends nothing.
+        type OsCall = std::convert::Infallible;
+    }
+}
+
+/// The OS call `signal` to `pid` becomes, or `None` when it must send nothing. `pid > 1` is an
+/// EXPLICIT guard (belt-and-braces alongside [`is_signal_eligible`]'s own check, since the pinned
+/// rustix's `Pid::from_raw` accepts negative raw values and rejects only zero), and on unix a pid
+/// that does not fit a positive `i32` is refused before it can become a negative one. Pure, so
+/// each kind's refusals are pinned without a signal sent.
+fn os_call(signal: Signal, pid: u32) -> Option<OsCall> {
+    if pid <= 1 {
+        return None;
+    }
+    std::cfg_select! {
+        unix => {
+            use rustix::process::Pid;
+            let raw = i32::try_from(pid).ok()?;
+            let rpid = Pid::from_raw(raw)?;
+            let signal = match signal {
+                Signal::Term => rustix::process::Signal::TERM,
+                Signal::Hard => rustix::process::Signal::KILL,
+                Signal::Stop | Signal::Resume => return None,
+            };
+            Some((rpid, signal))
+        }
+        target_os = "windows" => {
+            // Both ending kinds end the process, and there is no freeze: see [`Signal`].
+            match signal {
+                Signal::Term | Signal::Hard => Some(pid),
+                Signal::Stop | Signal::Resume => None,
+            }
+        }
+        _ => {
+            let _ = signal;
+            None
+        }
+    }
 }
 
 /// Send `signal` to `pid` - the reaper's ONE sanctioned signalling call (the `no-os-kill`
 /// gate, spec 78, exempts only this function and `tests/common/mod.rs::terminate_pid` from
 /// its ban on calling a signal API directly, never from its ban on shelling out to a process
 /// termination utility, and this function alone from its ban on the Windows
-/// process-termination call): on unix the internal rustix syscall, on Windows the process
-/// opened for termination and ended with exit code 1, on any other OS nothing. `pid > 1` is an
-/// EXPLICIT guard here too (belt-and-braces alongside [`is_signal_eligible`]'s own check, since
-/// the pinned rustix's `Pid::from_raw` accepts negative raw values and rejects only zero).
-/// Best-effort: ESRCH (the process already exited) or any other failure (permission, ...) is
-/// silently ignored, since the reap is teardown cleanup, never a hard error that could fail a
-/// worktree removal or a step.
+/// process-termination call): the call [`os_call`] maps it to, on unix the internal rustix
+/// syscall, on Windows the process opened for termination and ended with exit code 1, on any
+/// other OS nothing. Best-effort: ESRCH (the process already exited) or any other failure
+/// (permission, ...) is silently ignored, since the reap is teardown cleanup, never a hard error
+/// that could fail a worktree removal or a step.
 fn send_signal(signal: Signal, pid: u32) {
-    if pid <= 1 {
+    let Some(call) = os_call(signal, pid) else {
         return;
-    }
+    };
     std::cfg_select! {
         unix => {
-            use rustix::process::Pid;
-            let Ok(raw) = i32::try_from(pid) else {
-                return;
-            };
-            let Some(rpid) = Pid::from_raw(raw) else {
-                return;
-            };
-            let signal = match signal {
-                Signal::Term => rustix::process::Signal::TERM,
-                Signal::Hard => rustix::process::Signal::KILL,
-            };
+            let (rpid, signal) = call;
             let _ = rustix::process::kill_process(rpid, signal);
         }
         target_os = "windows" => {
@@ -389,10 +441,8 @@ fn send_signal(signal: Signal, pid: u32) {
             use windows_sys::Win32::System::Threading::{
                 OpenProcess, TerminateProcess, PROCESS_TERMINATE,
             };
-            // Both signals end the process: see [`Signal`].
-            let _ = signal;
             // SAFETY: the call takes no pointer and answers a null handle on failure.
-            let handle = unsafe { OpenProcess(PROCESS_TERMINATE, FALSE, pid) };
+            let handle = unsafe { OpenProcess(PROCESS_TERMINATE, FALSE, call) };
             if handle.is_null() {
                 return;
             }
@@ -403,9 +453,110 @@ fn send_signal(signal: Signal, pid: u32) {
             }
         }
         _ => {
-            let _ = signal;
+            match call {}
         }
     }
+}
+
+/// How long an end waits for what it froze to stop and for what it ended to be gone, all its
+/// generations together.
+pub const END_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// A process an end left running, or never signalled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Leftover {
+    /// The process's pid when the end saw it.
+    pub pid: u32,
+    /// Its command ([`crate::os_process::command`]), naming it in a progress line.
+    pub program: String,
+    /// Whether it is still frozen: the end froze it, could not end it, and could not resume it.
+    pub stopped: bool,
+}
+
+/// What an end left: `residue`, the processes it signalled that are still running past
+/// [`END_BOUND`]; and `skipped`, those it found but never signalled, because at signal time their
+/// parent chain no longer reached the tree's root (an escape, or a stranger that took a pid).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EndReport {
+    /// Signalled, and still running past the bound.
+    pub residue: Vec<Leftover>,
+    /// Found, and never signalled.
+    pub skipped: Vec<Leftover>,
+}
+
+/// The two OS facilities an end uses, so a test can add a stranger to the table it walks or keep
+/// one signal from landing. The checks every signal passes first read the live OS and are never
+/// part of this.
+#[expect(dead_code, reason = "the ends that call it land next")]
+trait EndOs {
+    /// The process table ([`crate::os_process::table`]).
+    fn table(&mut self) -> Vec<os_process::Entry>;
+    /// Send `signal` to `pid` ([`send_signal`]).
+    fn send(&mut self, signal: Signal, pid: u32);
+}
+
+/// The live OS.
+struct LiveOs;
+
+impl EndOs for LiveOs {
+    fn table(&mut self) -> Vec<os_process::Entry> {
+        os_process::table()
+    }
+
+    fn send(&mut self, signal: Signal, pid: u32) {
+        send_signal(signal, pid);
+    }
+}
+
+/// Whether `pid`'s live parent chain reaches `root`.
+#[expect(dead_code, reason = "the ends that call it land next")]
+fn chain_reaches(pid: u32, root: u32) -> bool {
+    chain_reaches_with(pid, root, os_process::parent)
+}
+
+/// [`chain_reaches`] over the parent reader `parent`.
+fn chain_reaches_with(pid: u32, root: u32, parent: impl Fn(u32) -> Option<u32>) -> bool {
+    let _ = (pid, root, parent);
+    todo!("the chain check")
+}
+
+/// End the process tree under the held child `main`.
+pub fn end_watched(main: &mut std::process::Child, remembered: &[Identity]) -> EndReport {
+    end_watched_with(&mut LiveOs, main, remembered, END_BOUND)
+}
+
+/// [`end_watched`] over `os`, its confirmations bounded by `bound`.
+fn end_watched_with(
+    os: &mut impl EndOs,
+    main: &mut std::process::Child,
+    remembered: &[Identity],
+    bound: std::time::Duration,
+) -> EndReport {
+    let _ = (os, main, remembered, bound);
+    todo!("the watched end")
+}
+
+/// End every descendant of this process.
+pub fn end_own_descendants(graceful: bool, children_left: impl FnMut() -> bool) -> EndReport {
+    end_descendants_with(
+        &mut LiveOs,
+        std::process::id(),
+        graceful,
+        children_left,
+        END_BOUND,
+    )
+}
+
+/// [`end_own_descendants`] over `os`, from `root`, bounded by `bound`.
+fn end_descendants_with(
+    os: &mut impl EndOs,
+    root: u32,
+    graceful: bool,
+    children_left: impl FnMut() -> bool,
+    bound: std::time::Duration,
+) -> EndReport {
+    let _ = (os, root, graceful, children_left, bound);
+    todo!("the end of a root's own descendants")
 }
 
 /// An OPAQUE snapshot of a process's descendants, taken by [`snapshot_descendants`] and
@@ -1434,5 +1585,412 @@ mod tests {
             alive_as_ancestor,
             "a pid recorded as an ancestor of self must be skipped"
         );
+    }
+
+    // ---- THE ENDS (spec 104 STOP): a tree ended through the handle that holds its root, read
+    // through the FIFO witness, so no signal of the test's own decides what was left running ----
+
+    #[cfg(unix)]
+    mod ends {
+        use super::*;
+        use crate::test_support::{Reading, Witness};
+        use std::os::unix::process::ExitStatusExt;
+        use std::time::Duration;
+
+        /// The OS call `signal` becomes: nothing for pid 0, pid 1 or a pid that would be negative
+        /// as a unix pid, and `expected` to pid 2.
+        fn maps_and_refuses(signal: Signal, expected: rustix::process::Signal) {
+            for pid in [0, 1, 0x8000_0000, u32::MAX] {
+                assert_eq!(
+                    os_call(signal, pid),
+                    None,
+                    "{signal:?} to pid {pid} sends nothing"
+                );
+            }
+            let two = rustix::process::Pid::from_raw(2).expect("2 is a pid");
+            assert_eq!(
+                os_call(signal, 2),
+                Some((two, expected)),
+                "{signal:?} to pid 2"
+            );
+        }
+
+        crate::test_cases! {
+            a_term_is_sigterm_and_never_reaches_pid_0_1_or_a_negative_pid:
+                maps_and_refuses(Signal::Term, rustix::process::Signal::TERM);
+            a_hard_end_is_sigkill_and_never_reaches_pid_0_1_or_a_negative_pid:
+                maps_and_refuses(Signal::Hard, rustix::process::Signal::KILL);
+            a_stop_is_sigstop_and_never_reaches_pid_0_1_or_a_negative_pid:
+                maps_and_refuses(Signal::Stop, rustix::process::Signal::STOP);
+            a_resume_is_sigcont_and_never_reaches_pid_0_1_or_a_negative_pid:
+                maps_and_refuses(Signal::Resume, rustix::process::Signal::CONT);
+        }
+
+        /// Whether `pid`'s chain reaches each root of `answers` over a parent reader that knows
+        /// only `links` (child, parent): every other pid's parent is unreadable.
+        fn chain(links: &[(u32, u32)], pid: u32, answers: &[(u32, bool)]) {
+            let parent = |of: u32| {
+                links
+                    .iter()
+                    .find(|(child, _)| *child == of)
+                    .map(|(_, parent)| *parent)
+            };
+            for &(root, expected) in answers {
+                assert_eq!(
+                    chain_reaches_with(pid, root, parent),
+                    expected,
+                    "does {pid}'s chain over {links:?} reach {root}?"
+                );
+            }
+        }
+
+        /// A chain of `length` links, each pid the child of the pid below it, from pid
+        /// `length + 2` down to pid 2.
+        fn long_chain(length: u32) -> Vec<(u32, u32)> {
+            (2..length + 2).map(|pid| (pid + 1, pid)).collect()
+        }
+
+        crate::test_cases! {
+            a_chain_reaches_its_parent_and_no_other_pid:
+                chain(&[(10, 5)], 10, &[(5, true), (6, false)]);
+            a_chain_reaches_a_root_through_an_intermediate:
+                chain(&[(10, 7), (7, 5)], 10, &[(5, true), (7, true), (3, false)]);
+            a_chain_stops_at_init:
+                chain(&[(10, 7), (7, 1), (1, 0)], 10, &[(7, true), (5, false)]);
+            a_chain_never_reaches_init_or_pid_0_as_a_root:
+                chain(&[(10, 2), (2, 1), (1, 0)], 10, &[(2, true), (1, false), (0, false)]);
+            a_chain_ends_on_a_cycle:
+                chain(&[(10, 11), (11, 12), (12, 11)], 10, &[(12, true), (99, false)]);
+            a_chain_ends_at_an_unreadable_parent:
+                chain(&[(10, 7)], 10, &[(7, true), (5, false)]);
+            a_process_is_not_its_own_descendant:
+                chain(&[(10, 5)], 10, &[(10, false), (5, true)]);
+            a_chain_walks_at_most_4096_steps:
+                chain(&long_chain(5000), 5002, &[(906, true), (905, false)]);
+        }
+
+        /// The fixture shell `body` (`Witness::script`), started under `witness`.
+        fn tree(witness: &Witness, body: &str) -> Child {
+            StdCommand::new("sh")
+                .arg("-c")
+                .arg(Witness::script(body))
+                .envs(witness.env())
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .expect("spawn the fixture shell")
+        }
+
+        /// The one child `pid` has in the process table.
+        fn only_child(pid: u32) -> u32 {
+            let kids: Vec<u32> = os_process::table()
+                .into_iter()
+                .filter(|entry| entry.parent == pid)
+                .map(|entry| entry.pid)
+                .collect();
+            assert_eq!(kids.len(), 1, "{pid} has one child: {kids:?}");
+            kids[0]
+        }
+
+        /// Whether `pid` is running and not frozen.
+        fn runs(pid: u32) -> bool {
+            os_process::state(pid).is_some_and(|state| !matches!(state, 'T' | 't' | 'Z'))
+        }
+
+        /// The live OS as an end sees it, with `stranger` (a pid and the tree member it poses
+        /// under) added to the table, and every hard end of `swallowed` dropped. Every signal the
+        /// end sends is recorded, dropped or not.
+        #[derive(Default)]
+        struct Rigged {
+            stranger: Option<(u32, u32)>,
+            swallowed: Option<u32>,
+            sent: Vec<(Signal, u32)>,
+        }
+
+        impl EndOs for Rigged {
+            fn table(&mut self) -> Vec<os_process::Entry> {
+                let mut table = os_process::table();
+                if let Some((pid, parent)) = self.stranger {
+                    let start = os_process::start_time(pid).expect("the stranger is running");
+                    table.retain(|entry| entry.pid != pid);
+                    table.push(os_process::Entry { pid, parent, start });
+                }
+                table
+            }
+
+            fn send(&mut self, signal: Signal, pid: u32) {
+                self.sent.push((signal, pid));
+                if !(signal == Signal::Hard && self.swallowed == Some(pid)) {
+                    send_signal(signal, pid);
+                }
+            }
+        }
+
+        /// Where of the sent signals `wanted` is, panicking when it was never sent.
+        fn position(sent: &[(Signal, u32)], wanted: (Signal, u32)) -> usize {
+            sent.iter()
+                .position(|&signal| signal == wanted)
+                .unwrap_or_else(|| panic!("{wanted:?} was sent: {sent:?}"))
+        }
+
+        #[test]
+        fn the_watched_end_freezes_the_tree_then_ends_it_deepest_first_and_never_asks() {
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "holder; ( holder; up; held ) & up; held");
+            assert!(witness.wait_up(4), "the fixture's four processes are up");
+            let table = os_process::table();
+            let middle = table
+                .iter()
+                .find(|entry| {
+                    entry.parent == main.id() && table.iter().any(|kid| kid.parent == entry.pid)
+                })
+                .expect("the main's child that has a child of its own")
+                .pid;
+            let deepest = only_child(middle);
+            let mut os = Rigged::default();
+
+            let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
+
+            assert_eq!(
+                (witness.read(), report),
+                (Reading::Ended, EndReport::default())
+            );
+            let status = main.try_wait().expect("read the main's status");
+            assert_eq!(
+                status.and_then(|status| status.signal()),
+                Some(9),
+                "the main is ended hard"
+            );
+            let sent = os.sent;
+            assert!(
+                !sent.iter().any(|(signal, _)| *signal == Signal::Term),
+                "no TERM: {sent:?}"
+            );
+            assert_eq!(
+                sent.first(),
+                Some(&(Signal::Stop, main.id())),
+                "the main freezes first"
+            );
+            assert_eq!(
+                sent.last(),
+                Some(&(Signal::Hard, main.id())),
+                "the main ends last"
+            );
+            let last_stop = sent.iter().rposition(|(signal, _)| *signal == Signal::Stop);
+            let first_hard = sent.iter().position(|(signal, _)| *signal == Signal::Hard);
+            assert!(
+                last_stop < first_hard,
+                "every freeze comes before any end: {sent:?}"
+            );
+            assert!(
+                position(&sent, (Signal::Hard, deepest)) < position(&sent, (Signal::Hard, middle)),
+                "a child ends before its parent: {sent:?}"
+            );
+        }
+
+        #[test]
+        fn the_watched_end_of_a_main_with_no_descendant_freezes_and_ends_it_alone() {
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "up; held");
+            assert!(witness.wait_up(1), "the fixture is up");
+            let mut os = Rigged::default();
+
+            let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
+
+            assert_eq!(
+                (witness.read(), report),
+                (Reading::Ended, EndReport::default())
+            );
+            let status = main.try_wait().expect("read the main's status");
+            assert_eq!(status.and_then(|status| status.signal()), Some(9));
+            assert_eq!(
+                os.sent,
+                vec![(Signal::Stop, main.id()), (Signal::Hard, main.id())]
+            );
+        }
+
+        #[test]
+        fn the_watched_end_resumes_and_reports_a_process_it_could_not_end() {
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "( holder; up; held ) & up; held");
+            assert!(witness.wait_up(3), "the fixture's three processes are up");
+            let middle = only_child(main.id());
+            let middle_start = os_process::start_time(middle).expect("the middle's start time");
+            let deepest = only_child(middle);
+            let mut os = Rigged {
+                swallowed: Some(deepest),
+                ..Rigged::default()
+            };
+
+            let report = end_watched_with(&mut os, &mut main, &[], Duration::from_secs(1));
+
+            let left: Vec<(u32, bool)> = report
+                .residue
+                .iter()
+                .map(|leftover| (leftover.pid, leftover.stopped))
+                .collect();
+            assert_eq!((left, report.skipped), (vec![(deepest, false)], vec![]));
+            assert!(
+                crate::test_support::wait_until(|| runs(deepest)),
+                "the process left running is resumed, not left frozen: {:?}",
+                os_process::state(deepest)
+            );
+            assert!(
+                crate::test_support::wait_until(|| !still_started(middle, middle_start)),
+                "its parent is ended"
+            );
+            assert!(
+                matches!(main.try_wait(), Ok(Some(_))),
+                "the main is ended and reaped"
+            );
+            assert_eq!(
+                witness.read(),
+                Reading::Held,
+                "the process left running holds the witness"
+            );
+            assert_eq!(witness.release(), Reading::Ended);
+        }
+
+        /// How a stranger, a process outside the tree, reaches an end.
+        #[derive(Clone, Copy, Debug)]
+        enum Posing {
+            /// It appears in the table as a child of a tree member.
+            InTheTable,
+            /// The watcher remembered it.
+            Remembered,
+        }
+
+        /// A watched end whose stranger reaches it as `posing` never signals the stranger and
+        /// reports it skipped, and still ends the tree.
+        fn the_watched_end_never_signals_a_stranger(posing: Posing) {
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "holder; up; held");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let dir = tempfile::tempdir().expect("a directory for the stranger");
+            let mut stranger = sleeper_in(dir.path());
+            assert!(crate::test_support::wait_until(|| runs(stranger.id())));
+            let identity = Identity {
+                pid: stranger.id(),
+                start: os_process::start_time(stranger.id()).expect("the stranger's start"),
+            };
+            let (mut os, remembered) = match posing {
+                Posing::InTheTable => (
+                    Rigged {
+                        stranger: Some((stranger.id(), main.id())),
+                        ..Rigged::default()
+                    },
+                    vec![],
+                ),
+                Posing::Remembered => (Rigged::default(), vec![identity]),
+            };
+
+            let report = end_watched_with(&mut os, &mut main, &remembered, END_BOUND);
+
+            let alive = matches!(stranger.try_wait(), Ok(None)) && runs(stranger.id());
+            cleanup(&mut stranger);
+            let skipped: Vec<u32> = report.skipped.iter().map(|leftover| leftover.pid).collect();
+            assert_eq!(
+                (alive, skipped, report.residue, witness.read()),
+                (true, vec![identity.pid], vec![], Reading::Ended),
+                "{posing:?}: the stranger runs on, reported skipped, and the tree is ended"
+            );
+            assert!(
+                !os.sent.iter().any(|(_, pid)| *pid == identity.pid),
+                "{posing:?}: nothing is sent to the stranger: {:?}",
+                os.sent
+            );
+        }
+
+        crate::test_cases! {
+            the_watched_end_never_signals_a_stranger_in_the_table:
+                the_watched_end_never_signals_a_stranger(Posing::InTheTable);
+            the_watched_end_never_signals_a_stranger_it_remembered:
+                the_watched_end_never_signals_a_stranger(Posing::Remembered);
+        }
+
+        #[test]
+        fn the_watched_end_of_a_main_already_gone_signals_nothing_and_reports_what_it_remembered() {
+            use std::io::Write;
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "holder; up; read -r unused");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let holder = only_child(main.id());
+            let remembered = [Identity {
+                pid: holder,
+                start: os_process::start_time(holder).expect("the holder's start"),
+            }];
+            let mut stdin = main.stdin.take().expect("the main's input");
+            let _ = stdin.write_all(b"\n");
+            drop(stdin);
+            assert!(
+                crate::test_support::wait_until(|| os_process::state(main.id()) == Some('Z')),
+                "the main exits"
+            );
+            let mut os = Rigged::default();
+
+            let report = end_watched_with(&mut os, &mut main, &remembered, END_BOUND);
+
+            let skipped: Vec<u32> = report.skipped.iter().map(|leftover| leftover.pid).collect();
+            assert_eq!(
+                (os.sent, skipped, report.residue),
+                (vec![], vec![holder], vec![])
+            );
+            assert_eq!(
+                witness.read(),
+                Reading::Held,
+                "the holder the main left runs on"
+            );
+            assert_eq!(witness.release(), Reading::Ended);
+        }
+
+        /// The end of a root's own descendants, `graceful` or not, with a stranger posing under
+        /// the root: the stranger is never signalled and is reported skipped, and the root's
+        /// descendants are ended, so the root, which waits for them, exits.
+        fn the_descendant_end_never_signals_a_stranger(graceful: bool) {
+            let mut witness = Witness::new();
+            let mut root = tree(&witness, "holder; holder; up; wait");
+            assert!(witness.wait_up(3), "the fixture's three processes are up");
+            let dir = tempfile::tempdir().expect("a directory for the stranger");
+            let mut stranger = sleeper_in(dir.path());
+            assert!(crate::test_support::wait_until(|| runs(stranger.id())));
+            let stranger_pid = stranger.id();
+            let mut os = Rigged {
+                stranger: Some((stranger_pid, root.id())),
+                ..Rigged::default()
+            };
+            let root_pid = root.id();
+            let children_left = || !descendants_in(&os_process::table(), root_pid).is_empty();
+
+            let report =
+                end_descendants_with(&mut os, root_pid, graceful, children_left, END_BOUND);
+
+            let alive = matches!(stranger.try_wait(), Ok(None)) && runs(stranger_pid);
+            cleanup(&mut stranger);
+            let root_exited =
+                crate::test_support::wait_until(|| matches!(root.try_wait(), Ok(Some(_))));
+            let skipped: Vec<u32> = report.skipped.iter().map(|leftover| leftover.pid).collect();
+            assert_eq!(
+                (alive, skipped, report.residue, root_exited, witness.read()),
+                (true, vec![stranger_pid], vec![], true, Reading::Ended),
+                "graceful {graceful}: the stranger runs on, reported skipped, and the tree is ended"
+            );
+            assert!(
+                !os.sent.iter().any(|(_, pid)| *pid == stranger_pid),
+                "nothing is sent to the stranger: {:?}",
+                os.sent
+            );
+            assert_eq!(
+                os.sent.iter().any(|(signal, _)| *signal == Signal::Term),
+                graceful,
+                "a TERM round only when graceful: {:?}",
+                os.sent
+            );
+        }
+
+        crate::test_cases! {
+            the_graceful_descendant_end_never_signals_a_stranger:
+                the_descendant_end_never_signals_a_stranger(true);
+            the_hard_descendant_end_never_signals_a_stranger:
+                the_descendant_end_never_signals_a_stranger(false);
+        }
     }
 }
