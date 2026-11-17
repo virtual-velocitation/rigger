@@ -23,7 +23,7 @@ use crate::{os_process, subprocess};
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -76,6 +76,15 @@ std::cfg_select! {
     }
 }
 
+// The one spelling of the OS set for a held tree: Linux holds a tree in a keeper process, and
+// every other OS watches it.
+std::cfg_select! {
+    target_os = "linux" => {
+        mod linux;
+    }
+    _ => {}
+}
+
 /// How long a watcher waits for a wake before it walks its tree again.
 const TICK: Duration = Duration::from_millis(250);
 
@@ -90,11 +99,30 @@ pub enum Containment {
     Watch(Why),
 }
 
+impl Containment {
+    /// The containment this OS gives a tree whose keeper would be `keeper`: on Linux the keeper,
+    /// once `keeper` answers its probe, and a watch naming why otherwise.
+    pub fn detect(keeper: &Path) -> Containment {
+        let _ = keeper;
+        todo!("the containment probe")
+    }
+}
+
 /// Why a tree is watched rather than held.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Why {
     /// A test chose it.
     Chosen,
+    /// The host was built through its test-convenience default, which chooses no containment.
+    NotChosen,
+    /// The keeper did not answer its probe, for the reason given.
+    ProbeFailed(String),
+    /// A job object could not hold the tree, for the reason given.
+    JobFailed(String),
+    /// The OS offers no containment a process can hold a tree in.
+    NoPublicContainment,
+    /// The OS is none this crate holds a tree on.
+    Unsupported,
 }
 
 /// A command whose process starts a contained tree: the command's own process is the tree's main,

@@ -45,6 +45,8 @@ mod cause_wire_periphery;
 mod change_path_revert_periphery;
 mod checkin_mutation_diff_base_periphery;
 mod checkpoint_commit_hook_bypass_periphery;
+#[cfg(target_os = "linux")]
+mod child_tree;
 mod ci_lanes;
 mod claude_code_spawn_config_periphery;
 mod cli;
