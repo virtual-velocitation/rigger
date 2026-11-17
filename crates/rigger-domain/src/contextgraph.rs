@@ -318,6 +318,9 @@ pub const TIER_EXTRACTED: &str = "extracted";
 /// define: in another file, more than once in its own, or once in its own when that definition
 /// folded after the reference (the definition arm's upgrade promotes it). The reference is
 /// inferred to reach a definition - real, but one confidence step below an EXTRACTED reference.
+/// A tagged reference lands on the definition itself (spec 117, RESOLVER AT READ): the one
+/// candidate of its tag's kinds in the view, which lies in another file, or, for a `field`
+/// reference, the one field or property in the view, its own file included.
 pub const TIER_INFERRED: &str = "inferred";
 /// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
 /// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external

@@ -13,7 +13,9 @@
 # implementer can close because the one test that could catch them never runs.
 #
 # WHAT. Only when DOCKER_HOST is unset and the user's podman socket exists: DOCKER_HOST points
-# at that socket. testcontainers for Rust starts no reaper container, so nothing else needs
+# at that socket. The socket is looked for under XDG_RUNTIME_DIR when that is an absolute path,
+# else under /run/user/<uid>: the XDG base directory specification makes a relative value
+# invalid, so an empty or relative one counts as unset, as it does in rigger itself. testcontainers for Rust starts no reaper container, so nothing else needs
 # setting: a test removes its container when it drops it. A DOCKER_HOST already set (a docker
 # host the caller configured) leaves everything as it is.
 #
@@ -30,7 +32,11 @@
 # +zzzz ZONE`), read with `date -d`; a container whose time does not read, or a max age that is
 # not a number, is left in place, and a removal that fails (its test removed it first) is not
 # the gate's failure.
-podman_socket="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}/podman/podman.sock"
+case "${XDG_RUNTIME_DIR:-}" in
+    /*) podman_runtime_dir=$XDG_RUNTIME_DIR ;;
+    *) podman_runtime_dir="/run/user/$(id -u 2>/dev/null)" ;;
+esac
+podman_socket="$podman_runtime_dir/podman/podman.sock"
 if test -z "${DOCKER_HOST:-}" && test -S "$podman_socket"; then
     DOCKER_HOST="unix://$podman_socket"
     export DOCKER_HOST

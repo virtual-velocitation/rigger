@@ -816,8 +816,10 @@ call), and REFERENCES from F. A call the qualified-mention rule gives no edge yi
 | down-hop | a placeholder | one candidate | a hop to it |
 | | | several candidates | a frontier |
 | up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf | callers |
-| tagged reference | Mention `Tagged(k)` | definitions of the leaf whose kind `reference_candidate_kinds(k)` names, a non-target kind included (a `field` reference reaches a field or a property): exactly one same-file | EXTRACTED |
+| tagged reference | Mention `Tagged(k)` | definitions of the leaf whose kind `reference_candidate_kinds(k)` names, a non-target kind included (a `field` reference's are a field, a property, a constant, a static or a variant): for any `k` but `field`, exactly one same-file | EXTRACTED |
 | | | else exactly one in the project | INFERRED |
+| | | else | no edge; counted as unresolved |
+| | | for `k` = `field`, the same-file step skipped and a constant, static or variant left to the qualified-mention rule: exactly one `field` or `property` definition in the project, in F or not | INFERRED |
 | | | else | no edge; counted as unresolved |
 | module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
 | proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |

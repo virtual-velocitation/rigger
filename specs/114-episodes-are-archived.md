@@ -554,7 +554,7 @@ fixture under a `TMPDIR` outside any repository, and from criterion 2 on it also
 `tests/hermetic_test_git_audit.rs`, so this holds wherever `RIGGER_TEST_TMPDIR` points, for binary
 and in-process fixtures alike, and a fixture reaches a repository only by making one beneath it. The
 export is criterion 2's fixture precondition, not a separate mitigation: the runner's default
-`TMPDIR` (`${XDG_CACHE_HOME:-$HOME/.cache}/rigger/test-tmp`) lies outside the checkout, and the
+`TMPDIR` (`rigger/test-tmp` under the user cache home rigger resolves) lies outside the checkout, and the
 export makes that hold where the cache home itself lies inside a repository. CI runs the same runner
 (`RIGGER_PIDNS: off` skips only the namespace), so its workflow needs no line. `archive_skip_at`'s
 outside-a-repository case is asserted through the binary.

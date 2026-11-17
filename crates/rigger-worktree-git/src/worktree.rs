@@ -3027,17 +3027,16 @@ pub fn scratch_root_path_with(
             .join(expand_home(root.to_string(), home.as_deref()))
             .to_string_lossy()
             .into_owned(),
-        None => expand_home(
-            cache_scratch_root_from(repo, xdg, home.clone())
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| {
-                    format!(
-                        "{}/{RIGGER_DIR}/{REPOSITORY_SCRATCH_SUBDIR}",
-                        if repo.is_empty() { "." } else { repo }
-                    )
-                }),
-            home.as_deref(),
-        ),
+        // An `XDG_CACHE_HOME` it takes is absolute (`rigger_process::home::xdg_dir`) and the
+        // home is what a `~/` would name, so this rung has no `~/` to expand.
+        None => cache_scratch_root_from(repo, xdg, home)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| {
+                format!(
+                    "{}/{RIGGER_DIR}/{REPOSITORY_SCRATCH_SUBDIR}",
+                    if repo.is_empty() { "." } else { repo }
+                )
+            }),
     }
 }
 
@@ -6009,20 +6008,23 @@ mod tests {
             ),
             "~/scratch"
         );
-        /// The default cache-home rung expands a `~/` cache home under the same given home.
-        scratch_root_path_with_expands_a_tilde_cache_home_under_the_given_home: assert_eq!(
-            scratch_root_path_with(
-                "/home/dev/acme",
-                "",
-                None,
-                Some(std::ffi::OsString::from("~/xdg")),
-                Some(std::ffi::OsString::from("/home/dev")),
-            ),
-            format!(
-                "/home/dev/xdg/rigger/{}",
-                marker_filename("/home/dev/acme").unwrap()
-            )
-        );
+        /// A `~/` cache home is a relative path (nothing expands it in the environment), which
+        /// the XDG base directory specification makes invalid, so the default cache-home rung
+        /// falls back to `.cache` under the given home.
+        scratch_root_path_with_takes_a_tilde_cache_home_as_relative_and_falls_to_the_home:
+            assert_eq!(
+                scratch_root_path_with(
+                    "/home/dev/acme",
+                    "",
+                    None,
+                    Some(std::ffi::OsString::from("~/xdg")),
+                    Some(std::ffi::OsString::from("/home/dev")),
+                ),
+                format!(
+                    "/home/dev/.cache/rigger/{}",
+                    marker_filename("/home/dev/acme").unwrap()
+                )
+            );
     }
 
     // ---- cache_scratch_root_from: PURE, so every case is driven with explicit params,

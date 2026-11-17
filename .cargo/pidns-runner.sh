@@ -32,8 +32,14 @@ set -u
 # mid-round). Twelve store-walk unit tests fail the same way for the same nesting. The
 # default lives on the large mount under the user cache, never under /tmp (the root
 # partition) and never under any .rigger; RIGGER_TEST_TMPDIR overrides it explicitly.
-# Applies to the RIGGER_PIDNS=off path too (CI), so the placement rule has one home.
-TMPDIR="${RIGGER_TEST_TMPDIR:-${XDG_CACHE_HOME:-$HOME/.cache}/rigger/test-tmp}"
+# Applies to the RIGGER_PIDNS=off path too (CI), so the placement rule has one home. The user
+# cache is the one rigger resolves: XDG_CACHE_HOME when it is an absolute path (the XDG base
+# directory specification makes a relative value invalid), else `.cache` under the home.
+case "${XDG_CACHE_HOME:-}" in
+    /*) cache_home=$XDG_CACHE_HOME ;;
+    *) cache_home=$HOME/.cache ;;
+esac
+TMPDIR="${RIGGER_TEST_TMPDIR:-$cache_home/rigger/test-tmp}"
 export TMPDIR
 mkdir -p "$TMPDIR" 2>/dev/null || true
 # The runner owns TMPDIR's lifecycle (2026-09-15). A test binary stopped mid-run (a gate or

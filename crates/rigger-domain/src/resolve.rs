@@ -9,7 +9,7 @@
 //! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
 //! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
-//! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge |
+//! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge; a `field` reference no qualifier narrows reads its field and property candidates alone and skips the same-file step: one in the view, in its file or not, is `inferred`, else no edge, so it reaches a constant, a static or a variant only through a qualifier that keeps it |
 //! | held reference | a tagged reference whose node already references the target, or its placeholder from that node, writes no edge |
 //! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
@@ -36,10 +36,10 @@ use crate::contextgraph::query::{
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, CODE_KIND_IMPL,
     CODE_KIND_TRAIT, KIND_AGENT, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE,
-    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_IMPL, REF_KIND_TYPE, REL_CALLS,
-    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_NEEDS,
-    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, TIER_AMBIGUOUS,
-    TIER_EXTRACTED, TIER_INFERRED,
+    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL,
+    REF_KIND_TYPE, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
+    REL_GOVERNS, REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    REL_SPECIFIES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
@@ -651,8 +651,11 @@ impl<'v> Resolver<'v> {
     /// tagged `tag`, from `file`, written in `lang`, over the candidates of the tag's kinds in
     /// `lang` ([`Pool::references`]): the one its qualifier narrows them to
     /// ([`Self::narrowed`]), EXTRACTED wherever it is, and none when it narrows them to several
-    /// or its qualifier makes it no link; else the one same-file candidate, EXTRACTED, else the
-    /// one in the view, INFERRED; none when no one candidate takes it.
+    /// or its qualifier makes it no link; else, for a `field` reference, the one field or
+    /// property candidate in the view, INFERRED even in `file`, so it never prefers its file and
+    /// reaches a constant, a static or a variant only through a qualifier that keeps it; else
+    /// the one same-file candidate, EXTRACTED, else the one in the view, INFERRED; none when no
+    /// one candidate takes it.
     fn tagged(
         &self,
         file: &str,
@@ -672,6 +675,14 @@ impl<'v> Resolver<'v> {
             Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
             Hop::Frontier(_) => return None,
             Hop::Terminal => {}
+        }
+        if tag == REF_KIND_FIELD {
+            let consts = reference_candidate_kinds(REF_KIND_CONST);
+            let members = targets.into_iter().filter(|c| !consts.contains(&c.kind));
+            return match hop(members.collect()) {
+                Hop::One(one) => Some((one.id.clone(), TIER_INFERRED)),
+                Hop::Terminal | Hop::Frontier(_) => None,
+            };
         }
         one_here_else_one_anywhere(&targets, file).map(|(c, here)| {
             let tier = if here { TIER_EXTRACTED } else { TIER_INFERRED };
@@ -1292,12 +1303,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// A method whose local path is dotted, as a Python or C# method's is (`Base.area`): its
-    /// leaf the text after its type's `.`, its parent the definition at `parent`.
-    fn dotted_method(local: &str, line: u32, parent: u32) -> Def {
+    /// A member of kind `kind` whose local path is dotted, as a Python or C# member's is
+    /// (`Base.area`): its leaf the text after its type's `.`, its parent the definition at
+    /// `parent`.
+    fn dotted(local: &str, kind: &str, line: u32, parent: u32) -> Def {
         Def {
             leaf: path_leaf(local).into(),
-            ..def(local, "method", line, Some(parent), false)
+            ..def(local, kind, line, Some(parent), false)
         }
     }
 
@@ -2177,9 +2189,9 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("Base", "type", 1, None, false),
-                dotted_method("Base.area", 2, 0),
+                dotted("Base.area", "method", 2, 0),
                 def("Child", "type", 5, None, false),
-                dotted_method("Child.area", 6, 2),
+                dotted("Child.area", "method", 6, 2),
                 def("main", "function", 10, None, false),
             ],
             vec![
@@ -2875,7 +2887,7 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("HttpExtensions", "type", 1, None, false),
-                dotted_method("HttpExtensions.GetClientIp", 2, 0),
+                dotted("HttpExtensions.GetClientIp", "method", 2, 0),
                 def("Shape", "type", 5, None, false),
             ],
             vec![],
@@ -2886,7 +2898,7 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("Handler", "type", 1, None, false),
-                dotted_method("Handler.Handle", 2, 0),
+                dotted("Handler.Handle", "method", 2, 0),
             ],
             vec![
                 qualified(MentionKind::Call, "Request.GetClientIp", Some(1), 3, false),
@@ -3060,6 +3072,253 @@ pub(crate) mod tests {
         ];
         for (shows, ask, want) in cases {
             assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+    }
+
+    /// AN UNQUALIFIED FIELD USE NEVER PREFERS ITS FILE (spec 117, RESOLVER AT READ): a `field`
+    /// reference the unqualified rule takes - written unqualified (`x.lang`), or behind a member
+    /// or type-path qualifier that keeps no candidate - reads the field and property definitions
+    /// of its leaf alone and skips the same-file step: exactly one in the view is INFERRED,
+    /// wherever it sits, and several or none give no edge. So `x.lang` beside a same-file `lang`
+    /// field and one in another file lands nowhere, beside one in another file lands on it
+    /// INFERRED, and beside one in its own file alone lands on that INFERRED too; a constant, a
+    /// static or a variant of the leaf neither takes it nor contests the field, nor does a test
+    /// field or another language's; a property takes it like a field. A qualifier that keeps a
+    /// constant still links it, EXTRACTED: C#'s `Square.SIDES`.
+    #[test]
+    fn an_unqualified_field_use_never_prefers_its_file() {
+        // `describe` reads `mention`, beside `Config`'s own `lang` field and the type `Opts`.
+        let config = |mention: Mention| {
+            code(
+                "src/config.rs",
+                "rust",
+                Scope::Product,
+                vec![
+                    def("Config", "type", 1, None, false),
+                    def("Config::lang", "field", 2, Some(0), false),
+                    def("Opts", "type", 4, None, false),
+                    def("describe", "function", 5, None, false),
+                ],
+                vec![mention],
+            )
+        };
+        let unqualified = || tagged("field", "lang", Some(3), 6);
+        let type_path = || {
+            let field = MentionKind::Tagged("field".into());
+            qualified(field, "Opts::lang", Some(3), 6, false)
+        };
+        let config_contains = [
+            "src/config.rs -CONTAINS/extracted-> src/config.rs::Config",
+            "src/config.rs::Config -CONTAINS/extracted-> src/config.rs::Config::lang",
+            "src/config.rs -CONTAINS/extracted-> src/config.rs::Opts",
+            "src/config.rs -CONTAINS/extracted-> src/config.rs::describe",
+        ];
+        let user = || {
+            code(
+                "src/user.rs",
+                "rust",
+                Scope::Product,
+                vec![def("render", "function", 1, None, false)],
+                vec![tagged("field", "lang", Some(0), 2)],
+            )
+        };
+        let locale = || {
+            code(
+                "src/locale.rs",
+                "rust",
+                Scope::Product,
+                vec![
+                    def("Locale", "type", 1, None, false),
+                    def("Locale::lang", "field", 2, Some(0), false),
+                ],
+                vec![],
+            )
+        };
+        let fake_locale = || {
+            code(
+                "tests/locale.rs",
+                "rust",
+                Scope::Test,
+                vec![
+                    def("FakeLocale", "type", 1, None, true),
+                    def("FakeLocale::lang", "field", 2, Some(0), true),
+                ],
+                vec![],
+            )
+        };
+        let tags = || {
+            code(
+                "src/tags.rs",
+                "rust",
+                Scope::Product,
+                vec![
+                    def("lang", "constant", 1, None, false),
+                    def("Tag", "type", 3, None, false),
+                    def("Tag::lang", "variant", 4, Some(1), false),
+                ],
+                vec![],
+            )
+        };
+        let cache = || {
+            code(
+                "src/cache.rs",
+                "rust",
+                Scope::Product,
+                vec![def("lang", "static", 1, None, false)],
+                vec![],
+            )
+        };
+        // `Handle` reads `Request.lang`, whose qualifier names nothing, and `Square.SIDES`.
+        let handler = |members: Vec<Def>| {
+            let field = || MentionKind::Tagged("field".into());
+            code(
+                "src/handler.cs",
+                "csharp",
+                Scope::Product,
+                [
+                    vec![
+                        def("Handler", "type", 1, None, false),
+                        dotted("Handler.Handle", "method", 2, 0),
+                    ],
+                    members,
+                ]
+                .concat(),
+                vec![
+                    qualified(field(), "Request.lang", Some(1), 3, false),
+                    qualified(field(), "Square.SIDES", Some(1), 4, false),
+                ],
+            )
+        };
+        let locale_cs = || {
+            code(
+                "src/locale.cs",
+                "csharp",
+                Scope::Product,
+                vec![
+                    def("Locale", "type", 1, None, false),
+                    dotted("Locale.lang", "property", 2, 0),
+                ],
+                vec![],
+            )
+        };
+        let square = || {
+            code(
+                "src/square.cs",
+                "csharp",
+                Scope::Product,
+                vec![
+                    def("Square", "type", 1, None, false),
+                    dotted("Square.SIDES", "constant", 2, 0),
+                ],
+                vec![],
+            )
+        };
+        let user_infers = [
+            "src/user.rs::render -REFERENCES/inferred-> src/locale.rs::Locale::lang",
+            "src/user.rs -CONTAINS/extracted-> src/user.rs::render",
+        ];
+        let user_contains = ["src/user.rs -CONTAINS/extracted-> src/user.rs::render"];
+        let handler_contains = [
+            "src/handler.cs -CONTAINS/extracted-> src/handler.cs::Handler",
+            "src/handler.cs::Handler -CONTAINS/extracted-> src/handler.cs::Handler.Handle",
+        ];
+        let sides = "src/handler.cs::Handler.Handle -REFERENCES/extracted-> \
+                     src/square.cs::Square.SIDES";
+        // (what the answer shows, the view's files, the file asked, its whole answer)
+        let cases: [(&str, Vec<FileFacts>, &str, Vec<&str>); 10] = [
+            (
+                "`x.lang` beside a same-file `lang` field and one in another file: no edge",
+                vec![config(unqualified()), locale()],
+                "src/config.rs",
+                config_contains.to_vec(),
+            ),
+            (
+                "`x.lang` beside one `lang` field in another file: INFERRED",
+                vec![user(), locale()],
+                "src/user.rs",
+                user_infers.to_vec(),
+            ),
+            (
+                "`x.lang` beside one `lang` field in its own file alone: INFERRED, not EXTRACTED",
+                vec![config(unqualified())],
+                "src/config.rs",
+                [
+                    &["src/config.rs::describe -REFERENCES/inferred-> \
+                       src/config.rs::Config::lang"][..],
+                    &config_contains[..],
+                ]
+                .concat(),
+            ),
+            (
+                "a test field and another language's property contest no product field use",
+                vec![user(), locale(), fake_locale(), locale_cs()],
+                "src/user.rs",
+                user_infers.to_vec(),
+            ),
+            (
+                "a static of the leaf alone takes no field use",
+                vec![user(), cache()],
+                "src/user.rs",
+                user_contains.to_vec(),
+            ),
+            (
+                "a constant, a static and a variant of the leaf contest no field",
+                vec![user(), locale(), tags(), cache()],
+                "src/user.rs",
+                user_infers.to_vec(),
+            ),
+            (
+                "no definition of the leaf: no edge",
+                vec![user()],
+                "src/user.rs",
+                user_contains.to_vec(),
+            ),
+            (
+                "a type-path qualifier keeping none falls back to the field rule: `Opts::lang` \
+                 beside a same-file `lang` field and one in another file, no edge",
+                vec![config(type_path()), locale()],
+                "src/config.rs",
+                config_contains.to_vec(),
+            ),
+            (
+                "a member qualifier keeping none falls back to the field rule: `Request.lang` \
+                 beside a same-file field and a property in another file, no edge; a member \
+                 qualifier keeping a constant links it, EXTRACTED",
+                vec![
+                    handler(vec![dotted("Handler.lang", "field", 6, 0)]),
+                    locale_cs(),
+                    square(),
+                ],
+                "src/handler.cs",
+                [
+                    &[sides][..],
+                    &handler_contains[..],
+                    &["src/handler.cs::Handler -CONTAINS/extracted-> \
+                       src/handler.cs::Handler.lang"][..],
+                ]
+                .concat(),
+            ),
+            (
+                "a member qualifier keeping none, beside one property in another file: INFERRED",
+                vec![handler(vec![]), locale_cs(), square()],
+                "src/handler.cs",
+                [
+                    &["src/handler.cs::Handler.Handle -REFERENCES/inferred-> \
+                       src/locale.cs::Locale.lang"][..],
+                    &[sides][..],
+                    &handler_contains[..],
+                ]
+                .concat(),
+            ),
+        ];
+        for (shows, files, asked, want) in cases {
+            let view = FactsView::new(stamp(), files);
+            let r = Resolver::new(&view);
+            assert_eq!(
+                answer(&view, &r, &Ask::Links(asked, false)),
+                want,
+                "{shows}"
+            );
         }
     }
 
