@@ -1292,6 +1292,15 @@ pub(crate) mod tests {
         }
     }
 
+    /// A method whose local path is dotted, as a Python or C# method's is (`Base.area`): its
+    /// leaf the text after its type's `.`, its parent the definition at `parent`.
+    fn dotted_method(local: &str, line: u32, parent: u32) -> Def {
+        Def {
+            leaf: path_leaf(local).into(),
+            ..def(local, "method", line, Some(parent), false)
+        }
+    }
+
     fn mention(
         kind: MentionKind,
         leaf: &str,
@@ -2097,11 +2106,6 @@ pub(crate) mod tests {
         let qualified_tag = |tag: &str, name: &str, line| {
             qualified(MentionKind::Tagged(tag.into()), name, Some(3), line, false)
         };
-        // A Python method: its leaf the text after the class's `.`.
-        let method = |local: &str, line, parent| Def {
-            leaf: path_leaf(local).into(),
-            ..def(local, "method", line, Some(parent), false)
-        };
         let code_view = code(
             "src/code_view.rs",
             "rust",
@@ -2173,9 +2177,9 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("Base", "type", 1, None, false),
-                method("Base.area", 2, 0),
+                dotted_method("Base.area", 2, 0),
                 def("Child", "type", 5, None, false),
-                method("Child.area", 6, 2),
+                dotted_method("Child.area", 6, 2),
                 def("main", "function", 10, None, false),
             ],
             vec![
@@ -2772,11 +2776,6 @@ pub(crate) mod tests {
     /// unqualified rule.
     #[test]
     fn a_qualifier_naming_no_definition_makes_no_link_and_a_member_qualifier_falls_back() {
-        // A C# member: its leaf the text after its type's `.`.
-        let member = |local: &str, line, parent| Def {
-            leaf: path_leaf(local).into(),
-            ..def(local, "method", line, Some(parent), false)
-        };
         let cursor = code(
             "src/cursor.rs",
             "rust",
@@ -2880,7 +2879,7 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("HttpExtensions", "type", 1, None, false),
-                member("HttpExtensions.GetClientIp", 2, 0),
+                dotted_method("HttpExtensions.GetClientIp", 2, 0),
                 def("Shape", "type", 5, None, false),
             ],
             vec![],
@@ -2891,7 +2890,7 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("Handler", "type", 1, None, false),
-                member("Handler.Handle", 2, 0),
+                dotted_method("Handler.Handle", 2, 0),
             ],
             vec![
                 qualified(MentionKind::Call, "Request.GetClientIp", Some(1), 3, false),
