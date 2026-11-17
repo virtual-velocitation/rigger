@@ -7203,6 +7203,42 @@ mod tests {
         }
     }
 
+    /// AN ANCESTRY READ ANSWERS OR FAILS: [`in_history`] answers yes for a commit the descendant
+    /// holds, no for one it does not, and an error - never a no - when git cannot answer, whether a
+    /// rev does not resolve or no repository sits at the path.
+    #[test]
+    fn an_ancestry_read_answers_yes_no_or_fails() {
+        #[derive(Debug, Clone, Copy)]
+        enum Ask {
+            Held,
+            NotHeld,
+            UnknownRev,
+            NoRepository,
+        }
+        // Each row: what is asked, and the answer (`None` for an error).
+        let cases = [
+            (Ask::Held, Some(true)),
+            (Ask::NotHeld, Some(false)),
+            (Ask::UnknownRev, None),
+            (Ask::NoRepository, None),
+        ];
+        for (ask, want) in cases {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let base = head_sha_of(&repo_path);
+            run_git(&repo_path, &["commit", "--allow-empty", "-q", "-m", "next"]).unwrap();
+            let tip = head_sha_of(&repo_path);
+            let (dir, ancestor, descendant) = match ask {
+                Ask::Held => (repo_path.clone(), base, tip),
+                Ask::NotHeld => (repo_path.clone(), tip, base),
+                Ask::UnknownRev => (repo_path.clone(), "0".repeat(40), tip),
+                Ask::NoRepository => (format!("{repo_path}/not-there"), base, tip),
+            };
+            let answer = in_history(&dir, &ancestor, &descendant);
+            assert_eq!(answer.as_ref().ok().copied(), want, "{ask:?}: {answer:?}");
+        }
+    }
+
     /// A DISCARD WITH NO REPOSITORY CLEARS NOTHING: an empty repository path names no
     /// repository to deregister a worktree from, so `discard` fails and leaves what sits at its
     /// path as it was - a plain directory, or a registered worktree of the branch, each holding
