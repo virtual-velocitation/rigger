@@ -18889,7 +18889,8 @@ mod tests {
                 .starts_with("coverage gap - no stage with an LLM verifier covers: ")
                 && err.0.ends_with(
                     "; to continue, amend the spec or the workflow until a stage with an LLM \
-                     verifier covers every criterion, then `rigger release`"
+                     verifier covers every criterion, then start `rigger run` again, with \
+                     `--rebase-definition` after a workflow change"
                 ),
             "{why}: the refusal names the gap and what a person does about it: {}",
             err.0
