@@ -2521,6 +2521,162 @@ pub(crate) mod tests {
         );
     }
 
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ) over the candidates
+    /// its rule reads alone. Each qualifier below holds, beside the one target, a definition of
+    /// the leaf that rule refuses: a test double's `Config::load` for a product call, the field
+    /// `Point::x` for any call, and a C++ `Limits::MAX` and the field `Limits::MAX` for a Rust
+    /// `const` reference. None is kept, so each mention lands on its target, EXTRACTED, where
+    /// keeping one would leave a call on its placeholder and a reference on no edge.
+    #[test]
+    fn a_qualified_mention_narrows_only_the_candidates_its_rule_reads() {
+        let qualified_call = |name: &str| qualified(MentionKind::Call, name, Some(0), 2, false);
+        let config = code(
+            "src/config.hpp",
+            "cpp",
+            Scope::Product,
+            vec![
+                def("Config", "type", 1, None, false),
+                def("Config::load", "method", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let fake_config = code(
+            "tests/fake_config.hpp",
+            "cpp",
+            Scope::Test,
+            vec![
+                def("Config", "type", 1, None, false),
+                def("Config::load", "method", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let app = code(
+            "src/app.cpp",
+            "cpp",
+            Scope::Product,
+            vec![def("main", "function", 1, None, false)],
+            vec![qualified_call("Config::load")],
+        );
+        let point = code(
+            "src/point.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Point", "type", 1, None, false),
+                def("Point::x", "field", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let point_ops = code(
+            "src/point_ops.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("impl Point", "impl", 1, None, false),
+                def("Point::x", "method", 2, Some(0), false),
+            ],
+            vec![tagged("impl", "Point", Some(0), 1)],
+        );
+        let plot = code(
+            "src/plot.rs",
+            "rust",
+            Scope::Product,
+            vec![def("plot", "function", 1, None, false)],
+            vec![qualified_call("Point::x")],
+        );
+        let limits = code(
+            "src/limits.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Limits", "type", 1, None, false),
+                def("Limits::MAX", "field", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let consts = code(
+            "src/consts.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("impl Limits", "impl", 1, None, false),
+                def("Limits::MAX", "constant", 2, Some(0), false),
+            ],
+            vec![tagged("impl", "Limits", Some(0), 1)],
+        );
+        let limits_hpp = code(
+            "src/limits.hpp",
+            "cpp",
+            Scope::Product,
+            vec![
+                def("Limits", "type", 1, None, false),
+                def("Limits::MAX", "constant", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let cap = code(
+            "src/cap.rs",
+            "rust",
+            Scope::Product,
+            vec![def("cap", "function", 1, None, false)],
+            vec![qualified(
+                MentionKind::Tagged("const".into()),
+                "Limits::MAX",
+                Some(0),
+                2,
+                false,
+            )],
+        );
+        let view = FactsView::new(
+            stamp(),
+            vec![
+                config,
+                fake_config,
+                app,
+                point,
+                point_ops,
+                plot,
+                limits,
+                consts,
+                limits_hpp,
+                cap,
+            ],
+        );
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let cases: [(&str, Ask, &[&str]); 3] = [
+            (
+                "a product call past a test definition of its leaf under its qualifier",
+                Ask::Links("src/app.cpp", false),
+                &[
+                    "src/app.cpp::main -CALLS/extracted-> src/config.hpp::Config::load",
+                    "src/app.cpp -REFERENCES/extracted-> src/config.hpp::Config::load",
+                    "src/app.cpp -CONTAINS/extracted-> src/app.cpp::main",
+                ],
+            ),
+            (
+                "a call past a field of its leaf under its qualifier",
+                Ask::Links("src/plot.rs", false),
+                &[
+                    "src/plot.rs::plot -CALLS/extracted-> src/point_ops.rs::Point::x",
+                    "src/plot.rs -REFERENCES/extracted-> src/point_ops.rs::Point::x",
+                    "src/plot.rs -CONTAINS/extracted-> src/plot.rs::plot",
+                ],
+            ),
+            (
+                "a reference past another language's and another kind's definition of its leaf",
+                Ask::Links("src/cap.rs", false),
+                &[
+                    "src/cap.rs::cap -REFERENCES/extracted-> src/consts.rs::Limits::MAX",
+                    "src/cap.rs -CONTAINS/extracted-> src/cap.rs::cap",
+                ],
+            ),
+        ];
+        for (shows, ask, want) in cases {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+    }
+
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {
