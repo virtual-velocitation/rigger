@@ -264,6 +264,7 @@ mod subject_view_memory_rail_contract;
 mod symbol_ref_caller_attribution;
 mod test_cache_home_reclaimed_periphery;
 mod test_files_are_declared;
+mod the_new_tags_resolve_as_references_periphery;
 mod turbovec_retired;
 mod turbovec_retired_cargo_boundary;
 mod ungated_fanout_template_wiring_periphery;

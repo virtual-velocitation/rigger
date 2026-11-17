@@ -15310,6 +15310,12 @@ fn confidence_tier_radius(g: &Graph, seed: &[String]) -> BlastRadius {
     }
 }
 
+/// Counts one edge a radius walk read, so a test sees how many edges a walk reads.
+fn read_radius_edge() {
+    #[cfg(test)]
+    tests::RADIUS_EDGES_READ.with(|read| read.set(read.get() + 1));
+}
+
 /// The files reachable from `seed` within `g` crossing ONLY edges whose confidence tier is in
 /// `allowed` - the one edge set, filtered (spec 29c criterion 2). A breadth-first reachability over
 /// the (undirected) edge set: an allowed edge extends the reached set from either endpoint, but a
@@ -15333,26 +15339,30 @@ fn files_reachable(g: &Graph, seed: &[String], allowed: &[&str]) -> BTreeSet<Str
         }
     };
     let allowed: BTreeSet<&str> = allowed.iter().copied().collect();
-    let mut reached: BTreeSet<String> = seed.iter().cloned().collect();
-    let mut frontier: Vec<String> = seed.to_vec();
+    // Each node's neighbours either way across the edges the walk may cross, indexed once, so the
+    // walk reads each edge once to index it and once from each end.
+    let mut adjacent: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for e in &g.edges {
+        read_radius_edge();
+        let declaration =
+            contextgraph::declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
+        if declaration || !allowed.contains(e.tier.as_str()) {
+            continue;
+        }
+        for (near, far) in [(&e.from, &e.to), (&e.to, &e.from)] {
+            adjacent
+                .entry(near.as_str())
+                .or_default()
+                .push(far.as_str());
+        }
+    }
+    let mut reached: BTreeSet<&str> = seed.iter().map(String::as_str).collect();
+    let mut frontier: Vec<&str> = reached.iter().copied().collect();
     while let Some(cur) = frontier.pop() {
-        for e in &g.edges {
-            let declaration =
-                contextgraph::declares_a_module(&e.rel, kind_of.get(e.to.as_str()).copied());
-            if declaration || !allowed.contains(e.tier.as_str()) {
-                continue;
-            }
-            let next = if e.from == cur {
-                Some(&e.to)
-            } else if e.to == cur {
-                Some(&e.from)
-            } else {
-                None
-            };
-            if let Some(n) = next {
-                if reached.insert(n.clone()) {
-                    frontier.push(n.clone());
-                }
+        for &next in adjacent.get(cur).into_iter().flatten() {
+            read_radius_edge();
+            if reached.insert(next) {
+                frontier.push(next);
             }
         }
     }
@@ -44114,6 +44124,62 @@ mod tests {
             ),
             [DECLARING_FILE, MOD_NODE].map(String::from).into()
         );
+    }
+
+    thread_local! {
+        /// The edges the radius walks this thread ran have read ([`read_radius_edge`]).
+        pub(super) static RADIUS_EDGES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    /// A radius walk reads each edge three times, once to index it and once from each end,
+    /// however many nodes it reaches: GIVEN a chain, a star and a complete graph of file nodes,
+    /// each at two sizes, WHEN the files reachable from its last node are walked, THEN every file
+    /// is reached and the walk has read exactly three times the graph's edges.
+    #[test]
+    fn files_reachable_reads_each_edge_a_bounded_number_of_times() {
+        let file = |i: usize| format!("f{i}.rs");
+        let edge = |(a, b): (usize, usize)| contextgraph::Edge {
+            from: file(a),
+            to: file(b),
+            rel: contextgraph::REL_REFERENCES.to_string().into(),
+            valid_from: 0,
+            valid_to: None,
+            source: 0,
+            tier: contextgraph::TIER_EXTRACTED.to_string().into(),
+        };
+        let chain = |n: usize| (1..n).map(|i| (i - 1, i)).collect::<Vec<_>>();
+        let star = |n: usize| (1..n).map(|i| (0, i)).collect::<Vec<_>>();
+        let complete = |n: usize| {
+            (0..n)
+                .flat_map(|a| (a + 1..n).map(move |b| (a, b)))
+                .collect::<Vec<_>>()
+        };
+        // (shape, nodes, its edges as node pairs)
+        let cases = [
+            ("chain", 50, chain(50)),
+            ("chain", 400, chain(400)),
+            ("star", 50, star(50)),
+            ("star", 400, star(400)),
+            ("complete", 12, complete(12)),
+            ("complete", 40, complete(40)),
+        ];
+        for (shape, n, pairs) in cases {
+            let g = Graph {
+                nodes: (0..n)
+                    .map(|i| contextgraph::Node {
+                        id: file(i),
+                        kind: contextgraph::KIND_FILE.into(),
+                        attrs: BTreeMap::new(),
+                    })
+                    .collect(),
+                edges: pairs.into_iter().map(edge).collect(),
+            };
+            let before = RADIUS_EDGES_READ.with(std::cell::Cell::get);
+            let reached = files_reachable(&g, &[file(n - 1)], &[contextgraph::TIER_EXTRACTED]);
+            let read = RADIUS_EDGES_READ.with(std::cell::Cell::get) - before;
+            assert_eq!(reached, (0..n).map(file).collect(), "{shape} of {n}");
+            assert_eq!(read, 3 * g.edges.len(), "edges read for {shape} of {n}");
+        }
     }
 
     /// THE MEMBER RULE at the code neighborhood (spec 119): over [`member_graph`], which holds no

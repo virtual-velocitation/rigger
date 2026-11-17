@@ -5,6 +5,7 @@
 //!
 //! | Rule | Resolution |
 //! |---|---|
+//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates its rule reads whose parent is a definition named `Q` or an implementation enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule |
 //! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
 //! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
@@ -22,19 +23,23 @@
 //! tests a reader shows, and resolves against every candidate when tests are shown.
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
 use crate::code_view::{CodeView, DefRef, MentionRef, Proofs, Settled};
-use crate::contextgraph::query::{entity_id, file_of, leaf_of, placeholder_id, split_id};
+use crate::contextgraph::query::{
+    entity_id, file_of, leaf_of, placeholder_id, split_id, split_path,
+};
 use crate::contextgraph::{
-    definition_precedence, is_call_target, reference_candidate_kinds, KIND_AGENT,
-    KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE, KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE,
-    REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS,
-    REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES,
-    TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
+    definition_precedence, is_call_target, reference_candidate_kinds, CODE_KIND_IMPL,
+    CODE_KIND_TRAIT, KIND_AGENT, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE,
+    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_IMPL, REL_CALLS, REL_CONSTRAINS,
+    REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_NEEDS, REL_REFERENCES,
+    REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, TIER_AMBIGUOUS, TIER_EXTRACTED,
+    TIER_INFERRED,
 };
 
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
@@ -96,7 +101,7 @@ pub fn hop<T>(mut candidates: Vec<T>) -> Hop<T> {
 
 /// Which candidates a mention resolves against: a product mention the product ones, a test
 /// mention all of them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pool {
     Product,
     All,
@@ -112,13 +117,15 @@ impl Pool {
         }
     }
 
-    fn admits(self, c: &Candidate) -> bool {
-        self == Pool::All || !c.test
+    /// Whether a mention from this pool may resolve against a definition that is test code
+    /// when `test`.
+    fn admits(self, test: bool) -> bool {
+        self == Pool::All || !test
     }
 
     /// Whether a call from this pool may land on `c`: the pool admits it and it is a call target.
     fn calls(self, c: &Candidate) -> bool {
-        self.admits(c) && is_call_target(Some(c.kind))
+        self.admits(c.test) && is_call_target(Some(c.kind))
     }
 }
 
@@ -131,6 +138,9 @@ pub struct Candidate<'v> {
     pub kind: &'v str,
     pub line: u32,
     pub test: bool,
+    /// The index in its file's definitions of the parent of the definition that settles the id,
+    /// the one its `CONTAINS` runs from; none at file level.
+    pub parent: Option<u32>,
 }
 
 /// One entity of a file: an id, settled over the definitions that share it.
@@ -228,6 +238,24 @@ fn one_here_else_one_anywhere<'c, 'v>(
         (_, [one]) => Some((*one, false)),
         _ => None,
     }
+}
+
+/// The qualifier of a mention written `name` whose leaf is `leaf`: the text before its last
+/// `::` or `.` ([`split_path`]); none when it is written as its leaf alone.
+fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
+    if name == leaf {
+        return None;
+    }
+    split_path(name).0
+}
+
+/// The parent definitions a qualifier names ([`Resolver::parents`]), each as (its file, its
+/// index in the file's definitions), in two tiers.
+struct Parents<'v> {
+    /// The definitions named the qualifier and the implementations of it.
+    own: FxHashSet<(&'v str, u32)>,
+    /// The traits those implementations implement, read only when no candidate sits under `own`.
+    traits: FxHashSet<(&'v str, u32)>,
 }
 
 /// `calls` in proof order: by the definition proved, then the calling file, then the evidence
@@ -336,6 +364,9 @@ pub struct Resolver<'v> {
     test_files: FxHashSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
     candidates: RefCell<FxHashMap<String, Arc<Vec<Candidate<'v>>>>>,
+    /// The parent definitions of each qualifier asked for in each pool ([`Self::parents`]),
+    /// gathered once per resolver.
+    parents: RefCell<FxHashMap<(String, Pool), Arc<Parents<'v>>>>,
     /// The test calls that prove a product definition, walked once per resolver.
     proof_calls: std::cell::OnceCell<Vec<ProofCall>>,
 }
@@ -372,6 +403,7 @@ impl<'v> Resolver<'v> {
             code_files,
             test_files,
             candidates: RefCell::default(),
+            parents: RefCell::default(),
             proof_calls: std::cell::OnceCell::new(),
         }
     }
@@ -445,6 +477,7 @@ impl<'v> Resolver<'v> {
                     kind: d.kind,
                     line: d.line,
                     test,
+                    parent: d.parent,
                 })
             })
             .collect();
@@ -464,11 +497,109 @@ impl<'v> Resolver<'v> {
             .collect()
     }
 
-    /// The call rule: the target and tier of a call to `leaf` from `file`.
-    fn call(&self, file: &str, leaf: &str, pool: Pool) -> (String, &'static str) {
+    /// The candidates of its rule, from `pool`, that a mention written `name` to `leaf` keeps by
+    /// its qualifier ([`qualifier`]): those whose parent in their file is in the qualifier's own
+    /// tier of [`Self::parents`] in `pool`, else, when none is, those whose parent is in its
+    /// trait tier. Terminal when the mention is unqualified or its qualifier keeps none, so the
+    /// unqualified rule takes it.
+    fn narrowed<'c>(
+        &self,
+        name: &str,
+        leaf: &str,
+        pool: Pool,
+        candidates: impl Iterator<Item = &'c Candidate<'v>>,
+    ) -> Hop<&'c Candidate<'v>> {
+        let Some(qualifier) = qualifier(name, leaf) else {
+            return Hop::Terminal;
+        };
+        let parents = self.parents(qualifier, pool);
+        let (mut own, mut traits) = (Vec::new(), Vec::new());
+        for c in candidates {
+            let Some(at) = c.parent.map(|p| (c.file, p)) else {
+                continue;
+            };
+            if parents.own.contains(&at) {
+                own.push(c);
+            } else if parents.traits.contains(&at) {
+                traits.push(c);
+            }
+        }
+        hop(if own.is_empty() { traits } else { own })
+    }
+
+    /// The parent definitions `qualifier` names, as (file, index in the file's definitions), in
+    /// two tiers. Its own: every definition whose leaf it is, and every implementation (an
+    /// `impl`-kind definition) enclosing an `impl`-tagged mention of it, so `T::new` reaches the
+    /// methods of `impl T` and `T::m` the `m` that `impl Tr for T` defines. Its traits: every
+    /// trait an `impl`-tagged mention such an implementation encloses names, so `T::m` reaches
+    /// a trait's `m` through `impl Tr for T` when [`Self::narrowed`] keeps no candidate of the
+    /// mention's rule under `T` or its implementations. A definition of another kind enclosing
+    /// an `impl` mention of it, a class naming its base, adds nothing; nor does an
+    /// implementation that is test code when `pool` does not admit it ([`Pool::admits`]), so a
+    /// test implementation changes no product edge. Gathered once per qualifier and pool, by name
+    /// alone in every language, as the call rule reads.
+    fn parents(&self, qualifier: &str, pool: Pool) -> Arc<Parents<'v>> {
+        let key = (qualifier.to_string(), pool);
+        if let Some(held) = self.parents.borrow().get(&key) {
+            return Arc::clone(held);
+        }
+        let is_impl =
+            |kind: &MentionKind| matches!(kind, MentionKind::Tagged(tag) if tag == REF_KIND_IMPL);
+        let mut parents = Parents {
+            own: (self.view.defs_named(qualifier))
+                .map(|d| (d.file.path, d.index))
+                .collect(),
+            traits: FxHashSet::default(),
+        };
+        // The mentions come in path order, so each file is read once.
+        let mut facts: Option<Cow<'v, FileFacts>> = None;
+        for m in self.view.mentions_named(qualifier) {
+            let Some(at) = m.enclosing.filter(|_| is_impl(&m.kind)) else {
+                continue;
+            };
+            if facts.as_ref().is_none_or(|f| f.path != m.file.path) {
+                facts = self.view.file(m.file.path);
+            }
+            let Some(facts) = &facts else {
+                continue;
+            };
+            let admitted = |d: &Def| {
+                d.kind == CODE_KIND_IMPL && pool.admits(self.is_test(d.test, m.file.path))
+            };
+            if !(facts.defs.get(at as usize)).is_some_and(admitted) {
+                continue;
+            }
+            parents.own.insert((m.file.path, at));
+            let names =
+                (facts.mentions.iter()).filter(|n| n.enclosing == Some(at) && is_impl(&n.kind));
+            for named in names {
+                parents.traits.extend(
+                    (self.view.defs_named(&named.leaf))
+                        .filter(|d| d.kind == CODE_KIND_TRAIT)
+                        .map(|d| (d.file.path, d.index)),
+                );
+            }
+        }
+        let parents = Arc::new(parents);
+        self.parents.borrow_mut().insert(key, Arc::clone(&parents));
+        parents
+    }
+
+    /// The call rule: the target and tier of a call written `name` to `leaf` from `file`. A
+    /// qualified call its qualifier narrows ([`Self::narrowed`]) lands on the one call target it
+    /// keeps, EXTRACTED wherever it is, or on the placeholder `F::%<leaf>`, INFERRED, when it
+    /// keeps several; any other call lands on its one same-file call target, EXTRACTED, else on
+    /// the placeholder.
+    fn call(&self, file: &str, name: &str, leaf: &str, pool: Pool) -> (String, &'static str) {
         let candidates = self.candidates(leaf);
+        let in_pool = candidates.iter().filter(|c| pool.calls(c));
+        match self.narrowed(name, leaf, pool, in_pool.clone()) {
+            Hop::One(one) => return (one.id.clone(), TIER_EXTRACTED),
+            Hop::Frontier(_) => return (placeholder_id(file, leaf), TIER_INFERRED),
+            Hop::Terminal => {}
+        }
         let (mut targets, mut here, mut one_here) = (0, 0, None);
-        for c in candidates.iter().filter(|c| pool.calls(c)) {
+        for c in in_pool {
             targets += 1;
             if c.file == file {
                 here += 1;
@@ -487,13 +618,17 @@ impl<'v> Resolver<'v> {
         (placeholder_id(file, leaf), tier)
     }
 
-    /// The tagged-reference rule: the target and tier of a reference tagged `tag` to `leaf` from
-    /// `file`, written in `lang`; none when no one candidate takes it.
+    /// The tagged-reference rule: the target and tier of a reference written `name` to `leaf`,
+    /// tagged `tag`, from `file`, written in `lang`, over the candidates of the tag's kinds in
+    /// `lang`: the one its qualifier narrows them to ([`Self::narrowed`]), EXTRACTED wherever it
+    /// is, and none when it narrows them to several; else the one same-file candidate, EXTRACTED,
+    /// else the one in the view, INFERRED; none when no one candidate takes it.
     fn tagged(
         &self,
         file: &str,
         lang: &str,
         tag: &str,
+        name: &str,
         leaf: &str,
         pool: Pool,
     ) -> Option<(String, &'static str)> {
@@ -501,8 +636,13 @@ impl<'v> Resolver<'v> {
         let candidates = self.candidates(leaf);
         let targets: Vec<&Candidate> = candidates
             .iter()
-            .filter(|c| pool.admits(c) && c.lang == lang && kinds.contains(&c.kind))
+            .filter(|c| pool.admits(c.test) && c.lang == lang && kinds.contains(&c.kind))
             .collect();
+        match self.narrowed(name, leaf, pool, targets.iter().copied()) {
+            Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
+            Hop::Frontier(_) => return None,
+            Hop::Terminal => {}
+        }
         one_here_else_one_anywhere(&targets, file).map(|(c, here)| {
             let tier = if here { TIER_EXTRACTED } else { TIER_INFERRED };
             (c.id.clone(), tier)
@@ -510,10 +650,10 @@ impl<'v> Resolver<'v> {
     }
 
     /// The proof rule: the product definition a test call to `leaf` from `file` proves. A call
-    /// the call rule lands on the one call target of `leaf` in `file` proves that definition when
-    /// it is product and none when it is test, so a test's call edge and its proof name one
+    /// from a `file` holding one call target of `leaf` proves that definition when it is product
+    /// and none when it is test, so an unqualified test call's edge and its proof name one
     /// definition; any other call proves the one product call target in `file`, else the one in
-    /// the view.
+    /// the view. It reads the leaf alone: no qualifier narrows a proof.
     pub(crate) fn proof(&self, file: &str, leaf: &str) -> Option<String> {
         let candidates = self.candidates(leaf);
         let mut here = candidates
@@ -529,14 +669,15 @@ impl<'v> Resolver<'v> {
         one_here_else_one_anywhere(&targets, file).map(|(c, _)| c.id.clone())
     }
 
-    /// The call-edge rule: where the edge of a call to `leaf` from `file` lands, and its tier. A
-    /// product call, and a test call the call rule resolves in `file`, take the call rule. A test
-    /// call the call rule sends to a placeholder lands, INFERRED, on the definition the proof rule
-    /// credits with it, so a test's call edge and its proof name one definition; on the
-    /// placeholder when the proof rule credits none. INFERRED even when that definition is in
-    /// `file`: the call rule found a same-file test definition of the leaf contesting it.
-    fn call_edge(&self, file: &str, leaf: &str, test: bool) -> (String, &'static str) {
-        let (to, tier) = self.call(file, leaf, Pool::of(test));
+    /// The call-edge rule: where the edge of a call written `name` to `leaf` from `file` lands,
+    /// and its tier. A product call, and a test call the call rule resolves EXTRACTED, take the
+    /// call rule. A test call the call rule sends to a placeholder lands, INFERRED, on the
+    /// definition the proof rule credits with it, so a test's call edge and its proof name one
+    /// definition; on the placeholder when the proof rule credits none. INFERRED even when that
+    /// definition is in `file`, where the call rule found no one target: a same-file test
+    /// definition of the leaf contested it, or the call's qualifier narrowed it to several.
+    fn call_edge(&self, file: &str, name: &str, leaf: &str, test: bool) -> (String, &'static str) {
+        let (to, tier) = self.call(file, name, leaf, Pool::of(test));
         if !test || tier == TIER_EXTRACTED {
             return (to, tier);
         }
@@ -654,7 +795,7 @@ impl<'v> Resolver<'v> {
             if m.kind != MentionKind::Call || (test && !tests) {
                 continue;
             }
-            let (to, tier) = self.call_edge(file, &m.leaf, test);
+            let (to, tier) = self.call_edge(file, &m.name, &m.leaf, test);
             sink(from_of(m.enclosing), REL_CALLS, &to, tier, test);
             sink(file, REL_REFERENCES, &to, tier, test);
             match referenced.get_mut(&to) {
@@ -675,7 +816,8 @@ impl<'v> Resolver<'v> {
             if test && !tests {
                 continue;
             }
-            let Some((to, tier)) = self.tagged(file, &facts.lang, tag, &m.leaf, Pool::of(test))
+            let pool = Pool::of(test);
+            let Some((to, tier)) = self.tagged(file, &facts.lang, tag, &m.name, &m.leaf, pool)
             else {
                 continue;
             };
@@ -900,15 +1042,17 @@ impl<'v> Resolver<'v> {
         })
     }
 
-    /// Whether a test call to `leaf` from `file` lands on a placeholder ([`Self::call_edge`]):
-    /// the call rule resolves it in no one definition in `file` and the proof rule credits none.
-    fn lands_on_placeholder(&self, file: &str, leaf: &str) -> bool {
-        leaf_of(&self.call_edge(file, leaf, true).0).is_some()
+    /// Whether a test call written `name` to `leaf` from `file` lands on a placeholder
+    /// ([`Self::call_edge`]): the call rule resolves it to no EXTRACTED edge and the proof rule
+    /// credits none.
+    fn lands_on_placeholder(&self, file: &str, name: &str, leaf: &str) -> bool {
+        leaf_of(&self.call_edge(file, name, leaf, true).0).is_some()
     }
 
     /// The test calls in `facts`, a code file, that land on a placeholder, as (leaf, caller)
     /// pairs, unordered: [`Self::placeholder_callers`] of every leaf `facts` calls at once. Where
-    /// a call lands depends only on its file and leaf, so each leaf is resolved once.
+    /// a call lands depends only on its file and name, its leaf and qualifier, so each name is
+    /// resolved once.
     pub fn file_placeholder_calls(&self, facts: &FileFacts) -> Vec<(String, String)> {
         let path = facts.path.as_str();
         let test_entity = self.test_entity_of(facts);
@@ -916,7 +1060,8 @@ impl<'v> Resolver<'v> {
         (facts.mentions.iter())
             .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
             .filter(|m| {
-                *(lands.entry(&m.leaf)).or_insert_with(|| self.lands_on_placeholder(path, &m.leaf))
+                *(lands.entry(&m.name))
+                    .or_insert_with(|| self.lands_on_placeholder(path, &m.name, &m.leaf))
             })
             .filter_map(|m| Some((m.leaf.clone(), test_entity(m.enclosing)?)))
             .collect()
@@ -925,13 +1070,16 @@ impl<'v> Resolver<'v> {
     /// The distinct callers of the test calls to `leaf` that land on a placeholder, in order: the
     /// test entities ([`Self::test_entity_of`]) a callers walk reaches through a placeholder bound
     /// to `leaf` and no proof names, read from the mentions of `leaf` alone. Where a call lands
-    /// depends only on its file and leaf, so each file is resolved once.
+    /// depends only on its file and name, its leaf and qualifier, so each name in each file is
+    /// resolved once.
     pub fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
-        let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
+        let mut lands: FxHashMap<(&str, &str), bool> = FxHashMap::default();
         let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
         for m in self.test_calls_named(leaf) {
-            let path = m.file.path;
-            if *(lands.entry(path)).or_insert_with(|| self.lands_on_placeholder(path, leaf)) {
+            let (path, name) = (m.file.path, m.name);
+            if *(lands.entry((path, name)))
+                .or_insert_with(|| self.lands_on_placeholder(path, name, leaf))
+            {
                 enclosing.entry(path).or_default().insert(m.enclosing);
             }
         }
@@ -1086,6 +1234,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::code_facts::{Def, DocConcept, DocLink, Stamp, Tip, WfNode, WfRelation};
     use crate::code_view::FactsView;
+    use crate::contextgraph::query::path_leaf;
 
     fn def(local: &str, kind: &str, line: u32, parent: Option<u32>, test: bool) -> Def {
         Def {
@@ -1128,6 +1277,21 @@ pub(crate) mod tests {
             line,
             false,
         )
+    }
+
+    /// A mention written `name` (`Q::leaf`, `Q.leaf`), its leaf the text after the last
+    /// separator.
+    fn qualified(
+        kind: MentionKind,
+        name: &str,
+        enclosing: Option<u32>,
+        line: u32,
+        test: bool,
+    ) -> Mention {
+        Mention {
+            name: name.into(),
+            ..mention(kind, path_leaf(name), enclosing, line, test)
+        }
     }
 
     fn decl(name: &str, def: u32, test: bool, candidates: &[&str]) -> ModuleDecl {
@@ -1364,6 +1528,8 @@ pub(crate) mod tests {
         Entities(&'static str, bool),
         TestFiles,
         Intent(&'static str),
+        PlaceholderCalls(&'static str),
+        PlaceholderCallers(&'static str),
     }
 
     fn render_link(l: &Link) -> String {
@@ -1423,6 +1589,12 @@ pub(crate) mod tests {
                 });
                 nodes.chain(links).collect()
             }
+            Ask::PlaceholderCalls(path) => r
+                .file_placeholder_calls(&view.file(path).unwrap())
+                .into_iter()
+                .map(|(leaf, caller)| format!("{leaf} {caller}"))
+                .collect(),
+            Ask::PlaceholderCallers(leaf) => r.placeholder_callers(leaf),
         }
     }
 
@@ -1799,6 +1971,746 @@ pub(crate) mod tests {
         for ((reader, got), want) in cases.into_iter().zip(wants) {
             assert_eq!(got, want, "{reader}");
         }
+    }
+
+    /// THE NEW TAGS RESOLVE AS REFERENCES (spec 117, NEW TAGS and RESOLVER AT READ): an `impl`
+    /// mention in an implementation header resolves onto the one trait or type of its leaf, and a
+    /// `variant` mention onto the one variant, each a REFERENCES link and never CALLS. A
+    /// same-leaf definition of a kind outside the tag's candidates - the implementation itself,
+    /// a function, a constant - is no candidate, so it neither takes the edge nor contests it.
+    #[test]
+    fn the_new_tags_resolve_as_references() {
+        let view = code(
+            "src/view.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("CodeView", "trait", 1, None, false),
+                def("Located", "type", 5, None, false),
+                def("Located::Many", "variant", 6, Some(1), false),
+            ],
+            vec![],
+        );
+        let facts = code(
+            "src/facts.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Located", "impl", 1, None, false),
+                def("locate", "function", 5, None, false),
+            ],
+            vec![
+                tagged("impl", "CodeView", Some(0), 1),
+                tagged("impl", "Located", Some(0), 1),
+                tagged("variant", "Many", Some(1), 6),
+            ],
+        );
+        let decoys = code(
+            "src/decoys.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("CodeView", "function", 1, None, false),
+                def("Many", "constant", 3, None, false),
+            ],
+            vec![],
+        );
+        let view = FactsView::new(stamp(), vec![view, facts, decoys]);
+        let resolver = Resolver::new(&view);
+        let links: Vec<String> = (resolver.links(&view.file("src/facts.rs").unwrap(), false))
+            .iter()
+            .map(render_link)
+            .collect();
+        assert_eq!(
+            links,
+            [
+                "src/facts.rs::Located -REFERENCES/inferred-> src/view.rs::CodeView",
+                "src/facts.rs::Located -REFERENCES/inferred-> src/view.rs::Located",
+                "src/facts.rs::locate -REFERENCES/inferred-> src/view.rs::Located::Many",
+                "src/facts.rs -CONTAINS/extracted-> src/facts.rs::Located",
+                "src/facts.rs -CONTAINS/extracted-> src/facts.rs::locate",
+            ],
+            "each tagged mention one REFERENCES link onto its trait, type or variant, no CALLS, \
+             then the file's CONTAINS"
+        );
+    }
+
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ): a call or a tagged
+    /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates its rule reads whose parent
+    /// is a definition named `Q` or an implementation enclosing an `impl` mention of `Q`, else,
+    /// when none is, those whose parent is a trait such an implementation names (`FactsView`'s
+    /// `stamp`). One kept candidate takes the edge EXTRACTED in any file, over a
+    /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
+    /// none leave the unqualified rule. A class whose base is `Q` is no implementation of `Q`.
+    /// The placeholder readers resolve each call by its name, so two calls of one leaf that
+    /// land apart are read apart.
+    #[test]
+    fn a_qualified_call_narrows_its_candidates() {
+        let qualified_call = |name: &str, enclosing, line, test| {
+            qualified(MentionKind::Call, name, enclosing, line, test)
+        };
+        let qualified_tag = |tag: &str, name: &str, line| {
+            qualified(MentionKind::Tagged(tag.into()), name, Some(3), line, false)
+        };
+        // A Python method: its leaf the text after the class's `.`.
+        let method = |local: &str, line, parent| Def {
+            leaf: path_leaf(local).into(),
+            ..def(local, "method", line, Some(parent), false)
+        };
+        let code_view = code(
+            "src/code_view.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("FactsView", "type", 1, None, false),
+                def("impl FactsView", "impl", 3, None, false),
+                def("FactsView::new", "method", 4, Some(1), false),
+                def("CodeView", "trait", 10, None, false),
+                def("CodeView::stamp", "method", 11, Some(3), false),
+                def("impl CodeView for FactsView", "impl", 20, None, false),
+                def("FactsView::files", "method", 21, Some(5), false),
+                def("Located", "type", 30, None, false),
+                def("Located::Many", "variant", 31, Some(7), false),
+                def("Located::One", "variant", 32, Some(7), false),
+            ],
+            vec![
+                tagged("impl", "FactsView", Some(1), 3),
+                tagged("impl", "CodeView", Some(5), 20),
+                tagged("impl", "FactsView", Some(5), 20),
+            ],
+        );
+        let snapshot = code(
+            "src/snapshot.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Snapshot", "type", 1, None, false),
+                def("impl CodeView for Snapshot", "impl", 3, None, false),
+                def("Snapshot::files", "method", 4, Some(1), false),
+                def("decode", "function", 10, None, false),
+                def("MAX", "constant", 12, None, false),
+            ],
+            vec![
+                tagged("impl", "CodeView", Some(1), 3),
+                tagged("impl", "Snapshot", Some(1), 3),
+            ],
+        );
+        let composed = code(
+            "src/composed.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Composed", "type", 1, None, false),
+                def("impl Composed", "impl", 3, None, false),
+                def("Composed::new", "method", 4, Some(1), false),
+                def("Composed::open", "method", 6, Some(1), false),
+                def("impl CodeView for Composed", "impl", 20, None, false),
+                def("Composed::files", "method", 21, Some(4), false),
+                def("Located", "type", 30, None, false),
+                def("Located::One", "variant", 31, Some(6), false),
+            ],
+            vec![
+                tagged("impl", "Composed", Some(1), 3),
+                qualified_call("FactsView::new", Some(3), 7, false),
+                qualified_call("FactsView::stamp", Some(3), 8, false),
+                qualified_call("CodeView::files", Some(3), 9, false),
+                qualified_call("Composed::decode", Some(3), 10, false),
+                qualified_tag("variant", "Located::Many", 11),
+                qualified_tag("variant", "Located::One", 12),
+                qualified_tag("const", "Composed::MAX", 13),
+                tagged("impl", "CodeView", Some(4), 20),
+                tagged("impl", "Composed", Some(4), 20),
+            ],
+        );
+        let shapes = code(
+            "src/shapes.py",
+            "python",
+            Scope::Product,
+            vec![
+                def("Base", "type", 1, None, false),
+                method("Base.area", 2, 0),
+                def("Child", "type", 5, None, false),
+                method("Child.area", 6, 2),
+                def("main", "function", 10, None, false),
+            ],
+            vec![
+                tagged("impl", "Base", Some(2), 5),
+                qualified_call("Base.area", Some(4), 11, false),
+            ],
+        );
+        let open = code(
+            "tests/open.rs",
+            "rust",
+            Scope::Test,
+            vec![def("opens", "function", 1, None, true)],
+            vec![
+                qualified_call("FactsView::files", Some(0), 2, true),
+                qualified_call("CodeView::files", Some(0), 3, true),
+            ],
+        );
+        let view = FactsView::new(stamp(), vec![code_view, snapshot, composed, shapes, open]);
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let cases: [(&str, Ask, &[&str]); 6] = [
+            (
+                "a product file's qualified calls and tagged references",
+                Ask::Links("src/composed.rs", false),
+                &[
+                    "src/composed.rs::Composed::open -CALLS/extracted-> \
+                     src/code_view.rs::FactsView::new",
+                    "src/composed.rs -REFERENCES/extracted-> src/code_view.rs::FactsView::new",
+                    "src/composed.rs::Composed::open -CALLS/extracted-> \
+                     src/code_view.rs::CodeView::stamp",
+                    "src/composed.rs -REFERENCES/extracted-> src/code_view.rs::CodeView::stamp",
+                    "src/composed.rs::Composed::open -CALLS/inferred-> src/composed.rs::%files",
+                    "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%files",
+                    "src/composed.rs::Composed::open -CALLS/inferred-> src/composed.rs::%decode",
+                    "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%decode",
+                    "src/composed.rs::impl Composed -REFERENCES/extracted-> \
+                     src/composed.rs::Composed",
+                    "src/composed.rs::Composed::open -REFERENCES/extracted-> \
+                     src/code_view.rs::Located::Many",
+                    "src/composed.rs::Composed::open -REFERENCES/inferred-> src/snapshot.rs::MAX",
+                    "src/composed.rs::impl CodeView for Composed -REFERENCES/inferred-> \
+                     src/code_view.rs::CodeView",
+                    "src/composed.rs::impl CodeView for Composed -REFERENCES/extracted-> \
+                     src/composed.rs::Composed",
+                    "src/composed.rs -CONTAINS/extracted-> src/composed.rs::Composed",
+                    "src/composed.rs::impl CodeView for Composed -CONTAINS/extracted-> \
+                     src/composed.rs::Composed::files",
+                    "src/composed.rs::impl Composed -CONTAINS/extracted-> \
+                     src/composed.rs::Composed::new",
+                    "src/composed.rs::impl Composed -CONTAINS/extracted-> \
+                     src/composed.rs::Composed::open",
+                    "src/composed.rs -CONTAINS/extracted-> src/composed.rs::Located",
+                    "src/composed.rs::Located -CONTAINS/extracted-> src/composed.rs::Located::One",
+                    "src/composed.rs -CONTAINS/extracted-> \
+                     src/composed.rs::impl CodeView for Composed",
+                    "src/composed.rs -CONTAINS/extracted-> src/composed.rs::impl Composed",
+                ],
+            ),
+            (
+                "a dotted qualifier, a base class no implementation",
+                Ask::Links("src/shapes.py", false),
+                &[
+                    "src/shapes.py::main -CALLS/extracted-> src/shapes.py::Base.area",
+                    "src/shapes.py -REFERENCES/extracted-> src/shapes.py::Base.area",
+                    "src/shapes.py::Child -REFERENCES/extracted-> src/shapes.py::Base",
+                    "src/shapes.py -CONTAINS/extracted-> src/shapes.py::Base",
+                    "src/shapes.py::Base -CONTAINS/extracted-> src/shapes.py::Base.area",
+                    "src/shapes.py -CONTAINS/extracted-> src/shapes.py::Child",
+                    "src/shapes.py::Child -CONTAINS/extracted-> src/shapes.py::Child.area",
+                    "src/shapes.py -CONTAINS/extracted-> src/shapes.py::main",
+                ],
+            ),
+            (
+                "a test file's qualified calls of one leaf",
+                Ask::Links("tests/open.rs", true),
+                &[
+                    "tests/open.rs::opens -CALLS/extracted-> src/code_view.rs::FactsView::files",
+                    "tests/open.rs -REFERENCES/extracted-> src/code_view.rs::FactsView::files",
+                    "tests/open.rs::opens -CALLS/inferred-> tests/open.rs::%files",
+                    "tests/open.rs -REFERENCES/inferred-> tests/open.rs::%files",
+                    "tests/open.rs -CONTAINS/extracted-> tests/open.rs::opens",
+                ],
+            ),
+            (
+                "the narrowed definition's callers",
+                Ask::UpHop("src/code_view.rs::FactsView::new", "new"),
+                &[
+                    "src/composed.rs::Composed::open -CALLS/extracted-> \
+                     src/code_view.rs::FactsView::new",
+                    "src/composed.rs -REFERENCES/extracted-> src/code_view.rs::FactsView::new",
+                ],
+            ),
+            (
+                "a test file's calls landing on a placeholder, by name",
+                Ask::PlaceholderCalls("tests/open.rs"),
+                &["files tests/open.rs::opens"],
+            ),
+            (
+                "a leaf's placeholder callers, by name",
+                Ask::PlaceholderCallers("files"),
+                &["tests/open.rs::opens"],
+            ),
+        ];
+        for (shows, ask, want) in cases {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+    }
+
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ), what a qualifier
+    /// reaches: an implementation is `Q`'s only through an `impl`-tagged mention of `Q` it
+    /// encloses, and it brings only the traits its own `impl`-tagged mentions name, read when no
+    /// candidate sits under `Q` or its implementations (`Wrapper::area`). So `Q` in an
+    /// implementation's header that does not implement it (`impl From<Source> for Wrapper`), a
+    /// trait bound in its header (`impl<T: Draw> Holder<T>`), a trait another implementation in
+    /// the file implements, and a type implementing the trait `Q` each add no parent, and the
+    /// mention keeps the unqualified rule.
+    #[test]
+    fn a_qualifier_reaches_its_implementations_and_their_traits_alone() {
+        let qualified_call =
+            |name: &str, line| qualified(MentionKind::Call, name, Some(0), line, false);
+        let shape = code(
+            "src/shape.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Shape", "trait", 1, None, false),
+                def("Shape::area", "method", 2, Some(0), false),
+                def("Draw", "trait", 5, None, false),
+                def("Draw::paint", "method", 6, Some(2), false),
+            ],
+            vec![],
+        );
+        let wrap = code(
+            "src/wrap.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Wrapper", "type", 1, None, false),
+                def("Wrapper::Empty", "variant", 2, Some(0), false),
+                def("impl From<Source> for Wrapper", "impl", 5, None, false),
+                def("Wrapper::from", "method", 6, Some(2), false),
+                def("impl Shape for Wrapper", "impl", 10, None, false),
+                def("Holder", "type", 15, None, false),
+                def("impl<T: Draw> Holder<T>", "impl", 17, None, false),
+                def("Holder::get", "method", 18, Some(6), false),
+            ],
+            vec![
+                tagged("impl", "From", Some(2), 5),
+                tagged("type", "Source", Some(2), 5),
+                tagged("impl", "Wrapper", Some(2), 5),
+                tagged("impl", "Shape", Some(4), 10),
+                tagged("impl", "Wrapper", Some(4), 10),
+                tagged("type", "Draw", Some(6), 17),
+                tagged("impl", "Holder", Some(6), 17),
+            ],
+        );
+        let user = code(
+            "src/user.rs",
+            "rust",
+            Scope::Product,
+            vec![def("run", "function", 1, None, false)],
+            vec![
+                qualified_call("Wrapper::area", 2),
+                qualified_call("Source::from", 3),
+                qualified_call("Holder::area", 4),
+                qualified_call("Holder::paint", 5),
+                qualified(
+                    MentionKind::Tagged("variant".into()),
+                    "Shape::Empty",
+                    Some(0),
+                    6,
+                    false,
+                ),
+            ],
+        );
+        let view = FactsView::new(stamp(), vec![shape, wrap, user]);
+        let r = Resolver::new(&view);
+        assert_eq!(
+            answer(&view, &r, &Ask::Links("src/user.rs", false)),
+            [
+                // `impl Shape for Wrapper` brings `Shape`.
+                "src/user.rs::run -CALLS/extracted-> src/shape.rs::Shape::area",
+                "src/user.rs -REFERENCES/extracted-> src/shape.rs::Shape::area",
+                // `Source` is a `type` mention in the header of `impl From<Source> for Wrapper`.
+                "src/user.rs::run -CALLS/inferred-> src/user.rs::%from",
+                "src/user.rs -REFERENCES/inferred-> src/user.rs::%from",
+                // `Shape` is implemented by `impl Shape for Wrapper`, not by `Holder`'s.
+                "src/user.rs::run -CALLS/inferred-> src/user.rs::%area",
+                "src/user.rs -REFERENCES/inferred-> src/user.rs::%area",
+                // `Draw` is a `type` mention, a bound, in the header of `Holder`'s.
+                "src/user.rs::run -CALLS/inferred-> src/user.rs::%paint",
+                "src/user.rs -REFERENCES/inferred-> src/user.rs::%paint",
+                // `Wrapper`, which implements `Shape`, is no parent of `Shape`.
+                "src/user.rs::run -REFERENCES/inferred-> src/wrap.rs::Wrapper::Empty",
+                "src/user.rs -CONTAINS/extracted-> src/user.rs::run",
+            ],
+            "each qualified mention narrowed by its qualifier's implementations and their traits \
+             alone, else by the unqualified rule"
+        );
+    }
+
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ) without letting a
+    /// test definition change a product edge: an implementation that is test code, by its own
+    /// mark (`Keeper`'s) or by its file's scope (`Holder`'s), is a parent of a test mention's
+    /// qualifier alone. So a product call to `Keeper::area` or `Holder::area`, and a product
+    /// `const` reference to `Keeper::SIDES`, keep the unqualified rule, while the same test
+    /// mentions reach `Shape::area` and `Shape::SIDES` through the test `impl Shape for ...`.
+    /// One resolver answers the product file first, so a parent set held for the qualifier alone
+    /// would hand the test mentions the product answer.
+    #[test]
+    fn a_test_implementation_narrows_test_mentions_alone() {
+        let qualified_call =
+            |name: &str, line, test| qualified(MentionKind::Call, name, Some(0), line, test);
+        let qualified_const = |name: &str, line, test| {
+            qualified(
+                MentionKind::Tagged("const".into()),
+                name,
+                Some(0),
+                line,
+                test,
+            )
+        };
+        let shape = code(
+            "src/shape.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Shape", "trait", 1, None, false),
+                def("Shape::area", "method", 2, Some(0), false),
+                def("Shape::SIDES", "constant", 3, Some(0), false),
+            ],
+            vec![],
+        );
+        let keep = code(
+            "src/keep.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Keeper", "type", 1, None, false),
+                def("impl Shape for Keeper", "impl", 4, None, true),
+            ],
+            vec![
+                tagged("impl", "Shape", Some(1), 4),
+                tagged("impl", "Keeper", Some(1), 4),
+            ],
+        );
+        let holder = code(
+            "src/holder.rs",
+            "rust",
+            Scope::Product,
+            vec![def("Holder", "type", 1, None, false)],
+            vec![],
+        );
+        let holder_test = code(
+            "tests/holder.rs",
+            "rust",
+            Scope::Test,
+            vec![def("impl Shape for Holder", "impl", 1, None, false)],
+            vec![
+                tagged("impl", "Shape", Some(0), 1),
+                tagged("impl", "Holder", Some(0), 1),
+            ],
+        );
+        let user = code(
+            "src/user.rs",
+            "rust",
+            Scope::Product,
+            vec![def("run", "function", 1, None, false)],
+            vec![
+                qualified_call("Keeper::area", 2, false),
+                qualified_call("Holder::area", 3, false),
+                qualified_const("Keeper::SIDES", 4, false),
+            ],
+        );
+        let user_test = code(
+            "tests/user.rs",
+            "rust",
+            Scope::Test,
+            vec![def("checks", "function", 1, None, true)],
+            vec![
+                qualified_call("Keeper::area", 2, true),
+                qualified_call("Holder::area", 3, true),
+                qualified_const("Keeper::SIDES", 4, true),
+            ],
+        );
+        let view = FactsView::new(
+            stamp(),
+            vec![shape, keep, holder, holder_test, user, user_test],
+        );
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let cases: [(&str, Ask, &[&str]); 2] = [
+            (
+                "a product mention keeps the unqualified rule past a test implementation",
+                Ask::Links("src/user.rs", false),
+                &[
+                    "src/user.rs::run -CALLS/inferred-> src/user.rs::%area",
+                    "src/user.rs -REFERENCES/inferred-> src/user.rs::%area",
+                    "src/user.rs::run -CALLS/inferred-> src/user.rs::%area",
+                    "src/user.rs -REFERENCES/inferred-> src/user.rs::%area",
+                    "src/user.rs::run -REFERENCES/inferred-> src/shape.rs::Shape::SIDES",
+                    "src/user.rs -CONTAINS/extracted-> src/user.rs::run",
+                ],
+            ),
+            (
+                "a test mention reaches the trait a test implementation names",
+                Ask::Links("tests/user.rs", true),
+                &[
+                    "tests/user.rs::checks -CALLS/extracted-> src/shape.rs::Shape::area",
+                    "tests/user.rs -REFERENCES/extracted-> src/shape.rs::Shape::area",
+                    "tests/user.rs::checks -CALLS/extracted-> src/shape.rs::Shape::area",
+                    "tests/user.rs -REFERENCES/extracted-> src/shape.rs::Shape::area",
+                    "tests/user.rs::checks -REFERENCES/extracted-> src/shape.rs::Shape::SIDES",
+                    "tests/user.rs -CONTAINS/extracted-> tests/user.rs::checks",
+                ],
+            ),
+        ];
+        for (shows, ask, want) in cases {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+    }
+
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ) to an
+    /// implementation's own member before its trait's: `Square::area` and `Square::SIDES` land
+    /// on the `area` and `SIDES` that `impl Shape for Square` defines, EXTRACTED, never beside
+    /// `Shape`'s. A trait's member is kept only when no call target or reference target of the
+    /// leaf sits under `Square` or an implementation of it, so `Square::name` reaches `Shape`'s
+    /// default `name` past the field `name` of `Square`, which no call lands on.
+    #[test]
+    fn an_implementations_own_member_outranks_its_traits() {
+        let shape = code(
+            "src/shape.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Shape", "trait", 1, None, false),
+                def("Shape::area", "method", 2, Some(0), false),
+                def("Shape::SIDES", "constant", 3, Some(0), false),
+                def("Shape::name", "method", 4, Some(0), false),
+            ],
+            vec![],
+        );
+        let square = code(
+            "src/square.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Square", "type", 1, None, false),
+                def("Square::name", "field", 2, Some(0), false),
+                def("impl Shape for Square", "impl", 5, None, false),
+                def("Square::area", "method", 6, Some(2), false),
+                def("Square::SIDES", "constant", 7, Some(2), false),
+            ],
+            vec![
+                tagged("impl", "Shape", Some(2), 5),
+                tagged("impl", "Square", Some(2), 5),
+            ],
+        );
+        let user = code(
+            "src/user.rs",
+            "rust",
+            Scope::Product,
+            vec![def("run", "function", 1, None, false)],
+            vec![
+                qualified(MentionKind::Call, "Square::area", Some(0), 2, false),
+                qualified(
+                    MentionKind::Tagged("const".into()),
+                    "Square::SIDES",
+                    Some(0),
+                    3,
+                    false,
+                ),
+                qualified(MentionKind::Call, "Square::name", Some(0), 4, false),
+            ],
+        );
+        let view = FactsView::new(stamp(), vec![shape, square, user]);
+        let r = Resolver::new(&view);
+        assert_eq!(
+            answer(&view, &r, &Ask::Links("src/user.rs", false)),
+            [
+                "src/user.rs::run -CALLS/extracted-> src/square.rs::Square::area",
+                "src/user.rs -REFERENCES/extracted-> src/square.rs::Square::area",
+                "src/user.rs::run -CALLS/extracted-> src/shape.rs::Shape::name",
+                "src/user.rs -REFERENCES/extracted-> src/shape.rs::Shape::name",
+                "src/user.rs::run -REFERENCES/extracted-> src/square.rs::Square::SIDES",
+                "src/user.rs -CONTAINS/extracted-> src/user.rs::run",
+            ],
+            "the implementation's own member first, its trait's only when it has none"
+        );
+    }
+
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ) over the candidates
+    /// its rule reads alone. Each qualifier below holds, beside the one target, a definition of
+    /// the leaf that rule refuses: a test double's `Config::load` for a product call, the field
+    /// `Point::x` for any call, and a C++ `Limits::MAX` and the field `Limits::MAX` for a Rust
+    /// `const` reference. None is kept, so each mention lands on its target, EXTRACTED, where
+    /// keeping one would leave a call on its placeholder and a reference on no edge.
+    #[test]
+    fn a_qualified_mention_narrows_only_the_candidates_its_rule_reads() {
+        let qualified_call = |name: &str| qualified(MentionKind::Call, name, Some(0), 2, false);
+        let config = code(
+            "src/config.hpp",
+            "cpp",
+            Scope::Product,
+            vec![
+                def("Config", "type", 1, None, false),
+                def("Config::load", "method", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let fake_config = code(
+            "tests/fake_config.hpp",
+            "cpp",
+            Scope::Test,
+            vec![
+                def("Config", "type", 1, None, false),
+                def("Config::load", "method", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let app = code(
+            "src/app.cpp",
+            "cpp",
+            Scope::Product,
+            vec![def("main", "function", 1, None, false)],
+            vec![qualified_call("Config::load")],
+        );
+        let point = code(
+            "src/point.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Point", "type", 1, None, false),
+                def("Point::x", "field", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let point_ops = code(
+            "src/point_ops.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("impl Point", "impl", 1, None, false),
+                def("Point::x", "method", 2, Some(0), false),
+            ],
+            vec![tagged("impl", "Point", Some(0), 1)],
+        );
+        let plot = code(
+            "src/plot.rs",
+            "rust",
+            Scope::Product,
+            vec![def("plot", "function", 1, None, false)],
+            vec![qualified_call("Point::x")],
+        );
+        let limits = code(
+            "src/limits.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Limits", "type", 1, None, false),
+                def("Limits::MAX", "field", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let consts = code(
+            "src/consts.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("impl Limits", "impl", 1, None, false),
+                def("Limits::MAX", "constant", 2, Some(0), false),
+            ],
+            vec![tagged("impl", "Limits", Some(0), 1)],
+        );
+        let limits_hpp = code(
+            "src/limits.hpp",
+            "cpp",
+            Scope::Product,
+            vec![
+                def("Limits", "type", 1, None, false),
+                def("Limits::MAX", "constant", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let cap = code(
+            "src/cap.rs",
+            "rust",
+            Scope::Product,
+            vec![def("cap", "function", 1, None, false)],
+            vec![qualified(
+                MentionKind::Tagged("const".into()),
+                "Limits::MAX",
+                Some(0),
+                2,
+                false,
+            )],
+        );
+        let view = FactsView::new(
+            stamp(),
+            vec![
+                config,
+                fake_config,
+                app,
+                point,
+                point_ops,
+                plot,
+                limits,
+                consts,
+                limits_hpp,
+                cap,
+            ],
+        );
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let cases: [(&str, Ask, &[&str]); 3] = [
+            (
+                "a product call past a test definition of its leaf under its qualifier",
+                Ask::Links("src/app.cpp", false),
+                &[
+                    "src/app.cpp::main -CALLS/extracted-> src/config.hpp::Config::load",
+                    "src/app.cpp -REFERENCES/extracted-> src/config.hpp::Config::load",
+                    "src/app.cpp -CONTAINS/extracted-> src/app.cpp::main",
+                ],
+            ),
+            (
+                "a call past a field of its leaf under its qualifier",
+                Ask::Links("src/plot.rs", false),
+                &[
+                    "src/plot.rs::plot -CALLS/extracted-> src/point_ops.rs::Point::x",
+                    "src/plot.rs -REFERENCES/extracted-> src/point_ops.rs::Point::x",
+                    "src/plot.rs -CONTAINS/extracted-> src/plot.rs::plot",
+                ],
+            ),
+            (
+                "a reference past another language's and another kind's definition of its leaf",
+                Ask::Links("src/cap.rs", false),
+                &[
+                    "src/cap.rs::cap -REFERENCES/extracted-> src/consts.rs::Limits::MAX",
+                    "src/cap.rs -CONTAINS/extracted-> src/cap.rs::cap",
+                ],
+            ),
+        ];
+        for (shows, ask, want) in cases {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+    }
+
+    /// A mention whose name is its leaf has no qualifier ([`qualifier`]), even when that leaf
+    /// holds a separator, as a leaf written whole (`Ns.IShape`) does: it keeps the unqualified
+    /// rule, so `Circle`'s reference to the `Ns.IShape` of another file is INFERRED, never
+    /// narrowed by `Ns` to EXTRACTED.
+    #[test]
+    fn a_name_written_as_its_leaf_has_no_qualifier_though_it_holds_a_separator() {
+        let shapes = code(
+            "src/shapes.cs",
+            "csharp",
+            Scope::Product,
+            vec![
+                def("Ns", "module", 1, None, false),
+                def("Ns.IShape", "trait", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let circle = code(
+            "src/circle.cs",
+            "csharp",
+            Scope::Product,
+            vec![def("Circle", "type", 1, None, false)],
+            vec![tagged("type", "Ns.IShape", Some(0), 1)],
+        );
+        let view = FactsView::new(stamp(), vec![shapes, circle]);
+        let r = Resolver::new(&view);
+        assert_eq!(
+            answer(&view, &r, &Ask::Links("src/circle.cs", false)),
+            [
+                "src/circle.cs::Circle -REFERENCES/inferred-> src/shapes.cs::Ns.IShape",
+                "src/circle.cs -CONTAINS/extracted-> src/circle.cs::Circle",
+            ],
+            "a leaf holding a separator, written as its name, keeps the unqualified rule"
+        );
     }
 
     #[test]
