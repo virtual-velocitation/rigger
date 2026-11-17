@@ -4330,6 +4330,46 @@ fn landing_on_the_live_session<'a>(land: impl Fn() + 'a) -> impl FnMut(&Path) + 
     }
 }
 
+/// A `beside` for [`run_on_arms_beside`] standing in for a process outside a session's tree that
+/// holds its output pipes open past its end, which no end of that tree reaches: once the session
+/// writes its pid to `$here/session-pid`, it opens the session's stderr (fd 2) and stream (fd 3)
+/// pipes through `/proc` and marks `$here/holder-attached`; once that process is gone it makes the
+/// write `land` makes, then lets both pipes go, so the host's drain joins end behind that write.
+#[cfg(unix)]
+fn holding_the_pipes_past_the_end<'a>(land: impl Fn() + 'a) -> impl FnMut(&Path) + 'a {
+    let mut pipes: Option<[std::fs::File; 2]> = None;
+    let mut landed = false;
+    move |fake| {
+        let bin = fake.join("bin");
+        let Some(pid) = std::fs::read_to_string(bin.join("session-pid"))
+            .ok()
+            .and_then(|pid| pid.trim().parse::<u32>().ok())
+        else {
+            return;
+        };
+        let open = |fd: u8| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(format!("/proc/{pid}/fd/{fd}"))
+                .expect("the session's pipe opens from outside its tree")
+        };
+        // Gone once it is, or once it is a zombie its parent has not yet reaped.
+        let gone = || rigger_process::os_process::state(pid).is_none_or(|state| state == 'Z');
+        match pipes {
+            None if !landed => {
+                pipes = Some([open(2), open(3)]);
+                std::fs::write(bin.join("holder-attached"), "").unwrap();
+            }
+            Some(_) if gone() => {
+                land();
+                landed = true;
+                pipes = None;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The operator hold a test lands with [`holding_the_live_session`], as [`run_holds`] reads it
 /// back.
 fn seeded_operator_hold() -> rigger::run::RunHeld {
@@ -8205,6 +8245,8 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
     const UNREADABLE: &str = "    printf '\\377\\376\\n' >&3\n";
     /// Reads the session's input to its close: the start of a stop, or the reap past a read error.
     const READS_TO_ITS_CLOSE: &str = "    while IFS= read -r _unused; do :; done\n";
+    /// Writes the session's pid where [`holding_the_pipes_past_the_end`] reads it.
+    const WRITES_ITS_PID: &str = "    printf '%s' \"$$\" > \"$here/session-pid\"\n";
 
     /// One launch of the re-attempt, at the ordinal its place says: whether it resumed the first
     /// attempt's session, how it closed, if it did, and the class of that close.
@@ -8226,9 +8268,22 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
     let retried = |category| format!("{}{ENDS}", api_retry_lines(&[category], 1));
     let under_a_hold = |shell: String| format!("{SESSION_WAITS_FOR_A_HOLD}{shell}{ENDS}");
     let held_as_its_input_closes = format!("{READS_TO_ITS_CLOSE}{}", under_a_hold(String::new()));
-    // Past a read error the host reaps the child it spawned and drains its output pipes, so a
-    // subshell of that child, holding them, outlives the reap, and the drain ends when it does.
-    let outliving_its_reap = format!("    (\n{held_as_its_input_closes}    )\n{ENDS}");
+    // Past a read error the host ends the session's tree, then drains its output pipes, so only
+    // a process outside that tree holding them keeps the drain joins open: the session waits for
+    // the test to hold them from outside it ([`holding_the_pipes_past_the_end`]), which lands the
+    // hold once the session is gone. Linux only: the holder opens the pipes through `/proc`.
+    let held_past_its_end = format!(
+        "{WRITES_ITS_PID}{}{UNREADABLE}{READS_TO_ITS_CLOSE}{ENDS}",
+        waiting_for!("holder-attached")
+    );
+    let held_in_the_drain_joins = cfg!(target_os = "linux").then(|| Case {
+        name: "a hold landing between a read error and the end of the drain joins",
+        workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
+        endings: vec![held_past_its_end],
+        launches: vec![(true, None, None), completed],
+        holds: vec![seeded_operator_hold()],
+        fault: None,
+    });
     let cases = [
         Case {
             name: "a wait class",
@@ -8282,14 +8337,6 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             name: "a read error on a held run",
             workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
             endings: vec![under_a_hold(UNREADABLE.to_string())],
-            launches: vec![(true, None, None), completed],
-            holds: vec![seeded_operator_hold()],
-            fault: None,
-        },
-        Case {
-            name: "a hold landing between a read error and the end of the drain joins",
-            workflow: &TWO_ATTEMPT_RED_UNIT_WORKFLOW,
-            endings: vec![format!("{UNREADABLE}{outliving_its_reap}")],
             launches: vec![(true, None, None), completed],
             holds: vec![seeded_operator_hold()],
             fault: None,
@@ -8351,7 +8398,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
             fault: None,
         },
     ];
-    for case in cases {
+    for case in cases.into_iter().chain(held_in_the_drain_joins) {
         let name = case.name;
         let dir = temp_git_project_with_commit();
         let root = dir.path();
@@ -8385,6 +8432,12 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         let mut hold = holding_the_live_session(root, || {
             common::fixtures::run_held_event(&seeded_operator_hold())
         });
+        let mut hold_past_the_end = holding_the_pipes_past_the_end(|| {
+            common::cli::seed_on_the_run(
+                root,
+                common::fixtures::run_held_event(&seeded_operator_hold()),
+            )
+        });
         // The host reads the hold once the launch has ended, so the release waits for what follows
         // that read: the launch's close, or the reclaim of its scratch when it closes nothing.
         let mut release = releasing_holds(root, 1, |root| {
@@ -8398,6 +8451,7 @@ fn a_resume_ending_api_side_or_on_a_held_run_launches_nothing_fresh() {
         let (out, err, ok, fake) =
             run_on_arms_beside(root, &["run"], scratch.path(), &arm, |fake| {
                 hold(fake);
+                hold_past_the_end(fake);
                 release(fake);
             });
         assert!(ok, "{name}: the run exits 0; stderr: {err}\nstdout: {out}");
