@@ -2653,12 +2653,12 @@ enum ReviewerOutput {
 
 /// The sentinel a degenerate-reviewer HALT (Gap 18, spec 07) embeds in its error so
 /// [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and routes
-/// it through a DEDICATED arm - like [`PARKED_MARKER`] and [`BUDGET_MARKER`] it uses
-/// control characters no real error text carries. The dedicated arm propagates the loud
-/// halt but emits NO per-unit lesson: a lesson there would misattribute the OPERATOR's
-/// broken reviewer to the unit under review (finding adv-u2gap18-halt-lesson-
-/// misattribution). `run_wave` STRIPS the marker before it surfaces, so the operator's
-/// halt message stays clean.
+/// it through its halt arm over [`HALT_MARKERS`] - like [`PARKED_MARKER`] and
+/// [`BUDGET_MARKER`] it uses control characters no real error text carries. That arm
+/// propagates the loud halt but emits NO per-unit lesson: a lesson there would misattribute
+/// the OPERATOR's broken reviewer to the unit under review (finding adv-u2gap18-halt-lesson-
+/// misattribution). The marker is STRIPPED before it surfaces ([`without_halt_markers`]), so
+/// the operator's halt message stays clean.
 const DEGENERATE_MARKER: &str = "\u{1}rigger:reviewer-degenerate\u{1}";
 
 /// Construct the LOUD-HALT error the review path returns when a reviewer's original spawn
@@ -2749,13 +2749,13 @@ fn verdictless_reviewer(stage: &str, tier: &str, agent: &str, id: &str, output: 
 
 /// The sentinel a runtime verdict-channel-mismatch HALT (spec 18, unit 3) - or a gating
 /// reviewer's second verdict-less result ([`verdictless_reviewer`]) - embeds in its
-/// error so [`run_wave`](RunCtx::run_wave) and the plan-critique gate recognize it through
-/// their own error wrapping and route it through a DEDICATED arm - like
-/// [`DEGENERATE_MARKER`] it uses control characters no real error text carries. The
-/// dedicated arm propagates the loud halt but emits NO per-unit lesson: the fault is the
-/// OPERATOR's gating persona (it records its verdict only as an event), not the unit under
-/// review, so a lesson there would misattribute it. The marker is STRIPPED before the
-/// message surfaces, so the operator's fix stays clean.
+/// error so [`run_wave`](RunCtx::run_wave) recognizes it through its own error wrapping and
+/// routes it through its halt arm over [`HALT_MARKERS`] - like [`DEGENERATE_MARKER`] it uses
+/// control characters no real error text carries. That arm propagates the loud halt but emits
+/// NO per-unit lesson: the fault is the OPERATOR's gating persona (it records its verdict only
+/// as an event), not the unit under review, so a lesson there would misattribute it. The marker
+/// is STRIPPED before the message surfaces ([`without_halt_markers`]), so the operator's fix
+/// stays clean.
 const MISMATCH_MARKER: &str = "\u{1}rigger:verdict-channel-mismatch\u{1}";
 
 /// The sentinel a hard PLAN-STAGE-COMMIT-LANDING failure
@@ -3619,21 +3619,11 @@ fn drive(
                         // A budget-refused gate spawn already set `budget_broke`; hold the
                         // fan-out and let the breaker trip below (like the wave's handling).
                         Err(e) if carries_marker(&e, BUDGET_MARKER) => fan_out_released = false,
-                        // A degenerate-reviewer HALT (Gap 18) propagates loudly, marker
-                        // stripped.
-                        Err(e) if carries_marker(&e, DEGENERATE_MARKER) => {
-                            return Err(Error(e.0.replace(DEGENERATE_MARKER, "")))
-                        }
-                        // A runtime verdict-channel mismatch (spec 18, unit 3) at the
-                        // plan-critique gate adjudicator propagates loudly, marker stripped:
-                        // the gate adjudicator emitted its verdict but put none on the result
-                        // channel, so the empty verdict would otherwise hold the fan-out as a
-                        // reject and loop the planner over a persona fault.
-                        Err(e) if carries_marker(&e, MISMATCH_MARKER) => {
-                            return Err(Error(e.0.replace(MISMATCH_MARKER, "")))
-                        }
-                        // Any other error propagates as before; a gate reviewer's crash
-                        // ([`SPAWN_CRASH_MARKER`]) has no infra retry here and loses its marker.
+                        // Any other error propagates and ends the step: a halt - a degenerate
+                        // gate reviewer, a verdict-less or mismatched gate adjudicator - keeps
+                        // its marker, which the run's fault hold strips ([`held_on_a_fault`]),
+                        // and a gate reviewer's crash ([`SPAWN_CRASH_MARKER`]) has no infra
+                        // retry here and loses its marker.
                         Err(e) => return Err(Error(e.0.replace(SPAWN_CRASH_MARKER, ""))),
                     }
                 }
