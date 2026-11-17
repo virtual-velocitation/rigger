@@ -2677,6 +2677,41 @@ pub(crate) mod tests {
         }
     }
 
+    /// A mention whose name is its leaf has no qualifier ([`qualifier`]), even when that leaf
+    /// holds a separator, as a leaf written whole (`Ns.IShape`) does: it keeps the unqualified
+    /// rule, so `Circle`'s reference to the `Ns.IShape` of another file is INFERRED, never
+    /// narrowed by `Ns` to EXTRACTED.
+    #[test]
+    fn a_name_written_as_its_leaf_has_no_qualifier_though_it_holds_a_separator() {
+        let shapes = code(
+            "src/shapes.cs",
+            "csharp",
+            Scope::Product,
+            vec![
+                def("Ns", "module", 1, None, false),
+                def("Ns.IShape", "trait", 2, Some(0), false),
+            ],
+            vec![],
+        );
+        let circle = code(
+            "src/circle.cs",
+            "csharp",
+            Scope::Product,
+            vec![def("Circle", "type", 1, None, false)],
+            vec![tagged("type", "Ns.IShape", Some(0), 1)],
+        );
+        let view = FactsView::new(stamp(), vec![shapes, circle]);
+        let r = Resolver::new(&view);
+        assert_eq!(
+            answer(&view, &r, &Ask::Links("src/circle.cs", false)),
+            [
+                "src/circle.cs::Circle -REFERENCES/inferred-> src/shapes.cs::Ns.IShape",
+                "src/circle.cs -CONTAINS/extracted-> src/circle.cs::Circle",
+            ],
+            "a leaf holding a separator, written as its name, keeps the unqualified rule"
+        );
+    }
+
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {
