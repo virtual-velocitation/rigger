@@ -300,7 +300,8 @@ pub const REL_REVIEWS_LIGHT: &str = "REVIEWS_LIGHT";
 
 // Edge confidence tiers (spec 29a, addendum 6.2). Every folded edge carries one, the
 // `precise`/`safe` split of the two-view blast radius made a first-class edge attribute. The
-// three tiers partition the call-reference set, so the graph keeps EVERY call reference (a
+// three tiers partition the call-reference set, so the graph keeps EVERY call reference but one
+// a path qualifier naming no product type or trait gives no link (spec 117, RESOLVER AT READ; a
 // tagged reference, one carrying a `ref_kind`, folds no edge - spec 117): a later traversal
 // reads the EXTRACTED sub-graph as the precise prompt seed and the structural reach
 // EXTRACTED u INFERRED as the blast radius's safe view (addendum 2.4).
@@ -320,9 +321,10 @@ pub const TIER_EXTRACTED: &str = "extracted";
 pub const TIER_INFERRED: &str = "inferred";
 /// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
 /// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external
-/// symbol, or a name only a data member or a declaration carries. It is kept on the graph (never
-/// dropped) but tiered lowest: the structural pass cannot confirm it resolves to any definition,
-/// so the blast radius never crosses it (addendum 2.4).
+/// symbol, or a name only a data member or a declaration carries. It is kept on the graph,
+/// dropped only when a path qualifier naming no product type or trait gives it no link (spec 117,
+/// RESOLVER AT READ), but tiered lowest: the structural pass cannot confirm it resolves to any
+/// definition, so the blast radius never crosses it (addendum 2.4).
 pub const TIER_AMBIGUOUS: &str = "ambiguous";
 
 /// The metadata key carrying the acting agent on an event (the DECIDED source).

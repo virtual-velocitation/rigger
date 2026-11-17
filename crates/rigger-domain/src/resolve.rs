@@ -5,7 +5,7 @@
 //!
 //! | Rule | Resolution |
 //! |---|---|
-//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates its rule reads whose parent is a definition named `Q` or an implementation enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule |
+//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates its rule reads whose parent is a definition named `Q` or an implementation enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule under a member qualifier (`Q.leaf`) or a path qualifier (`Q::leaf`) naming a product type or trait in the mention's language, and make no edge and no placeholder under any other path qualifier |
 //! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
 //! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
@@ -31,15 +31,15 @@ use std::sync::Arc;
 use crate::code_facts::{Def, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope};
 use crate::code_view::{CodeView, DefRef, MentionRef, Proofs, Settled};
 use crate::contextgraph::query::{
-    entity_id, file_of, leaf_of, placeholder_id, split_id, split_path,
+    entity_id, file_of, is_path_qualified, leaf_of, placeholder_id, split_id, split_path,
 };
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, CODE_KIND_IMPL,
     CODE_KIND_TRAIT, KIND_AGENT, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE,
-    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_IMPL, REL_CALLS, REL_CONSTRAINS,
-    REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_NEEDS, REL_REFERENCES,
-    REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, TIER_AMBIGUOUS, TIER_EXTRACTED,
-    TIER_INFERRED,
+    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_IMPL, REF_KIND_TYPE, REL_CALLS,
+    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_NEEDS,
+    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, TIER_AMBIGUOUS,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
@@ -126,6 +126,12 @@ impl Pool {
     /// Whether a call from this pool may land on `c`: the pool admits it and it is a call target.
     fn calls(self, c: &Candidate) -> bool {
         self.admits(c.test) && is_call_target(Some(c.kind))
+    }
+
+    /// Whether a reference from this pool written in `lang` may land on `c`: the pool admits
+    /// it, it is in `lang` and it is one of `kinds`.
+    fn references(self, c: &Candidate, lang: &str, kinds: &[&str]) -> bool {
+        self.admits(c.test) && c.lang == lang && kinds.contains(&c.kind)
     }
 }
 
@@ -497,20 +503,24 @@ impl<'v> Resolver<'v> {
             .collect()
     }
 
-    /// The candidates of its rule, from `pool`, that a mention written `name` to `leaf` keeps by
-    /// its qualifier ([`qualifier`]): those whose parent in their file is in the qualifier's own
-    /// tier of [`Self::parents`] in `pool`, else, when none is, those whose parent is in its
-    /// trait tier. Terminal when the mention is unqualified or its qualifier keeps none, so the
-    /// unqualified rule takes it.
+    /// The candidates of its rule, from `pool`, that a mention written `name` in `lang` to
+    /// `leaf` keeps by its qualifier ([`qualifier`]): those whose parent in their file is in the
+    /// qualifier's own tier of [`Self::parents`] in `pool`, else, when none is, those whose
+    /// parent is in its trait tier. Terminal when the mention is unqualified, or its qualifier
+    /// keeps none and is a member qualifier (`Q.leaf`) or a path qualifier (`Q::leaf`) that
+    /// names a product type or trait in `lang` ([`Self::names_a_type`]), so the unqualified rule
+    /// takes it; none when it keeps none and is any other path qualifier, so the mention makes
+    /// no link.
     fn narrowed<'c>(
         &self,
+        lang: &str,
         name: &str,
         leaf: &str,
         pool: Pool,
         candidates: impl Iterator<Item = &'c Candidate<'v>>,
-    ) -> Hop<&'c Candidate<'v>> {
+    ) -> Option<Hop<&'c Candidate<'v>>> {
         let Some(qualifier) = qualifier(name, leaf) else {
-            return Hop::Terminal;
+            return Some(Hop::Terminal);
         };
         let parents = self.parents(qualifier, pool);
         let (mut own, mut traits) = (Vec::new(), Vec::new());
@@ -524,7 +534,19 @@ impl<'v> Resolver<'v> {
                 traits.push(c);
             }
         }
-        hop(if own.is_empty() { traits } else { own })
+        let kept = if own.is_empty() { traits } else { own };
+        if kept.is_empty() && is_path_qualified(name) && !self.names_a_type(qualifier, lang) {
+            return None;
+        }
+        Some(hop(kept))
+    }
+
+    /// Whether `qualifier`, whole, names a product type or trait in `lang`: a definition a
+    /// product type reference written in `lang` may land on ([`Pool::references`]), whatever
+    /// the pool of the mention it qualifies, so a test type names no qualifier.
+    fn names_a_type(&self, qualifier: &str, lang: &str) -> bool {
+        let kinds = reference_candidate_kinds(REF_KIND_TYPE);
+        (self.candidates(qualifier).iter()).any(|c| Pool::Product.references(c, lang, &kinds))
     }
 
     /// The parent definitions `qualifier` names, as (file, index in the file's definitions), in
@@ -585,17 +607,24 @@ impl<'v> Resolver<'v> {
         parents
     }
 
-    /// The call rule: the target and tier of a call written `name` to `leaf` from `file`. A
-    /// qualified call its qualifier narrows ([`Self::narrowed`]) lands on the one call target it
-    /// keeps, EXTRACTED wherever it is, or on the placeholder `F::%<leaf>`, INFERRED, when it
-    /// keeps several; any other call lands on its one same-file call target, EXTRACTED, else on
-    /// the placeholder.
-    fn call(&self, file: &str, name: &str, leaf: &str, pool: Pool) -> (String, &'static str) {
+    /// The call rule: the target and tier of a call written `name` to `leaf` from `file`, in
+    /// `lang`. A qualified call its qualifier narrows ([`Self::narrowed`]) lands on the one call
+    /// target it keeps, EXTRACTED wherever it is, or on the placeholder `F::%<leaf>`, INFERRED,
+    /// when it keeps several, and lands nowhere when its qualifier makes it no link; any other
+    /// call lands on its one same-file call target, EXTRACTED, else on the placeholder.
+    fn call(
+        &self,
+        file: &str,
+        lang: &str,
+        name: &str,
+        leaf: &str,
+        pool: Pool,
+    ) -> Option<(String, &'static str)> {
         let candidates = self.candidates(leaf);
         let in_pool = candidates.iter().filter(|c| pool.calls(c));
-        match self.narrowed(name, leaf, pool, in_pool.clone()) {
-            Hop::One(one) => return (one.id.clone(), TIER_EXTRACTED),
-            Hop::Frontier(_) => return (placeholder_id(file, leaf), TIER_INFERRED),
+        match self.narrowed(lang, name, leaf, pool, in_pool.clone())? {
+            Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
+            Hop::Frontier(_) => return Some((placeholder_id(file, leaf), TIER_INFERRED)),
             Hop::Terminal => {}
         }
         let (mut targets, mut here, mut one_here) = (0, 0, None);
@@ -607,7 +636,7 @@ impl<'v> Resolver<'v> {
             }
         }
         if let (1, Some(one)) = (here, one_here) {
-            return (one.id.clone(), TIER_EXTRACTED);
+            return Some((one.id.clone(), TIER_EXTRACTED));
         }
         // No target is terminal ([`hop`]); one or more is a hop onward.
         let tier = if targets == 0 {
@@ -615,14 +644,15 @@ impl<'v> Resolver<'v> {
         } else {
             TIER_INFERRED
         };
-        (placeholder_id(file, leaf), tier)
+        Some((placeholder_id(file, leaf), tier))
     }
 
     /// The tagged-reference rule: the target and tier of a reference written `name` to `leaf`,
     /// tagged `tag`, from `file`, written in `lang`, over the candidates of the tag's kinds in
-    /// `lang`: the one its qualifier narrows them to ([`Self::narrowed`]), EXTRACTED wherever it
-    /// is, and none when it narrows them to several; else the one same-file candidate, EXTRACTED,
-    /// else the one in the view, INFERRED; none when no one candidate takes it.
+    /// `lang` ([`Pool::references`]): the one its qualifier narrows them to
+    /// ([`Self::narrowed`]), EXTRACTED wherever it is, and none when it narrows them to several
+    /// or its qualifier makes it no link; else the one same-file candidate, EXTRACTED, else the
+    /// one in the view, INFERRED; none when no one candidate takes it.
     fn tagged(
         &self,
         file: &str,
@@ -636,9 +666,9 @@ impl<'v> Resolver<'v> {
         let candidates = self.candidates(leaf);
         let targets: Vec<&Candidate> = candidates
             .iter()
-            .filter(|c| pool.admits(c.test) && c.lang == lang && kinds.contains(&c.kind))
+            .filter(|c| pool.references(c, lang, &kinds))
             .collect();
-        match self.narrowed(name, leaf, pool, targets.iter().copied()) {
+        match self.narrowed(lang, name, leaf, pool, targets.iter().copied())? {
             Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
             Hop::Frontier(_) => return None,
             Hop::Terminal => {}
@@ -669,20 +699,31 @@ impl<'v> Resolver<'v> {
         one_here_else_one_anywhere(&targets, file).map(|(c, _)| c.id.clone())
     }
 
-    /// The call-edge rule: where the edge of a call written `name` to `leaf` from `file` lands,
-    /// and its tier. A product call, and a test call the call rule resolves EXTRACTED, take the
-    /// call rule. A test call the call rule sends to a placeholder lands, INFERRED, on the
-    /// definition the proof rule credits with it, so a test's call edge and its proof name one
-    /// definition; on the placeholder when the proof rule credits none. INFERRED even when that
-    /// definition is in `file`, where the call rule found no one target: a same-file test
-    /// definition of the leaf contested it, or the call's qualifier narrowed it to several.
-    fn call_edge(&self, file: &str, name: &str, leaf: &str, test: bool) -> (String, &'static str) {
-        let (to, tier) = self.call(file, name, leaf, Pool::of(test));
+    /// The call-edge rule: where the edge of a call written `name` to `leaf` from `file`, in
+    /// `lang`, lands, and its tier. A product call, and a test call the call rule resolves
+    /// EXTRACTED, take the call rule. A test call the call rule sends to a placeholder lands,
+    /// INFERRED, on the definition the proof rule credits with it, so a test's call edge and its
+    /// proof name one definition; on the placeholder when the proof rule credits none. INFERRED
+    /// even when that definition is in `file`, where the call rule found no one target: a
+    /// same-file test definition of the leaf contested it, or the call's qualifier narrowed it
+    /// to several. None when the call rule makes the call no link, a test call too, though the
+    /// proof rule, which reads the leaf alone, may still credit a definition with it.
+    fn call_edge(
+        &self,
+        file: &str,
+        lang: &str,
+        name: &str,
+        leaf: &str,
+        test: bool,
+    ) -> Option<(String, &'static str)> {
+        let (to, tier) = self.call(file, lang, name, leaf, Pool::of(test))?;
         if !test || tier == TIER_EXTRACTED {
-            return (to, tier);
+            return Some((to, tier));
         }
-        self.proof(file, leaf)
-            .map_or((to, tier), |id| (id, TIER_INFERRED))
+        Some(
+            self.proof(file, leaf)
+                .map_or((to, tier), |id| (id, TIER_INFERRED)),
+        )
     }
 
     /// Whether `m`, a mention in `facts`, is test code.
@@ -795,7 +836,9 @@ impl<'v> Resolver<'v> {
             if m.kind != MentionKind::Call || (test && !tests) {
                 continue;
             }
-            let (to, tier) = self.call_edge(file, &m.name, &m.leaf, test);
+            let Some((to, tier)) = self.call_edge(file, &facts.lang, &m.name, &m.leaf, test) else {
+                continue;
+            };
             sink(from_of(m.enclosing), REL_CALLS, &to, tier, test);
             sink(file, REL_REFERENCES, &to, tier, test);
             match referenced.get_mut(&to) {
@@ -1042,11 +1085,11 @@ impl<'v> Resolver<'v> {
         })
     }
 
-    /// Whether a test call written `name` to `leaf` from `file` lands on a placeholder
-    /// ([`Self::call_edge`]): the call rule resolves it to no EXTRACTED edge and the proof rule
-    /// credits none.
-    fn lands_on_placeholder(&self, file: &str, name: &str, leaf: &str) -> bool {
-        leaf_of(&self.call_edge(file, name, leaf, true).0).is_some()
+    /// Whether a test call written `name` to `leaf` from `file`, in `lang`, lands on a
+    /// placeholder ([`Self::call_edge`]): the call rule sends it to one and the proof rule
+    /// credits none. A call the call rule makes no link lands on none.
+    fn lands_on_placeholder(&self, file: &str, lang: &str, name: &str, leaf: &str) -> bool {
+        (self.call_edge(file, lang, name, leaf, true)).is_some_and(|(to, _)| leaf_of(&to).is_some())
     }
 
     /// The test calls in `facts`, a code file, that land on a placeholder, as (leaf, caller)
@@ -1060,8 +1103,9 @@ impl<'v> Resolver<'v> {
         (facts.mentions.iter())
             .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
             .filter(|m| {
-                *(lands.entry(&m.name))
-                    .or_insert_with(|| self.lands_on_placeholder(path, &m.name, &m.leaf))
+                *(lands.entry(&m.name)).or_insert_with(|| {
+                    self.lands_on_placeholder(path, &facts.lang, &m.name, &m.leaf)
+                })
             })
             .filter_map(|m| Some((m.leaf.clone(), test_entity(m.enclosing)?)))
             .collect()
@@ -1078,7 +1122,7 @@ impl<'v> Resolver<'v> {
         for m in self.test_calls_named(leaf) {
             let (path, name) = (m.file.path, m.name);
             if *(lands.entry((path, name)))
-                .or_insert_with(|| self.lands_on_placeholder(path, name, leaf))
+                .or_insert_with(|| self.lands_on_placeholder(path, m.file.lang, name, leaf))
             {
                 enclosing.entry(path).or_default().insert(m.enclosing);
             }
@@ -1245,6 +1289,15 @@ pub(crate) mod tests {
             end_line: line,
             parent,
             test,
+        }
+    }
+
+    /// A method whose local path is dotted, as a Python or C# method's is (`Base.area`): its
+    /// leaf the text after its type's `.`, its parent the definition at `parent`.
+    fn dotted_method(local: &str, line: u32, parent: u32) -> Def {
+        Def {
+            leaf: path_leaf(local).into(),
+            ..def(local, "method", line, Some(parent), false)
         }
     }
 
@@ -2041,7 +2094,8 @@ pub(crate) mod tests {
     /// when none is, those whose parent is a trait such an implementation names (`FactsView`'s
     /// `stamp`). One kept candidate takes the edge EXTRACTED in any file, over a
     /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
-    /// none leave the unqualified rule. A class whose base is `Q` is no implementation of `Q`.
+    /// none, under a `Q` that names a type, leave the unqualified rule. A class whose base is `Q`
+    /// is no implementation of `Q`.
     /// The placeholder readers resolve each call by its name, so two calls of one leaf that
     /// land apart are read apart.
     #[test]
@@ -2051,11 +2105,6 @@ pub(crate) mod tests {
         };
         let qualified_tag = |tag: &str, name: &str, line| {
             qualified(MentionKind::Tagged(tag.into()), name, Some(3), line, false)
-        };
-        // A Python method: its leaf the text after the class's `.`.
-        let method = |local: &str, line, parent| Def {
-            leaf: path_leaf(local).into(),
-            ..def(local, "method", line, Some(parent), false)
         };
         let code_view = code(
             "src/code_view.rs",
@@ -2128,9 +2177,9 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("Base", "type", 1, None, false),
-                method("Base.area", 2, 0),
+                dotted_method("Base.area", 2, 0),
                 def("Child", "type", 5, None, false),
-                method("Child.area", 6, 2),
+                dotted_method("Child.area", 6, 2),
                 def("main", "function", 10, None, false),
             ],
             vec![
@@ -2260,6 +2309,7 @@ pub(crate) mod tests {
                 def("Shape::area", "method", 2, Some(0), false),
                 def("Draw", "trait", 5, None, false),
                 def("Draw::paint", "method", 6, Some(2), false),
+                def("Source", "type", 9, None, false),
             ],
             vec![],
         );
@@ -2711,6 +2761,306 @@ pub(crate) mod tests {
             ],
             "a leaf holding a separator, written as its name, keeps the unqualified rule"
         );
+    }
+
+    /// A tree of qualified mentions whose qualifiers keep no candidate of their rule, but one:
+    /// `AtomicU64::new` beside the project's `Cursor::new`, in its file and another, and
+    /// `AtomicU64::fetch_add`, which nothing defines, from product and test code; `load`
+    /// qualified by a module, a C++ type, a test type, a product type and a product trait, and
+    /// the variant reference `ErrorKind::NotFound`; the C# member qualifiers
+    /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape`; the test
+    /// calls `Gauge::unload` and `Atomic::unload`, whose leaf nothing defines; and the one whose
+    /// qualifier keeps a candidate, the test call `FakeStore::open` to a test type's own method.
+    pub(crate) fn qualifier_fixture() -> FactsView {
+        let cursor = code(
+            "src/cursor.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Cursor", "type", 1, None, false),
+                def("Cursor::new", "method", 2, Some(0), false),
+            ],
+            vec![qualified(
+                MentionKind::Call,
+                "AtomicU64::new",
+                Some(1),
+                3,
+                false,
+            )],
+        );
+        let seq = code(
+            "src/seq.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("TEMP_SEQ", "static", 1, None, false),
+                def("next", "function", 3, None, false),
+            ],
+            vec![
+                qualified(MentionKind::Call, "AtomicU64::new", Some(0), 1, false),
+                qualified(MentionKind::Call, "AtomicU64::fetch_add", Some(1), 4, false),
+            ],
+        );
+        let seq_test = code(
+            "tests/seq.rs",
+            "rust",
+            Scope::Test,
+            vec![def("counts", "function", 1, None, true)],
+            vec![
+                qualified(MentionKind::Call, "AtomicU64::new", Some(0), 2, true),
+                qualified(MentionKind::Call, "AtomicU64::fetch_add", Some(0), 3, true),
+            ],
+        );
+        let loader = code(
+            "src/loader.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("load", "function", 1, None, false),
+                def("cache", "module", 3, None, false),
+                def("Gauge", "type", 5, None, false),
+                def("Meter", "trait", 7, None, false),
+                def("LoadError", "type", 9, None, false),
+                def("LoadError::NotFound", "variant", 10, Some(4), false),
+            ],
+            vec![],
+        );
+        let atomic = code(
+            "src/atomic.hpp",
+            "cpp",
+            Scope::Product,
+            vec![def("Atomic", "type", 1, None, false)],
+            vec![],
+        );
+        let fake = code(
+            "tests/fake.rs",
+            "rust",
+            Scope::Test,
+            vec![def("Fake", "type", 1, None, false)],
+            vec![],
+        );
+        let app = code(
+            "src/app.rs",
+            "rust",
+            Scope::Product,
+            vec![def("main", "function", 1, None, false)],
+            vec![
+                qualified(MentionKind::Call, "cache::load", Some(0), 2, false),
+                qualified(MentionKind::Call, "Atomic::load", Some(0), 3, false),
+                qualified(MentionKind::Call, "Fake::load", Some(0), 4, false),
+                qualified(MentionKind::Call, "Gauge::load", Some(0), 5, false),
+                qualified(MentionKind::Call, "Meter::load", Some(0), 6, false),
+                qualified(
+                    MentionKind::Tagged("variant".into()),
+                    "ErrorKind::NotFound",
+                    Some(0),
+                    7,
+                    false,
+                ),
+            ],
+        );
+        let app_test = code(
+            "tests/app.rs",
+            "rust",
+            Scope::Test,
+            vec![def("checks", "function", 1, None, true)],
+            vec![
+                qualified(MentionKind::Call, "Fake::load", Some(0), 2, true),
+                qualified(MentionKind::Call, "Gauge::load", Some(0), 3, true),
+            ],
+        );
+        let http = code(
+            "src/http.cs",
+            "csharp",
+            Scope::Product,
+            vec![
+                def("HttpExtensions", "type", 1, None, false),
+                dotted_method("HttpExtensions.GetClientIp", 2, 0),
+                def("Shape", "type", 5, None, false),
+            ],
+            vec![],
+        );
+        let handler = code(
+            "src/handler.cs",
+            "csharp",
+            Scope::Product,
+            vec![
+                def("Handler", "type", 1, None, false),
+                dotted_method("Handler.Handle", 2, 0),
+            ],
+            vec![
+                qualified(MentionKind::Call, "Request.GetClientIp", Some(1), 3, false),
+                qualified(MentionKind::Call, "Request.Missing", Some(1), 4, false),
+                qualified(
+                    MentionKind::Tagged("type".into()),
+                    "Models.Shape",
+                    Some(1),
+                    5,
+                    false,
+                ),
+            ],
+        );
+        let support = code(
+            "tests/support.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("FakeStore", "type", 1, None, true),
+                def("FakeStore::open", "method", 2, Some(0), true),
+            ],
+            vec![],
+        );
+        let store = code(
+            "tests/store.rs",
+            "rust",
+            Scope::Test,
+            vec![def("opens", "function", 1, None, true)],
+            vec![qualified(
+                MentionKind::Call,
+                "FakeStore::open",
+                Some(0),
+                2,
+                true,
+            )],
+        );
+        let gauge = code(
+            "tests/gauge.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("drains", "function", 1, None, true),
+                def("swaps", "function", 4, None, true),
+            ],
+            vec![
+                qualified(MentionKind::Call, "Gauge::unload", Some(0), 2, true),
+                qualified(MentionKind::Call, "Atomic::unload", Some(1), 5, true),
+            ],
+        );
+        FactsView::new(
+            stamp(),
+            vec![
+                cursor, seq, seq_test, loader, atomic, fake, app, app_test, http, handler, support,
+                store, gauge,
+            ],
+        )
+    }
+
+    /// A QUALIFIER NAMING NO DEFINITION (spec 117, RESOLVER AT READ): when a qualified mention's
+    /// qualifier keeps no candidate of its rule ([`Resolver::narrowed`]), a member qualifier
+    /// (`Q.leaf`) takes the unqualified rule, as does a path qualifier (`Q::leaf`) naming a
+    /// product type or trait in the mention's language; any other path qualifier makes no link
+    /// and no placeholder. So `AtomicU64::new` beside the project's `Cursor::new`, in its file or
+    /// another, and `AtomicU64::fetch_add`, which nothing defines, land nowhere, a test call past
+    /// its proof too; so do `cache::load`, `Atomic::load` and `Fake::load`, their qualifier named
+    /// only by a module, a C++ type or a test type, from product and test code alike, and the
+    /// variant reference `ErrorKind::NotFound`. `Gauge::load`, `Meter::load`,
+    /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape` keep the
+    /// unqualified rule, and so the test call `Gauge::unload`, which nothing defines, lands on
+    /// its placeholder past every proof, while `Atomic::unload`, its qualifier named only by a
+    /// C++ type, lands nowhere. A qualifier that keeps a candidate links it whatever it names:
+    /// the test call `FakeStore::open`, its qualifier a test type, lands on that type's `open`.
+    #[test]
+    fn a_qualifier_naming_no_definition_makes_no_link_and_a_member_qualifier_falls_back() {
+        let view = qualifier_fixture();
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let cases: [(&str, Ask, &[&str]); 12] = [
+            (
+                "a path qualifier naming none, past a same-file call target of its leaf",
+                Ask::Links("src/cursor.rs", false),
+                &[
+                    "src/cursor.rs -CONTAINS/extracted-> src/cursor.rs::Cursor",
+                    "src/cursor.rs::Cursor -CONTAINS/extracted-> src/cursor.rs::Cursor::new",
+                ],
+            ),
+            (
+                "a path qualifier naming none, past a leaf defined in another file or nowhere",
+                Ask::Links("src/seq.rs", false),
+                &[
+                    "src/seq.rs -CONTAINS/extracted-> src/seq.rs::TEMP_SEQ",
+                    "src/seq.rs -CONTAINS/extracted-> src/seq.rs::next",
+                ],
+            ),
+            (
+                "a test call whose path qualifier names none, past its proof",
+                Ask::Links("tests/seq.rs", true),
+                &["tests/seq.rs -CONTAINS/extracted-> tests/seq.rs::counts"],
+            ),
+            (
+                "no test call of a path qualifier naming none lands on a placeholder",
+                Ask::PlaceholderCalls("tests/seq.rs"),
+                &[],
+            ),
+            (
+                "no placeholder caller of a leaf nothing defines",
+                Ask::PlaceholderCallers("fetch_add"),
+                &[],
+            ),
+            (
+                "no caller of the project definition of the leaf",
+                Ask::UpHop("src/cursor.rs::Cursor::new", "new"),
+                &[],
+            ),
+            (
+                "a qualifier named only by a module, a C++ type or a test type, then by a \
+                 product type and a product trait, then a variant reference",
+                Ask::Links("src/app.rs", false),
+                &[
+                    "src/app.rs::main -CALLS/inferred-> src/app.rs::%load",
+                    "src/app.rs -REFERENCES/inferred-> src/app.rs::%load",
+                    "src/app.rs::main -CALLS/inferred-> src/app.rs::%load",
+                    "src/app.rs -REFERENCES/inferred-> src/app.rs::%load",
+                    "src/app.rs -CONTAINS/extracted-> src/app.rs::main",
+                ],
+            ),
+            (
+                "a test mention's qualifier named only by a test type, then by a product type",
+                Ask::Links("tests/app.rs", true),
+                &[
+                    "tests/app.rs::checks -CALLS/inferred-> src/loader.rs::load",
+                    "tests/app.rs -REFERENCES/inferred-> src/loader.rs::load",
+                    "tests/app.rs -CONTAINS/extracted-> tests/app.rs::checks",
+                ],
+            ),
+            (
+                "member qualifiers naming none keep the unqualified rule",
+                Ask::Links("src/handler.cs", false),
+                &[
+                    "src/handler.cs::Handler.Handle -CALLS/inferred-> \
+                     src/handler.cs::%GetClientIp",
+                    "src/handler.cs -REFERENCES/inferred-> src/handler.cs::%GetClientIp",
+                    "src/handler.cs::Handler.Handle -CALLS/ambiguous-> src/handler.cs::%Missing",
+                    "src/handler.cs -REFERENCES/ambiguous-> src/handler.cs::%Missing",
+                    "src/handler.cs::Handler.Handle -REFERENCES/inferred-> src/http.cs::Shape",
+                    "src/handler.cs -CONTAINS/extracted-> src/handler.cs::Handler",
+                    "src/handler.cs::Handler -CONTAINS/extracted-> \
+                     src/handler.cs::Handler.Handle",
+                ],
+            ),
+            (
+                "a test call whose path qualifier, a test type, keeps that type's own method",
+                Ask::Links("tests/store.rs", true),
+                &[
+                    "tests/store.rs::opens -CALLS/extracted-> tests/support.rs::FakeStore::open",
+                    "tests/store.rs -REFERENCES/extracted-> tests/support.rs::FakeStore::open",
+                    "tests/store.rs -CONTAINS/extracted-> tests/store.rs::opens",
+                ],
+            ),
+            (
+                "a test call whose path qualifier names a product type lands on a placeholder, \
+                 one whose qualifier names only another language's type on none",
+                Ask::PlaceholderCalls("tests/gauge.rs"),
+                &["unload tests/gauge.rs::drains"],
+            ),
+            (
+                "the placeholder caller of a leaf nothing defines, by its file's language",
+                Ask::PlaceholderCallers("unload"),
+                &["tests/gauge.rs::drains"],
+            ),
+        ];
+        for (shows, ask, want) in cases {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
     }
 
     #[test]

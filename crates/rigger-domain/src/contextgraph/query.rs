@@ -231,11 +231,14 @@ pub fn leaf_of(id: &str) -> Option<&str> {
 
 /// The leaf a path query names (spec 119, A BARE SHOW FINDS A LEAF OR PATH): [`split_path`]'s
 /// leaf, the text after its last `::` or `.`, the whole text when it holds neither (`T::new` and
-/// `a.rs::T::new` give `new`, `S.field` gives `field`). The show lookup's path form and the
-/// grounder's symbol of a path-shaped term both read it.
+/// `a.rs::T::new` give `new`, `S.field` gives `field`). The show lookup's path form, the
+/// grounder's symbol of a path-shaped term and [`is_path_qualified`] read it.
 pub fn path_leaf(path: &str) -> &str {
     split_path(path).1
 }
+
+/// The separator of a path qualifier, `T::new`; a member qualifier's is `.`, `S.field`.
+const PATH_SEPARATOR: &str = "::";
 
 /// A path cut at its last `::` or `.` into its qualifier and its leaf: the text before that
 /// separator, none when the path holds neither, and the text after it, the whole path when it
@@ -244,12 +247,19 @@ pub fn path_leaf(path: &str) -> &str {
 /// 117, RESOLVER AT READ).
 pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
     let (head, tail) = path
-        .rsplit_once("::")
+        .rsplit_once(PATH_SEPARATOR)
         .map_or((None, path), |(head, tail)| (Some(head), tail));
     match tail.rsplit_once('.') {
         Some((_, leaf)) => (Some(&path[..path.len() - leaf.len() - 1]), leaf),
         None => (head, tail),
     }
+}
+
+/// Whether [`split_path`] cuts `path` at a `::`, a path qualifier (`T::new`, `a.b::c`), rather
+/// than at a `.`, a member qualifier (`S.field`, `a::b.c`); false when it holds neither. The
+/// resolver reads it for a qualifier that keeps no candidate (spec 117, RESOLVER AT READ).
+pub(crate) fn is_path_qualified(path: &str) -> bool {
+    path[..path.len() - path_leaf(path).len()].ends_with(PATH_SEPARATOR)
 }
 
 /// The ONE join of a code-entity id (spec 119), the inverse of [`split_id`]: `<file>::<rest>`,
@@ -2866,22 +2876,23 @@ mod leaf_tests {
 
     #[test]
     fn a_path_query_is_looked_up_by_the_text_after_its_last_separator() {
-        // (the path, its qualifier, its leaf)
+        // (the path, its qualifier, its leaf, whether it is cut at a `::`)
         let cases = [
-            ("T::new", Some("T"), "new"),
-            ("S.field", Some("S"), "field"),
-            ("a::b.c", Some("a::b"), "c"),
-            ("a.b::c", Some("a.b"), "c"),
-            ("a.rs::T::new", Some("a.rs::T"), "new"),
-            ("new", None, "new"),
-            ("T::%", Some("T"), "%"),
-            ("T::", Some("T"), ""),
-            ("::x", Some(""), "x"),
+            ("T::new", Some("T"), "new", true),
+            ("S.field", Some("S"), "field", false),
+            ("a::b.c", Some("a::b"), "c", false),
+            ("a.b::c", Some("a.b"), "c", true),
+            ("a.rs::T::new", Some("a.rs::T"), "new", true),
+            ("new", None, "new", false),
+            ("T::%", Some("T"), "%", true),
+            ("T::", Some("T"), "", true),
+            ("::x", Some(""), "x", true),
+            ("T:new", None, "T:new", false),
         ];
-        for (path, qualifier, leaf) in cases {
+        for (path, qualifier, leaf, path_qualified) in cases {
             assert_eq!(
-                (split_path(path), path_leaf(path)),
-                ((qualifier, leaf), leaf),
+                (split_path(path), path_leaf(path), is_path_qualified(path)),
+                ((qualifier, leaf), leaf, path_qualified),
                 "{path}"
             );
         }
