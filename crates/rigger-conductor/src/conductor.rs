@@ -2825,18 +2825,19 @@ fn probe_fault_halt(fault: gate::ProbeFault) -> Error {
     marked(PROBE_FAULT_MARKER, fault)
 }
 
-/// The sentinel a WORKTREE THE CONDUCTOR CANNOT MAKE embeds in its error ([`create_worktree`]): a
-/// `git worktree add` the conductor ran for a unit, a review or a post-merge re-gate failed, so
-/// the stage never started. A fault of the conductor's own scratch and git state, never of the
-/// unit's code, so it is a halt over [`HALT_MARKERS`]: no lesson names the unit, and it is
-/// charged no attempt.
+/// The sentinel a WORKTREE STEP GIT REFUSES embeds in its error ([`worktree_step`]): git refused
+/// a worktree the conductor makes, re-asserts or discards, or a branch it seeds, for a unit, a
+/// review or a post-merge re-gate, so the stage cannot go on. A fault of the conductor's own
+/// scratch and git state, never of the unit's code, so it is a halt over [`HALT_MARKERS`]: no
+/// lesson names the unit, and it is charged no attempt.
 const WORKTREE_MARKER: &str = "\u{1}rigger:worktree\u{1}";
 
-/// THE CONDUCTOR'S WORKTREE: [`Worktree::create`] of `dir` on `branch` in `repo` under `scratch`,
-/// its failure marked with [`WORKTREE_MARKER`]. Every worktree the conductor makes is made here.
-fn create_worktree(repo: &str, dir: &str, branch: &str, scratch: &str) -> Result<Worktree, Error> {
-    Worktree::create(repo, dir, branch, scratch)
-        .map_err(|e| marked(WORKTREE_MARKER, Error::from(e).0))
+/// THE CONDUCTOR'S WORKTREE STEP: `step`, the result of [`Worktree::create`],
+/// [`Worktree::ensure_present`], [`Worktree::discard`] or [`Worktree::create_branch_at`], its
+/// failure marked with [`WORKTREE_MARKER`]. Every worktree the conductor makes, re-asserts or
+/// discards, and every branch it seeds, passes through here.
+fn worktree_step<T>(step: Result<T, worktree::Error>) -> Result<T, Error> {
+    step.map_err(|e| marked(WORKTREE_MARKER, Error::from(e).0))
 }
 
 /// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
@@ -6282,7 +6283,7 @@ impl RunCtx<'_> {
             // criterion 6) - re-assert once more anyway, never relying on either of those
             // to still be valid by the time this line runs.
             if let Some(w) = wt {
-                w.ensure_present()?;
+                worktree_step(w.ensure_present())?;
             }
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4). Replay-keyed on unit + attempt: a repo-less unit that
@@ -6416,7 +6417,7 @@ impl RunCtx<'_> {
             // file) - nothing to compare against, nothing to restore to.
             return Ok(());
         }
-        w.ensure_present()?;
+        worktree_step(w.ensure_present())?;
         let dirty = w.changed_files()?;
         let tip = worktree::head_sha_of(dir);
         let moved = !tip.is_empty() && tip != round_start_sha;
@@ -7020,7 +7021,7 @@ impl RunCtx<'_> {
                 // centralized re-assert - so nothing else protects this read. Mirrors the
                 // identical fix already applied to every sibling stamp in this unit.
                 if let Some(w) = wt {
-                    w.ensure_present()?;
+                    worktree_step(w.ensure_present())?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
                 let cause = full.cause();
@@ -7070,7 +7071,7 @@ impl RunCtx<'_> {
                 // own internal re-assert (which ran BEFORE that re-gate) cannot cover this
                 // read. Re-assert immediately before it, same as every sibling site.
                 if let Some(w) = wt {
-                    w.ensure_present()?;
+                    worktree_step(w.ensure_present())?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
                 let failure = PriorFailure {
@@ -7588,7 +7589,7 @@ impl RunCtx<'_> {
                         // judge (adj-u3c3 round-2 reject: sdet-u3c3-verified-sha-stamped-before-
                         // restore).
                         if let Some(w) = wt {
-                            w.ensure_present()?;
+                            worktree_step(w.ensure_present())?;
                         }
                         // The verified status carries the gate evidence (item 4): each
                         // gate that ran summarized for the ledger's per-unit evidence.
@@ -7833,7 +7834,7 @@ impl RunCtx<'_> {
             // `run_reviewer`'s per-spawn re-assert ran and BEFORE this read. Re-assert
             // immediately before it, mirroring the `verified` stamp's fix.
             if let Some(w) = wt {
-                w.ensure_present()?;
+                worktree_step(w.ensure_present())?;
             }
             // Stamp the reviewed worktree sha (spec 11, unit 1): on a review reject this
             // is the sha the tiers judged, so the flip-flop fold can pair it with a later
@@ -7923,14 +7924,14 @@ impl RunCtx<'_> {
         let dir = unit_worktree_dir(&scratch, &st.name);
         let branch = unit_branch(&st.name);
         if lane == 0 {
-            return create_worktree(&self.deps.repo, &dir, &branch, &scratch);
+            return worktree_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch));
         }
-        create_worktree(
+        worktree_step(Worktree::create(
             &self.deps.repo,
             &format!("{dir}-spec{lane}"),
             &format!("{branch}-spec{lane}"),
             &scratch,
-        )
+        ))
     }
 
     /// First-green-wins speculation (spec 13, unit 3). A unit class declaring
@@ -8285,7 +8286,7 @@ impl RunCtx<'_> {
                 // re-gate) cannot cover this read. Re-assert immediately before it, matching
                 // the identical guard `emit_speculation_winner_status` already uses on this
                 // same candidate below.
-                candidates[i].wt.ensure_present()?;
+                worktree_step(candidates[i].wt.ensure_present())?;
                 // Held until the group's outcome is known ([`LostLanes`]): written as this
                 // lane's own failure when a later lane wins, or carried in the group's one
                 // record when none does, so one loss is never counted twice.
@@ -8445,7 +8446,7 @@ impl RunCtx<'_> {
         // identical bug class already fixed for the single-lane `verified`/`reviewed`/
         // `failed` stamps. Re-assert right before the read, never relying on an earlier
         // spawn-time re-assert to still be valid by the time this line runs.
-        candidate.wt.ensure_present()?;
+        worktree_step(candidate.wt.ensure_present())?;
         let winner_sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
             &verified_key(&st.name, attempt),
@@ -8536,7 +8537,7 @@ impl RunCtx<'_> {
         // AFTER it returns reject and BEFORE this read - the identical bug class already
         // fixed for the single-lane `failed_sha` stamp, mirrored here for the speculation
         // candidate's reject sibling.
-        wt.ensure_present()?;
+        worktree_step(wt.ensure_present())?;
         self.emit_keyed_meta(
             &format!("{}/spec-rejected#{attempt}", st.name),
             ledger::TYPE_UNIT_STATUS,
@@ -9199,7 +9200,7 @@ impl RunCtx<'_> {
             // could only protect whichever tier ran FIRST). A no-op fast path when nothing
             // disturbed the tree since the LAST re-assert (see [`Worktree::ensure_present`]).
             if let Some(w) = wt {
-                w.ensure_present()?;
+                worktree_step(w.ensure_present())?;
             }
             // Count the ReviewFindings this spawn emits to the graph - a lens/adversary's
             // REAL work channel (the review_protocol). A reviewer that emitted its findings
@@ -11014,7 +11015,7 @@ impl RunCtx<'_> {
         // uniformly instead of duplicating an inline call at each (adj-u3c3 round-2 reject:
         // adv-u3c3-ensure-present-covers-only-one-of-three-same-function-windows). A no-op
         // fast path when nothing disturbed the tree (see [`Worktree::ensure_present`]).
-        wt.ensure_present()?;
+        worktree_step(wt.ensure_present())?;
         // The unit's changed files span the commit-before-gates seam (§3.2): the
         // implementer's work is now committed, so a plain `git status` is clean -
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
@@ -11426,7 +11427,7 @@ impl RunCtx<'_> {
                         // Defense in depth (spec 64 criterion 3): the spawn just above is real
                         // wall-clock time, the window in which an out-of-band actor could
                         // delete the worktree before the next iteration's read consumes it.
-                        wt.ensure_present()?;
+                        worktree_step(wt.ensure_present())?;
                         lock = self.integrate_mu.lock().unwrap();
                     }
                 }
@@ -11467,8 +11468,17 @@ impl RunCtx<'_> {
             // them, leaving a leftover pinned at a now-stale sha. The safe resume is always
             // discard-then-recreate, exactly like a standalone review's
             // `review_only_worktree` - never adopt a leftover post-merge checkout.
-            Worktree::discard(&self.deps.repo, &pm_dir, &pm_branch, &scratch)?;
-            Worktree::create_branch_at(&self.deps.repo, &pm_branch, &commit)?;
+            worktree_step(Worktree::discard(
+                &self.deps.repo,
+                &pm_dir,
+                &pm_branch,
+                &scratch,
+            ))?;
+            worktree_step(Worktree::create_branch_at(
+                &self.deps.repo,
+                &pm_branch,
+                &commit,
+            ))?;
             // Captured into a local instead of `?`-ed directly (round 3 fix for
             // adv-u103c7-r3-createbranch-then-create-leaks-branch), mirroring the
             // capture-then-cleanup shape `run_gates`'s own call seven lines below already
@@ -11480,7 +11490,12 @@ impl RunCtx<'_> {
             // path (`Worktree::create` erred before returning a live worktree), so only
             // the branch needs reaping here - the dir-and-branch pair `run_gates`'s own
             // cleanup reaps below is for the LATER window, once a real `pm_wt` exists.
-            let create_result = create_worktree(&self.deps.repo, &pm_dir, &pm_branch, &scratch);
+            let create_result = worktree_step(Worktree::create(
+                &self.deps.repo,
+                &pm_dir,
+                &pm_branch,
+                &scratch,
+            ));
             if create_result.is_err() {
                 let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             }
@@ -11507,7 +11522,7 @@ impl RunCtx<'_> {
                 // own fixture drives, the gate command's own side effect) can delete the
                 // unit's worktree dir before this reset consumes it. A no-op fast path when
                 // nothing disturbed the tree.
-                wt.ensure_present()?;
+                worktree_step(wt.ensure_present())?;
                 wt.reset_branch_to(&unit_head_before_merge)?;
                 return Ok(Integration {
                     blocked: Some(merged.evidence),
@@ -13240,7 +13255,7 @@ impl RunCtx<'_> {
                 recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
             {
                 if !worktree::branch_exists(&self.deps.repo, &branch) {
-                    Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
+                    worktree_step(Worktree::create_branch_at(&self.deps.repo, &branch, &tip))?;
                 }
                 return Ok(Some((prior, tip, prior_spec)));
             }
@@ -13279,7 +13294,11 @@ impl RunCtx<'_> {
                 // create but before the record/delete below must never hard-error on
                 // "branch already exists" - it completes whatever's still pending instead.
                 if !quarantine_begun {
-                    Worktree::create_branch_at(&self.deps.repo, &quarantine, &tip)?;
+                    worktree_step(Worktree::create_branch_at(
+                        &self.deps.repo,
+                        &quarantine,
+                        &tip,
+                    ))?;
                 }
                 // QUARANTINE IS A RECORD, NOT JUST A RENAME (round 7), WRITTEN BEFORE THE
                 // DELETE THAT CLEARS THIS BLOCK'S OWN RE-ENTRY GATE (round 8): keyed on the
@@ -13346,7 +13365,7 @@ impl RunCtx<'_> {
             }),
             &[],
         )?;
-        Worktree::create_branch_at(&self.deps.repo, &branch, &tip)?;
+        worktree_step(Worktree::create_branch_at(&self.deps.repo, &branch, &tip))?;
         Ok(Some((prior, tip, spec)))
     }
 
@@ -13461,7 +13480,12 @@ impl RunCtx<'_> {
             &self.cfg.workflow.defaults.workdir,
         );
         let dir = unit_worktree_dir(&scratch, &st.name);
-        let wt = create_worktree(&self.deps.repo, &dir, &unit_branch(&st.name), &scratch)?;
+        let wt = worktree_step(Worktree::create(
+            &self.deps.repo,
+            &dir,
+            &unit_branch(&st.name),
+            &scratch,
+        ))?;
         Ok(Some(wt))
     }
 
@@ -13496,8 +13520,8 @@ impl RunCtx<'_> {
         // current HEAD rather than ADOPT the stale checkout and review stale code
         // (adv-u4det-review-adopt-staleness). This is the opposite of the unit worktree,
         // whose durable branch is exactly what `create` reuses.
-        Worktree::discard(&self.deps.repo, &dir, &branch, &scratch)?;
-        let wt = create_worktree(&self.deps.repo, &dir, &branch, &scratch)?;
+        worktree_step(Worktree::discard(&self.deps.repo, &dir, &branch, &scratch))?;
+        let wt = worktree_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch))?;
         Ok(Some(wt))
     }
 
@@ -18766,8 +18790,7 @@ mod tests {
             #[cfg(unix)]
             if !opts.dir.is_empty() && self.dangle_dir_by_agent.contains(&a.id) {
                 let _ = std::fs::remove_dir_all(&opts.dir);
-                std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &opts.dir)
-                    .unwrap();
+                std::os::unix::fs::symlink("/nonexistent-unit-worktree-target", &opts.dir).unwrap();
             }
             let mut output = self
                 .output_by_spawn_id
