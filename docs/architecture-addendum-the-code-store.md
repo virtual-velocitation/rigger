@@ -306,7 +306,7 @@ definition a thousand mentions resolve to.
 | A file | the id scheme it has today |
 | A design document | the id scheme it has today |
 | A workflow node | the id scheme it has today |
-| A call placeholder `<file>::%<leaf>` | made by the resolver for a mention that resolves to no single definition; never stored |
+| A call placeholder `<file>::%<leaf>`, or `<file>::%<Q>::<leaf>` / `<file>::%<Q>.<leaf>` for a qualified call whose qualifier keeps several candidates | made by the resolver for a mention that resolves to no single definition; never stored |
 
 ### 4.4 The stamp
 
@@ -806,16 +806,16 @@ call), and REFERENCES from F. A call the qualified-mention rule gives no edge yi
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
 | qualified mention | Mention `Call` or `Tagged(k)` in file F written `Q::leaf` or `Q.leaf` | the candidates the call or tagged-reference rule below reads whose parent is a definition whose leaf is `Q` or an `impl`-kind definition enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait an `impl` mention such an implementation encloses names: exactly one, in any file | EXTRACTED edge to that definition |
-| | | several | a call: INFERRED edge to the definition the proof rule credits a test mention to, else to the placeholder `F::%<leaf>`; a tagged reference: no edge |
+| | | several | a call: INFERRED edge to the definition the proof rule credits a test mention to, else to the placeholder keyed by the qualified name as written, `F::%Q::leaf` or `F::%Q.leaf`, never one of the several in its own file; a tagged reference: no edge |
 | | | none, under a member qualifier `Q.leaf` | the call or tagged-reference rule below |
 | | | none, under a path qualifier `Q::leaf` where `Q` is the leaf of a product `type` or `trait` definition in F's language | the call or tagged-reference rule below |
 | | | none, under any other path qualifier | no edge and no placeholder; not counted as unresolved (spec 117, RESOLVER AT READ) |
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
 | | | otherwise, a test mention the proof rule credits to a definition | INFERRED edge to that definition |
 | | | otherwise | edge to the placeholder `F::%<leaf>`: INFERRED if any candidate exists anywhere, AMBIGUOUS if none |
-| down-hop | a placeholder | one candidate | a hop to it |
+| down-hop | a placeholder: the candidates of its leaf, the text after the last `::` or `.` of the name it is keyed by, and for a qualified name those the qualified-mention rule keeps | one candidate | a hop to it |
 | | | several candidates | a frontier |
-| up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf | callers |
+| up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf, one keyed by a qualified name only when its down-hop holds D | callers |
 | tagged reference | Mention `Tagged(k)` | definitions of the leaf whose kind `reference_candidate_kinds(k)` names, a non-target kind included (a `field` reference's are a field, a property, a constant, a static or a variant): for any `k` but `field`, exactly one same-file | EXTRACTED |
 | | | else exactly one in the project | INFERRED |
 | | | else | no edge; counted as unresolved |

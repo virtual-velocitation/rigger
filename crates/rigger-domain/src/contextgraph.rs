@@ -1032,9 +1032,10 @@ pub trait ContextGraph: Send + Sync {
     /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
     /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A hop that lands on a
     /// BARE placeholder node, or on a named field, property or declaration, resolves by the leaf
-    /// its id names onto the call-target definition(s) of that leaf alone ([`is_call_target`]): a
-    /// hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked frontier the walk
-    /// does NOT descend (honest by construction). Reached nodes dedup into a
+    /// its id names onto the call-target definition(s) of that leaf alone ([`is_call_target`]), a
+    /// placeholder keyed by a qualified name onto those of its leaf the resolver's narrowed
+    /// down-hop keeps: a hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked
+    /// frontier the walk does NOT descend (honest by construction). Reached nodes dedup into a
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
     /// The default returns an empty [`CallGraph`], so a graph with no directed-walk support (a
@@ -1119,8 +1120,9 @@ pub trait ContextGraph: Send + Sync {
     }
 
     /// The distinct test entities the graph's `tests` filter hides whose calls land on a
-    /// placeholder bound to the leaf of a definition of `ids`, in id order: the hidden tests a
-    /// callers walk stepping from those nodes reaches through a placeholder rather than by a
+    /// placeholder bound to the leaf of a definition of `ids`, a placeholder keyed by a qualified
+    /// name only when its narrowed down-hop holds that definition, in id order: the hidden tests
+    /// a callers walk stepping from those nodes reaches through a placeholder rather than by a
     /// proof. None when tests are shown, the worktree cannot be compared, or by default (a graph
     /// that holds no code, a test double).
     fn hidden_placeholder_callers(&self, _ids: &[String]) -> Result<Vec<String>, Error> {

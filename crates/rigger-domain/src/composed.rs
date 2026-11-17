@@ -134,18 +134,22 @@ pub struct Honesty {
     pub behind: Option<String>,
 }
 
-/// Whether `node` is bound by `leaf`: its [`node_name`] is `leaf`, or its id's text after the
-/// first `::` is `leaf` or `leaf` behind the [`PLACEHOLDER_SIGIL`].
+/// Whether `node` is bound by `leaf`: its [`node_name`] is `leaf`, or its id is
+/// ([`id_binds_leaf`]).
 pub(crate) fn binds_leaf(node: &Node, leaf: &str) -> bool {
     node_name(node) == Some(leaf) || id_binds_leaf(&node.id, leaf)
 }
 
-/// Whether the text of `id` after its first `::` is `leaf` or `leaf` behind the
-/// [`PLACEHOLDER_SIGIL`].
+/// Whether the text of `id` after its first `::` is `leaf`, or a name behind the
+/// [`PLACEHOLDER_SIGIL`] that is `leaf` or whose leaf, the text after its last `::` or `.`, is:
+/// a placeholder keyed by a qualified name binds its leaf.
 pub(crate) fn id_binds_leaf(id: &str, leaf: &str) -> bool {
-    split_id(id)
-        .1
-        .is_some_and(|rest| rest == leaf || rest.strip_prefix(PLACEHOLDER_SIGIL) == Some(leaf))
+    split_id(id).1.is_some_and(|rest| {
+        rest == leaf
+            || rest
+                .strip_prefix(PLACEHOLDER_SIGIL)
+                .is_some_and(|name| name == leaf || path_leaf(name) == leaf)
+    })
 }
 
 /// The edges sorted by ends then relation, one per (from, to, relation), the first kept.
@@ -245,11 +249,8 @@ impl Indexed {
             }
             for (at, n) in self.nodes.iter().enumerate() {
                 let rest = split_id(&n.id).1;
-                let leaves = [
-                    node_name(n),
-                    rest,
-                    rest.and_then(|r| r.strip_prefix(PLACEHOLDER_SIGIL)),
-                ];
+                let placeholder = rest.and_then(|r| r.strip_prefix(PLACEHOLDER_SIGIL));
+                let leaves = [node_name(n), rest, placeholder, placeholder.map(path_leaf)];
                 for leaf in leaves.into_iter().flatten() {
                     let held = ix.leaves.entry(leaf.to_string()).or_default();
                     if held.last() != Some(&at) {
@@ -418,10 +419,14 @@ pub trait CodeHalf: Neighbors {
     /// The distinct test entities the filter hides that prove a node of `ids`, in id order,
     /// read from the proofs the half read for them ([`ContextGraph::hidden_provers`]).
     fn hidden_provers(&self, ids: &[String]) -> Vec<String>;
-    /// The distinct test entities the filter hides whose calls to `leaf` land on a placeholder,
-    /// in order ([`crate::resolve::Resolver::placeholder_callers`]): the callers a callers walk
-    /// reaches through a placeholder bound to `leaf`.
-    fn placeholder_callers(&self, leaf: &str) -> Vec<String>;
+    /// The distinct test entities the filter hides whose calls to `leaf` land on a placeholder
+    /// filed under `leaf` or under `id`, in order
+    /// ([`crate::resolve::Resolver::placeholder_callers`]): the callers a callers walk from the
+    /// definition `id` named `leaf` reaches through a placeholder bound to `leaf`.
+    fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String>;
+    /// The candidate ids the down-hop of the placeholder `id` keeps, when it is keyed by a
+    /// qualified name ([`CodeGraph::down_hop`]); none for any other id.
+    fn down_hop(&self, id: &str) -> Option<Vec<String>>;
     /// The files the attributes of the grouping `id` summarise, by [`fact_file`]: its members'
     /// (its label and hash) and its attached tests' (its test count); none when `id` names no
     /// grouping.
@@ -497,9 +502,12 @@ pub struct Whole {
     attachments: Vec<TestAttachment>,
     /// The proof calls read to attach the tests, kept while the filter hides tests.
     proofs: Vec<ProofCall>,
-    /// The callers of the test calls to each leaf that land on a placeholder, in order, kept
-    /// while the filter hides tests.
+    /// The callers of the test calls that land on a placeholder, in order, by the key each is
+    /// filed under, a leaf or a candidate id, kept while the filter hides tests.
     placeholder_callers: BTreeMap<String, Vec<String>>,
+    /// The candidates each placeholder keyed by a qualified name keeps ([`CodeGraph::down_hop`]),
+    /// read when the half is walked.
+    down_hops: BTreeMap<String, Vec<String>>,
 }
 
 impl Whole {
@@ -517,8 +525,9 @@ impl Whole {
     }
 
     /// [`Self::at`], reading the test calls landing on a placeholder that a callers walk reaches
-    /// ([`CodeGraph::placeholder_calls`]) only when `walked`: a read that is never walked leaves
-    /// them unresolved.
+    /// ([`CodeGraph::placeholder_calls`]) and the down-hops of its placeholders keyed by a
+    /// qualified name ([`CodeGraph::down_hop`]) only when `walked`: a read that is never walked
+    /// leaves them unresolved.
     fn read(view: &dyn CodeView, filter: ViewFilter, resolution: f64, walked: bool) -> Self {
         let computed = computed_at(view, resolution);
         let grains: Vec<&Groupings> = std::iter::once(view.groupings())
@@ -535,13 +544,16 @@ impl Whole {
         }
         let code = Indexed::new(graph, Vec::new());
         let mut placeholder_callers: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let placeholder_calls = if walked {
-            code_graph.placeholder_calls()
+        let (placeholder_calls, down_hops) = if walked {
+            let down_hops = (code.nodes.iter())
+                .filter_map(|n| Some((n.id.clone(), code_graph.down_hop(&n.id)?)))
+                .collect();
+            (code_graph.placeholder_calls(), down_hops)
         } else {
-            Vec::new()
+            (Vec::new(), BTreeMap::new())
         };
-        for (leaf, caller) in placeholder_calls {
-            placeholder_callers.entry(leaf).or_default().push(caller);
+        for (key, caller) in placeholder_calls {
+            placeholder_callers.entry(key).or_default().push(caller);
         }
         for callers in placeholder_callers.values_mut() {
             callers.sort_unstable();
@@ -578,6 +590,7 @@ impl Whole {
             attachments: attached,
             proofs,
             placeholder_callers,
+            down_hops,
         }
     }
 }
@@ -664,11 +677,15 @@ impl CodeHalf for Whole {
             ids,
         )
     }
-    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
-        self.placeholder_callers
-            .get(leaf)
-            .cloned()
-            .unwrap_or_default()
+    fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {
+        let filed = [leaf, id].map(|key| self.placeholder_callers.get(key));
+        let mut callers: Vec<String> = filed.into_iter().flatten().flatten().cloned().collect();
+        callers.sort_unstable();
+        callers.dedup();
+        callers
+    }
+    fn down_hop(&self, id: &str) -> Option<Vec<String>> {
+        self.down_hops.get(id).cloned()
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let arms = [&self.groupings.communities, &self.groupings.concepts];
@@ -746,8 +763,11 @@ impl CodeHalf for Arc<Whole> {
     fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
         (**self).hidden_provers(ids)
     }
-    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
-        (**self).placeholder_callers(leaf)
+    fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {
+        (**self).placeholder_callers(id, leaf)
+    }
+    fn down_hop(&self, id: &str) -> Option<Vec<String>> {
+        (**self).down_hop(id)
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         (**self).summarised_files(id)
@@ -1401,7 +1421,8 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         depth: i64,
         tier_floor: &str,
     ) -> Result<CallGraph, Error> {
-        calls(self, seed, direction, depth, tier_floor)
+        let down_hop = |id: &str| self.code.down_hop(id);
+        calls(self, seed, direction, depth, tier_floor, &down_hop)
     }
     fn resolve(&self, mention: &str) -> Result<Option<String>, Error> {
         match self.canonical.get(mention) {
@@ -1482,13 +1503,11 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         if self.stale {
             return Ok(Vec::new());
         }
-        let mut leaves = BTreeSet::new();
-        for id in ids {
-            leaves.extend(bound_leaf(self, id)?);
-        }
         let mut hidden = Vec::new();
-        for leaf in &leaves {
-            hidden.extend(self.code.placeholder_callers(leaf));
+        for id in ids {
+            if let Some(leaf) = bound_leaf(self, id)? {
+                hidden.extend(self.code.placeholder_callers(id, &leaf));
+            }
         }
         hidden.sort_unstable();
         hidden.dedup();
@@ -1642,19 +1661,36 @@ struct Hop {
     frontier: Option<Vec<String>>,
 }
 
+/// The candidates a placeholder keyed by a qualified name keeps ([`CodeHalf::down_hop`]): none
+/// for any other id.
+type DownHop<'a> = &'a dyn Fn(&str) -> Option<Vec<String>>;
+
+/// `cands` less those `kept` does not hold, when it is given: the call-target definitions of a
+/// leaf a placeholder reaches.
+fn kept_of(cands: &[String], kept: Option<&[String]>) -> Vec<String> {
+    let reached = cands.iter().filter(|c| kept.is_none_or(|k| k.contains(c)));
+    reached.cloned().collect()
+}
+
 /// One DOWN hop's callee: a named call target lands on itself; any other target resolves by the
-/// leaf its id names over the call-target definitions, one auto-continuing, more a frontier,
-/// none leaving it where it is.
+/// leaf its id names over the call-target definitions, those a placeholder keyed by a qualified
+/// name reaches by its leaf and keeps by its down-hop (`down_hop`), one auto-continuing, more a
+/// frontier, none leaving it where it is.
 fn resolve_down_hop(
     graph: &dyn Neighbors,
     raw_to: &str,
+    down_hop: DownHop,
 ) -> Result<(String, Option<Vec<String>>), Error> {
     if named_call_target(graph, raw_to)? == Some(true) {
         return Ok((raw_to.to_string(), None));
     }
-    let cands = match leaf_of(raw_to) {
-        Some(leaf) => definitions(graph, leaf, Admitted::CallTargets, None)?,
-        None => Vec::new(),
+    let cands = match (leaf_of(raw_to), down_hop(raw_to)) {
+        (Some(name), Some(kept)) => {
+            let cands = definitions(graph, path_leaf(name), Admitted::CallTargets, None)?;
+            kept_of(&cands, Some(&kept))
+        }
+        (Some(leaf), None) => definitions(graph, leaf, Admitted::CallTargets, None)?,
+        (None, _) => Vec::new(),
     };
     Ok(match cands.len() {
         1 => (cands.into_iter().next().unwrap(), None),
@@ -1679,8 +1715,10 @@ fn bound_leaf(graph: &dyn Neighbors, cur: &str) -> Result<Option<String>, Error>
 
 /// The callers of `cur` for one UP hop: none for a named non-target; else the direct callers
 /// whose edge targets `cur`, and, for a definition, the callers through a placeholder bound to
-/// its leaf ([`bound_leaf`]), a frontier when the leaf has more than one call-target definition.
-fn callers_of(graph: &dyn Neighbors, cur: &str) -> Result<Vec<Hop>, Error> {
+/// its leaf ([`bound_leaf`]) that reaches it: one keyed by a qualified name only when its
+/// down-hop keeps `cur` (`down_hop`). Each is a frontier when the call-target definitions of the
+/// leaf its placeholder reaches, those its down-hop keeps, are more than one.
+fn callers_of(graph: &dyn Neighbors, cur: &str, down_hop: DownHop) -> Result<Vec<Hop>, Error> {
     if named_call_target(graph, cur)? == Some(false) {
         return Ok(Vec::new());
     }
@@ -1694,19 +1732,27 @@ fn callers_of(graph: &dyn Neighbors, cur: &str) -> Result<Vec<Hop>, Error> {
         .collect();
     if let Some(leaf) = bound_leaf(graph, cur)?.as_deref() {
         let cands = definitions(graph, leaf, Admitted::CallTargets, None)?;
-        let frontier = (cands.len() > 1).then_some(cands);
         let mut via_bare = Vec::new();
         for t in graph.leaf_nodes(leaf)? {
             let target = is_call_target(t.attrs.get("kind").map(String::as_str));
-            if id_binds_leaf(&t.id, leaf) && (node_name(&t).is_none() || !target) {
-                via_bare.extend(graph.incoming(&t.id)?);
+            if !id_binds_leaf(&t.id, leaf) || (node_name(&t).is_some() && target) {
+                continue;
             }
+            let kept = down_hop(&t.id);
+            if kept.as_ref().is_some_and(|k| !k.iter().any(|c| c == cur)) {
+                continue;
+            }
+            let reached = kept_of(&cands, kept.as_deref());
+            let frontier = (reached.len() > 1).then_some(reached);
+            let calls = calls_at(graph.incoming(&t.id)?, |e| &e.from);
+            via_bare.extend(calls.into_iter().map(|via| (via, frontier.clone())));
         }
-        for via in calls_at(via_bare, |e| &e.from) {
+        via_bare.sort_by(|(a, _), (b, _)| a.from.cmp(&b.from));
+        for (via, frontier) in via_bare {
             hops.push(Hop {
                 next: via.from.clone(),
                 via,
-                frontier: frontier.clone(),
+                frontier,
             });
         }
     }
@@ -1832,13 +1878,15 @@ fn layered_call_walk(
 /// The directed `CALLS` walk of [`ContextGraph::calls`] over `graph`: callees (`Down`, a hop to a
 /// placeholder resolved by its leaf) or callers (`Up`, through the placeholders bound to each
 /// definition's leaf, with the referenced-but-not-called files beside them), each edge followed
-/// only at or above `tier_floor`.
+/// only at or above `tier_floor`. A placeholder keyed by a qualified name reaches only the
+/// candidates its down-hop keeps (`down_hop`, [`CodeHalf::down_hop`]).
 pub fn calls(
     graph: &dyn Neighbors,
     seed: &[String],
     direction: Direction,
     depth: i64,
     tier_floor: &str,
+    down_hop: DownHop,
 ) -> Result<CallGraph, Error> {
     let floor = tier_rank(tier_floor, UNRECOGNIZED_FLOOR_RANK);
     let followed = |e: &Edge| tier_rank(&e.tier, UNRECOGNIZED_EDGE_RANK) >= floor;
@@ -1848,7 +1896,7 @@ pub fn calls(
                 let mut hops = Vec::new();
                 for via in calls_at(graph.out(cur)?, |e| &e.to) {
                     if followed(&via) {
-                        let (next, frontier) = resolve_down_hop(graph, &via.to)?;
+                        let (next, frontier) = resolve_down_hop(graph, &via.to, down_hop)?;
                         hops.push(Hop {
                             next,
                             via,
@@ -1868,7 +1916,7 @@ pub fn calls(
         }
         Direction::Up => {
             let hops = |cur: &str| {
-                let mut hops = callers_of(graph, cur)?;
+                let mut hops = callers_of(graph, cur, down_hop)?;
                 hops.retain(|h| followed(&h.via));
                 Ok(hops)
             };

@@ -23,7 +23,9 @@ use crate::composed::{
     attachments, binds_leaf, cluster_files, id_binds_leaf, joined, ordered, provers_of, CodeHalf,
     Indexed,
 };
-use crate::contextgraph::query::{entity_id, leaf_of, member_file, placeholder_id, split_id};
+use crate::contextgraph::query::{
+    entity_id, leaf_of, member_file, path_leaf, placeholder_id, split_id,
+};
 use crate::contextgraph::{
     holds_attachment, Edge, Error, Graph, Neighbors, Node, KIND_ARTIFACT, KIND_CODE_ENTITY,
     KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL, REL_IN_COMMUNITY, REL_REALIZES,
@@ -618,7 +620,10 @@ impl<'v> State<'v> {
     /// `id` resolved from the assertions of `sources`, as the whole graph holds it.
     fn resolve(&mut self, id: &str, sources: &[(u32, Part)], leaves: &[String]) -> Resolved {
         let mut named: Vec<&str> = leaves.iter().map(String::as_str).collect();
-        named.extend(leaf_of(id));
+        // A placeholder is asserted by the calls to the leaf of the name it is keyed by.
+        let placeholder = leaf_of(id);
+        named.extend(placeholder);
+        named.extend(placeholder.map(path_leaf));
         let mut b = Builder::default();
         for &(place, part) in sources {
             match part {
@@ -909,14 +914,9 @@ impl<'v> State<'v> {
         let Some(facts) = self.facts(place) else {
             return Vec::new();
         };
-        // A file's named entities are its definitions' ids and the placeholders of its calls.
+        // A file's named entities are its definitions': a placeholder carries no name.
         let mut ids: Vec<String> = (facts.defs.iter())
             .map(|d| entity_id(file, &d.local))
-            .chain(
-                (facts.mentions.iter())
-                    .filter(|m| m.kind == MentionKind::Call)
-                    .map(|m| placeholder_id(file, &m.leaf)),
-            )
             .collect();
         ids.sort_unstable();
         ids.dedup();
@@ -928,8 +928,8 @@ impl<'v> State<'v> {
     }
 
     /// The nodes bound by `leaf` ([`binds_leaf`]), in id order: the definitions named `leaf`,
-    /// the placeholders of calls to it, the entities whose id ends in it, and the design and
-    /// workflow ids and cluster ids it binds.
+    /// the placeholders of calls to it, keyed by it or by the qualified name a call writes, the
+    /// entities whose id ends in it, and the design and workflow ids and cluster ids it binds.
     fn leaf_nodes(&mut self, leaf: &str) -> Vec<Node> {
         let mut ids: BTreeSet<String> = BTreeSet::new();
         for d in self.view.defs_named(leaf) {
@@ -950,12 +950,23 @@ impl<'v> State<'v> {
                 }
             }
         }
-        // A placeholder binds the leaf it calls, and the leaf behind the sigil binds its id's rest.
+        // A placeholder is keyed by the leaf a call writes or by its qualified name, and binds
+        // both and the leaf of the qualified one; the text behind the sigil binds its id's rest.
         let called = [Some(leaf), leaf.strip_prefix(PLACEHOLDER_SIGIL)];
         for called in called.into_iter().flatten() {
-            for m in self.view.mentions_named(called) {
-                if m.file.half == Half::Code && m.kind == MentionKind::Call {
-                    ids.insert(placeholder_id(m.file.path, called));
+            for named in BTreeSet::from([called, path_leaf(called)]) {
+                for m in self.view.mentions_named(named) {
+                    if m.file.half != Half::Code || m.kind != MentionKind::Call {
+                        continue;
+                    }
+                    for key in [
+                        placeholder_id(m.file.path, named),
+                        placeholder_id(m.file.path, m.name),
+                    ] {
+                        if id_binds_leaf(&key, leaf) {
+                            ids.insert(key);
+                        }
+                    }
                 }
             }
         }
@@ -1141,12 +1152,16 @@ impl CodeHalf for Near<'_> {
         }
     }
     /// Read from the mentions of `leaf` alone.
-    fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+    fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {
         let state = self.state();
         match state.tests {
-            Tests::Exclude => state.graph.resolver().placeholder_callers(leaf),
+            Tests::Exclude => state.graph.resolver().placeholder_callers(id, leaf),
             Tests::Include | Tests::Only => Vec::new(),
         }
+    }
+    /// Asked of the resolver when walked, never read ahead.
+    fn down_hop(&self, id: &str) -> Option<Vec<String>> {
+        self.state().graph.down_hop(id)
     }
     fn summarised_files(&self, id: &str) -> Vec<String> {
         let (members, tests) = {
@@ -1914,8 +1929,9 @@ mod tests {
         Out(&'static str, Vec<Edge>),
         /// [`Neighbors::leaf_nodes`] of the leaf: its nodes' ids, in order.
         Leaf(&'static str, &'static [&'static str]),
-        /// [`CodeHalf::placeholder_callers`] of the leaf: the hidden test callers, in order.
-        Callers(&'static str, &'static [&'static str]),
+        /// [`CodeHalf::placeholder_callers`] of the id and its leaf: the hidden test callers, in
+        /// order.
+        Callers(&'static str, &'static str, &'static [&'static str]),
     }
 
     /// A QUALIFIER NAMING NO DEFINITION reaches the reads of both code halves (spec 117, RESOLVER
@@ -1999,7 +2015,11 @@ mod tests {
                 "a test call whose path qualifier names a product type hides its caller behind a \
                  placeholder, one whose qualifier names only another language's type none",
                 Tests::Exclude,
-                Read::Callers("unload", &["tests/gauge.rs::drains"]),
+                Read::Callers(
+                    "tests/gauge.rs::%unload",
+                    "unload",
+                    &["tests/gauge.rs::drains"],
+                ),
             ),
             (
                 "a member qualifier naming none binds its leaf's placeholder",
@@ -2074,8 +2094,8 @@ mod tests {
                     Read::Leaf(leaf, want) => {
                         assert_eq!(ids(graph.leaf_nodes(leaf).unwrap()), *want, "{at}")
                     }
-                    Read::Callers(leaf, want) => {
-                        assert_eq!(graph.placeholder_callers(leaf), *want, "{at}")
+                    Read::Callers(id, leaf, want) => {
+                        assert_eq!(graph.placeholder_callers(id, leaf), *want, "{at}")
                     }
                 }
             }

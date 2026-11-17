@@ -5,12 +5,12 @@
 //!
 //! | Rule | Resolution |
 //! |---|---|
-//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates its rule reads whose parent is a definition named `Q` or an implementation enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule under a member qualifier (`Q.leaf`) or a path qualifier (`Q::leaf`) naming a product type or trait in the mention's language, and make no edge and no placeholder under any other path qualifier |
+//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates its rule reads whose parent is a definition named `Q` or an implementation enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder keyed by its qualified name (`F::%Q::leaf`, `F::%Q.leaf`), `inferred`, never one of them in its own file, and no tagged edge; none leave the call or tagged-reference rule under a member qualifier (`Q.leaf`) or a path qualifier (`Q::leaf`) naming a product type or trait in the mention's language, and make no edge and no placeholder under any other path qualifier |
 //! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
-//! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
+//! | down-hop | a placeholder's call-target candidates, those of the leaf after the last `::` or `.` of the name it is keyed by, and for a qualified name those its qualifier keeps: none, one, or a frontier |
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
 //! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge; a `field` reference no qualifier narrows reads its field and property candidates alone and skips the same-file step: one in the view, in its file or not, is `inferred`, else no edge, so it reaches a constant, a static or a variant only through a qualifier that keeps it |
-//! | held reference | a tagged reference whose node already references the target, or its placeholder from that node, writes no edge |
+//! | held reference | a tagged reference whose node already references the target, or the placeholder of its leaf from that node, keyed by the leaf or by a call's qualified name, writes no edge |
 //! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
 //! | proof | a test call: one same-file product call-target candidate, else one in the view |
@@ -522,6 +522,22 @@ impl<'v> Resolver<'v> {
         let Some(qualifier) = qualifier(name, leaf) else {
             return Some(Hop::Terminal);
         };
+        let kept = self.kept(qualifier, pool, candidates);
+        if kept.is_empty() && is_path_qualified(name) && !self.names_a_type(qualifier, lang) {
+            return None;
+        }
+        Some(hop(kept))
+    }
+
+    /// The `candidates` `qualifier` keeps in `pool`: those whose parent in their file is in its
+    /// own tier of [`Self::parents`], else, when none is, those whose parent is in its trait
+    /// tier, in the order given. The one split [`Self::narrowed`] and [`Self::down_hop`] read.
+    fn kept<'c>(
+        &self,
+        qualifier: &str,
+        pool: Pool,
+        candidates: impl Iterator<Item = &'c Candidate<'v>>,
+    ) -> Vec<&'c Candidate<'v>> {
         let parents = self.parents(qualifier, pool);
         let (mut own, mut traits) = (Vec::new(), Vec::new());
         for c in candidates {
@@ -534,11 +550,11 @@ impl<'v> Resolver<'v> {
                 traits.push(c);
             }
         }
-        let kept = if own.is_empty() { traits } else { own };
-        if kept.is_empty() && is_path_qualified(name) && !self.names_a_type(qualifier, lang) {
-            return None;
+        if own.is_empty() {
+            traits
+        } else {
+            own
         }
-        Some(hop(kept))
     }
 
     /// Whether `qualifier`, whole, names a product type or trait in `lang`: a definition a
@@ -609,9 +625,11 @@ impl<'v> Resolver<'v> {
 
     /// The call rule: the target and tier of a call written `name` to `leaf` from `file`, in
     /// `lang`. A qualified call its qualifier narrows ([`Self::narrowed`]) lands on the one call
-    /// target it keeps, EXTRACTED wherever it is, or on the placeholder `F::%<leaf>`, INFERRED,
-    /// when it keeps several, and lands nowhere when its qualifier makes it no link; any other
-    /// call lands on its one same-file call target, EXTRACTED, else on the placeholder.
+    /// target it keeps, EXTRACTED wherever it is, or, when it keeps several, on the placeholder
+    /// `F::%<name>` keyed by its qualified name (`F::%Q::leaf`, `F::%Q.leaf`), INFERRED, never on
+    /// a kept target in `file`; it lands nowhere when its qualifier makes it no link. Any other
+    /// call lands on its one same-file call target, EXTRACTED, else on the placeholder
+    /// `F::%<leaf>`.
     fn call(
         &self,
         file: &str,
@@ -624,7 +642,7 @@ impl<'v> Resolver<'v> {
         let in_pool = candidates.iter().filter(|c| pool.calls(c));
         match self.narrowed(lang, name, leaf, pool, in_pool.clone())? {
             Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
-            Hop::Frontier(_) => return Some((placeholder_id(file, leaf), TIER_INFERRED)),
+            Hop::Frontier(_) => return Some((placeholder_id(file, name), TIER_INFERRED)),
             Hop::Terminal => {}
         }
         let (mut targets, mut here, mut one_here) = (0, 0, None);
@@ -840,8 +858,10 @@ impl<'v> Resolver<'v> {
         let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or(file);
         // A product reference is held only by a product edge, so showing tests changes no
         // product edge. A call's reference runs from the file, so only one from the file is held;
-        // each target maps to whether a product call references it.
+        // each target maps to whether a product call references it, and a call landing on a
+        // placeholder, under its leaf or its qualified name, references its leaf's `F::%<leaf>`.
         let mut referenced: FxHashMap<String, bool> = FxHashMap::default();
+        let mut note = |to: String, test: bool| *referenced.entry(to).or_default() |= !test;
         for m in mentions.clone() {
             let test = self.mention_is_test(facts, m);
             if m.kind != MentionKind::Call || (test && !tests) {
@@ -852,12 +872,10 @@ impl<'v> Resolver<'v> {
             };
             sink(from_of(m.enclosing), REL_CALLS, &to, tier, test);
             sink(file, REL_REFERENCES, &to, tier, test);
-            match referenced.get_mut(&to) {
-                Some(product) => *product |= !test,
-                None => {
-                    referenced.insert(to, !test);
-                }
+            if leaf_of(&to).is_some() {
+                note(placeholder_id(file, &m.leaf), test);
             }
+            note(to, test);
         }
         let held = |from: &str, to: &str, test: bool| {
             from == file && referenced.get(to).is_some_and(|&product| test || product)
@@ -1096,45 +1114,67 @@ impl<'v> Resolver<'v> {
         })
     }
 
-    /// Whether a test call written `name` to `leaf` from `file`, in `lang`, lands on a
-    /// placeholder ([`Self::call_edge`]): the call rule sends it to one and the proof rule
-    /// credits none. A call the call rule makes no link lands on none.
-    fn lands_on_placeholder(&self, file: &str, lang: &str, name: &str, leaf: &str) -> bool {
-        (self.call_edge(file, lang, name, leaf, true)).is_some_and(|(to, _)| leaf_of(&to).is_some())
+    /// The keys a test call written `name` to `leaf` from `file`, in `lang`, is filed under when
+    /// it lands on a placeholder ([`Self::call_edge`]: the call rule sends it to one and the proof
+    /// rule credits none): `leaf` for the placeholder `F::%<leaf>`, and for one keyed by a
+    /// qualified name the id of each candidate its down-hop keeps in [`Pool::All`]
+    /// ([`Self::down_hop`]). None when the call lands elsewhere, or nowhere because the call rule
+    /// makes it no link.
+    fn placeholder_keys(&self, file: &str, lang: &str, name: &str, leaf: &str) -> Vec<String> {
+        let Some((to, _)) = self.call_edge(file, lang, name, leaf, true) else {
+            return Vec::new();
+        };
+        match leaf_of(&to) {
+            None => Vec::new(),
+            Some(written) if written == leaf => vec![leaf.to_string()],
+            Some(_) => match self.down_hop(&to, Pool::All) {
+                Some(Hop::One(c)) => vec![c.id],
+                Some(Hop::Frontier(cs)) => cs.into_iter().map(|c| c.id).collect(),
+                Some(Hop::Terminal) | None => Vec::new(),
+            },
+        }
     }
 
-    /// The test calls in `facts`, a code file, that land on a placeholder, as (leaf, caller)
-    /// pairs, unordered: [`Self::placeholder_callers`] of every leaf `facts` calls at once. Where
-    /// a call lands depends only on its file and name, its leaf and qualifier, so each name is
-    /// resolved once.
+    /// The test calls in `facts`, a code file, that land on a placeholder, as (key, caller)
+    /// pairs, one per key the call is filed under ([`Self::placeholder_keys`]), in mention then
+    /// key order: [`Self::placeholder_callers`] of every leaf `facts` calls at once. Where a call
+    /// lands depends only on its file and name, its leaf and qualifier, so each name is resolved
+    /// once.
     pub fn file_placeholder_calls(&self, facts: &FileFacts) -> Vec<(String, String)> {
         let path = facts.path.as_str();
         let test_entity = self.test_entity_of(facts);
-        let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
-        (facts.mentions.iter())
+        let mut keys: FxHashMap<&str, Vec<String>> = FxHashMap::default();
+        let mut calls = Vec::new();
+        for m in (facts.mentions.iter())
             .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
-            .filter(|m| {
-                *(lands.entry(&m.name)).or_insert_with(|| {
-                    self.lands_on_placeholder(path, &facts.lang, &m.name, &m.leaf)
-                })
-            })
-            .filter_map(|m| Some((m.leaf.clone(), test_entity(m.enclosing)?)))
-            .collect()
+        {
+            let filed = (keys.entry(&m.name))
+                .or_insert_with(|| self.placeholder_keys(path, &facts.lang, &m.name, &m.leaf));
+            if filed.is_empty() {
+                continue;
+            }
+            if let Some(caller) = test_entity(m.enclosing) {
+                calls.extend(filed.iter().map(|key| (key.clone(), caller.clone())));
+            }
+        }
+        calls
     }
 
-    /// The distinct callers of the test calls to `leaf` that land on a placeholder, in order: the
-    /// test entities ([`Self::test_entity_of`]) a callers walk reaches through a placeholder bound
-    /// to `leaf` and no proof names, read from the mentions of `leaf` alone. Where a call lands
-    /// depends only on its file and name, its leaf and qualifier, so each name in each file is
-    /// resolved once.
-    pub fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+    /// The distinct callers of the test calls to `leaf` that land on a placeholder and are filed
+    /// under `leaf` or under `id` ([`Self::placeholder_keys`]), in order: the test entities
+    /// ([`Self::test_entity_of`]) a callers walk from the definition `id` named `leaf` reaches
+    /// through a placeholder no proof names, read from the mentions of `leaf` alone. Where a call
+    /// lands depends only on its file and name, its leaf and qualifier, so each name in each file
+    /// is resolved once.
+    pub fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {
         let mut lands: FxHashMap<(&str, &str), bool> = FxHashMap::default();
         let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
         for m in self.test_calls_named(leaf) {
             let (path, name) = (m.file.path, m.name);
-            if *(lands.entry((path, name)))
-                .or_insert_with(|| self.lands_on_placeholder(path, m.file.lang, name, leaf))
-            {
+            if *(lands.entry((path, name))).or_insert_with(|| {
+                let keys = self.placeholder_keys(path, m.file.lang, name, leaf);
+                keys.iter().any(|key| key == leaf || key == id)
+            }) {
                 enclosing.entry(path).or_default().insert(m.enclosing);
             }
         }
@@ -1163,10 +1203,21 @@ impl<'v> Resolver<'v> {
         proofs
     }
 
-    /// The down-hop of `id`: what its placeholder's call-target candidates in `pool` resolve to;
-    /// none when `id` is no placeholder.
+    /// The down-hop of `id`: what its placeholder's call-target candidates in `pool` resolve to,
+    /// those of its leaf, the text after the last `::` or `.` of the name it is keyed by, and for
+    /// a name a qualifier writes, the ones that qualifier keeps ([`Self::kept`]); none when `id`
+    /// is no placeholder.
     pub fn down_hop(&self, id: &str, pool: Pool) -> Option<Hop<Candidate<'v>>> {
-        leaf_of(id).map(|leaf| hop(self.call_targets(leaf, pool)))
+        let (qualifier, leaf) = split_path(leaf_of(id)?);
+        let targets = self.call_targets(leaf, pool);
+        Some(match qualifier {
+            None => hop(targets),
+            Some(q) => hop(self
+                .kept(q, pool, targets.iter())
+                .into_iter()
+                .cloned()
+                .collect()),
+        })
     }
 
     /// The up-hop of the definition `id` named `leaf`: every call and reference edge that lands
@@ -1659,9 +1710,9 @@ pub(crate) mod tests {
             Ask::PlaceholderCalls(path) => r
                 .file_placeholder_calls(&view.file(path).unwrap())
                 .into_iter()
-                .map(|(leaf, caller)| format!("{leaf} {caller}"))
+                .map(|(key, caller)| format!("{key} {caller}"))
                 .collect(),
-            Ask::PlaceholderCallers(_, leaf) => r.placeholder_callers(leaf),
+            Ask::PlaceholderCallers(id, leaf) => r.placeholder_callers(id, leaf),
         }
     }
 
@@ -2015,11 +2066,14 @@ pub(crate) mod tests {
         let cases: [(&str, Vec<String>); 4] = [
             ("proof calls", calls(resolver.proof_calls().to_vec())),
             ("proofs of", calls(resolver.proofs_of("src/p.rs::target"))),
-            ("placeholder callers", resolver.placeholder_callers("draw")),
+            (
+                "placeholder callers",
+                resolver.placeholder_callers("src/d1.rs::draw", "draw"),
+            ),
             (
                 "file placeholder calls",
                 (resolver.file_placeholder_calls(&facts).into_iter())
-                    .map(|(leaf, caller)| format!("{leaf} {caller}"))
+                    .map(|(key, caller)| format!("{key} {caller}"))
                     .collect(),
             ),
         ];
