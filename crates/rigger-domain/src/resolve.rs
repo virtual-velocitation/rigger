@@ -1755,12 +1755,32 @@ pub(crate) mod tests {
 
     /// The files of [`fixture`], `change` applied to them.
     fn changed(change: impl FnOnce(&mut Vec<FileFacts>)) -> FactsView {
-        let view = fixture();
-        let mut files: Vec<FileFacts> = (view.files())
-            .map(|f| view.file(f.path).unwrap().into_owned())
+        changed_from(&fixture(), change)
+    }
+
+    /// The files of `base`, `change` applied to them.
+    fn changed_from(base: &FactsView, change: impl FnOnce(&mut Vec<FileFacts>)) -> FactsView {
+        let mut files: Vec<FileFacts> = (base.files())
+            .map(|f| base.file(f.path).unwrap().into_owned())
             .collect();
         change(&mut files);
         FactsView::new(stamp(), files)
+    }
+
+    /// Re-settling `view`, which holds `base`'s facts but for the files at `differing`, from the
+    /// rows `base` settled computes the test files and proof calls settling `view` whole
+    /// computes, and those rows move from `base`'s exactly when a file differs: `case` fails
+    /// otherwise.
+    fn assert_resettles(case: &str, base: &FactsView, view: &FactsView, differing: &[&str]) {
+        let settled = |view: &FactsView| -> (Vec<String>, Vec<ProofCall>) {
+            let whole = Resolver::new(view);
+            let test_files = whole.test_files().into_iter().map(str::to_string).collect();
+            (test_files, whole.proof_calls().to_vec())
+        };
+        let (was, want) = (settled(base), settled(view));
+        let differing: BTreeSet<&str> = differing.iter().copied().collect();
+        assert_eq!(differing.is_empty(), want == was, "{case}: the rows move");
+        assert_eq!(resettle(base, view, &differing), want, "{case}");
     }
 
     /// The file at `path` among `files`.
@@ -1814,18 +1834,268 @@ pub(crate) mod tests {
                 }),
             ),
         ];
-        let settled = |view: &FactsView| -> (Vec<String>, Vec<ProofCall>) {
-            let whole = Resolver::new(view);
-            let test_files = whole.test_files().into_iter().map(str::to_string).collect();
-            (test_files, whole.proof_calls().to_vec())
-        };
         let base = fixture();
-        let was = settled(&base);
         for (case, differing, view) in cases {
-            let want = settled(&view);
-            let differing: BTreeSet<&str> = differing.iter().copied().collect();
-            assert_eq!(differing.is_empty(), want == was, "{case}: the rows move");
-            assert_eq!(resettle(&base, &view, &differing), want, "{case}");
+            assert_resettles(case, &base, &view, differing);
+        }
+    }
+
+    /// A QUALIFIED PROOF RESETTLES (spec 117, RESOLVER AT READ): a test call's proof narrows by
+    /// its qualifier as its call edge does, so a second `impl Cursor` holding `new` moves the
+    /// proof of a test's `Cursor::new()` from the first `new` to none, and a test beside the
+    /// second `new` proves neither; and re-settling reaches every proof a qualifier moves, after
+    /// a file that only adds the type `AtomicU64` a test's `AtomicU64::new()` names, one that only
+    /// renames an `impl` mention over unchanged method ids, one that adds a test trait's method a
+    /// qualifier keeps through an implementation in another file, one that turns test the call
+    /// target a qualified call proves, and one that turns a type into a trait over unchanged
+    /// method ids, a qualifier reaching it only through an implementation in a file it does not
+    /// touch. The proofs of each definition say what the proof calls say.
+    #[test]
+    fn a_qualified_proof_resettles() {
+        let test_call = |name: &str, enclosing, line| {
+            qualified(MentionKind::Call, name, Some(enclosing), line, true)
+        };
+        let fn_def = |name: &str| vec![def(name, "function", 1, None, true)];
+        let base = FactsView::new(
+            stamp(),
+            vec![
+                code(
+                    "src/cursor.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Cursor", "impl", 1, None, false),
+                        def("Cursor::new", "method", 2, Some(0), false),
+                    ],
+                    vec![tagged("impl", "Cursor", Some(0), 1)],
+                ),
+                code(
+                    "src/store.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Store", "impl", 1, None, false),
+                        def("Store::new", "method", 2, Some(0), false),
+                        def("tests", "module", 10, None, true),
+                        def("tests::counts", "function", 11, Some(2), true),
+                    ],
+                    vec![
+                        tagged("impl", "Store", Some(0), 1),
+                        test_call("AtomicU64::new", 3, 12),
+                    ],
+                ),
+                code(
+                    "src/gauge.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![def("Gauge", "type", 1, None, false)],
+                    vec![],
+                ),
+                code(
+                    "src/meter.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Meter", "impl", 1, None, false),
+                        def("Meter::read", "method", 2, Some(0), false),
+                    ],
+                    vec![tagged("impl", "Meter", Some(0), 1)],
+                ),
+                code(
+                    "src/seal.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("Seal", "type", 1, None, false),
+                        def("impl Seal", "impl", 2, None, false),
+                        def("Seal::shut", "method", 3, Some(1), false),
+                    ],
+                    vec![tagged("impl", "Seal", Some(1), 2)],
+                ),
+                code(
+                    "tests/gauge.rs",
+                    "rust",
+                    Scope::Test,
+                    vec![
+                        def("impl Probe for Gauge", "impl", 1, None, true),
+                        def("probes", "function", 5, None, true),
+                    ],
+                    vec![
+                        tagged("impl", "Probe", Some(0), 1),
+                        tagged("impl", "Gauge", Some(0), 1),
+                        test_call("Gauge::read", 1, 6),
+                    ],
+                ),
+                code(
+                    "tests/probe.rs",
+                    "rust",
+                    Scope::Test,
+                    vec![def("Probe", "trait", 1, None, true)],
+                    vec![],
+                ),
+                code(
+                    "tests/read.rs",
+                    "rust",
+                    Scope::Test,
+                    fn_def("reads"),
+                    vec![test_call("Reader::new", 0, 2)],
+                ),
+                code(
+                    "tests/seq.rs",
+                    "rust",
+                    Scope::Test,
+                    fn_def("steps"),
+                    vec![
+                        test_call("Cursor::new", 0, 2),
+                        test_call("Store::new", 0, 3),
+                    ],
+                ),
+                code(
+                    "tests/valve.rs",
+                    "rust",
+                    Scope::Test,
+                    vec![
+                        def("impl Seal for Valve", "impl", 1, None, true),
+                        def("shuts", "function", 5, None, true),
+                    ],
+                    vec![
+                        tagged("impl", "Seal", Some(0), 1),
+                        tagged("impl", "Valve", Some(0), 1),
+                        test_call("Valve::shut", 1, 6),
+                    ],
+                ),
+            ],
+        );
+        // (case, the files that differ, the change, the proofs settled after it)
+        let cases: [(&str, &[&str], FactsView, &[&str]); 7] = [
+            (
+                "no file differs: each qualified call proves the one call target it keeps, and \
+                 one whose path qualifier names nothing proves none",
+                &[],
+                changed_from(&base, |_| {}),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a second `impl Cursor` holding `new` moves the proof of `Cursor::new()` to none, \
+                 and a test beside the second `new` proves neither",
+                &["src/cursor_ext.rs"],
+                changed_from(&base, |files| {
+                    files.push(code(
+                        "src/cursor_ext.rs",
+                        "rust",
+                        Scope::Product,
+                        vec![
+                            def("impl Cursor", "impl", 1, None, false),
+                            def("Cursor::new", "method", 2, Some(0), false),
+                            def("tests", "module", 10, None, true),
+                            def("tests::opens", "function", 11, Some(2), true),
+                        ],
+                        vec![
+                            tagged("impl", "Cursor", Some(0), 1),
+                            test_call("Cursor::new", 3, 12),
+                        ],
+                    ));
+                }),
+                &[
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a file that only adds `struct AtomicU64` lets `AtomicU64::new()` take the \
+                 unqualified rule in a file it does not touch",
+                &["src/atomic.rs"],
+                changed_from(&base, |files| {
+                    let atomic = vec![def("AtomicU64", "type", 1, None, false)];
+                    files.push(code(
+                        "src/atomic.rs",
+                        "rust",
+                        Scope::Product,
+                        atomic,
+                        vec![],
+                    ));
+                }),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/store.rs::Store::new <- src/store.rs:12 tests/seq.rs:3",
+                ],
+            ),
+            (
+                "an `impl` mention renamed over unchanged method ids moves the proof between the \
+                 files calling its old and its new name",
+                &["src/cursor.rs"],
+                changed_from(&base, |files| {
+                    at(files, "src/cursor.rs").mentions[0] = tagged("impl", "Reader", Some(0), 1);
+                }),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/read.rs:2",
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a test trait's method, kept through an implementation in another file, moves \
+                 the proof of `Gauge::read()` to none",
+                &["tests/probe.rs"],
+                changed_from(&base, |files| {
+                    let read = def("Probe::read", "method", 2, Some(0), true);
+                    at(files, "tests/probe.rs").defs.push(read);
+                }),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a call target turned test moves the proof of `Gauge::read()` to none",
+                &["src/meter.rs"],
+                changed_from(&base, |files| at(files, "src/meter.rs").defs[1].test = true),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a type turned trait over unchanged method ids gives `Valve::shut()` its method \
+                 through an implementation, in a file it does not touch, that names both",
+                &["src/seal.rs"],
+                changed_from(&base, |files| {
+                    let seal = at(files, "src/seal.rs");
+                    seal.defs = vec![
+                        def("Seal", "trait", 1, None, false),
+                        def("Seal::shut", "method", 2, Some(0), false),
+                    ];
+                    seal.mentions.clear();
+                }),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/seal.rs::Seal::shut <- tests/valve.rs:6",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+        ];
+        let ids = [
+            "src/cursor.rs::Cursor::new",
+            "src/cursor_ext.rs::Cursor::new",
+            "src/meter.rs::Meter::read",
+            "src/seal.rs::Seal::shut",
+            "src/store.rs::Store::new",
+        ];
+        for (case, differing, view, proofs) in cases {
+            let r = Resolver::new(&view);
+            assert_eq!(answer(&view, &r, &Ask::Proofs), proofs, "{case}");
+            for id in ids {
+                let calls = r.proof_calls().iter().filter(|c| c.target == id);
+                let want: Vec<ProofCall> = calls.cloned().collect();
+                assert_eq!(r.proofs_of(id), want, "{case}: the proofs of {id}");
+            }
+            assert_resettles(case, &base, &view, differing);
         }
     }
 
@@ -2001,7 +2271,7 @@ pub(crate) mod tests {
     /// is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (3, "6126b9cf9571d2f0");
+        const PINNED: (u64, &str) = (4, "6126b9cf9571d2f0");
         let view = fixture();
         let resolver = Resolver::new(&view);
         let test_files: Vec<&str> = (view.files())
