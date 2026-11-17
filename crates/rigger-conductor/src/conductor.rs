@@ -2386,7 +2386,7 @@ pub(crate) fn is_store_fault(e: &Error) -> bool {
 /// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`],
 /// [`LAND_REFUSED_MARKER`], [`PROBE_FAULT_MARKER`] or [`GIT_STEP_MARKER`], each a halt's signal,
-/// [`CONTENT_REFUSAL_MARKER`], a content step's refusal, [`EMIT_REFUSED_MARKER`], the emit guard's
+/// [`EMIT_REFUSED_MARKER`], the emit guard's
 /// refusal of a record the spawn emitted, [`INTERRUPTED_MARKER`], the host's interrupted
 /// close, or [`STORE_FAULT_MARKER`], a store read failing before the launch) rather than a plain
 /// spawn or stage failure. Robust to
@@ -2808,9 +2808,8 @@ fn plan_landing_failed(unit: &str, e: Error) -> Error {
 /// exactly like the other conductor-side infra faults: the dedicated arm propagates the loud
 /// halt but emits NO per-unit lesson of its own (the specific, path-naming lesson is already
 /// recorded by [`RunCtx::land_refused`] itself, before this marker is even minted) and
-/// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`). Its error
-/// carries the [`CONTENT_REFUSAL_MARKER`] too, so the drive it ends holds nothing
-/// ([`held_on_a_fault`]).
+/// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`). The drive it
+/// ends holds the run for the orchestrator ([`held_on_a_fault`]).
 const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
 
 /// The sentinel a FAILED GUARD PROBE embeds in its error (spec 121 criterion 19): a gate's
@@ -2834,19 +2833,6 @@ fn probe_fault_halt(fault: gate::ProbeFault) -> Error {
 /// further attempt changes it, so it is a halt over [`HALT_MARKERS`]: no lesson names the unit,
 /// it is charged no attempt, and the run is held ([`held_on_a_fault`]).
 const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
-
-/// The sentinel a CONTENT STEP'S REFUSAL embeds in its error ([`git_step`],
-/// [`RunCtx::land_refused`]): git ran a step the unit's own work stands in and refused it, or
-/// rigger's own guard refused it before git ran. It is the stage's failure, never a conductor
-/// fault, and it is no halt: the wave records it as the base does (a lesson naming the unit from
-/// the wave's generic arm; a landing refusal's own lesson; a plan landing's halt), and the drive
-/// it ends holds nothing ([`held_on_a_fault`]), so a relaunch takes the run up again.
-const CONTENT_REFUSAL_MARKER: &str = "\u{1}rigger:content-refusal\u{1}";
-
-/// `text` without the [`CONTENT_REFUSAL_MARKER`]: what a lesson and the operator read.
-fn without_content_refusal(text: &str) -> String {
-    text.replace(CONTENT_REFUSAL_MARKER, "")
-}
 
 /// THE CONDUCTOR'S GIT STEP: `step`, the result of a fallible git step the conductor takes on a
 /// unit's branch or worktree, or on the run branch it lands one on, classed by what caused its
@@ -2873,16 +2859,17 @@ fn without_content_refusal(text: &str) -> String {
 /// cherry-pick ([`Worktree::cherry_pick_onto_run_branch`]). Its [`StepError::Refused`] is the
 /// unit's own work in the way - a hook refusing the commit, a merge refused over the tree's
 /// changes, conflict-marker text, a cherry-pick left in progress - and travels as the stage's
-/// failure, marked with [`CONTENT_REFUSAL_MARKER`], so it is recorded as the base records it and
-/// holds nothing. Its [`StepError::Unanswered`] is git not answering, a conductor fault like any
-/// lifecycle failure.
+/// plain failure, so it is recorded as the base records it (a lesson naming the unit from the
+/// wave's generic arm; a plan landing's halt) and the drive it ends holds the run for the
+/// orchestrator ([`held_on_a_fault`]). Its [`StepError::Unanswered`] is git not answering, a
+/// conductor fault like any lifecycle failure.
 ///
 /// [`StepError::Refused`]: worktree::StepError::Refused
 /// [`StepError::Unanswered`]: worktree::StepError::Unanswered
 fn git_step<T, E: Into<worktree::StepError>>(step: Result<T, E>) -> Result<T, Error> {
     step.map_err(|e| match e.into() {
         worktree::StepError::Unanswered(fault) => marked(GIT_STEP_MARKER, fault),
-        refused => marked(CONTENT_REFUSAL_MARKER, refused),
+        refused => Error(refused.to_string()),
     })
 }
 
@@ -3200,8 +3187,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
 /// made when it started (signed verdicts), and, when `channel` is given, answering each
 /// `rigger gate <id>` request it carries for as long as the run drives, spawns included
 /// ([`RunCtx::answer_gate_request`]). The channel is closed when the run returns, however it
-/// returns. A drive of a begun run that fails on a fault, not on a content step's refusal,
-/// holds the run first ([`held_on_a_fault`]), for the orchestrator to resolve.
+/// returns. A drive of a begun run that ends on any error but a park holds the run first
+/// ([`held_on_a_fault`]), for the orchestrator to resolve.
 pub fn run_serving(
     cfg: &Config,
     deps: &Deps,
@@ -3226,23 +3213,18 @@ pub fn run_serving(
 /// fault recurs after a release in the same run. `rigger status` and `rigger watch` name it with
 /// whoever resolves it, no probe ends it, and `rigger release` continues the run. It is the one home of every error a begun run's drive returns: each
 /// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, an
-/// outage past the infra limit, a failed guard probe, a failed git step) and every other, but a
-/// park ([`is_parked`]), whatever parked a spawn left its own hold standing, and a content step's
-/// refusal ([`CONTENT_REFUSAL_MARKER`]: a refused checkpoint commit, merge or cherry-pick, a
-/// refused landing), the unit's own work in the way, which a relaunch takes up as the base did.
-/// A hold it cannot write is said through
-/// [`Deps::log`]; `e` is returned either way, with every [`HALT_MARKERS`] sentinel and the
-/// content refusal's stripped ([`without_halt_markers`], [`without_content_refusal`]), so neither
-/// the hold nor the operator's message carries one, whichever path the halt reached here by.
+/// outage past the infra limit, a failed guard probe, a failed git step, a refused landing) and
+/// every other, a content step git refused included, but a park ([`is_parked`]), whatever parked
+/// a spawn left its own hold standing: a drive that ends on an error and is neither held nor
+/// relaunched reaches nobody. A hold it cannot write is said through
+/// [`Deps::log`]; `e` is returned either way, with every [`HALT_MARKERS`] sentinel stripped
+/// ([`without_halt_markers`]), so neither the hold nor the operator's message carries one,
+/// whichever path the halt reached here by.
 fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
     if is_parked(&e) {
         return e;
     }
-    let refused = carries_marker(&e, CONTENT_REFUSAL_MARKER);
-    let e = Error(without_content_refusal(&without_halt_markers(e).0));
-    if refused {
-        return e;
-    }
+    let e = without_halt_markers(e);
     let fault = strip_failure_marker(&e);
     if let Err(write) = crate::run_store::hold_on_a_fault(&deps.folding(), &fault) {
         (deps.log)(&format!(
@@ -5521,16 +5503,11 @@ impl RunCtx<'_> {
                 // a leaf site already cleaned). A spawn crash's own marker
                 // ([`SPAWN_CRASH_MARKER`]) reaches here from a review stage outside
                 // the single lane, and is stripped with it.
-                // A content step's refusal keeps its [`CONTENT_REFUSAL_MARKER`] on the wave's
-                // error, for [`held_on_a_fault`], and never in the lesson.
                 let msg = strip_failure_marker(&e).replace(SPAWN_CRASH_MARKER, "");
                 let _ = self.emit_lesson(
                     None,
                     &name,
-                    &format!(
-                        "stage {name:?} failed in its wave: {}",
-                        without_content_refusal(&msg)
-                    ),
+                    &format!("stage {name:?} failed in its wave: {msg}"),
                     None,
                     None,
                 );
@@ -13069,7 +13046,7 @@ impl RunCtx<'_> {
         );
         let _ = self.emit_lesson(Some(wt), unit, &summary, None, None);
         Error(format!(
-            "{LAND_REFUSED_MARKER}{CONTENT_REFUSAL_MARKER}unit {unit:?}: landing refused for \
+            "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for \
              local changes at {}",
             paths.join(", ")
         ))
@@ -48014,46 +47991,22 @@ mod tests {
         );
     }
 
-    /// NEITHER A PARK NOR A CONTENT REFUSAL IS A FAULT: a parked spawn's error, whose park left
-    /// its own hold standing, is returned unchanged; a content step's refusal - bare, or inside
-    /// the plan landing's halt a cherry-pick an earlier attempt left in progress ends in - is
-    /// returned with no marker. Neither holds the run.
+    /// A PARK IS NO FAULT: a parked spawn's error reaching the conductor's fault hold is returned
+    /// unchanged and holds nothing, since whatever parked the spawn left its own hold standing.
     #[test]
-    fn a_park_or_a_content_refusal_reaching_the_fault_hold_holds_nothing() {
-        let refused = || marked(CONTENT_REFUSAL_MARKER, "worktree: CHERRY_PICK_HEAD left");
-        // (the error reaching the hold, whether it is a park)
-        let rows = [
-            (parked_spawn("solo/implementer#0"), true),
-            (refused(), false),
-            (plan_landing_failed("unit-a", refused()), false),
-        ];
-        for (error, parked) in rows {
-            let store = Store::open(":memory:").unwrap();
-            let driver = Stub::new();
-            let deps = stub_deps(&store, &driver, Vec::new());
-            crate::run_store::ensure_started(&deps.folding(), &deps.criteria).unwrap();
-            let shown = error.0.replace('\u{1}', "<M>");
-
-            let returned = held_on_a_fault(&deps, error);
-
-            if parked {
-                assert!(
-                    is_parked(&returned),
-                    "{shown}: the park is returned unchanged"
-                );
-            } else {
-                assert!(
-                    returned.0.contains("CHERRY_PICK_HEAD left") && !returned.0.contains('\u{1}'),
-                    "{shown}: the refusal is returned unmarked: {}",
-                    returned.0
-                );
-            }
-            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-            assert!(
-                holds_in(&events).is_empty(),
-                "{shown}: nothing holds the run"
-            );
-        }
+    fn a_park_reaching_the_fault_hold_holds_nothing() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        crate::run_store::ensure_started(&deps.folding(), &deps.criteria).unwrap();
+        let returned = held_on_a_fault(&deps, parked_spawn("solo/implementer#0"));
+        assert!(
+            is_parked(&returned),
+            "the park is returned unchanged: {}",
+            returned.0
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(holds_in(&events).is_empty(), "the park holds nothing");
     }
 
     /// A HALT REACHES NO PERSON MARKED: whichever path a halt took to the drive's end - the wave's
@@ -48423,20 +48376,23 @@ mod tests {
         );
     }
 
-    /// A CONTENT STEP'S REFUSAL IS THE UNIT'S: when git runs and refuses a step the unit's own
-    /// work stands in - a hook refusing the attempt's checkpoint commit, a merge of the run
-    /// branch refused over an untracked file in the worktree, a merge with a content conflict, a
-    /// commit refused over conflict-marker text - the stage fails exactly as on the base: a
-    /// lesson names the unit and its refusal, nothing holds the run, and no record carries a
-    /// marker. A conflict is remediated inside the drive, each attempt charged
-    /// (`integrate-conflict`). A refusal ends the drive with no attempt charged, and a relaunch
-    /// over the same store takes the run up again and integrates the unit once the refusal is
-    /// gone (each refusal here fires once).
+    /// A CONTENT STEP GIT REFUSES IS THE UNIT'S LESSON AND THE ORCHESTRATOR'S HOLD: when git runs
+    /// and refuses a step the unit's own work stands in - a hook refusing the attempt's checkpoint
+    /// commit, a merge of the run branch refused over an untracked file in the worktree, a commit
+    /// refused over conflict-marker text, the landing refused over local content in the run
+    /// checkout, a plan landing's cherry-pick refused over one an earlier attempt left in
+    /// progress - the failure is recorded as on the base (a lesson naming the unit and its
+    /// refusal; a refused landing's own lesson naming its path; a plan landing's halt, with no
+    /// lesson), no attempt is charged, the drive ends, and the run is held for the orchestrator,
+    /// the hold's first line the refusal's. Released with the refusal gone (each fires once, or
+    /// its planted cause is cleared), a relaunch integrates the unit and holds nothing new. A merge
+    /// with a content conflict is remediated inside the drive, each attempt charged
+    /// (`integrate-conflict`), and holds nothing. No record carries a marker.
     #[test]
     #[cfg(unix)]
-    fn a_content_step_git_refuses_is_the_units_failure_and_the_run_goes_on() {
+    fn a_content_step_git_refuses_records_the_units_lesson_ends_the_drive_and_holds_the_run() {
         use std::os::unix::fs::PermissionsExt;
-        #[derive(Debug, Clone, Copy)]
+        #[derive(Debug, Clone, Copy, PartialEq)]
         enum Step {
             /// A prepare-commit-msg hook, which `--no-verify` does not skip, refuses the first
             /// attempt's checkpoint commit (exit 1).
@@ -48452,33 +48408,54 @@ mod tests {
             /// the implementer's own commit of it, so the attempt's checkpoint commit is refused
             /// before git runs.
             ConflictMarkers,
+            /// The gate leaves an untracked f.txt in the run checkout, so the landing's
+            /// `git merge --ff-only` is refused over local content at the unit's own path.
+            LandRefused,
+            /// A plan stage commits under specs/, and the run checkout carries a cherry-pick an
+            /// earlier attempt left in progress with an empty sequencer, so the landing's
+            /// cherry-pick is refused before git picks anything.
+            PlanCherryPick,
         }
         /// How the step's refusal leaves the drive.
         #[derive(Debug, Clone, Copy, PartialEq)]
         enum Drive {
             /// Remediated inside the drive, each attempt charged.
             Remediates,
-            /// Ended, no attempt charged; a relaunch integrates the unit.
+            /// Ended and held, no attempt charged; released, a relaunch integrates the unit.
             Ends,
         }
-        // Each row: the step, the text the unit's lesson names, and how the drive goes.
+        // Each row: the step, the text its refusal names, whether a lesson names the unit and
+        // that text, and how the drive goes.
         let cases = [
             (
                 Step::CheckpointHook,
                 "hook: refusing the attempt",
+                true,
                 Drive::Ends,
             ),
-            (Step::MergeRefused, "op.txt", Drive::Ends),
-            (Step::MergeConflict, "f.txt", Drive::Remediates),
-            (Step::ConflictMarkers, "conflict-marker", Drive::Ends),
+            (Step::MergeRefused, "op.txt", true, Drive::Ends),
+            (Step::MergeConflict, "f.txt", true, Drive::Remediates),
+            (Step::ConflictMarkers, "conflict-marker", true, Drive::Ends),
+            (Step::LandRefused, "f.txt", true, Drive::Ends),
+            (
+                Step::PlanCherryPick,
+                "CHERRY_PICK_HEAD left in progress",
+                false,
+                Drive::Ends,
+            ),
         ];
-        for (step, named, drive) in cases {
+        for (step, named, lesson, drive) in cases {
             let repo = temp_git_project_with_commit();
             let repo_path = repo.path().to_str().unwrap().to_string();
             let elsewhere = tempfile::tempdir().unwrap();
             let mark = elsewhere.path().join("fired");
             let mark = mark.to_str().unwrap();
             let store = Store::open(":memory:").unwrap();
+            let unit = if step == Step::PlanCherryPick {
+                "plan"
+            } else {
+                "unit-a"
+            };
             let hook = |name: &str, body: String| {
                 let path = repo.path().join(".git").join("hooks").join(name);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -48501,7 +48478,12 @@ mod tests {
             let gate = match step {
                 Step::MergeRefused => format!("{} && echo note > note.txt", lands("op.txt", "op")),
                 Step::MergeConflict => lands("f.txt", "theirs"),
-                Step::CheckpointHook | Step::ConflictMarkers => "true".to_string(),
+                Step::LandRefused => {
+                    format!("[ -e '{mark}' ] || {{ touch '{mark}' && echo stray > '{repo_path}/f.txt'; }}")
+                }
+                Step::CheckpointHook | Step::ConflictMarkers | Step::PlanCherryPick => {
+                    "true".to_string()
+                }
             };
             match step {
                 Step::CheckpointHook => hook(
@@ -48522,15 +48504,22 @@ mod tests {
                         "printf '<<<<<<< ours\\nwork\\n=======\\ntheirs\\n>>>>>>> theirs\\n' > f.txt",
                     ),
                 ),
-                Step::MergeConflict => {}
+                Step::PlanCherryPick => {
+                    let head = run_git(&repo_path, &["rev-parse", "HEAD"]);
+                    let git_dir = repo.path().join(".git");
+                    std::fs::write(git_dir.join("CHERRY_PICK_HEAD"), &head.stdout).unwrap();
+                    std::fs::create_dir_all(git_dir.join("sequencer")).unwrap();
+                    std::fs::write(git_dir.join("sequencer").join("todo"), "").unwrap();
+                }
+                Step::MergeConflict | Step::LandRefused => {}
             }
             let mut cfg = Config::default();
-            for id in ["worker", "lens", "adversary", "judge"] {
+            for id in ["worker", "lens", "adversary", "judge", "planner"] {
                 cfg.agents.insert(id.into(), agent(id));
             }
             cfg.workflow.gates.insert("g".into(), gate_def(&gate));
             let review = match step {
-                Step::MergeRefused => crate::config::ReviewPanel::default(),
+                Step::MergeRefused | Step::PlanCherryPick => crate::config::ReviewPanel::default(),
                 _ => crate::config::ReviewPanel {
                     lenses: vec!["lens".into()],
                     adversary: "adversary".into(),
@@ -48538,27 +48527,40 @@ mod tests {
                     ..Default::default()
                 },
             };
-            cfg.workflow.stages.insert(
-                "unit-a".into(),
+            let stage = if step == Step::PlanCherryPick {
                 Stage {
-                    name: "unit-a".into(),
+                    name: unit.into(),
+                    agent: "planner".into(),
+                    produces: "dag".into(),
+                    ..Default::default()
+                }
+            } else {
+                Stage {
+                    name: unit.into(),
                     agent: "worker".into(),
                     criterion_id: "c1".into(),
                     gates: vec!["g".into()],
                     on_pass: "merge".into(),
                     review,
                     ..Default::default()
-                },
-            );
+                }
+            };
+            cfg.workflow.stages.insert(unit.into(), stage);
+            let commits_by_agent = match step {
+                Step::ConflictMarkers => HashMap::from([(
+                    "worker".to_string(),
+                    vec![("f.txt".into(), "clean\n".into())],
+                )]),
+                Step::PlanCherryPick => HashMap::from([(
+                    "planner".to_string(),
+                    vec![("specs/90-foo.md".into(), "amendment\n".into())],
+                )]),
+                _ => HashMap::new(),
+            };
             let driver = Stub {
-                write_file: (!matches!(step, Step::ConflictMarkers)).then(|| "f.txt".into()),
-                commits_by_agent: matches!(step, Step::ConflictMarkers)
-                    .then(|| {
-                        let commit = ("f.txt".to_string(), "clean\n".to_string());
-                        ("worker".to_string(), vec![commit])
-                    })
-                    .into_iter()
-                    .collect(),
+                write_file: (!matches!(step, Step::ConflictMarkers | Step::PlanCherryPick))
+                    .then(|| "f.txt".into()),
+                commits_by_agent,
                 output_by_agent: HashMap::from([
                     ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
                     ("lens".to_string(), "reviewed: no blocker".to_string()),
@@ -48582,13 +48584,16 @@ mod tests {
                     .collect::<Vec<_>>()
             };
             let lessons = of_type(contextgraph::TYPE_LESSON_LEARNED);
-            assert!(
-                lessons
-                    .iter()
-                    .any(|l| l.contains("unit-a") && l.contains(named)),
-                "{step:?}: a lesson names the unit and its refusal: {lessons:?}"
-            );
-            assert_eq!(holds_in(&events), [], "{step:?}: nothing holds the run");
+            if lesson {
+                assert!(
+                    lessons
+                        .iter()
+                        .any(|l| l.contains(unit) && l.contains(named)),
+                    "{step:?}: a lesson names the unit and its refusal: {lessons:?}"
+                );
+            } else {
+                assert_eq!(lessons, Vec::<String>::new(), "{step:?}: no lesson");
+            }
             assert_eq!(
                 events
                     .iter()
@@ -48607,10 +48612,11 @@ mod tests {
                             && failed.iter().all(|f| f.contains("integrate-conflict")),
                         "{step:?}: each remediation is charged: {failed:?}"
                     );
+                    assert_eq!(holds_in(&events), [], "{step:?}: nothing holds the run");
                 }
                 Drive::Ends => {
                     let Err(err) = first else {
-                        panic!("{step:?}: the refusal ends the drive, as on the base");
+                        panic!("{step:?}: the refusal ends the drive");
                     };
                     assert!(
                         err.0.contains(named) && !err.0.contains('\u{1}'),
@@ -48622,16 +48628,43 @@ mod tests {
                         Vec::<String>::new(),
                         "{step:?}: no attempt is charged"
                     );
+                    let held = [conductor_fault_hold(&err.0)];
+                    assert_eq!(
+                        holds_in(&events),
+                        held,
+                        "{step:?}: the run is held for the orchestrator on the refusal"
+                    );
+                    match step {
+                        Step::LandRefused => {
+                            std::fs::remove_file(repo.path().join("f.txt")).unwrap();
+                        }
+                        Step::PlanCherryPick => {
+                            let git_dir = repo.path().join(".git");
+                            std::fs::remove_file(git_dir.join("CHERRY_PICK_HEAD")).unwrap();
+                            std::fs::remove_dir_all(git_dir.join("sequencer")).unwrap();
+                        }
+                        _ => {}
+                    }
+                    let released = crate::run_store::release_hold(
+                        &deps.folding(),
+                        crate::run::HOLD_BY_OPERATOR,
+                        std::time::SystemTime::now(),
+                    );
+                    assert_eq!(released.ok(), Some(true), "{step:?}: the run is released");
                     let Ok(state) = run_isolated(&cfg, &deps) else {
                         panic!("{step:?}: a relaunch drives the run on");
                     };
                     assert_eq!(
-                        state.units["unit-a"].status,
+                        state.units[unit].status,
                         ledger::Status::Integrated,
                         "{step:?}: the relaunch integrates the unit"
                     );
                     let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-                    assert_eq!(holds_in(&events), [], "{step:?}: nothing held the relaunch");
+                    assert_eq!(
+                        holds_in(&events),
+                        held,
+                        "{step:?}: the relaunch holds nothing new"
+                    );
                 }
             }
         }
