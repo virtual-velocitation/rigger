@@ -28,7 +28,8 @@
 
 mod common;
 use common::repo::{
-    collect_rs_files, files_under, production_part, production_sources, repo_root, table_lines,
+    collect_rs_files, files_under, production_part, production_sources, repo_root,
+    rs_sources_under, table_lines,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1202,18 +1203,8 @@ const PRINCIPLE_LINTS: &[&str] = &["large_enum_variant", "module_inception"];
 /// Every `allow`/`expect` of a [`PRINCIPLE_LINTS`] lint over every `.rs` file under `root`'s
 /// `src/`, `crates/` and `tests/`, as `file:line: lint`.
 fn lint_exemptions(root: &Path) -> Vec<String> {
-    let mut files = Vec::new();
-    for dir in ["src", "crates", "tests"] {
-        collect_rs_files(&root.join(dir), &mut files);
-    }
     let mut out = Vec::new();
-    for path in files {
-        let text = fs::read_to_string(&path).unwrap_or_default();
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
+    for (rel, text) in rs_sources_under(root, &["src", "crates", "tests"]) {
         for (i, line) in text.lines().enumerate() {
             for lint in PRINCIPLE_LINTS {
                 if ["allow", "expect"]

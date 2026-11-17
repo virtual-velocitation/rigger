@@ -45,9 +45,7 @@
 //! the gate's own command carries no literal instance of what it forbids.
 
 use crate::common;
-use common::repo::collect_rs_files;
 
-use std::fs;
 use std::path::Path;
 
 use crate::source_audit;
@@ -302,22 +300,10 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
 /// file but [`REAPER`] - the whole-tree twin of the diff-scoped `no-os-kill` gate (spec 78, THE
 /// AUDIT TEST).
 fn scan_tree(root: &Path) -> Vec<Finding> {
-    let mut files = Vec::new();
-    for top in ["src", "crates", "tests"] {
-        collect_rs_files(&root.join(top), &mut files);
-    }
     let windows_termination = windows_termination_open();
     let mut findings = Vec::new();
-    for path in &files {
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+    for (rel, content) in common::repo::rs_sources_under(root, &["src", "crates", "tests"]) {
         let sanctioned = SANCTIONED_FILES.contains(&rel.as_str());
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
         for (i, line) in content.lines().enumerate() {
             let mut hits = if sanctioned {
                 sanctioned_hits(line)
