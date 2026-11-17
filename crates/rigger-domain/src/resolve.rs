@@ -1288,8 +1288,10 @@ pub fn resettle(
 pub(crate) mod tests {
     use super::*;
     use crate::code_facts::{Def, DocConcept, DocLink, Stamp, Tip, WfNode, WfRelation};
-    use crate::code_view::FactsView;
+    use crate::code_view::{Compared, FactsView, Tests, ViewFilter};
+    use crate::composed::{Composed, Honesty, Indexed};
     use crate::contextgraph::query::path_leaf;
+    use crate::contextgraph::{ContextGraph, Direction};
 
     fn def(local: &str, kind: &str, line: u32, parent: Option<u32>, test: bool) -> Def {
         Def {
@@ -1594,7 +1596,7 @@ pub(crate) mod tests {
         TestFiles,
         Intent(&'static str),
         PlaceholderCalls(&'static str),
-        PlaceholderCallers(&'static str),
+        PlaceholderCallers(&'static str, &'static str),
     }
 
     fn render_link(l: &Link) -> String {
@@ -1659,7 +1661,7 @@ pub(crate) mod tests {
                 .into_iter()
                 .map(|(leaf, caller)| format!("{leaf} {caller}"))
                 .collect(),
-            Ask::PlaceholderCallers(leaf) => r.placeholder_callers(leaf),
+            Ask::PlaceholderCallers(_, leaf) => r.placeholder_callers(leaf),
         }
     }
 
@@ -2108,8 +2110,9 @@ pub(crate) mod tests {
     /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
     /// none, under a `Q` that names a type, leave the unqualified rule. A class whose base is `Q`
     /// is no implementation of `Q`.
-    /// The placeholder readers resolve each call by its name, so two calls of one leaf that
-    /// land apart are read apart.
+    /// A call's placeholder for several kept candidates is keyed by its qualified name, and the
+    /// placeholder readers file a test call under each candidate it keeps, so two calls of one
+    /// leaf that land apart are read apart.
     #[test]
     fn a_qualified_call_narrows_its_candidates() {
         let qualified_call = |name: &str, enclosing, line, test| {
@@ -2223,8 +2226,9 @@ pub(crate) mod tests {
                     "src/composed.rs::Composed::open -CALLS/extracted-> \
                      src/code_view.rs::CodeView::stamp",
                     "src/composed.rs -REFERENCES/extracted-> src/code_view.rs::CodeView::stamp",
-                    "src/composed.rs::Composed::open -CALLS/inferred-> src/composed.rs::%files",
-                    "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%files",
+                    "src/composed.rs::Composed::open -CALLS/inferred-> \
+                     src/composed.rs::%CodeView::files",
+                    "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%CodeView::files",
                     "src/composed.rs::Composed::open -CALLS/inferred-> src/composed.rs::%decode",
                     "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%decode",
                     "src/composed.rs::impl Composed -REFERENCES/extracted-> \
@@ -2270,8 +2274,8 @@ pub(crate) mod tests {
                 &[
                     "tests/open.rs::opens -CALLS/extracted-> src/code_view.rs::FactsView::files",
                     "tests/open.rs -REFERENCES/extracted-> src/code_view.rs::FactsView::files",
-                    "tests/open.rs::opens -CALLS/inferred-> tests/open.rs::%files",
-                    "tests/open.rs -REFERENCES/inferred-> tests/open.rs::%files",
+                    "tests/open.rs::opens -CALLS/inferred-> tests/open.rs::%CodeView::files",
+                    "tests/open.rs -REFERENCES/inferred-> tests/open.rs::%CodeView::files",
                     "tests/open.rs -CONTAINS/extracted-> tests/open.rs::opens",
                 ],
             ),
@@ -2285,13 +2289,17 @@ pub(crate) mod tests {
                 ],
             ),
             (
-                "a test file's calls landing on a placeholder, by name",
+                "a test file's call landing on a placeholder, filed under each candidate it keeps",
                 Ask::PlaceholderCalls("tests/open.rs"),
-                &["files tests/open.rs::opens"],
+                &[
+                    "src/code_view.rs::FactsView::files tests/open.rs::opens",
+                    "src/composed.rs::Composed::files tests/open.rs::opens",
+                    "src/snapshot.rs::Snapshot::files tests/open.rs::opens",
+                ],
             ),
             (
-                "a leaf's placeholder callers, by name",
-                Ask::PlaceholderCallers("files"),
+                "a kept candidate's placeholder callers",
+                Ask::PlaceholderCallers("src/snapshot.rs::Snapshot::files", "files"),
                 &["tests/open.rs::opens"],
             ),
         ];
@@ -3005,7 +3013,7 @@ pub(crate) mod tests {
             ),
             (
                 "no placeholder caller of a leaf nothing defines",
-                Ask::PlaceholderCallers("fetch_add"),
+                Ask::PlaceholderCallers("tests/seq.rs::%fetch_add", "fetch_add"),
                 &[],
             ),
             (
@@ -3066,12 +3074,298 @@ pub(crate) mod tests {
             ),
             (
                 "the placeholder caller of a leaf nothing defines, by its file's language",
-                Ask::PlaceholderCallers("unload"),
+                Ask::PlaceholderCallers("tests/gauge.rs::%unload", "unload"),
                 &["tests/gauge.rs::drains"],
             ),
         ];
         for (shows, ask, want) in cases {
             assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+    }
+
+    /// SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE (spec 117, RESOLVER AT READ): a call
+    /// whose qualifier keeps several candidates lands on the placeholder keyed by its qualified
+    /// name (`F::%Q.leaf`), never on the candidate in its own file, and that placeholder's
+    /// down-hop is the kept set alone. So `CodeView.file`, written in the trait's default method
+    /// `describe` beside `FactsView`'s `file`, with `Snapshot`'s `file` in another file, reaches
+    /// both implementations and never `Store`'s `file`: in the resolver's links, down-hop,
+    /// up-hops and hidden test callers, and in `Composed`'s call walk over either code half,
+    /// which lists both as `describe`'s callees and `describe` as the caller of each. A shown
+    /// test call keeps the test implementation `Fake` beside them, and a file-level reference
+    /// to the leaf stays held by the call.
+    #[test]
+    fn several_narrowed_candidates_never_prefer_their_file() {
+        let qualified_call = |enclosing, line, test| {
+            qualified(
+                MentionKind::Call,
+                "CodeView.file",
+                Some(enclosing),
+                line,
+                test,
+            )
+        };
+        let code_view = code(
+            "src/code_view.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("CodeView", "trait", 1, None, false),
+                def("CodeView::describe", "method", 2, Some(0), false),
+                def("FactsView", "type", 10, None, false),
+                def("impl CodeView for FactsView", "impl", 12, None, false),
+                def("FactsView::file", "method", 13, Some(3), false),
+            ],
+            vec![
+                qualified_call(1, 3, false),
+                tagged("field", "file", None, 5),
+                tagged("impl", "CodeView", Some(3), 12),
+                tagged("impl", "FactsView", Some(3), 12),
+            ],
+        );
+        let snapshot = code(
+            "src/snapshot.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Snapshot", "type", 1, None, false),
+                def("impl CodeView for Snapshot", "impl", 3, None, false),
+                def("Snapshot::file", "method", 4, Some(1), false),
+            ],
+            vec![
+                tagged("impl", "CodeView", Some(1), 3),
+                tagged("impl", "Snapshot", Some(1), 3),
+            ],
+        );
+        let store = code(
+            "src/store.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Store", "type", 1, None, false),
+                def("impl Store", "impl", 3, None, false),
+                def("Store::file", "method", 4, Some(1), false),
+                def("Config", "type", 10, None, false),
+                def("Config::file", "field", 11, Some(3), false),
+            ],
+            vec![tagged("impl", "Store", Some(1), 3)],
+        );
+        let describe = code(
+            "tests/describe.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("describes", "function", 1, None, true),
+                def("Fake", "type", 5, None, true),
+                def("impl CodeView for Fake", "impl", 6, None, true),
+                def("Fake::file", "method", 7, Some(2), true),
+            ],
+            vec![
+                qualified_call(0, 2, true),
+                tagged("impl", "CodeView", Some(2), 6),
+                tagged("impl", "Fake", Some(2), 6),
+            ],
+        );
+        let view = FactsView::new(stamp(), vec![code_view, snapshot, store, describe]);
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let asks: [(&str, Ask, &[&str]); 10] = [
+            (
+                "a product call keeping two implementations, one in its own file, and a \
+                 file-level reference to the leaf held by it",
+                Ask::Links("src/code_view.rs", false),
+                &[
+                    "src/code_view.rs::CodeView::describe -CALLS/inferred-> \
+                     src/code_view.rs::%CodeView.file",
+                    "src/code_view.rs -REFERENCES/inferred-> src/code_view.rs::%CodeView.file",
+                    "src/code_view.rs::impl CodeView for FactsView -REFERENCES/extracted-> \
+                     src/code_view.rs::CodeView",
+                    "src/code_view.rs::impl CodeView for FactsView -REFERENCES/extracted-> \
+                     src/code_view.rs::FactsView",
+                    "src/code_view.rs -CONTAINS/extracted-> src/code_view.rs::CodeView",
+                    "src/code_view.rs::CodeView -CONTAINS/extracted-> \
+                     src/code_view.rs::CodeView::describe",
+                    "src/code_view.rs -CONTAINS/extracted-> src/code_view.rs::FactsView",
+                    "src/code_view.rs::impl CodeView for FactsView -CONTAINS/extracted-> \
+                     src/code_view.rs::FactsView::file",
+                    "src/code_view.rs -CONTAINS/extracted-> \
+                     src/code_view.rs::impl CodeView for FactsView",
+                ],
+            ),
+            (
+                "a test call keeping the test implementation too, past its proof",
+                Ask::Links("tests/describe.rs", true),
+                &[
+                    "tests/describe.rs::describes -CALLS/inferred-> \
+                     tests/describe.rs::%CodeView.file",
+                    "tests/describe.rs -REFERENCES/inferred-> tests/describe.rs::%CodeView.file",
+                    "tests/describe.rs::impl CodeView for Fake -REFERENCES/inferred-> \
+                     src/code_view.rs::CodeView",
+                    "tests/describe.rs::impl CodeView for Fake -REFERENCES/extracted-> \
+                     tests/describe.rs::Fake",
+                    "tests/describe.rs -CONTAINS/extracted-> tests/describe.rs::Fake",
+                    "tests/describe.rs::impl CodeView for Fake -CONTAINS/extracted-> \
+                     tests/describe.rs::Fake::file",
+                    "tests/describe.rs -CONTAINS/extracted-> tests/describe.rs::describes",
+                    "tests/describe.rs -CONTAINS/extracted-> \
+                     tests/describe.rs::impl CodeView for Fake",
+                ],
+            ),
+            (
+                "the product placeholder's down-hop, the product implementations",
+                Ask::DownHop("src/code_view.rs::%CodeView.file", Pool::Product),
+                &["frontier src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file"],
+            ),
+            (
+                "the test placeholder's down-hop, the test implementation too",
+                Ask::DownHop("tests/describe.rs::%CodeView.file", Pool::All),
+                &[
+                    "frontier src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file \
+                     tests/describe.rs::Fake::file",
+                ],
+            ),
+            (
+                "the caller of the implementation in the call's file",
+                Ask::UpHop("src/code_view.rs::FactsView::file", "file"),
+                &[
+                    "src/code_view.rs::CodeView::describe -CALLS/inferred-> \
+                     src/code_view.rs::%CodeView.file",
+                    "src/code_view.rs -REFERENCES/inferred-> src/code_view.rs::%CodeView.file",
+                ],
+            ),
+            (
+                "the caller of the implementation in another file",
+                Ask::UpHop("src/snapshot.rs::Snapshot::file", "file"),
+                &[
+                    "src/code_view.rs::CodeView::describe -CALLS/inferred-> \
+                     src/code_view.rs::%CodeView.file",
+                    "src/code_view.rs -REFERENCES/inferred-> src/code_view.rs::%CodeView.file",
+                ],
+            ),
+            (
+                "no caller of another type's method of the leaf",
+                Ask::UpHop("src/store.rs::Store::file", "file"),
+                &[],
+            ),
+            (
+                "the test call's placeholder filed under each candidate it keeps",
+                Ask::PlaceholderCalls("tests/describe.rs"),
+                &[
+                    "src/code_view.rs::FactsView::file tests/describe.rs::describes",
+                    "src/snapshot.rs::Snapshot::file tests/describe.rs::describes",
+                    "tests/describe.rs::Fake::file tests/describe.rs::describes",
+                ],
+            ),
+            (
+                "the hidden test caller of an implementation",
+                Ask::PlaceholderCallers("src/snapshot.rs::Snapshot::file", "file"),
+                &["tests/describe.rs::describes"],
+            ),
+            (
+                "no hidden test caller of another type's method of the leaf",
+                Ask::PlaceholderCallers("src/store.rs::Store::file", "file"),
+                &[],
+            ),
+        ];
+        for (shows, ask, want) in asks {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+        let records = Indexed::default();
+        let honesty = Honesty {
+            worktree: "wt".into(),
+            compared: Compared::Overlaid(0),
+            behind: None,
+        };
+        // The walk from `seed` as lines: each node by layer, with the frontier it is when it is
+        // one, each edge, each file referencing a seed's leaf and calling it from nowhere, and
+        // the hidden test callers of the seed.
+        let walk = |graph: &dyn ContextGraph, seed: &str, direction| -> Vec<String> {
+            let seed = [seed.to_string()];
+            let walked = graph.calls(&seed, direction, 2, TIER_INFERRED).unwrap();
+            let nodes = walked.nodes.iter().map(|n| match &n.frontier {
+                Some(cands) => format!("{} {} frontier {}", n.layer, n.node.id, cands.join(" ")),
+                None => format!("{} {}", n.layer, n.node.id),
+            });
+            let edges = (walked.edges.iter())
+                .map(|e| format!("{} -{}-> {}", e.edge.from, e.edge.tier, e.edge.to));
+            let referenced =
+                (walked.referenced_not_called.iter()).map(|n| format!("referenced {}", n.id));
+            let hidden = graph.hidden_placeholder_callers(&seed).unwrap();
+            (nodes.chain(edges).chain(referenced))
+                .chain([format!("hidden {hidden:?}")])
+                .collect()
+        };
+        // (what the walk shows, the tests shown, the seed, the direction, the whole walk)
+        let walks: [(&str, Tests, &str, Direction, &[&str]); 5] = [
+            (
+                "the trait method's callees: both implementations, a frontier",
+                Tests::Exclude,
+                "src/code_view.rs::CodeView::describe",
+                Direction::Down,
+                &[
+                    "0 src/code_view.rs::CodeView::describe",
+                    "1 src/code_view.rs::%CodeView.file frontier \
+                     src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file",
+                    "src/code_view.rs::CodeView::describe -inferred-> \
+                     src/code_view.rs::%CodeView.file",
+                    "hidden []",
+                ],
+            ),
+            (
+                "the caller of the implementation in the call's file, and its hidden test caller",
+                Tests::Exclude,
+                "src/code_view.rs::FactsView::file",
+                Direction::Up,
+                &[
+                    "0 src/code_view.rs::FactsView::file",
+                    "1 src/code_view.rs::CodeView::describe frontier \
+                     src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file",
+                    "src/code_view.rs::CodeView::describe -inferred-> \
+                     src/code_view.rs::FactsView::file",
+                    "hidden [\"tests/describe.rs::describes\"]",
+                ],
+            ),
+            (
+                "the caller of the implementation in another file, and its hidden test caller",
+                Tests::Exclude,
+                "src/snapshot.rs::Snapshot::file",
+                Direction::Up,
+                &[
+                    "0 src/snapshot.rs::Snapshot::file",
+                    "1 src/code_view.rs::CodeView::describe frontier \
+                     src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file",
+                    "src/code_view.rs::CodeView::describe -inferred-> \
+                     src/snapshot.rs::Snapshot::file",
+                    "hidden [\"tests/describe.rs::describes\"]",
+                ],
+            ),
+            (
+                "no caller of another type's method of the leaf",
+                Tests::Exclude,
+                "src/store.rs::Store::file",
+                Direction::Up,
+                &["0 src/store.rs::Store::file", "hidden []"],
+            ),
+            (
+                "a shown test call's callees: the test implementation beside both",
+                Tests::Include,
+                "tests/describe.rs::describes",
+                Direction::Down,
+                &[
+                    "0 tests/describe.rs::describes",
+                    "1 tests/describe.rs::%CodeView.file frontier \
+                     src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file \
+                     tests/describe.rs::Fake::file",
+                    "tests/describe.rs::describes -inferred-> tests/describe.rs::%CodeView.file",
+                    "hidden []",
+                ],
+            ),
+        ];
+        for (shows, tests, seed, direction, want) in walks {
+            let filter = ViewFilter { tests };
+            let whole = Composed::new(&records, &view, filter, honesty.clone()).unwrap();
+            assert_eq!(walk(&whole, seed, direction), want, "whole: {shows}");
+            let near = Composed::near(&records, &view, filter, honesty.clone()).unwrap();
+            assert_eq!(walk(&near, seed, direction), want, "near: {shows}");
         }
     }
 
