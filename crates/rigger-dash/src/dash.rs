@@ -52,8 +52,8 @@ use crate::contextgraph::{
 // them.
 use crate::contextgraph::query::{
     bucket_label_index, count_tests, defs_by_entity_suffix, fold_buckets, member_set,
-    memory_rail_of, neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id,
-    withheld_reached, Buckets,
+    memory_rail_of, neighborhood_of, node_file, node_label, node_name, placeholder_candidates,
+    referenced_id, withheld_reached, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -1505,7 +1505,8 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 /// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
 /// member that is a real definition (or a doc / file path) folds under its own file; a BARE
 /// cross-file placeholder (no `name` attr) resolves by its leaf to the call-target DEFINITION of
-/// that leaf - EXACTLY ONE folds under that definition's file (standing in for it, not counted
+/// that leaf, of those its down-hop keeps when it is keyed by a qualified name - EXACTLY ONE
+/// folds under that definition's file (standing in for it, not counted
 /// again, when that definition is itself a member), MORE THAN ONE (or zero) is surfaced
 /// as a marked-unresolved entry carrying the sorted candidate ids, never a wrong attribution to the
 /// referencing file its id encodes; a member naming NO file under its kind's arm of [`node_file`]
@@ -1651,8 +1652,9 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// - a member that IS a definition (a non-empty `name` attr, [`node_name`]) or a doc / file
 ///   node folds under its OWN file ([`node_file`], read by its kind);
 /// - a BARE cross-file code-entity placeholder (no `name` attr, or an empty one) resolves by its
-///   leaf ([`node_leaf`]) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
-///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's
+///   leaf ([`node_leaf`](crate::contextgraph::query::node_leaf)) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
+///   folds under its own file as every definition does), those its down-hop keeps for one keyed
+///   by a qualified name ([`placeholder_candidates`]): EXACTLY ONE folds under that definition's
 ///   file, and when that definition is itself a member the placeholder stands in for it, carrying
 ///   its edges but not counted again; MORE THAN ONE (or zero) is marked-unresolved with the sorted
 ///   candidate ids;
@@ -1681,12 +1683,10 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
     for m in members {
         let is_bare = m.kind == KIND_CODE_ENTITY && node_name(m).is_none();
         if is_bare {
-            // A bare placeholder resolves by its leaf; the honesty rule decides.
-            let cands = node_leaf(m)
-                .and_then(|leaf| defs_by_suffix.get(leaf))
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            match cands {
+            // A bare placeholder resolves by its leaf, keeping those its down-hop keeps when it
+            // is keyed by a qualified name; the honesty rule decides.
+            let cands = placeholder_candidates(m, &defs_by_suffix);
+            match cands.as_slice() {
                 [only] => {
                     if let Some(file) = node_file(KIND_CODE_ENTITY, only) {
                         resolved.insert(m.id.as_str(), file.to_string());

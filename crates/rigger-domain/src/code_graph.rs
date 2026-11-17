@@ -15,11 +15,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::code_facts::{FileFacts, Half, Mention};
 use crate::code_view::{CodeView, Tests, ViewFilter};
-use crate::contextgraph::query::{leaf_of, split_path};
+use crate::contextgraph::query::{leaf_of, split_path, CANDIDATES_ATTR};
 use crate::contextgraph::{
     Edge, Graph, Node, KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_FILE, TIER_EXTRACTED,
 };
-use crate::resolve::{Entity, IntentLink, IntentNode, Pool, ProofCall, Resolver};
+use crate::resolve::{Entity, Hop, IntentLink, IntentNode, Pool, ProofCall, Resolver};
 
 /// The attribute naming the file a design or workflow node's facts came from.
 pub(crate) const DOC_ATTR: &str = "doc";
@@ -206,22 +206,6 @@ impl Builder {
     }
 }
 
-/// The edge `from` -`rel`-> `to` asserted to `b`, its end first asserted as a code entity when
-/// it is a placeholder.
-fn linked(
-    b: &mut impl Asserts,
-    from: &str,
-    rel: &'static str,
-    to: &str,
-    tier: &'static str,
-    test: bool,
-) {
-    if leaf_of(to).is_some() {
-        b.node(to, KIND_CODE_ENTITY, [], test);
-    }
-    b.link(from, rel, to, tier, test);
-}
-
 /// A view resolved whole under one filter.
 pub struct Resolved {
     /// Every node and edge the filter shows.
@@ -318,14 +302,20 @@ impl<'v> CodeGraph<'v> {
         calls
     }
 
-    /// The candidate ids the down-hop of `id` keeps ([`Resolver::down_hop`]) in the pool the
-    /// filter shows, the test definitions too when tests are shown, when `id` is a placeholder
-    /// keyed by a qualified name; none for any other id.
+    /// The candidate ids a walk's down-hop from `id` reaches when `id` is a placeholder keyed by a
+    /// qualified name, in id order: those its down-hop keeps ([`Resolver::down_hop`]) in the
+    /// product pool under every filter, the pool [`Resolver::callers`] reads a product call in,
+    /// and, when the filter shows tests, those it keeps in the test pool beside them, never in
+    /// their place, since a product call and a test call of one name in one file land on one
+    /// placeholder; none for any other id.
     pub fn down_hop(&self, id: &str) -> Option<Vec<String>> {
         split_path(leaf_of(id)?).0?;
-        let pool = Pool::of(self.filter.tests != Tests::Exclude);
-        let kept = self.resolver.down_hop(id, pool)?.into_vec();
-        Some(kept.into_iter().map(|c| c.id).collect())
+        let kept = |pool| self.resolver.down_hop(id, pool).map(Hop::into_vec);
+        let mut ids: BTreeSet<String> = kept(Pool::Product)?.into_iter().map(|c| c.id).collect();
+        if self.filter.tests.admits(true) {
+            ids.extend(kept(Pool::All)?.into_iter().map(|c| c.id));
+        }
+        Some(ids.into_iter().collect())
     }
 
     /// The file node, entities, placeholders and edges of the code file `facts`, asserted to `b`.
@@ -395,7 +385,7 @@ impl<'v> CodeGraph<'v> {
         b: &mut impl Asserts,
     ) {
         (self.resolver).each_mention_link(facts, mentions, tests, |from, rel, to, tier, test| {
-            linked(b, from, rel, to, tier, test)
+            self.linked(b, from, rel, to, tier, test)
         });
     }
 
@@ -403,8 +393,31 @@ impl<'v> CodeGraph<'v> {
     /// asserted to `b` ([`Resolver::each_declared_link`]).
     pub(crate) fn code_declared(&self, facts: &FileFacts, tests: bool, b: &mut impl Asserts) {
         (self.resolver).each_declared_link(facts, tests, |from, rel, to, tier, test| {
-            linked(b, from, rel, to, tier, test)
+            self.linked(b, from, rel, to, tier, test)
         });
+    }
+
+    /// The edge `from` -`rel`-> `to` asserted to `b`, its end first asserted as a code entity when
+    /// it is a placeholder, one keyed by a qualified name carrying its down-hop
+    /// ([`Self::down_hop`]) as its [`CANDIDATES_ATTR`], so a reader holding the graph alone keeps
+    /// the candidates the walk does.
+    fn linked(
+        &self,
+        b: &mut impl Asserts,
+        from: &str,
+        rel: &'static str,
+        to: &str,
+        tier: &'static str,
+        test: bool,
+    ) {
+        if leaf_of(to).is_some() {
+            let candidates = self.down_hop(to).map(|ids| {
+                let ids = serde_json::to_string(&ids).expect("strings serialize");
+                (CANDIDATES_ATTR, ids)
+            });
+            b.node(to, KIND_CODE_ENTITY, candidates, test);
+        }
+        b.link(from, rel, to, tier, test);
     }
 
     /// The design and workflow nodes and edges of `facts`, asserted to `b`.

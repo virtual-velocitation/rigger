@@ -20,7 +20,7 @@ use crate::code_graph::{CodeGraph, DOC_ATTR};
 use crate::code_view::{CodeView, Compared, Groupings, Tests, ViewFilter};
 use crate::community::DEFAULT_RESOLUTION;
 use crate::contextgraph::query::{
-    entity_id, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
+    entity_id, kept_of, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
 };
 use crate::contextgraph::{
     entity_site, holds_attachment, is_call_target, CallEdge, CallGraph, CallNode, Candidate,
@@ -1664,13 +1664,6 @@ struct Hop {
 /// The candidates a placeholder keyed by a qualified name keeps ([`CodeHalf::down_hop`]): none
 /// for any other id.
 type DownHop<'a> = &'a dyn Fn(&str) -> Option<Vec<String>>;
-
-/// `cands` less those `kept` does not hold, when it is given: the call-target definitions of a
-/// leaf a placeholder reaches.
-fn kept_of(cands: &[String], kept: Option<&[String]>) -> Vec<String> {
-    let reached = cands.iter().filter(|c| kept.is_none_or(|k| k.contains(c)));
-    reached.cloned().collect()
-}
 
 /// One DOWN hop's callee: a named call target lands on itself; any other target resolves by the
 /// leaf its id names over the call-target definitions, those a placeholder keyed by a qualified

@@ -207,7 +207,8 @@ const RING_STEP: f64 = 30.0;
 const GOLDEN_ANGLE: f64 = 2.399_963_229_728_653;
 
 /// The label a map entity is drawn with: its leaf ([`node_leaf`]: a non-empty `name`, else the
-/// leaf its id names less one placeholder sigil), else its whole id (spec 119).
+/// leaf its id names less one placeholder sigil, the text after the qualifier of a placeholder
+/// keyed by a qualified name), else its whole id (spec 119).
 fn entity_label(node: &Node) -> String {
     node_leaf(node).map_or_else(|| node.id.clone(), str::to_string)
 }

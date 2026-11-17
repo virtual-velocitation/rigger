@@ -303,11 +303,42 @@ pub fn node_name(node: &Node) -> Option<&str> {
 
 /// A node's leaf (spec 119): its non-empty `name` attr whatever it holds ([`node_name`]: `new` for
 /// `a.rs::T::new`, `A.B`, `a::b`, a C# `operator %`'s `%`, so a named node is never read as a
-/// placeholder), else [`leaf_of`] its id (the qualified name as written, for a placeholder keyed
-/// by one). The store's pinned twin is the adapter's `node_leaf_sql()`, NULL exactly where this
+/// placeholder), else the [`path_leaf`] of [`leaf_of`] its id, the text after the last `::` or
+/// `.` of the name a placeholder is keyed by (spec 117: `<file>::%T.x` and `<file>::%x` both give
+/// `x`). The store's pinned twin is the adapter's `node_leaf_sql()`, NULL exactly where this
 /// reads the id.
 pub fn node_leaf(node: &Node) -> Option<&str> {
-    node_name(node).or_else(|| leaf_of(&node.id))
+    node_name(node).or_else(|| leaf_of(&node.id).map(path_leaf))
+}
+
+/// The attribute a placeholder keyed by a qualified name carries (spec 117, RESOLVER AT READ):
+/// the ids of the candidates its down-hop keeps, a JSON array, so a reader holding the graph
+/// alone keeps what the walk keeps.
+pub const CANDIDATES_ATTR: &str = "candidates";
+
+/// `cands` less those `kept` does not hold, when it is given: of the call-target definitions of
+/// a leaf, those a placeholder reaches.
+pub fn kept_of<C: AsRef<str> + Clone>(cands: &[C], kept: Option<&[String]>) -> Vec<C> {
+    let reached = cands
+        .iter()
+        .filter(|c| kept.is_none_or(|k| k.iter().any(|id| id == c.as_ref())));
+    reached.cloned().collect()
+}
+
+/// The call-target definitions a bare placeholder `node` resolves over, of `defs_by_suffix`
+/// ([`defs_by_entity_suffix`]): those of its leaf ([`node_leaf`]), less those its
+/// [`CANDIDATES_ATTR`] does not name when it carries one that parses ([`kept_of`]); none when it
+/// names no leaf.
+pub fn placeholder_candidates<'g>(
+    node: &Node,
+    defs_by_suffix: &BTreeMap<&str, Vec<&'g str>>,
+) -> Vec<&'g str> {
+    let kept: Option<Vec<String>> = node
+        .attrs
+        .get(CANDIDATES_ATTR)
+        .and_then(|ids| serde_json::from_str(ids).ok());
+    let cands = node_leaf(node).and_then(|leaf| defs_by_suffix.get(leaf));
+    kept_of(cands.map_or(&[], Vec::as_slice), kept.as_deref())
 }
 
 /// Index every code-entity DEFINITION a call resolves onto (a non-empty `name` attr,
@@ -775,7 +806,8 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
 /// and a code entity folds by [`node_file`] - its OWN FILE - rather than [`cluster_key`]'s directory
 /// fold. A REAL definition (a non-empty `name` attr, [`node_name`], a data member's included) takes
 /// [`node_file`] of its own id directly; a BARE placeholder resolves FIRST by its leaf
-/// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone.
+/// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone, those its down-hop
+/// keeps for one keyed by a qualified name ([`placeholder_candidates`]).
 pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
     match buckets.lens {
         Lens::Code { .. } => {
@@ -797,20 +829,18 @@ pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<Str
             }
             // A real definition (a non-empty `name` attr), a data member or a declaration as much
             // as a fn, folds under its OWN file. A BARE placeholder (no `name`, or an
-            // empty one) resolves by its leaf ([`node_leaf`]) over `buckets.defs_by_suffix`, the
-            // call targets, FIRST - the same honest resolution `reproject_files` performs - since
-            // its raw id names the REFERENCING file, not its true definition file: EXACTLY ONE
-            // candidate resolves to that definition's file; ZERO or MORE THAN ONE cannot be
-            // honestly attributed to any one file, so the fold excludes it entirely (never
-            // mis-attributed to the referencing file its own id encodes).
+            // empty one) resolves by its leaf over `buckets.defs_by_suffix`, the call targets,
+            // those its down-hop keeps for one keyed by a qualified name
+            // ([`placeholder_candidates`]), FIRST - the same honest resolution `reproject_files`
+            // performs - since its raw id names the REFERENCING file, not its true definition
+            // file: EXACTLY ONE candidate resolves to that definition's file; ZERO or MORE THAN
+            // ONE cannot be honestly attributed to any one file, so the fold excludes it entirely
+            // (never mis-attributed to the referencing file its own id encodes).
             if node_name(node).is_some() {
                 return node_file(&node.kind, &node.id).map(str::to_string);
             }
-            match node_leaf(node)
-                .and_then(|leaf| buckets.defs_by_suffix.get(leaf))
-                .map(Vec::as_slice)
-            {
-                Some([only]) => node_file(KIND_CODE_ENTITY, only).map(str::to_string),
+            match placeholder_candidates(node, &buckets.defs_by_suffix).as_slice() {
+                [only] => node_file(KIND_CODE_ENTITY, only).map(str::to_string),
                 _ => None,
             }
         }
