@@ -165,6 +165,7 @@ mod metadata_card_periphery;
 mod model_pinning_periphery;
 mod mutation_runner_pdeathsig_periphery;
 mod name_filter_drops_a_nameless_definition_periphery;
+mod near_folds_qualified_callers_periphery;
 mod new_run_critique_refusal_periphery;
 mod no_os_kill_audit;
 mod no_os_kill_test_helper_periphery;
