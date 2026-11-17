@@ -1801,6 +1801,68 @@ pub(crate) mod tests {
         }
     }
 
+    /// THE NEW TAGS RESOLVE AS REFERENCES (spec 117, NEW TAGS and RESOLVER AT READ): an `impl`
+    /// mention in an implementation header resolves onto the one trait or type of its leaf, and a
+    /// `variant` mention onto the one variant, each a REFERENCES link and never CALLS. A
+    /// same-leaf definition of a kind outside the tag's candidates - the implementation itself,
+    /// a function, a constant - is no candidate, so it neither takes the edge nor contests it.
+    #[test]
+    fn the_new_tags_resolve_as_references() {
+        let view = code(
+            "src/view.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("CodeView", "trait", 1, None, false),
+                def("Located", "type", 5, None, false),
+                def("Located::Many", "variant", 6, Some(1), false),
+            ],
+            vec![],
+        );
+        let facts = code(
+            "src/facts.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Located", "impl", 1, None, false),
+                def("locate", "function", 5, None, false),
+            ],
+            vec![
+                tagged("impl", "CodeView", Some(0), 1),
+                tagged("impl", "Located", Some(0), 1),
+                tagged("variant", "Many", Some(1), 6),
+            ],
+        );
+        let decoys = code(
+            "src/decoys.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("CodeView", "function", 1, None, false),
+                def("Many", "constant", 3, None, false),
+            ],
+            vec![],
+        );
+        let view = FactsView::new(stamp(), vec![view, facts, decoys]);
+        let resolver = Resolver::new(&view);
+        let links: Vec<String> = (resolver.links(&view.file("src/facts.rs").unwrap(), false))
+            .iter()
+            .map(render_link)
+            .collect();
+        assert_eq!(
+            links,
+            [
+                "src/facts.rs::Located -REFERENCES/inferred-> src/view.rs::CodeView",
+                "src/facts.rs::Located -REFERENCES/inferred-> src/view.rs::Located",
+                "src/facts.rs::locate -REFERENCES/inferred-> src/view.rs::Located::Many",
+                "src/facts.rs -CONTAINS/extracted-> src/facts.rs::Located",
+                "src/facts.rs -CONTAINS/extracted-> src/facts.rs::locate",
+            ],
+            "each tagged mention one REFERENCES link onto its trait, type or variant, no CALLS, \
+             then the file's CONTAINS"
+        );
+    }
+
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {

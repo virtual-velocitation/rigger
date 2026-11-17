@@ -1807,14 +1807,16 @@ mod kind_rank_rule {
     }
 }
 
-/// Spec 117, KIND CANDIDATES: the definition kinds each reference kind resolves onto.
+/// Spec 117, RESOLVER AT READ: the definition kinds each reference kind resolves onto.
 #[cfg(test)]
 mod reference_candidate_kinds_rule {
     use super::*;
 
-    /// The reference kinds each test below asks the rule about: the three it names candidates
+    /// The reference kinds each test below asks the rule about: the six it names candidates
     /// for, a module row's kind, a call's and the empty value.
-    const ASKED: [&str; 6] = ["type", "const", "use", "module", "call", ""];
+    const ASKED: [&str; 9] = [
+        "type", "impl", "const", "field", "variant", "use", "module", "call", "",
+    ];
 
     #[test]
     fn each_reference_kind_names_its_candidate_kinds_and_any_other_none() {
@@ -1823,7 +1825,10 @@ mod reference_candidate_kinds_rule {
             candidates,
             [
                 vec!["type", "trait"],
-                vec!["constant", "static"],
+                vec!["type", "trait"],
+                vec!["constant", "static", "variant"],
+                vec!["field", "property", "constant", "static", "variant"],
+                vec!["variant"],
                 vec![
                     "type",
                     "trait",
@@ -1842,7 +1847,9 @@ mod reference_candidate_kinds_rule {
                 vec![],
                 vec![],
             ],
-            "a use imports any kind but a method, a field, a property or a declaration"
+            "a type and an impl name a type or a trait, a const a constant, a static or a \
+             variant, a field a field or a property besides, a variant a variant alone, a use any \
+             kind but a method, a field, a property or a declaration, and any other kind none"
         );
     }
 
