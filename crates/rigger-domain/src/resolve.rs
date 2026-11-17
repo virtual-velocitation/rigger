@@ -9,7 +9,7 @@
 //! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
 //! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
-//! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge |
+//! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge; a `field` reference no qualifier narrows reads its field and property candidates alone and skips the same-file step: one in the view, in its file or not, is `inferred`, else no edge, so it reaches a constant, a static or a variant only through a qualifier that keeps it |
 //! | held reference | a tagged reference whose node already references the target, or its placeholder from that node, writes no edge |
 //! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
@@ -36,10 +36,10 @@ use crate::contextgraph::query::{
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, CODE_KIND_IMPL,
     CODE_KIND_TRAIT, KIND_AGENT, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE,
-    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_IMPL, REF_KIND_TYPE, REL_CALLS,
-    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_NEEDS,
-    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, TIER_AMBIGUOUS,
-    TIER_EXTRACTED, TIER_INFERRED,
+    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL,
+    REF_KIND_TYPE, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
+    REL_GOVERNS, REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    REL_SPECIFIES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
@@ -651,8 +651,11 @@ impl<'v> Resolver<'v> {
     /// tagged `tag`, from `file`, written in `lang`, over the candidates of the tag's kinds in
     /// `lang` ([`Pool::references`]): the one its qualifier narrows them to
     /// ([`Self::narrowed`]), EXTRACTED wherever it is, and none when it narrows them to several
-    /// or its qualifier makes it no link; else the one same-file candidate, EXTRACTED, else the
-    /// one in the view, INFERRED; none when no one candidate takes it.
+    /// or its qualifier makes it no link; else, for a `field` reference, the one field or
+    /// property candidate in the view, INFERRED even in `file`, so it never prefers its file and
+    /// reaches a constant, a static or a variant only through a qualifier that keeps it; else
+    /// the one same-file candidate, EXTRACTED, else the one in the view, INFERRED; none when no
+    /// one candidate takes it.
     fn tagged(
         &self,
         file: &str,
@@ -672,6 +675,14 @@ impl<'v> Resolver<'v> {
             Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
             Hop::Frontier(_) => return None,
             Hop::Terminal => {}
+        }
+        if tag == REF_KIND_FIELD {
+            let consts = reference_candidate_kinds(REF_KIND_CONST);
+            let members = targets.into_iter().filter(|c| !consts.contains(&c.kind));
+            return match hop(members.collect()) {
+                Hop::One(one) => Some((one.id.clone(), TIER_INFERRED)),
+                Hop::Terminal | Hop::Frontier(_) => None,
+            };
         }
         one_here_else_one_anywhere(&targets, file).map(|(c, here)| {
             let tier = if here { TIER_EXTRACTED } else { TIER_INFERRED };
