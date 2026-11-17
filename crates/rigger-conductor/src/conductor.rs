@@ -18862,9 +18862,9 @@ mod tests {
     }
 
     /// Running `cfg` over `criteria` - one of which it leaves uncovered - with a driver that
-    /// proposes nothing must be refused (`why`), naming the gap, and held for a person on that
-    /// refusal's own text, so `rigger status` names the uncovered criterion; returns the log the
-    /// refused run left.
+    /// proposes nothing must be refused (`why`), naming the gap and its remedy, and held for a
+    /// person on that refusal's own text, so `rigger status` names the uncovered criterion and
+    /// what to do about it; returns the log the refused run left.
     fn uncovered_run_log(cfg: Config, criteria: &[&str], why: &str) -> Vec<Event> {
         let st = Store::open(":memory:").unwrap();
         let driver = Stub::new();
@@ -18881,8 +18881,12 @@ mod tests {
             .unwrap();
         assert!(
             err.0
-                .starts_with("coverage gap - no stage with an LLM verifier covers: "),
-            "{why}: the refusal names the gap: {}",
+                .starts_with("coverage gap - no stage with an LLM verifier covers: ")
+                && err.0.ends_with(
+                    "; to continue, amend the spec or the workflow until a stage with an LLM \
+                     verifier covers every criterion, then `rigger release`"
+                ),
+            "{why}: the refusal names the gap and what a person does about it: {}",
             err.0
         );
         assert_eq!(
