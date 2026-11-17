@@ -25807,6 +25807,29 @@ mod tests {
         lines
     }
 
+    /// A REPO-LESS BRANCH COLLECTION RESOLVES NO SCRATCH ROOT: with no repository there is no
+    /// branch or worktree to collect, so the collection returns before it resolves a scratch
+    /// root, and the configured root is never made.
+    #[test]
+    fn a_repo_less_branch_collection_resolves_no_scratch_root() {
+        let st = Store::open(":memory:").unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path().join("configured-root");
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.workdir = root.to_str().unwrap().to_string();
+        let driver = Stub::new();
+        let deps = stub_deps(&st, &driver, Vec::new());
+        let ctx = RunCtx::for_test(&cfg, &deps);
+
+        ctx.gc_integrated_branches_logged(&ledger::RunState::default(), &[], &mut |_| {});
+
+        assert!(
+            !root.exists(),
+            "a repo-less collection makes no scratch root at {}",
+            root.display()
+        );
+    }
+
     // Periphery layer (SDET), spec 38 criterion 1: the inside-out test
     // `branch_gc_reclaims_integrated_units_and_retains_escalated_ones_on_resume` proves
     // the happy path of the ONE cross-module seam this unit adds - `run` at resume folds

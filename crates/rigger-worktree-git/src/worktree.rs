@@ -7194,6 +7194,48 @@ mod tests {
         }
     }
 
+    /// A DISCARD WITH NO REPOSITORY CLEARS NOTHING: an empty repository path names no
+    /// repository to deregister a worktree from, so `discard` fails and leaves what sits at its
+    /// path as it was - a plain directory, or a registered worktree of the branch, each holding
+    /// an uncommitted file - never removing it on git's refusal alone.
+    #[test]
+    fn discard_with_no_repository_path_clears_nothing() {
+        // Each row: whether the path holds a registered worktree of the branch (else a plain
+        // directory).
+        for registered in [false, true] {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let root = scratch_root(&repo_path, "", None);
+            let branch = "rigger/review/unit-unrepo";
+            let dir = format!("{root}/rigger-review-unit-unrepo");
+            if registered {
+                Worktree::create(&repo_path, &dir, branch, "").unwrap();
+            } else {
+                std::fs::create_dir_all(&dir).unwrap();
+            }
+            let work = std::path::Path::new(&dir).join("work.txt");
+            std::fs::write(&work, "uncommitted\n").unwrap();
+
+            let discarded = Worktree::discard("", &dir, branch, &root);
+
+            assert!(
+                discarded.is_err(),
+                "registered {registered}: a discard with no repository fails"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&work).ok().as_deref(),
+                Some("uncommitted\n"),
+                "registered {registered}: the file at the path survives"
+            );
+            if registered {
+                assert!(
+                    registered_worktree_for(&repo_path, branch).is_some(),
+                    "the worktree's registration survives"
+                );
+            }
+        }
+    }
+
     /// THE LEFTOVER CLEAR REAPS FIRST: on either arm of `create` that clears a leftover at the
     /// unit's path - its branch kept, or gone with its worktree - a process still rooted in the
     /// leftover is reaped under the scratch root the caller resolved (it ignores SIGTERM, so
