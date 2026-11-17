@@ -64,24 +64,38 @@ mod tests {
         a_path_is_itself: reads(Some("/home/operator"), Some("/home/operator"));
     }
 
+    /// `path` with a leading `/` read as the root of this OS's file system (the `C:` drive's root
+    /// on Windows), so a row's absolute path is absolute on every OS.
+    fn rooted(path: &str) -> PathBuf {
+        PathBuf::from(if cfg!(windows) && path.starts_with('/') {
+            format!("C:{path}")
+        } else {
+            path.to_owned()
+        })
+    }
+
     /// [`xdg_or_home`] of `xdg` and `home` under the default `.local/state` answers `expected`.
     fn roots(xdg: Option<&str>, home: Option<&str>, expected: Option<&str>) {
         assert_eq!(
             xdg_or_home(
-                xdg.map(OsString::from),
-                home.map(OsString::from),
+                xdg.map(|v| rooted(v).into_os_string()),
+                home.map(|v| rooted(v).into_os_string()),
                 &[".local", "state"]
             ),
-            expected.map(PathBuf::from)
+            expected.map(rooted)
         );
     }
 
-    // GIVEN an XDG variable's value and a home, WHEN the directory it roots is read, THEN a
-    // non-empty value wins, else the default under a non-empty home, else none.
+    // GIVEN an XDG variable's value and a home, WHEN the directory it roots is read, THEN an
+    // absolute value wins, else (an unset, empty or relative value, which the XDG base directory
+    // specification makes invalid) the default under a non-empty home, else none.
     rigger_domain::test_cases! {
         a_set_xdg_value_wins_over_the_home: roots(Some("/xdg"), Some("/home/dev"), Some("/xdg"));
         an_empty_xdg_value_falls_to_the_home: roots(Some(""), Some("/home/dev"), Some("/home/dev/.local/state"));
         an_unset_xdg_value_falls_to_the_home: roots(None, Some("/home/dev"), Some("/home/dev/.local/state"));
+        a_relative_xdg_value_falls_to_the_home: roots(Some("xdg"), Some("/home/dev"), Some("/home/dev/.local/state"));
+        a_dot_relative_xdg_value_falls_to_the_home: roots(Some("./xdg"), Some("/home/dev"), Some("/home/dev/.local/state"));
+        a_relative_xdg_value_and_no_home_is_none: roots(Some("xdg"), None, None);
         an_empty_home_is_no_home: roots(None, Some(""), None);
         no_xdg_value_and_no_home_is_none: roots(None, None, None);
     }
