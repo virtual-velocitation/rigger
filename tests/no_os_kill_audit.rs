@@ -4,7 +4,7 @@
 //! tree and fails, naming file and line, on any of the gate's forbidden shapes found outside
 //! the two sanctioned lifecycle helpers (`crates/rigger-process/src/reap.rs`, `tests/common/mod.rs`) - or on a
 //! shell-out / `--` argv separator / negative-pid `format!` found INSIDE those two files (and
-//! on the Windows process-termination call inside the test helper),
+//! on either Windows termination call inside the test helper),
 //! where calling the internal signal API directly is exactly the point and must NOT be
 //! flagged. It runs under plain `cargo test`, so unlike the shell gate it also covers CI
 //! (`.github/workflows/rust.yml`), which runs `cargo test` but not the rigger-loop gate.
@@ -18,12 +18,12 @@
 //! through `libc` or a `signal` module; the sanctioned rustix call itself (forbidden only
 //! OUTSIDE the two sanctioned files - see below); the `--` argv separator passed to
 //! `.arg(...)`; a `format!` call shaped to build a leading-hyphen (negative-pid-style)
-//! argument; and an opened call of the Windows process-termination function, forbidden in
-//! every file but `reap.rs`. Inside the two sanctioned files the Command::new shell-out, the
-//! `--` separator and the negative-pid `format!` remain banned (the gate's own narrower second
-//! check), and so does the Windows call inside the test helper - the direct unix signal call is
-//! exactly what those two files exist to make, and the reaper's `send_signal` is the one
-//! Windows termination site.
+//! argument; and an opened call of either Windows termination function (the process one and the
+//! job-object one), forbidden in every file but `reap.rs`. Inside the two sanctioned files the
+//! Command::new shell-out, the `--` separator and the negative-pid `format!` remain banned (the
+//! gate's own narrower second check), and so do the Windows calls inside the test helper - the
+//! direct unix signal call is exactly what those two files exist to make, and the reaper's
+//! `send_signal` and `end_job` are the Windows termination sites.
 //!
 //! The test module also runs the shipped script itself, by path, over one fixture unit branch
 //! per row, so the script's own patterns for the two Windows shapes are pinned by its exit and
@@ -94,6 +94,11 @@ fn module_kill_open(module: &str) -> String {
 /// An opened call of the Windows process-termination function (Terminate-Process).
 fn windows_termination_open() -> String {
     join("Terminate", "Process(")
+}
+/// An opened call of the Windows job-termination function (Terminate-JobObject), whose one site
+/// is the reaper's `end_job`, ending a job object the process created.
+fn job_termination_open() -> String {
+    join("TerminateJob", "Object(")
 }
 
 /// The exact set of words the Command::new shell-out shape and the bare shell
@@ -245,9 +250,9 @@ fn has_marker_shape(line: &str, (marker, tail): MarkerShape) -> bool {
 /// path, independent of `.rigger/gates/content.sh`'s copy.
 const SANCTIONED_FILES: [&str; 2] = [REAPER, "tests/common/mod.rs"];
 
-/// The reaper, whose `send_signal` is the one site of the Windows process-termination call:
-/// the one file [`scan_tree`] never flags for it (the test helper is sanctioned for the unix
-/// signal call only).
+/// The reaper, whose `send_signal` and `end_job` are the sites of the two Windows termination
+/// calls: the one file [`scan_tree`] never flags for them (the test helper is sanctioned for the
+/// unix signal call only).
 const REAPER: &str = "crates/rigger-process/src/reap.rs";
 
 /// Every forbidden shape found in one line of a file that is NOT one of the two sanctioned
@@ -298,7 +303,7 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
 
 /// Scan every `.rs` file under `root/src`, `root/crates` and `root/tests`, deterministically ordered by
 /// (file, line), applying [`general_hits`] outside [`SANCTIONED_FILES`] and
-/// [`sanctioned_hits`] inside them, and flagging the Windows process-termination call in every
+/// [`sanctioned_hits`] inside them, and flagging both Windows termination calls in every
 /// file but [`REAPER`] - the whole-tree twin of the diff-scoped `no-os-kill` gate (spec 78, THE
 /// AUDIT TEST).
 fn scan_tree(root: &Path) -> Vec<Finding> {
@@ -326,6 +331,9 @@ fn scan_tree(root: &Path) -> Vec<Finding> {
             };
             if rel != REAPER && line.contains(&windows_termination) {
                 hits.push("Windows process-termination call outside reap.rs");
+            }
+            if rel != REAPER && line.contains(&job_termination_open()) {
+                hits.push("Windows job-termination call outside reap.rs");
             }
             for shape in hits {
                 findings.push(Finding {
@@ -407,6 +415,11 @@ mod tests {
         format!("unsafe {{ {}handle, 1) }};\n", windows_termination_open())
     }
 
+    /// A line opening a call of the Windows job-termination function.
+    fn job_termination_call() -> String {
+        format!("unsafe {{ {}job, 1) }};\n", job_termination_open())
+    }
+
     /// A line shelling out to `program`.
     fn shell_out_to(program: &str) -> String {
         format!("let _ = std::process::Command::new(\"{program}\");\n")
@@ -474,6 +487,11 @@ mod tests {
             "crates/somewhere/src/lib.rs",
             &windows_termination_call(),
             "Windows process-termination call",
+        );
+        job_termination_call_is_caught_outside_reap_rs: caught_as(
+            "crates/somewhere/src/lib.rs",
+            &job_termination_call(),
+            "Windows job-termination call",
         );
         taskkill_shell_out_is_caught_outside_the_sanctioned_files: caught_as(
             "src/somewhere.rs",
@@ -560,6 +578,17 @@ mod tests {
             &windows_termination_call(),
             "Windows process-termination call",
         );
+        /// The reaper's end_job is the one Windows job-termination site.
+        a_job_termination_call_in_reap_rs_is_never_flagged: never_flagged(
+            &[("crates/rigger-process/src/reap.rs", &job_termination_call())],
+            "reap.rs's own Windows job-termination call must never be flagged",
+        );
+        /// The test helper may not end a job either.
+        a_job_termination_call_in_the_test_helper_is_caught: caught_as(
+            "tests/common/mod.rs",
+            &job_termination_call(),
+            "Windows job-termination call",
+        );
         /// Naming the Windows function without calling it (an import, a doc) is never a call.
         a_windows_termination_name_without_a_call_is_never_flagged: never_flagged(
             &[(
@@ -598,14 +627,15 @@ mod tests {
         file shelled out to kill or formatted a process-group target; use the internal guarded \
         signal call only\n";
 
-    /// The shipped gate's whole output when its Windows check fires: the Windows
-    /// process-termination call added outside the reaper.
+    /// The shipped gate's whole output when its Windows check fires: either Windows termination
+    /// call added outside the reaper.
     fn windows_termination_outside_the_reaper() -> String {
         format!(
-            "no-os-kill gate FAILED: the Windows process-termination call ({}) was introduced \
-             outside crates/rigger-process/src/reap.rs, whose send_signal is its one sanctioned \
-             site. See specs/78-no-os-level-kills.md\n",
-            join("Terminate", "Process")
+            "no-os-kill gate FAILED: a Windows termination call ({} or {}) was introduced outside \
+             crates/rigger-process/src/reap.rs, whose send_signal and end_job are their sanctioned \
+             sites. See specs/78-no-os-level-kills.md\n",
+            join("Terminate", "Process"),
+            join("TerminateJob", "Object")
         )
     }
 
@@ -654,6 +684,21 @@ mod tests {
         the_gate_passes_a_windows_termination_call_added_to_the_reaper: gate_judges(
             REAPER,
             &windows_termination_call(),
+            (true, ""),
+        );
+        the_gate_fails_a_job_termination_call_added_to_a_crate: gate_judges(
+            "crates/somewhere/src/lib.rs",
+            &job_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_fails_a_job_termination_call_added_to_the_test_helper: gate_judges(
+            "tests/common/mod.rs",
+            &job_termination_call(),
+            (false, &windows_termination_outside_the_reaper()),
+        );
+        the_gate_passes_a_job_termination_call_added_to_the_reaper: gate_judges(
+            REAPER,
+            &job_termination_call(),
             (true, ""),
         );
         the_gate_passes_the_windows_termination_name_imported_without_a_call: gate_judges(
