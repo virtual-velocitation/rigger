@@ -1920,8 +1920,8 @@ mod tests {
     /// AT READ): over the resolver's qualifier fixture, the whole graph and a neighbourhood
     /// answer each read with no node or edge of a path-qualified mention whose qualifier names
     /// no definition (`AtomicU64::new` beside the project's `Cursor::new`,
-    /// `AtomicU64::fetch_add`, `cache::load`, `ErrorKind::NotFound`), from product and test code
-    /// alike, and with what the unqualified rule gives a member qualifier
+    /// `AtomicU64::fetch_add`, `ErrorKind::NotFound`), from product and test code alike, and
+    /// with what the unqualified rule gives a member qualifier
     /// (`Request.GetClientIp`, `Request.Missing`, `Models.Shape`) and a path qualifier naming a
     /// product type (`Gauge::load`).
     #[test]
@@ -1963,8 +1963,8 @@ mod tests {
                 Read::Leaf("fetch_add", &[]),
             ),
             (
-                "a path qualifier naming a product type keeps the unqualified rule, and one \
-                 named by a module, a C++ type, a test type or none makes no edge",
+                "a path qualifier naming a product type keeps the unqualified rule, and a \
+                 variant reference whose qualifier names none makes no edge",
                 Tests::Exclude,
                 Read::Out(
                     "src/app.rs::main",
