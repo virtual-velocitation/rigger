@@ -22,6 +22,8 @@ pub mod lens;
 pub mod mcp;
 pub mod repo;
 pub mod served;
+#[cfg(unix)]
+pub mod witness;
 pub mod workflow_probe;
 
 #[allow(unused_imports)]

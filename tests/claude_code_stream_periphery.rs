@@ -1253,151 +1253,170 @@ fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
     );
 }
 
-#[test]
-fn spawn_stop_returns_within_bound_when_a_descendant_has_already_escaped_the_childs_tree() {
-    // The bounded-join backstop half of the SAME round-4 fix: a descendant that had
-    // ALREADY double-forked itself out of the driven child's own process tree before THE
-    // STOP's pid-tree snapshot ever ran (reparented to init/a subreaper, so
-    // reap::end_child's walk can never find it) still holds a duplicate of the stdout
-    // pipe's write end open. THE STOP must still return within a bounded time regardless -
-    // Driver::join_within (bounded by self.stop_grace on this path), not reap::end_child,
-    // is what closes this gap - and must never touch this pid, since by the time the walk
-    // runs it is no longer any part of the child's own tree at all.
-    //
-    // stop_grace is injected here as 4s - deliberately LARGER than the ordinary path's own
-    // dedicated ORDINARY_DRAIN_JOIN_BOUND (2s, round-5 fix,
-    // op-104-stop-ordinary-path-drain-bound) - rather than the smaller value a "just prove
-    // it returns" test would use: the escaped descendant holds BOTH the stdout and stderr
-    // pipe copies open (like the ordinary-path fixture below), so the two sequential
-    // trailing joins deterministically block for the FULL injected `stop_grace` each,
-    // never racing a real EOF. That makes the total elapsed a direct, load-bearing readout
-    // of WHICH constant `Driver::join_within` actually used on this path: at this 4s
-    // value, correctly using `self.stop_grace` measures ~9s (baseline wall-clock trigger
-    // plus 2x4s, confirmed empirically); a regression that silently reused the smaller
-    // `ORDINARY_DRAIN_JOIN_BOUND` here instead - exactly the constant the round-5 fix
-    // introduced one call site away - would measure ~5s instead, indistinguishable from
-    // "prompt" under the round-4 test's own loose `elapsed < 5s` ceiling alone. Both a
-    // floor and a ceiling below turn that gap into a fast, deterministic failure rather
-    // than a silent pass.
-    let fx = Fixture::new();
-    let driver = fx.stopping_driver(
-        "claude-code-descendant-out-of-tree-agent.sh",
-        Duration::from_secs(4),
-    );
-    let descendant_pid_file = fx.scratch_file("descendant-out-of-tree.pid");
-    let o = opts_with_env(
-        "u104-stop/implementer#0",
-        "RIGGER_TEST_DESCENDANT_PID_FILE",
-        &descendant_pid_file,
-    );
+// ---- A STOP OR AN END AND WHAT THE SESSION STARTED: a process the session starts at the moment a
+// stop or an end can miss it, or one that left the session's tree before the stop
+// (`claude-code-forks-at-stop-agent.sh`), read through the FIFO witness (`common::witness`), so
+// no signal of the test's own decides what was left running ----
 
-    let (_, elapsed) = stop(&driver, &o);
+#[cfg(unix)]
+mod forks_at_stop {
+    use super::*;
+    use crate::common::witness::{Reading, Witness};
+    use rigger::driver::claude_code::STOP_GRACE;
 
-    assert!(
-        elapsed > Duration::from_secs(7),
-        "THE STOP's trailing pipe joins must be bounded by the INJECTED self.stop_grace \
-         (4s here), never silently downgraded to the smaller, un-injected \
-         ORDINARY_DRAIN_JOIN_BOUND the ordinary (non-STOP) path uses - an elapsed time this \
-         low means the wrong constant governed this path: {elapsed:?}"
-    );
-    assert!(
-        elapsed < Duration::from_secs(20),
-        "THE STOP must still return within a bounded time even when a descendant that \
-         already escaped the child's own process tree still holds the stdout pipe's write \
-         end open: {elapsed:?}"
-    );
+    /// The fixture agent whose processes start where a stop or an end can miss them.
+    const FORKS_AT_STOP_AGENT: &str = "claude-code-forks-at-stop-agent.sh";
 
-    let descendant_pid = recorded_pid(
-        &descendant_pid_file,
-        "the fixture recorded its escaped descendant's pid before going silent",
-    );
-    assert!(
-        common::is_alive(descendant_pid),
-        "pid {descendant_pid}, standing in for a descendant that already escaped the \
-         child's own process tree, must be left untouched by THE STOP - it is not part of \
-         the tree reap::end_child's pid-tree walk can ever find, only a stray holder of \
-         its pipe"
-    );
+    /// The end's own rounds: a TERM round's 300 ms grace, then the KILL round's confirmation.
+    const END_ROUNDS: Duration = Duration::from_millis(600);
+    /// Two pipe joins (stderr, then stdout) at the 2 s bound an ending's joins wait at most.
+    const JOINS: Duration = Duration::from_secs(4);
+    /// A loaded machine's start-up and scheduling.
+    const SLACK: Duration = Duration::from_secs(1);
 
-    // This test's own cleanup, through the sanctioned test-side signal call - never any
-    // process rigger's own STOP is responsible for reaping.
-    common::terminate_pid(descendant_pid);
-}
+    /// The ending a row drives the session to.
+    #[derive(Clone, Copy, Debug)]
+    enum Window {
+        /// The init line reports the rigger MCP server `failed`: the launch fault's stop, with no
+        /// grace.
+        InitFault,
+        /// The session goes silent past a `max_wall_clock` of this many seconds: THE STOP.
+        Silence(u64),
+        /// The session prints its result and exits: an ordinary end, whose read gives up 1 s
+        /// after the result when a process still holds its stdout.
+        Result,
+    }
 
-#[test]
-fn spawn_returns_a_real_result_promptly_even_when_a_descendant_still_holds_the_stdout_pipe() {
-    // The round-4 bounded-join fix (op-104-stop-end-the-tree-and-bound-the-joins) applies
-    // Driver::join_within at FOUR call sites, not just the two inside
-    // stop_for_wall_clock_silence the two tests above already prove: read_stream's own
-    // ORDINARY exit - a genuine result lands, no wall-clock silence, THE STOP never runs
-    // at all - hits the identical two joins right after dash::ReapedChild::drop, which
-    // ends only the ONE held child and (unlike reap::end_child) never walks a process
-    // tree. Before the round-4 fix this path's joins were bare `join()` calls, so a
-    // descendant inheriting the stdout pipe would have hung spawn() forever on a
-    // perfectly ordinary, successful run - a boundary bug with zero periphery coverage on
-    // this non-STOP path until now. This proves the ordinary-completion half: a real
-    // result is still captured and returned, within a bounded time, and the descendant
-    // itself is left running untouched (this path never attempts to end it - only THE
-    // STOP's own reap::end_child does that, by design).
-    //
-    // adj-u104stop-r4-verdict-reject REQUIRED FIX (op-104-stop-ordinary-path-drain-bound):
-    // this path's two joins are bounded by a dedicated constant
-    // (`claude_code::ORDINARY_DRAIN_JOIN_BOUND`, a few seconds), never by `stop_grace` -
-    // `stop_grace` is THE STOP's own wait-for-a-graceful-exit concern and has no meaning
-    // here, where the child has already exited cleanly. Proving "promptly" at a shrunk
-    // `stop_grace` (the prior version of this test overrode it to 300ms) would prove
-    // nothing about the real bound this path now uses, so this `Driver` takes the
-    // PRODUCTION `stop_grace` default (`fx.driver()`'s own 30s) unmodified - only the
-    // STOP-path tests above still shrink `stop_grace`, for THEIR own concern.
-    let fx = Fixture::new();
-    let driver = fx.driver_running("claude-code-descendant-survives-a-clean-result-agent.sh");
-    let descendant_pid_file = fx.scratch_file("descendant-clean-result.pid");
-    let o = opts_with_env(
-        "u104-stop/implementer#0",
-        "RIGGER_TEST_DESCENDANT_PID_FILE",
-        &descendant_pid_file,
-    );
+    /// What a row's ending leaves running.
+    #[derive(Clone, Copy, Debug)]
+    enum Leaves {
+        /// Nothing the session started.
+        Nothing,
+        /// The process the session started before its result: an ordinary end leaves it alone.
+        TheLeftover,
+    }
 
-    let started = Instant::now();
-    let result = driver
-        .spawn(&wall_clock_bounded(1), "do the thing", &o, &no_emit)
-        .expect(
-            "a real result line must still be read back even though a descendant \
-             outlives the driven child and keeps the stdout pipe's write end open",
+    /// Drives the fixture in RIGGER_FORK_AT `mode` to `window`'s ending, THE STOP's grace `grace`,
+    /// and reads the witness the moment the spawn returns: `Ended` once nothing the session
+    /// started is still running, `Held` while one process still is. The ending returns within its
+    /// bound, whoever holds the session's pipes, and the test's release then ends what is left.
+    fn ends_at(window: Window, mode: &str, grace: Duration, leaves: Leaves) {
+        let mut witness = Witness::new();
+        let fx = Fixture::new();
+        let status = match window {
+            Window::InitFault => "failed",
+            Window::Silence(_) | Window::Result => "connected",
+        };
+        let mut env = witness.env();
+        env.push(("RIGGER_FORK_AT".to_string(), mode.to_string()));
+        env.push(("RIGGER_TEST_MCP_STATUS".to_string(), status.to_string()));
+        let o = SpawnOpts {
+            env,
+            ..opts("u-tree/implementer#0")
+        };
+        let wall = match window {
+            Window::Silence(secs) => secs,
+            Window::InitFault | Window::Result => 1,
+        };
+
+        let started = Instant::now();
+        let outcome = fx.stopping_driver(FORKS_AT_STOP_AGENT, grace).spawn(
+            &wall_clock_bounded(wall),
+            "do the thing",
+            &o,
+            &no_emit,
         );
-    let elapsed = started.elapsed();
+        let elapsed = started.elapsed();
+        let reading = witness.read();
+        eprintln!(
+            "forks_at_stop {window:?} {mode}: {} up, {reading:?}, {elapsed:?}",
+            witness.up()
+        );
 
-    assert_eq!(
-        result.output,
-        "done: a result survives a still-open descendant pipe"
-    );
-    // The fixture's forked descendant inherits copies of BOTH the stdout and stderr
-    // write ends, so both joins (stderr drain, then stdout reader, run sequentially)
-    // independently hit `claude_code::ORDINARY_DRAIN_JOIN_BOUND` before detaching -
-    // worst case is ~2x that bound, plus slack for process/scheduling overhead. This is
-    // what proves "promptly" at the real production `stop_grace` (unmodified above):
-    // the ordinary path no longer owes that field anything.
-    assert!(
-        elapsed < Duration::from_secs(6),
-        "an ordinary completion must return within the dedicated ordinary-path drain \
-         bound (never stop_grace) even when a descendant still holds the stdout pipe \
-         open: {elapsed:?}"
-    );
+        let bound = match (window, outcome) {
+            (Window::InitFault, Err(e)) => {
+                let message = rigger::conductor::strip_failure_marker(&e);
+                assert!(
+                    message.contains("rigger MCP server") && message.contains("\"failed\""),
+                    "the launch fault names the server and its status: {message}"
+                );
+                END_ROUNDS + JOINS + SLACK
+            }
+            (Window::Silence(_), Err(e)) => {
+                assert!(e.0.contains("stopped"), "{}", e.0);
+                Duration::from_secs(wall) + grace + END_ROUNDS + JOINS + SLACK
+            }
+            (Window::Result, Ok(result)) => {
+                assert_eq!(
+                    result.output,
+                    "done: a result survives a still-open descendant pipe"
+                );
+                Duration::from_secs(wall) + JOINS + SLACK
+            }
+            (window, outcome) => panic!("{window:?} {mode}: the spawn returned {outcome:?}"),
+        };
+        assert!(
+            witness.up() >= 1,
+            "{mode}: the fixture wrote its up byte, so the witness reads its processes and not a \
+             FIFO no process opened"
+        );
+        let expected = match leaves {
+            Leaves::Nothing => Reading::Ended,
+            Leaves::TheLeftover => Reading::Held,
+        };
+        assert_eq!(
+            (reading, elapsed < bound),
+            (expected, true),
+            "{window:?} {mode}: the witness read {reading:?} (Ended: nothing the session started \
+             is still running) and the ending took {elapsed:?} against its bound of {bound:?}"
+        );
+        assert_eq!(
+            witness.release(),
+            Reading::Ended,
+            "{mode}: the test's release ends every process the fixture started"
+        );
+    }
 
-    let descendant_pid = recorded_pid(
-        &descendant_pid_file,
-        "the fixture recorded its forked descendant's pid before exiting",
-    );
-    assert!(
-        common::is_alive(descendant_pid),
-        "pid {descendant_pid}: an ordinary completion's reap ends only the ONE held \
-         child (dash::ReapedChild::drop), never a descendant - this is the join bound's \
-         job, not a sweep, so the descendant must be left running"
-    );
-
-    // This test's own cleanup, through the sanctioned test-side signal call - never any
-    // process rigger's own ordinary completion path is responsible for reaping.
-    common::terminate_pid(descendant_pid);
+    rigger::test_cases! {
+        // The launch fault's stop: the session is ended at once, so a process it starts as the end
+        // reaches it is still the session's to end.
+        an_init_fault_ends_what_the_sessions_term_trap_starts:
+            ends_at(Window::InitFault, "term", Duration::from_secs(1), Leaves::Nothing);
+        an_init_fault_ends_what_the_sessions_term_trap_starts_as_it_exits:
+            ends_at(Window::InitFault, "term-exit", Duration::from_secs(1), Leaves::Nothing);
+        an_init_fault_ends_what_the_session_starts_at_its_input_end:
+            ends_at(Window::InitFault, "eof", Duration::from_secs(1), Leaves::Nothing);
+        an_init_fault_ends_what_the_session_starts_at_its_input_end_as_it_exits:
+            ends_at(Window::InitFault, "eof-exit", Duration::from_secs(1), Leaves::Nothing);
+        // A grace of 15 s: joins that waited the stop's grace would wait it twice and break the
+        // bound, which the ending's own 2 s join bound keeps.
+        an_init_fault_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
+            ends_at(Window::InitFault, "double", Duration::from_secs(15), Leaves::Nothing);
+        // THE STOP: input closed, the grace waited, then the end.
+        a_stop_ends_what_the_sessions_term_trap_starts:
+            ends_at(Window::Silence(1), "term", Duration::from_secs(1), Leaves::Nothing);
+        a_stop_ends_what_the_sessions_term_trap_starts_as_it_exits:
+            ends_at(Window::Silence(1), "term-exit", Duration::from_secs(1), Leaves::Nothing);
+        a_stop_ends_what_the_session_starts_at_its_input_end:
+            ends_at(Window::Silence(1), "eof", Duration::from_secs(1), Leaves::Nothing);
+        a_stop_ends_what_the_session_starts_at_its_input_end_as_it_exits:
+            ends_at(Window::Silence(1), "eof-exit", Duration::from_secs(1), Leaves::Nothing);
+        a_stop_ends_what_the_session_starts_during_the_grace:
+            ends_at(Window::Silence(1), "eof-then-margin", Duration::from_secs(4), Leaves::Nothing);
+        a_stop_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
+            ends_at(Window::Silence(1), "double", Duration::from_secs(15), Leaves::Nothing);
+        // The process leaves the tree 3 s after init, before the stop at 5 s.
+        a_stop_ends_a_process_that_left_the_sessions_tree_while_it_ran:
+            ends_at(Window::Silence(5), "double-slow", Duration::from_secs(1), Leaves::Nothing);
+        a_stop_ends_a_process_in_a_session_of_its_own:
+            ends_at(Window::Silence(1), "setsid", Duration::from_secs(1), Leaves::Nothing);
+        a_stop_ends_a_process_started_in_another_directory:
+            ends_at(Window::Silence(1), "chdir", Duration::from_secs(1), Leaves::Nothing);
+        // An ordinary end at the production grace, which it never waits: the result returns within
+        // the read's 1 s and two 2 s joins, and the process still holding the pipes runs on.
+        a_result_returns_promptly_and_leaves_a_leftover_alone:
+            ends_at(Window::Result, "clean-exit", STOP_GRACE, Leaves::TheLeftover);
+    }
 }
 
 // ---- THE STOP's bound: `max_wall_clock` 0 is unbounded, never a 5 s stop ----
