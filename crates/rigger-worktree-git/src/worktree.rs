@@ -2357,15 +2357,14 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
         std::fs::remove_file(dir)
             .or_else(|_| std::fs::remove_dir(dir))
             .map_err(|e| Error(format!("remove the link at {dir}: {e}")))?;
-        git(repo, &["worktree", "prune"])?;
-        return Ok(());
-    }
-    reap_dir_before_removal(dir, authorized_root);
-    if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
-        && std::path::Path::new(dir).exists()
-    {
-        std::fs::remove_dir_all(dir)
-            .map_err(|e| Error(format!("remove leftover worktree dir {dir}: {e}")))?;
+    } else {
+        reap_dir_before_removal(dir, authorized_root);
+        if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
+            && std::path::Path::new(dir).exists()
+        {
+            std::fs::remove_dir_all(dir)
+                .map_err(|e| Error(format!("remove leftover worktree dir {dir}: {e}")))?;
+        }
     }
     git(repo, &["worktree", "prune"])?;
     Ok(())
