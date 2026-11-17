@@ -2260,6 +2260,7 @@ pub(crate) mod tests {
                 def("Shape::area", "method", 2, Some(0), false),
                 def("Draw", "trait", 5, None, false),
                 def("Draw::paint", "method", 6, Some(2), false),
+                def("Source", "type", 9, None, false),
             ],
             vec![],
         );
@@ -2711,6 +2712,239 @@ pub(crate) mod tests {
             ],
             "a leaf holding a separator, written as its name, keeps the unqualified rule"
         );
+    }
+
+    /// A QUALIFIER NAMING NO DEFINITION (spec 117, RESOLVER AT READ): when a qualified mention's
+    /// qualifier keeps no candidate of its rule ([`Resolver::narrowed`]), a member qualifier
+    /// (`Q.leaf`) takes the unqualified rule, as does a path qualifier (`Q::leaf`) naming a
+    /// product type or trait in the mention's language; any other path qualifier makes no link
+    /// and no placeholder. So `AtomicU64::new` beside the project's `Cursor::new`, in its file or
+    /// another, and `AtomicU64::fetch_add`, which nothing defines, land nowhere, a test call past
+    /// its proof too; so do `cache::load`, `Atomic::load` and `Fake::load`, their qualifier named
+    /// only by a module, a C++ type or a test type, from product and test code alike, and the
+    /// variant reference `ErrorKind::NotFound`. `Gauge::load`, `Meter::load`,
+    /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape` keep the
+    /// unqualified rule.
+    #[test]
+    fn a_qualifier_naming_no_definition_makes_no_link_and_a_member_qualifier_falls_back() {
+        // A C# member: its leaf the text after its type's `.`.
+        let member = |local: &str, line, parent| Def {
+            leaf: path_leaf(local).into(),
+            ..def(local, "method", line, Some(parent), false)
+        };
+        let cursor = code(
+            "src/cursor.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Cursor", "type", 1, None, false),
+                def("Cursor::new", "method", 2, Some(0), false),
+            ],
+            vec![qualified(
+                MentionKind::Call,
+                "AtomicU64::new",
+                Some(1),
+                3,
+                false,
+            )],
+        );
+        let seq = code(
+            "src/seq.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("TEMP_SEQ", "static", 1, None, false),
+                def("next", "function", 3, None, false),
+            ],
+            vec![
+                qualified(MentionKind::Call, "AtomicU64::new", Some(0), 1, false),
+                qualified(MentionKind::Call, "AtomicU64::fetch_add", Some(1), 4, false),
+            ],
+        );
+        let seq_test = code(
+            "tests/seq.rs",
+            "rust",
+            Scope::Test,
+            vec![def("counts", "function", 1, None, true)],
+            vec![
+                qualified(MentionKind::Call, "AtomicU64::new", Some(0), 2, true),
+                qualified(MentionKind::Call, "AtomicU64::fetch_add", Some(0), 3, true),
+            ],
+        );
+        let loader = code(
+            "src/loader.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("load", "function", 1, None, false),
+                def("cache", "module", 3, None, false),
+                def("Gauge", "type", 5, None, false),
+                def("Meter", "trait", 7, None, false),
+                def("LoadError", "type", 9, None, false),
+                def("LoadError::NotFound", "variant", 10, Some(4), false),
+            ],
+            vec![],
+        );
+        let atomic = code(
+            "src/atomic.hpp",
+            "cpp",
+            Scope::Product,
+            vec![def("Atomic", "type", 1, None, false)],
+            vec![],
+        );
+        let fake = code(
+            "tests/fake.rs",
+            "rust",
+            Scope::Test,
+            vec![def("Fake", "type", 1, None, false)],
+            vec![],
+        );
+        let app = code(
+            "src/app.rs",
+            "rust",
+            Scope::Product,
+            vec![def("main", "function", 1, None, false)],
+            vec![
+                qualified(MentionKind::Call, "cache::load", Some(0), 2, false),
+                qualified(MentionKind::Call, "Atomic::load", Some(0), 3, false),
+                qualified(MentionKind::Call, "Fake::load", Some(0), 4, false),
+                qualified(MentionKind::Call, "Gauge::load", Some(0), 5, false),
+                qualified(MentionKind::Call, "Meter::load", Some(0), 6, false),
+                qualified(
+                    MentionKind::Tagged("variant".into()),
+                    "ErrorKind::NotFound",
+                    Some(0),
+                    7,
+                    false,
+                ),
+            ],
+        );
+        let app_test = code(
+            "tests/app.rs",
+            "rust",
+            Scope::Test,
+            vec![def("checks", "function", 1, None, true)],
+            vec![
+                qualified(MentionKind::Call, "Fake::load", Some(0), 2, true),
+                qualified(MentionKind::Call, "Gauge::load", Some(0), 3, true),
+            ],
+        );
+        let http = code(
+            "src/http.cs",
+            "csharp",
+            Scope::Product,
+            vec![
+                def("HttpExtensions", "type", 1, None, false),
+                member("HttpExtensions.GetClientIp", 2, 0),
+                def("Shape", "type", 5, None, false),
+            ],
+            vec![],
+        );
+        let handler = code(
+            "src/handler.cs",
+            "csharp",
+            Scope::Product,
+            vec![
+                def("Handler", "type", 1, None, false),
+                member("Handler.Handle", 2, 0),
+            ],
+            vec![
+                qualified(MentionKind::Call, "Request.GetClientIp", Some(1), 3, false),
+                qualified(MentionKind::Call, "Request.Missing", Some(1), 4, false),
+                qualified(
+                    MentionKind::Tagged("type".into()),
+                    "Models.Shape",
+                    Some(1),
+                    5,
+                    false,
+                ),
+            ],
+        );
+        let view = FactsView::new(
+            stamp(),
+            vec![
+                cursor, seq, seq_test, loader, atomic, fake, app, app_test, http, handler,
+            ],
+        );
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let cases: [(&str, Ask, &[&str]); 9] = [
+            (
+                "a path qualifier naming none, past a same-file call target of its leaf",
+                Ask::Links("src/cursor.rs", false),
+                &[
+                    "src/cursor.rs -CONTAINS/extracted-> src/cursor.rs::Cursor",
+                    "src/cursor.rs::Cursor -CONTAINS/extracted-> src/cursor.rs::Cursor::new",
+                ],
+            ),
+            (
+                "a path qualifier naming none, past a leaf defined in another file or nowhere",
+                Ask::Links("src/seq.rs", false),
+                &[
+                    "src/seq.rs -CONTAINS/extracted-> src/seq.rs::TEMP_SEQ",
+                    "src/seq.rs -CONTAINS/extracted-> src/seq.rs::next",
+                ],
+            ),
+            (
+                "a test call whose path qualifier names none, past its proof",
+                Ask::Links("tests/seq.rs", true),
+                &["tests/seq.rs -CONTAINS/extracted-> tests/seq.rs::counts"],
+            ),
+            (
+                "no test call of a path qualifier naming none lands on a placeholder",
+                Ask::PlaceholderCalls("tests/seq.rs"),
+                &[],
+            ),
+            (
+                "no placeholder caller of a leaf nothing defines",
+                Ask::PlaceholderCallers("fetch_add"),
+                &[],
+            ),
+            (
+                "no caller of the project definition of the leaf",
+                Ask::UpHop("src/cursor.rs::Cursor::new", "new"),
+                &[],
+            ),
+            (
+                "a qualifier named only by a module, a C++ type or a test type, then by a \
+                 product type and a product trait, then a variant reference",
+                Ask::Links("src/app.rs", false),
+                &[
+                    "src/app.rs::main -CALLS/inferred-> src/app.rs::%load",
+                    "src/app.rs -REFERENCES/inferred-> src/app.rs::%load",
+                    "src/app.rs::main -CALLS/inferred-> src/app.rs::%load",
+                    "src/app.rs -REFERENCES/inferred-> src/app.rs::%load",
+                    "src/app.rs -CONTAINS/extracted-> src/app.rs::main",
+                ],
+            ),
+            (
+                "a test mention's qualifier named only by a test type, then by a product type",
+                Ask::Links("tests/app.rs", true),
+                &[
+                    "tests/app.rs::checks -CALLS/inferred-> src/loader.rs::load",
+                    "tests/app.rs -REFERENCES/inferred-> src/loader.rs::load",
+                    "tests/app.rs -CONTAINS/extracted-> tests/app.rs::checks",
+                ],
+            ),
+            (
+                "member qualifiers naming none keep the unqualified rule",
+                Ask::Links("src/handler.cs", false),
+                &[
+                    "src/handler.cs::Handler.Handle -CALLS/inferred-> \
+                     src/handler.cs::%GetClientIp",
+                    "src/handler.cs -REFERENCES/inferred-> src/handler.cs::%GetClientIp",
+                    "src/handler.cs::Handler.Handle -CALLS/ambiguous-> src/handler.cs::%Missing",
+                    "src/handler.cs -REFERENCES/ambiguous-> src/handler.cs::%Missing",
+                    "src/handler.cs::Handler.Handle -REFERENCES/inferred-> src/http.cs::Shape",
+                    "src/handler.cs -CONTAINS/extracted-> src/handler.cs::Handler",
+                    "src/handler.cs::Handler -CONTAINS/extracted-> \
+                     src/handler.cs::Handler.Handle",
+                ],
+            ),
+        ];
+        for (shows, ask, want) in cases {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
     }
 
     #[test]
