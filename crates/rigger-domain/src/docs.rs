@@ -319,12 +319,13 @@ fn discipline_body(ctx: &DocsContext) -> String {
          refuses, recording nothing, when no run is live: none has started, or the current run \
          is done. `rigger release` ends the current run's hold, whichever \
          writer declared it, an outage hold included, so the next launch goes at once instead of \
-         after the next probe. With no hold open it records nothing and says so. A fault of the \
-         conductor's own that ends a run's drive, a spawn the API refused included, holds the \
-         run for the orchestrator, the session that launched the run and watches it, naming the \
-         fault, and its driver exits non-zero: `rigger watch` reports the hold, `rigger status` \
-         prints the fault under it, and once the cause is fixed at its root `rigger release` \
-         relaunches the run. When the same fault holds the run again after that release, the \
+         after the next probe. With no hold open it records nothing and says so. Any error but a \
+         park that ends a run's drive, a step git refused over a unit's work and a spawn the API \
+         refused included, holds the run for the orchestrator, the session that launched the \
+         run and watches it, naming the fault, and its driver exits non-zero: `rigger watch` \
+         reports the hold, `rigger status` prints the fault under it, and once the cause is \
+         fixed at its root `rigger release` relaunches the run. A `model_not_found` hold is the \
+         orchestrator's too. When the same fault holds the run again after that release, the \
          hold is for a person, and `rigger status` lists it under what needs you. {stop}\n",
         stop = DRIVER_STOP_RULE
     );
@@ -1046,13 +1047,13 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  names while it holds what a relaunched driver said before it ended, and a driver \
                  started by hand removes). `rigger \
                  watch` relaunches nothing: it names the dead driver and `rigger status` as what \
-                 brings it back, and it reports every open hold no probe ends, an operator hold \
-                 or the conductor's fault hold, driver or no driver, naming who resolves it and \
+                 brings it back, and it reports every open hold no probe ends, an operator hold, \
+                 the conductor's fault hold or a `model_not_found` hold, driver or no driver, naming who resolves it and \
                  how. A driver that returned is never relaunched, save one that ended with its \
                  run held for the orchestrator or a person, which `rigger release` relaunches: \
-                 one that parked on an operator hold, and one that ended on a fault of the \
-                 conductor's own, a spawn the API refused included, which holds the run naming \
-                 the fault and exits non-zero. A \
+                 one that parked on an operator hold, and one that ended on any error but a \
+                 park, a step git refused over a unit's work and a spawn the API refused \
+                 included, which holds the run naming the fault and exits non-zero. A \
                  driver that dies again within ten minutes of its relaunch, a relaunch that never \
                  started, or one whose recorded binary no longer exists is left stopped, and the \
                  line names the command that relaunches it by hand. A driver that gave its agents \
@@ -1104,17 +1105,17 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              the start of a new run and a `rigger run` run reaching done. A release with no hold \
              open records nothing and says so. A hold outlives its driver: no check relaunches a \
              held run, a relaunched driver that finds an operator hold parks its next launch and \
-             ends, and `rigger release` relaunches the run. A fault of the conductor's own that \
-             ends its drive (a plan landing that fails, a unit worktree it cannot make, a spawn \
-             the API refuses) holds the run the same way, naming the fault, and the driver exits \
-             non-zero.\n",
-            "A hold for a conductor fault or a refused request is YOURS to resolve first, as the \
-             orchestrator, the session that launched the run and watches it: `rigger watch` \
+             ends, and `rigger release` relaunches the run. Any error but a park that ends its \
+             drive (a plan landing that fails, a unit worktree it cannot make, a step git refuses \
+             over a unit's work, a spawn the API refuses) holds the run the same way, naming the \
+             fault, and the driver exits non-zero.\n",
+            "A hold for a conductor fault, a refused request or a `model_not_found` is YOURS to \
+             resolve first, as the orchestrator, the session that launched the run and watches it: `rigger watch` \
              reports it as a hold for the orchestrator, and `rigger status` prints the fault \
              under it. Read that fault. Fix its cause at the root, and never weaken a guard, a \
              gate or a criterion to get past it. Then run `rigger release`, which relaunches the \
              run. If the same fault holds the run again after your release (the same cause and \
-             the same first line of the fault), your fix did not hold and the hold is now for a \
+             the same first line of the fault, or `model_not_found` again), your fix did not hold and the hold is now for a \
              person: `rigger status` lists it under what needs you, so stop and tell them exactly \
              what you tried. A different fault after a release is yours to resolve again.\n",
         ],

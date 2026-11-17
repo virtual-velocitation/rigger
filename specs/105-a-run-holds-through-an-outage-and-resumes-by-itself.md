@@ -19,12 +19,14 @@ and a keep-awake port.
 
 DISPOSITIONS, decided, one table in code, `AgentFailure`'s disposition beside the enum
 (`crates/rigger-domain/src/agent.rs`), read by the host and the conductor; each row gives its
-disposition, its action text, whether it needs a person and whether it is a credential category:
+disposition, its action text, whether it needs a person, whether it is a credential category and
+whether a probe ends its hold:
 `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`, `billing_error`,
-`account_on_hold`, `verification_required`, `model_not_found` - HOLD on the first `api_retry` or
-`StopFailure` that
+`account_on_hold`, `verification_required` - HOLD on the first `api_retry` or `StopFailure` that
 carries the category; each needs a person, and `authentication_failed` and
-`oauth_org_not_allowed` are the credential categories. `rate_limit`, `overloaded`,
+`oauth_org_not_allowed` are the credential categories. `model_not_found` - HOLD likewise, for the
+orchestrator, needing no person, since the agent's configured model is the orchestrator's to fix,
+and for a person as ESCALATION decides. `rate_limit`, `overloaded`,
 `server_error` - WAIT while the session retries; HOLD when a session ends of it.
 `invalid_request` - REJECTED: the API refused the request as the conductor built it, the
 conductor's fault, so on first sight the run holds `conductor-fault` as ESCALATION decides, its
@@ -42,7 +44,7 @@ FAULT never holds and a REJECTED one holds as `conductor-fault`. Three causes ou
 categories have rows: `api-unstable`, action `none, the run retries by itself`, needing no
 person; `operator`, whose action is the hold's `--reason` text, needing a person; and
 `conductor-fault`, the conductor's hold on a fault of its own that ends the run's drive (any
-error but a park, a halt or a REJECTED spawn included), whose action is `read the fault rigger
+error but a park, a halt, a REJECTED spawn and a step git refused over a unit's work included), whose action is `read the fault rigger
 status prints under this hold, fix its cause at the root, then run rigger release`, needing no
 person, and which only `rigger release` ends; ESCALATION names its two rows for a person. A
 `RunHeld`'s `detail` is the error text of the line that sighted it, the fault for a
@@ -131,7 +133,8 @@ which it read the hold state (`ExpectedRevision::Exact`); on a conflict it reads
 revision, the `record_result_if_absent` idiom
 (`crates/rigger-store-sqlite/src/spawn_store.rs:114`), so repeated and concurrent appends land
 once: a second sighting appends nothing, except that a sighting or failed probe whose category
-needs a person and differs from the hold's cause appends one `RunHeld` with the new cause, and
+asks someone (needs a person, or is the orchestrator's) and differs from the hold's cause appends
+one `RunHeld` with the new cause, its row as ESCALATION decides, and
 `rigger hold` on a held run appends one with cause `operator`. A probe's or operator's `RunHeld`
 carries the prior `RunHeld`'s `model` forward, empty when none. When the conductor loop returns
 with `RunState::done()` true and a hold open, an operator hold included, the supervisor appends
@@ -160,6 +163,8 @@ latest `RunHeld` of the hold the run last released is the same fault; else
 `FAULT_ON_A_PERSONS_HOLD`, needing a person, action `a person holds this run: they read the
 fault, decide, then run rigger release`, when the open hold's latest `RunHeld` needs a person;
 else the `conductor-fault` row. A different fault after a release is the orchestrator's again.
+A `model_not_found` sighting or failed probe takes the same rows (`run_store::sighted`), the same
+fault for it being the same `cause`, since its `detail` is whichever line sighted it.
 No probe ends any of them. A `conductor-fault` `RunHeld` recorded before this rule, its fault in
 its `action` and needing a person, folds and reads as recorded, and its empty `detail` names no
 fault a later one can repeat.
@@ -461,7 +466,7 @@ beat gap and the resume carry the run.
 - [ ] a test proves THE DISPOSITION TABLE: each category maps to hold, wait, fault or rejected as
   decided;
   through `rigger run`, the first hold-class sighting appends `RunHeld` with its cause, action
-  and model, a repeated or concurrent one appends nothing, one whose person-needing category
+  and model, a repeated or concurrent one appends nothing, one whose category asks someone and
   differs from the hold's cause appends one, and none appends on an operator hold; a done run or
   a mint with a hold open, an operator hold included, appends `RunReleased {by: host}`; a
   session ending of a wait-class category and a third consecutive fault or stream-silence stop,
@@ -505,7 +510,7 @@ beat gap and the resume carry the run.
 - [ ] a test proves RELEASE BY PROBE: through `rigger run` against a fake `claude`, a logged-out
   status runs no canary and a `model_not_found` hold runs no probe; a logged-in status plus an
   `is_error: false` canary result on the hold's model appends `RunReleased`, and an error result
-  does not; a failed canary's person-needing category upgrades the cause; the canary writes no
+  does not; a failed canary's category that asks someone upgrades the cause; the canary writes no
   launch record; a hold re-declared during a probe is not released by it; the delay, a pure
   function proved by a table and through `rigger run` on backdated records, doubles per probe
   from 60 s to 900 s and carries over a quick re-hold but not an operator hold; `rigger hold`

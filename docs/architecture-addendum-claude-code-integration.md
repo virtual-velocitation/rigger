@@ -174,12 +174,12 @@ itself.
 |---|---|---|
 | `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error` | HOLD on first sight | `claude auth status` reports logged in, then a canary turn succeeds |
 | `billing_error`, `account_on_hold`, `verification_required` | HOLD on first sight | a canary turn succeeds |
-| `model_not_found` | HOLD on first sight, naming the model | a canary turn on that model succeeds |
+| `model_not_found` | HOLD on first sight, naming the model, for the orchestrator, the agent's configured model being its to fix; for a person when it holds again after a release, or lands on a hold that needs a person | a canary turn on that model succeeds |
 | `rate_limit`, `overloaded`, `server_error` | WAIT while Claude Code retries; HOLD when a session dies of it | a canary turn succeeds; a known reset time is honored |
 | `invalid_request` | REJECTED on first sight: the API refused the request as the conductor built it, the conductor's fault, so the run holds `conductor-fault` as a conductor fault does, its detail naming the spawn and its unit, then its prompt's size, and the spawn parks with nothing recorded and no attempt charged | `rigger release` |
 | `max_output_tokens`, `unknown` | FAULT: the error takes its spawn site's existing error path unchanged, so at the implementer it reruns uncharged under the infra limit and a spawn past that limit halts the run naming its class, which holds `conductor-fault` | - |
 | three consecutive FAULTs across the run, a REJECTED close counting toward none | HOLD `api-unstable` | a canary turn succeeds |
-| a conductor fault: any error but a park that ends the run's drive, a halt or a REJECTED spawn included | HOLD `conductor-fault` for the orchestrator, the session that launched the run and watches it, the fault its detail; for a person when the same fault holds again after a release, or lands on a hold that needs a person | `rigger release`, by the orchestrator once it fixed the cause, else by a person |
+| a conductor fault: any error but a park that ends the run's drive, a halt, a REJECTED spawn and a step git refused over a unit's work included | HOLD `conductor-fault` for the orchestrator, the session that launched the run and watches it, the fault its detail; for a person when the same fault holds again after a release, or lands on a hold that needs a person | `rigger release`, by the orchestrator once it fixed the cause, else by a person |
 | host suspended, supervisor absent | an implicit hold interval (5.3) | the supervisor is alive |
 | operator | `rigger hold --reason <text>` | `rigger release` |
 
@@ -198,12 +198,13 @@ itself.
          a launch that ends with an API-side category is `interrupted`: no result, no charge
          gates and merges already running continue - they need no API
 
-  a conductor-fault hold, by whom it is held:
+  a conductor-fault or model_not_found hold, by whom it is held:
     fault F, the run last released no hold of F   -> for the orchestrator  (needs_person false)
     rigger release, then F again                   -> for a person         (needs_person true)
     rigger release, then a different fault G       -> for the orchestrator
     F on an open hold that needs a person          -> for a person
-    the same fault: the same cause and the same first line of the detail, byte for byte
+    the same fault: the same cause and the same first line of the detail, byte for byte;
+                    for model_not_found, the same cause
 ```
 
 `RunHeld` and `RunReleased` are run-stream events; held is the fold "a `RunHeld` with no
@@ -236,10 +237,12 @@ that cannot resume gets a fresh launch of the same spawn. Neither charges an att
 - `rigger status`, first line: `HELD 17h02m - authentication_failed - log in to Claude
   Code (/login); the run resumes by itself`.
 - needs-you ranks `held` first when the hold needs a person (credential, billing,
-  account, model, operator, a conductor fault that held again after a release); the
+  account, operator, a conductor fault or a missing model that held again after a
+  release); the
   statusline health word is `held`; the dash health strip shows it.
 - `rigger watch` prints a line for every open hold no probe ends: `hold for the
-  orchestrator`, a conductor fault the launching session fixes at its root and releases,
+  orchestrator`, a conductor fault or a missing model the launching session fixes at its
+  root and releases,
   or `hold for a person`.
 - Attention gains two crossings, `held` and `released`; the plugin monitor delivers each
   to the operator's session within seconds.
