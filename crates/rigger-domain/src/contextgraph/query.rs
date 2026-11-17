@@ -231,8 +231,8 @@ pub fn leaf_of(id: &str) -> Option<&str> {
 
 /// The leaf a path query names (spec 119, A BARE SHOW FINDS A LEAF OR PATH): [`split_path`]'s
 /// leaf, the text after its last `::` or `.`, the whole text when it holds neither (`T::new` and
-/// `a.rs::T::new` give `new`, `S.field` gives `field`). The show lookup's path form and the
-/// grounder's symbol of a path-shaped term both read it.
+/// `a.rs::T::new` give `new`, `S.field` gives `field`). The show lookup's path form, the
+/// grounder's symbol of a path-shaped term and [`is_path_qualified`] read it.
 pub fn path_leaf(path: &str) -> &str {
     split_path(path).1
 }
