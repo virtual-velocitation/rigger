@@ -1652,12 +1652,12 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// - a member that IS a definition (a non-empty `name` attr, [`node_name`]) or a doc / file
 ///   node folds under its OWN file ([`node_file`], read by its kind);
 /// - a BARE cross-file code-entity placeholder (no `name` attr, or an empty one) resolves by its
-///   leaf ([`node_leaf`](crate::contextgraph::query::node_leaf)) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
-///   folds under its own file as every definition does), those its down-hop keeps for one keyed
-///   by a qualified name ([`placeholder_candidates`]): EXACTLY ONE folds under that definition's
-///   file, and when that definition is itself a member the placeholder stands in for it, carrying
-///   its edges but not counted again; MORE THAN ONE (or zero) is marked-unresolved with the sorted
-///   candidate ids;
+///   leaf ([`node_leaf`](crate::contextgraph::query::node_leaf)) over the call-target DEFINITION
+///   nodes sharing it (never a data member or a declaration, which folds under its own file as
+///   every definition does), those its down-hop keeps for one keyed by a qualified name
+///   ([`placeholder_candidates`]): EXACTLY ONE folds under that definition's file, and when that
+///   definition is itself a member the placeholder stands in for it, carrying its edges but not
+///   counted again; MORE THAN ONE (or zero) is marked-unresolved with the sorted candidate ids;
 /// - a member naming NO file under its kind's arm of [`node_file`] (a decision, or a `::`-less code
 ///   entity) is marked unresolved too, with an EMPTY candidate frontier - the same honesty shape a
 ///   zero-candidate bare placeholder already carries - rather than falling back to its raw KIND as
