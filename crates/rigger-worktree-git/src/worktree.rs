@@ -7101,6 +7101,83 @@ mod tests {
         wt.remove().unwrap();
     }
 
+    /// A BRANCH READ GIT CANNOT ANSWER CLEARS NOTHING: when git cannot say whether the unit's
+    /// branch exists - no repository path, a path that is not there, a configuration git
+    /// refuses - `create` fails with that read's error and leaves what sits at the unit's path
+    /// as it was: a plain directory, or a registered worktree of the branch, each holding an
+    /// uncommitted file.
+    #[test]
+    fn create_clears_nothing_when_the_branch_read_goes_unanswered() {
+        #[derive(Debug, Clone, Copy)]
+        enum Unanswered {
+            NoRepositoryPath,
+            PathNotThere,
+            RefusedConfiguration,
+        }
+        // Each row: why the branch read goes unanswered, and whether the unit's path holds a
+        // registered worktree of the branch (else a plain directory).
+        let cases = [
+            (Unanswered::NoRepositoryPath, false),
+            (Unanswered::NoRepositoryPath, true),
+            (Unanswered::PathNotThere, false),
+            (Unanswered::PathNotThere, true),
+            (Unanswered::RefusedConfiguration, false),
+            (Unanswered::RefusedConfiguration, true),
+        ];
+        for (why, registered) in cases {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let root = scratch_root(&repo_path, "", None);
+            let branch = "rigger/u/unit-unanswered";
+            let dir = format!("{root}/rigger-wt-unit-unanswered");
+            if registered {
+                Worktree::create(&repo_path, &dir, branch, "").unwrap();
+            } else {
+                std::fs::create_dir_all(&dir).unwrap();
+            }
+            let work = std::path::Path::new(&dir).join("work.txt");
+            std::fs::write(&work, "uncommitted\n").unwrap();
+            let config = repo.path().join(".git").join("config");
+            let kept_config = std::fs::read(&config).unwrap();
+            let asked = match why {
+                Unanswered::NoRepositoryPath => String::new(),
+                Unanswered::PathNotThere => format!("{repo_path}/not-there"),
+                Unanswered::RefusedConfiguration => {
+                    std::fs::write(&config, [kept_config.as_slice(), b"[broken\n"].concat())
+                        .unwrap();
+                    repo_path.clone()
+                }
+            };
+
+            let made = Worktree::create(&asked, &dir, branch, &root);
+            std::fs::write(&config, &kept_config).unwrap();
+
+            let Err(err) = made else {
+                panic!("{why:?}, registered {registered}: create must fail on an unanswered read");
+            };
+            assert!(
+                err.0.contains(branch),
+                "{why:?}, registered {registered}: the error names the branch read: {}",
+                err.0
+            );
+            assert_eq!(
+                std::fs::read_to_string(&work).ok().as_deref(),
+                Some("uncommitted\n"),
+                "{why:?}, registered {registered}: the file at the unit's path survives"
+            );
+            if registered {
+                assert!(
+                    worktree_on_branch(&dir, branch),
+                    "{why:?}: the registered worktree is still checked out on its branch"
+                );
+                assert!(
+                    registered_worktree_for(&repo_path, branch).is_some(),
+                    "{why:?}: the worktree's registration survives"
+                );
+            }
+        }
+    }
+
     #[test]
     fn create_adopts_the_deterministic_dir_via_a_path_lookup() {
         // Gap 12 (spec 06:48): with a DETERMINISTIC dir, a second process computes the
