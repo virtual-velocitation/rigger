@@ -2386,7 +2386,7 @@ pub(crate) fn is_store_fault(e: &Error) -> bool {
 /// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`],
 /// [`LAND_REFUSED_MARKER`], [`PROBE_FAULT_MARKER`] or [`GIT_STEP_MARKER`], each a halt's signal,
-/// [`EMIT_REFUSED_MARKER`], the emit guard's
+/// [`CONTENT_REFUSAL_MARKER`], a content step's refusal, [`EMIT_REFUSED_MARKER`], the emit guard's
 /// refusal of a record the spawn emitted, [`INTERRUPTED_MARKER`], the host's interrupted
 /// close, or [`STORE_FAULT_MARKER`], a store read failing before the launch) rather than a plain
 /// spawn or stage failure. Robust to
@@ -2808,7 +2808,9 @@ fn plan_landing_failed(unit: &str, e: Error) -> Error {
 /// exactly like the other conductor-side infra faults: the dedicated arm propagates the loud
 /// halt but emits NO per-unit lesson of its own (the specific, path-naming lesson is already
 /// recorded by [`RunCtx::land_refused`] itself, before this marker is even minted) and
-/// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`).
+/// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`). Its error
+/// carries the [`CONTENT_REFUSAL_MARKER`] too, so the drive it ends holds nothing
+/// ([`held_on_a_fault`]).
 const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
 
 /// The sentinel a FAILED GUARD PROBE embeds in its error (spec 121 criterion 19): a gate's
@@ -2825,35 +2827,63 @@ fn probe_fault_halt(fault: gate::ProbeFault) -> Error {
     marked(PROBE_FAULT_MARKER, fault)
 }
 
-/// The sentinel a FAILED GIT STEP embeds in its error ([`git_step`]): a git step the conductor
-/// takes on a unit's branch or worktree, or on the run branch it lands one on, failed - git
-/// refused or could not answer it, or the step refused before git ran (conflict-marker text a
-/// commit will not stage, a cherry-pick an earlier one left in progress) - so the stage cannot go
-/// on. The conductor's git state is not what the stage needs and no further attempt changes
-/// that, so it is a halt over [`HALT_MARKERS`]: no lesson names the unit, it is charged no
-/// attempt, and the run is held for a person ([`held_on_a_fault`]).
+/// The sentinel a CONDUCTOR FAULT in a git step embeds in its error ([`git_step`]): a lifecycle
+/// step on a unit's worktree or branch failed (git refused or could not answer it), or git did
+/// not answer a content step at all (it could not start, a signal ended it, it died), so the
+/// stage cannot go on. The conductor or a person caused it, the unit cannot fix it, and no
+/// further attempt changes it, so it is a halt over [`HALT_MARKERS`]: no lesson names the unit,
+/// it is charged no attempt, and the run is held ([`held_on_a_fault`]).
 const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
 
+/// The sentinel a CONTENT STEP'S REFUSAL embeds in its error ([`git_step`],
+/// [`RunCtx::land_refused`]): git ran a step the unit's own work stands in and refused it, or
+/// rigger's own guard refused it before git ran. It is the stage's failure, never a conductor
+/// fault, and it is no halt: the wave records it as the base does (a lesson naming the unit from
+/// the wave's generic arm; a landing refusal's own lesson; a plan landing's halt), and the drive
+/// it ends holds nothing ([`held_on_a_fault`]), so a relaunch takes the run up again.
+const CONTENT_REFUSAL_MARKER: &str = "\u{1}rigger:content-refusal\u{1}";
+
+/// `text` without the [`CONTENT_REFUSAL_MARKER`]: what a lesson and the operator read.
+fn without_content_refusal(text: &str) -> String {
+    text.replace(CONTENT_REFUSAL_MARKER, "")
+}
+
 /// THE CONDUCTOR'S GIT STEP: `step`, the result of a fallible git step the conductor takes on a
-/// unit's branch or worktree, or on the run branch it lands one on, its failure marked with
-/// [`GIT_STEP_MARKER`]. The full set: making, re-asserting and discarding a worktree
+/// unit's branch or worktree, or on the run branch it lands one on, classed by what caused its
+/// failure. A worktree result reaches a conductor error only through here: the agent interface's
+/// `Error` has no conversion from either worktree error, so a step taken outside this helper does
+/// not compile. A teardown that discards its result (`let _ =`) takes no step that can halt.
+///
+/// A LIFECYCLE step answers a plain [`worktree::Error`], and every failure of one is a conductor
+/// fault, marked with [`GIT_STEP_MARKER`]: making, re-asserting and discarding a worktree
 /// ([`Worktree::create`], [`Worktree::ensure_present`], [`Worktree::discard`]); reading a
 /// branch, its tip or its ancestry ([`worktree::branch_present`], [`worktree::branch_tip`],
 /// [`worktree::in_history`]); seeding, rolling back and deleting a branch
 /// ([`Worktree::create_branch_at`], [`Worktree::reset_branch_to`],
-/// [`Worktree::restore_reviewed_sha`], [`Worktree::delete_branch`]); committing
-/// ([`Worktree::commit_checkpoint`]); reading what a unit changed ([`Worktree::changed_files`],
-/// [`Worktree::changed_since_base`], [`Worktree::commits_since_base`],
-/// [`Worktree::files_touched_by_commit`], [`Worktree::diff_names`],
-/// [`Worktree::find_landed_by_patch_id`]); merging ([`Worktree::merge_into_worktree`],
-/// [`Worktree::accept_incoming`]); and every move of the run branch, through
-/// [`RunCtx::moving_the_run_branch`] ([`Worktree::land`], [`Worktree::cherry_pick_onto_run_branch`],
-/// [`Worktree::revert_on_base`], [`Worktree::reset_to`]). A worktree result reaches a conductor
-/// error only through here: the agent interface's `Error` has no conversion from the worktree
-/// error, so a step taken outside this helper does not compile. A teardown that discards its
-/// result (`let _ =`) takes no step that can halt.
+/// [`Worktree::restore_reviewed_sha`], [`Worktree::delete_branch`]); reading what a unit changed
+/// ([`Worktree::changed_files`], [`Worktree::changed_since_base`],
+/// [`Worktree::commits_since_base`], [`Worktree::files_touched_by_commit`],
+/// [`Worktree::diff_names`], [`Worktree::find_landed_by_patch_id`]); and the run branch's own
+/// moves through [`RunCtx::moving_the_run_branch`] ([`Worktree::land`],
+/// [`Worktree::revert_on_base`], [`Worktree::reset_to`]).
+///
+/// A CONTENT step answers a [`worktree::StepError`]: the checkpoint commit
+/// ([`Worktree::commit_checkpoint`]), the merge of the run branch into the unit's worktree
+/// ([`Worktree::merge_into_worktree`], [`Worktree::accept_incoming`]) and a plan-stage landing's
+/// cherry-pick ([`Worktree::cherry_pick_onto_run_branch`]). Its [`StepError::Refused`] is the
+/// unit's own work in the way - a hook refusing the commit, a merge refused over the tree's
+/// changes, conflict-marker text, a cherry-pick left in progress - and travels as the stage's
+/// failure, marked with [`CONTENT_REFUSAL_MARKER`], so it is recorded as the base records it and
+/// holds nothing. Its [`StepError::Unanswered`] is git not answering, a conductor fault like any
+/// lifecycle failure.
+///
+/// [`StepError::Refused`]: worktree::StepError::Refused
+/// [`StepError::Unanswered`]: worktree::StepError::Unanswered
 fn git_step<T, E: Into<worktree::StepError>>(step: Result<T, E>) -> Result<T, Error> {
-    step.map_err(|e| marked(GIT_STEP_MARKER, e.into()))
+    step.map_err(|e| match e.into() {
+        worktree::StepError::Unanswered(fault) => marked(GIT_STEP_MARKER, fault),
+        refused => marked(CONTENT_REFUSAL_MARKER, refused),
+    })
 }
 
 /// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
@@ -3170,8 +3200,8 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
 /// made when it started (signed verdicts), and, when `channel` is given, answering each
 /// `rigger gate <id>` request it carries for as long as the run drives, spawns included
 /// ([`RunCtx::answer_gate_request`]). The channel is closed when the run returns, however it
-/// returns. A drive of a begun run that fails holds the run for a person first
-/// ([`held_on_a_fault`]).
+/// returns. A drive of a begun run that fails on a fault, not on a content step's refusal,
+/// holds the run for a person first ([`held_on_a_fault`]).
 pub fn run_serving(
     cfg: &Config,
     deps: &Deps,
@@ -3195,17 +3225,24 @@ pub fn run_serving(
 /// ([`crate::run_store::hold_on_a_fault`], the fault's text with its class marker stripped), so
 /// `rigger status` and `rigger watch` name it among what needs a person and `rigger release`
 /// continues the run. It is the one home of every error a begun run's drive returns: each
-/// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, a
-/// refused landing, an outage past the infra limit, a failed guard probe, a failed git step)
-/// and every other, but a park ([`is_parked`]): whatever parked a spawn left its own hold
-/// standing. A hold it cannot write is said through [`Deps::log`]; `e` is returned either way,
-/// with every [`HALT_MARKERS`] sentinel stripped ([`without_halt_markers`]), so neither the hold
-/// nor the operator's message carries one, whichever path the halt reached here by.
+/// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, an
+/// outage past the infra limit, a failed guard probe, a failed git step) and every other, but a
+/// park ([`is_parked`]), whatever parked a spawn left its own hold standing, and a content step's
+/// refusal ([`CONTENT_REFUSAL_MARKER`]: a refused checkpoint commit, merge or cherry-pick, a
+/// refused landing), the unit's own work in the way, which a relaunch takes up as the base did.
+/// A hold it cannot write is said through
+/// [`Deps::log`]; `e` is returned either way, with every [`HALT_MARKERS`] sentinel and the
+/// content refusal's stripped ([`without_halt_markers`], [`without_content_refusal`]), so neither
+/// the hold nor the operator's message carries one, whichever path the halt reached here by.
 fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
     if is_parked(&e) {
         return e;
     }
-    let e = without_halt_markers(e);
+    let refused = carries_marker(&e, CONTENT_REFUSAL_MARKER);
+    let e = Error(without_content_refusal(&without_halt_markers(e).0));
+    if refused {
+        return e;
+    }
     let fault = strip_failure_marker(&e);
     if let Err(write) = crate::run_store::hold_on_a_fault(&deps.folding(), &fault) {
         (deps.log)(&format!(
@@ -4237,7 +4274,7 @@ impl RunCtx<'_> {
     /// drift to a relaunch, while an edit from outside the run still is. Called with
     /// `integrate_mu` held, so no other move lands between the two hashes. A crash between the
     /// move and the re-pin leaves the move unpinned, and that relaunch halts on drift as before.
-    /// The move is a git step ([`git_step`]): a failed one halts the run.
+    /// The move is a git step ([`git_step`]), classed as that step is.
     fn moving_the_run_branch<T, E: Into<worktree::StepError>>(
         &self,
         move_branch: impl FnOnce() -> Result<T, E>,
@@ -5484,11 +5521,16 @@ impl RunCtx<'_> {
                 // a leaf site already cleaned). A spawn crash's own marker
                 // ([`SPAWN_CRASH_MARKER`]) reaches here from a review stage outside
                 // the single lane, and is stripped with it.
+                // A content step's refusal keeps its [`CONTENT_REFUSAL_MARKER`] on the wave's
+                // error, for [`held_on_a_fault`], and never in the lesson.
                 let msg = strip_failure_marker(&e).replace(SPAWN_CRASH_MARKER, "");
                 let _ = self.emit_lesson(
                     None,
                     &name,
-                    &format!("stage {name:?} failed in its wave: {msg}"),
+                    &format!(
+                        "stage {name:?} failed in its wave: {}",
+                        without_content_refusal(&msg)
+                    ),
                     None,
                     None,
                 );
@@ -13027,7 +13069,8 @@ impl RunCtx<'_> {
         );
         let _ = self.emit_lesson(Some(wt), unit, &summary, None, None);
         Error(format!(
-            "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for local changes at {}",
+            "{LAND_REFUSED_MARKER}{CONTENT_REFUSAL_MARKER}unit {unit:?}: landing refused for \
+             local changes at {}",
             paths.join(", ")
         ))
     }
@@ -47971,22 +48014,46 @@ mod tests {
         );
     }
 
-    /// A PARK IS NO FAULT: a parked spawn's error reaching the conductor's fault hold is returned
-    /// unchanged and holds nothing, since whatever parked the spawn left its own hold standing.
+    /// NEITHER A PARK NOR A CONTENT REFUSAL IS A FAULT: a parked spawn's error, whose park left
+    /// its own hold standing, is returned unchanged; a content step's refusal - bare, or inside
+    /// the plan landing's halt a cherry-pick an earlier attempt left in progress ends in - is
+    /// returned with no marker. Neither holds the run.
     #[test]
-    fn a_park_reaching_the_fault_hold_holds_nothing() {
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub::new();
-        let deps = stub_deps(&store, &driver, Vec::new());
-        crate::run_store::ensure_started(&deps.folding(), &deps.criteria).unwrap();
-        let returned = held_on_a_fault(&deps, parked_spawn("solo/implementer#0"));
-        assert!(
-            is_parked(&returned),
-            "the park is returned unchanged: {}",
-            returned.0
-        );
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(holds_in(&events).is_empty(), "the park holds nothing");
+    fn a_park_or_a_content_refusal_reaching_the_fault_hold_holds_nothing() {
+        let refused = || marked(CONTENT_REFUSAL_MARKER, "worktree: CHERRY_PICK_HEAD left");
+        // (the error reaching the hold, whether it is a park)
+        let rows = [
+            (parked_spawn("solo/implementer#0"), true),
+            (refused(), false),
+            (plan_landing_failed("unit-a", refused()), false),
+        ];
+        for (error, parked) in rows {
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = stub_deps(&store, &driver, Vec::new());
+            crate::run_store::ensure_started(&deps.folding(), &deps.criteria).unwrap();
+            let shown = error.0.replace('\u{1}', "<M>");
+
+            let returned = held_on_a_fault(&deps, error);
+
+            if parked {
+                assert!(
+                    is_parked(&returned),
+                    "{shown}: the park is returned unchanged"
+                );
+            } else {
+                assert!(
+                    returned.0.contains("CHERRY_PICK_HEAD left") && !returned.0.contains('\u{1}'),
+                    "{shown}: the refusal is returned unmarked: {}",
+                    returned.0
+                );
+            }
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert!(
+                holds_in(&events).is_empty(),
+                "{shown}: nothing holds the run"
+            );
+        }
     }
 
     /// A HALT REACHES NO PERSON MARKED: whichever path a halt took to the drive's end - the wave's
@@ -48016,15 +48083,16 @@ mod tests {
         }
     }
 
-    /// A REFUSED GIT STEP IS THE CONDUCTOR'S FAULT: whichever git step the conductor takes on a
-    /// unit's branch or worktree is refused - making a unit's worktree, re-asserting it before a later step,
-    /// discarding a throwaway one, seeding a throwaway branch, committing an attempt's
-    /// checkpoint, landing on the run branch, rolling a unit's branch back, reading a branch's
-    /// tip, deleting a branch - the run halts naming git's refusal, records no lesson against the
-    /// unit, charges it no attempt, and is held for a person.
+    /// A LIFECYCLE GIT FAULT IS THE CONDUCTOR'S: whichever lifecycle step the conductor takes on
+    /// a unit's branch or worktree fails - making a unit's worktree, re-asserting it before a
+    /// later step, discarding a throwaway one, seeding a throwaway branch, landing on the run
+    /// branch, rolling a unit's branch back, reading a branch's tip, deleting a branch - or git
+    /// does not answer a content step (it dies staging an attempt's checkpoint), the run halts
+    /// naming git's answer, records no lesson against the unit, charges it no attempt, and is
+    /// held.
     #[test]
     #[cfg(unix)]
-    fn a_refused_git_step_halts_with_no_lesson_and_holds_the_run() {
+    fn a_lifecycle_git_fault_halts_with_no_lesson_and_holds_the_run() {
         #[derive(Debug, Clone, Copy)]
         enum Step {
             /// A missing but locked worktree is registered at the unit's path, which no leftover
@@ -48039,8 +48107,8 @@ mod tests {
             /// A ref under the post-merge re-gate's throwaway branch name holds its namespace,
             /// so seeding that branch is refused.
             SeedBranch,
-            /// The worker leaves its worktree's index locked, so committing the attempt's
-            /// checkpoint is refused.
+            /// The worker leaves its worktree's index locked, so git dies staging the attempt's
+            /// checkpoint (exit 128): a content step git did not answer.
             Checkpoint,
             /// The gate leaves the main checkout's index locked, so landing the unit on the run
             /// branch is refused.
@@ -48225,6 +48293,220 @@ mod tests {
                 Vec::<String>::new(),
                 "{step:?}: no record carries the halt's marker"
             );
+        }
+    }
+
+    /// A CONTENT STEP'S REFUSAL IS THE UNIT'S: when git runs and refuses a step the unit's own
+    /// work stands in - a hook refusing the attempt's checkpoint commit, a merge of the run
+    /// branch refused over an untracked file in the worktree, a merge with a content conflict, a
+    /// commit refused over conflict-marker text - the stage fails exactly as on the base: a
+    /// lesson names the unit and its refusal, nothing holds the run, and no record carries a
+    /// marker. A conflict is remediated inside the drive, each attempt charged
+    /// (`integrate-conflict`). A refusal ends the drive with no attempt charged, and a relaunch
+    /// over the same store takes the run up again and integrates the unit once the refusal is
+    /// gone (each refusal here fires once).
+    #[test]
+    #[cfg(unix)]
+    fn a_content_step_git_refuses_is_the_units_failure_and_the_run_goes_on() {
+        use std::os::unix::fs::PermissionsExt;
+        #[derive(Debug, Clone, Copy)]
+        enum Step {
+            /// A prepare-commit-msg hook, which `--no-verify` does not skip, refuses the first
+            /// attempt's checkpoint commit (exit 1).
+            CheckpointHook,
+            /// The gate lands op.txt on the run branch and leaves note.txt in the worktree, and a
+            /// post-commit hook leaves an untracked op.txt in the worktree right after the
+            /// pre-merge commit takes note.txt, so the merge of the run branch is refused (exit
+            /// 2). The stage has no review, whose residue check would clean note.txt away.
+            MergeRefused,
+            /// The gate lands a different f.txt on the run branch, so the merge conflicts.
+            MergeConflict,
+            /// A post-commit hook writes conflict-marker lines into the tracked f.txt right after
+            /// the implementer's own commit of it, so the attempt's checkpoint commit is refused
+            /// before git runs.
+            ConflictMarkers,
+        }
+        /// How the step's refusal leaves the drive.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Drive {
+            /// Remediated inside the drive, each attempt charged.
+            Remediates,
+            /// Ended, no attempt charged; a relaunch integrates the unit.
+            Ends,
+        }
+        // Each row: the step, the text the unit's lesson names, and how the drive goes.
+        let cases = [
+            (
+                Step::CheckpointHook,
+                "hook: refusing the attempt",
+                Drive::Ends,
+            ),
+            (Step::MergeRefused, "op.txt", Drive::Ends),
+            (Step::MergeConflict, "f.txt", Drive::Remediates),
+            (Step::ConflictMarkers, "conflict-marker", Drive::Ends),
+        ];
+        for (step, named, drive) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let elsewhere = tempfile::tempdir().unwrap();
+            let mark = elsewhere.path().join("fired");
+            let mark = mark.to_str().unwrap();
+            let store = Store::open(":memory:").unwrap();
+            let hook = |name: &str, body: String| {
+                let path = repo.path().join(".git").join("hooks").join(name);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, format!("#!/bin/sh\n{body}\nexit 0\n")).unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            };
+            // The hook body that runs `then` once, on the commit whose subject is `subject`.
+            let once_on = |subject: &str, then: &str| {
+                format!(
+                    "[ \"$(git log -1 --format=%s)\" = '{subject}' ] && [ ! -e '{mark}.hook' ] \
+                     && touch '{mark}.hook' && {then}"
+                )
+            };
+            let lands = |file: &str, text: &str| {
+                format!(
+                    "[ -e '{mark}' ] || {{ touch '{mark}' && echo {text} > '{repo_path}/{file}' \
+                     && git -C '{repo_path}' add {file} && git -C '{repo_path}' commit -qm {file}; }}"
+                )
+            };
+            let gate = match step {
+                Step::MergeRefused => format!("{} && echo note > note.txt", lands("op.txt", "op")),
+                Step::MergeConflict => lands("f.txt", "theirs"),
+                Step::CheckpointHook | Step::ConflictMarkers => "true".to_string(),
+            };
+            match step {
+                Step::CheckpointHook => hook(
+                    "prepare-commit-msg",
+                    format!(
+                        "if grep -qx 'rigger: unit-a attempt 1' \"$1\" && [ ! -e '{mark}.hook' ]; \
+                         then touch '{mark}.hook'; echo 'hook: refusing the attempt' >&2; exit 1; fi"
+                    ),
+                ),
+                Step::MergeRefused => hook(
+                    "post-commit",
+                    once_on("rigger: integrate unit-a", "echo op > op.txt"),
+                ),
+                Step::ConflictMarkers => hook(
+                    "post-commit",
+                    once_on(
+                        "agent amend f.txt",
+                        "printf '<<<<<<< ours\\nwork\\n=======\\ntheirs\\n>>>>>>> theirs\\n' > f.txt",
+                    ),
+                ),
+                Step::MergeConflict => {}
+            }
+            let mut cfg = Config::default();
+            for id in ["worker", "lens", "adversary", "judge"] {
+                cfg.agents.insert(id.into(), agent(id));
+            }
+            cfg.workflow.gates.insert("g".into(), gate_def(&gate));
+            let review = match step {
+                Step::MergeRefused => crate::config::ReviewPanel::default(),
+                _ => crate::config::ReviewPanel {
+                    lenses: vec!["lens".into()],
+                    adversary: "adversary".into(),
+                    adjudicator: "judge".into(),
+                    ..Default::default()
+                },
+            };
+            cfg.workflow.stages.insert(
+                "unit-a".into(),
+                Stage {
+                    name: "unit-a".into(),
+                    agent: "worker".into(),
+                    criterion_id: "c1".into(),
+                    gates: vec!["g".into()],
+                    on_pass: "merge".into(),
+                    review,
+                    ..Default::default()
+                },
+            );
+            let driver = Stub {
+                write_file: (!matches!(step, Step::ConflictMarkers)).then(|| "f.txt".into()),
+                commits_by_agent: matches!(step, Step::ConflictMarkers)
+                    .then(|| {
+                        let commit = ("f.txt".to_string(), "clean\n".to_string());
+                        ("worker".to_string(), vec![commit])
+                    })
+                    .into_iter()
+                    .collect(),
+                output_by_agent: HashMap::from([
+                    ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
+                    ("lens".to_string(), "reviewed: no blocker".to_string()),
+                    ("adversary".to_string(), "tried and failed".to_string()),
+                ]),
+                ..Stub::new()
+            };
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+
+            let first = run_isolated(&cfg, &deps);
+
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let of_type = |type_: &str| {
+                events
+                    .iter()
+                    .filter(|e| e.type_ == type_)
+                    .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                    .collect::<Vec<_>>()
+            };
+            let lessons = of_type(contextgraph::TYPE_LESSON_LEARNED);
+            assert!(
+                lessons
+                    .iter()
+                    .any(|l| l.contains("unit-a") && l.contains(named)),
+                "{step:?}: a lesson names the unit and its refusal: {lessons:?}"
+            );
+            assert_eq!(holds_in(&events), [], "{step:?}: nothing holds the run");
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                    .filter(|data| data.contains('\u{1}') || data.contains("\\u0001"))
+                    .collect::<Vec<_>>(),
+                Vec::<String>::new(),
+                "{step:?}: no record carries a marker"
+            );
+            let failed = of_type(ledger::TYPE_UNIT_FAILED);
+            match drive {
+                Drive::Remediates => {
+                    assert!(first.is_ok(), "{step:?}: the drive goes on");
+                    assert!(
+                        !failed.is_empty()
+                            && failed.iter().all(|f| f.contains("integrate-conflict")),
+                        "{step:?}: each remediation is charged: {failed:?}"
+                    );
+                }
+                Drive::Ends => {
+                    let Err(err) = first else {
+                        panic!("{step:?}: the refusal ends the drive, as on the base");
+                    };
+                    assert!(
+                        err.0.contains(named) && !err.0.contains('\u{1}'),
+                        "{step:?}: the drive's error names the refusal, unmarked: {}",
+                        err.0
+                    );
+                    assert_eq!(
+                        failed,
+                        Vec::<String>::new(),
+                        "{step:?}: no attempt is charged"
+                    );
+                    let Ok(state) = run_isolated(&cfg, &deps) else {
+                        panic!("{step:?}: a relaunch drives the run on");
+                    };
+                    assert_eq!(
+                        state.units["unit-a"].status,
+                        ledger::Status::Integrated,
+                        "{step:?}: the relaunch integrates the unit"
+                    );
+                    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+                    assert_eq!(holds_in(&events), [], "{step:?}: nothing held the relaunch");
+                }
+            }
         }
     }
 

@@ -17,7 +17,6 @@
 use crate::common;
 use common::git::run_git;
 
-use common::fixtures::conductor_fault_hold;
 use common::fixtures::gated_scratch_cfg;
 use common::fixtures::holds_in;
 use common::fixtures::mk_stage;
@@ -148,8 +147,8 @@ fn a_land_refused_for_local_changes_names_the_blocking_path_and_charges_no_attem
     );
     assert_eq!(
         holds_in(&events),
-        [conductor_fault_hold(&err.0)],
-        "the refusal holds the run for a person, naming the fault"
+        [],
+        "a refused landing is a content step's refusal: it holds nothing, as on the base"
     );
 
     // The unit's own branch keeps exactly its own real work - untouched by the refused

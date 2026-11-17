@@ -1,7 +1,8 @@
 //! The worktree adapter's error values (workspace split): plain data, which `rigger-worktree-git`
 //! re-exports under its historical `worktree::Error` and `worktree::StepError` paths. The agent
 //! interface's `Error` has no conversion from either: a worktree result reaches a conductor error
-//! only through the conductor's one git step, which marks it as a halt.
+//! only through the conductor's one git step, which halts on a step git did not answer and passes
+//! a refusal the unit's own work caused on as the stage's failure.
 
 #[derive(Debug, thiserror::Error)]
 #[error("worktree: {0}")]

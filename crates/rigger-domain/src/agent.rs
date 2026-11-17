@@ -30,8 +30,9 @@ pub const SPAWN_BOUND_TOOLS: [&str; 3] = [
 pub struct Error(pub String);
 
 /// Each listed error converts into a conductor [`Error`] carrying its display text. The worktree
-/// error is not listed: a worktree result reaches a conductor error only through the conductor's
-/// one git step, which marks it as a halt.
+/// errors are not listed: a worktree result reaches a conductor error only through the
+/// conductor's one git step, which marks a conductor fault as a halt and a refusal the unit's own
+/// work caused as the stage's failure.
 macro_rules! error_from_display {
     ($($source:ty),+) => {
         $(
