@@ -42,6 +42,7 @@ std::cfg_select! {
         mod unsupported {
             use std::path::PathBuf;
 
+            pub(super) use super::reported_image as running_image;
             pub(super) use super::scan_holders as holders;
 
             pub(super) fn pids() -> Vec<u32> {
@@ -232,6 +233,19 @@ pub fn holders(dir: &Path) -> Vec<u32> {
     native::holders(dir)
 }
 
+/// The path that execs the image this process runs: on Linux and Android its `/proc` link, which
+/// execs that image even once its file on disk is replaced; elsewhere the path the OS reports for
+/// it ([`std::env::current_exe`]), empty when it reports none.
+pub fn running_image() -> PathBuf {
+    native::running_image()
+}
+
+/// [`running_image`] on every OS whose adapter holds no link to it: the path the OS reports.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn reported_image() -> PathBuf {
+    std::env::current_exe().unwrap_or_default()
+}
+
 /// The composed holder scan [`holders`] answers on every OS that reports a process's working
 /// directory and open files: each process but this one and its un-exec'd forks that [`holds`]
 /// `dir`.
@@ -341,6 +355,15 @@ mod tests {
         let mut child = crate::subprocess::command("true").spawn().unwrap();
         child.wait().unwrap();
         child.id()
+    }
+
+    /// The running image is the image this process runs: it resolves to this test's executable.
+    #[test]
+    fn the_running_image_resolves_to_this_executable() {
+        assert_eq!(
+            running_image().canonicalize().unwrap(),
+            std::env::current_exe().unwrap().canonicalize().unwrap()
+        );
     }
 
     /// The process list names this process, and names it once.

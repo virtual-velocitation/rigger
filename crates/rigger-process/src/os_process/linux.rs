@@ -8,6 +8,11 @@ use std::path::{Path, PathBuf};
 
 pub(super) use super::scan_holders as holders;
 
+/// The link `/proc` holds to the image this process runs.
+pub(super) fn running_image() -> PathBuf {
+    PathBuf::from("/proc/self/exe")
+}
+
 /// The `/proc` directory of process `pid`.
 fn proc_of(pid: u32) -> PathBuf {
     Path::new("/proc").join(pid.to_string())

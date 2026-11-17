@@ -141,11 +141,6 @@ pub fn serve_keeper_if_asked() {
 /// How long a watcher waits for a wake before it walks its tree again.
 const TICK: Duration = Duration::from_millis(250);
 
-/// Linux's link to the image this process runs, which execs that image even once its file on disk
-/// is replaced: the keeper [`Containment::of_running_binary`] names. Only Linux reads a keeper's
-/// path.
-const RUNNING_IMAGE: &str = "/proc/self/exe";
-
 /// How a tree is contained.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Containment {
@@ -167,9 +162,10 @@ impl Containment {
 
     /// The containment this OS gives a tree whose keeper is the running executable, whose `main`
     /// calls [`serve_keeper_if_asked`] first ([`Containment::detect`]). The keeper is named by the
-    /// link to the running image, so it is the very build that answered the probe.
+    /// path that execs the running image ([`os_process::running_image`]), so on Linux, the one OS
+    /// that reads a keeper's path, it is the very build that answered the probe.
     pub fn of_running_binary() -> Containment {
-        detect(Path::new(RUNNING_IMAGE))
+        detect(&os_process::running_image())
     }
 }
 

@@ -221,6 +221,9 @@ fn listener_table() -> Vec<u32> {
     }
 }
 
+/// The path the OS reports for the image this process runs.
+pub(super) use super::reported_image as running_image;
+
 /// The processes the Restart Manager reports holding a regular file in `dir` or inside it, this
 /// process excluded: one session registers every such file, at most
 /// [`FILES_PER_REGISTRATION`](super::FILES_PER_REGISTRATION) per call
