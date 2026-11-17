@@ -178,8 +178,9 @@ impl Worktree {
     /// The worktree DIR is transient (it can live in a temp dir and be recreated);
     /// the BRANCH is the checkpoint. A branch that already exists cannot be
     /// `worktree add -b`'d (git refuses to clobber a ref), so we detect it and check
-    /// it out instead. A branch read git cannot answer is this call's error, and nothing at
-    /// `dir` is cleared on it.
+    /// it out instead. A read deciding whether `dir` is cleared - whether the branch exists, where
+    /// it is checked out, whether that worktree is there - that cannot be answered is this call's
+    /// error, and nothing at `dir`, and no registration, is cleared on it.
     ///
     /// `authorized_root` is the scratch root the CALLER independently resolved `dir`
     /// under (the same value [`crate::worktree::scratch_root_from_env`] or an
@@ -246,9 +247,13 @@ impl Worktree {
                 // is still checked out in a PRIOR process's registration - a killed or
                 // superseded `rigger run` - whose working dir may be at a different/old path
                 // or gone entirely). ADOPT the surviving registration when its dir survives,
-                // and prune-then-recreate when it does not; never fail on it.
-                if let Some(existing) = registered_worktree_for(repo, branch) {
-                    if std::path::Path::new(&existing).is_dir() {
+                // and prune-then-recreate when it does not. Both reads decide the prune and the
+                // clear below, so each is read fail-closed: a registration list git refuses, or
+                // a registered dir the filesystem cannot read, stops here.
+                if let Some(existing) = registration_for(repo, branch)? {
+                    if metadata_at(&existing, std::fs::metadata(&existing))?
+                        .is_some_and(|m| m.is_dir())
+                    {
                         return Ok(Worktree {
                             dir: existing,
                             branch: branch.to_string(),
@@ -2260,18 +2265,47 @@ pub fn worktree_on_branch(dir: &str, branch: &str) -> bool {
 /// as its own presence check before printing "removing" evidence, mirroring `sweep_
 /// terminal_logged`'s identical `git worktree list --porcelain`-driven candidate set -
 /// never a second, parallel notion of "is this worktree still here".
+///
+/// A list git cannot give reads as no registration, which only skips a reclaim; a caller that
+/// clears on the answer reads it fail-closed through [`registration_for`].
 pub fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
-    let out = run_git(repo, &["worktree", "list", "--porcelain"]).ok()?;
+    registration_for(repo, branch).ok().flatten()
+}
+
+/// The dir of the worktree that has `branch` checked out, read fail-closed: `None` when the
+/// registrations name no such worktree, and an error naming the branch when git cannot list them.
+fn registration_for(repo: &str, branch: &str) -> Result<Option<String>, Error> {
+    let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
+        Error(format!(
+            "read where branch {branch} is checked out: {}",
+            e.0
+        ))
+    })?;
     let want = format!("branch refs/heads/{branch}");
     let mut dir: Option<&str> = None;
     for line in out.lines() {
         if let Some(d) = line.strip_prefix("worktree ") {
             dir = Some(d);
         } else if line.trim() == want {
-            return dir.map(|d| d.to_string());
+            return Ok(dir.map(|d| d.to_string()));
         }
     }
-    None
+    Ok(None)
+}
+
+/// What `read`, a metadata read of `path`, answers: `None` when nothing is there, the metadata
+/// when something is, and an error naming `path` when the filesystem cannot answer, never a no.
+/// The read is [`std::fs::symlink_metadata`] for the path's own entry, a link being itself, or
+/// [`std::fs::metadata`] to follow a link to what it names.
+fn metadata_at(
+    path: &str,
+    read: std::io::Result<std::fs::Metadata>,
+) -> Result<Option<std::fs::Metadata>, Error> {
+    match read {
+        Ok(found) => Ok(Some(found)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(Error(format!("read what sits at {path}: {e}"))),
+    }
 }
 
 /// Remove whatever occupies `dir` so a subsequent `git worktree add <dir>` cannot
