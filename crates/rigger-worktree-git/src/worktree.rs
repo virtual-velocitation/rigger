@@ -7194,6 +7194,44 @@ mod tests {
         }
     }
 
+    /// THE LEFTOVER CLEAR REAPS FIRST: on either arm of `create` that clears a leftover at the
+    /// unit's path - its branch kept, or gone with its worktree - a process still rooted in the
+    /// leftover is reaped under the scratch root the caller resolved (it ignores SIGTERM, so
+    /// only the SIGKILL escalation ends it) while one rooted at the repository survives, and
+    /// the worktree is then made on its branch.
+    #[test]
+    fn create_reaps_a_process_rooted_in_a_leftover_before_clearing_it() {
+        // Each row: whether the unit's branch is kept (else gone with its worktree).
+        for kept in [true, false] {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let root = scratch_root(&repo_path, "", None);
+            let branch = "rigger/u/unit-reaped";
+            let dir = format!("{root}/rigger-wt-unit-reaped");
+            if kept {
+                run_git(&repo_path, &["branch", branch]).unwrap();
+            }
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut made = None;
+
+            assert_teardown_reaps_what_is_rooted_inside(
+                std::path::Path::new(&dir),
+                Some(repo.path()),
+                || made = Some(Worktree::create(&repo_path, &dir, branch, &root)),
+                "Worktree::create",
+            );
+
+            let wt = made
+                .unwrap()
+                .unwrap_or_else(|e| panic!("branch kept {kept}: create fails: {}", e.0));
+            assert!(
+                worktree_on_branch(&dir, branch),
+                "branch kept {kept}: the worktree is made on its branch at the cleared path"
+            );
+            wt.remove().unwrap();
+        }
+    }
+
     #[test]
     fn create_adopts_the_deterministic_dir_via_a_path_lookup() {
         // Gap 12 (spec 06:48): with a DETERMINISTIC dir, a second process computes the
