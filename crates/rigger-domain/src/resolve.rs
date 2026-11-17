@@ -2090,6 +2090,98 @@ pub(crate) mod tests {
         }
     }
 
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ), what a qualifier
+    /// reaches: an implementation is `Q`'s only through an `impl`-tagged mention of `Q` it
+    /// encloses, and it brings only the traits its own `impl`-tagged mentions name. So `Q` in an
+    /// implementation's header that does not implement it (`impl From<Source> for Wrapper`), a
+    /// trait bound in its header (`impl<T: Draw> Holder<T>`), a trait another implementation in
+    /// the file implements, and a type implementing the trait `Q` each add no parent, and the
+    /// mention keeps the unqualified rule.
+    #[test]
+    fn a_qualifier_reaches_its_implementations_and_their_traits_alone() {
+        let qualified_call =
+            |name: &str, line| qualified(MentionKind::Call, name, Some(0), line, false);
+        let shape = code(
+            "src/shape.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Shape", "trait", 1, None, false),
+                def("Shape::area", "method", 2, Some(0), false),
+                def("Draw", "trait", 5, None, false),
+                def("Draw::paint", "method", 6, Some(2), false),
+            ],
+            vec![],
+        );
+        let wrap = code(
+            "src/wrap.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Wrapper", "type", 1, None, false),
+                def("Wrapper::Empty", "variant", 2, Some(0), false),
+                def("impl From<Source> for Wrapper", "impl", 5, None, false),
+                def("Wrapper::from", "method", 6, Some(2), false),
+                def("impl Shape for Wrapper", "impl", 10, None, false),
+                def("Holder", "type", 15, None, false),
+                def("impl<T: Draw> Holder<T>", "impl", 17, None, false),
+                def("Holder::get", "method", 18, Some(6), false),
+            ],
+            vec![
+                tagged("impl", "From", Some(2), 5),
+                tagged("type", "Source", Some(2), 5),
+                tagged("impl", "Wrapper", Some(2), 5),
+                tagged("impl", "Shape", Some(4), 10),
+                tagged("impl", "Wrapper", Some(4), 10),
+                tagged("type", "Draw", Some(6), 17),
+                tagged("impl", "Holder", Some(6), 17),
+            ],
+        );
+        let user = code(
+            "src/user.rs",
+            "rust",
+            Scope::Product,
+            vec![def("run", "function", 1, None, false)],
+            vec![
+                qualified_call("Wrapper::area", 2),
+                qualified_call("Source::from", 3),
+                qualified_call("Holder::area", 4),
+                qualified_call("Holder::paint", 5),
+                qualified(
+                    MentionKind::Tagged("variant".into()),
+                    "Shape::Empty",
+                    Some(0),
+                    6,
+                    false,
+                ),
+            ],
+        );
+        let view = FactsView::new(stamp(), vec![shape, wrap, user]);
+        let r = Resolver::new(&view);
+        assert_eq!(
+            answer(&view, &r, &Ask::Links("src/user.rs", false)),
+            [
+                // `impl Shape for Wrapper` brings `Shape`.
+                "src/user.rs::run -CALLS/extracted-> src/shape.rs::Shape::area",
+                "src/user.rs -REFERENCES/extracted-> src/shape.rs::Shape::area",
+                // `Source` is a `type` mention in the header of `impl From<Source> for Wrapper`.
+                "src/user.rs::run -CALLS/inferred-> src/user.rs::%from",
+                "src/user.rs -REFERENCES/inferred-> src/user.rs::%from",
+                // `Shape` is implemented by `impl Shape for Wrapper`, not by `Holder`'s.
+                "src/user.rs::run -CALLS/inferred-> src/user.rs::%area",
+                "src/user.rs -REFERENCES/inferred-> src/user.rs::%area",
+                // `Draw` is a `type` mention, a bound, in the header of `Holder`'s.
+                "src/user.rs::run -CALLS/inferred-> src/user.rs::%paint",
+                "src/user.rs -REFERENCES/inferred-> src/user.rs::%paint",
+                // `Wrapper`, which implements `Shape`, is no parent of `Shape`.
+                "src/user.rs::run -REFERENCES/inferred-> src/wrap.rs::Wrapper::Empty",
+                "src/user.rs -CONTAINS/extracted-> src/user.rs::run",
+            ],
+            "each qualified mention narrowed by its qualifier's implementations and their traits \
+             alone, else by the unqualified rule"
+        );
+    }
+
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {
