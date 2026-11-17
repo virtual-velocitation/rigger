@@ -178,7 +178,8 @@ impl Worktree {
     /// The worktree DIR is transient (it can live in a temp dir and be recreated);
     /// the BRANCH is the checkpoint. A branch that already exists cannot be
     /// `worktree add -b`'d (git refuses to clobber a ref), so we detect it and check
-    /// it out instead.
+    /// it out instead. A branch read git cannot answer is this call's error, and nothing at
+    /// `dir` is cleared on it.
     ///
     /// `authorized_root` is the scratch root the CALLER independently resolved `dir`
     /// under (the same value [`crate::worktree::scratch_root_from_env`] or an
@@ -209,7 +210,9 @@ impl Worktree {
             // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
             // is a no-op, and a healthy registered worktree is never touched.
             heal_corrupt_worktree_admin(repo);
-            if branch_exists(repo, branch) {
+            // Read fail-closed: both arms below may clear what sits at `dir`, so a read git
+            // cannot answer stops here, never reads as "no branch".
+            if branch_present(repo, branch)? {
                 // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
                 // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
                 // uuid), so a resume - or a step that SUPERSEDES a prior one that died -
@@ -1524,7 +1527,12 @@ fn parse_status_z(out: &str) -> Vec<String> {
 /// refuses on when an escalated unit's recorded branch is gone - "refused with the
 /// branch name and the reflog hint."
 pub fn branch_exists(repo: &str, branch: &str) -> bool {
-    ref_resolves(repo, &format!("refs/heads/{branch}"))
+    branch_present(repo, branch).unwrap_or(false)
+}
+
+/// Whether local branch `branch` exists in `repo`, read fail-closed ([`ref_present`]).
+fn branch_present(repo: &str, branch: &str) -> Result<bool, Error> {
+    ref_present(repo, &format!("refs/heads/{branch}"))
 }
 
 /// The CURRENT tip commit sha of local branch `branch` in `repo`, or an error when the
@@ -1572,16 +1580,19 @@ pub fn landed_branch_tip(repo: &str, branch: &str, run_branch: &str) -> Option<S
 /// actually resolves (an unresolvable base has no tree to look paths up in - checking
 /// against it would read as "every path absent" and refuse spuriously).
 pub fn ref_resolves(repo: &str, r: &str) -> bool {
-    run_git(
-        repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("{r}^{{commit}}"),
-        ],
-    )
-    .is_ok()
+    ref_present(repo, r).unwrap_or(false)
+}
+
+/// Whether `r` resolves to a commit in `repo`, read fail-closed: `Ok(false)` only when git
+/// answers that it does not, and an error when git cannot answer (it cannot start, `repo` cannot
+/// be entered or holds no repository, or git ends any other way), so a caller about to clear what
+/// sits at a path never reads a failed read as absence.
+fn ref_present(repo: &str, r: &str) -> Result<bool, Error> {
+    let commit = format!("{r}^{{commit}}");
+    let args = ["rev-parse", "--verify", "--quiet", commit.as_str()];
+    finish_git_query(start_git(repo, &args))
+        .map(|answer| answer.is_some())
+        .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
 }
 
 /// Whether the repo-relative `path` exists in the tree of the commit `base_ref` names -
@@ -2608,7 +2619,12 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
 }
 
 pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
-    run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
+    run_git(dir, args).map_err(|out| git_failed(args, out))
+}
+
+/// The error of a `git <args>` run that failed, naming the command and what git said.
+fn git_failed(args: &[&str], out: impl std::fmt::Display) -> Error {
+    Error(format!("git {}: {out}", args.join(" ")))
 }
 
 /// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
