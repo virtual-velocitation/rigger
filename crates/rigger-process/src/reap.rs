@@ -147,24 +147,27 @@ pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
         .collect()
 }
 
-/// One candidate captured at scan time: the pid and its start time
+/// One process as a scan or a walk found it: the pid and its start time
 /// ([`crate::os_process::start_time`]), the same for the life of a pid and repeated only if the
 /// pid itself is reused, so comparing it again right before the signal is the TOCTOU witness
 /// that the pid still names the SAME process the scan found, not one the kernel recycled onto
 /// that number in the meantime (spec 78).
-struct ScanEntry {
-    pid: u32,
-    starttime: u64,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Identity {
+    /// The process's pid.
+    pub pid: u32,
+    /// Its start time when the pid was read, the witness [`still_started`] checks.
+    pub start: u64,
 }
 
 /// [`processes_rooted_under`] (the one scan authority) paired with each match's start time
 /// captured at this same instant, for the reaper's TOCTOU recheck. A pid whose start time
 /// cannot be read (it already exited between the cwd scan and this read) is dropped -
 /// nothing to compare against later, nothing worth signalling now.
-fn scan_with_starttime(base: &Path) -> Vec<ScanEntry> {
+fn scan_with_starttime(base: &Path) -> Vec<Identity> {
     processes_rooted_under(base)
         .into_iter()
-        .filter_map(|(pid, _)| pid_starttime(pid).map(|starttime| ScanEntry { pid, starttime }))
+        .filter_map(|(pid, _)| pid_starttime(pid).map(|start| Identity { pid, start }))
         .collect()
 }
 
@@ -239,7 +242,7 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// Best-effort and platform-tolerant like every other scan in this module: an OS the process
 /// interface cannot read, or a process the listing could not read, contributes nothing, never a
 /// hard error.
-fn descendants_of(root_pid: u32) -> Vec<ScanEntry> {
+fn descendants_of(root_pid: u32) -> Vec<Identity> {
     descendants_in(&os_process::table(), root_pid)
 }
 
@@ -249,7 +252,7 @@ fn descendants_of(root_pid: u32) -> Vec<ScanEntry> {
 /// and Windows may give that pid to a later process; a process failing that test is no descendant,
 /// and nor is anything below it. `seen` (the root included) ends the walk on a cycle, which the
 /// OS's own parent/child relationship should never produce but the walk must survive.
-fn descendants_in(table: &[os_process::Entry], root_pid: u32) -> Vec<ScanEntry> {
+fn descendants_in(table: &[os_process::Entry], root_pid: u32) -> Vec<Identity> {
     let Some(root) = table.iter().find(|entry| entry.pid == root_pid) else {
         return Vec::new();
     };
@@ -265,9 +268,9 @@ fn descendants_in(table: &[os_process::Entry], root_pid: u32) -> Vec<ScanEntry> 
             if kid.start < parent.start || !seen.insert(kid.pid) {
                 continue;
             }
-            out.push(ScanEntry {
+            out.push(Identity {
                 pid: kid.pid,
-                starttime: kid.start,
+                start: kid.start,
             });
             frontier.push_back(kid);
         }
@@ -293,12 +296,12 @@ fn is_signal_eligible(pid: u32, self_pid: u32, self_ancestors: &HashSet<u32>) ->
 /// ([`signal_descendant_if_unchanged`]), so there is exactly ONE TOCTOU recheck regardless
 /// of which kind of snapshot found the candidate.
 fn toctou_still_same_process(
-    target: &ScanEntry,
+    target: &Identity,
     self_pid: u32,
     self_ancestors: &HashSet<u32>,
 ) -> bool {
     is_signal_eligible(target.pid, self_pid, self_ancestors)
-        && still_started(target.pid, target.starttime)
+        && still_started(target.pid, target.start)
 }
 
 /// Re-read `target`'s cwd ([`crate::os_process::cwd`]) IMMEDIATELY before signalling it, and
@@ -308,7 +311,7 @@ fn toctou_still_same_process(
 /// rooted under `base`) between the scan and this call is silently skipped, never signalled,
 /// and so is a pid whose cwd cannot be read.
 fn signal_if_unchanged(
-    target: &ScanEntry,
+    target: &Identity,
     base: &Path,
     self_pid: u32,
     self_ancestors: &HashSet<u32>,
@@ -330,7 +333,7 @@ fn signal_if_unchanged(
 /// correctly signalled - only a RECYCLED pid (the kernel reused the number for an unrelated
 /// process) is skipped, exactly as for any other reap candidate.
 fn signal_descendant_if_unchanged(
-    target: &ScanEntry,
+    target: &Identity,
     self_pid: u32,
     self_ancestors: &HashSet<u32>,
     signal: Signal,
@@ -418,7 +421,7 @@ fn send_signal(signal: Signal, pid: u32) {
 /// gracefully or not, so a snapshot taken only once that wait has already ended (or taken
 /// only inside [`end_child`] itself, which is not even called until after it) would already
 /// be too late for a session that wound down entirely on its own.
-pub struct DescendantSnapshot(Vec<ScanEntry>);
+pub struct DescendantSnapshot(Vec<Identity>);
 
 /// Snapshot `pid`'s current descendants (see [`descendants_of`]) into an opaque
 /// [`DescendantSnapshot`] a caller can hold across its OWN later wait before spending it via
@@ -1283,7 +1286,7 @@ mod tests {
             .map(|(what, table, _)| {
                 let found = descendants_in(table, 10)
                     .iter()
-                    .map(|entry| (entry.pid, entry.starttime))
+                    .map(|entry| (entry.pid, entry.start))
                     .collect();
                 (*what, found)
             })
@@ -1314,7 +1317,7 @@ mod tests {
         let grandchild: u32 = line.trim().parse().expect("parse the grandchild pid");
         let found: Vec<(u32, Option<u64>)> = descendants_of(shell.id())
             .iter()
-            .map(|entry| (entry.pid, Some(entry.starttime)))
+            .map(|entry| (entry.pid, Some(entry.start)))
             .collect();
         let expected = vec![(grandchild, pid_starttime(grandchild))];
         cleanup(&mut shell);
@@ -1340,9 +1343,9 @@ mod tests {
         let mut child = sleeper_in(&base);
         let starttime = wait_until(|| pid_starttime(child.id()).is_some());
         assert!(starttime, "precondition: starttime is readable");
-        let target = ScanEntry {
+        let target = Identity {
             pid: child.id(),
-            starttime: pid_starttime(child.id()).unwrap(),
+            start: pid_starttime(child.id()).unwrap(),
         };
         signal_if_unchanged(
             &target,
@@ -1368,9 +1371,9 @@ mod tests {
         let mut child = sleeper_in(&base);
         let ready = wait_until(|| pid_starttime(child.id()).is_some());
         assert!(ready, "precondition: starttime is readable");
-        let target = ScanEntry {
+        let target = Identity {
             pid: child.id(),
-            starttime: pid_starttime(child.id())
+            start: pid_starttime(child.id())
                 .unwrap()
                 .wrapping_add(starttime_shift),
         };
@@ -1412,9 +1415,9 @@ mod tests {
         let mut child = sleeper_in(&base);
         let ready = wait_until(|| pid_starttime(child.id()).is_some());
         assert!(ready);
-        let target = ScanEntry {
+        let target = Identity {
             pid: child.id(),
-            starttime: pid_starttime(child.id()).unwrap(),
+            start: pid_starttime(child.id()).unwrap(),
         };
         // Pretend the child IS "self" - it must never be signalled.
         signal_if_unchanged(&target, &base, child.id(), &HashSet::new(), Signal::Hard);
