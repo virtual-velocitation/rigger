@@ -47961,6 +47961,33 @@ mod tests {
         assert!(holds_in(&events).is_empty(), "the park holds nothing");
     }
 
+    /// A HALT REACHES NO PERSON MARKED: whichever path a halt took to the drive's end - the wave's
+    /// halt arm, which strips its marker, or one that keeps it, such as the plan-critique gate's
+    /// own error arm - the run's fault hold names the halt's text and the error the run returns
+    /// carries no halt marker.
+    #[test]
+    fn a_marked_halt_reaching_the_fault_hold_is_held_and_returned_unmarked() {
+        for marker in HALT_MARKERS {
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = stub_deps(&store, &driver, Vec::new());
+            crate::run_store::ensure_started(&deps.folding(), &deps.criteria).unwrap();
+
+            let returned = held_on_a_fault(&deps, marked(marker, "git refused the step"));
+
+            assert_eq!(
+                returned.0, "git refused the step",
+                "{marker:?}: the run returns the halt's text, unmarked"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert_eq!(
+                holds_in(&events),
+                [conductor_fault_hold("git refused the step")],
+                "{marker:?}: the run is held on the halt's text"
+            );
+        }
+    }
+
     /// A WORKTREE STEP GIT REFUSES IS THE CONDUCTOR'S FAULT: whichever kind of worktree step the
     /// conductor takes is refused - making a unit's worktree, re-asserting it before a later step,
     /// discarding a throwaway one, seeding a throwaway branch - the run halts naming git's
