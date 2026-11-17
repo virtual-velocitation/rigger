@@ -14,8 +14,13 @@
 //! OS reports one (a kqueue on macOS) and on a timer elsewhere, and the end
 //! ([`crate::reap::end_watched`]) freezes the tree, ends it deepest first and reports what it
 //! could not reach: a remembered process that left the tree, whose parent chain no longer reaches
-//! the main, is reported and never signalled. Every signal goes through the reaper
-//! ([`crate::reap`]), the one place this crate signals a process.
+//! the main, is reported and never signalled. A kept tree ([`Containment::Keeper`], on Linux) is
+//! held by a keeper process, this executable run again, which spawns the main and is the child
+//! subreaper of everything the tree starts, so no process of the tree leaves it by orphaning
+//! itself; the handle's process is the keeper, and the handle answers the main's pid and the
+//! status the keeper reports for it. [`Containment::detect`] answers the containment this OS gives
+//! a tree. Every signal goes through the reaper ([`crate::reap`]), the one place this crate
+//! signals a process.
 
 use crate::reap::{self, Identity};
 pub use crate::reap::{EndReport, Leftover};
@@ -77,12 +82,53 @@ std::cfg_select! {
 }
 
 // The one spelling of the OS set for a held tree: Linux holds a tree in a keeper process, and
-// every other OS watches it.
+// every other OS watches it, naming why.
 std::cfg_select! {
     target_os = "linux" => {
         mod linux;
+        use linux::{detect, held, serve_if_asked};
     }
-    _ => {}
+    _ => {
+        /// The containment a tree is held in here: a watch, naming why, whatever the keeper.
+        fn detect(_keeper: &Path) -> Containment {
+            Containment::Watch(NO_KEEPER)
+        }
+
+        /// A tree held as `how`, which this OS holds no tree as.
+        fn held(how: &Containment, _program: &OsStr) -> io::Result<(Command, Box<dyn Contain>)> {
+            Err(unavailable(how))
+        }
+
+        /// No keeper runs here, so this process serves none.
+        fn serve_if_asked() {}
+
+        std::cfg_select! {
+            target_os = "macos" => {
+                /// Why a tree is watched here: macOS offers no containment a process can hold a
+                /// tree in.
+                const NO_KEEPER: Why = Why::NoPublicContainment;
+            }
+            _ => {
+                /// Why a tree is watched here: this OS is none this crate holds a tree on.
+                const NO_KEEPER: Why = Why::Unsupported;
+            }
+        }
+    }
+}
+
+/// The error a tree held as `how` answers where this OS holds no tree as `how`.
+fn unavailable(how: &Containment) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("containment {how:?} is not available"),
+    )
+}
+
+/// Serves the keeper and exits, when this process was started as one; returns at once otherwise.
+/// An executable that may be named as a [`Containment::Keeper`] calls this first in its `main`,
+/// before it reads its arguments or opens anything.
+pub fn serve_keeper_if_asked() {
+    serve_if_asked();
 }
 
 /// How long a watcher waits for a wake before it walks its tree again.
@@ -103,8 +149,7 @@ impl Containment {
     /// The containment this OS gives a tree whose keeper would be `keeper`: on Linux the keeper,
     /// once `keeper` answers its probe, and a watch naming why otherwise.
     pub fn detect(keeper: &Path) -> Containment {
-        let _ = keeper;
-        todo!("the containment probe")
+        detect(keeper)
     }
 }
 
@@ -133,18 +178,16 @@ pub struct TreeCommand {
 }
 
 impl TreeCommand {
-    /// A command for `program` ([`crate::subprocess::command`]), contained as `how`.
+    /// A command for `program` ([`crate::subprocess::command`]), contained as `how`. A kept tree's
+    /// command runs the keeper, whose arguments after `program` are the main's and whose
+    /// environment, directory and streams the main inherits. An error where this OS holds no tree
+    /// as `how`.
     pub fn new(program: impl AsRef<OsStr>, how: &Containment) -> io::Result<TreeCommand> {
-        match how {
-            Containment::Watch(_) => Ok(TreeCommand {
-                command: subprocess::command(program),
-                contain: Box::new(Watch),
-            }),
-            Containment::Keeper(_) | Containment::Job => Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("containment {how:?} is not available"),
-            )),
-        }
+        let (command, contain): (Command, Box<dyn Contain>) = match how {
+            Containment::Watch(_) => (subprocess::command(program), Box::new(Watch)),
+            Containment::Keeper(_) | Containment::Job => held(how, program.as_ref())?,
+        };
+        Ok(TreeCommand { command, contain })
     }
 
     /// The command, for its arguments, environment, directory and streams.

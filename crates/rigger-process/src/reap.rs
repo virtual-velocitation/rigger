@@ -644,7 +644,7 @@ fn frozen_or_gone(pid: u32) -> bool {
 }
 
 /// Reads `done` every [`POLL`] until it holds or `deadline` passes; whether it held.
-fn poll_until(deadline: Instant, mut done: impl FnMut() -> bool) -> bool {
+pub(crate) fn poll_until(deadline: Instant, mut done: impl FnMut() -> bool) -> bool {
     loop {
         if done() {
             return true;
@@ -654,6 +654,24 @@ fn poll_until(deadline: Instant, mut done: impl FnMut() -> bool) -> bool {
         }
         std::thread::sleep(POLL);
     }
+}
+
+/// The processes of the tree under `main` still running, read without signalling any: `main`,
+/// while its pid still names it, and every running descendant a walk finds under it. A tree whose
+/// keeper is gone is reported this way, since what the keeper held is no longer this process's to
+/// signal.
+pub fn left_running(main: &Identity) -> Vec<Leftover> {
+    if !running(main) {
+        return Vec::new();
+    }
+    let mut left = vec![Leftover::of(main.pid, false)];
+    left.extend(
+        descendants_of(main.pid)
+            .iter()
+            .filter(|target| running(target))
+            .map(|target| Leftover::of(target.pid, false)),
+    );
+    left
 }
 
 /// End the process tree under the held child `main`, which this process spawned and has not yet

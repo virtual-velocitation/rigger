@@ -25,9 +25,9 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 # `wasm32` core lane never builds them.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
-# (spec 78), and this crate's other system calls: the process ids and owners it reads and
-# `inherit_on_exec`'s descriptor-flag call. See the root manifest for why the 1.x line with only
-# `std` + `process`.
+# (spec 78), and this crate's other system calls: the process ids and owners it reads,
+# `inherit_on_exec`'s descriptor-flag call, and the Linux keeper's child subreaper and its wait on
+# its children. See the root manifest for why the 1.x line with only `std` + `process`.
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
 # The build budget's cross-process advisory slot lock (`flock(2)` on unix, `LockFileEx` on
 # Windows).
@@ -62,8 +62,10 @@ tokio = { version = "1", features = ["rt", "time"] }
 # process interface reads libproc through the libc below.
 [target.'cfg(unix)'.dependencies]
 # The unix interrupt trigger's `SIGINT` handler: `signal`, and the async-signal-safe `ftruncate`
-# and `_exit` it calls, and the macOS process adapter's libproc reads, from the libc the lock
-# already resolves for rustix's dependents.
+# and `_exit` it calls; the Linux keeper's signal dispositions (`sigaction`, `signal`), its wait on
+# its control pipe (`poll`), and its standard streams put over by `/dev/null` (`open`, `dup2`,
+# `close`) and its descriptors' close-on-exec (`fcntl`); and the macOS process adapter's libproc
+# reads, from the libc the lock already resolves for rustix's dependents.
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
