@@ -2718,6 +2718,80 @@ fn a_failed_guard_probe_on_the_regenerate_command_halts_the_step_and_a_resume_la
     drop(repo);
 }
 
+/// A regenerate commit git refuses is a content step: the commit carries the unit's regenerated
+/// tree, so a hook refusing it records the unit's lesson naming the refusal, charges no attempt,
+/// ends the drive and holds the run for the orchestrator, the hold's first line the refusal's.
+/// Released with the refusal gone, a resume regenerates and lands the unit.
+#[test]
+#[cfg(unix)]
+fn a_refused_regenerate_commit_records_the_units_lesson_and_holds_the_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = temp_git_project_with_commit();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let fired = elsewhere.path().join("fired");
+    let hook = repo
+        .path()
+        .join(".git")
+        .join("hooks")
+        .join("prepare-commit-msg");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\nif grep -qx 'rigger: regenerate conflicting artifacts for unit-a' \"$1\" \
+             && [ ! -e '{fired}' ]; then touch '{fired}'; echo 'hook: refusing the regeneration' \
+             >&2; exit 1; fi\nexit 0\n",
+            fired = fired.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let cfg = regenerating_cfg(&repo_path);
+    let store = Store::open(":memory:").unwrap();
+    let driver = confined_conflict_driver(&repo_path);
+
+    let err = run(
+        &cfg,
+        &bare_deps(&store, &driver, &rigger::gate::ExecRunner, &repo_path),
+    )
+    .err()
+    .expect("a refused regenerate commit ends the drive");
+
+    assert!(
+        err.0.contains("hook: refusing the regeneration"),
+        "the drive ends naming git's refusal: {}",
+        err.0
+    );
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        wave_lessons(&events),
+        [format!("stage \"unit-a\" failed in its wave: {}", err.0)],
+        "the regenerate commit is the unit's work, so its lesson names the unit"
+    );
+    assert_eq!(
+        count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+        0,
+        "no attempt is charged"
+    );
+    assert_eq!(
+        holds_in(&events),
+        [conductor_fault_hold(&err.0)],
+        "the run is held for the orchestrator, naming the refusal"
+    );
+
+    resume_lands_unit_a(
+        &cfg,
+        &store,
+        &rigger::gate::ExecRunner,
+        &repo_path,
+        "released with the refusal gone, the resume regenerates and lands the unit",
+    );
+    let final_gen = std::fs::read_to_string(Path::new(&repo_path).join("gen.txt")).unwrap();
+    assert_eq!(final_gen, "REGENERATED\n");
+    drop(repo);
+}
+
 /// A crash on the append that would durably record `after` while the mutation itself already
 /// succeeded for real: call 1 fails on exactly that append with `before` recorded, the
 /// mutation's effect is already on disk (`on_disk`), and a resumed call re-derives the same
