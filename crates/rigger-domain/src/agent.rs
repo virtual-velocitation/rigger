@@ -459,6 +459,15 @@ pub const FAULT_ON_A_PERSONS_HOLD: DispositionRow = DispositionRow {
     ..CONDUCTOR_FAULT_ROW
 };
 
+/// A conductor-fault hold of a unit's own work git refused (a checkpoint commit, the merge of the
+/// run branch into its worktree), held for the orchestrator: the unit was charged the attempt the
+/// refusal ended, so its release retries the unit with the refusal in its next prompt.
+pub const UNIT_WORK_REFUSED: DispositionRow = for_the_orchestrator(
+    "git refused a unit's own work, the refusal in the fault rigger status prints under this \
+     hold: rigger release retries the unit with it; fix the tree first only if the fault shows \
+     no agent session can change it",
+);
+
 /// The conductor-fault row: held for the orchestrator, which reads the fault `rigger status`
 /// prints under the hold, fixes its cause and releases the run.
 const CONDUCTOR_FAULT_ROW: DispositionRow = for_the_orchestrator(
@@ -934,6 +943,19 @@ mod tests {
                 ),
             ],
             "a hold for the orchestrator's rows for a person"
+        );
+        assert_eq!(
+            UNIT_WORK_REFUSED,
+            DispositionRow {
+                disposition: Disposition::Hold,
+                action: "git refused a unit's own work, the refusal in the fault rigger status \
+                         prints under this hold: rigger release retries the unit with it; fix the \
+                         tree first only if the fault shows no agent session can change it",
+                needs_person: false,
+                credential: false,
+                probed: false,
+            },
+            "a unit's refused work is held for the orchestrator, whose release retries the unit"
         );
     }
 

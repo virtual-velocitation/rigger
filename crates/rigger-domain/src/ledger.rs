@@ -78,7 +78,7 @@ pub struct Unit {
     pub commit: String,
     /// The most recent `UnitFailed`'s `cause` (spec 69, criterion 3: the cause wire) -
     /// the conductor's own closed-vocabulary tag (`reject`, `gate:<name>`,
-    /// `integrate-conflict`, `infra:<kind>`) for WHY this attempt failed, stamped at the
+    /// `integrate-conflict`, `git-refused`, `infra:<kind>`) for WHY this attempt failed, stamped at the
     /// branch that failed it, never inferred downstream. Raw passthrough (mirrors
     /// `attempts`: each `UnitFailed` unconditionally overwrites it), so it always
     /// reflects the LATEST failure. Empty on a unit that has never failed, or on a

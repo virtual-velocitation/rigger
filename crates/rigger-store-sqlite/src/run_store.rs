@@ -15,6 +15,7 @@ use std::time::SystemTime;
 
 use rigger_domain::agent::{
     cause_row, DispositionRow, CONDUCTOR_FAULT, FAULT_ON_A_PERSONS_HOLD, FAULT_RECURRED, OPERATOR,
+    UNIT_WORK_REFUSED,
 };
 use rigger_domain::ledger::{holds, project, Hold, RunState};
 
@@ -349,6 +350,23 @@ fn sighted(read: &HoldRead, cause: &str, detail: &str, by: &str, model: &str) ->
 /// latest `RunHeld` already names the same fault takes nothing, so a relaunch meeting the fault
 /// again adds no second hold.
 pub fn hold_on_a_fault(store: &dyn EventStore, fault: &str) -> Result<(), Error> {
+    hold_on_a_fault_of(store, fault, cause_row(CONDUCTOR_FAULT))
+}
+
+/// [`hold_on_a_fault`] for git refusing a unit's own work, the unit charged the attempt the
+/// refusal ended: its action is [`UNIT_WORK_REFUSED`]'s, whose release retries the unit. Each
+/// attempt's refusal is its own fault (its first line names the attempt), so the unit's retry
+/// bound, not a recurrence, decides when a person is needed.
+pub fn hold_on_refused_unit_work(store: &dyn EventStore, fault: &str) -> Result<(), Error> {
+    hold_on_a_fault_of(store, fault, UNIT_WORK_REFUSED)
+}
+
+/// The conductor's fault hold of `fault` standing on `row`, as [`escalated`] holds it.
+fn hold_on_a_fault_of(
+    store: &dyn EventStore,
+    fault: &str,
+    row: DispositionRow,
+) -> Result<(), Error> {
     let detail = fault_detail(fault);
     append_on_hold(store, TYPE_RUN_HELD, |read| {
         let open = read.open.as_ref();
@@ -361,7 +379,7 @@ pub fn hold_on_a_fault(store: &dyn EventStore, fault: &str) -> Result<(), Error>
             .released
             .as_ref()
             .is_some_and(|hold| hold.latest.same_fault(&held));
-        let row = escalated(cause_row(CONDUCTOR_FAULT), recurred, open);
+        let row = escalated(row, recurred, open);
         let body = held_on(row, CONDUCTOR_FAULT, &detail, HOLD_BY_CONDUCTOR, model);
         serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
     })

@@ -120,6 +120,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "For the operator: review of unit {unit:?} at attempt {attemp",
             "a review round left unit {unit:?}'s worktree as residue afte",
             "unit {:?} escalated after {attempts} attempts; {why}",
+            "unit {:?} attempt {} was refused: {refusal}",
             "unit {:?} escalated: all {width} speculation candidates fail",
             "review stage {:?} escalated after {attempts} attempts; {why}",
             "plan-critique {gate_name:?} escalated after {attempts} attem",
@@ -172,6 +173,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "the orchestrator's fix did not hold: a person decides, then ",
             "a person holds this run: they read the fault, decide, then r",
             "read the fault rigger status prints under this hold, fix its",
+            "git refused a unit's own work, the refusal in the fault rigg",
         ],
     ),
     (

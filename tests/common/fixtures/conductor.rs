@@ -88,6 +88,18 @@ pub fn recurred_fault_hold(error: &str) -> rigger::run::RunHeld {
     }
 }
 
+/// The hold the conductor writes when git refused a unit's own work and the unit was charged
+/// the attempt: [`conductor_fault_hold`] under the unit-work row's action, whose release retries
+/// the unit ([`UNIT_WORK_REFUSED`](rigger_domain::agent::UNIT_WORK_REFUSED)).
+pub fn unit_work_hold(error: &str) -> rigger::run::RunHeld {
+    let row = rigger_domain::agent::UNIT_WORK_REFUSED;
+    rigger::run::RunHeld {
+        action: row.action.to_string(),
+        needs_person: row.needs_person,
+        ..conductor_fault_hold(error)
+    }
+}
+
 /// Every `RunHeld` body among `events`, oldest first.
 pub fn holds_in(events: &[Event]) -> Vec<rigger::run::RunHeld> {
     events

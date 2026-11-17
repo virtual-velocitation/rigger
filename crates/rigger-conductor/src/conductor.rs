@@ -2861,18 +2861,57 @@ const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
 /// cherry-pick ([`Worktree::cherry_pick_onto_run_branch`]). Its [`StepError::Refused`] is the
 /// unit's own work in the way - a hook refusing the commit, a merge refused over the tree's
 /// changes, conflict-marker text, a cherry-pick left in progress - and travels as the stage's
-/// plain failure, so it is recorded as the base records it (a lesson naming the unit from the
-/// wave's generic arm; a plan landing's halt) and the drive it ends holds the run for the
-/// orchestrator ([`held_on_a_fault`]). Its [`StepError::Unanswered`] is git not answering, a
-/// conductor fault like any lifecycle failure.
+/// failure marked with [`CONTENT_REFUSAL_MARKER`]: a unit's stage charges it to the attempt it
+/// ended ([`RunCtx::charge_refused_work`]), a plan landing's halt carries it, and every other
+/// stage, and a step on the operator's regenerable paths ([`on_regenerable_paths`]), records it
+/// as the base does (a lesson naming the unit from the wave's generic arm); the drive it ends
+/// holds the run for the orchestrator ([`held_on_a_fault`]). Its
+/// [`StepError::Unanswered`] is git not answering, a conductor fault like any lifecycle failure.
 ///
 /// [`StepError::Refused`]: worktree::StepError::Refused
 /// [`StepError::Unanswered`]: worktree::StepError::Unanswered
 fn git_step<T, E: Into<worktree::StepError>>(step: Result<T, E>) -> Result<T, Error> {
     step.map_err(|e| match e.into() {
         worktree::StepError::Unanswered(fault) => marked(GIT_STEP_MARKER, fault),
-        refused => Error(refused.to_string()),
+        refused => marked(CONTENT_REFUSAL_MARKER, refused),
     })
+}
+
+/// The sentinel a CONTENT STEP'S REFUSAL embeds in its error ([`git_step`]): git refused a step
+/// the unit's own work stands in (a checkpoint commit, the merge of the run branch into its
+/// worktree), or rigger's own guard refused it before git ran. A unit's stage that ends on it,
+/// with no halt marker beside it, is charged the attempt it ended and retried
+/// ([`RunCtx::charge_refused_work`]); no reader sees it ([`without_halt_markers`]).
+const CONTENT_REFUSAL_MARKER: &str = "\u{1}rigger:content-refusal\u{1}";
+
+/// The sentinel the error of a unit charged for a content step's refusal carries
+/// ([`RunCtx::charge_refused_work`]): the drive it ends holds the run on
+/// [`UNIT_WORK_REFUSED`](rigger_domain::agent::UNIT_WORK_REFUSED), whose release retries the
+/// unit ([`held_on_a_fault`]).
+const UNIT_RETRY_MARKER: &str = "\u{1}rigger:unit-retry\u{1}";
+
+/// `text` without the [`CONTENT_REFUSAL_MARKER`] and the [`UNIT_RETRY_MARKER`]: what a lesson
+/// and the operator read.
+fn without_refusal_markers(text: &str) -> String {
+    text.replace(CONTENT_REFUSAL_MARKER, "")
+        .replace(UNIT_RETRY_MARKER, "")
+}
+
+/// A content step on the operator's REGENERABLE paths (`workflow.regenerate`): the placeholder
+/// resolution of a conflicted one ([`Worktree::accept_incoming`]) and the commit of the
+/// regenerated tree. Each handles the operator's generated output by the conductor's own rule,
+/// a catch-up commit even after the unit's work has landed, so another attempt of the unit
+/// cannot change what refused it: its refusal is no attempt of the unit's, and holds the run
+/// uncharged, its lesson kept.
+fn on_regenerable_paths<T>(step: Result<T, Error>) -> Result<T, Error> {
+    step.map_err(|e| Error(without_refusal_markers(&e.0)))
+}
+
+/// Whether `e` is a content step's refusal of a unit's own work and nothing else: it carries the
+/// [`CONTENT_REFUSAL_MARKER`] and no halt wraps it (a plan landing's, which holds the run
+/// uncharged).
+fn refused_unit_work(e: &Error) -> bool {
+    carries_marker(e, CONTENT_REFUSAL_MARKER) && !HALT_MARKERS.iter().any(|m| carries_marker(e, m))
 }
 
 /// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
@@ -2891,11 +2930,14 @@ const HALT_MARKERS: [&str; 8] = [
     SPAWN_CRASH_MARKER,
 ];
 
-/// `e` with every [`HALT_MARKERS`] sentinel stripped: the operator's message a halt reaches
-/// `conductor::run`'s caller with, from the wave's halt arm, the deferred gates and the run's
-/// fault hold ([`held_on_a_fault`]) alike.
+/// `e` with every [`HALT_MARKERS`] sentinel stripped, and the refusal markers a halt can wrap
+/// ([`without_refusal_markers`]): the operator's message a halt reaches `conductor::run`'s caller
+/// with, from the wave's halt arm, the deferred gates and the run's fault hold
+/// ([`held_on_a_fault`]) alike.
 fn without_halt_markers(e: Error) -> Error {
-    Error(HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")))
+    Error(without_refusal_markers(
+        &HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")),
+    ))
 }
 
 /// The sentinel an INFRA HALT embeds in its error so [`run_wave`](RunCtx::run_wave) routes it
@@ -3232,7 +3274,9 @@ pub fn run_serving(
 /// outage past the infra limit, a failed guard probe, a failed git step, a refused landing) and
 /// every other, a content step git refused included, but a park ([`is_parked`]), whatever parked
 /// a spawn left its own hold standing: a drive that ends on an error and is neither held nor
-/// relaunched reaches nobody. A hold it cannot write is said through
+/// relaunched reaches nobody. A unit charged for git refusing its own work
+/// ([`UNIT_RETRY_MARKER`]) is held on [`UNIT_WORK_REFUSED`](rigger_domain::agent::UNIT_WORK_REFUSED)
+/// instead, whose release retries it. A hold it cannot write is said through
 /// [`Deps::log`]; `e` is returned either way, with every [`HALT_MARKERS`] sentinel stripped
 /// ([`without_halt_markers`]), so neither the hold nor the operator's message carries one,
 /// whichever path the halt reached here by.
@@ -3240,9 +3284,15 @@ fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
     if is_parked(&e) {
         return e;
     }
+    let retries_a_unit = carries_marker(&e, UNIT_RETRY_MARKER);
     let e = without_halt_markers(e);
     let fault = strip_failure_marker(&e);
-    if let Err(write) = crate::run_store::hold_on_a_fault(&deps.folding(), &fault) {
+    let held = if retries_a_unit {
+        crate::run_store::hold_on_refused_unit_work(&deps.folding(), &fault)
+    } else {
+        crate::run_store::hold_on_a_fault(&deps.folding(), &fault)
+    };
+    if let Err(write) = held {
         (deps.log)(&format!(
             "rigger run: the run was not held on its fault ({write}): {fault}"
         ));
@@ -5529,15 +5579,15 @@ impl RunCtx<'_> {
                 // A no-op for every marker-free error (every other driver, or text
                 // a leaf site already cleaned).
                 let msg = strip_failure_marker(&e);
-                let _ = self.emit_lesson(
-                    None,
-                    &name,
-                    &format!("stage {name:?} failed in its wave: {msg}"),
-                    None,
-                    None,
-                );
+                let lesson = {
+                    let msg = without_refusal_markers(&msg);
+                    format!("stage {name:?} failed in its wave: {msg}")
+                };
+                let _ = self.emit_lesson(None, &name, &lesson, None, None);
+                // A charged unit's retry marker rides on to the run's fault hold
+                // ([`held_on_a_fault`]), which strips it; a bare refusal's goes here.
                 if first_err.is_none() {
-                    *first_err = Some(Error(msg));
+                    *first_err = Some(Error(msg.replace(CONTENT_REFUSAL_MARKER, "")));
                 }
             }
         }
@@ -5719,8 +5769,17 @@ impl RunCtx<'_> {
         // While the unit's lifecycle drives its worktree, a `rigger gate <id>` request from it
         // may be answered (signed verdicts).
         let live = (!dir.is_empty()).then(|| self.live_unit(&dir, &st.name));
-        let result = self.run_single_stage(st, wt.as_ref(), &dir, phase, &any_parked);
+        let attempt = std::cell::Cell::new(0);
+        let result = self.run_single_stage(st, wt.as_ref(), &dir, phase, &any_parked, &attempt);
         drop(live);
+        // Git refusing a step on the unit's own work ended the attempt `attempt` holds: it is
+        // charged like a failed gate, and the tree is kept for the next attempt, which a
+        // release of the run's hold launches with the refusal in its prompt.
+        let refused = matches!(&result, Err(e) if refused_unit_work(e));
+        let result = match result {
+            Err(e) if refused => self.charge_refused_work(st, wt.as_ref(), &dir, attempt.get(), &e),
+            other => other,
+        };
         // A PARKED return is not the stage ending - it is the stage HANDING WORK to
         // out-of-process agents that run BETWEEN conductor processes, in this worktree,
         // against this build cache. Removing either here deletes the tree the parked
@@ -5739,7 +5798,7 @@ impl RunCtx<'_> {
         let parked_unwind = any_parked.load(Ordering::SeqCst)
             || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &wt {
-            if !parked_unwind {
+            if !parked_unwind && !refused {
                 let _ = w.remove();
             }
             // The unit's branch is its DURABLE checkpoint (resume-continuity): it must
@@ -6930,6 +6989,8 @@ impl RunCtx<'_> {
     /// [`Self::review_unit`] call below - it is `run_stage`'s out-of-band any-parked
     /// signal, read there AFTER this function returns, independently of whatever `Result`
     /// this function itself propagates (see `run_stage`'s doc comment at its call site).
+    /// `attempt` is set to the unit's attempt count each time it moves, so `run_stage` charges
+    /// a content step's refusal to the attempt it ended ([`Self::charge_refused_work`]).
     fn run_single_stage(
         &self,
         st: &Stage,
@@ -6937,6 +6998,7 @@ impl RunCtx<'_> {
         dir: &str,
         phase: ResumePhase,
         any_parked: &std::sync::atomic::AtomicBool,
+        attempt: &std::cell::Cell<u32>,
     ) -> Result<bool, Error> {
         // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1): `stage_worktree`'s call
         // to `Worktree::create`, just before this call, ADOPTS a worktree already
@@ -6997,6 +7059,7 @@ impl RunCtx<'_> {
         // REPLAYING the condemned pass's stale verdict - the reverse gear genuinely re-verifies
         // the fix, never a content-blind false green.
         let mut attempts = self.effective_attempts(&st.name);
+        attempt.set(attempts);
         // The infra reruns this attempt already recorded (F3): the stage resumes under the
         // next retry ordinal, so an earlier process's spoiled run is never replayed.
         let mut infra = InfraRetries::recorded(&events, &st.name, attempts);
@@ -7047,6 +7110,7 @@ impl RunCtx<'_> {
             // exhaustive suite, never the narrowed subset (R6). Cheap: every gate the prior
             // window already ran replays its recorded verdict; only gates it skipped run now.
             let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
+            attempt.set(attempts);
             // An all-infra red is an outage, not the approved code (F3): the suite reruns
             // uncharged under the next retry ordinal until the taxonomy's infra limit halts
             // the step.
@@ -7879,64 +7943,119 @@ impl RunCtx<'_> {
                 any_parked.store(false, Ordering::SeqCst);
                 continue;
             }
-            let max_retries = self.max_retries_for(&st.name, st);
-            let rem = safety::remediate(attempts, max_retries);
+            // spec 69, criterion 3: `cause` was set above, at the branch that actually failed
+            // this attempt (spawn crash / gate / merge-block / review reject) - never inferred
+            // here from the shared evidence.
+            let rem = self.charge_failed_attempt(st, wt, dir, attempts, &next, &cause)?;
+            if rem.decision == safety::Decision::Escalate {
+                return Ok(false);
+            }
             attempts = rem.attempts;
+            attempt.set(attempts);
             // The new attempt's infra reruns, from the log read at entry (none, unless an
             // earlier process already ran it).
             infra = InfraRetries::recorded(&events, &st.name, attempts);
-            // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
-            // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): the
-            // SAME bug class the `reviewed` stamp above now guards against - a review
-            // tier's own spawn (most reachably the adjudicator's, on the reject arm this
-            // stamp is reached from) could have deleted the tree as its side effect AFTER
-            // `run_reviewer`'s per-spawn re-assert ran and BEFORE this read. Re-assert
-            // immediately before it, mirroring the `verified` stamp's fix.
-            if let Some(w) = wt {
-                git_step(w.ensure_present())?;
-            }
-            // Stamp the reviewed worktree sha (spec 11, unit 1): on a review reject this
-            // is the sha the tiers judged, so the flip-flop fold can pair it with a later
-            // approve on the SAME sha. Harmless on a gate/spawn failure (the fold only
-            // reads it for a detected review reject); empty (omitted) on a repo-less unit.
-            let failed_sha = worktree::head_sha_of(dir);
-            self.emit_meta(
-                ledger::TYPE_UNIT_FAILED,
-                // spec 69, criterion 3: `cause` was set above, at the branch that
-                // actually failed this attempt (spawn crash / gate / merge-block /
-                // review reject) - never inferred here from the shared evidence. The
-                // failure's specifics ride along (gap 61), so a later process re-entering
-                // the unit prompts it from the log.
-                next.failed_body(&st.name, attempts, max_retries, &cause),
-                &[(META_WORKTREE_SHA, &failed_sha)],
-            )?;
-            if rem.decision == safety::Decision::Escalate {
-                // The escalation lesson carries the CONCRETE final failure (spec 02):
-                // the specific gate/review reason, never a generic placeholder when one is
-                // available. A spawn crash never reaches here - it is infra (F3).
-                let why = if next.is_empty() {
-                    "its gates or review would not pass".to_string()
-                } else {
-                    next.summary()
-                };
-                let _ = self.emit_lesson(
-                    wt,
-                    &st.name,
-                    &format!(
-                        "unit {:?} escalated after {attempts} attempts; {why}",
-                        st.name
-                    ),
-                    None,
-                    None,
-                );
-                self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": st.name}))?;
-                return Ok(false);
-            }
             // Carry this attempt's failure into the next iteration's prompt.
             prior = next;
             // otherwise loop and retry the stage (re-grounding + the prior-failure
             // block via build_prompt_with_failure)
         }
+    }
+
+    /// THE UNIT'S REMEDIATION CHARGE: unit `st`, `attempts` attempts already failed, failed
+    /// one more on `failure` of `cause`. Records its `UnitFailed` at the next attempt count,
+    /// the failure's specifics riding along (gap 61) so a later process re-entering the unit
+    /// prompts it from the log, and, once the unit's retry bound is spent, its escalation
+    /// lesson and `UnitEscalated`. Returns the remediation decided, whose `attempts` is the
+    /// count recorded.
+    fn charge_failed_attempt(
+        &self,
+        st: &Stage,
+        wt: Option<&Worktree>,
+        dir: &str,
+        attempts: u32,
+        failure: &PriorFailure,
+        cause: &str,
+    ) -> Result<safety::Remediation, Error> {
+        let max_retries = self.max_retries_for(&st.name, st);
+        let rem = safety::remediate(attempts, max_retries);
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
+        // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): a review
+        // tier's own spawn (most reachably the adjudicator's, on the reject arm) could have
+        // deleted the tree as its side effect AFTER `run_reviewer`'s per-spawn re-assert ran
+        // and BEFORE this read. Re-assert immediately before it, mirroring the `verified`
+        // stamp's fix.
+        if let Some(w) = wt {
+            git_step(w.ensure_present())?;
+        }
+        // Stamp the reviewed worktree sha (spec 11, unit 1): on a review reject this is the
+        // sha the tiers judged, so the flip-flop fold can pair it with a later approve on the
+        // SAME sha. Harmless on any other failure (the fold only reads it for a detected review
+        // reject); empty (omitted) on a repo-less unit.
+        let failed_sha = worktree::head_sha_of(dir);
+        self.emit_meta(
+            ledger::TYPE_UNIT_FAILED,
+            failure.failed_body(&st.name, rem.attempts, max_retries, cause),
+            &[(META_WORKTREE_SHA, &failed_sha)],
+        )?;
+        if rem.decision == safety::Decision::Escalate {
+            // The escalation lesson carries the CONCRETE final failure (spec 02): the specific
+            // gate/review reason, never a generic placeholder when one is available. A spawn
+            // crash never reaches here - it is infra (F3).
+            let why = if failure.is_empty() {
+                "its gates or review would not pass".to_string()
+            } else {
+                failure.summary()
+            };
+            let attempts = rem.attempts;
+            let _ = self.emit_lesson(
+                wt,
+                &st.name,
+                &format!(
+                    "unit {:?} escalated after {attempts} attempts; {why}",
+                    st.name
+                ),
+                None,
+                None,
+            );
+            self.emit(ledger::TYPE_UNIT_ESCALATED, json!({"id": st.name}))?;
+        }
+        Ok(rem)
+    }
+
+    /// RUNG ONE AFTER THE SESSION ENDED: git refused a step on unit `st`'s own work (`e`, a
+    /// [`refused_unit_work`] error) after its agent's session ended, so no agent saw it. The
+    /// refusal is the failure of the attempt it ended (`attempts` failed before it), charged
+    /// like a failed gate's ([`Self::charge_failed_attempt`], cause [`CAUSE_GIT_REFUSED`]): git's
+    /// message is the failure's evidence, so the next attempt's prompt carries it. The caller
+    /// keeps the unit's worktree, so the work in the tree at the refusal is there for that
+    /// attempt. A spent bound escalates the unit (`Ok(false)`, no hold); otherwise the drive
+    /// ends on the refusal marked with [`UNIT_RETRY_MARKER`], its first line naming the attempt,
+    /// so the run is held for the orchestrator and its release launches the next attempt.
+    fn charge_refused_work(
+        &self,
+        st: &Stage,
+        wt: Option<&Worktree>,
+        dir: &str,
+        attempts: u32,
+        e: &Error,
+    ) -> Result<bool, Error> {
+        let refusal = without_halt_markers(Error(strip_failure_marker(e))).0;
+        let failure = PriorFailure {
+            gate_evidence: vec![refusal.clone()],
+            ..Default::default()
+        };
+        let rem = self.charge_failed_attempt(st, wt, dir, attempts, &failure, CAUSE_GIT_REFUSED)?;
+        if rem.decision == safety::Decision::Escalate {
+            return Ok(false);
+        }
+        Err(marked(
+            UNIT_RETRY_MARKER,
+            format!(
+                "unit {:?} attempt {} was refused: {refusal}",
+                st.name, rem.attempts
+            ),
+        ))
     }
 
     /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
@@ -11465,7 +11584,7 @@ impl RunCtx<'_> {
                             &regenerable,
                         )?;
                         for p in &regenerable {
-                            git_step(wt.accept_incoming(p))?;
+                            on_regenerable_paths(git_step(wt.accept_incoming(p)))?;
                         }
                         // TABLE row 2's after-record: the placeholder-staging just above is done.
                         self.record_placeholder_staged(&st.name, attempt, retry, &regenerable)?;
@@ -12023,9 +12142,9 @@ impl RunCtx<'_> {
         for cmd in commands {
             self.run_regenerate_command(&wt.dir, cmd)?;
         }
-        let committed = git_step(wt.commit_checkpoint(&format!(
+        let committed = on_regenerable_paths(git_step(wt.commit_checkpoint(&format!(
             "rigger: regenerate conflicting artifacts for {unit}"
-        )))?;
+        ))))?;
         if committed.is_empty() {
             Ok(worktree::head_sha_of(&wt.dir))
         } else {
@@ -14257,12 +14376,18 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   ([`spawn::Adjudication::is_infra_fault`]); [`CAUSE_INFRA_HANDOVER`] an author session (the
 ///   implementer or the sdet-author) that ended without its handover line
 ///   ([`RunCtx::handover_miss`]), whose rerun continues that session.
+/// - [`CAUSE_GIT_REFUSED`]: a content step refused the unit's own work after its session ended
+///   (git refusing a checkpoint commit or the merge of the run branch into its worktree, or
+///   the conflict-marker guard refusing the commit before git ran): the unit's failure,
+///   charged with the refusal as its evidence ([`RunCtx::charge_refused_work`]), never an
+///   outage.
 const CAUSE_REJECT: &str = "reject";
 const CAUSE_INTEGRATE_CONFLICT: &str = "integrate-conflict";
 const CAUSE_INFRA_SPAWN: &str = "infra:spawn";
 const CAUSE_INFRA_GATE: &str = "infra:gate";
 const CAUSE_INFRA_REVIEW: &str = "infra:review";
 const CAUSE_INFRA_HANDOVER: &str = "infra:handover";
+const CAUSE_GIT_REFUSED: &str = "git-refused";
 
 /// The most characters of a missed hand-over's last line its evidence records.
 const HANDOVER_LAST_LINE_CHARS: usize = 200;
@@ -48556,21 +48681,26 @@ mod tests {
         );
     }
 
-    /// A CONTENT STEP GIT REFUSES IS THE UNIT'S LESSON AND THE ORCHESTRATOR'S HOLD: when git runs
-    /// and refuses a step the unit's own work stands in - a hook refusing the attempt's checkpoint
-    /// commit, a merge of the run branch refused over an untracked file in the worktree, a commit
-    /// refused over conflict-marker text, the landing refused over local content in the run
-    /// checkout, a plan landing's cherry-pick refused over one an earlier attempt left in
-    /// progress - the failure is recorded as on the base (a lesson naming the unit and its
-    /// refusal; a refused landing's own lesson naming its path; a plan landing's halt, with no
-    /// lesson), no attempt is charged, the drive ends, and the run is held for the orchestrator,
-    /// the hold's first line the refusal's. Released with the refusal gone (each fires once, or
-    /// its planted cause is cleared), a relaunch integrates the unit and holds nothing new. A merge
-    /// with a content conflict is remediated inside the drive, each attempt charged
-    /// (`integrate-conflict`), and holds nothing. No record carries a marker.
+    /// A CONTENT STEP GIT REFUSES ON A UNIT'S OWN WORK IS THE UNIT'S FAILED ATTEMPT, AND ITS
+    /// RELEASE RETRIES THE UNIT: when git refuses a step on the unit's own work after its
+    /// session ended - a hook refusing the attempt's checkpoint commit (the first attempt's, or
+    /// the second's after a red gate), a merge of the run branch refused over an untracked file
+    /// in the worktree, a commit refused over conflict-marker text, the merge's conclusion
+    /// refused by a hook - the attempt is charged (`UnitFailed`, cause `git-refused`, git's
+    /// message its evidence), a lesson names the unit and its refusal, the drive ends, and the
+    /// run is held for the orchestrator on the unit-work row, the hold's first line naming the
+    /// attempt. Released, the relaunch launches the next implementer attempt (never one the log
+    /// answers) with the refusal in its prompt and the work the refused tree held, integrates the
+    /// unit and holds nothing new; a further relaunch launches nothing. The landing refused over
+    /// local content in the run checkout, and a plan landing's cherry-pick refused over one an
+    /// earlier attempt left in progress, are no unit's attempt: no attempt is charged (a refused
+    /// landing's lesson naming its path; a plan landing's halt, with no lesson), and the run is
+    /// held on the conductor-fault row; released with the cause cleared, a relaunch integrates
+    /// the unit. A merge with a content conflict is remediated inside the drive, each attempt
+    /// charged (`integrate-conflict`), and holds nothing. No record carries a marker.
     #[test]
     #[cfg(unix)]
-    fn a_content_step_git_refuses_records_the_units_lesson_ends_the_drive_and_holds_the_run() {
+    fn a_content_step_git_refuses_on_a_units_work_is_charged_held_and_retried_on_release() {
         use std::os::unix::fs::PermissionsExt;
         #[derive(Debug, Clone, Copy, PartialEq)]
         enum Step {
@@ -48588,6 +48718,13 @@ mod tests {
             /// the implementer's own commit of it, so the attempt's checkpoint commit is refused
             /// before git runs.
             ConflictMarkers,
+            /// The gate lands g.txt on the run branch, so the merge of the run branch into the
+            /// worktree is a real merge, and a prepare-commit-msg hook refuses its conclusion
+            /// once, leaving the merge in progress.
+            MergeFinalize,
+            /// The gate fails once, so the second attempt runs inside the drive, and a
+            /// prepare-commit-msg hook refuses that attempt's checkpoint commit.
+            CheckpointAfterRed,
             /// The gate leaves an untracked f.txt in the run checkout, so the landing's
             /// `git merge --ff-only` is refused over local content at the unit's own path.
             LandRefused,
@@ -48603,6 +48740,9 @@ mod tests {
             Remediates,
             /// Ended and held, no attempt charged; released, a relaunch integrates the unit.
             Ends,
+            /// The attempt charged, the drive ended and held for a retry; released, a relaunch
+            /// launches the next attempt with the refusal and integrates the unit.
+            Retries,
         }
         // Each row: the step, the text its refusal names, whether a lesson names the unit and
         // that text, and how the drive goes.
@@ -48611,11 +48751,28 @@ mod tests {
                 Step::CheckpointHook,
                 "hook: refusing the attempt",
                 true,
-                Drive::Ends,
+                Drive::Retries,
             ),
-            (Step::MergeRefused, "op.txt", true, Drive::Ends),
+            (Step::MergeRefused, "op.txt", true, Drive::Retries),
             (Step::MergeConflict, "f.txt", true, Drive::Remediates),
-            (Step::ConflictMarkers, "conflict-marker", true, Drive::Ends),
+            (
+                Step::ConflictMarkers,
+                "conflict-marker",
+                true,
+                Drive::Retries,
+            ),
+            (
+                Step::MergeFinalize,
+                "hook: refusing the merge",
+                true,
+                Drive::Retries,
+            ),
+            (
+                Step::CheckpointAfterRed,
+                "hook: refusing the attempt",
+                true,
+                Drive::Retries,
+            ),
             (Step::LandRefused, "f.txt", true, Drive::Ends),
             (
                 Step::PlanCherryPick,
@@ -48655,9 +48812,19 @@ mod tests {
                      && git -C '{repo_path}' add {file} && git -C '{repo_path}' commit -qm {file}; }}"
                 )
             };
+            // The checkpoint a hook refuses, and the attempt it ends (its implementer spawn's
+            // index).
+            let (refused_checkpoint, refused_attempt) = match step {
+                Step::CheckpointAfterRed => ("rigger: unit-a attempt 2", 1),
+                _ => ("rigger: unit-a attempt 1", 0),
+            };
             let gate = match step {
                 Step::MergeRefused => format!("{} && echo note > note.txt", lands("op.txt", "op")),
                 Step::MergeConflict => lands("f.txt", "theirs"),
+                Step::MergeFinalize => lands("g.txt", "run"),
+                Step::CheckpointAfterRed => {
+                    format!("[ -e '{mark}' ] || {{ touch '{mark}' && exit 1; }}")
+                }
                 Step::LandRefused => {
                     format!("[ -e '{mark}' ] || {{ touch '{mark}' && echo stray > '{repo_path}/f.txt'; }}")
                 }
@@ -48666,11 +48833,18 @@ mod tests {
                 }
             };
             match step {
-                Step::CheckpointHook => hook(
+                Step::CheckpointHook | Step::CheckpointAfterRed => hook(
                     "prepare-commit-msg",
                     format!(
-                        "if grep -qx 'rigger: unit-a attempt 1' \"$1\" && [ ! -e '{mark}.hook' ]; \
+                        "if grep -qx '{refused_checkpoint}' \"$1\" && [ ! -e '{mark}.hook' ]; \
                          then touch '{mark}.hook'; echo 'hook: refusing the attempt' >&2; exit 1; fi"
+                    ),
+                ),
+                Step::MergeFinalize => hook(
+                    "prepare-commit-msg",
+                    format!(
+                        "if [ \"$2\" = merge ] && [ ! -e '{mark}.hook' ]; \
+                         then touch '{mark}.hook'; echo 'hook: refusing the merge' >&2; exit 1; fi"
                     ),
                 ),
                 Step::MergeRefused => hook(
@@ -48737,9 +48911,17 @@ mod tests {
                 )]),
                 _ => HashMap::new(),
             };
+            // The refused attempt alone writes kept.txt, so it is in the tree only if the work
+            // the refusal left there reaches the retry.
+            let refused_spawn = format!("{unit}/implementer#{refused_attempt}");
+            let retry_spawn = format!("{unit}/implementer#{}", refused_attempt + 1);
             let driver = Stub {
                 write_file: (!matches!(step, Step::ConflictMarkers | Step::PlanCherryPick))
                     .then(|| "f.txt".into()),
+                write_files_by_spawn_id: (drive == Drive::Retries)
+                    .then(|| (refused_spawn.clone(), vec!["kept.txt".to_string()]))
+                    .into_iter()
+                    .collect(),
                 commits_by_agent,
                 output_by_agent: HashMap::from([
                     ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
@@ -48846,8 +49028,237 @@ mod tests {
                         "{step:?}: the relaunch holds nothing new"
                     );
                 }
+                Drive::Retries => {
+                    let Err(err) = first else {
+                        panic!("{step:?}: the refusal ends the drive");
+                    };
+                    assert!(
+                        err.0.contains(named) && !err.0.contains('\u{1}'),
+                        "{step:?}: the drive's error names the refusal, unmarked: {}",
+                        err.0
+                    );
+                    let charged = failed
+                        .iter()
+                        .map(|f| serde_json::from_str::<Value>(f).unwrap())
+                        .filter(|f| f["cause"] == CAUSE_GIT_REFUSED)
+                        .collect::<Vec<_>>();
+                    assert!(
+                        charged.len() == 1
+                            && charged[0]["attempts"] == refused_attempt + 1
+                            && charged[0]["gate_evidence"][0]
+                                .as_str()
+                                .is_some_and(|e| e.contains(named)),
+                        "{step:?}: the refused attempt is charged, git's message its evidence: \
+                         {failed:?}"
+                    );
+                    assert!(
+                        err.0.starts_with(&format!(
+                            "unit \"{unit}\" attempt {} was refused: ",
+                            refused_attempt + 1
+                        )),
+                        "{step:?}: the hold's first line names the attempt: {}",
+                        err.0
+                    );
+                    let held = [crate::test_support::unit_work_hold(&err.0)];
+                    assert_eq!(
+                        holds_in(&events),
+                        held,
+                        "{step:?}: the run is held for the orchestrator to retry the unit"
+                    );
+                    let launched = driver.spawn_ids();
+                    assert!(
+                        launched.contains(&refused_spawn) && !launched.contains(&retry_spawn),
+                        "{step:?}: the drive ended on the refused attempt: {launched:?}"
+                    );
+                    let released = crate::run_store::release_hold(
+                        &deps.folding(),
+                        crate::run::HOLD_BY_OPERATOR,
+                        std::time::SystemTime::now(),
+                    );
+                    assert_eq!(released.ok(), Some(true), "{step:?}: the run is released");
+                    let Ok(state) = run_isolated(&cfg, &deps) else {
+                        panic!("{step:?}: a relaunch drives the run on");
+                    };
+                    assert_eq!(
+                        state.units[unit].status,
+                        ledger::Status::Integrated,
+                        "{step:?}: the retry integrates the unit"
+                    );
+                    let relaunched = driver.spawn_ids();
+                    assert_eq!(
+                        relaunched[launched.len()..]
+                            .iter()
+                            .filter(|id| id.contains("/implementer#"))
+                            .collect::<Vec<_>>(),
+                        [&retry_spawn],
+                        "{step:?}: the relaunch launches the next attempt, and only it"
+                    );
+                    assert!(
+                        relaunched[launched.len()..]
+                            .iter()
+                            .all(|id| !launched.contains(id)),
+                        "{step:?}: the relaunch launches no spawn the log answers: {relaunched:?}"
+                    );
+                    assert!(
+                        driver
+                            .prompts_for("worker")
+                            .last()
+                            .is_some_and(|p| p.contains(named)),
+                        "{step:?}: the retry's prompt carries the refusal"
+                    );
+                    assert_eq!(
+                        std::fs::read_to_string(repo.path().join("kept.txt")).ok(),
+                        Some("work\n".to_string()),
+                        "{step:?}: the work the refused tree held lands with the retry"
+                    );
+                    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+                    assert_eq!(
+                        holds_in(&events),
+                        held,
+                        "{step:?}: the relaunch holds nothing new"
+                    );
+                    assert!(
+                        run_isolated(&cfg, &deps).is_ok()
+                            && driver.spawn_ids().len() == relaunched.len(),
+                        "{step:?}: a further relaunch launches nothing"
+                    );
+                }
             }
         }
+    }
+
+    /// A UNIT GIT REFUSES ON EVERY ATTEMPT ESCALATES WHEN ITS BOUND IS SPENT: a hook refusing
+    /// every attempt's checkpoint commit charges each attempt and holds the run to retry the
+    /// unit, each hold its own fault (its first line names the attempt), so none recurs to a
+    /// person; released each time, the relaunch launches the next attempt. The attempt that
+    /// spends the unit's retry bound escalates the unit (its lesson naming the refusal,
+    /// `UnitEscalated`) and holds nothing, the drive going on, and the unit's worktree keeps the
+    /// work the refused trees held.
+    #[test]
+    #[cfg(unix)]
+    fn a_unit_git_refuses_on_every_attempt_escalates_when_its_bound_is_spent() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_dir = unit_worktree_dir(&scratch, "unit-a");
+        let hook = repo
+            .path()
+            .join(".git")
+            .join("hooks")
+            .join("prepare-commit-msg");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\nif grep -q '^rigger: unit-a attempt' \"$1\"; then \
+             echo 'hook: refusing the attempt' >&2; exit 1; fi\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 3;
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                criterion_id: "c1".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            write_files_by_spawn_id: HashMap::from([(
+                "unit-a/implementer#0".to_string(),
+                vec!["kept.txt".to_string()],
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let events = || store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let mut holds = Vec::new();
+        for attempt in 1..=2 {
+            let Err(err) = run_isolated(&cfg, &deps) else {
+                panic!("attempt {attempt}: the refusal ends the drive");
+            };
+            assert!(
+                err.0
+                    .starts_with(&format!("unit \"unit-a\" attempt {attempt} was refused: ")),
+                "attempt {attempt}: the hold's first line names the attempt: {}",
+                err.0
+            );
+            holds.push(crate::test_support::unit_work_hold(&err.0));
+            assert_eq!(
+                holds_in(&events()),
+                holds,
+                "attempt {attempt}: held to retry the unit, never for a person"
+            );
+            let released = crate::run_store::release_hold(
+                &deps.folding(),
+                crate::run::HOLD_BY_OPERATOR,
+                std::time::SystemTime::now(),
+            );
+            assert_eq!(released.ok(), Some(true), "attempt {attempt}: released");
+        }
+        let Ok(state) = run_isolated(&cfg, &deps) else {
+            panic!("the attempt that spends the bound escalates the unit, the drive going on");
+        };
+        assert_eq!(state.units["unit-a"].status, ledger::Status::Escalated);
+        let events = events();
+        assert_eq!(holds_in(&events), holds, "the escalation holds nothing");
+        let of_type = |type_: &str| {
+            events
+                .iter()
+                .filter(|e| e.type_ == type_)
+                .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            of_type(ledger::TYPE_UNIT_FAILED)
+                .iter()
+                .map(|f| (f["attempts"].clone(), f["cause"].clone()))
+                .collect::<Vec<_>>(),
+            (1..=3)
+                .map(|n| (json!(n), json!(CAUSE_GIT_REFUSED)))
+                .collect::<Vec<_>>(),
+            "each refused attempt is charged"
+        );
+        assert_eq!(of_type(ledger::TYPE_UNIT_ESCALATED).len(), 1, "escalated");
+        assert!(
+            of_type(contextgraph::TYPE_LESSON_LEARNED).iter().any(|l| {
+                l["summary"].as_str().is_some_and(|s| {
+                    s.contains("escalated after 3 attempts")
+                        && s.contains("hook: refusing the attempt")
+                })
+            }),
+            "the escalation lesson names the refusal"
+        );
+        assert_eq!(
+            driver
+                .spawn_ids()
+                .into_iter()
+                .filter(|id| id.contains("/implementer#"))
+                .collect::<Vec<_>>(),
+            [
+                "unit-a/implementer#0",
+                "unit-a/implementer#1",
+                "unit-a/implementer#2"
+            ],
+            "each release launches the next attempt, once"
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&unit_dir).join("kept.txt")).ok(),
+            Some("work\n".to_string()),
+            "the escalated unit's worktree keeps the work the refused trees held"
+        );
     }
 
     #[test]

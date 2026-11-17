@@ -159,12 +159,14 @@
 //!
 //! - Row 1 (conflict detection), before-record|mutation boundary,
 //!   `a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1`: call 1's
-//!   driver plants a stray untracked file at a path it also lands directly on the bare run
-//!   branch (mirrors GAP 8's `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo
-//!   directly" technique) so `Worktree::merge_into_worktree`'s own merge is refused NON-content
-//!   (GAP 7's mechanism, relocated to the unit's OWN worktree) - proving the before-record
-//!   landed but not the after-record. Call 2 (stray file removed) proves resume completes and
-//!   the after-record lands exactly once, never duplicated.
+//!   driver lands a sibling path directly on the bare run branch (mirrors GAP 8's
+//!   `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo directly" technique), and its
+//!   adjudicator, the last spawn before the integrate door, takes the unit worktree's index
+//!   lock, so `Worktree::merge_into_worktree`'s first git step dies unanswered (exit 128): a
+//!   halt no attempt of the unit caused, charged to nobody - proving the before-record landed
+//!   but not the after-record. A refusal of the unit's own work would not do here: it is charged
+//!   to the unit and retried, never resumed in place. Call 2 (lock released) proves resume
+//!   completes and the after-record lands exactly once, never duplicated.
 //! - Row 1's mutation|after-record boundary,
 //!   `a_crash_right_after_the_merge_succeeds_resumes_and_completes_row_1_after_record`: an
 //!   ordinary, conflict-free single-unit merge (`A_WORK_DRIVER`) - `merge_into_worktree`
@@ -1793,6 +1795,11 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
          replaced by a fabricated message: {}",
         err.0
     );
+    assert!(
+        !err.0.contains('\u{1}'),
+        "the operator's message carries no class sentinel: {:?}",
+        err.0
+    );
 
     // unit-b's already-landed work is untouched by unit-a's LATER failure in the same wave -
     // the shared-state corruption the original finding warned a hard error could cause.
@@ -1819,10 +1826,10 @@ fn a_non_content_merge_failure_surfaces_as_a_run_error_leaving_branches_intact()
     );
 
     // unit-a's own durable branch keeps every prior commit (spec 88 criterion 1's own
-    // guarantee, extended here to a non-content failure): its worktree DIRECTORY is reclaimed
-    // (an ordinary terminal teardown, matching every other non-parked terminal exit), but the
-    // branch itself is untouched - a single-parent commit carrying exactly unit-a's own real
-    // work, never a partially-applied or corrupted merge.
+    // guarantee, extended here to a non-content failure): git refused the unit's own work, so
+    // the attempt is charged and its worktree kept for the next one, and the branch itself is
+    // untouched - a single-parent commit carrying exactly unit-a's own real work, never a
+    // partially-applied or corrupted merge.
     let branch_log = trimmed_stdout(&run_git(
         &repo_path,
         &["log", "--oneline", "rigger/u/unit-a"],
@@ -2025,16 +2032,13 @@ fn a_resumed_run_after_accept_incoming_fails_never_double_records_the_regenerate
 
 /// Call 1's driver for the row-1 fixture: plants a NEW path directly on the bare run branch
 /// (mirrors `PermanentModifyDeleteConflictDriver`'s "mutate the bare repo directly" technique
-/// above) AND leaves a stray FIFO at that same path in this unit's own worktree - a FIFO,
-/// exactly like GAP 7's `NonContentMergeFailureDriver`, because git flatly refuses to track a
-/// special file at all (unlike an ordinary untracked regular file, which the conductor's own
-/// pre-merge `git add -A` would silently sweep into the implementer's commit, turning this into
-/// an ordinary ADD/ADD content conflict instead of the NON-content refusal this fixture needs) -
-/// so `Worktree::merge_into_worktree`'s own `git merge --no-commit` is refused NON-content,
-/// reached only AFTER row 1's before-record already landed.
+/// above), and its adjudicator - the last spawn before the integrate door - takes the unit
+/// worktree's index lock, so the first git step of `Worktree::merge_into_worktree`, reached only
+/// AFTER row 1's before-record already landed, dies unanswered (git's exit 128): a fault no
+/// attempt of the unit caused, so the drive halts with nothing charged and resumes in place.
 struct Row1MergeCrashDriver {
     repo: String,
-    worktree_dir: Mutex<String>,
+    index_lock: Mutex<String>,
 }
 
 impl AgentDriver for Row1MergeCrashDriver {
@@ -2049,16 +2053,12 @@ impl AgentDriver for Row1MergeCrashDriver {
             std::fs::write(Path::new(&self.repo).join("shared.rs"), "SIBLING\n").unwrap();
             git_commit_all(&self.repo, "sibling landed directly on the run branch");
             std::fs::write(Path::new(&opts.dir).join("a.rs"), "A_WORK\n").unwrap();
-            assert!(
-                Command::new("mkfifo")
-                    .arg(Path::new(&opts.dir).join("shared.rs"))
-                    .status()
-                    .unwrap()
-                    .success(),
-                "test setup: mkfifo must succeed"
-            );
-            *self.worktree_dir.lock().unwrap() = opts.dir.clone();
+            let git_dir = trimmed_stdout(&run_git(&opts.dir, &["rev-parse", "--absolute-git-dir"]));
+            *self.index_lock.lock().unwrap() = format!("{git_dir}/index.lock");
             return Ok(AgentResult::default());
+        }
+        if opts.id.contains("/adjudicator#") {
+            std::fs::write(&*self.index_lock.lock().unwrap(), "").unwrap();
         }
         Ok(review_or_adjudicate(opts))
     }
@@ -2078,16 +2078,16 @@ fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
     let store = Store::open(":memory:").unwrap();
     let driver = Row1MergeCrashDriver {
         repo: repo_path.clone(),
-        worktree_dir: Mutex::new(String::new()),
+        index_lock: Mutex::new(String::new()),
     };
     {
         let deps = bare_deps(&store, &driver, &rigger::gate::ExecRunner, &repo_path);
         let err = run(&cfg, &deps)
             .err()
-            .expect("call 1 must fail - the stray untracked file refuses the merge");
+            .expect("call 1 must fail - the held index lock leaves the merge unanswered");
         assert!(
-            err.0.contains("shared.rs") || err.0.to_lowercase().contains("untracked"),
-            "call 1 must fail for the SIMULATED non-content reason, not some other defect; got: {}",
+            err.0.contains("index.lock"),
+            "call 1 must fail for the SIMULATED unanswered step, not some other defect; got: {}",
             err.0
         );
     }
@@ -2102,13 +2102,16 @@ fn a_crash_right_after_the_merge_attempt_record_resumes_and_completes_row_1() {
         "row 1's after-record must NOT land - the merge mutation itself failed; \
          events: {events_after_call_1:?}"
     );
+    assert_eq!(
+        count_of_type(&events_after_call_1, ledger::TYPE_UNIT_FAILED),
+        0,
+        "a step git never answered is no attempt of the unit's, so nothing is charged; \
+         events: {events_after_call_1:?}"
+    );
 
-    // Clear the obstruction exactly as an operator resolving a real non-content failure would -
-    // both the stray file this unit's own worktree carries and the untracked copy git itself
-    // may have left in the shared repo's working tree from the refused merge attempt.
-    let wt_dir = driver.worktree_dir.lock().unwrap().clone();
-    let _ = std::fs::remove_file(Path::new(&wt_dir).join("shared.rs"));
-    let _ = std::fs::remove_file(Path::new(&repo_path).join("shared.rs"));
+    // Release the lock exactly as an operator clearing a stale one would; the worktree's
+    // teardown may already have taken it with the worktree's admin directory.
+    let _ = std::fs::remove_file(&*driver.index_lock.lock().unwrap());
 
     let events_after_call_2 = resume_lands_unit_a(
         &cfg,
