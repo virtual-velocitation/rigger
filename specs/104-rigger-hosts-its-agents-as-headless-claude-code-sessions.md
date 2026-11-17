@@ -77,14 +77,15 @@ API-side: the failure charges no remediation attempt, the spawn is relaunched at
 then the run halts naming the class and the spawn.
 
 STOP, decided: the host enforces `max_wall_clock` against stream silence. Expiry closes the
-session's input, waits 30 s, then ends the child through the sanctioned lifecycle helper
-(`crates/rigger-process/src/reap.rs`) on the child's own handle; the launch ends `stopped` and the existing
-liveness-fault result is recorded. The helper ends the child's own descendants too, found by
-a parent-pid walk snapshotted before the first signal, never by working directory (a sibling
-spawn shares the worktree, not the process tree); and every join on the session's pipe
-readers is bounded, so a stop returns even when a process outside the tree holds the pipe. On
-start the supervisor closes any `SpawnLaunched` left open as `interrupted` and reaps
-processes still rooted in that spawn's worktree before it relaunches.
+session's input, waits 30 s, then ends the session's tree through the handle the driver holds;
+the launch ends `stopped` and the existing liveness-fault result is recorded. The session runs
+in a contained process tree (`crates/rigger-process/src/child_tree.rs`), never found by
+working directory (a sibling spawn shares the worktree, not the process tree): ending it ends
+every process the session started, proved empty on Linux and Windows. Every join on the
+session's pipe readers is bounded by the ordinary drain bound, so a stop returns even when a
+process outside the tree holds the pipe. On start the supervisor closes any `SpawnLaunched`
+left open as `interrupted` and reaps processes still rooted in that spawn's worktree before it
+relaunches.
 
 CONSTRAINTS WALK: the child exits before `system/init` (binary missing, unknown flag) - a
 fault of class `unknown` carrying the stderr tail, never a hang. Relaunch - a new session id

@@ -1459,7 +1459,7 @@ impl Driver<'_> {
     }
 
     /// THE STOP sequence itself (spec 104 STOP: "closes the session's input, waits 30 s, then
-    /// ends the child through the sanctioned lifecycle helper on the child's own handle"),
+    /// ends the session's tree through the handle the driver holds"),
     /// the ONE stop mechanism every ending that must stop a live session goes through - a
     /// silence expiry ([`Driver::stop_for_wall_clock_silence`], the full
     /// [`Driver::stop_grace`]), a resume silent with no session ([`Driver::read_stream`]'s stop
@@ -1501,10 +1501,10 @@ impl Driver<'_> {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        // "then ends the child through the sanctioned lifecycle helper on the child's own
-        // handle": the tree handle ends every process the session started, the main among them
-        // when the grace above did not see it exit. The tree is the session's own, held from its
-        // spawn, never matched by cwd - NO worktree-wide sweep here: this spawn's worktree can be
+        // "then ends the session's tree through the handle the driver holds": the tree handle
+        // ends every process the session started, the main among them when the grace above did
+        // not see it exit. The tree is the session's own, held from its spawn, never matched by
+        // cwd - NO worktree-wide sweep here: this spawn's worktree can be
         // shared, right now, by a live SIBLING spawn (the review fan-out's own concurrent lenses,
         // `run_review_agents_concurrently`, all passed the same dir), and a cwd-scanned match has
         // no notion of which spawn owns a process (round-2 reject
