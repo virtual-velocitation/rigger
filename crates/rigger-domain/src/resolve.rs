@@ -2431,6 +2431,75 @@ pub(crate) mod tests {
         }
     }
 
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ) to an
+    /// implementation's own member before its trait's: `Square::area` and `Square::SIDES` land
+    /// on the `area` and `SIDES` that `impl Shape for Square` defines, EXTRACTED, never beside
+    /// `Shape`'s. A trait's member is kept only when no call target or reference target of the
+    /// leaf sits under `Square` or an implementation of it, so `Square::name` reaches `Shape`'s
+    /// default `name` past the field `name` of `Square`, which no call lands on.
+    #[test]
+    fn an_implementations_own_member_outranks_its_traits() {
+        let shape = code(
+            "src/shape.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Shape", "trait", 1, None, false),
+                def("Shape::area", "method", 2, Some(0), false),
+                def("Shape::SIDES", "constant", 3, Some(0), false),
+                def("Shape::name", "method", 4, Some(0), false),
+            ],
+            vec![],
+        );
+        let square = code(
+            "src/square.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Square", "type", 1, None, false),
+                def("Square::name", "field", 2, Some(0), false),
+                def("impl Shape for Square", "impl", 5, None, false),
+                def("Square::area", "method", 6, Some(2), false),
+                def("Square::SIDES", "constant", 7, Some(2), false),
+            ],
+            vec![
+                tagged("impl", "Shape", Some(2), 5),
+                tagged("impl", "Square", Some(2), 5),
+            ],
+        );
+        let user = code(
+            "src/user.rs",
+            "rust",
+            Scope::Product,
+            vec![def("run", "function", 1, None, false)],
+            vec![
+                qualified(MentionKind::Call, "Square::area", Some(0), 2, false),
+                qualified(
+                    MentionKind::Tagged("const".into()),
+                    "Square::SIDES",
+                    Some(0),
+                    3,
+                    false,
+                ),
+                qualified(MentionKind::Call, "Square::name", Some(0), 4, false),
+            ],
+        );
+        let view = FactsView::new(stamp(), vec![shape, square, user]);
+        let r = Resolver::new(&view);
+        assert_eq!(
+            answer(&view, &r, &Ask::Links("src/user.rs", false)),
+            [
+                "src/user.rs::run -CALLS/extracted-> src/square.rs::Square::area",
+                "src/user.rs -REFERENCES/extracted-> src/square.rs::Square::area",
+                "src/user.rs::run -CALLS/extracted-> src/shape.rs::Shape::name",
+                "src/user.rs -REFERENCES/extracted-> src/shape.rs::Shape::name",
+                "src/user.rs::run -REFERENCES/extracted-> src/square.rs::Square::SIDES",
+                "src/user.rs -CONTAINS/extracted-> src/user.rs::run",
+            ],
+            "the implementation's own member first, its trait's only when it has none"
+        );
+    }
+
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {
