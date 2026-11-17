@@ -136,6 +136,18 @@ fn halves<'r>(
     [("whole", Box::new(whole)), ("near", Box::new(near))]
 }
 
+/// One call walk and what it reaches: what the walk shows, the tests shown, the seed, the
+/// direction, its nodes, its frontiers with their candidates, and its edges' ends.
+type Walk<'a> = (
+    &'a str,
+    Tests,
+    &'a str,
+    Direction,
+    &'a [&'a str],
+    &'a [(&'a str, &'a [&'a str])],
+    &'a [(&'a str, &'a str)],
+);
+
 /// GIVEN the tree of [`two_traits_sharing_a_leaf`] and no records, WHEN the call walk runs down
 /// from a caller of `file` or up from a definition of it, on either code half, THEN each
 /// qualified call reaches the placeholder keyed by the name it writes, never the implementation
@@ -156,18 +168,7 @@ fn each_placeholder_of_a_leaf_reaches_what_its_own_qualifier_keeps_on_either_hal
         STORE_FILE,
     ];
     let archive_shown: &[&str] = &[TARBALL_FILE, ZIP_FILE, FAKE_FILE];
-    // (what the walk shows, the tests shown, the seed, the direction, its nodes, its frontiers
-    // with their candidates, its edges' ends)
-    #[allow(clippy::type_complexity)]
-    let walks: [(
-        &str,
-        Tests,
-        &str,
-        Direction,
-        &[&str],
-        &[(&str, &[&str])],
-        &[(&str, &str)],
-    ); 8] = [
+    let walks: [Walk; 8] = [
         (
             "the trait's method calling `CodeView.file`: both implementations, the one in its \
              own file among them",
