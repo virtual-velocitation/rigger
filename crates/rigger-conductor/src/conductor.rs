@@ -48071,6 +48071,10 @@ mod tests {
             /// The unit's branch was started for another criterion, HEAD holds its tip, and it is
             /// checked out in another worktree, so deleting it is refused.
             BranchDelete,
+            /// The unit's branch was started for another criterion and holds a commit HEAD lacks,
+            /// so it is quarantined; it is checked out in another worktree, so deleting it once
+            /// the quarantine is recorded is refused.
+            QuarantinedDelete,
         }
         // Each row: the step git refuses, and the text of the refusal the halt names.
         let cases = [
@@ -48083,6 +48087,7 @@ mod tests {
             (Step::BranchReset, "reset --hard"),
             (Step::BranchTip, "unknown revision"),
             (Step::BranchDelete, "cannot delete branch"),
+            (Step::QuarantinedDelete, "cannot delete branch"),
         ];
         for (step, refusal) in cases {
             let repo = temp_git_project_with_commit();
@@ -48181,20 +48186,22 @@ mod tests {
                     seed_events_in_run(&store, &["prior"], &prior);
                     true
                 }
-                Step::BranchDelete => {
+                Step::BranchDelete | Step::QuarantinedDelete => {
                     seed_events_in_run(
                         &store,
                         &["prior"],
                         &[started_with_criterion("unit-a", "c0")],
                     );
                     let held = elsewhere.path().join("held");
+                    let held = held.to_str().unwrap();
                     let branch = unit_branch("unit-a");
-                    run_git(
-                        &repo_path,
-                        &["worktree", "add", "-b", &branch, held.to_str().unwrap()],
-                    )
-                    .status
-                    .success()
+                    run_git(&repo_path, &["worktree", "add", "-b", &branch, held])
+                        .status
+                        .success()
+                        && (matches!(step, Step::BranchDelete)
+                            || run_git(held, &["commit", "--allow-empty", "-qm", "foreign"])
+                                .status
+                                .success())
                 }
             };
             assert!(planted, "{step:?}: precondition: the refusal is planted");
