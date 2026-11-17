@@ -1,6 +1,7 @@
 //! The one read of the user's home directory (spec 125, THE HOME). Every default rigger roots
 //! under the home starts from [`home_dir`]: the state home the instance registry lives under and
-//! the cache home the scratch roots live under, each after its own XDG variable ([`xdg_or_home`]).
+//! the cache home the scratch roots live under, each after its own XDG variable ([`xdg_or_home`]),
+//! and every XDG variable is read by one rule ([`xdg_dir`]).
 
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -19,22 +20,31 @@ pub fn home_dir() -> Option<OsString> {
     }
 }
 
-/// `value`, an environment variable's, as the home and XDG reads take it: `None` when it is unset
-/// or empty, so an empty value counts as unset.
+/// `value`, an environment variable's, as the home reads take it: `None` when it is unset or
+/// empty, so an empty value counts as unset.
 pub fn non_empty(value: Option<OsString>) -> Option<OsString> {
     value.filter(|v| !v.is_empty())
 }
 
-/// The directory an XDG base-directory variable roots: `xdg`, the variable's value, when it is
-/// non-empty, else `home` joined with each of `default`'s components when `home` is non-empty,
-/// else `None`. The one rule the cache home and the state home each follow with its own default.
+/// The directory `value`, an XDG base-directory variable's value, names: the value when it is an
+/// absolute path, else `None`. The XDG base directory specification makes a relative value
+/// invalid and says to ignore it, so an unset, empty or relative value each counts as unset. The
+/// one rule every XDG variable rigger reads is taken by.
+pub fn xdg_dir(value: Option<OsString>) -> Option<PathBuf> {
+    value.map(PathBuf::from).filter(|dir| dir.is_absolute())
+}
+
+/// The directory an XDG base-directory variable roots: `xdg`, the variable's value, when
+/// [`xdg_dir`] takes it, else `home` joined with each of `default`'s components when `home` is
+/// non-empty, else `None`. The one rule the cache home, the state home and the config home each
+/// follow with its own default.
 pub fn xdg_or_home(
     xdg: Option<OsString>,
     home: Option<OsString>,
     default: &[&str],
 ) -> Option<PathBuf> {
-    if let Some(dir) = non_empty(xdg) {
-        return Some(PathBuf::from(dir));
+    if let Some(dir) = xdg_dir(xdg) {
+        return Some(dir);
     }
     Some(
         default

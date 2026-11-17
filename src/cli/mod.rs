@@ -5408,9 +5408,11 @@ if [ -n "$main_worktree" ]; then
 fi
 # The relocated per-unit target (spec 89): a unit's build cache is the sibling
 # `cargo-target-<unit>` of its worktree under `<cache home>/rigger/<encoded repo root>`,
-# where the repo root is encoded byte by byte - alphanumerics and `-` kept, every other
-# byte as `_xx` hex - exactly as the binary encodes it, so this shell derivation and the
-# Rust one name the same directory.
+# where the cache home is XDG_CACHE_HOME when it is an absolute path (the XDG base directory
+# specification makes a relative value invalid) and `.cache` under the home otherwise, and
+# the repo root is encoded byte by byte - alphanumerics and `-` kept, every other byte as
+# `_xx` hex - each exactly as the binary resolves it, so this shell derivation and the Rust
+# one name the same directory.
 encode_repo_path() {
     p="$1"; out=""
     while [ -n "$p" ]; do
@@ -5431,7 +5433,11 @@ if [ -n "$repo_root" ]; then
     if [ -n "$unit" ]; then
         unit_release="$repo_root/.rigger/tmp/cargo-target-$unit/release/rigger"
         unit_debug="$repo_root/.rigger/tmp/cargo-target-$unit/debug/rigger"
-        cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/rigger/$(encode_repo_path "$repo_root")"
+        case "${XDG_CACHE_HOME:-}" in
+            /*) cache_home=$XDG_CACHE_HOME ;;
+            *) cache_home="$HOME/.cache" ;;
+        esac
+        cache_root="$cache_home/rigger/$(encode_repo_path "$repo_root")"
         relocated_release="$cache_root/cargo-target-$unit/release/rigger"
         relocated_debug="$cache_root/cargo-target-$unit/debug/rigger"
     fi
@@ -6367,10 +6373,8 @@ mod tests {
             "relocated candidates sit after the local target and before the pre-relocation \
              unit paths; got:\n{candidates}"
         );
-        assert!(
-            hook.contains("XDG_CACHE_HOME:-$HOME/.cache") && hook.contains("/rigger/"),
-            "the relocated root honors XDG_CACHE_HOME and nests under rigger/; got:\n{hook}"
-        );
+        // Where the relocated root lies under each XDG_CACHE_HOME value is pinned by running
+        // the block (`relocated_build_under`).
 
         let fn_start = hook.find("encode_repo_path() {").unwrap();
         let fn_end = fn_start + hook[fn_start..].find("\n}\n").unwrap() + "\n}\n".len();
