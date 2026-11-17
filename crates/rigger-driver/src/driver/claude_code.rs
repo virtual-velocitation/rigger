@@ -761,7 +761,7 @@ impl Driver<'_> {
                             // yet, on a BOUNDED launch only. Runs the whole sequence inline so
                             // the caller sees exactly one outcome for "this launch never
                             // produced a result". A resume silent to here never showed its
-                            // session: the same sequence ends the child first, then the hold read
+                            // session: the same sequence ends the session first, then the hold read
                             // chooses, the fallback answering a run proved unheld with no fault of
                             // its own.
                             if awaiting_session {

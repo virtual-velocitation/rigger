@@ -158,8 +158,9 @@ for people.
 ### 4.6 Stop
 
 A host-initiated stop (wall clock, operator) closes the session's input stream, waits a
-grace period, then ends the child through the sanctioned lifecycle helper on the child's
-own handle. Never a pid, a group or a shell-out.
+grace period, then ends the session's process tree through the handle the driver holds
+(`crates/rigger-process/src/child_tree.rs`): the child it spawned and the containment it
+created for that child. Never a pid read from elsewhere, a group or a shell-out.
 
 ---
 

@@ -1023,7 +1023,8 @@ fn spawn_waits_out_a_clean_eof_before_reaping_never_kills_mid_teardown() {
 #[test]
 fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
     // THE STOP (architecture addendum §4.6): "closes the session's input stream, waits a
-    // grace period, then ends the child through the sanctioned lifecycle helper." This
+    // grace period, then ends the session's process tree through the handle the driver
+    // holds." This
     // fixture goes silent after `system/init` but exits ON ITS OWN the moment its stdin
     // closes - the well-behaved case, proving the grace period is honored rather than an
     // immediate force-end, while `stop_grace` is injected short so the test itself stays
