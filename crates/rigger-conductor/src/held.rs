@@ -16,10 +16,12 @@
 //!
 //! A spawn the API refused (an error of a class whose row rejects,
 //! [`Disposition::Rejected`](rigger_domain::agent::Disposition::Rejected), the host closed `fault`)
-//! is the conductor's fault, never the API's: the decorator holds the run for a person on it
-//! ([`crate::run_store::hold_on_a_fault`], naming the spawn, its unit and its prompt's size) and
-//! parks the spawn, recording nothing, so the drive ends with no attempt charged and no lesson,
-//! every later spawn of the drive parks on that hold too, and `rigger release` continues the run.
+//! is the conductor's fault, never the API's: the decorator holds the run for the orchestrator on
+//! it ([`crate::run_store::hold_on_a_fault`], naming the spawn and its unit on the fault's first
+//! line, its prompt's size and the refusal after), for a person when the same refusal recurs
+//! after a release, and parks the spawn, recording nothing, so the drive ends with no attempt
+//! charged and no lesson, every later spawn of the drive parks on that hold too, and `rigger
+//! release` continues the run.
 //! A hold it cannot write leaves the refusal to its spawn site.
 //!
 //! Four errors reach the conductor unchanged, held or not: one carrying a conductor marker, a store
@@ -73,7 +75,7 @@ pub struct HeldDriver<'a> {
     relaunch_counts: Mutex<HashMap<String, u32>>,
     /// Whether an operator hold parks a spawn ([`Self::parking_on_an_operator_hold`]), and
     /// whether a spawn parked, on an operator hold or on the API's refusal; once one has, every
-    /// hold for a person parks the drive's later spawns.
+    /// manual hold parks the drive's later spawns.
     parks_on_an_operator_hold: bool,
     parked: AtomicBool,
     /// The fault this decorator last held the run on for a spawn the API refused.
@@ -125,12 +127,14 @@ impl<'a> HeldDriver<'a> {
         self.rejected.lock().expect("rejected spawn lock").take()
     }
 
-    /// Hold the run for a person on `e`, the API's refusal of the spawn `opts` names with
-    /// `prompt`, and park that spawn: the fault names the spawn, its unit and the prompt's size in
-    /// characters. `None` when the hold cannot be written, leaving `e` to its spawn site.
+    /// Hold the run on `e`, the API's refusal of the spawn `opts` names with `prompt`, as a fault
+    /// of the conductor's ([`crate::run_store::hold_on_a_fault`]), and park that spawn: the
+    /// fault's first line names the spawn and its unit, the line the same refusal recurring after a
+    /// release is told apart by, and the next the prompt's size in characters and the refusal.
+    /// `None` when the hold cannot be written, leaving `e` to its spawn site.
     fn park_the_refused(&self, e: &Error, prompt: &str, opts: &SpawnOpts) -> Option<Error> {
         let fault = format!(
-            "the API refused spawn {} of unit {} (a prompt of {} characters): {}",
+            "the API refused spawn {} of unit {}\na prompt of {} characters: {}",
             opts.id,
             opts.unit,
             prompt.chars().count(),
@@ -151,7 +155,7 @@ impl<'a> HeldDriver<'a> {
     /// Return once the run is not held, for spawn `id`. A failed read of the run ends the wait
     /// with `relaunched`, the error of the spawn this wait relaunches, or with the read's own error
     /// marked a store fault ([`store_fault`]) before a first launch, since a run not proved
-    /// unheld launches nothing. A hold for a person ends it with `id` parked when this decorator
+    /// unheld launches nothing. A manual hold ends it with `id` parked when this decorator
     /// parks on an operator hold or has parked a spawn already.
     fn wait_out_the_hold(&self, id: &str, mut relaunched: Option<Error>) -> Result<(), Error> {
         loop {
@@ -389,7 +393,7 @@ mod tests {
     /// with `e`, the four characters of the prompt [`check`] hands it named.
     fn refusal(e: &Error) -> String {
         format!(
-            "the API refused spawn {ID} of unit solo (a prompt of 4 characters): {}",
+            "the API refused spawn {ID} of unit solo\na prompt of 4 characters: {}",
             strip_failure_marker(e)
         )
     }
@@ -659,14 +663,14 @@ mod tests {
     }
 
     /// A SPAWN THE API REFUSES IS THE CONDUCTOR'S FAULT: an error of the `invalid_request` class
-    /// the host closed `fault` holds the run for a person, naming the spawn, its unit and its
-    /// prompt's size, and parks the spawn with nothing recorded, so the run's drive ends with no
+    /// the host closed `fault` holds the run for the orchestrator, naming the spawn, its unit and
+    /// its prompt's size, and parks the spawn with nothing recorded, so the run's drive ends with no
     /// attempt charged and `rigger release` continues it; a later spawn of the drive parks on that
     /// hold too, a driver that does not park on an operator hold included. A refusal the host
     /// closed `interrupted` on a held run is carried across like any interrupted error, and a
     /// hold the decorator cannot write leaves the refusal to its spawn site.
     #[test]
-    fn a_spawn_the_api_refuses_parks_and_holds_the_run_for_a_person() {
+    fn a_spawn_the_api_refuses_parks_and_holds_the_run_for_the_orchestrator() {
         let refused_close = || classed(REJECTED);
         check(vec![
             Row {

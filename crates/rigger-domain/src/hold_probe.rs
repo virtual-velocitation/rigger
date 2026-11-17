@@ -229,7 +229,8 @@ mod tests {
     }
 
     /// THE DELAY (spec 105 RELEASE), one pure function: no probe of an unheld run, a manual hold
-    /// (the operator's or the conductor's) or a `model_not_found` hold; otherwise the delay is 60 s doubled per probe line inside
+    /// (the operator's, or the conductor's whether for the orchestrator or, recurring after a
+    /// release, for a person) or a `model_not_found` hold; otherwise the delay is 60 s doubled per probe line inside
     /// the hold's chain, capped at 900 s, and the probe falls one delay after the later of the
     /// latest such line and the hold's latest `RunHeld`, clamped to one delay from now. A released
     /// hold joins the chain when the next hold's first `RunHeld` falls at most 600 s after its
@@ -267,6 +268,17 @@ mod tests {
             (
                 "a conductor hold",
                 vec![Held("conductor-fault", HOLD_BY_CONDUCTOR, 100)],
+                vec![],
+                now,
+                None,
+            ),
+            (
+                "a conductor hold after a release of the same fault, for a person",
+                vec![
+                    Held("conductor-fault", HOLD_BY_CONDUCTOR, 100),
+                    Released(200),
+                    Held("conductor-fault", HOLD_BY_CONDUCTOR, 300),
+                ],
                 vec![],
                 now,
                 None,

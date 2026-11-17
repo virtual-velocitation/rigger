@@ -4691,115 +4691,153 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
     }
 }
 
-/// A SPAWN THE API REFUSES HOLDS THE RUN FOR A PERSON: a first launch the API refuses
-/// (`invalid_request`, as it refuses a prompt too long) is the conductor's fault, never an outage:
-/// it reruns nothing, charges the unit no attempt, records no lesson and no result, holds the run
-/// for a person on a fault naming the spawn, its unit and its prompt's size, and ends the driver
-/// non-zero with its record left, so `rigger status` names the hold among what needs a person and
-/// `rigger release` relaunches the run. The run driven again launches the spawn once more and is
+/// A SPAWN THE API REFUSES HOLDS THE RUN FOR THE ORCHESTRATOR, THEN FOR A PERSON: a launch the
+/// API refuses (`invalid_request`, as it refuses a prompt too long) is the conductor's fault,
+/// never an outage: it reruns nothing, charges the unit no attempt, records no lesson and no
+/// result, holds the run on a fault naming the spawn and its unit on its first line and its
+/// prompt's size after, and ends the driver non-zero with its record left, naming whom the hold
+/// is for. The first refusal is held for the orchestrator: `rigger status` shows the hold, its
+/// action and its fault without listing it among what needs a person. Released, the same refusal
+/// again is held for a person, and `rigger status` lists it among what needs one. Each `rigger
+/// release` relaunches the run, and the run driven again launches the spawn once more and is
 /// done.
 #[cfg(unix)]
 #[test]
-fn a_spawn_the_api_refuses_holds_the_run_for_a_person_until_its_release() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
-    let scratch = tempfile::tempdir().unwrap();
+fn a_spawn_the_api_refuses_holds_the_run_for_the_orchestrator_then_a_person() {
+    use rigger_domain::agent::{cause_row, CONDUCTOR_FAULT, FAULT_RECURRED};
     let refused = classed_session("invalid_request");
-    let arm = format!(
-        r#"  *"Do the unit."*)
-    if [ -e "$here/refused" ]; then
-        echo "pub fn work() {{}}" > work.rs
-        exit 0
-    fi
-    : > "$here/refused"
-{refused}    ;;
-"#
-    );
-    let (out, err, ok, _fake) = run_on_arms_beside(root, &["run"], scratch.path(), &arm, |_| {});
-    assert!(
-        !ok && err.contains("is held for a person (the API refused spawn solo/implementer#0 ")
-            && err.contains("`rigger release` relaunches it"),
-        "the driver ends non-zero, naming the hold and its release; stdout: {out}\nstderr: {err}"
-    );
-    let first = (
-        "solo/implementer#0".to_string(),
-        0,
-        "fault".to_string(),
-        Some("invalid_request".to_string()),
-    );
-    assert_eq!(
-        closed_launches(root),
-        std::slice::from_ref(&first),
-        "one launch, refused and never rerun; stderr: {err}"
-    );
-    let holds = run_holds(root);
-    let fault = holds.first().map(|h| h.detail.clone()).unwrap_or_default();
-    assert_eq!(
-        holds,
-        [common::fixtures::conductor_fault_hold(&fault)],
-        "one hold for a person, never `api-unstable`; stderr: {err}"
-    );
-    assert!(
-        fault.starts_with("the API refused spawn solo/implementer#0 of unit solo (a prompt of ")
-            && fault.contains(" characters): "),
-        "the hold names the spawn, its unit and its prompt's size: {fault}"
-    );
-    let charged = [
-        rigger::ledger::TYPE_UNIT_FAILED,
-        rigger::contextgraph::TYPE_LESSON_LEARNED,
-        rigger::spawn::TYPE_SPAWN_RESULT,
+    let arm = format!("  *\"Do the unit.\"*)\n{refused}    ;;\n");
+    let spawn = "solo/implementer#0";
+    let first_line = format!("the API refused spawn {spawn} of unit solo");
+    // Each row: how many launches the API refuses in a row, and whom the last refusal's hold is
+    // for, with its action.
+    let rows = [
+        (1, "the orchestrator", cause_row(CONDUCTOR_FAULT).action),
+        (2, "a person", FAULT_RECURRED.action),
     ];
-    assert_eq!(
-        charged.map(|type_| common::cli::run_payloads(root, type_)),
-        charged.map(|_| Vec::<serde_json::Value>::new()),
-        "no attempt charged, no lesson and no result recorded"
-    );
-    let record = common::cli::driver_record(root);
-    assert!(!record.is_empty(), "the ended driver leaves its record");
-    let status = invoke_over_record(root, &record, &["status"], &[]);
-    let needs_you = status.out.split_once("needs you:").map(|(_, after)| after);
-    assert!(
-        needs_you.is_some_and(|after| after.contains("solo/implementer#0"))
-            && status.out.contains("rigger release"),
-        "status names the hold among what needs a person, and `rigger release`; stdout: {}",
-        status.out
-    );
-    let released = invoke_over_record(root, &record, &["release"], &[]);
-    assert_eq!(
-        (released.relaunches, released.err.contains(RELAUNCHED)),
-        (vec![relaunch_line(&record)], true),
-        "`rigger release` relaunches the run; stderr: {}",
-        released.err
-    );
-    let (out, err, ok, _fake) = run_on_arms(
-        root,
-        &["run"],
-        scratch.path(),
-        &sighting_worker_arm("", &[]),
-    );
-    assert!(
-        ok && out.lines().nth(2) == Some("done: every unit integrated"),
-        "the run driven again is done; stdout: {out}\nstderr: {err}"
-    );
-    assert_eq!(
-        closed_launches(root),
-        [
-            first,
-            (
-                "solo/implementer#0".to_string(),
-                1,
-                "completed".to_string(),
-                None
-            ),
-        ],
-        "the refused spawn launches once more and completes; stderr: {err}"
-    );
-    assert_eq!(
-        common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_FAILED),
-        Vec::<serde_json::Value>::new(),
-        "the unit is charged nothing"
-    );
+    for (refusals, held_for, action) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let mut launches = Vec::new();
+        let mut record = String::new();
+        for refusal in 1..=refusals {
+            let (out, err, ok, _fake) =
+                run_on_arms_beside(root, &["run"], scratch.path(), &arm, |_| {});
+            let (held_for, action) = if refusal == refusals {
+                (held_for, action)
+            } else {
+                ("the orchestrator", cause_row(CONDUCTOR_FAULT).action)
+            };
+            let ended = format!(
+                "is held for {held_for} ({CONDUCTOR_FAULT}: {first_line} - {action}), so this \
+                 driver ended; `rigger release` relaunches it"
+            );
+            assert!(
+                !ok && err.contains(&ended),
+                "{refusals}/{refusal}: the driver ends non-zero, naming the hold, whom it is for \
+                 and its release; stdout: {out}\nstderr: {err}"
+            );
+            launches.push((
+                spawn.to_string(),
+                refusal - 1,
+                "fault".to_string(),
+                Some("invalid_request".to_string()),
+            ));
+            assert_eq!(
+                closed_launches(root),
+                launches,
+                "{refusals}/{refusal}: each refused launch is never rerun; stderr: {err}"
+            );
+            record = common::cli::driver_record(root);
+            assert!(
+                !record.is_empty(),
+                "{refusals}/{refusal}: the ended driver leaves its record"
+            );
+            if refusal < refusals {
+                let released = invoke_over_record(root, &record, &["release"], &[]);
+                assert!(
+                    released.err.contains(RELAUNCHED),
+                    "{refusals}/{refusal}: `rigger release` relaunches the run; stderr: {}",
+                    released.err
+                );
+            }
+        }
+        let holds = run_holds(root);
+        let fault = holds.first().map(|h| h.detail.clone()).unwrap_or_default();
+        let mut expected = vec![common::fixtures::conductor_fault_hold(&fault)];
+        if refusals == 2 {
+            expected.push(common::fixtures::recurred_fault_hold(&fault));
+        }
+        assert_eq!(
+            holds, expected,
+            "{refusals}: one hold per refusal, never `api-unstable`, the recurrence for a person"
+        );
+        assert!(
+            fault.starts_with(&format!("{first_line}\na prompt of "))
+                && fault.contains(" characters: "),
+            "{refusals}: the hold names the spawn and its unit, then its prompt's size: {fault}"
+        );
+        let charged = [
+            rigger::ledger::TYPE_UNIT_FAILED,
+            rigger::contextgraph::TYPE_LESSON_LEARNED,
+            rigger::spawn::TYPE_SPAWN_RESULT,
+        ];
+        assert_eq!(
+            charged.map(|type_| common::cli::run_payloads(root, type_)),
+            charged.map(|_| Vec::<serde_json::Value>::new()),
+            "{refusals}: no attempt charged, no lesson and no result recorded"
+        );
+        let status = invoke_over_record(root, &record, &["status"], &[]);
+        let needs_you = status.out.split_once("needs you:").map(|(_, after)| after);
+        assert_eq!(
+            needs_you
+                .is_some_and(|after| after.contains(&format!("run: held - {CONDUCTOR_FAULT}"))),
+            refusals == 2,
+            "{refusals}: status lists the hold among what needs a person only when it is for one; \
+             stdout: {}",
+            status.out
+        );
+        assert!(
+            status
+                .out
+                .contains(&format!("{CONDUCTOR_FAULT} - {action}"))
+                && status.out.contains(&format!("\n  {first_line}\n"))
+                && status.out.contains("rigger release"),
+            "{refusals}: status shows the hold's action, its fault and `rigger release`; \
+             stdout: {}",
+            status.out
+        );
+        let released = invoke_over_record(root, &record, &["release"], &[]);
+        assert_eq!(
+            (released.relaunches, released.err.contains(RELAUNCHED)),
+            (vec![relaunch_line(&record)], true),
+            "{refusals}: `rigger release` relaunches the run; stderr: {}",
+            released.err
+        );
+        let (out, err, ok, _fake) = run_on_arms(
+            root,
+            &["run"],
+            scratch.path(),
+            &sighting_worker_arm("", &[]),
+        );
+        assert!(
+            ok && out.lines().nth(2) == Some("done: every unit integrated"),
+            "{refusals}: the run driven again is done; stdout: {out}\nstderr: {err}"
+        );
+        launches.push((spawn.to_string(), refusals, "completed".to_string(), None));
+        assert_eq!(
+            closed_launches(root),
+            launches,
+            "{refusals}: the refused spawn launches once more and completes; stderr: {err}"
+        );
+        assert_eq!(
+            common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_FAILED),
+            Vec::<serde_json::Value>::new(),
+            "{refusals}: the unit is charged nothing"
+        );
+    }
 }
 
 /// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] whose worker is stopped after a second of stream silence.
@@ -4833,7 +4871,8 @@ stages:
 /// ordinal with no infra mark, and that launch's error, on a run the release left unheld, halts
 /// the run past the infra limit naming its cause. Given a session failing a hold class on every
 /// launch, the id relaunches twice and the third error passes though the run holds, the bound
-/// spent, and a run that is not done leaves that hold.
+/// spent, and a run that is not done leaves that hold. The halt holds the run for the
+/// orchestrator, or for a person over a hold already waiting on one.
 #[cfg(unix)]
 #[test]
 fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
@@ -4849,7 +4888,10 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
         launches: Vec<(&'static str, u32)>,
         holds: Vec<rigger::run::RunHeld>,
         releases: Vec<&'static str>,
+        /// The row of the halt's own hold: whom it is for and its action.
+        halt: rigger_domain::agent::DispositionRow,
     }
+    let orchestrator = rigger_domain::agent::cause_row(rigger_domain::agent::CONDUCTOR_FAULT);
     let unstable = worker_hold(
         "api-unstable",
         "",
@@ -4873,6 +4915,7 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             launches: reran_then_relaunched.clone(),
             holds: vec![unstable.clone()],
             releases: vec!["operator"],
+            halt: orchestrator,
         },
         Case {
             name: "a stream-silence stop",
@@ -4883,6 +4926,7 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             launches: reran_then_relaunched,
             holds: vec![unstable],
             releases: vec!["operator"],
+            halt: orchestrator,
         },
         Case {
             name: "a hold class past the relaunch bound",
@@ -4893,6 +4937,7 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             launches: vec![(first, 0), (first, 1), (first, 2)],
             holds: vec![billing.clone(), billing.clone(), billing],
             releases: vec!["operator", "operator"],
+            halt: rigger_domain::agent::FAULT_ON_A_PERSONS_HOLD,
         },
     ];
     for case in cases {
@@ -4938,9 +4983,19 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             .unwrap_or_else(|| panic!("{name}: the halt holds the run; stderr: {err}"));
         assert_eq!(before, case.holds, "{name}: the holds before the halt");
         assert_eq!(
-            (halt.cause.as_str(), halt.by.as_str(), halt.needs_person),
-            ("conductor-fault", "conductor", true),
-            "{name}: the halt holds the run for a person"
+            (
+                halt.cause.as_str(),
+                halt.by.as_str(),
+                halt.needs_person,
+                halt.action.as_str()
+            ),
+            (
+                "conductor-fault",
+                "conductor",
+                case.halt.needs_person,
+                case.halt.action
+            ),
+            "{name}: the halt holds the run for whom its row names"
         );
         assert!(
             halt.detail.contains(case.cause)
@@ -16141,7 +16196,7 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
             &["watch", "--once"],
             Over::Held,
             false,
-            Some("held for a person, and no driver runs it; `rigger release` relaunches it"),
+            Some("hold for a person: run - operator - the operator stops the run"),
         ),
         (&["status"], Over::LinkedWorktree, false, None),
         (&["prime"], Over::LinkedWorktree, false, None),
@@ -16619,23 +16674,41 @@ fn hold_on_a_conductor_fault(root: &Path) {
 
 /// One case of [`an_operator_hold_stops_a_run_for_good_until_its_release`]: its name, the hold,
 /// whether the hold lands before the death, whether the dead driver was itself a relaunch made just
-/// now, and what `rigger status` says of the hold.
-type PersonHoldCase = (&'static str, fn(&Path), bool, bool, &'static str);
+/// now, what `rigger status` says of the hold, whether it lists the hold among what needs a
+/// person, and the line `rigger watch` reports it on.
+type ManualHoldCase = (
+    &'static str,
+    fn(&Path),
+    bool,
+    bool,
+    &'static str,
+    bool,
+    &'static str,
+);
 
-/// A HOLD FOR A PERSON IS THE STOP: a run its operator held, or the conductor held on a fault of
-/// its own, whether the hold came before its driver's death or after it, a relaunched driver that
-/// died at once included, is relaunched by no invocation, and its record is left as it was, until
-/// `rigger release` relaunches it. `rigger status` names the hold among what needs a person, with
-/// `rigger release` as what continues the run, and `rigger watch` reports it.
+/// The line `rigger watch` reports an operator hold of [`hold_the_run`] on.
+const OPERATOR_HOLD_WATCHED: &str =
+    "hold for a person: run - operator - the operator stops the run \
+     (respond: a person decides, then runs rigger release)";
+
+/// A MANUAL HOLD IS THE STOP: a run its operator held, or the conductor held on a fault of its
+/// own, whether the hold came before its driver's death or after it, a relaunched driver that died
+/// at once included, is relaunched by no invocation, and its record is left as it was, until
+/// `rigger release` relaunches it. `rigger status` shows the hold with `rigger release` as what
+/// continues the run, listing it among what needs a person only when it is for one (the
+/// operator's), and `rigger watch` reports it for whoever resolves it: a person, or the
+/// orchestrator with what to do.
 #[test]
 fn an_operator_hold_stops_a_run_for_good_until_its_release() {
-    let rows: [PersonHoldCase; 4] = [
+    let rows: [ManualHoldCase; 4] = [
         (
             "a hold, then the death",
             hold_the_run,
             true,
             false,
             "the operator stops the run",
+            true,
+            OPERATOR_HOLD_WATCHED,
         ),
         (
             "the death, then a hold",
@@ -16643,6 +16716,8 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
             false,
             false,
             "the operator stops the run",
+            true,
+            OPERATOR_HOLD_WATCHED,
         ),
         (
             "a relaunched driver held, then dead at once",
@@ -16650,6 +16725,8 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
             true,
             true,
             "the operator stops the run",
+            true,
+            OPERATOR_HOLD_WATCHED,
         ),
         (
             "a conductor fault held the run as its driver ended",
@@ -16657,9 +16734,13 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
             true,
             false,
             SEEDED_CONDUCTOR_FAULT,
+            false,
+            "hold for the orchestrator: run - conductor-fault: worktree: git worktree add failed: \
+             the path already exists - read the fault rigger status prints under this hold, fix \
+             its cause at the root, then run rigger release (respond: rigger-resume-a-run)",
         ),
     ];
-    for (case, hold, hold_first, revived, reason) in rows {
+    for (case, hold, hold_first, revived, reason, for_a_person, watch_line) in rows {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
@@ -16691,18 +16772,21 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
         let status = invoke_over_record(root, &record, &["status"], &[]);
         let needs_you = status.out.split_once("needs you:").map(|(_, after)| after);
         assert!(
-            needs_you.is_some_and(|after| after.contains(reason))
-                && status.out.contains("rigger release"),
-            "{case}: status names the hold among what needs a person, and `rigger release`; \
+            status.out.contains(reason) && status.out.contains("rigger release"),
+            "{case}: status shows the hold and `rigger release`; stdout: {}",
+            status.out
+        );
+        assert_eq!(
+            needs_you.is_some_and(|after| after.contains(reason)),
+            for_a_person,
+            "{case}: status lists the hold among what needs a person only when it is for one; \
              stdout: {}",
             status.out
         );
         let watched = invoke_over_record(root, &record, &["watch", "--once"], &[]);
-        let held_for_a_person =
-            "held for a person, and no driver runs it; `rigger release` relaunches it";
         assert!(
-            watched.out.contains(held_for_a_person) || watched.err.contains(held_for_a_person),
-            "{case}: watch reports the hold; stdout: {}\nstderr: {}",
+            watched.out.contains(watch_line) || watched.err.contains(watch_line),
+            "{case}: watch reports the hold for whoever resolves it; stdout: {}\nstderr: {}",
             watched.out,
             watched.err
         );

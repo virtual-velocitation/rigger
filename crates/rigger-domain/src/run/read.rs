@@ -144,20 +144,12 @@ pub fn read_current_hold(store: &dyn EventStore, stream: &str) -> Result<Option<
     Ok(state.hold)
 }
 
-/// THE HOLD FOR A PERSON ON THE CURRENT RUN: [`hold_for_a_person_in`] the current run's
-/// [`HOLD_TYPES`] events. A read that fails answers the store's error, and each caller decides
-/// what an unread hold means to it.
-pub fn read_hold_for_a_person(store: &dyn EventStore, stream: &str) -> Result<Option<Hold>, Error> {
-    hold_for_a_person_in(&read_current_hold_events(store, stream)?)
-}
-
-/// THE HOLD FOR A PERSON IN A RUN'S `events`: their folded hold ([`fold_holds`]) when it is
-/// [`Hold::manual`], the operator's or the conductor's on a fault of its own, which only
-/// `rigger release` ends; `None` when the run is unheld or held for a probe to release.
-pub fn hold_for_a_person_in(events: &[Event]) -> Result<Option<Hold>, Error> {
-    let mut state = RunState::new();
-    fold_holds(&mut state, events)?;
-    Ok(state.hold.filter(|hold| hold.manual))
+/// THE MANUAL HOLD ON THE CURRENT RUN: [`read_current_hold`]'s hold when it is [`Hold::manual`],
+/// the operator's or the conductor's on a fault of its own, which only `rigger release` ends,
+/// whoever resolves it first; `None` when the run is unheld or held for a probe to release. A read
+/// that fails answers the store's error, and each caller decides what an unread hold means to it.
+pub fn read_manual_hold(store: &dyn EventStore, stream: &str) -> Result<Option<Hold>, Error> {
+    Ok(read_current_hold(store, stream)?.filter(|hold| hold.manual))
 }
 
 /// The current run's [`HOLD_TYPES`] events ([`read_current_run_typed`]): what the hold read folds

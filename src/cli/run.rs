@@ -1195,12 +1195,12 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let channel = socket
         .as_ref()
         .map(|s| s as &dyn rigger::gate_channel::GateChannel);
-    // A driver that parked a launch on a hold for a person drives again once the hold is gone,
-    // since a release while it still runs relaunches nothing; it ends only while the hold stands.
-    // A drive that failed under such a hold, the conductor's own fault hold included, leaves its
-    // record for `rigger release` the same way, and so does a drive whose spawn the API refused,
-    // which the decorator parked on the hold it put on the run: that driver fails, naming the
-    // fault. Each drive holds a verdict key of its own, as a relaunched driver would.
+    // A driver that parked a launch on a manual hold drives again once the hold is gone, since a
+    // release while it still runs relaunches nothing; it ends only while the hold stands. A drive
+    // that failed under such a hold, the conductor's own fault hold included, leaves its record
+    // for `rigger release` the same way, and so does a drive whose spawn the API refused, which
+    // the decorator parked on the hold it put on the run: that driver fails, naming the fault.
+    // Each drive holds a verdict key of its own, as a relaunched driver would.
     let rs = loop {
         let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
         let driven = beating(
@@ -1218,14 +1218,10 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
             Err(e) => {
                 // Only a hold read leaves a failed driver's record for `rigger release`.
                 if let Ok(Some(hold)) =
-                    runscope::read::read_hold_for_a_person(&folding, conductor::STREAM)
+                    runscope::read::read_manual_hold(&folding, conductor::STREAM)
                 {
                     step_record.leave_for_release();
-                    stderr_line(&ended_held_for_a_person(
-                        command,
-                        &run,
-                        Some(&hold.reason()),
-                    ));
+                    stderr_line(&ended_held(command, &run, Some(&hold), "ended"));
                 }
                 return Err(e.into());
             }
@@ -1236,18 +1232,17 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         }
         // A hold read that fails is read as standing: a run not proved free of one launches
         // nothing.
-        if matches!(
-            runscope::read::read_hold_for_a_person(&folding, conductor::STREAM),
-            Ok(None)
-        ) {
-            continue;
-        }
+        let hold = match runscope::read::read_manual_hold(&folding, conductor::STREAM) {
+            Ok(None) => continue,
+            read => read.ok().flatten(),
+        };
         step_record.leave_for_release();
         if let Some(fault) = refused {
-            stderr_line(&ended_held_for_a_person(command, &run, Some(&fault)));
+            stderr_line(&ended_held(command, &run, hold.as_ref(), "ended"));
             return Err(fault.into());
         }
-        stderr_line(&ended_held_for_a_person(command, &run, None));
+        let parked = "parked its next launch and ended";
+        stderr_line(&ended_held(command, &run, hold.as_ref(), parked));
         break rs;
     };
     // A done run releases its open hold, an operator hold included (spec 105); any other exit
@@ -1372,15 +1367,15 @@ fn reclaim_orphans_at_start(
     }
 }
 
-/// The line `command`'s driver says as it ends with `run` held for a person, leaving its record
-/// for `rigger release`: `failed_on` names the fault its failed drive ended on, `None` when it
-/// parked its next launch on the hold.
-fn ended_held_for_a_person(command: &str, run: &str, failed_on: Option<&str>) -> String {
-    let ended = match failed_on {
-        Some(reason) => format!(" ({reason}), so this driver ended"),
-        None => ", so this driver parked its next launch and ended".to_string(),
-    };
-    format!("{command}: run {run} is held for a person{ended}; `rigger release` relaunches it")
+/// The line `command`'s driver says as it ends with `run` held, leaving its record for `rigger
+/// release`: whom `hold` is held for and the hold as they are told it ([`ledger::Hold::told`]:
+/// its cause, its detail's first line and its action), then how the driver `ended`. A hold that
+/// could not be read is named held alone.
+fn ended_held(command: &str, run: &str, hold: Option<&ledger::Hold>, ended: &str) -> String {
+    let held = hold.map_or_else(String::new, |hold| {
+        format!(" for {} ({})", hold.held_for(), hold.told())
+    });
+    format!("{command}: run {run} is held{held}, so this driver {ended}; `rigger release` relaunches it")
 }
 
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).

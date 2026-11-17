@@ -2817,8 +2817,8 @@ const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
 /// requested shared-cache guard failed its probe, so the runner returned a
 /// [`gate::ProbeFault`] and ran nothing. A local filesystem answer that no wait and no rerun
 /// changes, only the operator's fix, so it is a halt over [`HALT_MARKERS`], never the F3
-/// infra rerun and never the self-retrying hold: the hold it leaves is the one for a person
-/// ([`held_on_a_fault`]).
+/// infra rerun and never the self-retrying hold: the hold it leaves is the conductor's fault hold,
+/// which no probe ends ([`held_on_a_fault`]).
 const PROBE_FAULT_MARKER: &str = "\u{1}rigger:probe-fault\u{1}";
 
 /// The error a gate runner's [`gate::ProbeFault`] travels as: its text, which names the guard
@@ -3201,7 +3201,7 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
 /// `rigger gate <id>` request it carries for as long as the run drives, spawns included
 /// ([`RunCtx::answer_gate_request`]). The channel is closed when the run returns, however it
 /// returns. A drive of a begun run that fails on a fault, not on a content step's refusal,
-/// holds the run for a person first ([`held_on_a_fault`]).
+/// holds the run first ([`held_on_a_fault`]), for the orchestrator to resolve.
 pub fn run_serving(
     cfg: &Config,
     deps: &Deps,
@@ -3220,11 +3220,11 @@ pub fn run_serving(
     drive(cfg, deps, verdict_key, channel, run_id).map_err(|e| held_on_a_fault(deps, e))
 }
 
-/// THE CONDUCTOR'S FAULT HOLD: hold the run for a person on `e`, a fault of the conductor's own
-/// that ended the run's drive, before the drive returns it
-/// ([`crate::run_store::hold_on_a_fault`], the fault's text with its class marker stripped), so
-/// `rigger status` and `rigger watch` name it among what needs a person and `rigger release`
-/// continues the run. It is the one home of every error a begun run's drive returns: each
+/// THE CONDUCTOR'S FAULT HOLD: hold the run on `e`, a fault of the conductor's own that ended the
+/// run's drive, before the drive returns it ([`crate::run_store::hold_on_a_fault`], the fault's
+/// text with its class marker stripped): for the orchestrator first, for a person when the same
+/// fault recurs after a release in the same run. `rigger status` and `rigger watch` name it with
+/// whoever resolves it, no probe ends it, and `rigger release` continues the run. It is the one home of every error a begun run's drive returns: each
 /// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, an
 /// outage past the infra limit, a failed guard probe, a failed git step) and every other, but a
 /// park ([`is_parked`]), whatever parked a spawn left its own hold standing, and a content step's
@@ -18960,7 +18960,7 @@ mod tests {
         assert_eq!(
             holds_in(&events),
             [conductor_fault_hold(&err.0)],
-            "{why}: the refusal holds the run for a person on its own text"
+            "{why}: the refusal holds the run for the orchestrator on its own text"
         );
         events
     }
@@ -26858,7 +26858,7 @@ mod tests {
         assert_eq!(
             holds_in(&events),
             [conductor_fault_hold(&err.0)],
-            "the halt holds the run for a person, naming the fault"
+            "the halt holds the run for the orchestrator, naming the fault"
         );
     }
 
@@ -27665,7 +27665,7 @@ mod tests {
         assert_eq!(
             holds_in(&events),
             [conductor_fault_hold(&err.0)],
-            "the halt holds the run for a person, naming the fault"
+            "the halt holds the run for the orchestrator, naming the fault"
         );
         // The implementer ran exactly once - the halt did not restart the unit lifecycle.
         assert_eq!(occurrences(&driver.call_order, "worker"), 1);
@@ -31926,7 +31926,7 @@ mod tests {
         assert_eq!(
             holds_in(&events),
             [conductor_fault_hold(&err.0)],
-            "the halt holds the run for a person, naming the fault"
+            "the halt holds the run for the orchestrator, naming the fault"
         );
     }
 
@@ -34394,7 +34394,7 @@ mod tests {
         assert_eq!(
             holds_in(&events),
             [conductor_fault_hold(&err.0)],
-            "the halt holds the run for a person, naming the fault"
+            "the halt holds the run for the orchestrator, naming the fault"
         );
 
         // The relaunch after the outage: the next ordinal crashes once more, then recovers.
@@ -48282,7 +48282,7 @@ mod tests {
             assert_eq!(
                 holds_in(&events),
                 [conductor_fault_hold(&err.0)],
-                "{step:?}: the fault holds the run for a person, naming it"
+                "{step:?}: the fault holds the run for the orchestrator, naming it"
             );
             assert_eq!(
                 events
@@ -48294,6 +48294,133 @@ mod tests {
                 "{step:?}: no record carries the halt's marker"
             );
         }
+    }
+
+    /// A FAULT THE ORCHESTRATOR'S FIX DID NOT END GOES TO A PERSON: through the drive, a lifecycle
+    /// fault (a missing but locked worktree at the unit's path refusing `git worktree add -b`)
+    /// holds the run for the orchestrator. Released with the cause left in place, the relaunch
+    /// adds the worktree on the branch the refused add left, a fault whose first line names
+    /// another command, so it is a different fault and held for the orchestrator again; released
+    /// again, the next relaunch's fault has the same first line and holds the run for a person.
+    /// Released once the cause is removed, the next relaunch's different fault (the main
+    /// checkout's index locked, refusing the landing) holds it for the orchestrator.
+    #[test]
+    #[cfg(unix)]
+    fn a_fault_that_holds_again_after_a_release_holds_the_run_for_a_person() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mark = elsewhere.path().join("fixed");
+        let mark = mark.to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_dir = unit_worktree_dir(&scratch, "unit-a");
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        let gate = format!("[ ! -e '{mark}' ] || touch '{repo_path}/.git/index.lock'");
+        cfg.workflow.gates.insert("g".into(), gate_def(&gate));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                criterion_id: "c1".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        assert!(
+            strand_worktree_at(&repo_path, &unit_dir),
+            "precondition: the refusal is planted"
+        );
+        let release = || {
+            let released = crate::run_store::release_hold(
+                &deps.folding(),
+                crate::run::HOLD_BY_OPERATOR,
+                std::time::SystemTime::now(),
+            );
+            assert_eq!(
+                released.ok(),
+                Some(true),
+                "the orchestrator releases the run"
+            );
+        };
+        let held = |run: &str| {
+            let Err(err) = run_isolated(&cfg, &deps) else {
+                panic!("{run}: the fault halts the run");
+            };
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            (err.0, holds_in(&events))
+        };
+
+        let (first, holds) = held("first drive");
+        assert!(
+            first.starts_with("worktree: git worktree add -b ")
+                && first.contains("missing but locked"),
+            "the first fault: {first}"
+        );
+        assert_eq!(
+            holds,
+            [conductor_fault_hold(&first)],
+            "the first fault holds the run for the orchestrator"
+        );
+        release();
+        let (second, holds) = held("relaunch, cause in place");
+        let first_line = |fault: &str| fault.lines().next().unwrap_or_default().to_string();
+        assert!(
+            second.contains("missing but locked") && first_line(&second) != first_line(&first),
+            "the relaunch's fault has another first line: {second}"
+        );
+        assert_eq!(
+            holds,
+            [conductor_fault_hold(&first), conductor_fault_hold(&second)],
+            "a fault with another first line after a release holds the run for the orchestrator"
+        );
+        release();
+        let (again, holds) = held("relaunch, cause still in place");
+        assert_eq!(again, second, "the relaunch meets the same fault");
+        assert_eq!(
+            holds,
+            [
+                conductor_fault_hold(&first),
+                conductor_fault_hold(&second),
+                crate::test_support::recurred_fault_hold(&again)
+            ],
+            "the same fault after a release holds the run for a person"
+        );
+        release();
+        let unlocked = run_git(&repo_path, &["worktree", "unlock", &unit_dir]);
+        let pruned = run_git(&repo_path, &["worktree", "prune"]);
+        assert!(
+            unlocked.status.success()
+                && pruned.status.success()
+                && std::fs::write(mark, "").is_ok(),
+            "precondition: the cause is removed and the next fault planted"
+        );
+        let (other, holds) = held("relaunch, cause removed");
+        assert!(
+            other.contains("merge --ff-only"),
+            "a different fault: {other}"
+        );
+        assert_eq!(
+            holds,
+            [
+                conductor_fault_hold(&first),
+                conductor_fault_hold(&second),
+                crate::test_support::recurred_fault_hold(&again),
+                conductor_fault_hold(&other)
+            ],
+            "a different fault after a release holds the run for the orchestrator"
+        );
     }
 
     /// A CONTENT STEP'S REFUSAL IS THE UNIT'S: when git runs and refuses a step the unit's own
@@ -49655,7 +49782,7 @@ mod tests {
         assert_eq!(
             holds_in(&events),
             [conductor_fault_hold(&probe_fault().to_string())],
-            "the halt holds the run for a person, naming the fault"
+            "the halt holds the run for the orchestrator, naming the fault"
         );
     }
 
@@ -54978,13 +55105,13 @@ mod tests {
         }
     }
 
-    /// A PLAN-CRITIQUE SPAWN THE API REFUSES HOLDS THE RUN FOR A PERSON: through the run's held
-    /// driver, a gate reviewer the API refuses (`invalid_request`, its prompt too long) parks the
-    /// gate, so the step ends with the fan-out held, no lesson recorded against any unit and no
-    /// attempt charged, the driver saying it parked, and the run held for a person on a fault
-    /// naming the spawn, its unit and its prompt's size.
+    /// A PLAN-CRITIQUE SPAWN THE API REFUSES HOLDS THE RUN FOR THE ORCHESTRATOR: through the run's
+    /// held driver, a gate reviewer the API refuses (`invalid_request`, its prompt too long) parks
+    /// the gate, so the step ends with the fan-out held, no lesson recorded against any unit and
+    /// no attempt charged, the driver saying it parked, and the run held for the orchestrator on a
+    /// fault naming the spawn and its unit on its first line, its prompt's size after.
     #[test]
-    fn a_plan_critique_spawn_the_api_refuses_holds_the_run_for_a_person() {
+    fn a_plan_critique_spawn_the_api_refuses_holds_the_run_for_the_orchestrator() {
         let st = Store::open(":memory:").unwrap();
         let inner = ParkingGateDriver::refusing(widget_split());
         let held = crate::held::HeldDriver::new(&inner, &st, &|| {});
@@ -55022,12 +55149,12 @@ mod tests {
         assert_eq!(
             holds,
             [conductor_fault_hold(&fault)],
-            "one hold for a person on the refusal"
+            "one hold for the orchestrator on the refusal"
         );
         assert!(
             fault.starts_with("the API refused spawn plan-critique/")
-                && fault.contains(" of unit plan-critique (a prompt of ")
-                && fault.ends_with(&format!(" characters): {REFUSED_PROMPT}")),
+                && fault.contains(" of unit plan-critique\na prompt of ")
+                && fault.ends_with(&format!(" characters: {REFUSED_PROMPT}")),
             "the fault names the spawn, its unit and its prompt's size: {fault}"
         );
         assert_eq!(
@@ -55040,7 +55167,8 @@ mod tests {
     /// A PLAN-CRITIQUE HALT REACHES THE OPERATOR UNMARKED: a gate adjudicator that returns only
     /// empty output, or that twice exits with no verdict line, halts the run at the gate before
     /// any unit is implemented - the halt naming the reviewer and carrying no halt marker, no
-    /// lesson recorded, no attempt charged, and the run held for a person on the halt's text.
+    /// lesson recorded, no attempt charged, and the run held for the orchestrator on the halt's
+    /// text.
     #[test]
     fn a_plan_critique_halt_reaches_the_operator_unmarked_and_holds_the_run() {
         for (row, judge, names, spawns) in [
@@ -55094,7 +55222,7 @@ mod tests {
             assert_eq!(
                 holds_in(&events),
                 [conductor_fault_hold(&err.0)],
-                "{row}: the run is held for a person on the halt's text"
+                "{row}: the run is held for the orchestrator on the halt's text"
             );
         }
     }

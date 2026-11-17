@@ -13,8 +13,10 @@
 
 use std::time::SystemTime;
 
-use rigger_domain::agent::{cause_row, CONDUCTOR_FAULT, OPERATOR};
-use rigger_domain::ledger::{project, Hold, RunState};
+use rigger_domain::agent::{
+    cause_row, DispositionRow, CONDUCTOR_FAULT, FAULT_ON_A_PERSONS_HOLD, FAULT_RECURRED, OPERATOR,
+};
+use rigger_domain::ledger::{holds, project, Hold, RunState};
 
 use crate::contextgraph::TYPE_DECISION_MADE;
 use crate::eventstore::{
@@ -23,9 +25,10 @@ use crate::eventstore::{
 use crate::retention::PERCEPTION_TYPES;
 use crate::run::read::{fold_holds, read_run, read_run_at_head, HOLD_TYPES};
 use crate::run::{
-    adopted_run, current_run, current_run_id, effective_definition, RunHeld, RunReleased, RunStart,
-    RunStarted, HOLD_BY_CONDUCTOR, HOLD_BY_HOST, HOLD_BY_OPERATOR, HOLD_BY_PROBE, META_DEFINITION,
-    META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD, TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
+    adopted_run, current_run, current_run_id, effective_definition, fault_detail, RunHeld,
+    RunReleased, RunStart, RunStarted, HOLD_BY_CONDUCTOR, HOLD_BY_HOST, HOLD_BY_OPERATOR,
+    HOLD_BY_PROBE, META_DEFINITION, META_DEFINITION_PRIOR, META_RUN_ID, STREAM, TYPE_RUN_HELD,
+    TYPE_RUN_RELEASED, TYPE_RUN_STARTED,
 };
 
 /// Record a re-pin of the current run's definition from `old` to `new`, for `cause`: the
@@ -321,34 +324,62 @@ pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(),
     .map(drop)
 }
 
-/// Hold the current run for a person on a fault of the conductor's own that ended its drive
-/// (`fault`, its text): one `RunHeld {by: conductor}` of cause `conductor-fault`, the fault on one
-/// line as its detail and its action, carrying the open hold's latest model forward. It lands over
-/// any open hold, an operator hold included, since the fault is news to whoever releases it; a
-/// hold whose latest `RunHeld` already names this same fault takes nothing, so a relaunch meeting
-/// the fault again adds no second hold.
+/// Hold the current run on a fault of the conductor's own that ended its drive (`fault`, its
+/// text; spec 105): one `RunHeld {by: conductor}` of cause `conductor-fault`, the fault's lines as
+/// its detail ([`fault_detail`]), carrying the open hold's latest model forward. The hold is for
+/// the orchestrator, the cause's row, save where a person decides: the hold the run last released
+/// named the same fault ([`RunHeld::same_fault`]), so the orchestrator's fix did not hold
+/// ([`FAULT_RECURRED`]), or the hold open now already waits on a person
+/// ([`FAULT_ON_A_PERSONS_HOLD`]). It lands over any open hold, an operator hold included, since the
+/// fault is news to whoever releases it; an open hold whose latest `RunHeld` already names the same
+/// fault takes nothing, so a relaunch meeting the fault again adds no second hold. Decided inside
+/// the compare-and-append ([`append_at_head`]) over the current run's hold events, its released
+/// holds included.
 pub fn hold_on_a_fault(store: &dyn EventStore, fault: &str) -> Result<(), Error> {
-    let line = fault.split_whitespace().collect::<Vec<_>>().join(" ");
-    append_on_hold(store, TYPE_RUN_HELD, |hold| {
-        let model = hold.map_or("", |hold| hold.latest.model.as_str());
-        let body = RunHeld {
-            action: line.clone(),
-            ..held_by(CONDUCTOR_FAULT, &line, HOLD_BY_CONDUCTOR, model)
-        };
-        let named = hold.is_some_and(|hold| {
-            hold.latest.cause == body.cause && hold.latest.detail == body.detail
-        });
-        (!named)
-            .then(|| serialized(TYPE_RUN_HELD, body.to_event()))
-            .transpose()
-    })
+    let detail = fault_detail(fault);
+    let mut read_so_far: Vec<Event> = Vec::new();
+    append_at_head(
+        store,
+        TypeSelection::Only(&HOLD_TYPES),
+        TYPE_RUN_HELD,
+        |read| {
+            accumulate(&mut read_so_far, read);
+            let events = current_run(&read_so_far);
+            let mut state = RunState::new();
+            fold_holds(&mut state, events)?;
+            let open = state.hold.as_ref();
+            let model = open.map_or("", |hold| hold.latest.model.as_str());
+            let held = held_by(CONDUCTOR_FAULT, &detail, HOLD_BY_CONDUCTOR, model);
+            if open.is_some_and(|hold| hold.latest.same_fault(&held)) {
+                return Ok(None);
+            }
+            let released = holds(events)
+                .into_iter()
+                .rev()
+                .find(|span| span.release.is_some())
+                .and_then(|span| span.hold);
+            let row = if released.is_some_and(|hold| hold.latest.same_fault(&held)) {
+                FAULT_RECURRED
+            } else if open.is_some_and(|hold| hold.latest.needs_person) {
+                FAULT_ON_A_PERSONS_HOLD
+            } else {
+                return serialized(TYPE_RUN_HELD, held.to_event()).map(Some);
+            };
+            let body = held_on(row, CONDUCTOR_FAULT, &detail, HOLD_BY_CONDUCTOR, model);
+            serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
+        },
+    )
     .map(drop)
 }
 
 /// The `RunHeld` of `cause` written by `by`, its action and need for a person read from the
 /// cause's row of the disposition table.
 fn held_by(cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
-    let row = cause_row(cause);
+    held_on(cause_row(cause), cause, detail, by, model)
+}
+
+/// The `RunHeld` of `cause` written by `by`, its action and need for a person `row`'s.
+fn held_on(row: DispositionRow, cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
     RunHeld {
         cause: cause.to_string(),
         detail: detail.to_string(),
@@ -357,6 +388,17 @@ fn held_by(cause: &str, detail: &str, by: &str, model: &str) -> RunHeld {
         by: by.to_string(),
         model: model.to_string(),
     }
+}
+
+/// Add `read`, what one read of [`append_at_head`] handed its `decide`, to `read_so_far`, the run
+/// read so far: the first read whole, a re-read only past the revisions already read, since it
+/// starts at the pinned revision the read before it holds.
+fn accumulate(read_so_far: &mut Vec<Event>, read: &[Event]) {
+    let seen = read_so_far.last().map(|e| e.revision);
+    let landed = read
+        .iter()
+        .filter(|e| seen.is_none_or(|seen| e.revision > seen));
+    read_so_far.extend(landed.cloned());
 }
 
 /// Why `rigger hold` holds nothing (spec 105): the current run is not live.
@@ -396,12 +438,7 @@ pub fn hold_by_operator(
         TypeSelection::Except(&PERCEPTION_TYPES),
         TYPE_RUN_HELD,
         |read| {
-            // A re-read starts at the pinned revision, already read.
-            let seen = read_so_far.last().map(|e| e.revision);
-            let landed = read
-                .iter()
-                .filter(|e| seen.is_none_or(|seen| e.revision > seen));
-            read_so_far.extend(landed.cloned());
+            accumulate(&mut read_so_far, read);
             let events = current_run(&read_so_far);
             let run = project(events).map_err(|e| Error::Backend(format!("fold the run: {e}")))?;
             live = match current_run_id(events) {
@@ -722,56 +759,111 @@ mod tests {
     }
 
     /// The fault [`hold_on_a_fault`] is handed, spread over lines as an error's text can be.
-    const FAULT: &str = "worktree: git worktree add\n   failed: the path already exists";
+    const FAULT: &str = "worktree: git worktree add\n   failed:  the path already exists";
 
-    /// The `RunHeld` the conductor appends for [`FAULT`] on a hold whose latest model was `model`.
-    fn fault_hold(detail: &str, model: &str) -> RunHeld {
+    /// The detail a conductor-fault hold records for [`FAULT`]: its lines, each collapsed.
+    const DETAIL: &str = "worktree: git worktree add\nfailed: the path already exists";
+
+    /// The `RunHeld` the conductor appends for a fault of `detail` on a hold whose latest model
+    /// was `model`, of the disposition `row`.
+    fn fault_hold(row: DispositionRow, detail: &str, model: &str) -> RunHeld {
         RunHeld {
             cause: CONDUCTOR_FAULT.to_string(),
             detail: detail.to_string(),
-            action: detail.to_string(),
-            needs_person: true,
+            action: row.action.to_string(),
+            needs_person: row.needs_person,
             by: HOLD_BY_CONDUCTOR.to_string(),
             model: model.to_string(),
         }
     }
 
-    /// A CONDUCTOR FAULT HOLDS THE RUN ONCE: on an unheld run and over any open hold, an operator
-    /// hold included, it appends one person-needing `RunHeld {by: conductor}` naming the fault on
-    /// one line and carrying the hold's model; on a hold whose latest `RunHeld` already names the
-    /// same fault it appends nothing, while a different fault, or a released hold of the same
-    /// one, takes a new hold.
+    /// A CONDUCTOR FAULT HOLDS THE RUN ONCE, FOR THE ORCHESTRATOR FIRST (spec 105): on an unheld
+    /// run, over a hold a probe ends, or after a released hold of another fault, it appends one
+    /// `RunHeld {by: conductor}` for the orchestrator, the fault's lines its detail and the
+    /// hold's model carried; after a released hold of the same fault in the current run - its
+    /// cause and its detail's first line alike, byte for byte, whatever its later lines - it is
+    /// held for a person, the orchestrator's fix not having held; over an open hold that waits on
+    /// a person, an operator hold, it is held for that person; and on a hold whose latest
+    /// `RunHeld` already names the same fault it appends nothing. A released hold the current
+    /// run's boundary stands after, or one a later released hold of another fault follows, and
+    /// a hold recorded before details kept their lines, are no recurrence.
     #[test]
-    fn a_conductor_fault_holds_the_run_once_over_any_hold() {
-        const LINE: &str = "worktree: git worktree add failed: the path already exists";
-        let named = |detail: &str| fault_hold(detail, "").to_event().unwrap();
-        let rows: [(&str, Vec<Event>, Option<RunHeld>); 7] = [
-            ("an unheld run", vec![], Some(fault_hold(LINE, ""))),
-            (
-                "an operator hold",
-                vec![held(OPERATOR, HOLD_BY_OPERATOR, "opus")],
-                Some(fault_hold(LINE, "opus")),
-            ),
+    fn a_conductor_fault_holds_for_the_orchestrator_then_a_person_when_it_recurs() {
+        let orchestrator = |model| Some(fault_hold(cause_row(CONDUCTOR_FAULT), DETAIL, model));
+        let person = Some(fault_hold(FAULT_RECURRED, DETAIL, ""));
+        let named = |detail: &str| {
+            let body = fault_hold(cause_row(CONDUCTOR_FAULT), detail, "");
+            body.to_event().unwrap()
+        };
+        let operator = || {
+            let body = RunHeld {
+                cause: OPERATOR.to_string(),
+                action: "the operator's reason".to_string(),
+                needs_person: true,
+                by: HOLD_BY_OPERATOR.to_string(),
+                model: "opus".to_string(),
+                ..RunHeld::default()
+            };
+            body.to_event().unwrap()
+        };
+        let boundary = || RunStarted::default().to_event().unwrap();
+        const OTHER: &str = "plan landing failed";
+        const ONE_LINE: &str = "worktree: git worktree add failed: the path already exists";
+        let rows: [(&str, Vec<Event>, Option<RunHeld>); 12] = [
+            ("an unheld run", vec![], orchestrator("")),
             (
                 "a host hold the run retries by itself",
                 vec![held(API_UNSTABLE, HOLD_BY_HOST, "sonnet")],
-                Some(fault_hold(LINE, "sonnet")),
+                orchestrator("sonnet"),
             ),
-            ("a hold naming the same fault", vec![named(LINE)], None),
+            ("a hold naming the same fault", vec![named(DETAIL)], None),
             (
                 "a host hold landed on a hold naming the same fault",
-                vec![named(LINE), held(API_UNSTABLE, HOLD_BY_HOST, "")],
-                Some(fault_hold(LINE, "")),
+                vec![named(DETAIL), held(API_UNSTABLE, HOLD_BY_HOST, "")],
+                orchestrator(""),
             ),
             (
                 "a hold naming another fault",
-                vec![named("plan landing failed")],
-                Some(fault_hold(LINE, "")),
+                vec![named(OTHER)],
+                orchestrator(""),
             ),
             (
                 "a released hold naming the same fault",
-                vec![named(LINE), released()],
-                Some(fault_hold(LINE, "")),
+                vec![named(DETAIL), released()],
+                person.clone(),
+            ),
+            (
+                "a released hold of the same first line, its later lines differing",
+                vec![
+                    named("worktree: git worktree add\nfailed: locked"),
+                    released(),
+                ],
+                person.clone(),
+            ),
+            (
+                "a released hold naming another fault",
+                vec![named(OTHER), released()],
+                orchestrator(""),
+            ),
+            (
+                "a released hold of the same fault, then a released hold of another",
+                vec![named(DETAIL), released(), named(OTHER), released()],
+                orchestrator(""),
+            ),
+            (
+                "a released hold of the same fault in the run before",
+                vec![named(DETAIL), released(), boundary()],
+                orchestrator(""),
+            ),
+            (
+                "a released hold of the same fault recorded on one line",
+                vec![named(ONE_LINE), released()],
+                orchestrator(""),
+            ),
+            (
+                "an operator hold",
+                vec![operator()],
+                Some(fault_hold(FAULT_ON_A_PERSONS_HOLD, DETAIL, "opus")),
             ),
         ];
         for (name, log, expected) in rows {

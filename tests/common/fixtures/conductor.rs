@@ -63,14 +63,28 @@ pub fn run_held_event(body: &rigger::run::RunHeld) -> Event {
     body.to_event().unwrap()
 }
 
-/// The hold the conductor writes for a person on a fault of its own that ended the run's drive:
-/// `error`, the fault's text, on one line as its detail and its action, needing a person.
+/// The hold the conductor writes on a fault of its own that ended the run's drive, held for the
+/// orchestrator: `error`, the fault's text, as its detail
+/// ([`fault_detail`](rigger_domain::run::fault_detail)), under the conductor-fault row's action.
 pub fn conductor_fault_hold(error: &str) -> rigger::run::RunHeld {
-    let line = error.split_whitespace().collect::<Vec<_>>().join(" ");
+    use rigger_domain::agent::{cause_row, CONDUCTOR_FAULT};
+    let row = cause_row(CONDUCTOR_FAULT);
     rigger::run::RunHeld {
-        detail: line.clone(),
-        needs_person: true,
-        ..hold_naming("conductor-fault", &line, "conductor")
+        detail: rigger_domain::run::fault_detail(error),
+        needs_person: row.needs_person,
+        ..hold_naming(CONDUCTOR_FAULT, row.action, "conductor")
+    }
+}
+
+/// The hold the conductor writes when `error` holds the run again after a release of the same
+/// fault in the same run: [`conductor_fault_hold`] for a person, the orchestrator's fix not
+/// having held ([`FAULT_RECURRED`](rigger_domain::agent::FAULT_RECURRED)).
+pub fn recurred_fault_hold(error: &str) -> rigger::run::RunHeld {
+    let row = rigger_domain::agent::FAULT_RECURRED;
+    rigger::run::RunHeld {
+        action: row.action.to_string(),
+        needs_person: row.needs_person,
+        ..conductor_fault_hold(error)
     }
 }
 

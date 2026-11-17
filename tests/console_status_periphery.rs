@@ -46,6 +46,26 @@ fn seed_a_host_hold(root: &Path) {
     seed_on_the_run(root, run_held_event(&hold));
 }
 
+/// The fault the conductor-fault holds in this file name, over two lines.
+const FAULT: &str = "worktree: git worktree add failed\nfatal: the path already exists";
+
+/// Hold `root`'s current run as the conductor does on [`FAULT`], for the orchestrator.
+fn seed_a_conductor_fault_hold(root: &Path) {
+    seed_on_the_run(
+        root,
+        run_held_event(&common::fixtures::conductor_fault_hold(FAULT)),
+    );
+}
+
+/// Hold `root`'s current run as the conductor does when [`FAULT`] recurs after a release, for a
+/// person.
+fn seed_a_recurred_fault_hold(root: &Path) {
+    seed_on_the_run(
+        root,
+        run_held_event(&common::fixtures::recurred_fault_hold(FAULT)),
+    );
+}
+
 /// Hold `root`'s current run as the host does on a failed login, needing a person.
 fn seed_a_login_hold(root: &Path) {
     let hold = rigger::run::RunHeld {
@@ -298,7 +318,9 @@ fn console_dock_and_statusline_are_reachable_directly_over_a_real_store_round_tr
 /// Spec 105's WHAT A PERSON SEES through the compiled `rigger status`: given a started run the host
 /// or the operator (through `rigger hold`) holds, when the operator asks for its status, then it
 /// opens with the HELD line, ending that the run resumes by itself only for a host hold a
-/// supervisor beat watched within 90 s; the statusline under the run header reads `held` while
+/// supervisor beat watched within 90 s, then the hold's detail a line each, indented; a conductor
+/// fault's hold names the orchestrator's action, or a person's once the fault recurred after a
+/// release; the statusline under the run header reads `held` while
 /// the dock lists nothing but the hold, and `needs-you` beside any other entry; and the needs-you
 /// section lists the open hold first, under its own cause and never an earlier released hold's,
 /// for a hold whose latest `RunHeld` needs a person, and nothing for one that needs none. A hold
@@ -317,6 +339,8 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
         beat: Option<Duration>,
         /// The HELD line past its duration, `None` for no HELD line.
         held: Option<String>,
+        /// The lines of the hold's detail the HELD line is followed by.
+        detail: &'static [&'static str],
         statusline: &'static str,
         needs_you: Vec<String>,
     }
@@ -324,6 +348,13 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
     let operator_held = format!("operator - {REASON}; rigger release ends it");
     let operator_entry = format!("run: held - operator - {REASON}");
     let host_released = "rate_limit - wait it out; rigger release ends it".to_string();
+    let fault_lines: &[&str] = &[
+        "worktree: git worktree add failed",
+        "fatal: the path already exists",
+    ];
+    let orchestrator =
+        rigger_domain::agent::cause_row(rigger_domain::agent::CONDUCTOR_FAULT).action;
+    let recurred = rigger_domain::agent::FAULT_RECURRED.action;
     let threshold = rigger::blocker::REJECT_RECURRENCE_DIAGNOSE_THRESHOLD;
     let cases = vec![
         Case {
@@ -332,6 +363,7 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             verbs: &[],
             beat: Some(Duration::ZERO),
             held: Some("rate_limit - wait it out; the run resumes by itself".to_string()),
+            detail: &[],
             statusline: "- . 0/0 units . held",
             needs_you: vec![],
         },
@@ -341,6 +373,7 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             verbs: &[],
             beat: Some(Duration::from_secs(120)),
             held: Some(host_released.clone()),
+            detail: &[],
             statusline: "- . 0/0 units . held",
             needs_you: vec![],
         },
@@ -350,6 +383,7 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             verbs: &[HOLD],
             beat: None,
             held: Some(operator_held.clone()),
+            detail: &[],
             statusline: "- . 0/0 units . held",
             needs_you: vec![operator_entry.clone()],
         },
@@ -359,6 +393,7 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             verbs: &[HOLD],
             beat: None,
             held: Some(operator_held.clone()),
+            detail: &[],
             statusline: "- . 0/0 units . held",
             needs_you: vec![operator_entry.clone()],
         },
@@ -368,6 +403,7 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             verbs: &[RELEASE, HOLD],
             beat: None,
             held: Some(operator_held.clone()),
+            detail: &[],
             statusline: "- . 0/0 units . held",
             needs_you: vec![operator_entry.clone()],
         },
@@ -380,6 +416,7 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             verbs: &[],
             beat: None,
             held: Some(host_released),
+            detail: &[],
             statusline: "- . 0/0 units . held",
             needs_you: vec![],
         },
@@ -397,6 +434,7 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             verbs: &[HOLD],
             beat: None,
             held: Some(operator_held),
+            detail: &[],
             statusline: "u-fail . 0/1 units . needs-you",
             needs_you: vec![
                 operator_entry,
@@ -409,8 +447,33 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
             verbs: &[HOLD, RELEASE],
             beat: None,
             held: None,
+            detail: &[],
             statusline: "- . 0/0 units . healthy",
             needs_you: vec![],
+        },
+        Case {
+            name: "a conductor fault, held for the orchestrator",
+            seed: seed_a_conductor_fault_hold,
+            verbs: &[],
+            beat: None,
+            held: Some(format!(
+                "conductor-fault - {orchestrator}; rigger release ends it"
+            )),
+            detail: fault_lines,
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![],
+        },
+        Case {
+            name: "a conductor fault that recurred after a release, held for a person",
+            seed: seed_a_recurred_fault_hold,
+            verbs: &[],
+            beat: None,
+            held: Some(format!(
+                "conductor-fault - {recurred}; rigger release ends it"
+            )),
+            detail: fault_lines,
+            statusline: "- . 0/0 units . held",
+            needs_you: vec![format!("run: held - conductor-fault - {recurred}")],
         },
     ];
     for case in cases {
@@ -449,6 +512,7 @@ fn rigger_status_shows_a_person_the_hold_in_its_held_line_statusline_and_needs_y
                 "{name}: held since the hold was raised; got {held_for}s"
             );
             expected.push(format!("HELD {held_for}s - {held}"));
+            expected.extend(case.detail.iter().map(|line| format!("  {line}")));
         }
         expected.push(format!("run {}", rigger::ledger::short_run_id(&run_id)));
         expected.push(case.statusline.to_string());

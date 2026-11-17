@@ -2000,11 +2000,11 @@ fn a_crash_between_the_quarantine_rename_and_the_canonical_delete_completes_on_a
 /// returns `Err` (proven at the real boundary, never by calling the private function
 /// directly), the retry's own `UnitStarted` must never be written (the `?` fires inside
 /// `start_and_run_stage`, strictly BEFORE its `UnitStarted` emit - so a crash-resumed retry
-/// never sees a half-recorded unit either), and the failed read halts as every git step on a
-/// unit's branch that git refuses does: no lesson against the retry unit, whose work did not
-/// cause it, and the run held for a person on the halt's text, which names the ref that no
-/// longer resolves - the failure stays legible in the log, never a swallowed failure invisible
-/// to the operator.
+/// never sees a half-recorded unit either), and the failed read, one that decides an adoption,
+/// halts as every lifecycle git step git refuses does: no lesson against the retry unit, whose
+/// work did not cause it, and the run held for the orchestrator on the halt's text, which names
+/// the ref that no longer resolves - the failure stays legible in the log, never a swallowed
+/// failure invisible to the operator.
 #[test]
 fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silently_starting_fresh()
 {
@@ -2149,7 +2149,7 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
     assert_eq!(
         holds_in(&events),
         [conductor_fault_hold(&err.0)],
-        "the run is held for a person on the halt's text"
+        "the run is held for the orchestrator on the halt's text"
     );
     assert!(
         !repo.path().join("run3-own-work.txt").exists(),

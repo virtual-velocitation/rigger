@@ -377,9 +377,13 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     // WHAT A PERSON SEES (spec 105): a held run's status opens with its HELD line, ahead of
     // every other line, so the hold is the first thing an operator reads.
+    // The hold's detail follows, each line indented: what whoever resolves it reads first.
     if let Some(hold) = &console_state.hold {
         let latest_beat = rigger::liveness::beat_times(&prog_events).last().copied();
         println!("{}", held_line(hold, latest_beat, now));
+        for line in hold.latest.detail.lines() {
+            println!("  {line}");
+        }
     }
 
     // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown

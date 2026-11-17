@@ -271,11 +271,37 @@ impl Hold {
     /// cause alone when that action is empty, as an operator hold held with an empty reason has:
     /// the one text the HELD line of `rigger status`, the [`ATTENTION_HELD`] entry and the note a relaunched session reads name a hold by.
     pub fn reason(&self) -> String {
+        self.with_action(self.latest.cause.clone())
+    }
+
+    /// The hold as the lines that tell whoever resolves it name it: its cause, then the first line
+    /// of its latest detail ([`RunHeld::first_line`]) after a colon when it has one, then its
+    /// action as [`Hold::reason`] adds it. The driver's line as it ends on a hold and the line of
+    /// a check that leaves a held run's driver stopped name the hold by it.
+    pub fn told(&self) -> String {
         let latest = &self.latest;
-        if latest.action.is_empty() {
-            latest.cause.clone()
+        self.with_action(match latest.first_line() {
+            "" => latest.cause.clone(),
+            first => format!("{}: {first}", latest.cause),
+        })
+    }
+
+    /// Who resolves the hold first, as the lines that tell of it name them (spec 105): `a person`
+    /// when its latest `RunHeld` needs one, else `the orchestrator`, the session that launched the
+    /// run and watches it.
+    pub fn held_for(&self) -> &'static str {
+        if self.latest.needs_person {
+            "a person"
         } else {
-            format!("{} - {}", latest.cause, latest.action)
+            "the orchestrator"
+        }
+    }
+
+    /// `named`, then ` - ` and the latest `RunHeld`'s action when that is not empty.
+    fn with_action(&self, named: String) -> String {
+        match self.latest.action.as_str() {
+            "" => named,
+            action => format!("{named} - {action}"),
         }
     }
 }
@@ -1754,25 +1780,81 @@ mod tests {
     }
 
     /// WHAT A PERSON SEES: a hold reads as `<cause> - <action>` of its latest `RunHeld`, and as its
-    /// cause alone when that action is empty, as an operator hold held with an empty reason is.
+    /// cause alone when that action is empty, as an operator hold held with an empty reason is;
+    /// told to whoever resolves it, the first line of its detail follows the cause after a colon.
+    /// It is for a person exactly when its latest `RunHeld` says it needs one, else for the
+    /// orchestrator: every reader takes the action and the need for a person as the writer
+    /// recorded them, so a hold recorded before the conductor's holds went to the orchestrator
+    /// (a conductor-fault hold whose action is its fault, needing a person) reads as it did.
     #[test]
     fn a_hold_reads_as_its_cause_and_action_or_its_cause_alone() {
-        for (cause, action, want) in [
-            ("auth", "log in again", "auth - log in again"),
-            ("operator", "moving quota", "operator - moving quota"),
-            ("operator", "", "operator"),
-        ] {
+        // (cause, detail, action, needs a person, reason, told, held for)
+        let rows = [
+            (
+                "auth",
+                "",
+                "log in again",
+                true,
+                "auth - log in again",
+                "auth - log in again",
+                "a person",
+            ),
+            (
+                "operator",
+                "",
+                "moving quota",
+                true,
+                "operator - moving quota",
+                "operator - moving quota",
+                "a person",
+            ),
+            ("operator", "", "", true, "operator", "operator", "a person"),
+            (
+                "rate_limit",
+                "429 too many",
+                "none, the run retries by itself",
+                false,
+                "rate_limit - none, the run retries by itself",
+                "rate_limit: 429 too many - none, the run retries by itself",
+                "the orchestrator",
+            ),
+            (
+                "conductor-fault",
+                "git failed\nfatal: locked",
+                "fix it, then run rigger release",
+                false,
+                "conductor-fault - fix it, then run rigger release",
+                "conductor-fault: git failed - fix it, then run rigger release",
+                "the orchestrator",
+            ),
+            (
+                "conductor-fault",
+                "git failed",
+                "git failed",
+                true,
+                "conductor-fault - git failed",
+                "conductor-fault: git failed - git failed",
+                "a person",
+            ),
+        ];
+        for (cause, detail, action, needs_person, reason, told, held_for) in rows {
             let hold = Hold {
                 since: UNIX_EPOCH,
                 manual: cause == "operator",
                 latest: RunHeld {
                     cause: cause.to_string(),
+                    detail: detail.to_string(),
                     action: action.to_string(),
+                    needs_person,
                     ..RunHeld::default()
                 },
                 revision: 0,
             };
-            assert_eq!(hold.reason(), want, "{cause} with action {action:?}");
+            assert_eq!(
+                (hold.reason(), hold.told(), hold.held_for()),
+                (reason.to_string(), told.to_string(), held_for),
+                "{cause} with detail {detail:?} and action {action:?}"
+            );
         }
     }
 

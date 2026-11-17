@@ -386,7 +386,7 @@ pub enum Disposition {
     /// The category never holds: the error takes its spawn site's existing path.
     Fault,
     /// The API refused the request as the conductor built it: the conductor's fault, so the run
-    /// holds for a person and the close counts toward no outage.
+    /// holds as on a [`CONDUCTOR_FAULT`] and the close counts toward no outage.
     Rejected,
 }
 
@@ -419,9 +419,38 @@ pub const API_UNSTABLE: &str = "api-unstable";
 /// The cause of the hold `rigger hold` appends: the operator holds the run, giving a reason.
 pub const OPERATOR: &str = "operator";
 
-/// The cause of the hold the conductor appends on a fault of its own that ends the run's drive:
-/// the fault, not a unit's work, stopped the run, and a person fixes it, then releases the run.
+/// The cause of the hold the conductor appends on a fault of its own that ends the run's drive, a
+/// spawn the API refused included: the fault, not a unit's work, stopped the run. Its row holds it
+/// for the orchestrator, the session that launched the run and watches it, which fixes the cause
+/// at its root and releases the run; [`FAULT_RECURRED`] and [`FAULT_ON_A_PERSONS_HOLD`] hold it
+/// for a person instead.
 pub const CONDUCTOR_FAULT: &str = "conductor-fault";
+
+/// A conductor-fault hold for a person: the hold its run last released named the same fault
+/// ([`crate::run::RunHeld::same_fault`]), so the orchestrator's fix did not hold.
+pub const FAULT_RECURRED: DispositionRow = DispositionRow {
+    action: "the orchestrator's fix did not hold: a person decides, then runs rigger release",
+    needs_person: true,
+    ..CONDUCTOR_FAULT_ROW
+};
+
+/// A conductor-fault hold for a person: it landed on an open hold that already waits on one, an
+/// operator hold, so its release stays theirs.
+pub const FAULT_ON_A_PERSONS_HOLD: DispositionRow = DispositionRow {
+    action: "a person holds this run: they read the fault, decide, then run rigger release",
+    needs_person: true,
+    ..CONDUCTOR_FAULT_ROW
+};
+
+/// The conductor-fault row: held for the orchestrator, which reads the fault `rigger status`
+/// prints under the hold, fixes its cause and releases the run; no probe ends it.
+const CONDUCTOR_FAULT_ROW: DispositionRow = DispositionRow {
+    disposition: Disposition::Hold,
+    action: "read the fault rigger status prints under this hold, fix its cause at the root, then \
+             run rigger release",
+    needs_person: false,
+    credential: false,
+};
 
 /// The action of a hold that clears without anyone: a wait-class category's and `api-unstable`'s.
 const RETRIES_BY_ITSELF: &str = "none, the run retries by itself";
@@ -456,9 +485,9 @@ const fn holds(action: &'static str) -> DispositionRow {
 }
 
 /// The disposition table's row for a hold's `cause`: `api-unstable`'s, `operator`'s,
-/// `conductor-fault`'s, or the category's. The `operator` and `conductor-fault` rows need a person
-/// and name no action: no row can hold a per-hold reason, so `rigger hold`'s append puts its
-/// reason in the action over the row's, and the conductor's append puts its fault there.
+/// `conductor-fault`'s, or the category's. The `operator` row needs a person and names no action:
+/// no row can hold a per-hold reason, so `rigger hold`'s append puts its reason in the action over
+/// the row's. The `conductor-fault` row is held for the orchestrator, the fault its detail.
 pub fn cause_row(cause: &str) -> DispositionRow {
     match cause {
         API_UNSTABLE => DispositionRow {
@@ -467,7 +496,8 @@ pub fn cause_row(cause: &str) -> DispositionRow {
             needs_person: false,
             credential: false,
         },
-        OPERATOR | CONDUCTOR_FAULT => holds(""),
+        OPERATOR => holds(""),
+        CONDUCTOR_FAULT => CONDUCTOR_FAULT_ROW,
         category => AgentFailure::from_category(category).row(),
     }
 }
@@ -800,9 +830,10 @@ mod tests {
     }
 
     /// A hold's `cause` reads its row from the one table, the three causes no category names
-    /// included: `api-unstable` needs no person and the run retries by itself; `operator` and
-    /// `conductor-fault` need a person and name no action, `rigger hold`'s reason or the
-    /// conductor's fault standing in for it.
+    /// included: `api-unstable` needs no person and the run retries by itself; `operator` needs a
+    /// person and names no action, `rigger hold`'s reason standing in for it; `conductor-fault`
+    /// is held for the orchestrator, its action what the orchestrator does, and its two rows for
+    /// a person name why a person decides.
     #[test]
     fn a_holds_cause_reads_the_table_api_unstable_and_operator_included() {
         let rows = [
@@ -828,8 +859,9 @@ mod tests {
                 "conductor-fault",
                 DispositionRow {
                     disposition: Disposition::Hold,
-                    action: "",
-                    needs_person: true,
+                    action: "read the fault rigger status prints under this hold, fix its cause \
+                             at the root, then run rigger release",
+                    needs_person: false,
                     credential: false,
                 },
             ),
@@ -843,6 +875,25 @@ mod tests {
             assert_eq!(cause_row(cause), row, "{cause}");
         }
         assert_eq!(API_UNSTABLE, "api-unstable");
+        let for_a_person = |action| DispositionRow {
+            disposition: Disposition::Hold,
+            action,
+            needs_person: true,
+            credential: false,
+        };
+        assert_eq!(
+            [FAULT_RECURRED, FAULT_ON_A_PERSONS_HOLD],
+            [
+                for_a_person(
+                    "the orchestrator's fix did not hold: a person decides, then runs rigger \
+                     release"
+                ),
+                for_a_person(
+                    "a person holds this run: they read the fault, decide, then run rigger release"
+                ),
+            ],
+            "a conductor fault's rows for a person"
+        );
     }
 
     /// The request a spawn parks is derived from its options and its agent alone: every field the
