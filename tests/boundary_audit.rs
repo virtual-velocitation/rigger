@@ -28,7 +28,7 @@
 
 mod common;
 use common::repo::{
-    collect_files, collect_rs_files, production_part, production_sources, repo_root, table_lines,
+    collect_rs_files, files_under, production_part, production_sources, repo_root, table_lines,
 };
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -1255,17 +1255,9 @@ fn lines_inside_a_literal(text: &str) -> BTreeSet<usize> {
 /// extension, tracked or not, as lossy UTF-8; only a `.rs` file holds a string literal, so only
 /// it can hold the YAML key form.
 fn gate_token_lines(root: &Path) -> Vec<Finding> {
-    let mut files = Vec::new();
-    for dir in ["src", "crates"] {
-        collect_files(&root.join(dir), &mut files);
-    }
     let mut out = Vec::new();
-    for path in files {
-        let file = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
+    for file in files_under(root, &["src", "crates"]) {
+        let path = root.join(&file);
         let bytes = fs::read(&path).unwrap_or_else(|e| panic!("read {file}: {e}"));
         let text = String::from_utf8_lossy(&bytes);
         let in_string = if path.extension().is_some_and(|ext| ext == "rs") {
@@ -1422,12 +1414,7 @@ fn the_real_core_tree_with_injected_gate_names_reports_exactly_the_banned_lines(
     let root = dir.path();
     let mut listed = BTreeMap::new();
     for top in ["src", "crates"] {
-        let mut files = Vec::new();
-        collect_files(&real.join(top), &mut files);
-        let rels: Vec<String> = files
-            .iter()
-            .map(|path| path.strip_prefix(&real).unwrap().display().to_string())
-            .collect();
+        let rels = files_under(&real, &[top]);
         for rel in &rels {
             let to = root.join(rel);
             fs::create_dir_all(to.parent().unwrap()).unwrap();

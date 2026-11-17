@@ -425,9 +425,25 @@ pub fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
 /// Every production `.rs` file under `root`'s `src/` and each `crates/*/src/`, as
 /// `(repo-relative path, text)`.
 pub fn production_sources(root: &Path) -> Vec<(String, String)> {
-    rs_files_under(root, &["src", "crates"])
-        .into_iter()
-        .filter(|rel| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
+    with_text(
+        root,
+        rs_files_under(root, &["src", "crates"])
+            .into_iter()
+            .filter(|rel| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src")),
+    )
+}
+
+/// Every `.rs` file strictly under each of `root`'s `dirs` ([`rs_files_under`]), as
+/// `(repo-relative path, text)`.
+pub fn rs_sources_under(root: &Path, dirs: &[&str]) -> Vec<(String, String)> {
+    with_text(root, rs_files_under(root, dirs))
+}
+
+/// Each repo-relative path in `rels` with the text of its file under `root`. A file that cannot
+/// be read as text fails the caller, naming it: an audit never vouches for a source it could not
+/// read.
+fn with_text(root: &Path, rels: impl IntoIterator<Item = String>) -> Vec<(String, String)> {
+    rels.into_iter()
         .map(|rel| {
             let text = super::fixtures::read_text(&root.join(&rel));
             (rel, text)
@@ -436,11 +452,20 @@ pub fn production_sources(root: &Path) -> Vec<(String, String)> {
 }
 
 /// Every `.rs` file strictly under each of `root`'s `dirs`, in `dirs` order and sorted within
-/// each, as a repo-relative `/`-separated path.
+/// each, as a repo-relative `/`-separated path ([`files_under`]).
 pub fn rs_files_under(root: &Path, dirs: &[&str]) -> Vec<String> {
+    files_under(root, dirs)
+        .into_iter()
+        .filter(|rel| Path::new(rel).extension().is_some_and(|ext| ext == "rs"))
+        .collect()
+}
+
+/// Every file strictly under each of `root`'s `dirs`, of any extension, in `dirs` order and
+/// sorted within each, as a repo-relative `/`-separated path.
+pub fn files_under(root: &Path, dirs: &[&str]) -> Vec<String> {
     let mut files = Vec::new();
     for dir in dirs {
-        collect_rs_files(&root.join(dir), &mut files);
+        collect_files(&root.join(dir), &mut files);
     }
     files
         .iter()

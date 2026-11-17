@@ -8,9 +8,7 @@
 //! process of their own ([`OWN_PROCESS_VERBS`]) are not audited.
 
 use crate::common;
-use common::repo::collect_rs_files;
 
-use std::fs;
 use std::path::Path;
 
 use crate::source_audit;
@@ -69,26 +67,11 @@ fn scan_file(rel: &str, content: &str) -> Vec<Finding> {
 
 /// Every piecewise stderr write in the audited files under `root`.
 fn scan_tree(root: &Path) -> Vec<Finding> {
-    let mut files = Vec::new();
-    for top in ["src", "crates"] {
-        collect_rs_files(&root.join(top), &mut files);
-    }
-    let mut findings = Vec::new();
-    for path in &files {
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        if !audited(&rel) {
-            continue;
-        }
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
-        findings.extend(scan_file(&rel, &content));
-    }
-    findings
+    common::repo::rs_sources_under(root, &["src", "crates"])
+        .iter()
+        .filter(|(rel, _)| audited(rel))
+        .flat_map(|(rel, content)| scan_file(rel, content))
+        .collect()
 }
 
 #[test]
