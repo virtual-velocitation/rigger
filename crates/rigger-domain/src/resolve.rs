@@ -259,7 +259,7 @@ fn one_here_else_one_anywhere<'c, 'v>(
 
 /// The qualifier of a mention written `name` whose leaf is `leaf`: the text before its last
 /// `::` or `.` ([`split_path`]); none when it is written as its leaf alone.
-fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
+pub(crate) fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
     if name == leaf {
         return None;
     }
