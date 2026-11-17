@@ -1086,6 +1086,7 @@ pub(crate) mod tests {
     use super::*;
     use crate::code_facts::{Def, DocConcept, DocLink, Stamp, Tip, WfNode, WfRelation};
     use crate::code_view::FactsView;
+    use crate::contextgraph::query::path_leaf;
 
     fn def(local: &str, kind: &str, line: u32, parent: Option<u32>, test: bool) -> Def {
         Def {
@@ -1128,6 +1129,21 @@ pub(crate) mod tests {
             line,
             false,
         )
+    }
+
+    /// A mention written `name` (`Q::leaf`, `Q.leaf`), its leaf the text after the last
+    /// separator.
+    fn qualified(
+        kind: MentionKind,
+        name: &str,
+        enclosing: Option<u32>,
+        line: u32,
+        test: bool,
+    ) -> Mention {
+        Mention {
+            name: name.into(),
+            ..mention(kind, path_leaf(name), enclosing, line, test)
+        }
     }
 
     fn decl(name: &str, def: u32, test: bool, candidates: &[&str]) -> ModuleDecl {
@@ -1364,6 +1380,8 @@ pub(crate) mod tests {
         Entities(&'static str, bool),
         TestFiles,
         Intent(&'static str),
+        PlaceholderCalls(&'static str),
+        PlaceholderCallers(&'static str),
     }
 
     fn render_link(l: &Link) -> String {
@@ -1423,6 +1441,12 @@ pub(crate) mod tests {
                 });
                 nodes.chain(links).collect()
             }
+            Ask::PlaceholderCalls(path) => r
+                .file_placeholder_calls(&view.file(path).unwrap())
+                .into_iter()
+                .map(|(leaf, caller)| format!("{leaf} {caller}"))
+                .collect(),
+            Ask::PlaceholderCallers(leaf) => r.placeholder_callers(leaf),
         }
     }
 
@@ -1861,6 +1885,209 @@ pub(crate) mod tests {
             "each tagged mention one REFERENCES link onto its trait, type or variant, no CALLS, \
              then the file's CONTAINS"
         );
+    }
+
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ): a call or a tagged
+    /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates of its leaf whose parent is
+    /// a definition named `Q`, an implementation whose header names `Q`, or a trait such an
+    /// implementation names. One kept candidate takes the edge EXTRACTED in any file, over a
+    /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
+    /// none leave the unqualified rule. A class whose base is `Q` is no implementation of `Q`.
+    /// The placeholder readers resolve each call by its name, so two calls of one leaf that
+    /// land apart are read apart.
+    #[test]
+    fn a_qualified_call_narrows_its_candidates() {
+        let qualified_call = |name: &str, enclosing, line, test| {
+            qualified(MentionKind::Call, name, enclosing, line, test)
+        };
+        let qualified_tag = |tag: &str, name: &str, line| {
+            qualified(MentionKind::Tagged(tag.into()), name, Some(3), line, false)
+        };
+        // A Python method: its leaf the text after the class's `.`.
+        let method = |local: &str, line, parent| Def {
+            leaf: path_leaf(local).into(),
+            ..def(local, "method", line, Some(parent), false)
+        };
+        let code_view = code(
+            "src/code_view.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("FactsView", "type", 1, None, false),
+                def("impl FactsView", "impl", 3, None, false),
+                def("FactsView::new", "method", 4, Some(1), false),
+                def("CodeView", "trait", 10, None, false),
+                def("CodeView::stamp", "method", 11, Some(3), false),
+                def("impl CodeView for FactsView", "impl", 20, None, false),
+                def("FactsView::files", "method", 21, Some(5), false),
+                def("Located", "type", 30, None, false),
+                def("Located::Many", "variant", 31, Some(7), false),
+                def("Located::One", "variant", 32, Some(7), false),
+            ],
+            vec![
+                tagged("impl", "FactsView", Some(1), 3),
+                tagged("impl", "CodeView", Some(5), 20),
+                tagged("impl", "FactsView", Some(5), 20),
+            ],
+        );
+        let snapshot = code(
+            "src/snapshot.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Snapshot", "type", 1, None, false),
+                def("impl CodeView for Snapshot", "impl", 3, None, false),
+                def("Snapshot::files", "method", 4, Some(1), false),
+                def("decode", "function", 10, None, false),
+                def("MAX", "constant", 12, None, false),
+            ],
+            vec![
+                tagged("impl", "CodeView", Some(1), 3),
+                tagged("impl", "Snapshot", Some(1), 3),
+            ],
+        );
+        let composed = code(
+            "src/composed.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Composed", "type", 1, None, false),
+                def("impl Composed", "impl", 3, None, false),
+                def("Composed::new", "method", 4, Some(1), false),
+                def("Composed::open", "method", 6, Some(1), false),
+                def("impl CodeView for Composed", "impl", 20, None, false),
+                def("Composed::files", "method", 21, Some(4), false),
+                def("Located", "type", 30, None, false),
+                def("Located::One", "variant", 31, Some(6), false),
+            ],
+            vec![
+                tagged("impl", "Composed", Some(1), 3),
+                qualified_call("FactsView::new", Some(3), 7, false),
+                qualified_call("FactsView::stamp", Some(3), 8, false),
+                qualified_call("CodeView::files", Some(3), 9, false),
+                qualified_call("Composed::decode", Some(3), 10, false),
+                qualified_tag("variant", "Located::Many", 11),
+                qualified_tag("variant", "Located::One", 12),
+                qualified_tag("const", "Composed::MAX", 13),
+                tagged("impl", "CodeView", Some(4), 20),
+                tagged("impl", "Composed", Some(4), 20),
+            ],
+        );
+        let shapes = code(
+            "src/shapes.py",
+            "python",
+            Scope::Product,
+            vec![
+                def("Base", "type", 1, None, false),
+                method("Base.area", 2, 0),
+                def("Child", "type", 5, None, false),
+                method("Child.area", 6, 2),
+                def("main", "function", 10, None, false),
+            ],
+            vec![
+                tagged("impl", "Base", Some(2), 5),
+                qualified_call("Base.area", Some(4), 11, false),
+            ],
+        );
+        let open = code(
+            "tests/open.rs",
+            "rust",
+            Scope::Test,
+            vec![def("opens", "function", 1, None, true)],
+            vec![
+                qualified_call("FactsView::files", Some(0), 2, true),
+                qualified_call("CodeView::files", Some(0), 3, true),
+            ],
+        );
+        let view = FactsView::new(stamp(), vec![code_view, snapshot, composed, shapes, open]);
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let cases: [(&str, Ask, &[&str]); 6] = [
+            (
+                "a product file's qualified calls and tagged references",
+                Ask::Links("src/composed.rs", false),
+                &[
+                    "src/composed.rs::Composed::open -CALLS/extracted-> \
+                     src/code_view.rs::FactsView::new",
+                    "src/composed.rs -REFERENCES/extracted-> src/code_view.rs::FactsView::new",
+                    "src/composed.rs::Composed::open -CALLS/extracted-> \
+                     src/code_view.rs::CodeView::stamp",
+                    "src/composed.rs -REFERENCES/extracted-> src/code_view.rs::CodeView::stamp",
+                    "src/composed.rs::Composed::open -CALLS/inferred-> src/composed.rs::%files",
+                    "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%files",
+                    "src/composed.rs::Composed::open -CALLS/inferred-> src/composed.rs::%decode",
+                    "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%decode",
+                    "src/composed.rs::impl Composed -REFERENCES/extracted-> \
+                     src/composed.rs::Composed",
+                    "src/composed.rs::Composed::open -REFERENCES/extracted-> \
+                     src/code_view.rs::Located::Many",
+                    "src/composed.rs::Composed::open -REFERENCES/inferred-> src/snapshot.rs::MAX",
+                    "src/composed.rs::impl CodeView for Composed -REFERENCES/inferred-> \
+                     src/code_view.rs::CodeView",
+                    "src/composed.rs::impl CodeView for Composed -REFERENCES/extracted-> \
+                     src/composed.rs::Composed",
+                    "src/composed.rs -CONTAINS/extracted-> src/composed.rs::Composed",
+                    "src/composed.rs::impl CodeView for Composed -CONTAINS/extracted-> \
+                     src/composed.rs::Composed::files",
+                    "src/composed.rs::impl Composed -CONTAINS/extracted-> \
+                     src/composed.rs::Composed::new",
+                    "src/composed.rs::impl Composed -CONTAINS/extracted-> \
+                     src/composed.rs::Composed::open",
+                    "src/composed.rs -CONTAINS/extracted-> src/composed.rs::Located",
+                    "src/composed.rs::Located -CONTAINS/extracted-> src/composed.rs::Located::One",
+                    "src/composed.rs -CONTAINS/extracted-> \
+                     src/composed.rs::impl CodeView for Composed",
+                    "src/composed.rs -CONTAINS/extracted-> src/composed.rs::impl Composed",
+                ],
+            ),
+            (
+                "a dotted qualifier, a base class no implementation",
+                Ask::Links("src/shapes.py", false),
+                &[
+                    "src/shapes.py::main -CALLS/extracted-> src/shapes.py::Base.area",
+                    "src/shapes.py -REFERENCES/extracted-> src/shapes.py::Base.area",
+                    "src/shapes.py::Child -REFERENCES/extracted-> src/shapes.py::Base",
+                    "src/shapes.py -CONTAINS/extracted-> src/shapes.py::Base",
+                    "src/shapes.py::Base -CONTAINS/extracted-> src/shapes.py::Base.area",
+                    "src/shapes.py -CONTAINS/extracted-> src/shapes.py::Child",
+                    "src/shapes.py::Child -CONTAINS/extracted-> src/shapes.py::Child.area",
+                    "src/shapes.py -CONTAINS/extracted-> src/shapes.py::main",
+                ],
+            ),
+            (
+                "a test file's qualified calls of one leaf",
+                Ask::Links("tests/open.rs", true),
+                &[
+                    "tests/open.rs::opens -CALLS/extracted-> src/code_view.rs::FactsView::files",
+                    "tests/open.rs -REFERENCES/extracted-> src/code_view.rs::FactsView::files",
+                    "tests/open.rs::opens -CALLS/inferred-> tests/open.rs::%files",
+                    "tests/open.rs -REFERENCES/inferred-> tests/open.rs::%files",
+                    "tests/open.rs -CONTAINS/extracted-> tests/open.rs::opens",
+                ],
+            ),
+            (
+                "the narrowed definition's callers",
+                Ask::UpHop("src/code_view.rs::FactsView::new", "new"),
+                &[
+                    "src/composed.rs::Composed::open -CALLS/extracted-> \
+                     src/code_view.rs::FactsView::new",
+                    "src/composed.rs -REFERENCES/extracted-> src/code_view.rs::FactsView::new",
+                ],
+            ),
+            (
+                "a test file's calls landing on a placeholder, by name",
+                Ask::PlaceholderCalls("tests/open.rs"),
+                &["files tests/open.rs::opens"],
+            ),
+            (
+                "a leaf's placeholder callers, by name",
+                Ask::PlaceholderCallers("files"),
+                &["tests/open.rs::opens"],
+            ),
+        ];
+        for (shows, ask, want) in cases {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
     }
 
     #[test]
