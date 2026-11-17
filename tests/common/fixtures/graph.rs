@@ -861,7 +861,7 @@ pub fn file_half(id: &str) -> &str {
     split_id(id).0
 }
 
-/// The file declaring `mod x;` (spec 117, A MODULE ROW REACHES ITS FILE).
+/// The file declaring `mod x;` (spec 117, MODULE ROOTS AT READ).
 pub const DECLARING_FILE: &str = "src/lib.rs";
 /// The `mod` node of [`DECLARING_FILE`]'s `mod x;`.
 pub const MOD_NODE: &str = "src/lib.rs::x";
