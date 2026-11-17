@@ -7,7 +7,7 @@ use crate::config::RIGGER_DIR;
 use crate::eventstore::Event;
 use crate::spawn::SpawnEvent;
 
-pub use rigger_domain::worktree::Error;
+pub use rigger_domain::worktree::{Error, StepError};
 
 /// Which `git diff` range [`Worktree::diff_names`] compares `from` against `HEAD` with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -653,7 +653,7 @@ impl Worktree {
     /// [`Self::commit_checkpoint`] instead (spec 92 escalation ruling
     /// d-checkin-rigger-own-commits-bypass-hooks) - a hook enforcing content policy has
     /// no commit of THIS one's shape to police.
-    pub fn commit(&self, message: &str) -> Result<String, Error> {
+    pub fn commit(&self, message: &str) -> Result<String, StepError> {
         self.commit_with(message, false)
     }
 
@@ -671,11 +671,11 @@ impl Worktree {
     /// d-checkin-rigger-own-commits-bypass-hooks). The policy still holds where it belongs:
     /// the agent's own commits run the hooks, and the gates and `rigger validate` check the
     /// drift the hook checks.
-    pub fn commit_checkpoint(&self, message: &str) -> Result<String, Error> {
+    pub fn commit_checkpoint(&self, message: &str) -> Result<String, StepError> {
         self.commit_with(message, true)
     }
 
-    fn commit_with(&self, message: &str, no_verify: bool) -> Result<String, Error> {
+    fn commit_with(&self, message: &str, no_verify: bool) -> Result<String, StepError> {
         // The scan's scope (spec 89, criterion 1, round 2 fix
         // `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`)
         // MUST be read before `git add -A` below stages anything - staging is exactly what
@@ -691,7 +691,7 @@ impl Worktree {
             .conflict_markers_present(ScanAt::Worktree, &scope)?
             .is_empty()
         {
-            return Err(Error(format!(
+            return Err(StepError::Refused(format!(
                 "refusing to commit in {}: conflict-marker text is present in tracked \
                  file content - resolve it before committing",
                 self.dir
@@ -703,10 +703,10 @@ impl Worktree {
         } else {
             &["commit", "-m", message]
         };
-        match run_git(&self.dir, args) {
+        match run_git_with_status(&self.dir, args) {
             Ok(_) => {}
-            Err(out) if out.contains("nothing to commit") => return Ok(String::new()),
-            Err(out) => return Err(Error(format!("commit: {out}"))),
+            Err((_, out)) if out.contains("nothing to commit") => return Ok(String::new()),
+            Err((status, out)) => return Err(content_failure(status, format!("commit: {out}"))),
         }
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
     }
@@ -971,9 +971,14 @@ impl Worktree {
     /// one nobody was asked to touch) until the conductor's OWN regeneration pass overwrites
     /// the path for real, in a follow-up commit, after the source conflict is resolved - the
     /// design's "in that order".
-    pub fn accept_incoming(&self, path: &str) -> Result<(), Error> {
-        git(&self.dir, &["checkout", "--theirs", "--", path])?;
-        git(&self.dir, &["add", "--", path])?;
+    pub fn accept_incoming(&self, path: &str) -> Result<(), StepError> {
+        for args in [
+            &["checkout", "--theirs", "--", path][..],
+            &["add", "--", path][..],
+        ] {
+            run_git_with_status(&self.dir, args)
+                .map_err(|(status, out)| content_failure(status, git_failed(args, out).0))?;
+        }
         Ok(())
     }
 
@@ -995,10 +1000,10 @@ impl Worktree {
     /// content, and re-invoking `git merge` would be refused outright by git regardless.
     /// Worktree state - read below via `conflicting_paths` - is the sole authority for what
     /// happens next; this whole commit-and-attempt block is skipped.
-    pub fn merge_into_worktree(&self, message: &str) -> Result<MergeOutcome, Error> {
+    pub fn merge_into_worktree(&self, message: &str) -> Result<MergeOutcome, StepError> {
         // Set only by a fresh attempt's own merge command below - `None` on a crash-resumed
         // re-entry (the block below is skipped entirely) or when no merge was even needed.
-        let mut merge_attempt: Option<String> = None;
+        let mut merge_attempt: Option<(Option<i32>, String)> = None;
         if !self.merge_in_progress() {
             // Rigger's own integration bookkeeping commit (spec 92 escalation ruling
             // d-checkin-rigger-own-commits-bypass-hooks): the same class as the
@@ -1031,7 +1036,8 @@ impl Worktree {
             // surfaced as a genuine `Err` instead of silently falling through to land the
             // unit's branch UNCHANGED.
             merge_attempt =
-                run_git(&self.dir, &["merge", "--no-commit", "--no-ff", &run_tip]).err();
+                run_git_with_status(&self.dir, &["merge", "--no-commit", "--no-ff", &run_tip])
+                    .err();
         }
         let conflicts = self.conflicting_paths()?;
         if !conflicts.is_empty() {
@@ -1051,17 +1057,22 @@ impl Worktree {
             // bypass as the pre-merge commit just above (d-checkin-rigger-own-commits-
             // bypass-hooks) - this is rigger's own merge-conclusion bookkeeping, not a
             // commit an agent or a person means to make.
-            match run_git(&self.dir, &["commit", "--no-edit", "--no-verify"]) {
+            match run_git_with_status(&self.dir, &["commit", "--no-edit", "--no-verify"]) {
                 Ok(_) => {}
-                Err(out) if out.contains("nothing to commit") => {}
-                Err(out) => return Err(Error(format!("commit merge: {out}"))),
+                Err((_, out)) if out.contains("nothing to commit") => {}
+                Err((status, out)) => {
+                    return Err(content_failure(status, format!("commit merge: {out}")))
+                }
             }
-        } else if let Some(out) = merge_attempt {
+        } else if let Some((status, out)) = merge_attempt {
             // Worktree state has now ruled out a real content conflict (`conflicts` empty
             // above) and an in-progress merge to finalize (`merge_in_progress` just above) -
             // so a fresh attempt's own merge command failing here is a genuine, non-content
             // error (spec 88 criterion 1, operator ruling point (e)), never a silent no-op.
-            return Err(Error(format!("worktree merge --no-commit --no-ff: {out}")));
+            return Err(content_failure(
+                status,
+                format!("worktree merge --no-commit --no-ff: {out}"),
+            ));
         }
         let commit = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
         Ok(MergeOutcome::Ready(commit))
@@ -1188,7 +1199,10 @@ impl Worktree {
         }
     }
 
-    pub fn cherry_pick_onto_run_branch(&self, shas: &[String]) -> Result<CherryPickOutcome, Error> {
+    pub fn cherry_pick_onto_run_branch(
+        &self,
+        shas: &[String],
+    ) -> Result<CherryPickOutcome, StepError> {
         if shas.is_empty() {
             return Ok(CherryPickOutcome::Picked(Vec::new()));
         }
@@ -1240,7 +1254,7 @@ impl Worktree {
             let mut skips_left = Self::sequencer_todo_remaining(&self.repo)?;
             loop {
                 if skips_left == 0 {
-                    return Err(Error(
+                    return Err(StepError::Refused(
                         "CHERRY_PICK_HEAD left in progress by an earlier attempt, and it is \
                          neither a conflict nor a resolvable empty-commit pause: exhausted the \
                          sequencer's own remaining-todo count without resolving"
@@ -1264,7 +1278,7 @@ impl Worktree {
                             )));
                         }
                         if !out.contains("previous cherry-pick is now empty") {
-                            return Err(Error(format!(
+                            return Err(StepError::Refused(format!(
                                 "CHERRY_PICK_HEAD left in progress by an earlier attempt, and \
                                  it is neither a conflict nor a resolvable empty-commit pause: \
                                  {out}"
@@ -1334,7 +1348,7 @@ impl Worktree {
                 if conflicted {
                     Ok(CherryPickOutcome::Conflict(out))
                 } else {
-                    Err(Error(format!("git cherry-pick {}: {out}", shas.join(" "))))
+                    Err(Error(format!("git cherry-pick {}: {out}", shas.join(" "))).into())
                 }
             }
         }
@@ -2792,7 +2806,16 @@ pub fn finish_git(
     started: std::io::Result<std::process::Child>,
     output: GitOutput,
 ) -> Result<Vec<u8>, Vec<u8>> {
-    let out = waited(started)?;
+    finish_git_with_status(started, output).map_err(|(_, answer)| answer)
+}
+
+/// [`finish_git`]'s answer, a failure also holding git's exit status: `None` when git could not
+/// start or a signal ended it.
+fn finish_git_with_status(
+    started: std::io::Result<std::process::Child>,
+    output: GitOutput,
+) -> Result<Vec<u8>, (Option<i32>, Vec<u8>)> {
+    let out = waited(started).map_err(|start| (None, start))?;
     let answer = match (output, out.status.success()) {
         (GitOutput::Stdout, true) => out.stdout,
         (GitOutput::Stdout, false) => out.stderr,
@@ -2801,7 +2824,7 @@ pub fn finish_git(
     if out.status.success() {
         Ok(answer)
     } else {
-        Err(answer)
+        Err((out.status.code(), answer))
     }
 }
 
@@ -2831,10 +2854,30 @@ fn waited(started: std::io::Result<std::process::Child>) -> Result<std::process:
 
 /// `git <args>` in `dir`, answering standard output and standard error together as text.
 pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
+    run_git_with_status(dir, args).map_err(|(_, out)| out)
+}
+
+/// [`run_git`]'s answer, a failure also holding git's exit status ([`finish_git_with_status`]).
+fn run_git_with_status(dir: &str, args: &[&str]) -> Result<String, (Option<i32>, String)> {
     let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
-    git_output(dir, args, GitOutput::StdoutAndStderr)
+    finish_git_with_status(start_git(dir, args), GitOutput::StdoutAndStderr)
         .map(text)
-        .map_err(text)
+        .map_err(|(status, out)| (status, text(out)))
+}
+
+/// A content step's failure ([`StepError`]): `message`, the step's words for the git run that
+/// failed with exit `status` ([`run_git_with_status`]). Git ran and refused the step when it
+/// exited 1 to 127 - a hook's refusal, a merge refused over local changes or untracked files; it
+/// did not answer when it could not start or a signal ended it (no status) or when it died
+/// (128 and above, git's own fatal exit: a lock, a corrupt object, a missing identity). A refusal
+/// git reports by dying, a merge or a commit over unmerged paths, never reaches here: the commit
+/// stages every path before it runs, and the merge reads unmerged paths before it reports a
+/// failure, taking them down the conflict route.
+fn content_failure(status: Option<i32>, message: String) -> StepError {
+    match status {
+        Some(1..=127) => StepError::Refused(message),
+        _ => StepError::Unanswered(Error(message)),
+    }
 }
 
 /// Resolve the run's scratch root - where transient worktrees live. Precedence:
@@ -3280,6 +3323,32 @@ mod tests {
     use crate::test_support::run_log;
 
     #[test]
+    fn a_content_step_is_a_refusal_only_when_git_ran_and_exited_below_128() {
+        // (git's exit status, whether the failure is a refusal)
+        let rows: [(Option<i32>, bool); 7] = [
+            (Some(1), true),    // a hook's refusal, a content conflict, an error git returns
+            (Some(2), true),    // a merge refused over local changes or untracked files
+            (Some(127), true),  // the top of the range git returns errors in
+            (Some(128), false), // git died: a lock, a corrupt object, a missing identity
+            (Some(129), false), // a shell's signal status
+            (Some(-1), false),  // no status git gives
+            (None, false),      // git could not start, or a signal ended it
+        ];
+        for (status, refused) in rows {
+            match content_failure(status, "the step's words".into()) {
+                StepError::Refused(m) => {
+                    assert!(refused, "{status:?} must be git not answering");
+                    assert_eq!(m, "the step's words");
+                }
+                StepError::Unanswered(Error(m)) => {
+                    assert!(!refused, "{status:?} must be a refusal");
+                    assert_eq!(m, "the step's words");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn git_output_answers_the_streams_its_mode_names() {
         // `--version` prints to stdout; an unknown `git var` fails with usage on stderr.
         let rows: [(&str, &[&str], GitOutput, bool, &str); 4] = [
@@ -3443,16 +3512,16 @@ mod tests {
     }
 
     trait IntegrateForTest {
-        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error>;
+        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, StepError>;
     }
 
     impl IntegrateForTest for Worktree {
-        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error> {
+        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, StepError> {
             match self.merge_into_worktree(message)? {
                 MergeOutcome::Conflict(paths) => Ok(IntegrateOutcome::Conflict(paths)),
                 MergeOutcome::Ready(commit) => {
                     if !commit.is_empty() && self.land()? == LandOutcome::TipMoved {
-                        return Err(Error("run tip moved under the test".into()));
+                        return Err(Error("run tip moved under the test".into()).into());
                     }
                     Ok(IntegrateOutcome::Merged(commit))
                 }
@@ -4430,8 +4499,10 @@ mod tests {
             "test setup: mkfifo must succeed"
         );
 
+        // Git ran and refused the merge (exit 2): the unit's own tree is in the way.
         let err = match b.integrate("rigger: integrate b") {
-            Err(e) => e,
+            Err(StepError::Refused(e)) => e,
+            Err(other) => panic!("git refusing the merge over the tree is a refusal: {other:?}"),
             Ok(IntegrateOutcome::Merged(c)) => panic!(
                 "a non-content git failure must surface as an Err, never a silent Merged({c:?})"
             ),
@@ -4440,9 +4511,8 @@ mod tests {
             ),
         };
         assert!(
-            err.0.contains("clash.rs") || err.0.to_lowercase().contains("untracked"),
-            "the real git failure must propagate, not a fabricated message: {}",
-            err.0
+            err.contains("clash.rs") || err.to_lowercase().contains("untracked"),
+            "the real git failure must propagate, not a fabricated message: {err}"
         );
         // The stray FIFO is exactly what git itself refused to touch - proof this is the real
         // git refusal, not some other failure.
@@ -4542,14 +4612,16 @@ mod tests {
             }
         }
 
+        // Git answers an object store it cannot write with an error it returns (exit 1), not
+        // one it dies on: a refusal, which reaches the conductor as the stage's failure.
         let err = match result {
-            Err(e) => e,
+            Err(StepError::Refused(e)) => e,
+            Err(other) => panic!("a commit git returns an error on is a refusal: {other:?}"),
             Ok(_) => panic!("a genuine commit failure must surface as an Err, not a silent no-op"),
         };
         assert!(
-            err.0.contains("insufficient permission"),
-            "the real failure must propagate verbatim: {}",
-            err.0
+            err.contains("insufficient permission"),
+            "the real failure must propagate verbatim: {err}"
         );
         assert!(
             b.merge_in_progress(),
@@ -4799,7 +4871,7 @@ mod tests {
         assert!(
             second.is_ok(),
             "a resumed already-landed cherry-pick must resolve, never hard-error: {:?}",
-            second.err().map(|e| e.0)
+            second.err().map(|e| e.to_string())
         );
         match second.unwrap() {
             CherryPickOutcome::Picked(landed) => assert!(
@@ -4894,7 +4966,7 @@ mod tests {
             resumed.is_ok(),
             "a leftover in-progress marker must be self-healed, never surfaced as a hard \
              error: {:?}",
-            resumed.err().map(|e| e.0)
+            resumed.err().map(|e| e.to_string())
         );
         match resumed.unwrap() {
             CherryPickOutcome::Conflict(detail) => {
@@ -5023,7 +5095,7 @@ mod tests {
             resumed.is_ok(),
             "a leftover in-progress marker with no sequencer/todo file must be \
              self-healed, never surfaced as a hard error: {:?}",
-            resumed.err().map(|e| e.0)
+            resumed.err().map(|e| e.to_string())
         );
         match resumed.unwrap() {
             CherryPickOutcome::Conflict(detail) => {
@@ -5140,7 +5212,7 @@ mod tests {
             resumed.is_ok(),
             "a shrunk-to-one still_pending leftover marker with no sequencer/todo \
              file must be self-healed, never surfaced as a hard error: {:?}",
-            resumed.err().map(|e| e.0)
+            resumed.err().map(|e| e.to_string())
         );
         match resumed.unwrap() {
             CherryPickOutcome::Conflict(detail) => {
@@ -5369,7 +5441,7 @@ mod tests {
         assert!(
             resumed.is_ok(),
             "a leftover conflict marker must resolve, never hard-error: {:?}",
-            resumed.err().map(|e| e.0)
+            resumed.err().map(|e| e.to_string())
         );
         match resumed.unwrap() {
             CherryPickOutcome::Conflict(_) => {}
@@ -5417,7 +5489,7 @@ mod tests {
             Ok(CherryPickOutcome::Conflict(detail)) => {
                 panic!("a nonexistent sha is not a conflict; got Conflict({detail})")
             }
-            Err(e) => e.0,
+            Err(e) => e.to_string(),
         };
         assert!(
             err.contains("bad object"),

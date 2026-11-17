@@ -1917,8 +1917,7 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_ahead_of_two_chained
         }
         Err(e) => panic!(
             "a leftover marker ahead of two chained empty commits must self-heal through the \
-             public API, never hard-error: {:?}",
-            e.0
+             public API, never hard-error: {e}"
         ),
     }
     assert!(
@@ -2171,8 +2170,7 @@ fn cherry_pick_onto_run_branch_self_heals_a_leftover_marker_with_a_missing_seque
         }
         Err(e) => panic!(
             "a leftover marker with no sequencer/todo file must self-heal through the public \
-             API, never hard-error: {:?}",
-            e.0
+             API, never hard-error: {e}"
         ),
     }
     assert!(

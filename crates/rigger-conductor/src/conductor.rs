@@ -2852,8 +2852,8 @@ const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
 /// error only through here: the agent interface's `Error` has no conversion from the worktree
 /// error, so a step taken outside this helper does not compile. A teardown that discards its
 /// result (`let _ =`) takes no step that can halt.
-fn git_step<T>(step: Result<T, worktree::Error>) -> Result<T, Error> {
-    step.map_err(|e| marked(GIT_STEP_MARKER, e))
+fn git_step<T, E: Into<worktree::StepError>>(step: Result<T, E>) -> Result<T, Error> {
+    step.map_err(|e| marked(GIT_STEP_MARKER, e.into()))
 }
 
 /// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
@@ -4238,9 +4238,9 @@ impl RunCtx<'_> {
     /// `integrate_mu` held, so no other move lands between the two hashes. A crash between the
     /// move and the re-pin leaves the move unpinned, and that relaunch halts on drift as before.
     /// The move is a git step ([`git_step`]): a failed one halts the run.
-    fn moving_the_run_branch<T>(
+    fn moving_the_run_branch<T, E: Into<worktree::StepError>>(
         &self,
-        move_branch: impl FnOnce() -> Result<T, worktree::Error>,
+        move_branch: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, Error> {
         let before = self.checkout_definition();
         let moved = git_step(move_branch())?;
