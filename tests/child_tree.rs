@@ -16,7 +16,7 @@ use rigger::os_process;
 use rigger::reap::END_BOUND;
 use std::io::{self, BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::{Duration, Instant};
 
@@ -82,9 +82,21 @@ fn a_kept_spawn_of_a_missing_program_fails_as_not_found() {
     }
 }
 
+/// Waits on `tree`'s main on a thread of its own, answering the main's status and the tree, or
+/// `None` when the wait has not answered within [`END_BOUND`].
+fn waited(tree: ReapedChild) -> Option<(io::Result<ExitStatus>, ReapedChild)> {
+    let (answer, answered) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut tree = tree;
+        let status = tree.wait();
+        let _ = answer.send((status, tree));
+    });
+    answered.recv_timeout(END_BOUND).ok()
+}
+
 /// The kept fixture `body`, ended by the handle's end once its main is up when `end` is set and
-/// waited on otherwise, answers the main's exit `code` and ending `signal`, and leaves nothing
-/// running.
+/// waited on otherwise, a wait closing the main's input first as `Child::wait` does, answers the
+/// main's exit `code` and ending `signal`, and leaves nothing running.
 fn answers_the_mains_status(body: &str, end: bool, code: Option<i32>, signal: Option<i32>) {
     use std::os::unix::process::ExitStatusExt;
     let mut witness = Witness::new();
@@ -97,7 +109,9 @@ fn answers_the_mains_status(body: &str, end: bool, code: Option<i32>, signal: Op
             .expect("read the main's status")
             .expect("the ended main's status")
     } else {
-        tree.wait().expect("wait on the main")
+        let (status, waited_on) = waited(tree).expect("the wait answers within its bound");
+        tree = waited_on;
+        status.expect("wait on the main")
     };
 
     assert_eq!((status.code(), status.signal()), (code, signal));
@@ -110,6 +124,8 @@ rigger::test_cases! {
         answers_the_mains_status("exit 3", false, Some(3), None);
     a_kept_main_the_end_ends_answers_the_terminating_signal:
         answers_the_mains_status("up; held", true, None, Some(15));
+    a_kept_main_reading_its_input_answers_once_the_wait_closes_it:
+        answers_the_mains_status("read -r unused; exit 4", false, Some(4), None);
 }
 
 /// The kept fixture `body`, with `up` of its processes up and then `before` done to it, is ended
