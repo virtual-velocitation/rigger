@@ -26,12 +26,13 @@
 
 use crate::reap::{self, Identity};
 pub use crate::reap::{EndReport, Leftover};
-use crate::{os_process, subprocess};
+use crate::{os_process, subprocess, whole_line};
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output};
+use std::sync::Once;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -140,6 +141,11 @@ pub fn serve_keeper_if_asked() {
 /// How long a watcher waits for a wake before it walks its tree again.
 const TICK: Duration = Duration::from_millis(250);
 
+/// Linux's link to the image this process runs, which execs that image even once its file on disk
+/// is replaced: the keeper [`Containment::of_running_binary`] names. Only Linux reads a keeper's
+/// path.
+const RUNNING_IMAGE: &str = "/proc/self/exe";
+
 /// How a tree is contained.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Containment {
@@ -157,6 +163,13 @@ impl Containment {
     /// naming why otherwise.
     pub fn detect(keeper: &Path) -> Containment {
         detect(keeper)
+    }
+
+    /// The containment this OS gives a tree whose keeper is the running executable, whose `main`
+    /// calls [`serve_keeper_if_asked`] first ([`Containment::detect`]). The keeper is named by the
+    /// link to the running image, so it is the very build that answered the probe.
+    pub fn of_running_binary() -> Containment {
+        detect(Path::new(RUNNING_IMAGE))
     }
 }
 
@@ -177,6 +190,22 @@ pub enum Why {
     Unsupported,
 }
 
+impl Why {
+    /// Why a tree is watched where a containment was wanted: a keeper that failed its probe, a job
+    /// that could not hold the tree, or a host that chose none. `None` where the watch is the
+    /// design (macOS, an OS this crate holds no tree on) or a test's choice.
+    fn degradation(&self) -> Option<String> {
+        match self {
+            Why::ProbeFailed(reason) => {
+                Some(format!("the session keeper failed its probe: {reason}"))
+            }
+            Why::JobFailed(reason) => Some(format!("no job object holds the session: {reason}")),
+            Why::NotChosen => Some("the host chose no containment".to_string()),
+            Why::Chosen | Why::NoPublicContainment | Why::Unsupported => None,
+        }
+    }
+}
+
 /// A command whose process starts a contained tree: the command's own process is the tree's main,
 /// and every process it starts is the tree's.
 pub struct TreeCommand {
@@ -192,7 +221,7 @@ impl TreeCommand {
     /// as `how`.
     pub fn new(program: impl AsRef<OsStr>, how: &Containment) -> io::Result<TreeCommand> {
         let (command, contain): (Command, Box<dyn Contain>) = match how {
-            Containment::Watch(_) => (subprocess::command(program), Box::new(Watch)),
+            Containment::Watch(why) => (subprocess::command(program), Box::new(Watch(why.clone()))),
             Containment::Keeper(_) | Containment::Job => held(how, program.as_ref())?,
         };
         Ok(TreeCommand { command, contain })
@@ -218,13 +247,15 @@ trait Contain: Send {
     fn spawn(self: Box<Self>, command: Command) -> io::Result<ReapedChild>;
 }
 
-/// A watched tree's start: the command's process is the main, and a watcher walks its tree.
-struct Watch;
+/// A watched tree's start, and why it is watched: the command's process is the main, and a
+/// watcher walks its tree.
+struct Watch(Why);
 
 impl Contain for Watch {
     fn spawn(self: Box<Self>, mut command: Command) -> io::Result<ReapedChild> {
         let mut tree = ReapedChild::new(command.spawn()?);
         tree.watch()?;
+        tree.watched_because(&self.0);
         Ok(tree)
     }
 }
@@ -282,7 +313,7 @@ pub struct ReapedChild {
     child: Child,
     hold: Box<dyn Hold>,
     released: bool,
-    fallback: Option<Why>,
+    degraded: Option<String>,
 }
 
 impl ReapedChild {
@@ -298,7 +329,7 @@ impl ReapedChild {
             child,
             hold,
             released: false,
-            fallback: None,
+            degraded: None,
         }
     }
 
@@ -315,11 +346,29 @@ impl ReapedChild {
         Ok(())
     }
 
-    /// Why this tree is watched though its command named another containment, when its launch
-    /// fell back to a watch: on Windows, a job that could not be created, or a main that could not
-    /// join one. The host says so in a progress line.
-    pub fn fallback(&self) -> Option<&Why> {
-        self.fallback.as_ref()
+    /// Notes that this tree is watched because `why`. Where that is a degradation
+    /// ([`ReapedChild::degraded`]) the handle names it, and this process says it once on its error
+    /// output.
+    fn watched_because(&mut self, why: &Why) {
+        static SAID: Once = Once::new();
+        let Some(reason) = why.degradation() else {
+            return;
+        };
+        SAID.call_once(|| {
+            whole_line::say(format_args!(
+                "rigger: session containment unavailable: {reason}; a session's processes are \
+                 watched, and one whose parent exits unseen can outlive the session"
+            ))
+        });
+        self.degraded = Some(reason);
+    }
+
+    /// Why this tree is watched where a containment was wanted: its host's containment was a
+    /// watch for a keeper that failed its probe or for no choice at all, or on Windows its launch
+    /// fell back to a watch for a job that could not be created or joined. The host says so in a
+    /// progress line.
+    pub fn degraded(&self) -> Option<&str> {
+        self.degraded.as_deref()
     }
 
     /// The main process's pid.
@@ -347,8 +396,10 @@ impl ReapedChild {
         self.hold.try_wait(&mut self.child)
     }
 
-    /// Waits for the main process to exit, sending it nothing, and reaps it.
+    /// Closes the main process's input, as [`Child::wait`] does, then waits for the main to exit,
+    /// sending it nothing, and reaps it.
     pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        drop(self.take_stdin());
         self.hold.wait(&mut self.child)
     }
 
@@ -387,13 +438,52 @@ impl ReapedChild {
         self.hold.release(&mut self.child);
     }
 
-    /// Ends the main process, and the descendants `descendants` snapshotted before it was asked to
-    /// exit ([`crate::reap::end_child`]): the stop's end until the stop ends the tree through
-    /// [`ReapedChild::end`].
-    #[doc(hidden)]
-    pub fn end_from_snapshot(&mut self, descendants: reap::DescendantSnapshot) {
-        reap::end_child(&mut self.child, descendants);
+    /// Finishes with a tree its host is done reading: one whose main has exited is let go
+    /// ([`ReapedChild::release`]), what the main left running running on, and one whose main still
+    /// runs is ended ([`ReapedChild::end`]). Answers what an end left, nothing on a release.
+    pub fn finish(mut self) -> EndReport {
+        if matches!(self.try_wait(), Ok(Some(_))) {
+            self.release();
+            return EndReport::default();
+        }
+        self.end()
     }
+
+    /// Waits for the main process to exit and answers its status and all of its output, as
+    /// [`Child::wait_with_output`] does: its input is closed first, and each output pipe is read
+    /// to its end on a thread of its own. The tree is then let go ([`ReapedChild::release`]), so a
+    /// process the main left running runs on, and one holding an output pipe holds this read until
+    /// it exits, as it holds `Child::wait_with_output`'s. A wait that fails ends the tree.
+    pub fn wait_with_output(mut self) -> io::Result<Output> {
+        let stdout = self.take_stdout().map(read_to_end);
+        let stderr = self.take_stderr().map(read_to_end);
+        let status = self.wait()?;
+        self.release();
+        Ok(Output {
+            status,
+            stdout: joined(stdout)?,
+            stderr: joined(stderr)?,
+        })
+    }
+}
+
+/// Reads `pipe` to its end on a thread of its own.
+fn read_to_end(mut pipe: impl Read + Send + 'static) -> JoinHandle<io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        pipe.read_to_end(&mut bytes).map(|_| bytes)
+    })
+}
+
+/// What a [`read_to_end`] read, empty where there was no pipe to read.
+fn joined(reader: Option<JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>> {
+    reader.map_or(Ok(Vec::new()), |reader| {
+        reader.join().unwrap_or_else(|_| {
+            Err(io::Error::other(
+                "a reader of the session's output panicked",
+            ))
+        })
+    })
 }
 
 impl Drop for ReapedChild {
@@ -573,6 +663,32 @@ mod tests {
             "the holder the main left runs on"
         );
         assert_eq!(witness.release(), Reading::Ended);
+    }
+
+    /// A watched tree running `body`, finished once `up` of its processes are up and, where
+    /// `exited`, once its main has exited, leaves the witness reading `left`.
+    fn finishes(body: &str, up: usize, exited: bool, left: Reading) {
+        let mut witness = Witness::new();
+        let mut tree = watched(&witness, body);
+        assert!(witness.wait_up(up), "the fixture's {up} processes are up");
+        if exited {
+            assert!(
+                wait_until(|| matches!(tree.try_wait(), Ok(Some(_)))),
+                "the main exits"
+            );
+        }
+
+        let report = tree.finish();
+
+        assert_eq!((witness.read(), report), (left, EndReport::default()));
+        assert_eq!(witness.release(), Reading::Ended);
+    }
+
+    crate::test_cases! {
+        a_finished_tree_whose_main_exited_leaves_what_it_started_running:
+            finishes("holder; up", 2, true, Reading::Held);
+        a_finished_tree_whose_main_runs_is_ended:
+            finishes("holder; up; held", 2, false, Reading::Ended);
     }
 
     #[test]

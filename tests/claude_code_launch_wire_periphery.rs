@@ -56,9 +56,9 @@ use common::fixtures::implementer_opts as opts;
 use common::fixtures::no_emit;
 
 use std::io::Read;
-use std::process::Child;
 use std::sync::Mutex;
 
+use rigger::child_tree::ReapedChild;
 use rigger::conductor::AgentDriver;
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::Driver;
@@ -97,10 +97,10 @@ fn no_stream_extras() -> (Store, Store) {
 /// fixture reads one stdin line then exits on its own, so this only drains and waits on
 /// the handle rigger's own no-os-kill discipline requires (never a signal, never a pid
 /// read back from a marker).
-fn reap(child: &mut Child) {
+fn reap(child: &mut ReapedChild) {
     child.wait().expect("fixture agent exits on its own");
     let mut out = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
+    if let Some(mut stdout) = child.take_stdout() {
         let _ = stdout.read_to_string(&mut out);
     }
 }
@@ -128,6 +128,7 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
         handed_env: Vec::new(),
         beat_source: None,
         hold_sink: None,
+        containment: common::session_containment(),
     };
 
     // First "process": open the store, perform one launch, then DROP the store - the
@@ -281,6 +282,7 @@ fn launch_resolves_an_empty_rigger_bin_to_the_literal_rigger_on_path() {
         handed_env: Vec::new(),
         beat_source: None,
         hold_sink: None,
+        containment: common::session_containment(),
     };
     let store = Store::open(":memory:").expect("in-memory store for a pure-argv assertion");
     let mut launch = driver
@@ -356,6 +358,7 @@ fn launch_resolves_an_empty_bin_to_the_literal_claude_found_on_path() {
         handed_env: Vec::new(),
         beat_source: None,
         hold_sink: None,
+        containment: common::session_containment(),
     };
     let store = Store::open(":memory:").expect("in-memory store");
     let result = driver.launch(
@@ -401,6 +404,7 @@ fn a_failed_task_write_reaps_the_child_and_names_its_error() {
         handed_env: Vec::new(),
         beat_source: None,
         hold_sink: None,
+        containment: common::session_containment(),
     };
     let pid_dir = tempfile::tempdir().expect("throwaway dir for the fixture's pid file");
     let pid_file = pid_dir.path().join("child.pid");

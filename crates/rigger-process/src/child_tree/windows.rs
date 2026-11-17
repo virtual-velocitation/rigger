@@ -10,7 +10,7 @@
 //! nothing.
 //!
 //! A job that cannot be created, or a main that cannot join one, leaves that launch watched, and
-//! the handle says why ([`ReapedChild::fallback`]): the main is still suspended, so its watcher
+//! the handle says why ([`ReapedChild::degraded`]): the main is still suspended, so its watcher
 //! starts before it runs.
 
 use super::{Contain, Containment, Hold, ReapedChild, Why};
@@ -81,7 +81,7 @@ impl Contain for JobStart {
             Ok(job) => tree.hold = Box::new(Jobbed(Some(job))),
             Err(why) => {
                 tree.watch()?;
-                tree.fallback = Some(Why::JobFailed(why));
+                tree.watched_because(&Why::JobFailed(why));
             }
         }
         resume(tree.child.id())?;
@@ -250,7 +250,7 @@ mod tests {
             .raw_arg(format!("/c {script}"))
             .stdout(Stdio::piped());
         let mut tree = command.spawn().expect("spawn the jobbed tree");
-        assert_eq!(tree.fallback(), None, "the tree is held in a job");
+        assert_eq!(tree.degraded(), None, "the tree is held in a job");
         let (lines, _reader) = line_channel(tree.take_stdout().expect("the output pipe"));
         (tree, lines)
     }

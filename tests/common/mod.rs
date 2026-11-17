@@ -136,6 +136,15 @@ pub fn rigger_bin() -> PathBuf {
     }
 }
 
+/// How a session this suite launches through a host holds its process tree: the containment this
+/// OS gives a tree the built binary keeps, as a composition root hands its host one
+/// (`Containment::of_running_binary`), detected once per suite.
+pub fn session_containment() -> &'static rigger::child_tree::Containment {
+    static CONTAINMENT: std::sync::OnceLock<rigger::child_tree::Containment> =
+        std::sync::OnceLock::new();
+    CONTAINMENT.get_or_init(|| rigger::child_tree::Containment::detect(&rigger_bin()))
+}
+
 /// A `Command` for the compiled `rigger` binary this suite drives, defensively UNFENCED
 /// (spec 70 criterion 3's gate store fence, ground (a) of the u3 reject:
 /// adv-u3-fence-breaks-existing-store-precedence-tests-measured) - the ONE shared authority

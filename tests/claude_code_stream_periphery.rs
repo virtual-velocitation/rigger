@@ -62,6 +62,7 @@ use common::fixtures::{
 };
 use common::is_running;
 use common::repo::SILENT_PAST_THE_POLL;
+use rigger::child_tree::{Containment, Why};
 use rigger::conductor::{AgentDriver, AgentFailure, AgentResult, Error, SpawnOpts};
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::{framed, Driver};
@@ -79,6 +80,10 @@ use serde_json::{json, Value};
 
 /// The fixture agent replaying the recorded success stream.
 const STREAM_AGENT: &str = "claude-code-stream-agent.sh";
+
+/// A session's tree watched from its main rather than held: the containment where the OS offers
+/// none to hold a tree in, under which a process that leaves the tree unseen outlives the session.
+static WATCHED: Containment = Containment::Watch(Why::Chosen);
 
 /// A fresh `Driver` wired to two independent in-memory stores and a scratch root under
 /// the test's own tempdir - so every test gets its own isolated scratch tree and stores,
@@ -109,6 +114,7 @@ impl Fixture {
             handed_env: Vec::new(),
             beat_source: None,
             hold_sink: None,
+            containment: common::session_containment(),
         }
     }
 
@@ -1069,7 +1075,7 @@ fn spawn_stops_gracefully_when_a_silent_child_winds_down_on_its_own() {
 fn spawn_stop_grace_loop_actually_waits_out_the_injected_duration() {
     // Pins the grace-period LOOP itself, not just its outer bound: a host whose deadline
     // is computed BEHIND `now()` (never ahead of it), or whose `while now() < deadline`
-    // bound check never iterates at all, reaches `reap::end_child`'s SIGTERM the instant
+    // bound check never iterates at all, reaches the end of the session's tree the instant
     // the child's input closes - before this fixture's own deliberate post-EOF sleep
     // completes - so the fixture is killed mid-sleep and never writes its marker. Only a
     // host that genuinely polls across the injected `stop_grace` window observes the
@@ -1102,9 +1108,9 @@ fn spawn_stop_grace_loop_actually_waits_out_the_injected_duration() {
 #[test]
 fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing() {
     // The escalation half of THE STOP: a session that ignores its stdin closing entirely
-    // (never exits on its own) must still be ended - through `reap::end_child`'s
-    // handle-bound TERM-then-grace-then-KILL sequence, never a computed pid or a
-    // shell-out - once the injected grace elapses. Proven the SAME way this file's own
+    // (never exits on its own) must still be ended - through the end of the session's tree its
+    // handle holds (`ReapedChild::end`), never a computed pid or a shell-out - once the injected
+    // grace elapses. Proven the SAME way this file's own
     // mid-stream-read-error test proves a reap: a REAL pid the fixture wrote itself,
     // checked via `common::is_alive` independently of the `Child` handle that reaped it.
     let fx = Fixture::new();
@@ -1128,7 +1134,7 @@ fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_
     assert!(
         !common::is_alive(pid),
         "child pid {pid} ignored its input closing and must still be ended by \
-         reap::end_child's escalation - never leaked"
+         the end of the session's tree - never leaked"
     );
 }
 
@@ -1185,7 +1191,7 @@ fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_cloc
     );
     assert!(
         !common::is_alive(stopped_pid),
-        "the stopped spawn's own held child must still be ended by reap::end_child"
+        "the stopped spawn's own held child must still be ended by the end of its tree"
     );
 
     // The SIBLING - sharing the same worktree cwd, never held by this spawn's own `Child`
@@ -1218,8 +1224,7 @@ fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
     // adj-u104stop-r3-verdict-reject UPHELD adv-u104stop-r3-stop-can-still-hang-on-a-
     // descendant: a descendant the driven child forked (`sleep 60 &`, never `exec`'d, so it
     // stays a genuine CHILD of the fixture's own shell) inherits the stdout pipe's write
-    // end before the shell goes silent. reap::end_child's new PID-TREE walk
-    // (descendants_of, snapshotted before the child's own first signal) must find this
+    // end before the shell goes silent. The end of the session's tree must find this
     // descendant and end it too - never left running merely because THE STOP only ever
     // held a `Child` handle to its direct parent - and THE STOP must still return promptly.
     let fx = Fixture::new();
@@ -1249,7 +1254,7 @@ fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
     assert!(
         common::wait_until(|| !is_running(descendant_pid)),
         "a descendant still in the child's own process tree (pid {descendant_pid}) must be \
-         ended by reap::end_child's new pid-tree walk, not merely left to outlive THE STOP"
+         ended by the end of the session's tree, not merely left to outlive THE STOP"
     );
 }
 
@@ -1285,20 +1290,34 @@ mod forks_at_stop {
         Result,
     }
 
+    /// How a row's session holds its tree.
+    #[derive(Clone, Copy, Debug)]
+    enum Held {
+        /// As the composition root holds it: by the keeper on Linux.
+        Kept,
+        /// Watched from its main ([`WATCHED`]).
+        Watched,
+    }
+
     /// What a row's ending leaves running.
     #[derive(Clone, Copy, Debug)]
     enum Leaves {
         /// Nothing the session started.
         Nothing,
-        /// The process the session started before its result: an ordinary end leaves it alone.
+        /// The process the session started before its result, which an ordinary end leaves
+        /// alone, or one that left a watched tree before the watch saw it.
         TheLeftover,
+        /// The process the watch saw leave the session's tree: left running, never signalled, and
+        /// named in the end's progress line.
+        TheEscapee,
     }
 
-    /// Drives the fixture in RIGGER_FORK_AT `mode` to `window`'s ending, THE STOP's grace `grace`,
-    /// and reads the witness the moment the spawn returns: `Ended` once nothing the session
-    /// started is still running, `Held` while one process still is. The ending returns within its
-    /// bound, whoever holds the session's pipes, and the test's release then ends what is left.
-    fn ends_at(window: Window, mode: &str, grace: Duration, leaves: Leaves) {
+    /// Drives the fixture in RIGGER_FORK_AT `mode`, its tree held as `held`, to `window`'s ending,
+    /// THE STOP's grace `grace`, and reads the witness the moment the spawn returns: `Ended` once
+    /// nothing the session started is still running, `Held` while one process still is. The
+    /// ending returns within its bound, whoever holds the session's pipes, and the test's release
+    /// then ends what is left.
+    fn ends_held_at(held: Held, window: Window, mode: &str, grace: Duration, leaves: Leaves) {
         let mut witness = Witness::new();
         let fx = Fixture::new();
         let status = match window {
@@ -1317,17 +1336,20 @@ mod forks_at_stop {
             Window::InitFault | Window::Result => 1,
         };
 
+        let driver = match held {
+            Held::Kept => fx.stopping_driver(FORKS_AT_STOP_AGENT, grace),
+            Held::Watched => Driver {
+                containment: &WATCHED,
+                ..fx.stopping_driver(FORKS_AT_STOP_AGENT, grace)
+            },
+        };
+
         let started = Instant::now();
-        let outcome = fx.stopping_driver(FORKS_AT_STOP_AGENT, grace).spawn(
-            &wall_clock_bounded(wall),
-            "do the thing",
-            &o,
-            &no_emit,
-        );
+        let outcome = driver.spawn(&wall_clock_bounded(wall), "do the thing", &o, &no_emit);
         let elapsed = started.elapsed();
         let reading = witness.read();
         eprintln!(
-            "forks_at_stop {window:?} {mode}: {} up, {reading:?}, {elapsed:?}",
+            "forks_at_stop {held:?} {window:?} {mode}: {} up, {reading:?}, {elapsed:?}",
             witness.up()
         );
 
@@ -1360,19 +1382,41 @@ mod forks_at_stop {
         );
         let expected = match leaves {
             Leaves::Nothing => Reading::Ended,
-            Leaves::TheLeftover => Reading::Held,
+            Leaves::TheLeftover | Leaves::TheEscapee => Reading::Held,
         };
         assert_eq!(
             (reading, elapsed < bound),
             (expected, true),
-            "{window:?} {mode}: the witness read {reading:?} (Ended: nothing the session started \
-             is still running) and the ending took {elapsed:?} against its bound of {bound:?}"
+            "{held:?} {window:?} {mode}: the witness read {reading:?} (Ended: nothing the session \
+             started is still running) and the ending took {elapsed:?} against its bound of \
+             {bound:?}"
         );
+        if let Leaves::TheEscapee = leaves {
+            let named = fx.activities().into_iter().any(|line| {
+                line.contains("left processes running")
+                    && line.contains("outside the session's tree, never signalled")
+            });
+            assert!(
+                named,
+                "{mode}: the end names the escapee: {:?}",
+                fx.activities()
+            );
+        }
         assert_eq!(
             witness.release(),
             Reading::Ended,
             "{mode}: the test's release ends every process the fixture started"
         );
+    }
+
+    /// [`ends_held_at`] with the tree kept, as the composition root holds it.
+    fn ends_at(window: Window, mode: &str, grace: Duration, leaves: Leaves) {
+        ends_held_at(Held::Kept, window, mode, grace, leaves);
+    }
+
+    /// [`ends_held_at`] with the tree watched.
+    fn ends_watched_at(window: Window, mode: &str, grace: Duration, leaves: Leaves) {
+        ends_held_at(Held::Watched, window, mode, grace, leaves);
     }
 
     rigger::test_cases! {
@@ -1414,6 +1458,39 @@ mod forks_at_stop {
         // the read's 1 s and two 2 s joins, and the process still holding the pipes runs on.
         a_result_returns_promptly_and_leaves_a_leftover_alone:
             ends_at(Window::Result, "clean-exit", STOP_GRACE, Leaves::TheLeftover);
+        // Watched: the end freezes the tree and asks nothing of it, so no trap of the session's
+        // runs.
+        a_watched_init_fault_ends_the_session_without_running_its_term_trap:
+            ends_watched_at(Window::InitFault, "term", Duration::from_secs(1), Leaves::Nothing);
+        a_watched_stop_ends_what_the_session_starts_at_its_input_end:
+            ends_watched_at(Window::Silence(1), "eof", Duration::from_secs(1), Leaves::Nothing);
+        a_watched_stop_ends_what_the_session_starts_during_the_grace:
+            ends_watched_at(
+                Window::Silence(1),
+                "eof-then-margin",
+                Duration::from_secs(4),
+                Leaves::Nothing,
+            );
+        a_watched_stop_ends_a_process_in_a_session_of_its_own:
+            ends_watched_at(Window::Silence(1), "setsid", Duration::from_secs(1), Leaves::Nothing);
+        // What a watch cannot hold: a process that left the tree before the stop runs on, and the
+        // stop still returns within its bound.
+        a_watched_stop_leaves_a_process_that_left_the_tree_without_waiting_on_its_pipes:
+            ends_watched_at(
+                Window::Silence(1),
+                "double",
+                Duration::from_secs(15),
+                Leaves::TheLeftover,
+            );
+        a_watched_stop_names_a_process_it_saw_leave_the_tree_and_never_signals_it:
+            ends_watched_at(
+                Window::Silence(5),
+                "double-slow",
+                Duration::from_secs(1),
+                Leaves::TheEscapee,
+            );
+        a_watched_result_returns_promptly_and_leaves_a_leftover_alone:
+            ends_watched_at(Window::Result, "clean-exit", STOP_GRACE, Leaves::TheLeftover);
     }
 }
 
@@ -3291,8 +3368,12 @@ fn a_launch_ends_as_the_hold_and_its_class_decide() {
         let name = case.name;
         let fx = Fixture::started(&case.seeded);
         let before = fx.holds().len();
+        // Watched, not kept: the window a hold lands in while the launch ends is the one a
+        // process that left the session's tree holds open (`unreadable-pipes-held`), and only a
+        // watched tree leaves one; a keeper adopts that process and ends it with the session.
         let driver = Driver {
             hold_sink: (!case.no_sink).then_some(&fx.run_store as &dyn EventStore),
+            containment: &WATCHED,
             ..fx.stopping_driver(RESUME_ENDING_AGENT, WIND_DOWN_GRACE)
         };
         let mut o = if case.fresh {

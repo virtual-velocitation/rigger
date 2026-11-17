@@ -214,14 +214,9 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
     out
 }
 
-/// Every descendant of `root_pid` - its children, their children, and so on - snapshotted as
-/// `(pid, starttime)` pairs at the moment of the call (spec 104 criterion 6 round-4 fix,
-/// decision `op-104-stop-end-the-tree-and-bound-the-joins`): [`end_child`]'s counterpart to
-/// [`ancestor_pids`]'s upward walk, but downward, so a process the held child FORKED but
-/// never `exec`'d (and so never became the held child itself) - one that inherited a stdout
-/// or stderr pipe write end before going silent - is still found and can still be ended,
-/// even though [`end_child`] only ever held a [`std::process::Child`] handle to its direct
-/// parent.
+/// Every descendant of `root_pid` - its children, their children, and so on - read as
+/// `(pid, starttime)` pairs at the moment of the call: [`ancestor_pids`]'s upward walk, but
+/// downward, so a process a held child forked is found though only the child's handle is held.
 ///
 /// The process interface gives every process its OWN parent, never a parent's list of children,
 /// so the walk reads ONE process table ([`crate::os_process::table`]: each process's parent and
@@ -230,16 +225,8 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// process can share this same worktree as its cwd without being anywhere in this child's
 /// process tree (`op-104-stop-no-sweep-at-wall-clock-stop`'s sibling-safety guarantee, which
 /// this walk must never reopen), so it can never appear here regardless of what it shares on
-/// disk.
-///
-/// Called ONCE, before the FIRST signal [`end_child`] sends: a process reparents to its
-/// nearest surviving ancestor the instant its own parent exits, so a walk taken any later
-/// risks missing a descendant the kernel has already handed off elsewhere - the walk must
-/// see the tree as it stood before any of this ending began. Each entry carries the start time
-/// the table read for the SAME TOCTOU recheck [`scan_with_starttime`] already gives the
-/// cwd-scanned reap - a descendant that has since exited, or whose pid the kernel has since
-/// recycled onto an unrelated process, is refused by that recheck immediately before either
-/// signal.
+/// disk. Each entry carries the start time the table read, for the TOCTOU recheck
+/// ([`toctou_still_same_process`]) every signal to it passes.
 ///
 /// Best-effort and platform-tolerant like every other scan in this module: an OS the process
 /// interface cannot read, or a process the listing could not read, contributes nothing, never a
@@ -309,9 +296,8 @@ fn is_signal_eligible(pid: u32, self_pid: u32, self_ancestors: &HashSet<u32>) ->
 /// scan recorded. This is the pid-identity half of the TOCTOU guard (spec 78) - a pid that
 /// exited and was recycled onto an unrelated process in the gap since the scan reads a
 /// DIFFERENT start time and is refused - shared by both the cwd-scanned signal path
-/// ([`signal_if_unchanged`]) and the pid-tree-scanned one
-/// ([`signal_descendant_if_unchanged`]), so there is exactly ONE TOCTOU recheck regardless
-/// of which kind of snapshot found the candidate.
+/// ([`signal_if_unchanged`]) and the pid-tree-walked one ([`Tree::send`]), so there is exactly
+/// ONE TOCTOU recheck regardless of which kind of snapshot found the candidate.
 fn toctou_still_same_process(
     target: &Identity,
     self_pid: u32,
@@ -337,24 +323,6 @@ fn signal_if_unchanged(
     if !os_process::cwd_lies_in(target.pid, base) {
         return;
     }
-    if toctou_still_same_process(target, self_pid, self_ancestors) {
-        send_signal(signal, target.pid);
-    }
-}
-
-/// Signal a descendant [`descendants_of`]'s PID-TREE walk found, after the SAME TOCTOU
-/// recheck [`signal_if_unchanged`]'s own cwd-scanned callers already get
-/// ([`toctou_still_same_process`]) - but deliberately NO cwd/base check at all (spec 104
-/// criterion 6 round-4 fix): this candidate was matched by process-tree membership, not by
-/// working directory, so a descendant that has since `chdir`'d somewhere else is still
-/// correctly signalled - only a RECYCLED pid (the kernel reused the number for an unrelated
-/// process) is skipped, exactly as for any other reap candidate.
-fn signal_descendant_if_unchanged(
-    target: &Identity,
-    self_pid: u32,
-    self_ancestors: &HashSet<u32>,
-    signal: Signal,
-) {
     if toctou_still_same_process(target, self_pid, self_ancestors) {
         send_signal(signal, target.pid);
     }
@@ -931,106 +899,6 @@ std::cfg_select! {
     _ => {}
 }
 
-/// An OPAQUE snapshot of a process's descendants, taken by [`snapshot_descendants`] and
-/// spent by [`end_child`] (spec 104 criterion 6 round-4 fix, decision
-/// `op-104-stop-end-the-tree-and-bound-the-joins`). A SEPARATE snapshot step, rather than
-/// [`end_child`] always taking its own fresh one internally, exists so a caller that must
-/// give the child its OWN passive period to exit UNSIGNALLED BEFORE ever calling
-/// [`end_child`] at all (THE STOP, `driver::claude_code::Driver::stop_for_wall_clock_silence`:
-/// it closes the session's input, then waits `stop_grace` for the agent to notice and exit
-/// gracefully, with no signal sent at all, before ever ending it) can still capture the
-/// descendant tree at the CORRECT moment - before that passive wait, never after: a
-/// descendant reparents to its nearest surviving ancestor the INSTANT its own parent exits,
-/// gracefully or not, so a snapshot taken only once that wait has already ended (or taken
-/// only inside [`end_child`] itself, which is not even called until after it) would already
-/// be too late for a session that wound down entirely on its own.
-pub struct DescendantSnapshot(Vec<Identity>);
-
-/// Snapshot `pid`'s current descendants (see [`descendants_of`]) into an opaque
-/// [`DescendantSnapshot`] a caller can hold across its OWN later wait before spending it via
-/// [`end_child`]. A caller with no such earlier wait of its own can snapshot immediately
-/// before calling [`end_child`] - there is no self-snapshotting shortcut, so every caller's
-/// snapshot timing is visible at its own call site rather than hidden inside this module.
-pub fn snapshot_descendants(pid: u32) -> DescendantSnapshot {
-    DescendantSnapshot(descendants_of(pid))
-}
-
-/// End a process rigger still holds a live [`std::process::Child`] handle to, AND every
-/// descendant it forked but never `exec`'d (spec 104 criterion 6, STOP;
-/// `docs/architecture-addendum-claude-code-integration.md` §4.6; round-4 fix, decision
-/// `op-104-stop-end-the-tree-and-bound-the-joins`): SIGTERM the child, wait [`GRACE`] for it
-/// to exit on its own, then finish it via [`send_signal`] (SIGKILL) if it has not - the
-/// crate's ONE implementation of "end a held child," never a second, parallel one. This
-/// promotes the tests-only `cleanup()` fixture helper's pattern (same file, above) into
-/// production code, running the identical TERM-then-grace-then-KILL escalation
-/// [`reap_authorized`] already runs for a cwd-SCANNED base (via [`signal_if_unchanged`]), but
-/// keyed on a HELD HANDLE instead: the `pid` [`send_signal`] receives for the child is read
-/// directly off the live `child` the caller still owns (`child.id()`), never a marker, a
-/// pidfile, or a process scan (never a COMPUTED pid) - so this stays the handle-bound
-/// counterpart to [`send_signal`]'s cwd-scanned production callers, and the escalation
-/// deliberately does NOT call the standard library's own `Child::kill`, which would be a
-/// second, `no-os-kill`-gate-invisible signalling path (see decision
-/// `sdet-u104stop-endchild-bypasses-send-signal`).
-///
-/// `descendants` (an opaque [`DescendantSnapshot`] from [`snapshot_descendants`], taken by
-/// the CALLER at whatever moment is correct for it - see that function's own doc) then get
-/// the identical TERM-then-grace-then-KILL escalation, each signal going through
-/// [`signal_descendant_if_unchanged`]'s own TOCTOU recheck. `child` may have ALREADY exited
-/// by the time this is called (a caller's own earlier passive wait may already have
-/// collected it) - the child itself then needs nothing further, but `descendants` (captured
-/// by the caller while it was still alive) still might, so `descendants` is always processed
-/// regardless of the child's own state; only a `child` ALREADY exited on entry with an EMPTY
-/// snapshot is a true no-op, nothing left to end at all. Each is matched by PID-TREE
-/// membership alone, deliberately never by cwd: a live SIBLING spawn's process can share
-/// this held child's worktree as its cwd without being anywhere in ITS process tree, so this
-/// can end the held child's own leftovers without ever touching a sibling's legitimate work
-/// (`op-104-stop-no-sweep-at-wall-clock-stop`) - the exact hazard a cwd sweep here would
-/// reopen. `descendants` is never rescanned once the direct child is gone: any real
-/// descendant has already reparented away from it by then, so a rescan rooted at its pid
-/// would find nothing at all - each entry is simply rechecked immediately before its own
-/// TERM, then again before its own KILL.
-pub fn end_child(child: &mut std::process::Child, descendants: DescendantSnapshot) {
-    let descendants = descendants.0;
-    if !matches!(child.try_wait(), Ok(Some(_))) {
-        send_signal(Signal::Term, child.id());
-        let deadline = std::time::Instant::now() + GRACE;
-        loop {
-            if matches!(child.try_wait(), Ok(Some(_))) {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        // Still alive past the grace: finish it through send_signal (SIGKILL) - the
-        // crate's ONE signalling call, the same one reap_authorized's own KILL escalation
-        // already uses two functions above via signal_if_unchanged - then collect it so no
-        // zombie survives this function.
-        if !matches!(child.try_wait(), Ok(Some(_))) {
-            send_signal(Signal::Hard, child.id());
-        }
-        let _ = child.wait();
-    }
-
-    // The descendants, from whichever snapshot the caller took - TERM every one, wait the
-    // SAME grace period (a flat wait, mirroring reap_authorized's own TERM-then-grace-then-
-    // KILL shape for a cwd-scanned base - no early-exit poll needed here, since this is
-    // best-effort teardown, not the caller-visible path the child's own grace loop above
-    // already keeps fast), then KILL whatever is still alive.
-    if !descendants.is_empty() {
-        let self_pid = std::process::id();
-        let self_ancestors = ancestor_pids(self_pid);
-        for d in &descendants {
-            signal_descendant_if_unchanged(d, self_pid, &self_ancestors, Signal::Term);
-        }
-        std::thread::sleep(GRACE);
-        for d in &descendants {
-            signal_descendant_if_unchanged(d, self_pid, &self_ancestors, Signal::Hard);
-        }
-    }
-}
-
 /// Validate that `base_dir` is a directory the reaper is authorized to touch (spec 78, THE
 /// REAPER; spec 78 round-2 amendment, decision `u78c2r2-authorized-root-caller-supplied`;
 /// spec 89 criterion 3, THE RECLAIM GUARD COMPARES PATHS): `authorized_root` must
@@ -1248,51 +1116,6 @@ mod tests {
     /// returns whether it exited.
     fn wait_for_exit(child: &mut Child) -> bool {
         wait_until(|| matches!(child.try_wait(), Ok(Some(_))))
-    }
-
-    // ---- end_child (spec 104 criterion 6, STOP): the handle-bound production reap ----
-
-    #[test]
-    fn end_child_term_stops_a_well_behaved_process_within_grace() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut child = sleeper_in(dir.path());
-        let snapshot = snapshot_descendants(child.id());
-        let started = std::time::Instant::now();
-        end_child(&mut child, snapshot);
-        assert!(
-            started.elapsed() < GRACE,
-            "a TERM-responsive child must exit on the signal, not wait out the full grace"
-        );
-        assert!(
-            matches!(child.try_wait(), Ok(Some(_))),
-            "the child must be reaped (no zombie left behind)"
-        );
-    }
-
-    #[test]
-    fn end_child_escalates_to_kill_when_the_process_ignores_term() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut child = sigterm_ignorer_in(dir.path());
-        let snapshot = snapshot_descendants(child.id());
-        end_child(&mut child, snapshot);
-        assert!(
-            matches!(child.try_wait(), Ok(Some(_))),
-            "a TERM-ignoring child must still be ended, via the SIGKILL escalation"
-        );
-    }
-
-    #[test]
-    fn end_child_is_a_noop_on_an_already_exited_child() {
-        let mut child = StdCommand::new("true").spawn().expect("spawn true");
-        assert!(
-            wait_for_exit(&mut child),
-            "the fixture must exit on its own first"
-        );
-        // Must not panic, hang, or send a signal to a pid that may have been recycled -
-        // `try_wait` already reaped it, so this is a pure no-op.
-        let snapshot = snapshot_descendants(child.id());
-        end_child(&mut child, snapshot);
-        assert!(matches!(child.try_wait(), Ok(Some(_))));
     }
 
     #[test]
