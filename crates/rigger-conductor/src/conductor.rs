@@ -2896,12 +2896,21 @@ fn without_halt_markers(e: Error) -> Error {
     Error(HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")))
 }
 
-/// The sentinel an INFRA HALT (F3) embeds in its error so [`run_wave`](RunCtx::run_wave)
-/// routes it through its halt arm over [`HALT_MARKERS`]: a unit's stage failed on
-/// infrastructure more times than the taxonomy's infra limit allows
-/// ([`failure::Taxonomy::infra_limit`]), so the step halts loudly instead of charging the
-/// unit an attempt for an outage it did not cause.
+/// The sentinel an INFRA HALT embeds in its error so [`run_wave`](RunCtx::run_wave) routes it
+/// through its halt arm over [`HALT_MARKERS`]: a fault of the infrastructure the unit's stage
+/// runs on, which no attempt of the unit caused, so the step halts loudly with no lesson naming
+/// the unit and no attempt charged. A unit's stage that failed on infrastructure more times
+/// than the taxonomy's infra limit allows ([`failure::Taxonomy::infra_limit`], F3) carries it,
+/// and so does every [`infra_fault`].
 const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
+
+/// `fault` as an infra halt ([`INFRA_MARKER`]): the isolation guard refusing a reviewer's or a
+/// conflict resolver's working directory, or the run branch moving under every landing pass.
+/// Its text, the marker stripped, is the text the fault had unmarked, so the run's fault hold
+/// reads the same detail.
+fn infra_fault(fault: impl std::fmt::Display) -> Error {
+    marked(INFRA_MARKER, fault)
+}
 
 /// The sentinel a sdet-author or review-tier spawn crash embeds in its error: a spawn error that
 /// is no park, no budget refusal and no refused record (and, for the sdet-author, its opts
@@ -2918,9 +2927,11 @@ const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
 const SPAWN_CRASH_MARKER: &str = "\u{1}rigger:spawn-crashed\u{1}";
 
 /// The error a sdet-author or review-tier spawn crash returns: `message` marked with
-/// [`SPAWN_CRASH_MARKER`].
+/// [`SPAWN_CRASH_MARKER`], every halt marker inside it stripped, so a crash's text (the F3
+/// evidence the single lane records, an operator's message) carries none: the sdet-author's
+/// crash may wrap its opts guard's [`infra_fault`].
 fn spawn_crash(message: String) -> Error {
-    marked(SPAWN_CRASH_MARKER, message)
+    marked(SPAWN_CRASH_MARKER, without_halt_markers(Error(message)).0)
 }
 
 /// A sdet seam or review result split for the single lane: `Ok(Err(crash))` when it carries the
@@ -5883,7 +5894,8 @@ impl RunCtx<'_> {
         // here.
         reviews: &[String],
     ) -> Result<SpawnOpts, Error> {
-        self.assert_isolated_cwd(role, agent_id, dir)?;
+        self.assert_isolated_cwd(role, agent_id, dir)
+            .map_err(|refused| infra_fault(refused.0))?;
         // The unit cache this spawn builds into ([`Self::spawn_env`]), from its role alone: the
         // sdet-author builds the unit's own tree, so it keeps the unit's cache, warm for the
         // gates that run right after it; every review tier builds into the unit's review cache.
@@ -11291,7 +11303,7 @@ impl RunCtx<'_> {
                                     json!({"run_tip": pre_merge, "unit_tip": c}),
                                 )?;
                                 if pass >= TIP_MOVED_PASS_BOUND {
-                                    return Err(Error(format!(
+                                    return Err(infra_fault(format!(
                                         "integrate {}: the run branch moved under every one of \
                                          {pass} landing passes",
                                         st.name
@@ -12413,7 +12425,8 @@ impl RunCtx<'_> {
             ))
         })?;
         if self.agent_isolated(&st.agent) {
-            self.assert_isolated_cwd("implementer", &st.agent, &wt.dir)?;
+            self.assert_isolated_cwd("implementer", &st.agent, &wt.dir)
+                .map_err(|refused| infra_fault(refused.0))?;
         }
         let site = self.spawn_env(
             &self.build_env()?,
@@ -48299,6 +48312,82 @@ mod tests {
             let events = log.read_stream(STREAM, 0, Direction::Forward).unwrap();
             let err = assert_held_with_no_lesson(&format!("{failure:?}"), halted, &events);
             assert_eq!(err, fault, "{failure:?}: the halt names the failure");
+        }
+    }
+
+    /// THE ISOLATION GUARD IS NO UNIT'S FAILURE: a reviewer the guard refuses to spawn with no
+    /// worktree dir settles its stage as a halt of the wave carrying the refusal's text, unmarked,
+    /// and records no lesson against the unit, where a stage's own unmarked error records one.
+    #[test]
+    fn an_isolation_refusal_settles_its_stage_as_a_halt_with_no_lesson() {
+        #[derive(Debug, Clone, Copy)]
+        enum Failure {
+            /// The guard refuses an adversary spawn with no worktree dir.
+            IsolationRefused,
+            /// The stage fails on its own unmarked error.
+            StageFailed,
+        }
+        const OWN: &str = "the stage's own failure";
+        for failure in [Failure::IsolationRefused, Failure::StageFailed] {
+            let repo = temp_git_project_with_commit();
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = Deps {
+                repo: repo.path().to_str().unwrap().to_string(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let (err, text, lessons) = match failure {
+                Failure::IsolationRefused => {
+                    let text = ctx
+                        .assert_isolated_cwd(ROLE_ADVERSARY, "adv", "")
+                        .expect_err("precondition: the guard refuses an empty dir")
+                        .0;
+                    let stage = Stage {
+                        name: "unit-a".into(),
+                        ..Default::default()
+                    };
+                    let Err(err) = ctx.reviewer_spawn_opts(
+                        "unit-a/adversary#0",
+                        ROLE_ADVERSARY,
+                        "adv",
+                        "",
+                        0,
+                        false,
+                        &stage,
+                        &[],
+                    ) else {
+                        panic!("the guard refuses the reviewer");
+                    };
+                    (err, text, Vec::new())
+                }
+                Failure::StageFailed => (
+                    Error(OWN.to_string()),
+                    OWN.to_string(),
+                    vec![format!("stage \"unit-a\" failed in its wave: {OWN}")],
+                ),
+            };
+            let mut first_err = None;
+            ctx.settle_stage(
+                "unit-a".into(),
+                Err(err),
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+                &mut HashSet::new(),
+                &mut first_err,
+            );
+            assert_eq!(
+                first_err.map(|e| e.0),
+                Some(text),
+                "{failure:?}: the stage's error is the wave's, unmarked"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert_eq!(
+                wave_lessons(&events),
+                lessons,
+                "{failure:?}: the lessons naming the unit"
+            );
         }
     }
 

@@ -289,16 +289,19 @@ use common::git::run_git;
 
 use common::cli::write_workflow;
 use common::fixtures::bare_deps;
+use common::fixtures::conductor_fault_hold;
 use common::fixtures::count_of_type;
 use common::fixtures::count_status_marker;
 use common::fixtures::gate_def;
 use common::fixtures::gate_outcomes;
 use common::fixtures::gated_scratch_cfg;
 use common::fixtures::has_status_marker;
+use common::fixtures::holds_in;
 use common::fixtures::mk_stage;
 use common::fixtures::payloads_of_type;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::scratch_cfg;
+use common::fixtures::wave_lessons;
 use common::fixtures::FailAppendContaining;
 use common::fixtures::FifoAtLandingDriver;
 use common::fixtures::A_WORK_DRIVER;
@@ -2481,7 +2484,7 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
         let store = Store::open(":memory:").unwrap();
         let driver = confined_conflict_driver(&repo_path);
         let runner = FailRegenerateOnceRunner::red_once();
-        {
+        let fault = {
             let deps = bare_deps(&store, &driver, &runner, &repo_path);
             let err = run(&cfg, &deps)
                 .err()
@@ -2491,8 +2494,14 @@ fn a_confined_regenerate_command_failure_and_a_store_failure_each_resume_and_com
                 "call 1 must fail for the SIMULATED gate reason, not some other defect; got: {}",
                 err.0
             );
-        }
+            err.0
+        };
         let events_after_call_1 = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            wave_lessons(&events_after_call_1),
+            [format!("stage \"unit-a\" failed in its wave: {fault}")],
+            "a failed regenerate command is the unit's work, so its lesson names the unit"
+        );
         assert!(
             has_status_marker(
                 &events_after_call_1,
@@ -3101,23 +3110,23 @@ fn a_crash_right_after_landing_succeeds_with_owed_regeneration_completes_row_3_o
 // ============================================================================================
 
 /// An `EventStore` decorator: forwards every call to `inner` unchanged except `append`, which -
-/// on the FIRST append it sees carrying `STATUS_INTEGRATE_LANDING_INTENT`
+/// on each of the first `moves` appends it sees carrying `STATUS_INTEGRATE_LANDING_INTENT`
 /// ("integrate-landing-intent", row 4's before-record, written immediately before
-/// `Worktree::land` runs) - commits a brand-new, unrelated file directly onto `repo`'s current
-/// checkout BEFORE delegating, simulating exactly the race `Worktree::land`'s own doc comment
-/// names as its reason to exist: "the run branch MOVED between that merge and this call (an
-/// operator commit, a sibling's landing)". `repo` is the SAME directory `Worktree::land` itself
-/// runs `git merge --ff-only` against, so the very next `land` call hits a REAL `--ff-only`
-/// refusal, never a simulated one. `fired` gates this to ONCE: every later pass's own
-/// landing-intent record (the retry this fix exists to drive) must NOT re-trigger it, or the
-/// run would never converge inside `TIP_MOVED_PASS_BOUND`.
-struct MoveRunTipOnFirstLandingIntent<'a> {
+/// `Worktree::land` runs) - commits one more line of an unrelated file directly onto `repo`'s
+/// current checkout BEFORE delegating, simulating exactly the race `Worktree::land`'s own doc
+/// comment names as its reason to exist: "the run branch MOVED between that merge and this call
+/// (an operator commit, a sibling's landing)". `repo` is the SAME directory `Worktree::land`
+/// itself runs `git merge --ff-only` against, so the very next `land` call hits a REAL
+/// `--ff-only` refusal, never a simulated one. `moves` of 1 moves the tip under the first pass
+/// alone, so the retry this fix exists to drive converges inside `TIP_MOVED_PASS_BOUND`; a
+/// `moves` past the bound moves it under every pass.
+struct MoveRunTipOnLandingIntents<'a> {
     inner: &'a dyn EventStore,
     repo: String,
-    fired: Mutex<bool>,
+    moves: Mutex<u32>,
 }
 
-impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
+impl EventStore for MoveRunTipOnLandingIntents<'_> {
     fn append(
         &self,
         stream: &str,
@@ -3130,14 +3139,13 @@ impl EventStore for MoveRunTipOnFirstLandingIntent<'_> {
                     .contains("\"status\":\"integrate-landing-intent\"")
         });
         if is_landing_intent {
-            let mut fired = self.fired.lock().unwrap();
-            if !*fired {
-                *fired = true;
-                std::fs::write(
-                    Path::new(&self.repo).join("operator_side_note.txt"),
-                    "OPERATOR\n",
-                )
-                .unwrap();
+            let mut moves = self.moves.lock().unwrap();
+            if *moves > 0 {
+                *moves -= 1;
+                let note = Path::new(&self.repo).join("operator_side_note.txt");
+                let mut text = std::fs::read_to_string(&note).unwrap_or_default();
+                text.push_str("OPERATOR\n");
+                std::fs::write(&note, text).unwrap();
                 git_commit_all(
                     &self.repo,
                     "operator: an out-of-band commit races the landing window",
@@ -3166,10 +3174,10 @@ fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_l
         .insert("unit-a".into(), mk_stage("unit-a", "g"));
 
     let store = Store::open(":memory:").unwrap();
-    let moving_store = MoveRunTipOnFirstLandingIntent {
+    let moving_store = MoveRunTipOnLandingIntents {
         inner: &store,
         repo: repo_path.clone(),
-        fired: Mutex::new(false),
+        moves: Mutex::new(1),
     };
     let driver = A_WORK_DRIVER;
     let deps = bare_deps(
@@ -3229,6 +3237,67 @@ fn a_run_tip_moved_under_the_landing_window_is_recorded_and_retried_to_a_clean_l
     assert!(
         !Path::new(&repo_path).join(".git/MERGE_HEAD").exists(),
         "a refused --ff-only must never leave the repo mid-merge"
+    );
+
+    drop(repo);
+}
+
+/// A run branch that moves under every landing pass halts the run once the passes reach
+/// `TIP_MOVED_PASS_BOUND`: an outage of the run's infrastructure, never the unit's work, so the
+/// halt names the unit and the bound, no lesson names the unit, no attempt is charged, and the
+/// run is held for the orchestrator.
+#[test]
+fn a_run_tip_moved_under_every_landing_pass_halts_with_no_lesson_and_holds_the_run() {
+    let repo = temp_git_project_with_commit();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+
+    let mut cfg = gated_scratch_cfg(&repo_path);
+    cfg.workflow
+        .stages
+        .insert("unit-a".into(), mk_stage("unit-a", "g"));
+
+    let store = Store::open(":memory:").unwrap();
+    let moving_store = MoveRunTipOnLandingIntents {
+        inner: &store,
+        repo: repo_path.clone(),
+        moves: Mutex::new(u32::MAX),
+    };
+    let driver = A_WORK_DRIVER;
+    let deps = bare_deps(
+        &moving_store,
+        &driver,
+        &rigger::gate::ExecRunner,
+        &repo_path,
+    );
+
+    let err = run(&cfg, &deps)
+        .err()
+        .expect("a run branch moving under every landing pass halts the run");
+
+    assert_eq!(
+        err.0,
+        "integrate unit-a: the run branch moved under every one of 8 landing passes"
+    );
+    let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+    assert_eq!(
+        count_status_marker(&events, "integrate-tip-moved"),
+        8,
+        "every pass the run branch moved under is recorded"
+    );
+    assert_eq!(
+        wave_lessons(&events),
+        Vec::<String>::new(),
+        "no lesson names the unit"
+    );
+    assert_eq!(
+        count_of_type(&events, ledger::TYPE_UNIT_FAILED),
+        0,
+        "no attempt is charged"
+    );
+    assert_eq!(
+        holds_in(&events),
+        [conductor_fault_hold(&err.0)],
+        "the run is held for the orchestrator, naming the halt"
     );
 
     drop(repo);
