@@ -1697,17 +1697,57 @@ mod tests {
         }
 
         /// The live OS as an end sees it, with `stranger` (a pid and the tree member it poses
-        /// under) added to the table, and every hard end of `swallowed` dropped. Every signal the
-        /// end sends is recorded, dropped or not.
+        /// under) added to the table, every hard end of `swallowed` dropped, and `forker` started
+        /// on one more process ahead of each read of the table. Every signal the end sends is
+        /// recorded, dropped or not.
         #[derive(Default)]
         struct Rigged {
             stranger: Option<(u32, u32)>,
             swallowed: Option<u32>,
+            forker: Option<Forker>,
             sent: Vec<(Signal, u32)>,
+        }
+
+        /// A tree member that is never frozen, as on an OS with no freeze, and starts a process
+        /// each time a line reaches its `input`, `left` times more.
+        struct Forker {
+            pid: u32,
+            input: std::process::ChildStdin,
+            left: usize,
+        }
+
+        impl Forker {
+            /// Start one more process under the member, if any is left, and wait for it in the
+            /// table.
+            fn fork(&mut self) {
+                use std::io::Write;
+                if self.left == 0 {
+                    return;
+                }
+                self.left -= 1;
+                let pid = self.pid;
+                let children = || {
+                    os_process::table()
+                        .iter()
+                        .filter(|entry| entry.parent == pid)
+                        .count()
+                };
+                let before = children();
+                self.input
+                    .write_all(b"\n")
+                    .expect("ask the member for a process");
+                assert!(
+                    crate::test_support::wait_until(|| children() > before),
+                    "the member starts a process"
+                );
+            }
         }
 
         impl EndOs for Rigged {
             fn table(&mut self) -> Vec<os_process::Entry> {
+                if let Some(forker) = &mut self.forker {
+                    forker.fork();
+                }
                 let mut table = os_process::table();
                 if let Some((pid, parent)) = self.stranger {
                     let start = os_process::start_time(pid).expect("the stranger is running");
@@ -1719,7 +1759,13 @@ mod tests {
 
             fn send(&mut self, signal: Signal, pid: u32) {
                 self.sent.push((signal, pid));
-                if !(signal == Signal::Hard && self.swallowed == Some(pid)) {
+                let never_frozen = self.forker.as_ref().is_some_and(|forker| forker.pid == pid);
+                let dropped = match signal {
+                    Signal::Hard => self.swallowed == Some(pid),
+                    Signal::Stop => never_frozen,
+                    Signal::Term | Signal::Resume => false,
+                };
+                if !dropped {
                     send_signal(signal, pid);
                 }
             }
@@ -1940,6 +1986,49 @@ mod tests {
                 "the holder the main left runs on"
             );
             assert_eq!(witness.release(), Reading::Ended);
+        }
+
+        /// A tree member that is never frozen and starts a process at every read of the table: the
+        /// watched end stops walking once its bound passes, long before the member stops forking,
+        /// and still ends every process it found, and the main.
+        #[test]
+        fn the_watched_end_stops_walking_at_its_bound_when_a_member_keeps_forking() {
+            const FORKS: usize = 40;
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "up; while read -r unused; do holder; done; held");
+            assert!(witness.wait_up(1), "the fixture is up");
+            let input = main.stdin.take().expect("the main's input");
+            let mut os = Rigged {
+                forker: Some(Forker {
+                    pid: main.id(),
+                    input,
+                    left: FORKS,
+                }),
+                ..Rigged::default()
+            };
+            let bound = Duration::from_secs(1);
+
+            let started = std::time::Instant::now();
+            let report = end_watched_with(&mut os, &mut main, &[], bound);
+            let elapsed = started.elapsed();
+
+            let forks_left = os.forker.as_ref().map_or(0, |forker| forker.left);
+            assert_eq!(
+                (report, witness.read(), forks_left > 0),
+                (EndReport::default(), Reading::Ended, true),
+                "the end stopped walking with {forks_left} of {FORKS} forks left, and ended every \
+                 process it found"
+            );
+            assert!(
+                elapsed < bound + Duration::from_secs(2),
+                "the end returns near its bound: {elapsed:?}"
+            );
+            let status = main.try_wait().expect("read the main's status");
+            assert_eq!(
+                status.and_then(|status| status.signal()),
+                Some(9),
+                "the main is ended hard"
+            );
         }
 
         /// The end of a root's own descendants, `graceful` or not, with a stranger posing under
