@@ -11,8 +11,8 @@
 //! no native adapter every reader answers absent. The native adapters are Linux's (`/proc`),
 //! which Android, running the same kernel, binds too, macOS's (libproc) and Windows's (the
 //! Win32 process, IP Helper and Restart Manager calls);
-//! Windows reports no other process's working directory, run state or open files, so there those
-//! three readers answer absent.
+//! Windows reports no other process's working directory or open files, so there those two readers
+//! answer absent, and of a process's run state it reports only that the process has exited.
 //!
 //! The rules the macOS and Windows adapters apply to what their OS's calls answer - which parent a
 //! record is trusted to name, how a table's rows, a socket's port and a start time read, whether a
@@ -45,6 +45,10 @@ std::cfg_select! {
             pub(super) use super::scan_holders as holders;
 
             pub(super) fn pids() -> Vec<u32> {
+                Vec::new()
+            }
+
+            pub(super) fn table() -> Vec<super::Entry> {
                 Vec::new()
             }
 
@@ -94,6 +98,7 @@ std::cfg_select! {
                     assert_eq!(
                         (
                             pids(),
+                            table(),
                             parent(me),
                             start_time(me),
                             cwd(me),
@@ -105,6 +110,7 @@ std::cfg_select! {
                             holders(std::path::Path::new("/")),
                         ),
                         (
+                            Vec::new(),
                             Vec::new(),
                             None,
                             None,
@@ -127,6 +133,28 @@ std::cfg_select! {
 /// The pid of every process this process can see, each once.
 pub fn pids() -> Vec<u32> {
     native::pids()
+}
+
+/// One process of the process table ([`table`]): its pid, the pid its record names as its parent
+/// ([`parent`]) and its start time ([`start_time`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Entry {
+    /// The process's pid.
+    pub pid: u32,
+    /// The pid the process's record names as its parent. On Windows a record keeps a parent's pid
+    /// after that parent exits, and a later process can take it, so a walk down the table keeps a
+    /// child only if it started no earlier than the parent it names.
+    pub parent: u32,
+    /// The process's start time, the witness [`start_time`] reads.
+    pub start: u64,
+}
+
+/// Every process this process can see, each once, with its parent and start time, read in one
+/// listing: one `/proc` pass on Linux, one process list and one BSD-info read a process on macOS,
+/// one process snapshot and each process's times on Windows. A process whose parent or start time
+/// cannot be read (it exited during the listing, or this process may not read it) is left out.
+pub fn table() -> Vec<Entry> {
+    native::table()
 }
 
 /// The pid of process `pid`'s parent; `None` when `pid` is gone or its parent cannot be read.
@@ -167,7 +195,8 @@ pub fn command(pid: u32) -> String {
 
 /// Process `pid`'s run state as one letter: `R` running, `S` sleeping, `T` stopped, `Z` a zombie
 /// (exited, not yet reaped by its parent), or the OS's own letter for another state. `None` when
-/// `pid` is gone or its state cannot be read.
+/// `pid` is gone or its state cannot be read. Windows reads only `Z`, for a process that has exited
+/// while a handle still holds it, and `None` for a live one.
 pub fn state(pid: u32) -> Option<char> {
     native::state(pid)
 }
@@ -320,6 +349,40 @@ mod tests {
     fn the_process_list_names_this_process_once() {
         let me = std::process::id();
         assert_eq!(pids().into_iter().filter(|&pid| pid == me).count(), 1);
+    }
+
+    /// The table names this process and a child it spawned, each once, with the parent and start
+    /// time the one-process readers report, and names no process that is gone.
+    #[cfg(unix)]
+    #[test]
+    fn the_table_names_each_process_once_with_its_parent_and_start_time() {
+        let me = std::process::id();
+        let mut child = sleeper_in(Path::new("/"));
+        let gone = gone_pid();
+        let listed = table();
+        let rows_of = |pid: u32| -> Vec<Entry> {
+            listed
+                .iter()
+                .filter(|row| row.pid == pid)
+                .copied()
+                .collect()
+        };
+        let read = (rows_of(me), rows_of(child.id()), rows_of(gone));
+        let expected = (
+            vec![Entry {
+                pid: me,
+                parent: std::os::unix::process::parent_id(),
+                start: start_time(me).unwrap(),
+            }],
+            vec![Entry {
+                pid: child.id(),
+                parent: me,
+                start: start_time(child.id()).unwrap(),
+            }],
+            Vec::new(),
+        );
+        cleanup(&mut child);
+        assert_eq!(read, expected);
     }
 
     /// This process's parent is the parent the OS reports to it, and a child it spawned names it

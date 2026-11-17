@@ -3,9 +3,9 @@
 //! name (command), IP Helper's owner-pid TCP listener table ([`listening_pid`]) and the Restart
 //! Manager ([`holders`]). Each function answers the fact its namesake in [`super`] documents; a
 //! call that fails - the process exited, or this process may not open it - answers absent.
-//! Windows documents no call that reads another process's working directory, run state or open
-//! files, so [`cwd`] and [`state`] answer `None` and [`open_files`] empty, and with no fork
-//! [`is_unexeced_fork_of`] answers false.
+//! Windows documents no call that reads another process's working directory or open files, so
+//! [`cwd`] answers `None` and [`open_files`] empty; of a process's run state it reports only that
+//! the process has exited ([`state`]); and with no fork [`is_unexeced_fork_of`] answers false.
 
 use std::path::{Path, PathBuf};
 use std::ptr::null;
@@ -13,7 +13,7 @@ use std::ptr::null;
 use windows_sys::core::PCWSTR;
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS, FALSE, FILETIME,
-    HANDLE, INVALID_HANDLE_VALUE, NO_ERROR,
+    HANDLE, INVALID_HANDLE_VALUE, NO_ERROR, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
@@ -27,8 +27,9 @@ use windows_sys::Win32::System::RestartManager::{
     RM_PROCESS_INFO,
 };
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
+    PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    PROCESS_SYNCHRONIZE,
 };
 
 use crate::win32::wide;
@@ -46,11 +47,11 @@ impl Drop for Owned {
     }
 }
 
-/// Process `pid` opened to read its limited information, or `None` when it cannot be opened (it
-/// is gone, or this process may not open it).
-fn open(pid: u32) -> Option<Owned> {
+/// Process `pid` opened with `access`, or `None` when it cannot be opened (it is gone, or this
+/// process may not open it).
+fn open(pid: u32, access: PROCESS_ACCESS_RIGHTS) -> Option<Owned> {
     // SAFETY: the call takes no pointer and answers a null handle on failure.
-    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
+    let handle = unsafe { OpenProcess(access, FALSE, pid) };
     (!handle.is_null()).then_some(Owned(handle))
 }
 
@@ -83,6 +84,22 @@ pub(super) fn pids() -> Vec<u32> {
     snapshot().into_iter().map(|(pid, _)| pid).collect()
 }
 
+/// Each process of ONE ToolHelp snapshot with the parent its entry names and its [`start_time`];
+/// the walk over it, not this listing, judges whether that parent is still the one that started
+/// the process.
+pub(super) fn table() -> Vec<super::Entry> {
+    snapshot()
+        .into_iter()
+        .filter_map(|(pid, parent)| {
+            Some(super::Entry {
+                pid,
+                parent,
+                start: start_time(pid)?,
+            })
+        })
+        .collect()
+}
+
 /// The parent `pid`'s snapshot entry names, while [`super::trusts_parent`] trusts it: that parent
 /// still opens and started no later than `pid`.
 pub(super) fn parent(pid: u32) -> Option<u32> {
@@ -93,7 +110,7 @@ pub(super) fn parent(pid: u32) -> Option<u32> {
 
 /// The creation time `GetProcessTimes` reports, in 100-nanosecond intervals since 1601.
 pub(super) fn start_time(pid: u32) -> Option<u64> {
-    let process = open(pid)?;
+    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
     let (mut created, mut exited, mut kernel, mut user) = (
         FILETIME::default(),
         FILETIME::default(),
@@ -116,7 +133,7 @@ pub(super) fn cwd(_pid: u32) -> Option<PathBuf> {
 /// The full path of `pid`'s executable (`QueryFullProcessImageNameW`); empty when it cannot be
 /// read.
 pub(super) fn command(pid: u32) -> String {
-    let Some(process) = open(pid) else {
+    let Some(process) = open(pid, PROCESS_QUERY_LIMITED_INFORMATION) else {
         return String::new();
     };
     let mut name = vec![0u16; MAX_IMAGE_NAME];
@@ -138,9 +155,16 @@ pub(super) fn command(pid: u32) -> String {
     String::from_utf16_lossy(&name)
 }
 
-/// No documented call reads another process's run state.
-pub(super) fn state(_pid: u32) -> Option<char> {
-    None
+/// `Z` once `pid` has exited while a handle still holds it: a process handle is signalled when
+/// the process exits, so a wait on it for no time (`WaitForSingleObject`) answers
+/// `WAIT_OBJECT_0`. `None` while it runs, or when it cannot be opened; Windows documents no call
+/// that reads another process's other run states.
+pub(super) fn state(pid: u32) -> Option<char> {
+    let process = open(pid, PROCESS_SYNCHRONIZE)?;
+    // SAFETY: the handle is open with the synchronize right a wait needs, and a zero timeout
+    // returns at once.
+    let exited = unsafe { WaitForSingleObject(process.0, 0) } == WAIT_OBJECT_0;
+    exited.then_some('Z')
 }
 
 /// No documented call reads another process's open files.

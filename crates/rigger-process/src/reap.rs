@@ -91,7 +91,7 @@
 //! recycled pid can never reach upward into the process tree running rigger itself.
 
 use crate::os_process;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
 /// How long a well-behaved process is given to exit on SIGTERM before it is SIGKILLed.
@@ -218,12 +218,9 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// even though [`end_child`] only ever held a [`std::process::Child`] handle to its direct
 /// parent.
 ///
-/// The process interface gives every process its OWN parent ([`crate::os_process::parent`]),
-/// never a parent's list of children, so finding descendants means reading every listed
-/// process's parent ONCE up front, grouping by parent into a children-of map, then walking that
-/// map from `root_pid` - never a listing per level of the walk (on Windows each parent read takes
-/// its own snapshot of the process table, so there the reads cost one snapshot per listed
-/// process). Matched by PID-TREE
+/// The process interface gives every process its OWN parent, never a parent's list of children,
+/// so the walk reads ONE process table ([`crate::os_process::table`]: each process's parent and
+/// start time from a single listing) and walks it in [`descendants_in`]. Matched by PID-TREE
 /// membership alone, deliberately NEVER by working directory: a live sibling spawn's own
 /// process can share this same worktree as its cwd without being anywhere in this child's
 /// process tree (`op-104-stop-no-sweep-at-wall-clock-stop`'s sibling-safety guarantee, which
@@ -233,42 +230,46 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// Called ONCE, before the FIRST signal [`end_child`] sends: a process reparents to its
 /// nearest surviving ancestor the instant its own parent exits, so a walk taken any later
 /// risks missing a descendant the kernel has already handed off elsewhere - the walk must
-/// see the tree as it stood before any of this ending began. Each surviving entry carries
-/// its start time (via [`pid_starttime`]) for the SAME TOCTOU recheck [`scan_with_starttime`]
-/// already gives the cwd-scanned reap - a descendant that has since exited, or whose pid the
-/// kernel has since recycled onto an unrelated process, is dropped here or refused again by
-/// that recheck immediately before either signal.
+/// see the tree as it stood before any of this ending began. Each entry carries the start time
+/// the table read for the SAME TOCTOU recheck [`scan_with_starttime`] already gives the
+/// cwd-scanned reap - a descendant that has since exited, or whose pid the kernel has since
+/// recycled onto an unrelated process, is refused by that recheck immediately before either
+/// signal.
 ///
 /// Best-effort and platform-tolerant like every other scan in this module: an OS the process
-/// interface cannot read, or a race that removes a pid between the listing and the read,
-/// contributes nothing, never a hard error. `seen` guards the walk against a cycle (which the
-/// OS's own parent/child relationship should never produce, but the walk must still
-/// terminate regardless - the same defensive shape [`ancestor_pids`] already uses upward).
+/// interface cannot read, or a process the listing could not read, contributes nothing, never a
+/// hard error.
 fn descendants_of(root_pid: u32) -> Vec<ScanEntry> {
-    let mut children_of: HashMap<u32, Vec<u32>> = HashMap::new();
-    for pid in os_process::pids() {
-        if let Some(ppid) = os_process::parent(pid) {
-            children_of.entry(ppid).or_default().push(pid);
-        }
+    descendants_in(&os_process::table(), root_pid)
+}
+
+/// The descendants of `root_pid` in `table`, children before grandchildren and each generation in
+/// the table's order: empty when the table does not list `root_pid`. A process is kept only if it
+/// started no earlier than the parent it names, because a Windows entry keeps a dead parent's pid
+/// and Windows may give that pid to a later process; a process failing that test is no descendant,
+/// and nor is anything below it. `seen` (the root included) ends the walk on a cycle, which the
+/// OS's own parent/child relationship should never produce but the walk must survive.
+fn descendants_in(table: &[os_process::Entry], root_pid: u32) -> Vec<ScanEntry> {
+    let Some(root) = table.iter().find(|entry| entry.pid == root_pid) else {
+        return Vec::new();
+    };
+    let mut children_of: HashMap<u32, Vec<&os_process::Entry>> = HashMap::new();
+    for entry in table {
+        children_of.entry(entry.parent).or_default().push(entry);
     }
     let mut out = Vec::new();
-    let mut seen: HashSet<u32> = HashSet::new();
-    let mut frontier = vec![root_pid];
-    while let Some(pid) = frontier.pop() {
-        let Some(kids) = children_of.get(&pid) else {
-            continue;
-        };
-        for &kid in kids {
-            if !seen.insert(kid) {
+    let mut seen: HashSet<u32> = HashSet::from([root_pid]);
+    let mut frontier = VecDeque::from([root]);
+    while let Some(parent) = frontier.pop_front() {
+        for &kid in children_of.get(&parent.pid).into_iter().flatten() {
+            if kid.start < parent.start || !seen.insert(kid.pid) {
                 continue;
             }
-            if let Some(starttime) = pid_starttime(kid) {
-                out.push(ScanEntry {
-                    pid: kid,
-                    starttime,
-                });
-            }
-            frontier.push(kid);
+            out.push(ScanEntry {
+                pid: kid.pid,
+                starttime: kid.start,
+            });
+            frontier.push_back(kid);
         }
     }
     out
@@ -1221,6 +1222,103 @@ mod tests {
             "ancestor_pids must walk THROUGH the intermediate shell to find it: \
              {ancestors:?} (shell pid {shell_pid})"
         );
+    }
+
+    /// One process-table row: `pid`, the parent its record names, and its start time.
+    fn row(pid: u32, parent: u32, start: u64) -> os_process::Entry {
+        os_process::Entry { pid, parent, start }
+    }
+
+    /// A walk row: what it shows, the table, and the `(pid, start)` descendants of pid 10.
+    type WalkRow = (&'static str, Vec<os_process::Entry>, Vec<(u32, u64)>);
+
+    /// THE DESCENDANT WALK (one table, start order): from a root the table lists, every process
+    /// whose named parent is the root or one of its descendants, parents before their children in
+    /// the table's order, each with the start time the table read. A child that started before the
+    /// parent it names is no descendant (on Windows that parent's pid was taken by a later process),
+    /// and neither are its own children; a child started with its parent is one. A root the table
+    /// does not list has none, the root is never its own descendant, and a cycle of parents ends.
+    #[test]
+    fn the_descendant_walk_follows_named_parents_in_start_order_from_a_listed_root() {
+        let rows: [WalkRow; 7] = [
+            ("a root with no child", vec![row(10, 1, 100)], vec![]),
+            (
+                "children before grandchildren, in the table's order",
+                vec![
+                    row(13, 11, 130),
+                    row(10, 1, 100),
+                    row(12, 10, 120),
+                    row(11, 10, 110),
+                ],
+                vec![(12, 120), (11, 110), (13, 130)],
+            ),
+            (
+                "a child started with its parent",
+                vec![row(10, 1, 100), row(11, 10, 100)],
+                vec![(11, 100)],
+            ),
+            (
+                "a child started before the parent it names, and its own child",
+                vec![row(10, 1, 100), row(11, 10, 99), row(12, 11, 150)],
+                vec![],
+            ),
+            (
+                "a stranger whose parent is another process",
+                vec![row(10, 1, 100), row(20, 1, 105), row(21, 20, 106)],
+                vec![],
+            ),
+            (
+                "a root the table does not list",
+                vec![row(11, 10, 110)],
+                vec![],
+            ),
+            (
+                "a cycle of parents through the root",
+                vec![row(10, 11, 100), row(11, 10, 100)],
+                vec![(11, 100)],
+            ),
+        ];
+        let walked: Vec<(&str, Vec<(u32, u64)>)> = rows
+            .iter()
+            .map(|(what, table, _)| {
+                let found = descendants_in(table, 10)
+                    .iter()
+                    .map(|entry| (entry.pid, entry.starttime))
+                    .collect();
+                (*what, found)
+            })
+            .collect();
+        let expected: Vec<(&str, Vec<(u32, u64)>)> = rows
+            .iter()
+            .map(|(what, _, found)| (*what, found.clone()))
+            .collect();
+        assert_eq!(walked, expected);
+    }
+
+    /// The walk over the live table finds a grandchild through the shell that started it, with
+    /// the start time the grandchild reads.
+    #[cfg(unix)]
+    #[test]
+    fn the_descendant_walk_finds_a_live_grandchild_through_its_parent() {
+        let mut shell = StdCommand::new("sh")
+            .arg("-c")
+            .arg("sleep 300 & echo $!; wait")
+            .current_dir(Path::new("/"))
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn shell with a backgrounded grandchild");
+        let stdout = shell.stdout.take().expect("piped stdout");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
+            .expect("read the grandchild's pid line");
+        let grandchild: u32 = line.trim().parse().expect("parse the grandchild pid");
+        let found: Vec<(u32, Option<u64>)> = descendants_of(shell.id())
+            .iter()
+            .map(|entry| (entry.pid, Some(entry.starttime)))
+            .collect();
+        let expected = vec![(grandchild, pid_starttime(grandchild))];
+        cleanup(&mut shell);
+        assert_eq!(found, expected);
     }
 
     #[test]
