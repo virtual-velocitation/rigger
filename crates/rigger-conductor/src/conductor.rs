@@ -3179,8 +3179,8 @@ pub fn run_serving(
 /// `rigger status` and `rigger watch` name it among what needs a person and `rigger release`
 /// continues the run. It is the one home of every error a begun run's drive returns: each
 /// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, a
-/// refused landing, an outage past the infra limit, a failed guard probe, a worktree it could not
-/// make) and every other, but a park ([`is_parked`]): whatever parked a spawn left its own hold
+/// refused landing, an outage past the infra limit, a failed guard probe, a worktree step git
+/// refused) and every other, but a park ([`is_parked`]): whatever parked a spawn left its own hold
 /// standing. A hold it cannot write is said through [`Deps::log`]; `e` is returned unchanged
 /// either way.
 fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
@@ -5434,8 +5434,8 @@ impl RunCtx<'_> {
             // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
             // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
             // landing refused by the run checkout's local changes, a unit's infra reruns
-            // past the taxonomy's infra limit, a gate's failed guard probe, a worktree the
-            // conductor could not make) - is an infrastructure or configuration
+            // past the taxonomy's infra limit, a gate's failed guard probe, a worktree step
+            // git refused the conductor) - is an infrastructure or configuration
             // fault, not the unit's failure. ONE arm for all of them: propagate the loud
             // halt as the wave's error with the recognition marker stripped (so the
             // operator's message stays clean), emit NO per-unit lesson here (it would
