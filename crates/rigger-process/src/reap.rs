@@ -1945,13 +1945,14 @@ mod tests {
         }
 
         /// The live OS as an end sees it, with `stranger` (a pid and the tree member it poses
-        /// under) added to the table, `vanishing` left out of every read of the table but the
-        /// first, every hard end of `swallowed` dropped, and `forker` started on one more process
-        /// ahead of each read of the table. Every signal the end sends is recorded, dropped or
-        /// not.
+        /// under) and `ghost` (a process gone before the end, and the member it poses under) added
+        /// to the table, `vanishing` left out of every read of the table but the first, every hard
+        /// end of `swallowed` dropped, and `forker` started on one more process ahead of each read
+        /// of the table. Every signal the end sends is recorded, dropped or not.
         #[derive(Default)]
         struct Rigged {
             stranger: Option<(u32, u32)>,
+            ghost: Option<(Identity, u32)>,
             vanishing: Option<u32>,
             swallowed: Option<u32>,
             forker: Option<Forker>,
@@ -2004,6 +2005,13 @@ mod tests {
                     let start = os_process::start_time(pid).expect("the stranger is running");
                     table.retain(|entry| entry.pid != pid);
                     table.push(os_process::Entry { pid, parent, start });
+                }
+                if let Some((ghost, parent)) = self.ghost {
+                    table.push(os_process::Entry {
+                        pid: ghost.pid,
+                        parent,
+                        start: ghost.start,
+                    });
                 }
                 self.reads += 1;
                 if self.reads > 1 {
@@ -2364,6 +2372,68 @@ mod tests {
                 the_descendant_end_never_signals_a_stranger(true);
             the_hard_descendant_end_never_signals_a_stranger:
                 the_descendant_end_never_signals_a_stranger(false);
+        }
+
+        /// Which end a row runs.
+        #[derive(Clone, Copy, Debug)]
+        enum Ending {
+            /// [`end_watched_with`], of the held root.
+            Watched,
+            /// [`end_descendants_with`], of the root's descendants.
+            Descendants,
+        }
+
+        /// `ending` over a tree whose table also lists, under its root, a process that exited and
+        /// was reaped before the end: the end neither signals it nor reports it, since nothing of
+        /// it is left running, and still ends the tree.
+        fn an_end_never_reports_a_process_gone_before_its_signal(ending: Ending) {
+            let mut witness = Witness::new();
+            let mut root = tree(&witness, "holder; up; wait");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let mut gone = StdCommand::new("true")
+                .spawn()
+                .expect("spawn a process that exits");
+            let ghost = Identity {
+                pid: gone.id(),
+                start: os_process::start_time(gone.id()).expect("its start, read before its reap"),
+            };
+            gone.wait().expect("reap the process that exits");
+            let root_pid = root.id();
+            let mut os = Rigged {
+                ghost: Some((ghost, root_pid)),
+                ..Rigged::default()
+            };
+
+            let report = match ending {
+                Ending::Watched => end_watched_with(&mut os, &mut root, &[], END_BOUND),
+                Ending::Descendants => end_descendants_with(
+                    &mut os,
+                    root_pid,
+                    false,
+                    || !descendants_in(&os_process::table(), root_pid).is_empty(),
+                    END_BOUND,
+                ),
+            };
+
+            let root_exited =
+                crate::test_support::wait_until(|| matches!(root.try_wait(), Ok(Some(_))));
+            assert_eq!(
+                (report, root_exited, witness.read()),
+                (EndReport::default(), true, Reading::Ended),
+                "{ending:?}: nothing is reported and the tree is ended"
+            );
+            assert!(
+                !os.sent.iter().any(|(_, pid)| *pid == ghost.pid),
+                "{ending:?}: nothing is sent to the gone process: {:?}",
+                os.sent
+            );
+        }
+
+        crate::test_cases! {
+            the_watched_end_never_reports_a_process_gone_before_its_signal:
+                an_end_never_reports_a_process_gone_before_its_signal(Ending::Watched);
+            the_descendant_end_never_reports_a_process_gone_before_its_signal:
+                an_end_never_reports_a_process_gone_before_its_signal(Ending::Descendants);
         }
     }
 }
