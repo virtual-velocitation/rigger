@@ -3799,9 +3799,7 @@ fn watch_poll_over(
     // A hold for a person on the run, the operator's or the conductor's, is its stop: `watch`
     // reports it held, never its driver dead. Folded from the run this poll already read, which
     // holds the run's hold events.
-    let mut held = RunState::new();
-    runscope::read::fold_holds(&mut held, &run_events)?;
-    let held_for_a_person = held.hold.is_some_and(|hold| hold.manual);
+    let held_for_a_person = runscope::read::hold_for_a_person_in(&run_events)?.is_some();
 
     let inputs = watch::WatchInputs {
         run_events: &run_events,
