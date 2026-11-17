@@ -321,9 +321,11 @@ fn discipline_body(ctx: &DocsContext) -> String {
          writer declared it, an outage hold included, so the next launch goes at once instead of \
          after the next probe. With no hold open it records nothing and says so. A fault of the \
          conductor's own that ends a run's drive, a spawn the API refused included, holds the \
-         run for you too, naming the fault, and its driver exits non-zero: `rigger status` lists \
-         the hold under what needs you, and once the fault is fixed `rigger release` relaunches \
-         the run. {stop}\n",
+         run for the orchestrator, the session that launched the run and watches it, naming the \
+         fault, and its driver exits non-zero: `rigger watch` reports the hold, `rigger status` \
+         prints the fault under it, and once the cause is fixed at its root `rigger release` \
+         relaunches the run. When the same fault holds the run again after that release, the \
+         hold is for a person, and `rigger status` lists it under what needs you. {stop}\n",
         stop = DRIVER_STOP_RULE
     );
 
@@ -1022,8 +1024,9 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
     render_operation_skill(
         "rigger-resume-a-run",
         "Continue interrupted work after a dead driver (spent quota, a crash, a \
-         laptop that slept mid-run) or `rigger status` showing an agent 'in flight' with a \
-         stale heartbeat. Read this before relaunching a run or reaching for `--fresh`.",
+         laptop that slept mid-run), `rigger status` showing an agent 'in flight' with a \
+         stale heartbeat, or a hold `rigger watch` reports for the orchestrator. Read this \
+         before relaunching a run or reaching for `--fresh`.",
         &[],
         &[
             "Diagnose first: `rigger status` (or the dashboard) shows each in-flight agent's \
@@ -1043,12 +1046,13 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  names while it holds what a relaunched driver said before it ended, and a driver \
                  started by hand removes). `rigger \
                  watch` relaunches nothing: it names the dead driver and `rigger status` as what \
-                 brings it back, and under a hold for a person, an operator hold or the \
-                 conductor's fault hold, it reports the run held and names `rigger release`. A \
-                 driver that returned is never relaunched, save one that ended with its run held \
-                 for a person, which `rigger release` relaunches: one that parked on an operator \
-                 hold, and one that ended on a fault of the conductor's own, a spawn the API \
-                 refused included, which holds the run naming the fault and exits non-zero. A \
+                 brings it back, and it reports every open hold no probe ends, an operator hold \
+                 or the conductor's fault hold, driver or no driver, naming who resolves it and \
+                 how. A driver that returned is never relaunched, save one that ended with its \
+                 run held for the orchestrator or a person, which `rigger release` relaunches: \
+                 one that parked on an operator hold, and one that ended on a fault of the \
+                 conductor's own, a spawn the API refused included, which holds the run naming \
+                 the fault and exits non-zero. A \
                  driver that dies again within ten minutes of its relaunch, a relaunch that never \
                  started, or one whose recorded binary no longer exists is left stopped, and the \
                  line names the command that relaunches it by hand. A driver that gave its agents \
@@ -1062,8 +1066,9 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
                  with no session opened: the entry runs `rigger run --at-login <project root>`, \
                  which relaunches a dead driver as `rigger status` would and removes the entry \
                  once no relaunch is owed. A driver that ends on its own or is refused removes \
-                 its entry as it empties its record, save one that ended with its run held for a \
-                 person, whose entry stands with its record; a run started without the flag registers nothing, \
+                 its entry as it empties its record, save one that ended with its run held for \
+                 the orchestrator or a person, whose entry stands with its record; a run started \
+                 without the flag registers nothing, \
                  and a login removes the entry an earlier launch of it left. A login also removes \
                  the entry of a project on a volume not mounted at that login; its run comes back \
                  by the usual relaunch at the next session start or `rigger status`, and registers \
@@ -1101,9 +1106,17 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              held run, a relaunched driver that finds an operator hold parks its next launch and \
              ends, and `rigger release` relaunches the run. A fault of the conductor's own that \
              ends its drive (a plan landing that fails, a unit worktree it cannot make, a spawn \
-             the API refuses) holds the run for a person the same way, naming the fault: \
-             `rigger status` lists it under what needs you, the driver exits non-zero, and once \
-             the fault is fixed `rigger release` relaunches the run.\n",
+             the API refuses) holds the run the same way, naming the fault, and the driver exits \
+             non-zero.\n",
+            "A hold for a conductor fault or a refused request is YOURS to resolve first, as the \
+             orchestrator, the session that launched the run and watches it: `rigger watch` \
+             reports it as a hold for the orchestrator, and `rigger status` prints the fault \
+             under it. Read that fault. Fix its cause at the root, and never weaken a guard, a \
+             gate or a criterion to get past it. Then run `rigger release`, which relaunches the \
+             run. If the same fault holds the run again after your release (the same cause and \
+             the same first line of the fault), your fix did not hold and the hold is now for a \
+             person: `rigger status` lists it under what needs you, so stop and tell them exactly \
+             what you tried. A different fault after a release is yours to resolve again.\n",
         ],
         "Do not reach for `--fresh` reflexively just because a run looks stuck: on a merely-interrupted run it abandons the \
          adoptable state your relaunch would otherwise have continued from, in exchange for \
@@ -1218,7 +1231,10 @@ fn render_watch_a_run_skill(ctx: &DocsContext) -> String {
                 "FIRST instruction, every time: on launch, ARM `rigger watch` under the harness's \
                  background monitor - it polls store and status on its own (default every {}s, \
                  `--interval <s>` to change it) and folds these same five signals, plus a sixth \
-                 store-integrity check of its own, into one printed line per anomaly. The manual look \
+                 store-integrity check of its own, into one printed line per anomaly. It also \
+                 prints a line for every open hold no probe will end, driver or no driver, naming \
+                 who resolves it (you, the orchestrator, first; a person once your fix has not \
+                 held) and its response. The manual look \
                  above is the FALLBACK for when nothing is armed, exercised at least once per \
                  remediation cycle even while `rigger watch` is running.\n",
                 ctx.watch_poll_interval_secs
