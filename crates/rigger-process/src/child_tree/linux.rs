@@ -30,16 +30,65 @@ pub(super) enum Record {
 
 #[cfg_attr(not(test), allow(dead_code))] // read by the keeper and its driver once they exist
 impl Record {
-    /// The record as one line, without its line end.
+    /// The record as one line, without its line end: its tag, then its fields, each after one
+    /// space. A leftover's program is its last field, everything after its pid's space, with each
+    /// line end in it written as a space.
     pub(super) fn encode(&self) -> String {
-        todo!("the record's line")
+        match self {
+            Record::Spawned(pid) => format!("spawned {pid}"),
+            Record::Failed(errno) => format!("failed {errno}"),
+            Record::Unavailable(errno) => format!("unavailable {errno}"),
+            Record::Probed => "ok".to_string(),
+            Record::Exited(raw) => format!("exited {raw}"),
+            Record::Residue(left) => format!("residue {}", Record::fields(left)),
+            Record::Skipped(left) => format!("skipped {}", Record::fields(left)),
+            Record::Ended => "ended".to_string(),
+        }
     }
 
     /// The record `line` encodes, without its line end; `None` for a line that is no record.
     pub(super) fn decode(line: &str) -> Option<Record> {
-        let _ = line;
-        todo!("the line's record")
+        let (tag, rest) = match line.split_once(' ') {
+            Some((tag, rest)) => (tag, Some(rest)),
+            None => (line, None),
+        };
+        match (tag, rest) {
+            ("ok", None) => Some(Record::Probed),
+            ("ended", None) => Some(Record::Ended),
+            ("spawned", Some(pid)) => digits(pid).map(Record::Spawned),
+            ("failed", Some(errno)) => errno.parse().ok().map(Record::Failed),
+            ("unavailable", Some(errno)) => errno.parse().ok().map(Record::Unavailable),
+            ("exited", Some(raw)) => raw.parse().ok().map(Record::Exited),
+            ("residue", Some(rest)) => Record::leftover(rest).map(Record::Residue),
+            ("skipped", Some(rest)) => Record::leftover(rest).map(Record::Skipped),
+            _ => None,
+        }
     }
+
+    /// A leftover's fields: its pid, a space, and its program on one line.
+    fn fields(left: &Leftover) -> String {
+        format!("{} {}", left.pid, left.program.replace(['\n', '\r'], " "))
+    }
+
+    /// The leftover `fields` names ([`Record::fields`]); `None` unless they are a pid, a space
+    /// and a program.
+    fn leftover(fields: &str) -> Option<Leftover> {
+        let (pid, program) = fields.split_once(' ')?;
+        Some(Leftover {
+            pid: digits(pid)?,
+            program: program.to_string(),
+            stopped: false,
+        })
+    }
+}
+
+/// The number `field` names in decimal digits alone, no sign.
+#[cfg_attr(not(test), allow(dead_code))] // read by the keeper and its driver once they exist
+fn digits(field: &str) -> Option<u32> {
+    if field.is_empty() || !field.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    field.parse().ok()
 }
 
 #[cfg(test)]
