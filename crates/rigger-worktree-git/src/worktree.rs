@@ -7140,20 +7140,31 @@ mod tests {
         wt.remove().unwrap();
     }
 
-    /// A BRANCH READ GIT CANNOT ANSWER CLEARS NOTHING: when git cannot say whether the unit's
-    /// branch exists - no repository path, a path that is not there, a configuration git
-    /// refuses - `create` fails with that read's error and leaves what sits at the unit's path
-    /// as it was: a plain directory, or a registered worktree of the branch, each holding an
-    /// uncommitted file.
+    /// A READ DECIDING THE CLEAR THAT GOES UNANSWERED CLEARS NOTHING: when git cannot say whether
+    /// the unit's branch exists (no repository path, a path that is not there, a configuration git
+    /// refuses), or where the existing branch is checked out (a registration list git refuses),
+    /// or the filesystem cannot say whether the branch's registered worktree is there, `create`
+    /// fails with that read's error and leaves what sits at the unit's path as it was - a plain
+    /// directory, or a registered worktree of the branch, each holding an uncommitted file - and
+    /// every registration as it was.
     #[test]
-    fn create_clears_nothing_when_the_branch_read_goes_unanswered() {
+    #[cfg(unix)]
+    fn create_clears_nothing_when_a_read_deciding_the_clear_goes_unanswered() {
+        use std::os::unix::fs::PermissionsExt;
         #[derive(Debug, Clone, Copy)]
         enum Unanswered {
             NoRepositoryPath,
             PathNotThere,
             RefusedConfiguration,
+            /// The branch read answers that the branch exists, and the read of where it is
+            /// registered fails: another worktree's admin entry holds a `locked` directory, which
+            /// `git worktree list` refuses.
+            Registration,
+            /// The branch is checked out in a worktree elsewhere whose parent directory denies
+            /// every access, so whether that worktree is there cannot be read.
+            RegisteredDir,
         }
-        // Each row: why the branch read goes unanswered, and whether the unit's path holds a
+        // Each row: which read goes unanswered and why, and whether the unit's path holds a
         // registered worktree of the branch (else a plain directory).
         let cases = [
             (Unanswered::NoRepositoryPath, false),
@@ -7162,6 +7173,8 @@ mod tests {
             (Unanswered::PathNotThere, true),
             (Unanswered::RefusedConfiguration, false),
             (Unanswered::RefusedConfiguration, true),
+            (Unanswered::Registration, false),
+            (Unanswered::RegisteredDir, false),
         ];
         for (why, registered) in cases {
             let repo = init_repo();
@@ -7178,6 +7191,9 @@ mod tests {
             std::fs::write(&work, "uncommitted\n").unwrap();
             let config = repo.path().join(".git").join("config");
             let kept_config = std::fs::read(&config).unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
+            let sealed = elsewhere.path().join("sealed");
+            let mut named = branch.to_string();
             let asked = match why {
                 Unanswered::NoRepositoryPath => String::new(),
                 Unanswered::PathNotThere => format!("{repo_path}/not-there"),
@@ -7186,18 +7202,58 @@ mod tests {
                         .unwrap();
                     repo_path.clone()
                 }
+                Unanswered::Registration => {
+                    run_git(&repo_path, &["branch", branch]).unwrap();
+                    let other = format!("{root}/rigger-wt-other");
+                    run_git(
+                        &repo_path,
+                        &["worktree", "add", "-q", "-b", "other", &other],
+                    )
+                    .unwrap();
+                    let admin = repo.path().join(".git/worktrees/rigger-wt-other");
+                    std::fs::create_dir(admin.join("locked")).unwrap();
+                    repo_path.clone()
+                }
+                Unanswered::RegisteredDir => {
+                    let held = sealed.join("held");
+                    let held = held.to_str().unwrap();
+                    run_git(&repo_path, &["worktree", "add", "-q", "-b", branch, held]).unwrap();
+                    named = held.to_string();
+                    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000))
+                        .unwrap();
+                    repo_path.clone()
+                }
             };
+            let registrations = || {
+                std::fs::read_dir(repo.path().join(".git").join("worktrees"))
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .map(|entry| entry.file_name())
+                            .collect::<std::collections::BTreeSet<_>>()
+                    })
+                    .unwrap_or_default()
+            };
+            let registered_before = registrations();
 
             let made = Worktree::create(&asked, &dir, branch, &root);
             std::fs::write(&config, &kept_config).unwrap();
+            if sealed.exists() {
+                std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
 
             let Err(err) = made else {
                 panic!("{why:?}, registered {registered}: create must fail on an unanswered read");
             };
             assert!(
-                err.0.contains(branch),
-                "{why:?}, registered {registered}: the error names the branch read: {}",
+                err.0.contains(&named),
+                "{why:?}, registered {registered}: the error names what could not be read: {}",
                 err.0
+            );
+            assert_eq!(
+                registrations(),
+                registered_before,
+                "{why:?}, registered {registered}: every registration survives"
             );
             assert_eq!(
                 std::fs::read_to_string(&work).ok().as_deref(),
@@ -7208,10 +7264,6 @@ mod tests {
                 assert!(
                     worktree_on_branch(&dir, branch),
                     "{why:?}: the registered worktree is still checked out on its branch"
-                );
-                assert!(
-                    registered_worktree_for(&repo_path, branch).is_some(),
-                    "{why:?}: the worktree's registration survives"
                 );
             }
         }
