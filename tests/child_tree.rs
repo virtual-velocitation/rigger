@@ -2,7 +2,8 @@
 //! (`crates/rigger-process/src/child_tree/linux.rs`). The handle answers the main's pid and its
 //! exact status; an end, a drop and a TERM to the keeper each leave nothing the tree started
 //! running; a release after the main's exit leaves what the main left running; the keeper holds
-//! none of the session's streams; and a keeper that is gone or deaf is reported, never trusted.
+//! none of the session's streams; and a keeper that is gone or deaf is reported, never trusted,
+//! and a main a gone keeper left is reported, never signalled.
 //! Every process a row starts is read through the FIFO witness (`common::witness`), and the test
 //! signals none of them.
 
@@ -266,12 +267,21 @@ fn a_kept_main_holds_the_descriptors_a_watched_main_holds_and_the_keeper_holds_n
     );
 }
 
-/// The fixture `tests/fixtures/fake-keeper.sh` in the keeper's place, misbehaving as `mode`.
-fn faked(witness: &Witness, mode: &str) -> ReapedChild {
+/// The fixture `tests/fixtures/fake-keeper.sh` in the keeper's place, misbehaving as `mode`, its
+/// command's environment also given `env`.
+fn faked_with(witness: &Witness, mode: &str, env: &[(&str, String)]) -> ReapedChild {
     let fake = Containment::Keeper(PathBuf::from(fixture_script("fake-keeper.sh")));
     let mut command = command(witness, &fake, "exit 0");
-    command.command_mut().env("RIGGER_TEST_KEEPER", mode);
+    command
+        .command_mut()
+        .env("RIGGER_TEST_KEEPER", mode)
+        .envs(env.iter().map(|(name, value)| (name, value)));
     command.spawn().expect("spawn under the fake keeper")
+}
+
+/// The fake keeper misbehaving as `mode` ([`faked_with`]).
+fn faked(witness: &Witness, mode: &str) -> ReapedChild {
+    faked_with(witness, mode, &[])
 }
 
 #[test]
@@ -291,6 +301,34 @@ fn a_keeper_gone_without_the_mains_status_is_an_error_never_a_status() {
         Ok(status) => panic!("a keeper gone without its records answered {status:?}"),
     }
     assert!(tree.wait().is_err(), "a wait answers the same error");
+}
+
+#[test]
+fn a_keeper_gone_while_its_main_runs_reports_the_main_skipped_and_signals_nothing() {
+    let mut witness = Witness::new();
+    let mut main = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(Witness::script("up; held"))
+        .envs(witness.env())
+        .spawn()
+        .expect("spawn the main the keeper leaves");
+    assert!(witness.wait_up(1), "the main is up");
+    let mut tree = faked_with(
+        &witness,
+        "lost",
+        &[("RIGGER_TEST_MAIN", main.id().to_string())],
+    );
+
+    let report = tree.end();
+
+    let skipped: Vec<u32> = report.skipped.iter().map(|leftover| leftover.pid).collect();
+    assert_eq!(
+        (report.residue, skipped, witness.read()),
+        (vec![], vec![main.id()], Reading::Held),
+        "the main the keeper left runs on, reported skipped"
+    );
+    assert_eq!(witness.release(), Reading::Ended);
+    main.wait().expect("reap the main");
 }
 
 #[test]

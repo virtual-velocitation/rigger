@@ -2,9 +2,11 @@
 # A stand-in for the Linux keeper (`crates/rigger-process/src/child_tree/linux.rs`), run as one in
 # its place with the keeper's arguments: its status descriptor, its control descriptor, then the
 # program it would spawn, which it never spawns. It writes the spawn record naming itself as the
-# tree's main, then misbehaves as `$RIGGER_TEST_KEEPER` names:
+# tree's main, unless its mode says otherwise, then misbehaves as `$RIGGER_TEST_KEEPER` names:
 #
 # `gone` exits at once, writing no other record, as a keeper ended from outside does.
+# `lost` names `$RIGGER_TEST_MAIN` as the main instead, then exits at once, as a keeper ended from
+# outside while its main runs on does.
 # `deaf` starts a holder and stays until the test releases it (tests/fixtures/witness.sh), never
 # reading its control descriptor, as a keeper that does not end its tree within its bound does.
 #
@@ -17,6 +19,9 @@ status=/proc/$$/fd/$1
 case "$RIGGER_TEST_KEEPER" in
 gone)
     printf 'spawned %s\n' "$$" >"$status"
+    ;;
+lost)
+    printf 'spawned %s\n' "$RIGGER_TEST_MAIN" >"$status"
     ;;
 deaf)
     self=$(readlink "$0") || self=$0
