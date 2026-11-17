@@ -2295,7 +2295,16 @@ pub fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
 /// `repo_admin_lock(repo)` across its own whole call before reaching here. This function
 /// itself must NEVER take that lock: `std::sync::Mutex` is not reentrant, and doing so would
 /// deadlock every one of its callers against itself.
+///
+/// An empty `repo` names no repository to deregister `dir` from, so this fails before it reaps
+/// or removes anything: git's refusal of that path is never read as "nothing is registered here".
 fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
+    if repo.is_empty() {
+        return Err(Error(format!(
+            "clear worktree dir {dir}: {}",
+            crate::subprocess::NO_REPOSITORY
+        )));
+    }
     reap_dir_before_removal(dir, authorized_root);
     if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
         && std::path::Path::new(dir).exists()

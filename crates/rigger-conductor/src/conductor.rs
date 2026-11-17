@@ -10523,6 +10523,10 @@ impl RunCtx<'_> {
         events: &[Event],
         log: &mut dyn FnMut(&str),
     ) {
+        if self.deps.repo.is_empty() {
+            // No repo => no branch or worktree to collect, and no scratch root to resolve.
+            return;
+        }
         // The SAME caller-resolved scratch root every other `Worktree::create`/`discard`
         // call site in this file already computes (spec 79 round-2 fix): threaded through
         // to `reclaim_worktree_on_branch` so its reap-before-removal is authorized against
