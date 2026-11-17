@@ -25,7 +25,8 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   unit done. Keep rustfmt and clippy clean as you go, not as a final cleanup. The
   gates are confirmation, never discovery.
 - Process lifecycle is handle-bound. A process is ended ONLY through the
-  `std::process::Child` handle that spawned it (`kill()` + `wait()`), or through
+  `std::process::Child` handle that spawned it (`kill()` + `wait()`), through a
+  job object this process created, ended through `reap::end_job`, or through
   the two sanctioned internal helpers: `reap::send_signal` in production and
   `tests/common/mod.rs::terminate_pid` / `is_alive` in tests. Never shell out to
   `kill`, `pkill` or `killall`; never signal a process group (a negative pid);

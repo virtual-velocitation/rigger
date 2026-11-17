@@ -7,16 +7,17 @@
 #     The byte pattern is generated at runtime via `printf` octal (portable to POSIX sh / dash and
 #     bash), so this script carries no literal em dash and passes on its own diff.
 #   no-os-kill (spec 78): rigger issues NO OS-level kills. Process lifecycle is handle-bound
-#     (`Child::kill()`/`wait()` on a child this process spawned) or, in exactly two sanctioned
-#     places, an internal guarded signal call: the worktree reaper
+#     (`Child::kill()`/`wait()` on a child this process spawned, or a job object it created) or,
+#     in exactly two sanctioned places, an internal guarded signal call: the worktree reaper
 #     (crates/rigger-process/src/reap.rs) and the shared test lifecycle helper
 #     (tests/common/mod.rs). Everywhere else in src/, crates/ and tests/, an added line that shells
 #     out to kill/pkill/killall/xkill/taskkill (the name in any case), formats a negative
 #     (process-group) pid, uses the `--` argv separator, or calls a signal API directly FAILS.
-#     Inside the two sanctioned files a shell-out is still a failure. The Windows
-#     process-termination call (TerminateProcess) has one site, the reaper's send_signal: an added
-#     call anywhere else, the test helper included, FAILS. Scoped to code: prose in docs/, specs/
-#     and .rigger/ may name the rule.
+#     Inside the two sanctioned files a shell-out is still a failure. The Windows termination
+#     calls each have one site, both in the reaper: TerminateProcess in send_signal, and
+#     TerminateJobObject in end_job, which ends a job object this process created. An added call
+#     of either anywhere else, the test helper included, FAILS. Scoped to code: prose in docs/,
+#     specs/ and .rigger/ may name the rule.
 #     WHY: computed kill targets (a pgid, a marker pid, a /proc scan) resolved to kill(-1) and
 #     destroyed the operator's whole desktop session seven-plus times; the review panel approved
 #     each site because nothing mechanical forbade it. Now something does.
@@ -79,8 +80,8 @@ no-os-kill)
         echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"
         exit 1
     fi
-    if added src crates tests ":(exclude)crates/rigger-process/src/reap.rs" | grep -qE "TerminateProcess\("; then
-        echo "no-os-kill gate FAILED: the Windows process-termination call (TerminateProcess) was introduced outside crates/rigger-process/src/reap.rs, whose send_signal is its one sanctioned site. See specs/78-no-os-level-kills.md"
+    if added src crates tests ":(exclude)crates/rigger-process/src/reap.rs" | grep -qE "Terminate(Process|JobObject)\("; then
+        echo "no-os-kill gate FAILED: a Windows termination call (TerminateProcess or TerminateJobObject) was introduced outside crates/rigger-process/src/reap.rs, whose send_signal and end_job are their sanctioned sites. See specs/78-no-os-level-kills.md"
         exit 1
     fi
     ;;
