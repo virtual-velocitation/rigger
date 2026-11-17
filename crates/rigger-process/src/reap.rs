@@ -1584,9 +1584,10 @@ mod tests {
     /// THE DESCENDANT WALK (one table, start order): from a root the table lists, every process
     /// whose named parent is the root or one of its descendants, parents before their children in
     /// the table's order, each with the start time the table read. A child that started before the
-    /// parent it names is no descendant (on Windows that parent's pid was taken by a later process),
-    /// and neither are its own children; a child started with its parent is one. A root the table
-    /// does not list has none, the root is never its own descendant, and a cycle of parents ends.
+    /// parent it names is no descendant (on Windows that parent's pid was taken by a later
+    /// process), and neither are its own children; a child started with its parent is one. A root
+    /// the table does not list has none, the root is never its own descendant, and a cycle of
+    /// parents ends.
     #[test]
     fn the_descendant_walk_follows_named_parents_in_start_order_from_a_listed_root() {
         let rows: [WalkRow; 7] = [

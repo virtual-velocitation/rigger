@@ -610,8 +610,8 @@ mod tests {
     crate::test_cases! {
         a_watched_end_ends_a_tree_that_forks_as_it_ends:
             ends_the_tree(
-                "( i=0; while [ $i -lt 100 ]; do holder; sleep 0.02; i=$((i+1)); done; up; held ) & \
-                 up; held",
+                "( i=0; while [ $i -lt 100 ]; do holder; sleep 0.02; i=$((i+1)); done; \
+                 up; held ) & up; held",
                 6,
             );
         a_watched_end_ends_a_process_in_a_session_of_its_own:
