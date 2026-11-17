@@ -7339,6 +7339,90 @@ mod tests {
         }
     }
 
+    /// A LINK AT A WORKTREE'S PATH IS REMOVED AS A LINK: making or discarding a worktree at a path
+    /// a symlink occupies decides by the path's own metadata, never by following the link. A
+    /// dangling link is cleared like any leftover; a link to a directory or to another registered
+    /// worktree is removed as a link, and its target, the file the target holds and the target's
+    /// registration all survive.
+    #[test]
+    #[cfg(unix)]
+    fn a_link_at_a_worktree_path_is_removed_as_a_link() {
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Link {
+            Dangling,
+            ToDirectory,
+            ToWorktree,
+        }
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Step {
+            CreateOnNewBranch,
+            CreateOnBranch,
+            Discard,
+        }
+        let links = [Link::Dangling, Link::ToDirectory, Link::ToWorktree];
+        let steps = [Step::CreateOnNewBranch, Step::CreateOnBranch, Step::Discard];
+        for (link, step) in links.into_iter().flat_map(|l| steps.map(|s| (l, s))) {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let root = scratch_root(&repo_path, "", None);
+            std::fs::create_dir_all(&root).unwrap();
+            let branch = "rigger/u/unit-linked";
+            let dir = format!("{root}/rigger-wt-unit-linked");
+            let elsewhere = tempfile::tempdir().unwrap();
+            let target = elsewhere.path().join("target");
+            match link {
+                Link::Dangling => {}
+                Link::ToDirectory => std::fs::create_dir(&target).unwrap(),
+                Link::ToWorktree => {
+                    let at = target.to_str().unwrap();
+                    run_git(&repo_path, &["worktree", "add", "-q", "-b", "other", at]).unwrap();
+                }
+            }
+            let kept = target.join("kept.txt");
+            if link != Link::Dangling {
+                std::fs::write(&kept, "kept\n").unwrap();
+            }
+            if step != Step::CreateOnNewBranch {
+                run_git(&repo_path, &["branch", branch]).unwrap();
+            }
+            std::os::unix::fs::symlink(&target, &dir).unwrap();
+
+            let done = match step {
+                Step::Discard => Worktree::discard(&repo_path, &dir, branch, &root),
+                _ => Worktree::create(&repo_path, &dir, branch, &root).map(|_| ()),
+            };
+
+            assert!(done.is_ok(), "{link:?}, {step:?}: {done:?}");
+            let at_path = std::fs::symlink_metadata(&dir);
+            if step == Step::Discard {
+                assert!(at_path.is_err(), "{link:?}: the link is gone");
+            } else {
+                assert!(
+                    at_path.is_ok_and(|m| m.is_dir()),
+                    "{link:?}, {step:?}: a directory, not the link, stands at the path"
+                );
+                assert!(
+                    worktree_on_branch(&dir, branch),
+                    "{link:?}, {step:?}: the worktree at the path is on its branch"
+                );
+            }
+            if link != Link::Dangling {
+                assert_eq!(
+                    std::fs::read_to_string(&kept).ok().as_deref(),
+                    Some("kept\n"),
+                    "{link:?}, {step:?}: the file the link's target holds survives"
+                );
+            }
+            if link == Link::ToWorktree {
+                assert_eq!(
+                    registered_worktree_for(&repo_path, "other").as_deref(),
+                    target.to_str(),
+                    "{link:?}, {step:?}: the target's registration survives"
+                );
+            }
+        }
+    }
+
     /// A DISCARD WITH NO REPOSITORY CLEARS NOTHING: an empty repository path names no
     /// repository to deregister a worktree from, so `discard` fails and leaves what sits at its
     /// path as it was - a plain directory, or a registered worktree of the branch, each holding
