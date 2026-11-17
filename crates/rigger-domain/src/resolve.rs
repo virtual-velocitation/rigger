@@ -1346,6 +1346,7 @@ pub fn resettle(
 pub(crate) mod tests {
     use super::*;
     use crate::code_facts::{Def, DocConcept, DocLink, Stamp, Tip, WfNode, WfRelation};
+    use crate::code_graph::CodeGraph;
     use crate::code_view::{Compared, FactsView, Tests, ViewFilter};
     use crate::composed::{Composed, Honesty, Indexed};
     use crate::contextgraph::query::path_leaf;
@@ -3153,7 +3154,11 @@ pub(crate) mod tests {
     /// up-hops and hidden test callers, and in `Composed`'s call walk over either code half,
     /// which lists both as `describe`'s callees and `describe` as the caller of each. A shown
     /// test call keeps the test implementation `Fake` beside them, and a file-level reference
-    /// to the leaf stays held by the call.
+    /// to the leaf stays held by the call. The walk reads a product call's placeholder in the
+    /// product pool under every filter, as the resolver's up-hop reads a link in its own: so
+    /// `Cube.size` keeps its traits' `size` methods, and a test-only `Cube`'s own `size`, which
+    /// the test pool keeps in their place, joins them only when tests are shown, the set its
+    /// node's `candidates` attribute carries.
     #[test]
     fn several_narrowed_candidates_never_prefer_their_file() {
         let qualified_call = |enclosing, line, test| {
@@ -3226,10 +3231,64 @@ pub(crate) mod tests {
                 tagged("impl", "Fake", Some(2), 6),
             ],
         );
-        let view = FactsView::new(stamp(), vec![code_view, snapshot, store, describe]);
+        // `Cube.size`, written in `report`, whose qualifier's own tier holds no product `size`, so
+        // its traits' methods are its product set, beside a test-only `Cube` whose own `size`
+        // fills that tier in the test pool.
+        let shape = code(
+            "src/shape.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Area", "trait", 1, None, false),
+                def("Area::size", "method", 2, Some(0), false),
+                def("Volume", "trait", 5, None, false),
+                def("Volume::size", "method", 6, Some(2), false),
+            ],
+            vec![],
+        );
+        let cube = code(
+            "src/cube.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Cube", "type", 1, None, false),
+                def("impl Area for Cube", "impl", 3, None, false),
+                def("impl Volume for Cube", "impl", 5, None, false),
+            ],
+            vec![
+                tagged("impl", "Area", Some(1), 3),
+                tagged("impl", "Cube", Some(1), 3),
+                tagged("impl", "Volume", Some(2), 5),
+                tagged("impl", "Cube", Some(2), 5),
+            ],
+        );
+        let report = code(
+            "src/report.rs",
+            "rust",
+            Scope::Product,
+            vec![def("report", "function", 1, None, false)],
+            vec![qualified(MentionKind::Call, "Cube.size", Some(0), 2, false)],
+        );
+        let test_cube = code(
+            "tests/cube.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("Cube", "type", 1, None, true),
+                def("impl Cube", "impl", 3, None, true),
+                def("Cube::size", "method", 4, Some(1), true),
+            ],
+            vec![tagged("impl", "Cube", Some(1), 3)],
+        );
+        let view = FactsView::new(
+            stamp(),
+            vec![
+                code_view, snapshot, store, describe, shape, cube, report, test_cube,
+            ],
+        );
         let r = Resolver::new(&view);
         // (what the answer shows, the question, the whole answer)
-        let asks: [(&str, Ask, &[&str]); 10] = [
+        let asks: [(&str, Ask, &[&str]); 13] = [
             (
                 "a product call keeping two implementations, one in its own file, and a \
                  file-level reference to the leaf held by it",
@@ -3326,6 +3385,24 @@ pub(crate) mod tests {
                 Ask::PlaceholderCallers("src/store.rs::Store::file", "file"),
                 &[],
             ),
+            (
+                "a product call's down-hop in its own pool, its qualifier's traits' methods",
+                Ask::DownHop("src/report.rs::%Cube.size", Pool::Product),
+                &["frontier src/shape.rs::Area::size src/shape.rs::Volume::size"],
+            ),
+            (
+                "the same placeholder in the test pool, the test type's own method alone",
+                Ask::DownHop("src/report.rs::%Cube.size", Pool::All),
+                &["one tests/cube.rs::Cube::size"],
+            ),
+            (
+                "the product caller of a trait method, read in its link's pool",
+                Ask::UpHop("src/shape.rs::Area::size", "size"),
+                &[
+                    "src/report.rs::report -CALLS/inferred-> src/report.rs::%Cube.size",
+                    "src/report.rs -REFERENCES/inferred-> src/report.rs::%Cube.size",
+                ],
+            ),
         ];
         for (shows, ask, want) in asks {
             assert_eq!(answer(&view, &r, &ask), want, "{shows}");
@@ -3356,7 +3433,7 @@ pub(crate) mod tests {
                 .collect()
         };
         // (what the walk shows, the tests shown, the seed, the direction, the whole walk)
-        let walks: [(&str, Tests, &str, Direction, &[&str]); 5] = [
+        let walks: [(&str, Tests, &str, Direction, &[&str]); 9] = [
             (
                 "the trait method's callees: both implementations, a frontier",
                 Tests::Exclude,
@@ -3420,6 +3497,62 @@ pub(crate) mod tests {
                     "hidden []",
                 ],
             ),
+            (
+                "a product call's callees with tests hidden: its traits' methods",
+                Tests::Exclude,
+                "src/report.rs::report",
+                Direction::Down,
+                &[
+                    "0 src/report.rs::report",
+                    "1 src/report.rs::%Cube.size frontier \
+                     src/shape.rs::Area::size src/shape.rs::Volume::size",
+                    "src/report.rs::report -inferred-> src/report.rs::%Cube.size",
+                    "hidden []",
+                ],
+            ),
+            (
+                "a product call's callees with tests shown: the test type's own method beside \
+                 its traits' methods, never in their place",
+                Tests::Include,
+                "src/report.rs::report",
+                Direction::Down,
+                &[
+                    "0 src/report.rs::report",
+                    "1 src/report.rs::%Cube.size frontier \
+                     src/shape.rs::Area::size src/shape.rs::Volume::size \
+                     tests/cube.rs::Cube::size",
+                    "src/report.rs::report -inferred-> src/report.rs::%Cube.size",
+                    "hidden []",
+                ],
+            ),
+            (
+                "a trait method's product caller with tests hidden",
+                Tests::Exclude,
+                "src/shape.rs::Area::size",
+                Direction::Up,
+                &[
+                    "0 src/shape.rs::Area::size",
+                    "1 src/report.rs::report frontier \
+                     src/shape.rs::Area::size src/shape.rs::Volume::size",
+                    "src/report.rs::report -inferred-> src/shape.rs::Area::size",
+                    "hidden []",
+                ],
+            ),
+            (
+                "a trait method's product caller with tests shown, under the frontier holding \
+                 the test type's own method too",
+                Tests::Include,
+                "src/shape.rs::Area::size",
+                Direction::Up,
+                &[
+                    "0 src/shape.rs::Area::size",
+                    "1 src/report.rs::report frontier \
+                     src/shape.rs::Area::size src/shape.rs::Volume::size \
+                     tests/cube.rs::Cube::size",
+                    "src/report.rs::report -inferred-> src/shape.rs::Area::size",
+                    "hidden []",
+                ],
+            ),
         ];
         for (shows, tests, seed, direction, want) in walks {
             let filter = ViewFilter { tests };
@@ -3427,6 +3560,46 @@ pub(crate) mod tests {
             assert_eq!(walk(&whole, seed, direction), want, "whole: {shows}");
             let near = Composed::near(&records, &view, filter, honesty.clone()).unwrap();
             assert_eq!(walk(&near, seed, direction), want, "near: {shows}");
+        }
+        // (the tests shown, a node, the candidates its down-hop keeps and its `candidates`
+        // attribute carries, none for a node that is no qualified placeholder)
+        let product = ["src/shape.rs::Area::size", "src/shape.rs::Volume::size"];
+        let implementations = [
+            "src/code_view.rs::FactsView::file",
+            "src/snapshot.rs::Snapshot::file",
+        ];
+        let carried: [(Tests, &str, Option<Vec<&str>>); 5] = [
+            (
+                Tests::Exclude,
+                "src/report.rs::%Cube.size",
+                Some(product.to_vec()),
+            ),
+            (
+                Tests::Include,
+                "src/report.rs::%Cube.size",
+                Some([&product[..], &["tests/cube.rs::Cube::size"]].concat()),
+            ),
+            (
+                Tests::Exclude,
+                "src/code_view.rs::%CodeView.file",
+                Some(implementations.to_vec()),
+            ),
+            (
+                Tests::Include,
+                "tests/describe.rs::%CodeView.file",
+                Some([&implementations[..], &["tests/describe.rs::Fake::file"]].concat()),
+            ),
+            (Tests::Include, "src/shape.rs::Area::size", None),
+        ];
+        for (tests, id, want) in carried {
+            let graph = CodeGraph::new(&view, ViewFilter { tests });
+            let want: Option<Vec<String>> = want.map(|w| w.iter().map(|c| c.to_string()).collect());
+            assert_eq!(graph.down_hop(id), want, "{tests:?} {id}");
+            let whole = graph.whole();
+            let node = whole.nodes.iter().find(|n| n.id == id).unwrap();
+            let attr = node.attrs.get("candidates").cloned();
+            let json = want.map(|w| serde_json::to_string(&w).unwrap());
+            assert_eq!(attr, json, "{tests:?} {id}");
         }
     }
 

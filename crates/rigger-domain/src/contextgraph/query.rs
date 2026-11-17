@@ -2920,8 +2920,17 @@ mod leaf_tests {
                 node_leaf(&def_node("f.ts::%", "%")),
                 node_leaf(&unnamed),
                 node_leaf(&plain("x", KIND_CODE_ENTITY)),
+                node_leaf(&plain("b.rs::%T.new", KIND_CODE_ENTITY)),
+                node_leaf(&plain("b.rs::%T::new", KIND_CODE_ENTITY)),
             ],
-            [Some("new"), Some("%"), Some("new"), None]
+            [
+                Some("new"),
+                Some("%"),
+                Some("new"),
+                None,
+                Some("new"),
+                Some("new")
+            ]
         );
     }
 
@@ -2940,6 +2949,81 @@ mod leaf_tests {
         let mut g = nested_and_placeholder();
         g.nodes.push(empty_named_node("c.rs::%new"));
         assert_eq!(files_lens_keys(&g), vec![Some("a.rs".to_string()); 3]);
+    }
+}
+
+/// Spec 117, SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE, at the files lens: a
+/// placeholder keyed by a qualified name binds by its leaf.
+#[cfg(test)]
+mod qualified_placeholder_tests {
+    use super::lens_views::files_lens_keys;
+    use super::*;
+    use crate::test_support::{def_node, node_with_optional_attrs};
+
+    /// One row: what the row shows, each definition with its file, the down-hop carried, the
+    /// placeholder's key.
+    type Row<'a> = (
+        &'a str,
+        &'a [(&'a str, &'a str)],
+        Option<&'a str>,
+        Option<&'a str>,
+    );
+
+    /// Each row: the definitions of the leaf `new` the graph holds, the `candidates` attribute
+    /// the placeholder `b.rs::%T.new` carries, and the file the files lens folds it under. It
+    /// keeps the definitions of its leaf its attribute names, the resolver's down-hop, and every
+    /// one when it carries none or one that does not parse: exactly one kept gives its file.
+    #[test]
+    fn the_files_lens_folds_a_qualified_placeholder_by_its_leaf_over_its_down_hop() {
+        let both = [("a.rs::T::new", "a.rs"), ("c.rs::U::new", "c.rs")];
+        let cases: [Row; 6] = [
+            (
+                "a down-hop of both definitions",
+                &both,
+                Some(r#"["a.rs::T::new","c.rs::U::new"]"#),
+                None,
+            ),
+            (
+                "a down-hop of one shown definition and one the graph does not hold",
+                &both,
+                Some(r#"["c.rs::U::new","tests/t.rs::T::new"]"#),
+                Some("c.rs"),
+            ),
+            (
+                "a down-hop of none the graph holds",
+                &both,
+                Some(r#"["tests/t.rs::T::new"]"#),
+                None,
+            ),
+            ("no down-hop carried, two definitions", &both, None, None),
+            (
+                "no down-hop carried, one definition",
+                &both[1..],
+                None,
+                Some("c.rs"),
+            ),
+            (
+                "a down-hop that does not parse, one definition",
+                &both[1..],
+                Some("c.rs::U::new"),
+                Some("c.rs"),
+            ),
+        ];
+        for (case, defs, carried, want) in cases {
+            let mut nodes = vec![node_with_optional_attrs(
+                "b.rs::%T.new",
+                KIND_CODE_ENTITY,
+                &[("candidates", carried)],
+            )];
+            nodes.extend(defs.iter().map(|(d, _)| def_node(d, "new")));
+            let g = Graph {
+                nodes,
+                edges: Vec::new(),
+            };
+            let mut want = vec![want.map(str::to_string)];
+            want.extend(defs.iter().map(|(_, file)| Some(file.to_string())));
+            assert_eq!(files_lens_keys(&g), want, "{case}");
+        }
     }
 }
 

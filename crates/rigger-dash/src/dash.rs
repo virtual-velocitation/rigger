@@ -13590,3 +13590,76 @@ mod file_half_c13 {
         assert_eq!(unresolved_frontiers(&re), vec![("v1.2-choice", Vec::new())]);
     }
 }
+
+/// Spec 117, SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE, at the files re-projection: a
+/// placeholder keyed by a qualified name binds by its leaf.
+#[cfg(test)]
+mod qualified_placeholder_c2 {
+    use super::reprojection_views::{cluster_counts, unresolved_frontiers};
+    use super::*;
+    use crate::test_support::ONE_COMMUNITY;
+    use crate::test_support::{def_node, node_with_optional_attrs, one_community_graph};
+
+    /// One row: the case, the `candidates` attribute the placeholder carries, and the file
+    /// buckets and marked-unresolved frontiers the files re-projection gives.
+    type QualifiedCase<'a> = (
+        &'a str,
+        Option<&'a str>,
+        Vec<(&'a str, usize)>,
+        Vec<(&'a str, Vec<String>)>,
+    );
+
+    /// Each row: a community holding the placeholder `src/report.rs::%Cube.size` alone, with the
+    /// definitions of its leaf `size` outside it. The placeholder keeps those of its leaf its
+    /// `candidates` attribute carries, the resolver's down-hop, and every one when it carries
+    /// none or one that does not parse: exactly one folds under that definition's file, more are
+    /// marked unresolved with those candidates.
+    #[test]
+    fn reproject_files_binds_a_qualified_placeholder_by_its_leaf_over_its_down_hop() {
+        let (area, other, volume) = (
+            "src/area.rs::Area::size",
+            "src/other.rs::size",
+            "src/volume.rs::Volume::size",
+        );
+        let placeholder = "src/report.rs::%Cube.size";
+        let frontier =
+            |cands: &[&str]| vec![(placeholder, cands.iter().map(|c| c.to_string()).collect())];
+        let cases: [QualifiedCase<'_>; 4] = [
+            (
+                "a down-hop of two shown definitions: a frontier of those two",
+                Some(r#"["src/area.rs::Area::size","src/volume.rs::Volume::size"]"#),
+                vec![],
+                frontier(&[area, volume]),
+            ),
+            (
+                "a down-hop of one shown definition and one the graph does not hold",
+                Some(r#"["src/volume.rs::Volume::size","tests/cube.rs::Cube::size"]"#),
+                vec![("src/volume.rs", 1)],
+                vec![],
+            ),
+            (
+                "no down-hop carried: every definition of the leaf",
+                None,
+                vec![],
+                frontier(&[area, other, volume]),
+            ),
+            (
+                "a down-hop that does not parse reads as none carried",
+                Some("src/area.rs::Area::size"),
+                vec![],
+                frontier(&[area, other, volume]),
+            ),
+        ];
+        for (case, carried, clusters, unresolved) in cases {
+            let ph =
+                node_with_optional_attrs(placeholder, KIND_CODE_ENTITY, &[("candidates", carried)]);
+            let mut g = one_community_graph(ONE_COMMUNITY, vec![ph]);
+            g.nodes
+                .extend([area, other, volume].map(|d| def_node(d, "size")));
+            let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
+            assert_eq!(cluster_counts(&re), clusters, "{case}");
+            assert_eq!(unresolved_frontiers(&re), unresolved, "{case}");
+            assert_eq!(re.total, 1, "{case}");
+        }
+    }
+}
