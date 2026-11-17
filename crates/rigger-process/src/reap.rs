@@ -1697,14 +1697,17 @@ mod tests {
         }
 
         /// The live OS as an end sees it, with `stranger` (a pid and the tree member it poses
-        /// under) added to the table, every hard end of `swallowed` dropped, and `forker` started
-        /// on one more process ahead of each read of the table. Every signal the end sends is
-        /// recorded, dropped or not.
+        /// under) added to the table, `vanishing` left out of every read of the table but the
+        /// first, every hard end of `swallowed` dropped, and `forker` started on one more process
+        /// ahead of each read of the table. Every signal the end sends is recorded, dropped or
+        /// not.
         #[derive(Default)]
         struct Rigged {
             stranger: Option<(u32, u32)>,
+            vanishing: Option<u32>,
             swallowed: Option<u32>,
             forker: Option<Forker>,
+            reads: usize,
             sent: Vec<(Signal, u32)>,
         }
 
@@ -1753,6 +1756,10 @@ mod tests {
                     let start = os_process::start_time(pid).expect("the stranger is running");
                     table.retain(|entry| entry.pid != pid);
                     table.push(os_process::Entry { pid, parent, start });
+                }
+                self.reads += 1;
+                if self.reads > 1 {
+                    table.retain(|entry| Some(entry.pid) != self.vanishing);
                 }
                 table
             }
@@ -2028,6 +2035,33 @@ mod tests {
                 status.and_then(|status| status.signal()),
                 Some(9),
                 "the main is ended hard"
+            );
+        }
+
+        /// A process the end froze that a later walk no longer lists is still ended, before its
+        /// parent: the end ends every process it froze, whichever walk listed it last.
+        #[test]
+        fn the_watched_end_ends_a_process_it_froze_that_a_later_walk_missed() {
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "( holder; up; held ) & up; held");
+            assert!(witness.wait_up(3), "the fixture's three processes are up");
+            let middle = only_child(main.id());
+            let deepest = only_child(middle);
+            let mut os = Rigged {
+                vanishing: Some(deepest),
+                ..Rigged::default()
+            };
+
+            let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
+
+            assert_eq!(
+                (witness.read(), report),
+                (Reading::Ended, EndReport::default())
+            );
+            let sent = os.sent;
+            assert!(
+                position(&sent, (Signal::Hard, deepest)) < position(&sent, (Signal::Hard, middle)),
+                "the process the later walk missed ends before its parent: {sent:?}"
             );
         }
 
