@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::budget::{self, BuildBudget};
-use crate::config::{AgentDef, Config, RegenerateRule, ReviewStep, Stage};
+use crate::config::{AgentDef, Config, LaterRounds, RegenerateRule, ReviewStep, Stage};
 use crate::config_store;
 use crate::contextgraph::{self, Graph, OpenGraph, RecordFold};
 #[cfg(test)]
@@ -35,7 +35,7 @@ use crate::spawn::{
 #[cfg(test)]
 use crate::spawn_store;
 use crate::verdict_mac::{VerdictFields, VerdictKey};
-use crate::worktree::{self, Worktree};
+use crate::worktree::{self, CommitLine, FileDiff, Worktree};
 use rigger_domain::code_view::AdvanceCodeStore;
 pub use rigger_domain::review::verdict_approves;
 pub use rigger_domain::review::VERDICT_APPROVE;
@@ -378,6 +378,25 @@ const META_RESUMED_FROM: &str = "resumed_from";
 /// namespaces never collide in practice).
 fn review_round_start_key(unit: &str, attempt: u32) -> String {
     format!("{unit}/review-round-start#{attempt}")
+}
+
+/// The replay key of the `reviewed` status an approve records for `unit` at `attempt` (a
+/// speculation winner's at its lane, a review gate's at its own attempt).
+fn reviewed_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/reviewed#{attempt}")
+}
+
+/// The replay key of the [`STATUS_REVIEW_TIER`] mark a depth policy's routing records for `unit`
+/// at `attempt` ([`RunCtx::log_review_tier`]).
+fn review_tier_key(unit: &str, attempt: u32) -> String {
+    format!("{unit}/review-tier#{attempt}")
+}
+
+/// The event of `run` logged under the replay key `key`, if any: a keyed emit appends once, so
+/// there is at most one.
+fn logged_under<'a>(run: &'a [Event], key: &str) -> Option<&'a Event> {
+    run.iter()
+        .find(|e| e.meta.get(META_REPLAY_KEY).is_some_and(|k| k == key))
 }
 
 /// The replay key of the `UnitFailed` a review reject records for `unit` at its failing
@@ -2568,7 +2587,7 @@ fn review_retry_window(ordinal: u32) -> std::ops::RangeInclusive<u32> {
 }
 
 /// One ReviewFinding a review round recorded: the step `role` whose spawn recorded it, its `id`
-/// and its rendered [`record_line`].
+/// and its rendered [`finding_line`].
 struct RoundFinding {
     role: String,
     id: String,
@@ -2599,13 +2618,7 @@ fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> 
         let body: Value = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
         let field = |k: &str| body.get(k).and_then(Value::as_str).unwrap_or("");
         let id = field("id");
-        let by = e
-            .meta
-            .get(contextgraph::META_ACTOR)
-            .map(String::as_str)
-            .filter(|a| !a.is_empty())
-            .unwrap_or_else(|| field("by"));
-        let line = record_line(id, by, field("summary"));
+        let line = finding_line(id, finding_author(e, &body), field("summary"));
         match found.iter_mut().find(|f| f.role == role && f.id == id) {
             Some(f) => f.line = line,
             None => found.push(RoundFinding {
@@ -2618,17 +2631,70 @@ fn round_findings(run: &[Event], unit: &str, attempt: u32) -> Vec<RoundFinding> 
     found
 }
 
+/// Who recorded the ReviewFinding `e`, whose payload is `body`: the role token its
+/// [`contextgraph::META_ACTOR`] stamp names, else the `by` its payload names; empty when it
+/// names neither.
+fn finding_author<'a>(e: &'a Event, body: &'a Value) -> &'a str {
+    e.meta
+        .get(contextgraph::META_ACTOR)
+        .map(String::as_str)
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| body.get("by").and_then(Value::as_str).unwrap_or(""))
+}
+
+/// The members of `unit`'s review round `attempt` that recorded a ReviewFinding with no
+/// [`META_SPAWN`] stamp ([`finding_author`]), which [`round_findings`] cannot place in a round:
+/// each logged after the round's [`STATUS_REVIEW_ROUND_START`] mark, or anywhere in `run` when
+/// the round has none, as a review that is not a unit's has none. Not every emit path stamps
+/// its spawn (an out-of-process emit without its spawn id, an operator's own), so such a
+/// finding may be the round's, and [`round_findings_block`] never calls its author silent.
+fn unstamped_round_authors(run: &[Event], unit: &str, attempt: u32) -> BTreeSet<String> {
+    let start = run
+        .iter()
+        .position(|e| {
+            unit_status_marks(std::slice::from_ref(e), unit, &[STATUS_REVIEW_ROUND_START])
+                .any(|(_, at, _)| at == u64::from(attempt))
+        })
+        .unwrap_or(0);
+    run[start..]
+        .iter()
+        .filter(|e| {
+            e.type_ == contextgraph::TYPE_REVIEW_FINDING && !e.meta.contains_key(META_SPAWN)
+        })
+        .filter_map(|e| {
+            let body: Value = serde_json::from_slice(&e.data).unwrap_or(Value::Null);
+            Some(finding_author(e, &body).to_string()).filter(|by| !by.is_empty())
+        })
+        .collect()
+}
+
 /// The block a review spawn's task closes on over its round's `findings`: for a unit's
 /// adjudicator (`all`) every one under [`ROUND_FINDINGS_ALL`], whatever file it names, which
-/// the graph slice of its prompt may leave out; for any other step's `role` the ones it recorded
-/// itself under [`ROUND_FINDINGS_YOURS`], so a reviewer re-driven within its round knows what it
-/// already recorded. Empty when there is none to list.
-fn round_findings_block(findings: &[RoundFinding], role: &str, all: bool) -> String {
-    let lines: String = findings
+/// the graph slice of its prompt may leave out, then a [`ROUND_NO_FINDING`] row for each role
+/// of its `roster` that recorded none, so a silent reviewer reads as one - never for a role
+/// `unstamped` names ([`unstamped_round_authors`]), whose finding may be the round's; for any
+/// other step's `role` the ones it recorded itself under [`ROUND_FINDINGS_YOURS`], so a
+/// reviewer re-driven within its round knows what it already recorded. Empty when there is
+/// none to list.
+fn round_findings_block(
+    findings: &[RoundFinding],
+    role: &str,
+    all: bool,
+    roster: &[String],
+    unstamped: &BTreeSet<String>,
+) -> String {
+    let mut lines: String = findings
         .iter()
         .filter(|f| all || f.role == role)
         .map(|f| f.line.as_str())
         .collect();
+    if all {
+        for silent in roster.iter().filter(|member| {
+            !findings.iter().any(|f| &f.role == *member) && !unstamped.contains(*member)
+        }) {
+            lines.push_str(&fill(ROUND_NO_FINDING, &[("role", silent)]));
+        }
+    }
     if lines.is_empty() {
         String::new()
     } else if all {
@@ -3756,12 +3822,8 @@ fn has_producer(stages: &BTreeMap<String, Stage>) -> bool {
 fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spawn::Adjudication> {
     let earlier = s.checked_sub(2)?;
     let stopping = s - 1;
-    let keyed = |key: String| {
-        run.iter()
-            .find(|e| e.meta.get(META_REPLAY_KEY) == Some(&key))
-    };
     let spec_ambiguity = |k: u32| {
-        keyed(failed_key(gate, k))
+        logged_under(run, &failed_key(gate, k))
             .and_then(Event::decode::<Value>)
             .and_then(|v| spawn::Adjudication::parse(v.get("review_reason")?.as_str()?))
             .filter(spawn::Adjudication::is_spec_ambiguity)
@@ -3776,7 +3838,7 @@ fn spec_defect_stop(run: &[Event], gate: &str, plan: &str, s: u32) -> Option<spa
     };
     spec_ambiguity(earlier)?;
     let adjudication = spec_ambiguity(stopping)?;
-    let completed = keyed(spec_defect_escalated_key(gate, stopping)).is_some();
+    let completed = logged_under(run, &spec_defect_escalated_key(gate, stopping)).is_some();
     (re_planned(stopping) && !re_planned(s) && !completed).then_some(adjudication)
 }
 
@@ -5707,7 +5769,7 @@ impl RunCtx<'_> {
         routing: &TierRouting,
     ) -> Result<(), Error> {
         self.emit_keyed(
-            &format!("{}/review-tier#{attempt}", st.name),
+            &review_tier_key(&st.name, attempt),
             ledger::TYPE_UNIT_STATUS,
             json!({
                 "id": st.name,
@@ -5988,6 +6050,113 @@ impl RunCtx<'_> {
         Some((base, paths))
     }
 
+    /// AN UNCHANGED TREE KEEPS ITS APPROVE: when a later review `round` of `unit` at `attempt`
+    /// judges the very tree the round it reviews from approved ([`reusable_approve`]), the tree
+    /// of `round_start_sha` in `wt` being the tree of the round's base, record
+    /// that approve again as this attempt's `reviewed` status and return it, spawning no
+    /// reviewer. Its evidence names the approve it reuses and the sha that round judged
+    /// ([`approve_reused`]) above that approve's own evidence; it carries that round's
+    /// adjudicator model and this round's start sha, `round_start_sha`. `None`, so the whole
+    /// panel runs, when there is no such approve or the log cannot be read. The outcome names no
+    /// compensation target: the round that rendered the verdict queued its own.
+    fn reuse_approve(
+        &self,
+        unit: &str,
+        attempt: u32,
+        round: &ReviewRound,
+        tier: Option<&str>,
+        wt: Option<&Worktree>,
+        round_start_sha: &str,
+    ) -> Result<Option<ReviewOutcome>, Error> {
+        let Ok(events) = self.read_current_run() else {
+            return Ok(None);
+        };
+        let same_tree =
+            wt.is_some_and(|w| w.same_tree(&round.base, round_start_sha).unwrap_or(false));
+        let Some((key, approve)) = reusable_approve(&events, unit, attempt, round, tier, same_tree)
+        else {
+            return Ok(None);
+        };
+        let prior = approve
+            .decode::<Value>()
+            .and_then(|v| v["evidence"]["review"].as_str().map(str::to_string))
+            .unwrap_or_default();
+        let reason = format!("{}\n{prior}", approve_reused(&key, &round.base));
+        if let Some(w) = wt {
+            w.ensure_present()?;
+        }
+        let model = |name: &str| approve.meta.get(name).cloned().unwrap_or_default();
+        self.emit_keyed_meta(
+            &reviewed_key(unit, attempt),
+            ledger::TYPE_UNIT_STATUS,
+            json!({"id": unit, "status": "reviewed", "evidence": review_evidence(&reason)}),
+            &[
+                (META_MODEL_ALIAS, &model(META_MODEL_ALIAS)),
+                (META_MODEL_RESOLVED, &model(META_MODEL_RESOLVED)),
+                (META_WORKTREE_SHA, round_start_sha),
+            ],
+        )?;
+        Ok(Some(ReviewOutcome::approved(reason)))
+    }
+
+    /// THE REVIEW PACKET of the round that judges `head`, its round-start sha, in the unit
+    /// worktree `wt` ([`ReviewPacket::block`]): the commits and hunks from the base of `round`,
+    /// the round that sent the unit back, or on a first round from the unit's fork point, beside
+    /// the whole unit's files from that fork point. A check-in stage's fork point is the run's
+    /// recorded base ([`Self::run_base_env`]) when it is an ancestor of `head`, so the check-in
+    /// reviews the whole run. Empty only when there is no worktree or no `head`; a `head` with
+    /// no fork point, or a read that fails, renders the packet's header over the round's base,
+    /// else the run's recorded base, else the empty tree ([`worktree::empty_tree`]), so the
+    /// read it names shows every line of `head` and never reads a range with no base.
+    fn review_packet(
+        &self,
+        st: &Stage,
+        wt: Option<&Worktree>,
+        head: &str,
+        round: Option<&ReviewRound>,
+    ) -> String {
+        let Some(wt) = wt.filter(|_| !head.is_empty()) else {
+            return String::new();
+        };
+        let run_base = is_check_in(st, &self.cfg.workflow.stages)
+            .then(|| self.run_base_env())
+            .filter(|base| !base.is_empty() && worktree::is_ancestor(&wt.dir, base, head));
+        let fork = run_base.or_else(|| wt.fork_point(head).ok());
+        let base = round
+            .map(|r| r.base.clone())
+            .or_else(|| fork.clone())
+            .unwrap_or_else(|| self.run_base_env());
+        let base = if base.is_empty() {
+            worktree::empty_tree(&wt.dir)
+        } else {
+            base
+        };
+        let read = || {
+            let fork = fork.as_deref()?;
+            let files = wt.diff_files(fork, head).ok()?;
+            let delta = if base == fork {
+                files.clone()
+            } else {
+                wt.diff_files(&base, head).ok()?
+            };
+            Some(PacketChange {
+                commits: wt.commits_between(&base, head).ok()?,
+                whole: format!("{fork}..{head}"),
+                files,
+                delta,
+            })
+        };
+        ReviewPacket {
+            change: read(),
+            head: head.to_string(),
+            required: round
+                .map(|r| r.required.iter().map(|item| item.path.clone()).collect())
+                .unwrap_or_default(),
+            base,
+        }
+        .block()
+    }
+
     /// Run the review of THIS unit's diff over the routed panel's steps
     /// ([`ReviewPanel::steps`](crate::config::ReviewPanel::steps)), in step order, and return
     /// the outcome (whether it is approved, plus the adjudicator's verdict reasoning) (section 3.2).
@@ -6057,7 +6226,9 @@ impl RunCtx<'_> {
     /// `prior_required` is the REQUIRED list this attempt's implementer was handed. On a LATER
     /// review round - one whose unit an earlier round of the same branch judged
     /// ([`Self::round_delta`]) - every step reviews the delta since that round against it
-    /// ([`ReviewRound`]); a reject's own REQUIRED list rides back on the outcome.
+    /// ([`ReviewRound`]); a reject's own REQUIRED list rides back on the outcome. A later round
+    /// whose tree is the one that earlier round approved reuses the approve and runs no step
+    /// ([`Self::reuse_approve`]).
     // Each argument is a distinct, already-documented review input (stage, worktree dir,
     // attempt, the two routing/deferral flags, the blast-radius view, the caller's
     // any-parked out-param, the unit worktree object itself for the ensure-on-park
@@ -6118,6 +6289,21 @@ impl RunCtx<'_> {
                 required: prior_required.to_vec(),
                 audit: audit_id(&st.name, attempt),
             });
+        // AN UNCHANGED TREE KEEPS ITS APPROVE: a later round judging the tree the round it
+        // reviews from approved reuses that approve and spawns no reviewer
+        // ([`Self::reuse_approve`]). Speculation defers its `reviewed` status to the winning
+        // lane, so a candidate always runs the panel.
+        if let Some(round) = round.as_ref().filter(|_| !defer_reviewed) {
+            let tier = routing.policy.then_some(routing.tier);
+            if let Some(reused) =
+                self.reuse_approve(&st.name, attempt, round, tier, wt, &round_start_sha)?
+            {
+                return Ok(reused);
+            }
+        }
+        // THE REVIEW PACKET every step reads: the change this round judges, read from git once,
+        // here, when the round starts.
+        let packet = self.review_packet(st, wt, &round_start_sha, round.as_ref());
         // THE STEP LOOP: the panel's review sequence ([`ReviewPanel::steps`]) runs in step order,
         // each step grounding AFTER every step before it, so `graph_context` surfaces their
         // findings, each step spawning under its [`review_step_role`] token, computed from
@@ -6132,19 +6318,49 @@ impl RunCtx<'_> {
         // before any later step spends a spawn. The adjudicator reads every earlier step's findings
         // from the graph and renders the gating verdict.
         let steps = panel.steps();
+        // WHO A LATER ROUND RE-RUNS (`review.later_rounds`): under `finders`, the members whose
+        // upheld findings sent the unit back and the adjudicator ([`later_round_finders`]), each
+        // spawning under its own step's token, and each step handed only the members that ran;
+        // `None` runs every member. A log that cannot be read runs every member.
+        let finders = match (&round, panel.later_rounds) {
+            (Some(round), LaterRounds::Finders) => {
+                let tier = routing.policy.then_some(routing.tier);
+                self.read_current_run().ok().and_then(|events| {
+                    later_round_finders(&events, &st.name, attempt, round, &steps, tier)
+                })
+            }
+            _ => None,
+        };
+        let runs = |token: &String| {
+            finders
+                .as_ref()
+                .is_none_or(|members| members.contains(token))
+        };
         let mut verdict = None;
         for (index, step) in steps.iter().enumerate() {
-            let roster = step_roster(&steps, index, review_step_role);
             let k = step_ordinal(&steps, index);
+            let roster: Vec<String> = step_roster(&steps, index, review_step_role)
+                .into_iter()
+                .filter(runs)
+                .collect();
+            let agents: Vec<String> = step
+                .agents()
+                .iter()
+                .filter(|agent| runs(&review_step_role(step.kind(), agent, k)))
+                .cloned()
+                .collect();
+            if agents.is_empty() {
+                continue;
+            }
             let ran = match step {
                 // Spec 64 c1 round 4: forward the CALLER's any-parked signal (see this
                 // function's doc comment) rather than a throwaway local - `run_stage` reads it
                 // back after `run_single_stage` returns, so the unit's own worktree survives a
                 // lens park even when a co-chunked sibling's genuine error is what this call's
                 // `?` propagates below.
-                ReviewStep::Lenses(ids) => self.run_review_agents_concurrently(
+                ReviewStep::Lenses(_) => self.run_review_agents_concurrently(
                     st,
-                    ids,
+                    &agents,
                     dir,
                     attempt,
                     ordinal,
@@ -6152,6 +6368,7 @@ impl RunCtx<'_> {
                     any_parked,
                     wt,
                     round.as_ref(),
+                    &packet,
                     &roster,
                 ),
                 ReviewStep::Adversary(id) => self.run_finding_reviewer(
@@ -6164,10 +6381,21 @@ impl RunCtx<'_> {
                     k,
                     wt,
                     round.as_ref(),
+                    &packet,
                     &roster,
                 ),
                 ReviewStep::Adjudicator(id) => self
-                    .run_adjudicator(st, id, dir, attempt, ordinal, wt, &roster, round.as_ref())
+                    .run_adjudicator(
+                        st,
+                        id,
+                        dir,
+                        attempt,
+                        ordinal,
+                        wt,
+                        &roster,
+                        round.as_ref(),
+                        &packet,
+                    )
                     .map(|judged| verdict = Some((id.as_str(), judged))),
             };
             // A REVIEW ROUND LEAVES THE TREE IT REVIEWED even on a genuine crash (spec 103,
@@ -6239,7 +6467,7 @@ impl RunCtx<'_> {
             // (spec 04, criterion 4). It is the adjudicator SPAWN's unit event, so it
             // carries the adjudicator's requested alias and resolved id (spec 05 line 52).
             self.emit_keyed_meta(
-                &format!("{}/reviewed#{attempt}", st.name),
+                &reviewed_key(&st.name, attempt),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -6307,7 +6535,8 @@ impl RunCtx<'_> {
                     "For the operator: review of unit {unit:?} at attempt {attempt} found, \
                      outside the delta it reviewed, an item that is no correctness defect, so \
                      it no longer holds the unit back - {}: {}",
-                    item.path, item.finding
+                    debug_escaped(&item.path),
+                    debug_escaped(&item.finding)
                 ),
                 vec![item.path.clone()],
             )?;
@@ -6397,7 +6626,7 @@ impl RunCtx<'_> {
                 "a review round left unit {unit:?}'s worktree as residue after judging \
                  {round_start_sha} - {where_at}: {}. Restored to the reviewed sha; no \
                  attempt charged.",
-                residue.join(", ")
+                escaped_list(&residue)
             ),
             None,
             None,
@@ -8431,7 +8660,7 @@ impl RunCtx<'_> {
         let steps = self.cfg.workflow.effective_review_panel(st).steps();
         if let Some(adjudicator) = step_adjudicator(&steps) {
             self.emit_keyed_meta(
-                &format!("{}/reviewed#{attempt}", st.name),
+                &reviewed_key(&st.name, attempt),
                 ledger::TYPE_UNIT_STATUS,
                 json!({
                     "id": st.name,
@@ -8659,6 +8888,9 @@ impl RunCtx<'_> {
                 any_lens_parked,
                 None,
                 None,
+                // No unit worktree, so no review packet: each reviewer reads the stage's
+                // change itself.
+                "",
                 &step_roster(&[ReviewStep::Lenses(lenses.clone())], 0, review_step_role),
             )?;
             if !st.adversary.is_empty() {
@@ -8673,6 +8905,7 @@ impl RunCtx<'_> {
                     1,
                     None,
                     None,
+                    "",
                     &review_roster(&lenses),
                 )?;
             }
@@ -8691,6 +8924,7 @@ impl RunCtx<'_> {
                     None,
                     &adjudicator_roster(&lenses, &st.adversary),
                     None,
+                    "",
                 )?
             };
 
@@ -8734,7 +8968,7 @@ impl RunCtx<'_> {
                 // reviewers/gates all replayed; keying `reviewed` skips the duplicate and
                 // lets `UnitIntegrated` (terminal, never re-scheduled) land exactly once.
                 self.emit_keyed_meta(
-                    &format!("{}/reviewed#{attempts}", st.name),
+                    &reviewed_key(&st.name, attempts),
                     ledger::TYPE_UNIT_STATUS,
                     json!({
                         "id": st.name,
@@ -8851,8 +9085,9 @@ impl RunCtx<'_> {
     /// separately from the propagated Err.
     // Each argument is a distinct review input - the stage, its lens ids, the worktree dir,
     // the attempt and its infra retry ordinal, the step's ordinal among the lens steps, the
-    // any-parked out-param, the unit worktree, the later-round block, the lens step's roster -
-    // the same primitive-argument shape `run_reviewer` carries this allow for.
+    // any-parked out-param, the unit worktree, the later-round block, the round's review packet,
+    // the lens step's roster - the same primitive-argument shape `run_reviewer` carries this
+    // allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_review_agents_concurrently(
         &self,
@@ -8867,6 +9102,8 @@ impl RunCtx<'_> {
         any_parked: &std::sync::atomic::AtomicBool,
         wt: Option<&Worktree>,
         round: Option<&ReviewRound>,
+        // The round's review packet ([`Self::review_packet`]), the caller's value.
+        packet: &str,
         // The roster every lens of this step carries ([`step_roster`]), the caller's value.
         roster: &[String],
     ) -> Result<(), Error> {
@@ -8889,6 +9126,7 @@ impl RunCtx<'_> {
                                 k,
                                 wt,
                                 round,
+                                packet,
                                 roster,
                             )
                         })
@@ -8956,8 +9194,8 @@ impl RunCtx<'_> {
     /// [`SpawnOpts::reviews`].
     // Each argument is a distinct review input (stage, step kind, agent id, dir, attempt and its
     // infra retry ordinal, the step's ordinal, the ensure-on-park worktree, the later-round block,
-    // the step's roster) - the same primitive-argument shape `run_reviewer` carries this allow
-    // for.
+    // the round's review packet, the step's roster) - the same primitive-argument shape
+    // `run_reviewer` carries this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_finding_reviewer(
         &self,
@@ -8970,6 +9208,7 @@ impl RunCtx<'_> {
         k: u32,
         wt: Option<&Worktree>,
         round: Option<&ReviewRound>,
+        packet: &str,
         roster: &[String],
     ) -> Result<(), Error> {
         // The output is not a verdict - the findings go to the graph - so the substantive result
@@ -8978,9 +9217,9 @@ impl RunCtx<'_> {
         // step's token so an out-of-process emit (`rigger emit`, the spawn-bound MCP server)
         // carries attribution too.
         let role = review_step_role(kind, agent_id, k);
-        let prompt = self.build_review_prompt(st, dir, &role, round)?;
+        let prompt = self.build_review_prompt(st, dir, &role, round, packet)?;
         let resume = round
-            .map(|r| self.review_resume_task(st, dir, r))
+            .map(|r| self.review_resume_task(st, dir, r, packet))
             .transpose()?;
         self.run_reviewer(
             st,
@@ -9119,8 +9358,10 @@ impl RunCtx<'_> {
             // The findings this round already recorded, read afresh for every spawn: a reviewer
             // re-driven within its round (its driver died after it recorded, or its result was
             // degenerate or verdict-less) is told its own, and the adjudicator every one.
-            let found = round_findings(&self.read_current_run()?, &st.name, attempt);
-            let block = round_findings_block(&found, role, whole_round);
+            let run = self.read_current_run()?;
+            let found = round_findings(&run, &st.name, attempt);
+            let unstamped = unstamped_round_authors(&run, &st.name, attempt);
+            let block = round_findings_block(&found, role, whole_round, reviews, &unstamped);
             let held = found.iter().any(|f| f.role == role);
             // A later round's first spawn of this role continues the session the role's last
             // round ran as; a respawn within the round (a degenerate or verdict-less result)
@@ -9468,9 +9709,9 @@ impl RunCtx<'_> {
     /// and, on a later review round, ends with that round's block, where a reject naming no
     /// REQUIRED item is degenerate ([`ReviewerOutput::RoundVerdict`]).
     // Each argument is a distinct, already-documented review input (stage, agent id, dir,
-    // attempt, the ensure-on-park worktree, the step's roster and the review round) - the same
-    // primitive-argument shape `run_reviewer`/`reviewer_spawn_opts` already carry this allow
-    // for.
+    // attempt, the ensure-on-park worktree, the step's roster, the review round and its review
+    // packet) - the same primitive-argument shape `run_reviewer`/`reviewer_spawn_opts` already
+    // carry this allow for.
     #[allow(clippy::too_many_arguments)]
     fn run_adjudicator(
         &self,
@@ -9482,6 +9723,7 @@ impl RunCtx<'_> {
         wt: Option<&Worktree>,
         roster: &[String],
         round: Option<&ReviewRound>,
+        packet: &str,
     ) -> Result<(bool, String, String), Error> {
         // Unlike the other tiers the adjudicator's result IS the verdict, so it is read
         // here (not discarded). `run_reviewer` guarantees it is non-degenerate before it
@@ -9498,12 +9740,12 @@ impl RunCtx<'_> {
         // sentence included exactly when its spawn at `dir` carries the unit's review cache.
         let prompt = format!(
             "{}{}{}",
-            self.review_base_prompt(st, dir)?,
+            self.review_base_prompt(st, dir, packet)?,
             adjudicator_contract(self.reviewer_has_build_cache(dir)?),
             round.map(ReviewRound::block).unwrap_or_default()
         );
         let resume = round
-            .map(|r| self.review_resume_task(st, dir, r))
+            .map(|r| self.review_resume_task(st, dir, r, packet))
             .transpose()?;
         let result = self.run_reviewer(
             st,
@@ -9942,7 +10184,7 @@ impl RunCtx<'_> {
                 // and record it terminal + integrated so the main loop never re-runs it and
                 // the fan-out units that need it become ready.
                 self.emit_keyed_meta(
-                    &format!("{gate_name}/reviewed#{attempts}"),
+                    &reviewed_key(&gate_name, attempts),
                     ledger::TYPE_UNIT_STATUS,
                     json!({
                         "id": gate_name,
@@ -12639,17 +12881,19 @@ impl RunCtx<'_> {
     /// from the graph, and a reviewer who emits its own findings feeds the next tier the
     /// same way; the `by`-carried `actor` also lets the review-quality folds attribute the
     /// finding on the out-of-process path (see [`review_protocol`]). On a later review round
-    /// it ends with that round's block ([`ReviewRound::block`]).
+    /// it ends with that round's block ([`ReviewRound::block`]). `packet` is the round's review
+    /// packet ([`Self::review_packet`]), read after the gate evidence.
     fn build_review_prompt(
         &self,
         st: &Stage,
         dir: &str,
         actor: &str,
         round: Option<&ReviewRound>,
+        packet: &str,
     ) -> Result<String, Error> {
         Ok(format!(
             "{}{}{}",
-            self.review_base_prompt(st, dir)?,
+            self.review_base_prompt(st, dir, packet)?,
             review_protocol(actor, self.reviewer_has_build_cache(dir)?),
             round.map(ReviewRound::block).unwrap_or_default()
         ))
@@ -12659,10 +12903,11 @@ impl RunCtx<'_> {
     /// [`Self::build_review_prompt`], the adjudicator in [`Self::run_adjudicator`]: the grounded
     /// [`Self::build_prompt`] followed by the [`gate_evidence_block`] of the commit the reviewer
     /// judges - the HEAD of `dir`, addressed by the same [`worktree::head_sha_of`] the gates'
-    /// digests are ([`Self::run_gates_at`]) - read from this run's log.
-    fn review_base_prompt(&self, st: &Stage, dir: &str) -> Result<String, Error> {
+    /// digests are ([`Self::run_gates_at`]) - read from this run's log, and the round's review
+    /// `packet` ([`Self::review_packet`]): the change that commit makes.
+    fn review_base_prompt(&self, st: &Stage, dir: &str, packet: &str) -> Result<String, Error> {
         Ok(format!(
-            "{}{}",
+            "{}{}{packet}",
             self.build_prompt(st)?,
             self.review_gate_evidence(st, dir)?
         ))
@@ -12737,13 +12982,15 @@ impl RunCtx<'_> {
     /// The task a RESUMED review tier is sent on a later round: the findings now recorded about
     /// the unit's files (this round's earlier tiers' among them, which the session has not
     /// seen), the gate evidence of the commit this round judges in `dir` (the session saw only
-    /// an earlier round's), and the round's block - its delta and REQUIRED list. The session
-    /// already holds the criterion, the grounding and its review protocol.
+    /// an earlier round's), the round's review `packet` ([`Self::review_packet`]), and the
+    /// round's block - its delta and REQUIRED list. The session already holds the criterion,
+    /// the grounding and its review protocol.
     fn review_resume_task(
         &self,
         st: &Stage,
         dir: &str,
         round: &ReviewRound,
+        packet: &str,
     ) -> Result<String, Error> {
         let seed = self.grounded_seed(st);
         let mut b = String::new();
@@ -12751,6 +12998,7 @@ impl RunCtx<'_> {
             write_capped_findings(&mut b, &g, &seed);
         }
         b.push_str(&self.review_gate_evidence(st, dir)?);
+        b.push_str(packet);
         b.push_str(&round.block());
         Ok(b)
     }
@@ -14586,8 +14834,9 @@ fn adjudicator_contract(carries_cache: bool) -> String {
 }
 
 /// The block the check-in stage's first prompt ends with when the run's review upheld any
-/// finding (`notes`, from [`run_notes`]): each note once, with its locations and text, and what
-/// the stage does with them. Empty for no note, so the stage's prompt is then unchanged.
+/// finding (`notes`, from [`run_notes`]): each note once, with its locations and text, each
+/// escaped ([`debug_escaped`]) as a reviewer wrote it, and what the stage does with them. Empty
+/// for no note, so the stage's prompt is then unchanged.
 fn notes_block(notes: &[RunNote]) -> String {
     if notes.is_empty() {
         return String::new();
@@ -14597,12 +14846,26 @@ fn notes_block(notes: &[RunNote]) -> String {
         let at = if note.about.is_empty() {
             String::new()
         } else {
-            format!(" ({})", note.about.join(", "))
+            format!(" ({})", escaped_list(&note.about))
         };
-        block.push_str(&format!("- {}{at}: {}\n", note.id, note.summary));
+        block.push_str(&format!(
+            "- {}{at}: {}\n",
+            debug_escaped(&note.id),
+            debug_escaped(&note.summary)
+        ));
     }
     block.push_str(RUN_NOTES_CLOSING);
     block
+}
+
+/// `paths` joined by `, `, each escaped ([`debug_escaped`]), so a newline in one cannot end
+/// the line that lists them.
+fn escaped_list(paths: &[String]) -> String {
+    paths
+        .iter()
+        .map(|path| debug_escaped(path))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// A LATER REVIEW ROUND: an earlier round judged the unit at `base` and sent it back, its
@@ -14620,18 +14883,24 @@ struct ReviewRound {
 
 impl ReviewRound {
     /// Whether `item` holds the unit back on this round: a correctness defect anywhere, or any
-    /// finding in the delta this round reviewed. Every other item is the operator's.
+    /// finding whose path names a file of the delta this round reviewed ([`required_names`]).
+    /// Every other item is the operator's.
     fn blocks(&self, item: &RequiredItem) -> bool {
-        item.correctness || self.delta.contains(&item.path)
+        item.correctness
+            || self
+                .delta
+                .iter()
+                .any(|path| required_names(&item.path, path))
     }
 
     /// The block every review tier's prompt ends with on this round: what it reviews (the
-    /// delta and the REQUIRED list) and the rule that splits what it finds outside the delta.
+    /// delta, each path escaped ([`debug_escaped`]), and the REQUIRED list) and the rule that
+    /// splits what it finds outside the delta.
     fn block(&self) -> String {
         let delta = if self.delta.is_empty() {
             DELTA_NONE.to_string()
         } else {
-            self.delta.join(", ")
+            escaped_list(&self.delta)
         };
         let required = if self.required.is_empty() {
             ROUND_REQUIRED_NONE.to_string()
@@ -14651,6 +14920,261 @@ impl ReviewRound {
     }
 }
 
+/// The review packet's count cap: the most files whose hunks it carries ([`packet_hunks`]); every
+/// file after them is listed as elided.
+const PACKET_VERBATIM_N: usize = 64;
+
+/// The review packet's byte cap: a hard bound on the hunks it carries ([`packet_hunks`]), so a
+/// large change never blows a reviewer's prompt; every file past it is listed with the read that
+/// fetches it.
+const PACKET_BUDGET_BYTES: usize = 96 * 1024;
+
+/// The review packet's count cap on each of its row lists, the commits and the changed files: the
+/// most rows it lists before one row counts the rest.
+const PACKET_ROWS_N: usize = 64;
+
+/// The review packet's byte cap on each of its row lists, beside [`PACKET_ROWS_N`].
+const PACKET_ROWS_BYTES: usize = 8 * 1024;
+
+/// THE REVIEW PACKET a review round's every step reads ([`ReviewPacket::block`]): the change from
+/// `base` to `head`, the round-start sha the round judges, read from git once when the round
+/// starts ([`RunCtx::review_packet`]), so no reviewer spends a read fetching it.
+struct ReviewPacket {
+    /// Where the commits and the hunks start: the unit's fork point on a first round, the
+    /// round-start sha of the round that sent the unit back on a later one.
+    base: String,
+    /// The round-start sha: the commit the round judges and the one an approve lands.
+    head: String,
+    /// What git read, or `None` when a read failed.
+    change: Option<PacketChange>,
+    /// The paths the REQUIRED items of the round that sent the unit back name; empty on a first
+    /// round.
+    required: Vec<String>,
+}
+
+/// The change a [`ReviewPacket`] carries, as git read it.
+struct PacketChange {
+    /// Every commit `base..head` adds, oldest first.
+    commits: Vec<CommitLine>,
+    /// The range the file list reads over: the unit's whole change, from its fork point.
+    whole: String,
+    /// Every file `whole` changed, by path.
+    files: Vec<FileDiff>,
+    /// Every file `base..head` changed: the files whose hunks the packet carries, the same as
+    /// `files` on a first round.
+    delta: Vec<FileDiff>,
+}
+
+impl ReviewPacket {
+    /// The packet, in order: its header naming the range; then, when git read the change, the
+    /// commits, the whole unit's files with their line counts, each list capped by
+    /// [`packet_rows`], each REQUIRED item's path the round's change left untouched, the hunks
+    /// [`packet_hunks`] keeps, a row for each binary file of the round's change, and the files it
+    /// elides with the read that fetches each - or, when a read failed, that read for the whole
+    /// range. Every path is escaped ([`debug_escaped`]), so no path forges a row.
+    fn block(&self) -> String {
+        let range = [("base", self.base.as_str()), ("head", self.head.as_str())];
+        let mut b = fill(REVIEW_PACKET_HEADER, &range);
+        let Some(change) = &self.change else {
+            b.push_str(&fill(PACKET_UNREADABLE, &range));
+            return b;
+        };
+        b.push_str(&fill(
+            PACKET_COMMITS_HEADER,
+            &[("count", &change.commits.len().to_string())],
+        ));
+        b.push_str(&packet_rows(
+            change.commits.iter().map(|commit| {
+                fill(
+                    PACKET_COMMITS_ROW,
+                    &[("sha", &commit.sha), ("subject", &commit.subject)],
+                )
+            }),
+            change.commits.len(),
+            |rest| {
+                fill(
+                    PACKET_COMMITS_ELIDED,
+                    &[("count", &rest.to_string()), range[0], range[1]],
+                )
+            },
+        ));
+        let (added, removed) = change
+            .files
+            .iter()
+            .filter_map(|f| f.lines)
+            .fold((0u64, 0u64), |(a, r), (x, y)| {
+                (a + u64::from(x), r + u64::from(y))
+            });
+        b.push_str(&fill(
+            PACKET_FILES_HEADER,
+            &[
+                ("range", &change.whole),
+                ("count", &change.files.len().to_string()),
+                ("added", &added.to_string()),
+                ("removed", &removed.to_string()),
+            ],
+        ));
+        b.push_str(&packet_rows(
+            change.files.iter().map(|file| {
+                let (status, path) = (file.status.to_string(), packet_path(file));
+                match file.lines {
+                    Some((added, removed)) => fill(
+                        PACKET_FILES_ROW,
+                        &[
+                            ("status", &status),
+                            ("path", &path),
+                            ("added", &added.to_string()),
+                            ("removed", &removed.to_string()),
+                        ],
+                    ),
+                    None => packet_binary_row(file),
+                }
+            }),
+            change.files.len(),
+            |rest| {
+                fill(
+                    PACKET_FILES_ELIDED,
+                    &[("count", &rest.to_string()), ("range", &change.whole)],
+                )
+            },
+        ));
+        let required: BTreeSet<&str> = self.required.iter().map(String::as_str).collect();
+        for path in required {
+            if required_path(path).is_some()
+                && !change.delta.iter().any(|f| packet_file_is(f, path))
+            {
+                b.push_str(&fill(
+                    PACKET_REQUIRED_UNCHANGED,
+                    &[("path", &debug_escaped(path)), ("base", &self.base)],
+                ));
+            }
+        }
+        let (kept, elided) = packet_hunks(&change.delta, &self.required);
+        let binary: Vec<&FileDiff> = change.delta.iter().filter(|f| f.lines.is_none()).collect();
+        if !kept.is_empty() || !binary.is_empty() {
+            b.push_str(PACKET_HUNKS_HEADER);
+            for file in kept {
+                b.push_str(&file.patch);
+            }
+            for file in binary {
+                b.push_str(&packet_binary_row(file));
+            }
+        }
+        if !elided.is_empty() {
+            b.push_str(&fill(PACKET_ELIDED_HEADER, &range));
+            for file in elided {
+                let (added, removed) = file.lines.unwrap_or_default();
+                b.push_str(&fill(
+                    PACKET_ELIDED_ROW,
+                    &[
+                        ("path", &packet_path(file)),
+                        ("added", &added.to_string()),
+                        ("removed", &removed.to_string()),
+                    ],
+                ));
+            }
+        }
+        b
+    }
+}
+
+/// How a review packet names `file`: its path, or `old -> new` for a rename or copy, each path
+/// escaped ([`debug_escaped`]) so a newline in a path cannot forge a row.
+fn packet_path(file: &FileDiff) -> String {
+    let path = debug_escaped(&file.path);
+    match &file.old_path {
+        Some(old) => format!("{} -> {path}", debug_escaped(old)),
+        None => path,
+    }
+}
+
+/// The review packet's row for the binary file `file`: its status letter and its path.
+fn packet_binary_row(file: &FileDiff) -> String {
+    fill(
+        PACKET_BINARY_ROW,
+        &[
+            ("status", &file.status.to_string()),
+            ("path", &packet_path(file)),
+        ],
+    )
+}
+
+/// The rows of one of the review packet's lists, `rows` of `total`, rendered lazily: the leading
+/// ones [`within_budget`] keeps under [`PACKET_ROWS_N`] rows and [`PACKET_ROWS_BYTES`], then, when
+/// it left any out, the row `rest` renders counting them.
+fn packet_rows(
+    rows: impl Iterator<Item = String>,
+    total: usize,
+    rest: impl Fn(usize) -> String,
+) -> String {
+    let kept = within_budget(rows, PACKET_ROWS_N, PACKET_ROWS_BYTES, String::len);
+    let left_out = total - kept.len();
+    let mut b = kept.concat();
+    if left_out > 0 {
+        b.push_str(&rest(left_out));
+    }
+    b
+}
+
+/// Whether `file` is a change the REQUIRED item path `required` names ([`required_names`]): its
+/// path, or the path a rename or copy left.
+fn packet_file_is(file: &FileDiff, required: &str) -> bool {
+    required_names(required, &file.path)
+        || file
+            .old_path
+            .as_deref()
+            .is_some_and(|old| required_names(required, old))
+}
+
+/// The repository path the REQUIRED item path `required` spells, in each spelling an
+/// adjudicator writes one: trimmed, without a leading `./`, without the line or range it points
+/// at (`:12`, `:12-14`) and without a trailing `/`. `None` when nothing is left, as for a
+/// pattern item's empty path: such a path names nothing.
+fn required_path(required: &str) -> Option<&str> {
+    let mut plain = required.trim();
+    while let Some(rest) = plain.strip_prefix("./") {
+        plain = rest;
+    }
+    while let Some((file, at)) = plain.rsplit_once(':') {
+        let line = at.starts_with(|c: char| c.is_ascii_digit())
+            && at.chars().all(|c| c.is_ascii_digit() || c == '-');
+        if !line {
+            break;
+        }
+        plain = file;
+    }
+    Some(plain.trim_end_matches('/')).filter(|plain| !plain.is_empty())
+}
+
+/// Whether the REQUIRED item path `required` names the repository path `path`: the path
+/// [`required_path`] spells is `path`, or a directory holding it.
+fn required_names(required: &str, path: &str) -> bool {
+    required_path(required).is_some_and(|plain| {
+        path.strip_prefix(plain)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+    })
+}
+
+/// The files of `delta` whose hunks a review packet carries, and the files its caps leave out,
+/// each in the order the packet lists them: the files `required` names first, then the rest, each
+/// group smallest patch first and then by path. Each file is kept when its [`Budget`] of
+/// [`PACKET_VERBATIM_N`] files and [`PACKET_BUDGET_BYTES`] admits it beside the files kept
+/// before it, so a file over the bytes left is elided alone and filling goes on; every file past
+/// the count cap is elided. A binary file has no hunk, so it is in neither list.
+fn packet_hunks<'a>(
+    delta: &'a [FileDiff],
+    required: &[String],
+) -> (Vec<&'a FileDiff>, Vec<&'a FileDiff>) {
+    let order = |f: &'a FileDiff| {
+        let named = required.iter().any(|path| packet_file_is(f, path));
+        (!named, f.patch.len(), f.path.as_str())
+    };
+    let mut text: Vec<&'a FileDiff> = delta.iter().filter(|f| f.lines.is_some()).collect();
+    text.sort_by(|a, b| order(a).cmp(&order(b)));
+    let mut budget = Budget::new(PACKET_VERBATIM_N, PACKET_BUDGET_BYTES);
+    text.into_iter().partition(|f| budget.admit(f.patch.len()))
+}
+
 /// Whether an adjudicator's `output` rejects without naming a single item it requires fixed:
 /// a reject a later review round cannot hold the next attempt to. A reject blaming
 /// infrastructure judged no code, so it requires nothing and is never this (F3).
@@ -14665,18 +15189,31 @@ fn rejects_without_required(output: &str) -> bool {
 /// the operator. The verdict text follows it.
 const CONVERGED: &str = "converged";
 
+/// The first line of the `reviewed` evidence of a later round that reused the approve recorded
+/// under `key` ([`RunCtx::reuse_approve`]) of the tree at `sha`, which it judged again unchanged.
+/// The reused verdict's own evidence follows it.
+fn approve_reused(key: &str, sha: &str) -> String {
+    format!("approve reused from {key}: tree unchanged since {sha}")
+}
+
 /// One `- <path>: <finding>` line per REQUIRED item, followed for a pattern item by its
 /// [`PATTERN_LABEL`] line, the trimmed shape and then `record`, the block's record sentence:
 /// the one rendering the implementer's prior-failure block and a later round's review block
-/// share, each passing its own record sentence.
+/// share, each passing its own record sentence. The adjudicator wrote the path, the finding
+/// and the shape, so each is escaped ([`debug_escaped`]) and a newline in one cannot forge a
+/// line.
 fn required_lines(items: &[RequiredItem], record: &str) -> String {
     items
         .iter()
         .map(|item| {
-            let mut line = format!("- {}: {}\n", item.path, item.finding);
+            let mut line = format!(
+                "- {}: {}\n",
+                debug_escaped(&item.path),
+                debug_escaped(&item.finding)
+            );
             let shape = item.pattern.trim();
             if !shape.is_empty() {
-                line.push_str(&fill(PATTERN_LABEL, &[("shape", shape)]));
+                line.push_str(&fill(PATTERN_LABEL, &[("shape", &debug_escaped(shape))]));
                 line.push_str(record);
             }
             line
@@ -14806,17 +15343,44 @@ pub fn within_budget<T>(
     budget_bytes: usize,
     size: impl Fn(&T) -> usize,
 ) -> Vec<T> {
-    let mut used = 0usize;
-    let mut kept = Vec::new();
-    for entry in entries {
-        let bytes = size(&entry);
-        if kept.len() >= verbatim_n || used + bytes > budget_bytes {
-            break;
+    let mut budget = Budget::new(verbatim_n, budget_bytes);
+    entries
+        .into_iter()
+        .take_while(|entry| budget.admit(size(entry)))
+        .collect()
+}
+
+/// The ONE admission rule behind every capped slice: an entry is admitted while fewer than
+/// `verbatim_n` are admitted AND its bytes fit under `budget_bytes` beside every entry admitted
+/// before it. [`within_budget`] stops at the first entry it refuses; [`packet_hunks`] walks on.
+struct Budget {
+    verbatim_n: usize,
+    budget_bytes: usize,
+    kept: usize,
+    used: usize,
+}
+
+impl Budget {
+    /// A budget of `verbatim_n` entries and `budget_bytes`, nothing admitted yet.
+    fn new(verbatim_n: usize, budget_bytes: usize) -> Self {
+        Self {
+            verbatim_n,
+            budget_bytes,
+            kept: 0,
+            used: 0,
         }
-        used += bytes;
-        kept.push(entry);
     }
-    kept
+
+    /// Whether an entry of `bytes` fits beside the entries admitted so far, counting it in when it
+    /// does.
+    fn admit(&mut self, bytes: usize) -> bool {
+        let fits = self.kept < self.verbatim_n && self.used + bytes <= self.budget_bytes;
+        if fits {
+            self.kept += 1;
+            self.used += bytes;
+        }
+        fits
+    }
 }
 
 /// The SINGLE recent-N + byte-budget + elision-note core behind EVERY budgeted prompt section -
@@ -15102,6 +15666,16 @@ fn record_line(id: &str, by: &str, summary: &str) -> String {
     } else {
         format!("- {by} ({id}): {summary}\n")
     }
+}
+
+/// A finding's [`record_line`], its `id`, its reviewer `by` and its `summary` each escaped
+/// ([`debug_escaped`]): a reviewer writes all three, so a newline in one cannot forge a row.
+fn finding_line(id: &str, by: &str, summary: &str) -> String {
+    record_line(
+        &debug_escaped(id),
+        &debug_escaped(by),
+        &debug_escaped(summary),
+    )
 }
 
 /// Render the "Code neighborhood" section (spec 29c criterion 1): the code-entity DEFINITIONS the
@@ -15471,7 +16045,7 @@ fn write_capped_findings(b: &mut String, g: &Graph, seed: &[String]) {
         false,
         |n| {
             let attr = |k: &str| n.attrs.get(k).map(String::as_str).unwrap_or("");
-            record_line(&n.id, attr("by"), attr("summary"))
+            finding_line(&n.id, attr("by"), attr("summary"))
         },
     );
 }
@@ -15902,15 +16476,15 @@ fn quarantine_branch_name(unit_id: &str, tip: &str) -> String {
 }
 
 /// Every durable [`STATUS_REVIEW_ROUND_START`] mark [`RunCtx::review_round_start_sha`]
-/// stamped for `unit`, in log order, as `(attempt, sha)` - matching on the event's own
+/// stamped for `unit`, in log order, as `(attempt, sha, mark)` - matching on the event's own
 /// `id`/`status`/`attempt` fields rather than trusting a caller's replay key alone, the
 /// read shape [`recorded_adoption`] shares. A mark carrying no sha is skipped.
 fn review_round_starts<'a>(
     events: &'a [Event],
     unit: &'a str,
-) -> impl Iterator<Item = (u64, String)> + 'a {
+) -> impl Iterator<Item = (u64, String, &'a Event)> + 'a {
     unit_status_marks(events, unit, &[STATUS_REVIEW_ROUND_START])
-        .filter_map(|(_, attempt, e)| Some((attempt, e.meta.get(META_WORKTREE_SHA).cloned()?)))
+        .filter_map(|(_, attempt, e)| Some((attempt, e.meta.get(META_WORKTREE_SHA).cloned()?, e)))
 }
 
 /// Every attempt-stamped `UnitStatus` mark `unit` recorded with one of `statuses`, in log
@@ -15944,7 +16518,7 @@ fn unit_status_marks<'a>(
 /// rather than calling this at all.
 fn recorded_review_round_start_sha(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
     review_round_starts(events, unit)
-        .find_map(|(stamped, sha)| (stamped == u64::from(attempt)).then_some(sha))
+        .find_map(|(stamped, sha, _)| (stamped == u64::from(attempt)).then_some(sha))
 }
 
 /// The session `role`'s latest spawn on `unit` at an attempt before `attempt` ran as, read
@@ -15981,11 +16555,156 @@ fn recorded_session(
 /// verdict sent the unit back to build again. `None` when no review round judged the unit
 /// before `attempt`, or the latest one recorded no sha (a repo-less unit).
 fn round_delta_base(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
-    review_round_starts(events, unit)
-        .filter(|(stamped, _)| *stamped < u64::from(attempt))
-        .max_by_key(|(stamped, _)| *stamped)
-        .map(|(_, sha)| sha)
+    prior_review_round(events, unit, attempt)
+        .map(|(_, sha, _)| sha)
         .filter(|sha| !sha.is_empty())
+}
+
+/// The latest review round that judged `unit` at an attempt before `attempt` - the round whose
+/// verdict sent the unit back to build again - as its [`review_round_starts`] entry.
+fn prior_review_round<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    attempt: u32,
+) -> Option<(u64, String, &'a Event)> {
+    review_round_starts(events, unit)
+        .filter(|(stamped, _, _)| *stamped < u64::from(attempt))
+        .max_by_key(|(stamped, _, _)| *stamped)
+}
+
+/// The earlier review round a later `round` of `unit` at `attempt` reviews from, as its attempt
+/// and start mark: the [`prior_review_round`], when its start sha is `round`'s base.
+fn round_reviewed_from<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    attempt: u32,
+    round: &ReviewRound,
+) -> Option<(u64, &'a Event)> {
+    prior_review_round(events, unit, attempt)
+        .filter(|(_, base, _)| *base == round.base)
+        .map(|(k, _, mark)| (k, mark))
+}
+
+/// The bodies of `unit`'s `UnitFailed` events logged after the event `after` and before the
+/// start of its review round at `attempt`, or to the log's end when that round has not started:
+/// what sent the unit back between an earlier round and this one.
+fn failures_since<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    after: &'a Event,
+    attempt: u32,
+) -> impl Iterator<Item = Value> + 'a {
+    let until = review_round_starts(events, unit)
+        .find(|(stamped, _, _)| *stamped == u64::from(attempt))
+        .map(|(_, _, e)| e.position);
+    events
+        .iter()
+        .filter(move |e| e.position > after.position && until.is_none_or(|end| e.position < end))
+        .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+        .filter_map(Event::decode::<Value>)
+        .filter(move |v| v["id"] == unit)
+}
+
+/// The review tier `unit`'s review round at `attempt` recorded under its [`review_tier_key`], or
+/// `None` when it recorded none: a panel with no depth policy.
+fn recorded_review_tier(events: &[Event], unit: &str, attempt: u32) -> Option<String> {
+    logged_under(events, &review_tier_key(unit, attempt))
+        .and_then(Event::decode::<Value>)
+        .and_then(|v| v["evidence"]["review-tier"].as_str().map(str::to_string))
+}
+
+/// The approve a later review `round` of `unit` at `attempt` reuses
+/// ([`RunCtx::reuse_approve`]), as its replay key and event: the `reviewed` status of the round
+/// `round` reviews from, when that round approved the very tree this one judges. Every
+/// condition must hold, so reuse fails closed: the tree this round judges is the tree of the
+/// round's base (`same_tree`), so it is the one the earlier round judged; that round's approve
+/// records its start sha as the sha it judged; it recorded the review tier `tier` this round
+/// routes to (`None` for both with no depth policy); and what sent the unit back since is one
+/// or more merges the post-merge gates blocked ([`CAUSE_INTEGRATE_CONFLICT`]), never a reject
+/// or a red gate, which condemns the approve.
+fn reusable_approve<'a>(
+    events: &'a [Event],
+    unit: &'a str,
+    attempt: u32,
+    round: &ReviewRound,
+    tier: Option<&str>,
+    same_tree: bool,
+) -> Option<(String, &'a Event)> {
+    if !same_tree {
+        return None;
+    }
+    let (k, _) = round_reviewed_from(events, unit, attempt, round)?;
+    let k = u32::try_from(k).ok()?;
+    let key = reviewed_key(unit, k);
+    let approve = logged_under(events, &key).filter(|e| {
+        e.type_ == ledger::TYPE_UNIT_STATUS
+            && e.meta.get(META_WORKTREE_SHA) == Some(&round.base)
+            && e.decode::<Value>()
+                .is_some_and(|v| v["id"] == unit && v["status"] == "reviewed")
+    })?;
+    let recorded = recorded_review_tier(events, unit, k);
+    let blocked: Vec<bool> = failures_since(events, unit, approve, attempt)
+        .map(|v| v["cause"] == CAUSE_INTEGRATE_CONFLICT)
+        .collect();
+    let sent_back_by_blocked_merges = !blocked.is_empty() && blocked.iter().all(|b| *b);
+    (recorded.as_deref() == tier && sent_back_by_blocked_merges).then_some((key, approve))
+}
+
+/// The role tokens of the members of `steps` a later review `round` of `unit` at `attempt`
+/// re-runs under `later_rounds: finders` ([`LaterRounds::Finders`]): each member that recorded,
+/// in that round or any round before it ([`round_findings`]), a finding the round that sent the
+/// unit back upheld, and the adjudicator. That round's verdict is its reject: the first
+/// `UnitFailed` of the unit logged between that round's start and this one's that carries a
+/// review reason, which only a review reject records. `None`, so every member runs, when that
+/// round is not the one `round` reviews from, when it recorded a review tier other than `tier`,
+/// the one this round routes to (`None` for both with no depth policy), so a member of this
+/// round's panel may never have reviewed the unit, when no such reject upheld a finding a
+/// member recorded, or when the round's delta reaches a file none of its REQUIRED items names
+/// ([`required_names`]).
+fn later_round_finders(
+    events: &[Event],
+    unit: &str,
+    attempt: u32,
+    round: &ReviewRound,
+    steps: &[ReviewStep],
+    tier: Option<&str>,
+) -> Option<Vec<String>> {
+    let required = |path: &String| {
+        round
+            .required
+            .iter()
+            .any(|item| required_names(&item.path, path))
+    };
+    if !round.delta.iter().all(required) {
+        return None;
+    }
+    let (k, mark) = round_reviewed_from(events, unit, attempt, round)?;
+    let k = u32::try_from(k).ok()?;
+    if recorded_review_tier(events, unit, k).as_deref() != tier {
+        return None;
+    }
+    let upheld = failures_since(events, unit, mark, attempt)
+        .find_map(|v| spawn::Adjudication::parse(v["review_reason"].as_str()?))?
+        .upheld;
+    let found: Vec<RoundFinding> = (0..=k)
+        .flat_map(|earlier| round_findings(events, unit, earlier))
+        .collect();
+    let finder = |member: &String| {
+        member != ROLE_ADJUDICATOR
+            && found
+                .iter()
+                .any(|f| f.role == *member && upheld.contains(&f.id))
+    };
+    let members = step_roster(steps, steps.len(), review_step_role);
+    if !members.iter().any(finder) {
+        return None;
+    }
+    Some(
+        members
+            .into_iter()
+            .filter(|member| member == ROLE_ADJUDICATOR || finder(member))
+            .collect(),
+    )
 }
 
 /// Whether a round delta's `paths` changed documentation only: at least one path, and every
@@ -15999,7 +16718,8 @@ fn is_documentation_only(paths: &[String]) -> bool {
 
 /// The task a RESUMED sdet-author is sent on a later attempt, naming what sent the unit back:
 /// the review round's `delta` (the round-start `base` it was judged at and the paths changed
-/// since), and the `gate_evidence` of the gates the previous attempt failed. Empty when neither
+/// since, each escaped by [`escaped_list`]), and the `gate_evidence` of the gates the previous
+/// attempt failed. Empty when neither
 /// names anything - a first attempt - so the spawn stays fresh. Its session already holds the
 /// criterion and the tests it authored.
 fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[String]) -> String {
@@ -16008,7 +16728,7 @@ fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[S
         let changed = if paths.is_empty() {
             DELTA_NONE.to_string()
         } else {
-            paths.join(", ")
+            escaped_list(paths)
         };
         causes.push(fill(
             LATER_ATTEMPT_REVIEW_CAUSE,
@@ -16587,6 +17307,7 @@ mod tests {
     use crate::test_support::gate_def;
     use crate::test_support::gate_def_inputs;
     use crate::test_support::git_ok;
+    use crate::test_support::git_ok_with_identity;
     use crate::test_support::git_out;
     use crate::test_support::has_status_marker as has_status;
     use crate::test_support::one_gated_stage_cfg;
@@ -23052,7 +23773,9 @@ mod tests {
         );
 
         // Review tiers judge against the same criterion text.
-        let review = ctx.build_review_prompt(&unit, "", "lens", None).unwrap();
+        let review = ctx
+            .build_review_prompt(&unit, "", "lens", None, "")
+            .unwrap();
         assert!(
             review.starts_with(header) && review.contains(verbatim),
             "a review prompt must carry the unit's task block; prompt was:\n{review}"
@@ -25442,6 +26165,7 @@ mod tests {
                     adjudicator: "judge".into(),
                     steps: None,
                     tiers: None,
+                    later_rounds: Default::default(),
                 },
                 ..Default::default()
             },
@@ -27601,6 +28325,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -28061,6 +28786,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -28125,6 +28851,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers,
+            later_rounds: Default::default(),
         }
     }
 
@@ -28703,6 +29430,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -30618,6 +31346,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -30770,6 +31499,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -30835,6 +31565,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "plan".into(),
@@ -30910,6 +31641,7 @@ mod tests {
                     adjudicator: "adjudicator".into(),
                     steps: None,
                     tiers: None,
+                    later_rounds: Default::default(),
                 },
                 ..Default::default()
             },
@@ -31720,6 +32452,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         if let Some(bound) = max_retries {
             cfg.workflow.defaults.max_retries = bound;
@@ -31779,9 +32512,11 @@ mod tests {
     }
 
     /// A later review round reviews what changed since the round that sent the unit back,
-    /// and the items that round required: every tier's round-1 prompt names the round-0 sha
-    /// its delta is read from, the `git diff` that is its scope, and each REQUIRED item, which
-    /// the round-1 implementer was also handed as its REQUIRED list. Round 0 carries none.
+    /// and the items that round required: every tier's round-1 prompt carries the REVIEW
+    /// PACKET of the change from the round-0 sha to the sha round 1 judges - the whole unit's
+    /// files, and the hunks of the delta alone - and each REQUIRED item, which the round-1
+    /// implementer was also handed as its REQUIRED list. Round 0's packet reads the unit's whole
+    /// change from its fork point, and carries no REQUIRED item.
     #[test]
     fn the_round_two_review_prompt_carries_the_prior_required_list_and_the_delta_base() {
         let (rs, events, driver) = run_review_rounds(&[
@@ -31791,19 +32526,51 @@ mod tests {
         assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
         let base = recorded_review_round_start_sha(&events, "implement", 0)
             .expect("round 0 stamps the sha it judged");
+        let head = recorded_review_round_start_sha(&events, "implement", 1)
+            .expect("round 1 stamps the sha it judged");
         let item = "- feature.rs: close the unscoped read";
+        let (feature_hunk, fix_hunk) = (
+            "diff --git a/feature.rs b/feature.rs",
+            "diff --git a/fix1.rs b/fix1.rs",
+        );
         for agent in ["lens", "adversary", "adj"] {
             let prompts = driver.prompts_for(agent);
             assert_eq!(prompts.len(), 2, "{agent} reviews both rounds");
             assert!(
-                !prompts[0].contains(item) && !prompts[0].contains("..HEAD"),
-                "{agent}'s first round has no earlier round to read a delta from:\n{}",
+                !prompts[0].contains(item),
+                "{agent}'s first round has no earlier round's REQUIRED list:\n{}",
                 prompts[0]
             );
-            for needle in [&format!("git diff {base}..HEAD"), "fix1.rs", item] {
+            for needle in [
+                format!("..{base}, read when this round started"),
+                "A feature.rs (+1 -0)".into(),
+                format!("{feature_hunk}\n"),
+                "+work\n".into(),
+            ] {
                 assert!(
-                    prompts[1].contains(needle),
+                    prompts[0].contains("REVIEW PACKET: git diff ") && prompts[0].contains(&needle),
+                    "{agent}'s first-round packet must carry {needle:?}:\n{}",
+                    prompts[0]
+                );
+            }
+            for needle in [
+                format!("REVIEW PACKET: git diff {base}..{head}"),
+                "A feature.rs (+1 -0)".into(),
+                "A fix1.rs (+1 -0)".into(),
+                fix_hunk.into(),
+                item.into(),
+            ] {
+                assert!(
+                    prompts[1].contains(&needle),
                     "{agent}'s second round must carry {needle:?}:\n{}",
+                    prompts[1]
+                );
+            }
+            for absent in [feature_hunk.to_string(), format!("{base}..HEAD")] {
+                assert!(
+                    !prompts[1].contains(&absent),
+                    "{agent}'s second round carries the delta's hunks alone, never \
+                     {absent:?}:\n{}",
                     prompts[1]
                 );
             }
@@ -32228,11 +32995,11 @@ mod tests {
     /// A RE-ATTEMPT CONTINUES EACH ROLE'S SESSION: every spawn of the first round starts fresh,
     /// and after the reject every role's spawn on the next round resumes the session its
     /// round-0 spawn ran as, sent only what changed - the implementer the prior-failure block
-    /// with its REQUIRED list, the sdet-author the delta, each review tier the round's delta
-    /// and REQUIRED list - never the criterion it already holds.
+    /// with its REQUIRED list, the sdet-author the delta, each review tier the round's REVIEW
+    /// PACKET, delta and REQUIRED list - never the criterion it already holds.
     #[test]
     fn a_later_round_resumes_each_roles_session_with_what_changed_alone() {
-        let (rs, _, driver) = run_session_rounds(&[
+        let (rs, events, driver) = run_session_rounds(&[
             (adjudicator_at(0, 0), REJECT_FEATURE),
             (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
         ]);
@@ -32272,6 +33039,742 @@ mod tests {
             implementer.contains(item) && implementer.contains("do not start over"),
             "the implementer is sent its prior-failure block:\n{implementer}"
         );
+        let range = [0, 1].map(|attempt| {
+            recorded_review_round_start_sha(&events, "implement", attempt)
+                .expect("each round stamps the sha it judged")
+        });
+        let header = format!("REVIEW PACKET: git diff {}..{}", range[0], range[1]);
+        for role in ["lens:lens", ROLE_ADVERSARY, ROLE_ADJUDICATOR] {
+            let (_, task) = driver
+                .resume_of(&spawn_id("implement", role, 1))
+                .expect("round 1 spawns every review tier");
+            assert!(
+                task.contains(&header) && task.contains("diff --git a/fix1.rs b/fix1.rs"),
+                "{role}'s resumed session is sent the round's packet:\n{task}"
+            );
+        }
+    }
+
+    /// One row of [`a_later_round_re_runs_the_members_its_later_rounds_key_names`]: the panel's
+    /// `later_rounds` value (`None` leaves the key out), the findings round 0's spawns recorded
+    /// as (role, id), the ids round 0's reject upheld, the file its one REQUIRED item names, and
+    /// the members round 1 runs before its adjudicator, in step order.
+    struct LaterRoundsRow {
+        name: &'static str,
+        later_rounds: Option<&'static str>,
+        found: Vec<(String, &'static str)>,
+        upheld: Vec<&'static str>,
+        required: &'static str,
+        runs: Vec<String>,
+    }
+
+    /// WHO A LATER ROUND RE-RUNS: round 0's adjudicator rejects after its members recorded the
+    /// row's findings, upholding some and requiring one fix, and round 1's implementer writes
+    /// `fix1.rs`. `later_rounds: all`, the default, re-runs every member; `finders` re-runs only
+    /// the members whose upheld findings sent the unit back - every member when no upheld id is
+    /// one a member recorded, or when the delta reaches a file no REQUIRED item names. The
+    /// adjudicator runs every round, its roster the members that ran.
+    #[test]
+    fn a_later_round_re_runs_the_members_its_later_rounds_key_names() {
+        let (lens, other) = (lens_role("lens"), lens_role("other"));
+        let every = vec![lens.clone(), other.clone(), ROLE_ADVERSARY.to_string()];
+        let rows = [
+            LaterRoundsRow {
+                name: "the key left out re-runs every member",
+                later_rounds: None,
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "fix1.rs",
+                runs: every.clone(),
+            },
+            LaterRoundsRow {
+                name: "all re-runs every member",
+                later_rounds: Some("all"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "fix1.rs",
+                runs: every.clone(),
+            },
+            LaterRoundsRow {
+                name: "finders re-runs the lens whose finding was upheld",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1"), (other.clone(), "o-1")],
+                upheld: vec!["f-1"],
+                required: "fix1.rs",
+                runs: vec![lens.clone()],
+            },
+            LaterRoundsRow {
+                name: "finders re-runs the adversary whose finding was upheld",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1"), (ROLE_ADVERSARY.to_string(), "a-1")],
+                upheld: vec!["a-1"],
+                required: "fix1.rs",
+                runs: vec![ROLE_ADVERSARY.to_string()],
+            },
+            LaterRoundsRow {
+                name: "an upheld id no member recorded re-runs every member",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["ghost"],
+                required: "fix1.rs",
+                runs: every.clone(),
+            },
+            LaterRoundsRow {
+                name: "a delta past the required files re-runs every member",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "feature.rs",
+                runs: every.clone(),
+            },
+            LaterRoundsRow {
+                name: "a required path spelled from the root names the file",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "./fix1.rs",
+                runs: vec![lens.clone()],
+            },
+            LaterRoundsRow {
+                name: "a required path naming a line names the file",
+                later_rounds: Some("finders"),
+                found: vec![(lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                required: "fix1.rs:12",
+                runs: vec![lens.clone()],
+            },
+        ];
+        for row in rows {
+            let mut panel = json!({
+                "lenses": ["lens", "other"],
+                "adversary": "adversary",
+                "adjudicator": "adj",
+            });
+            if let Some(value) = row.later_rounds {
+                panel["later_rounds"] = json!(value);
+            }
+            let mut cfg = per_unit_panel_cfg(None);
+            cfg.agents.insert("other".into(), agent("other"));
+            cfg.workflow.defaults.review = serde_json::from_value(panel).expect("a map panel");
+            let reject = json!({
+                "verdict": "reject",
+                "upheld": row.upheld,
+                "required": [{"finding": "close it", "path": row.required, "correctness": true}],
+            })
+            .to_string();
+            let mut emits: HashMap<String, Emits> = HashMap::new();
+            for (role, id) in &row.found {
+                emits
+                    .entry(spawn_id("implement", role, 0))
+                    .or_default()
+                    .push(finding(id, "a defect", "feature.rs"));
+            }
+            let driver = Stub {
+                emits_by_spawn_id: emits,
+                ..session_stub(&[
+                    (adjudicator_at(0, 0), reject.as_str()),
+                    (adjudicator_at(1, 0), r#"{"verdict":"approve"}"#),
+                ])
+            };
+            let repo = temp_git_project_with_commit();
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo.path().to_str().unwrap().to_string(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_eq!(
+                rs.units["implement"].status,
+                ledger::Status::Integrated,
+                "{}",
+                row.name
+            );
+            let mut reviewed: Vec<String> = driver
+                .spawn_ids()
+                .into_iter()
+                .filter(|id| {
+                    spawn::attempt_of(id) == 1
+                        && spawn::review_step_of(spawn::spawn_role(id)).is_some()
+                })
+                .collect();
+            reviewed.sort();
+            let mut expected: Vec<String> = row
+                .runs
+                .iter()
+                .chain([&ROLE_ADJUDICATOR.to_string()])
+                .map(|role| spawn_id("implement", role, 1))
+                .collect();
+            expected.sort();
+            assert_eq!(reviewed, expected, "{}: round 1's spawns", row.name);
+            assert_eq!(
+                cached(&driver.reviews_by_spawn_id, &adjudicator_at(1, 0)),
+                Some(row.runs.clone()),
+                "{}: the adjudicator's roster is the members that ran",
+                row.name
+            );
+        }
+    }
+
+    /// One row of [`a_later_round_counts_as_finders_the_members_any_earlier_round_upheld`]: the
+    /// findings rounds 0 and 1 recorded as (attempt, role, id), the ids each round's reject
+    /// upheld, the review tier round 1 recorded and the one round 2 routes to (`None` for no
+    /// depth policy), and the members round 2 runs, adjudicator last, or `None` when every member
+    /// runs.
+    struct FindersRow {
+        name: &'static str,
+        found: Vec<(u32, String, &'static str)>,
+        upheld: Vec<&'static str>,
+        recorded: Option<&'static str>,
+        tier: Option<&'static str>,
+        runs: Option<Vec<String>>,
+    }
+
+    /// WHO A LATER ROUND RE-RUNS, READ FROM THE LOG: round 2 of unit `u` reviews from round 1,
+    /// whose reject upheld the row's ids after rounds 0 and 1 recorded the row's findings. A
+    /// member is a finder when any earlier round recorded an upheld id under its role, so the
+    /// owner of a finding still open since round 0 re-runs though it recorded nothing in
+    /// round 1. Every member runs when round 1 recorded a review tier other than the one
+    /// round 2 routes to, or when no upheld id is one a member recorded.
+    #[test]
+    fn a_later_round_counts_as_finders_the_members_any_earlier_round_upheld() {
+        let (lens, other) = (lens_role("lens"), lens_role("other"));
+        let steps = [
+            ReviewStep::Lenses(vec!["lens".into(), "other".into()]),
+            ReviewStep::Adjudicator("adj".into()),
+        ];
+        let round = ReviewRound {
+            base: "sha1".into(),
+            delta: vec!["fix.rs".into()],
+            required: vec![RequiredItem {
+                finding: "close it".into(),
+                path: "fix.rs".into(),
+                correctness: true,
+                pattern: String::new(),
+            }],
+            audit: String::new(),
+        };
+        let finders = |members: &[&String]| {
+            Some(
+                members
+                    .iter()
+                    .map(|member| member.to_string())
+                    .chain([ROLE_ADJUDICATOR.to_string()])
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let rows = [
+            FindersRow {
+                name: "a finding round 1 recorded and upheld",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                recorded: None,
+                tier: None,
+                runs: finders(&[&lens]),
+            },
+            FindersRow {
+                name: "a finding round 0 recorded and round 1 upheld again",
+                found: vec![(0, other.clone(), "o-1"), (1, lens.clone(), "f-1")],
+                upheld: vec!["o-1", "f-1"],
+                recorded: None,
+                tier: None,
+                runs: finders(&[&lens, &other]),
+            },
+            FindersRow {
+                name: "round 1 under the review tier round 2 routes to",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                recorded: Some("full"),
+                tier: Some("full"),
+                runs: finders(&[&lens]),
+            },
+            FindersRow {
+                name: "round 1 under another review tier",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                recorded: Some("light"),
+                tier: Some("full"),
+                runs: None,
+            },
+            FindersRow {
+                name: "round 1 under no depth policy and round 2 under one",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["f-1"],
+                recorded: None,
+                tier: Some("full"),
+                runs: None,
+            },
+            FindersRow {
+                name: "an upheld id no member recorded",
+                found: vec![(1, lens.clone(), "f-1")],
+                upheld: vec!["ghost"],
+                recorded: None,
+                tier: None,
+                runs: None,
+            },
+        ];
+        let status = |payload: Value| {
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&payload).unwrap(),
+            )
+        };
+        for row in rows {
+            let mut log = Vec::new();
+            for attempt in 0..2u32 {
+                log.push(
+                    status(
+                        json!({"id": "u", "status": STATUS_REVIEW_ROUND_START, "attempt": attempt}),
+                    )
+                    .with_meta(META_WORKTREE_SHA, format!("sha{attempt}")),
+                );
+                if let Some(tier) = row.recorded.filter(|_| attempt == 1) {
+                    log.push(
+                        status(json!({"id": "u", "status": STATUS_REVIEW_TIER, "evidence": {"review-tier": tier}}))
+                            .with_meta(META_REPLAY_KEY, review_tier_key("u", attempt)),
+                    );
+                }
+                for (_, role, id) in row.found.iter().filter(|(at, _, _)| *at == attempt) {
+                    log.push(
+                        Event::new(
+                            contextgraph::TYPE_REVIEW_FINDING,
+                            serde_json::to_vec(
+                                &json!({"id": id, "summary": "a defect", "by": role}),
+                            )
+                            .unwrap(),
+                        )
+                        .with_meta(META_SPAWN, spawn_id("u", role, attempt)),
+                    );
+                }
+                let reject = json!({
+                    "verdict": "reject",
+                    "upheld": row.upheld,
+                    "required": [{"finding": "close it", "path": "fix.rs", "correctness": true}],
+                });
+                log.push(Event::new(
+                    ledger::TYPE_UNIT_FAILED,
+                    serde_json::to_vec(&json!({
+                        "id": "u",
+                        "cause": CAUSE_REJECT,
+                        "review_reason": reject.to_string(),
+                    }))
+                    .unwrap(),
+                ));
+            }
+            for (position, e) in (1..).zip(log.iter_mut()) {
+                e.position = position;
+            }
+            assert_eq!(
+                later_round_finders(&log, "u", 2, &round, &steps, row.tier),
+                row.runs,
+                "{}",
+                row.name
+            );
+        }
+    }
+
+    /// Each spelling of a REQUIRED item's path that names a repository path: the path itself,
+    /// from the root (`./`), with the line or range it points at (`:12`, `:12-14`), and a
+    /// directory, which names every path under it; an empty path, another file, and a file whose name only
+    /// starts the same name nothing.
+    #[test]
+    fn a_required_path_names_a_file_in_each_spelling_an_adjudicator_writes() {
+        let rows = [
+            ("src/a.rs", "src/a.rs", true),
+            ("./src/a.rs", "src/a.rs", true),
+            ("src/a.rs:12", "src/a.rs", true),
+            ("src/a.rs:12-14", "src/a.rs", true),
+            ("./src/a.rs:12:5", "src/a.rs", true),
+            (" src/a.rs ", "src/a.rs", true),
+            ("src", "src/a.rs", true),
+            ("src/", "src/a.rs", true),
+            ("./src/", "src/a.rs", true),
+            ("", "src/a.rs", false),
+            ("./", "src/a.rs", false),
+            ("src/b.rs", "src/a.rs", false),
+            ("src/a", "src/a.rs", false),
+            ("sr", "src/a.rs", false),
+        ];
+        for (required, path, names) in rows {
+            assert_eq!(
+                required_names(required, path),
+                names,
+                "{required:?} names {path:?}"
+            );
+        }
+    }
+
+    /// A later round's REQUIRED item holds the unit back when it is a correctness defect, or
+    /// when its path names a file of the round's delta in any spelling [`required_names`]
+    /// reads; any other item is the operator's.
+    #[test]
+    fn a_round_blocks_on_an_item_whose_path_names_its_delta_in_any_spelling() {
+        let accented = "docs/a b/\u{e9}.md";
+        let round = ReviewRound {
+            base: "b".to_string(),
+            delta: vec!["src/fix.rs".to_string(), accented.to_string()],
+            required: Vec::new(),
+            audit: String::new(),
+        };
+        let item = |path: &str, correctness: bool| RequiredItem {
+            path: path.to_string(),
+            correctness,
+            ..RequiredItem::default()
+        };
+        let rows = [
+            ("the delta path itself", item("src/fix.rs", false), true),
+            (
+                "from the root, at a line",
+                item("./src/fix.rs:3", false),
+                true,
+            ),
+            ("at a range", item("src/fix.rs:3-9", false), true),
+            ("its directory", item("src/", false), true),
+            (
+                "a path with spaces and non-ASCII characters",
+                item(accented, false),
+                true,
+            ),
+            ("another file", item("src/other.rs", false), false),
+            (
+                "a name the delta path only starts with",
+                item("src/fix", false),
+                false,
+            ),
+            ("an empty path", item("", false), false),
+            (
+                "a correctness defect outside the delta",
+                item("src/other.rs", true),
+                true,
+            ),
+        ];
+        for (case, item, blocks) in rows {
+            assert_eq!(round.blocks(&item), blocks, "{case}");
+        }
+    }
+
+    /// The verdict a [`ReuseRow`]'s round 0 approved with.
+    const REUSE_PRIOR: &str = r#"{"verdict":"approve"}"#;
+
+    /// The verdict a [`ReuseRow`]'s round 0, or a later review, rejected with.
+    const REUSE_REJECT: &str = r#"{"verdict":"reject","upheld":[],"required":[{"finding":"close it","path":"feature.rs","correctness":true}]}"#;
+
+    /// Round 0's verdict in a [`ReuseRow`]'s log, and what sent the unit back to attempt 1.
+    #[derive(Clone, Copy)]
+    enum RoundZero {
+        /// An approve recorded at the unit branch's tip, then a merge the post-merge gates
+        /// blocked.
+        ApprovedAtTip,
+        /// An approve recorded at another sha, then a blocked merge.
+        ApprovedElsewhere,
+        /// An approve recorded at the tip, then a later review's reject of the unit.
+        ApprovedThenRejected,
+        /// An approve recorded at the tip, then a gate the unit failed.
+        ApprovedThenGateRed,
+        /// A reject requiring one fix.
+        Rejected,
+    }
+
+    /// What a [`ReuseRow`]'s unit holds when attempt 1's review starts.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum AttemptOne {
+        /// The tree round 0 judged.
+        Unchanged,
+        /// That tree and the `fix1.rs` attempt 1's implementer writes.
+        Fixed,
+        /// That tree and a gitlink a later commit on the unit's branch adds, which the
+        /// repository's `diff.ignoreSubmodules=all` hides from every name diff.
+        HiddenGitlink,
+    }
+
+    /// One row of [`a_later_round_reuses_the_approve_of_an_unchanged_tree_and_fails_closed`]:
+    /// whether round 0 stamped its start mark, its verdict, the review tier it recorded, what
+    /// attempt 1's tree holds, and whether attempt 1 reuses round 0's approve.
+    struct ReuseRow {
+        name: &'static str,
+        started: bool,
+        verdict: RoundZero,
+        tier: Option<&'static str>,
+        attempt_one: AttemptOne,
+        reused: bool,
+    }
+
+    /// Commit on `branch` of `repo` a gitlink to `commit` at `sub`, and set the repository's
+    /// `diff.ignoreSubmodules=all`: the branch's tree then differs from `commit`'s while every
+    /// name diff between them lists nothing.
+    fn hide_a_gitlink_on(repo: &str, branch: &str, commit: &str) {
+        let scratch = tempfile::tempdir().unwrap();
+        let dir = scratch.path().join("gitlink");
+        let dir = dir.to_str().unwrap();
+        git_ok(repo, &["worktree", "add", dir, branch]);
+        git_ok(
+            dir,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{commit},sub"),
+            ],
+        );
+        git_ok_with_identity(dir, &["commit", "-q", "-m", "add a gitlink"]);
+        git_ok(repo, &["worktree", "remove", "--force", dir]);
+        git_ok(repo, &["config", "diff.ignoreSubmodules", "all"]);
+        assert_eq!(
+            git_out(
+                repo,
+                &["diff", "--name-only", &format!("{commit}..{branch}")]
+            ),
+            "",
+            "precondition: no name diff sees the gitlink"
+        );
+    }
+
+    /// The log a [`ReuseRow`] seeds for unit `s`, whose branch's tip is `tip`: the unit started,
+    /// round 0's start mark when the row has one, the review tier it recorded, its verdict, and
+    /// the failure that sent the unit back to attempt 1.
+    fn reuse_row_log(row: &ReuseRow, tip: &str) -> Vec<Event> {
+        let status = |key: &str, payload: Value, metas: &[(&str, &str)]| {
+            let mut e = Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(&payload).unwrap(),
+            );
+            e.meta.insert(META_REPLAY_KEY.into(), key.into());
+            for (k, v) in metas {
+                e.meta.insert((*k).into(), (*v).into());
+            }
+            e
+        };
+        let approved = |sha: &str| {
+            status(
+                "s/reviewed#0",
+                json!({"id": "s", "status": "reviewed", "evidence": {"review": REUSE_PRIOR}}),
+                &[
+                    (META_MODEL_ALIAS, "alias-0"),
+                    (META_MODEL_RESOLVED, "resolved-0"),
+                    (META_WORKTREE_SHA, sha),
+                ],
+            )
+        };
+        let failed = |cause: &str, review_reason: &str| {
+            let required = spawn::Adjudication::parse(review_reason)
+                .map(|a| a.required)
+                .unwrap_or_default();
+            Event::new(
+                ledger::TYPE_UNIT_FAILED,
+                serde_json::to_vec(&json!({
+                    "id": "s",
+                    "attempts": 1,
+                    "cause": cause,
+                    "gate_evidence": ["the merged tree is red"],
+                    "review_reason": review_reason,
+                    "required": required,
+                }))
+                .unwrap(),
+            )
+        };
+        let mut log = vec![started_on_branch("s")];
+        if row.started {
+            log.push(status(
+                &review_round_start_key("s", 0),
+                json!({"id": "s", "status": STATUS_REVIEW_ROUND_START, "attempt": 0}),
+                &[(META_WORKTREE_SHA, tip)],
+            ));
+        }
+        if let Some(tier) = row.tier {
+            log.push(status(
+                "s/review-tier#0",
+                json!({"id": "s", "status": STATUS_REVIEW_TIER, "evidence": {"review-tier": tier}}),
+                &[],
+            ));
+        }
+        log.extend(match row.verdict {
+            RoundZero::ApprovedAtTip => vec![approved(tip), failed(CAUSE_INTEGRATE_CONFLICT, "")],
+            RoundZero::ApprovedElsewhere => vec![
+                approved("0123456789abcdef0123456789abcdef01234567"),
+                failed(CAUSE_INTEGRATE_CONFLICT, ""),
+            ],
+            RoundZero::ApprovedThenRejected => {
+                vec![approved(tip), failed(CAUSE_REJECT, REUSE_REJECT)]
+            }
+            RoundZero::ApprovedThenGateRed => vec![approved(tip), failed("gate:ok", "")],
+            RoundZero::Rejected => vec![failed(CAUSE_REJECT, REUSE_REJECT)],
+        });
+        log
+    }
+
+    /// AN UNCHANGED TREE KEEPS ITS APPROVE, AND ONLY IT: a prior window's unit `s` re-enters at
+    /// attempt 1 after round 0, and attempt 1's review reuses round 0's approve - no reviewer
+    /// spawned, its `reviewed` evidence naming the round it reuses above that round's verdict,
+    /// that round's adjudicator model and the sha it judged - only when round 0 approved the very
+    /// tree attempt 1 judges under the same review tier and nothing condemned that approve since.
+    /// Every other log runs the whole panel. The unit integrates either way.
+    #[test]
+    fn a_later_round_reuses_the_approve_of_an_unchanged_tree_and_fails_closed() {
+        let row = |name, started, verdict, tier, attempt_one, reused| ReuseRow {
+            name,
+            started,
+            verdict,
+            tier,
+            attempt_one,
+            reused,
+        };
+        let rows = [
+            row(
+                "an unchanged tree reuses the approve",
+                true,
+                RoundZero::ApprovedAtTip,
+                None,
+                AttemptOne::Unchanged,
+                true,
+            ),
+            row(
+                "a changed tree runs the panel",
+                true,
+                RoundZero::ApprovedAtTip,
+                None,
+                AttemptOne::Fixed,
+                false,
+            ),
+            row(
+                "a tree no name diff sees changed runs the panel",
+                true,
+                RoundZero::ApprovedAtTip,
+                None,
+                AttemptOne::HiddenGitlink,
+                false,
+            ),
+            row(
+                "a rejected round runs the panel",
+                true,
+                RoundZero::Rejected,
+                None,
+                AttemptOne::Unchanged,
+                false,
+            ),
+            row(
+                "an approve of another sha runs the panel",
+                true,
+                RoundZero::ApprovedElsewhere,
+                None,
+                AttemptOne::Unchanged,
+                false,
+            ),
+            row(
+                "a changed review tier runs the panel",
+                true,
+                RoundZero::ApprovedAtTip,
+                Some("light"),
+                AttemptOne::Unchanged,
+                false,
+            ),
+            row(
+                "no earlier round start runs the panel",
+                false,
+                RoundZero::ApprovedAtTip,
+                None,
+                AttemptOne::Unchanged,
+                false,
+            ),
+            row(
+                "an approve a later reject condemned runs the panel",
+                true,
+                RoundZero::ApprovedThenRejected,
+                None,
+                AttemptOne::Unchanged,
+                false,
+            ),
+            row(
+                "an approve a red gate condemned runs the panel",
+                true,
+                RoundZero::ApprovedThenGateRed,
+                None,
+                AttemptOne::Unchanged,
+                false,
+            ),
+        ];
+        let mut panel = vec![
+            spawn_id("s", &lens_role("lens"), 1),
+            spawn_id("s", ROLE_ADJUDICATOR, 1),
+        ];
+        panel.sort();
+        for row in rows {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            commit_on_unit_branch(&repo_path, "s", "feature.rs", "fn feature() {}\n");
+            let tip = trimmed_stdout(&run_git(&repo_path, &["rev-parse", &unit_branch("s")]));
+            if row.attempt_one == AttemptOne::HiddenGitlink {
+                hide_a_gitlink_on(&repo_path, &unit_branch("s"), &tip);
+            }
+            let st = Store::open(":memory:").unwrap();
+            seed_events_in_run(&st, &[], &reuse_row_log(&row, &tip));
+            let mut driver = approving_panel_stub(&["lens"]);
+            if row.attempt_one == AttemptOne::Fixed {
+                driver.write_files_by_spawn_id.insert(
+                    spawn_id("s", ROLE_IMPLEMENTER, 1),
+                    vec!["fix1.rs".to_string()],
+                );
+            }
+            let deps = Deps {
+                repo: repo_path,
+                ..stub_deps(&st, &driver, Vec::new())
+            };
+            let rs = run_isolated(&reviewed_merge_cfg(false), &deps).unwrap();
+            assert_eq!(
+                rs.units["s"].status,
+                ledger::Status::Integrated,
+                "{}",
+                row.name
+            );
+            let mut reviewers: Vec<String> = driver
+                .spawn_ids()
+                .into_iter()
+                .filter(|id| {
+                    spawn::attempt_of(id) == 1
+                        && spawn::review_step_of(spawn::spawn_role(id)).is_some()
+                })
+                .collect();
+            reviewers.sort();
+            let spawned = if row.reused {
+                Vec::new()
+            } else {
+                panel.clone()
+            };
+            assert_eq!(reviewers, spawned, "{}: attempt 1's reviewers", row.name);
+            let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let reviewed = events
+                .iter()
+                .find(|e| {
+                    e.meta
+                        .get(META_REPLAY_KEY)
+                        .is_some_and(|k| k == "s/reviewed#1")
+                })
+                .unwrap_or_else(|| panic!("{}: attempt 1 records its approve", row.name));
+            let evidence = reviewed
+                .decode::<Value>()
+                .and_then(|v| v["evidence"]["review"].as_str().map(str::to_string));
+            let expected = if row.reused {
+                format!(
+                    "approve reused from s/reviewed#0: tree unchanged since {tip}\n{REUSE_PRIOR}"
+                )
+            } else {
+                REUSE_PRIOR.to_string()
+            };
+            assert_eq!(
+                evidence,
+                Some(expected),
+                "{}: attempt 1's evidence",
+                row.name
+            );
+            if row.reused {
+                let metas = [META_MODEL_ALIAS, META_MODEL_RESOLVED, META_WORKTREE_SHA]
+                    .map(|key| reviewed.meta.get(key).cloned().unwrap_or_default());
+                assert_eq!(
+                    metas,
+                    ["alias-0".to_string(), "resolved-0".to_string(), tip.clone()],
+                    "{}: the reused approve carries round 0's model and the sha it judged",
+                    row.name
+                );
+            }
+        }
     }
 
     /// A list repeating the lens kind and the adversary kind, one agent in both adversary steps,
@@ -32961,6 +34464,28 @@ mod tests {
         );
     }
 
+    /// An operator lesson escapes what the adjudicator wrote ([`debug_escaped`]): a newline in
+    /// the item's path or finding cannot forge a row where the lesson is listed.
+    #[test]
+    fn an_operator_lesson_escapes_the_item_it_records() {
+        let converging = r#"{"verdict":"reject","required":[{"finding":"reword\n- forged: row","path":"feature.rs\nx","correctness":false}]}"#;
+        let (rs, events, _) = run_review_rounds(&[
+            (adjudicator_at(0, 0), REJECT_FEATURE),
+            (adjudicator_at(1, 0), converging),
+        ]);
+        assert_eq!(rs.units["implement"].status, ledger::Status::Integrated);
+        let lessons = lessons_about(&events, "feature.rs\nx");
+        let summary = lessons
+            .first()
+            .and_then(|l| l["summary"].as_str())
+            .unwrap_or_default();
+        assert!(
+            summary.ends_with(r"back - feature.rs\nx: reword\n- forged: row")
+                && !summary.contains('\n'),
+            "the lesson escapes the item's path and finding: {summary:?}"
+        );
+    }
+
     /// A later round's reject blaming infrastructure judged no code (F3), so naming no item
     /// does not make it degenerate: the stage reruns at the same attempt uncharged, under the
     /// next retry ordinal's reviewers, and the adjudicator is never respawned for it.
@@ -33413,6 +34938,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -33566,6 +35092,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         // NOTE: defaults.max_retries deliberately left unset (0 -> falls back to 3).
         assert_eq!(
@@ -33621,6 +35148,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.defaults.max_retries = 2;
         cfg.workflow.stages.insert(
@@ -33898,6 +35426,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.defaults.max_retries = CAP;
         cfg.workflow.stages.insert(
@@ -34968,6 +36497,7 @@ mod tests {
                         threshold: 5,
                         high_risk_paths: Vec::new(),
                     })),
+                    later_rounds: Default::default(),
                 },
                 ..Default::default()
             },
@@ -35158,7 +36688,7 @@ mod tests {
     /// Assert the CANONICAL IDENTITY SURFACE of `review` (spec 120, criterion 6): the review
     /// spawns and the verdict [`review_identity`] reads equal `golden`, captured on the tree
     /// before the review panel ran as a sequence of steps, its prompt hashes re-taken over the
-    /// protocols spec 121 cut.
+    /// protocols spec 121 cut and the adjudicator's rows for its silent members.
     fn assert_review_identity(review: crate::config::ReviewPanel, golden: &[&str]) {
         let (lines, prompts) = review_identity(review);
         assert_eq!(lines, golden, "the review task prompts:\n{prompts}");
@@ -35180,16 +36710,17 @@ mod tests {
 
     // The golden lines [`review_identity`] read on the tree before the review panel ran as a
     // sequence of steps (spec 120, criterion 6), each review prompt's hash re-taken once spec 121
-    // cut the cadence and method clauses out of the decision and finding protocols: each review
-    // spawn, then each status stamp.
+    // cut the cadence and method clauses out of the decision and finding protocols, and each
+    // adjudicator's again once it was told each member of its roster that recorded no finding:
+    // each review spawn, then each status stamp.
     const ARCHITECTURE_LENS_SPAWN: &str = r#"s/lens:architecture-reviewer#0 [] b7e40a3070fb1689"#;
     const SDET_LENS_SPAWN: &str = r#"s/lens:sdet#0 [] f30fefa68bbcc6e5"#;
     const ADVERSARY_SPAWN: &str =
         r#"s/adversary#0 ["lens:architecture-reviewer", "lens:sdet"] a184517608c490fb"#;
-    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] 958da5b165e10309"#;
+    const ADJUDICATOR_AFTER_LENSES_AND_ADVERSARY_SPAWN: &str = r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet", "adversary"] d3c6483d113965ba"#;
     const ADJUDICATOR_AFTER_LENSES_SPAWN: &str =
-        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] 958da5b165e10309"#;
-    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] 958da5b165e10309"#;
+        r#"s/adjudicator#0 ["lens:architecture-reviewer", "lens:sdet"] 33454cdac45ebef8"#;
+    const ADJUDICATOR_AFTER_SDET_SPAWN: &str = r#"s/adjudicator#0 ["lens:sdet"] 58afb1ef02074b7a"#;
     const GREEN_STAMP: &str = r#""green" {"green":"implemented by worker"} Some("worker-model")"#;
     const VERIFIED_STAMP: &str = r#""verified" {} Some("worker-model")"#;
     const LIGHT_TIER_STAMP: &str = r#""review-tier" {"blast-radius":"1","empty-radius":"false","flapped":"false","high-risk-path":"","review-tier":"light","threshold":"5"} None"#;
@@ -35937,6 +37468,110 @@ mod tests {
                     want,
                     "base_tip {base_tip:?}: every gate must carry the run base exactly when \
                      the run recorded one: {env:?}"
+                );
+            }
+        }
+    }
+
+    /// A CHECK-IN REVIEWS THE WHOLE RUN: the check-in's review packet reads from the run's
+    /// recorded base, so it lists the unit's landed `slice.rs` beside its own `sweep.rs`, while
+    /// a unit's packet reads from the unit's fork point and lists its own change alone. A run
+    /// that recorded no base reads the check-in from its own fork point, past the landed unit.
+    #[test]
+    fn a_check_in_packet_reads_the_whole_run_from_the_run_base() {
+        let criterion = "the slice lands";
+        let unit = unit_slug(1, criterion);
+        for recorded in [true, false] {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let base_tip = git_head(&repo_path);
+            let mut cfg = fan_out_checkin_cfg("ok", "ok");
+            for id in ["lens", "adversary", "adj"] {
+                cfg.agents.insert(id.into(), agent(id));
+            }
+            cfg.workflow.defaults.review = config::ReviewPanel {
+                lenses: vec!["lens".into()],
+                adversary: "adversary".into(),
+                adjudicator: "adj".into(),
+                steps: None,
+                tiers: None,
+                later_rounds: Default::default(),
+            };
+            let st = Store::open(":memory:").unwrap();
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({
+                        "run": "check-in-packet",
+                        "criteria": [criterion],
+                        "base_tip": if recorded { base_tip.as_str() } else { "" },
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            let driver = Stub {
+                output: "reviewed the diff".into(),
+                output_by_agent: [("adj".to_string(), r#"{"verdict":"approve"}"#.to_string())]
+                    .into_iter()
+                    .collect(),
+                write_files_by_spawn_id: [
+                    (
+                        spawn_id(&unit, ROLE_IMPLEMENTER, 0),
+                        vec!["slice.rs".into()],
+                    ),
+                    (
+                        spawn_id("checkin", ROLE_IMPLEMENTER, 0),
+                        vec!["sweep.rs".into()],
+                    ),
+                ]
+                .into_iter()
+                .collect(),
+                ..Stub::new()
+            };
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&st, &driver, vec![criterion.to_string()])
+            };
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_eq!(rs.units["checkin"].status, ledger::Status::Integrated);
+            let events = st
+                .read_all(0, Direction::Forward, &Filter::default())
+                .unwrap();
+            let head = |name: &str| {
+                recorded_review_round_start_sha(&events, name, 0)
+                    .unwrap_or_else(|| panic!("{name}'s review round stamps the sha it judged"))
+            };
+            let lens = driver.prompts_for("lens");
+            assert_eq!(
+                lens.len(),
+                2,
+                "the lens reviews the unit, then the check-in"
+            );
+            let (unit_prompt, checkin_prompt) = (&lens[0], &lens[1]);
+            let unit_range = format!("REVIEW PACKET: git diff {base_tip}..{}", head(&unit));
+            assert!(
+                unit_prompt.contains(&unit_range)
+                    && unit_prompt.contains("A slice.rs (+1 -0)")
+                    && !unit_prompt.contains("sweep.rs"),
+                "recorded {recorded}: the unit's packet reads its own change from its fork \
+                 point:\n{unit_prompt}"
+            );
+            let checkin_range = format!("REVIEW PACKET: git diff {base_tip}..{}", head("checkin"));
+            for (needle, present) in [
+                (checkin_range.as_str(), recorded),
+                ("A slice.rs (+1 -0)", recorded),
+                ("diff --git a/slice.rs b/slice.rs", recorded),
+                ("A sweep.rs (+1 -0)", true),
+                ("diff --git a/sweep.rs b/sweep.rs", true),
+            ] {
+                assert_eq!(
+                    checkin_prompt.contains(needle),
+                    present,
+                    "recorded {recorded}: the check-in's packet carries {needle:?} exactly when \
+                     {present}:\n{checkin_prompt}"
                 );
             }
         }
@@ -36852,6 +38487,31 @@ mod tests {
         );
     }
 
+    /// A residue lesson escapes each path it names ([`debug_escaped`]): a reviewer's committed
+    /// file whose name holds a newline cannot forge a row where the lesson is listed.
+    #[cfg(unix)]
+    #[test]
+    fn a_residue_lesson_escapes_each_path_it_names() {
+        let (_repo, _repo_path, events) = approving_round_with_residue(|stub| Stub {
+            commits_by_agent: HashMap::from([(
+                "judge".to_string(),
+                vec![("residue\n- forged.rs".to_string(), "junk\n".to_string())],
+            )]),
+            ..stub
+        });
+        let summaries: Vec<String> = payloads_of_type(&events, contextgraph::TYPE_LESSON_LEARNED)
+            .iter()
+            .filter_map(|lesson| lesson["summary"].as_str().map(str::to_string))
+            .filter(|summary| summary.contains("as residue after judging"))
+            .collect();
+        assert!(
+            summaries.len() == 1
+                && summaries[0].contains(r"residue\n- forged.rs")
+                && !summaries[0].contains('\n'),
+            "the residue lesson escapes the path it names: {summaries:?}"
+        );
+    }
+
     #[test]
     fn a_review_rounds_lens_residue_survives_a_later_tiers_genuine_crash_and_is_restored() {
         // Spec 103, criterion 6, round 2 (adv-u103c6-guard-skipped-on-tier-err, UPHELD):
@@ -37368,6 +39028,7 @@ mod tests {
                     adjudicator: "judge".into(),
                     steps: None,
                     tiers: None,
+                    later_rounds: Default::default(),
                 },
                 ..Default::default()
             },
@@ -40106,10 +41767,11 @@ mod tests {
     }
 
     /// The adjudicator is told every finding its unit's round recorded, by id, whatever file it
-    /// names: over the real graph a finding outside the stage's seed, which the graph slice
-    /// leaves out, is listed beside the one the slice carries; a later round's resumed
-    /// adjudicator is sent that round's findings and never an earlier round's; and an
-    /// adjudicator re-driven within its round is told the finding its first spawn recorded.
+    /// names, then each reviewer of its roster that recorded none: over the real graph a finding
+    /// outside the stage's seed, which the graph slice leaves out, is listed beside the one the
+    /// slice carries; a later round's resumed adjudicator is sent that round's findings and
+    /// never an earlier round's; and an adjudicator re-driven within its round is told the
+    /// finding its first spawn recorded.
     #[test]
     fn the_adjudicator_is_told_every_finding_its_round_recorded_whatever_file_it_names() {
         const ALL: &str = "Every finding recorded this round, by id:";
@@ -40127,13 +41789,20 @@ mod tests {
             (
                 "a later round's resumed adjudicator",
                 round_one_adjudicator_resume_task(),
-                &["- lens:lens (g1): ROUND_ONE_finding\n"],
+                &[
+                    "- lens:lens (g1): ROUND_ONE_finding\n",
+                    "- adversary: recorded no finding this round\n",
+                ],
                 &["ROUND_ZERO_finding"],
             ),
             (
                 "an adjudicator re-driven within its round",
                 verdictless_adjudicator_re_drive_prompt(),
-                &["- adjudicator (j1): ADJUDICATOR_finding\n"],
+                &[
+                    "- adjudicator (j1): ADJUDICATOR_finding\n",
+                    "- lens:lens: recorded no finding this round\n",
+                    "- adversary: recorded no finding this round\n",
+                ],
                 &[],
             ),
         ];
@@ -40751,7 +42420,7 @@ mod tests {
                  - n-one (core.rs:3): name the bound\n\
                  Fix every note that is still true; leave a note that is false or already fixed.\n"
                     .to_string(),
-                WHEN_YOU_REVIEW[5..8]
+                WHEN_YOU_REVIEW[6..9]
                     .iter()
                     .map(|sentence| (discipline, *sentence))
                     .collect(),
@@ -41342,6 +43011,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         cfg.workflow.stages.insert(
             "implement".into(),
@@ -49400,6 +51070,7 @@ mod tests {
             adjudicator: "adj".into(),
             steps: None,
             tiers: None,
+            later_rounds: Default::default(),
         };
         // `s` passes its inline gate but the adjudicator ALWAYS rejects, so it remediates
         // to the bound and ESCALATES. It also references the deferred whole-tree gate.
@@ -50226,6 +51897,102 @@ mod tests {
             None,
             "a sibling lane's round-start sha is not in this branch's history, so no delta"
         );
+    }
+
+    /// A round's REVIEW PACKET is empty only with no worktree or no head to judge: a head that
+    /// shares no history with the checkout (so it has no fork point) and a round whose base git
+    /// does not hold each render the packet's header and the read that fetches the change,
+    /// over the round's base, else the run's recorded base, else, in a run that recorded none,
+    /// the empty tree, never an empty string and never a range with no base.
+    #[test]
+    fn a_review_packet_names_a_range_it_cannot_read() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let run_base = git_head(&repo_path);
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let dir = unit_worktree_dir(&scratch, "u");
+        let wt = Worktree::create(&repo_path, &dir, &unit_branch("u"), &scratch).unwrap();
+        std::fs::write(Path::new(&wt.dir).join("work.rs"), "work\n").unwrap();
+        wt.commit_checkpoint("work").unwrap();
+        let head = worktree::head_sha_of(&wt.dir);
+        let orphan = git_out(&wt.dir, &["commit-tree", "HEAD^{tree}", "-m", "orphan"]);
+        let gone = "0".repeat(40);
+        let round = ReviewRound {
+            base: gone.clone(),
+            delta: Vec::new(),
+            required: Vec::new(),
+            audit: String::new(),
+        };
+        let store_over = |base_tip: &str| {
+            let st = Store::open(":memory:").unwrap();
+            st.append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({
+                        "run": "run-packet",
+                        "criteria": [],
+                        "base_tip": base_tip,
+                    }))
+                    .unwrap(),
+                )],
+            )
+            .unwrap();
+            st
+        };
+        let (st, unbased_st) = (store_over(&run_base), store_over(""));
+        let driver = Stub::new();
+        let cfg = Config::default();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let unbased_deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&unbased_st, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let unbased = RunCtx::for_test(&cfg, &unbased_deps);
+        let stage = Stage::default();
+        let unreadable = |base: &str, head: &str| {
+            let range = [("base", base), ("head", head)];
+            format!(
+                "{}{}",
+                fill(REVIEW_PACKET_HEADER, &range),
+                fill(PACKET_UNREADABLE, &range)
+            )
+        };
+        let cases = [
+            (
+                "no worktree",
+                ctx.review_packet(&stage, None, &head, None),
+                String::new(),
+            ),
+            (
+                "no head",
+                ctx.review_packet(&stage, Some(&wt), "", None),
+                String::new(),
+            ),
+            (
+                "a head with no fork point, over the run's recorded base",
+                ctx.review_packet(&stage, Some(&wt), &orphan, None),
+                unreadable(&run_base, &orphan),
+            ),
+            (
+                "a head with no fork point in a run that recorded no base, over the empty tree",
+                unbased.review_packet(&stage, Some(&wt), &orphan, None),
+                unreadable(worktree::SHA1_EMPTY_TREE, &orphan),
+            ),
+            (
+                "a round whose base git does not hold",
+                ctx.review_packet(&stage, Some(&wt), &head, Some(&round)),
+                unreadable(&gone, &head),
+            ),
+        ];
+        for (case, got, expected) in cases {
+            assert_eq!(got, expected, "{case}");
+        }
     }
 
     #[test]
@@ -54541,6 +56308,20 @@ mod tests {
                 ),
             ),
             (
+                "a run note whose id, locations and text hold newlines",
+                notes_block(&[note(
+                    "i\nd",
+                    &["a\nb", "dir with space/\u{e9}.rs"],
+                    "s\n- forged: row",
+                )]),
+                format!(
+                    "{}- i\\nd (a\\nb, {}): s\\n- forged: row\n{}",
+                    notes(&["RUN_NOTES_HEADER"]),
+                    "dir with space/\u{e9}.rs",
+                    notes(&["RUN_NOTES_CLOSING"])
+                ),
+            ),
+            (
                 "a task with no refusal kept",
                 unrefused,
                 "{prompt}".to_string(),
@@ -54645,6 +56426,7 @@ mod tests {
             &prior(&["PATTERN_LABEL", "PRIOR_PATTERN"]),
             &[("audit", &audit_id("{unit}", 2))],
         );
+        let accented = "dir with space/\u{e9}.rs";
         let review_round = |delta: &[&str], required: Vec<RequiredItem>| {
             ReviewRound {
                 base: "{base}".to_string(),
@@ -54777,6 +56559,27 @@ mod tests {
                 ),
             ),
             (
+                "a review round whose delta path and REQUIRED item hold newlines",
+                review_round(
+                    &["a\n- forged.rs", accented],
+                    vec![RequiredItem {
+                        finding: "f\n- x: forged".to_string(),
+                        path: "p\nq".to_string(),
+                        pattern: "s\nt".to_string(),
+                        ..RequiredItem::default()
+                    }],
+                ),
+                format!(
+                    "{}- p\\nq: f\\n- x: forged\n{}{}",
+                    fill(
+                        &round(&["ROUND_LEAD_IN", "ROUND_REQUIRED_HEADER"]),
+                        &[("delta", &format!("a\\n- forged.rs, {accented}"))]
+                    ),
+                    fill(&round(&["PATTERN_LABEL"]), &[("shape", "s\\nt")]),
+                    round(&["ROUND_PATTERN", "ROUND_OUTSIDE_DELTA"])
+                ),
+            ),
+            (
                 "gate evidence with no commit",
                 gate_evidence_block(&gated, "u-1", ""),
                 String::new(),
@@ -54819,9 +56622,469 @@ mod tests {
                 attempt(None, &["{evidence}"]),
                 later_lead(&later(&["LATER_ATTEMPT_GATE_CAUSE"])),
             ),
+            (
+                "a later attempt after a review round whose delta path holds a newline",
+                attempt(Some(&["a\n- forged.rs", accented]), &[]),
+                later_lead(&review_cause(&format!("a\\n- forged.rs, {accented}"))),
+            ),
         ];
         for (case, render, expected) in cases {
             assert_renders(case, &render, &expected);
+        }
+    }
+
+    /// A changed file of the review packet's fixtures: `path`, renamed from `old` when set, git's
+    /// `status` letter, its line counts (none for a binary file) and its patch section.
+    fn packet_file(
+        path: &str,
+        old: Option<&str>,
+        status: char,
+        lines: Option<(u32, u32)>,
+        patch: &str,
+    ) -> crate::worktree::FileDiff {
+        crate::worktree::FileDiff {
+            path: path.to_string(),
+            old_path: old.map(str::to_string),
+            status,
+            lines,
+            patch: patch.to_string(),
+        }
+    }
+
+    /// Over the placeholder fixture the REVIEW PACKET is its registry groups on each branch: a
+    /// first round's packet whose commits, text, binary and renamed files and hunks fit the
+    /// budget, each binary file of its delta a row after the hunks; a later round's packet with
+    /// no commit, a REQUIRED item's path its delta left unchanged, REQUIRED paths in other
+    /// spellings of a changed file or of nothing, a binary file only its delta changed and a hunk
+    /// over the budget, listed as elided; a packet over paths holding a newline, a tab, spaces and
+    /// non-ASCII characters, each escaped so no path forges a row; packets whose commits and
+    /// files pass each row cap, the rest counted in one row; and a packet whose change could not
+    /// be read.
+    #[test]
+    fn the_review_packet_is_its_groups_on_each_branch() {
+        use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
+        let picks = GroupPicks::new(crate::prompt_surface::prompt_groups());
+        let group = |name: &str, slots: &[(&str, &str)]| {
+            fill(
+                &picks.rendered("conductor::ReviewPacket::block", &[name]),
+                slots,
+            )
+        };
+        let header = group(
+            "REVIEW_PACKET_HEADER",
+            &[("base", "{base}"), ("head", "{head}")],
+        );
+        let text = packet_file("{a}", None, 'M', Some((1, 2)), "{patch a}\n");
+        let binary = packet_file("{bin}", None, 'A', None, "{patch bin}\n");
+        let renamed = packet_file("{new}", Some("{old}"), 'R', Some((3, 0)), "{patch r}\n");
+        let first = vec![text.clone(), binary.clone(), renamed.clone()];
+        let over = packet_file(
+            "{big}",
+            None,
+            'M',
+            Some((4, 5)),
+            &"x".repeat(PACKET_BUDGET_BYTES + 1),
+        );
+        let packet = |change: Option<PacketChange>, required: &[&str]| {
+            ReviewPacket {
+                base: "{base}".to_string(),
+                head: "{head}".to_string(),
+                change,
+                required: required.iter().map(|s| s.to_string()).collect(),
+            }
+            .block()
+        };
+        let change = |commits: Vec<crate::worktree::CommitLine>,
+                      files: Vec<crate::worktree::FileDiff>,
+                      delta: Vec<crate::worktree::FileDiff>| PacketChange {
+            commits,
+            whole: "{whole}".to_string(),
+            files,
+            delta,
+        };
+        let commit = crate::worktree::CommitLine {
+            sha: "{sha}".to_string(),
+            subject: "{subject}".to_string(),
+        };
+        let delta_binary = packet_file("{dbin}", None, 'M', None, "{patch dbin}\n");
+        let forged = "a\n- D forged";
+        let escaped_forged = "a\\n- D forged";
+        let newline = packet_file(forged, None, 'M', Some((1, 1)), "{patch nl}\n");
+        let newline_over = packet_file(
+            forged,
+            None,
+            'M',
+            Some((1, 1)),
+            &"x".repeat(PACKET_BUDGET_BYTES + 1),
+        );
+        let spaced = packet_file(
+            "dir with space/\u{e9}t\u{e9}.rs",
+            Some("old\tname"),
+            'R',
+            Some((0, 0)),
+            "{patch sp}\n",
+        );
+        let past = PACKET_ROWS_N + 1;
+        let many_commits: Vec<_> = (0..past)
+            .map(|i| crate::worktree::CommitLine {
+                sha: format!("s{i}"),
+                subject: "{subject}".to_string(),
+            })
+            .collect();
+        let many_files: Vec<_> = (0..past)
+            .map(|i| packet_file(&format!("f{i:03}"), None, 'A', Some((1, 0)), "{p}\n"))
+            .collect();
+        let many_rows =
+            |rows: &dyn Fn(usize) -> String| (0..PACKET_ROWS_N).map(rows).collect::<String>();
+        let long_commit = crate::worktree::CommitLine {
+            sha: "s0".to_string(),
+            subject: "x".repeat(PACKET_ROWS_BYTES),
+        };
+        let cases = [
+            (
+                "a first round's packet under the budget",
+                packet(
+                    Some(change(vec![commit.clone()], first.clone(), first.clone())),
+                    &[],
+                ),
+                format!(
+                    "{header}{}{}{}{}{}{}{}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", "1")]),
+                    group(
+                        "PACKET_COMMITS_ROW",
+                        &[("sha", "{sha}"), ("subject", "{subject}")]
+                    ),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", "3"),
+                            ("added", "4"),
+                            ("removed", "2")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "M"),
+                            ("path", "{a}"),
+                            ("added", "1"),
+                            ("removed", "2")
+                        ]
+                    ),
+                    group(
+                        "PACKET_BINARY_ROW",
+                        &[("status", "A"), ("path", "{bin}")]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "R"),
+                            ("path", "{old} -> {new}"),
+                            ("added", "3"),
+                            ("removed", "0")
+                        ]
+                    ),
+                    group("PACKET_HUNKS_HEADER", &[]),
+                    "{patch a}\n",
+                    "{patch r}\n",
+                    group(
+                        "PACKET_BINARY_ROW",
+                        &[("status", "A"), ("path", "{bin}")]
+                    ),
+                ),
+            ),
+            (
+                "a later round's packet with no commit, an unchanged REQUIRED path and an elided hunk",
+                packet(
+                    Some(change(
+                        Vec::new(),
+                        vec![text.clone(), over.clone()],
+                        vec![over.clone(), delta_binary.clone()],
+                    )),
+                    &["{req}", "{big}", "{req}", "./{big}:3", "{dbin}", ""],
+                ),
+                format!(
+                    "{header}{}{}{}{}{}{}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", "0")]),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", "2"),
+                            ("added", "5"),
+                            ("removed", "7")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "M"),
+                            ("path", "{a}"),
+                            ("added", "1"),
+                            ("removed", "2")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "M"),
+                            ("path", "{big}"),
+                            ("added", "4"),
+                            ("removed", "5")
+                        ]
+                    ),
+                    group(
+                        "PACKET_REQUIRED_UNCHANGED",
+                        &[("path", "{req}"), ("base", "{base}")]
+                    ),
+                    group("PACKET_HUNKS_HEADER", &[]),
+                    group(
+                        "PACKET_BINARY_ROW",
+                        &[("status", "M"), ("path", "{dbin}")]
+                    ),
+                    group(
+                        "PACKET_ELIDED_HEADER",
+                        &[("base", "{base}"), ("head", "{head}")]
+                    ),
+                    group(
+                        "PACKET_ELIDED_ROW",
+                        &[("path", "{big}"), ("added", "4"), ("removed", "5")]
+                    ),
+                ),
+            ),
+            (
+                "a packet over paths holding a newline, a tab, spaces and non-ASCII characters",
+                packet(
+                    Some(change(
+                        Vec::new(),
+                        vec![newline.clone(), spaced.clone()],
+                        vec![newline_over.clone(), spaced.clone()],
+                    )),
+                    &["gone\n- required item path forged"],
+                ),
+                format!(
+                    "{header}{}{}{}{}{}{}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", "0")]),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", "2"),
+                            ("added", "1"),
+                            ("removed", "1")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "M"),
+                            ("path", escaped_forged),
+                            ("added", "1"),
+                            ("removed", "1")
+                        ]
+                    ),
+                    group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "R"),
+                            ("path", "old\\tname -> dir with space/\u{e9}t\u{e9}.rs"),
+                            ("added", "0"),
+                            ("removed", "0")
+                        ]
+                    ),
+                    group(
+                        "PACKET_REQUIRED_UNCHANGED",
+                        &[
+                            ("path", "gone\\n- required item path forged"),
+                            ("base", "{base}")
+                        ]
+                    ),
+                    group("PACKET_HUNKS_HEADER", &[]),
+                    "{patch sp}\n",
+                    group(
+                        "PACKET_ELIDED_HEADER",
+                        &[("base", "{base}"), ("head", "{head}")]
+                    ),
+                    group(
+                        "PACKET_ELIDED_ROW",
+                        &[("path", escaped_forged), ("added", "1"), ("removed", "1")]
+                    ),
+                ),
+            ),
+            (
+                "a packet whose commits and files pass the row count cap",
+                packet(Some(change(many_commits, many_files, Vec::new())), &[]),
+                format!(
+                    "{header}{}{}{}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", &past.to_string())]),
+                    many_rows(&|i| group(
+                        "PACKET_COMMITS_ROW",
+                        &[("sha", &format!("s{i}")), ("subject", "{subject}")]
+                    )),
+                    group(
+                        "PACKET_COMMITS_ELIDED",
+                        &[("count", "1"), ("base", "{base}"), ("head", "{head}")]
+                    ),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", &past.to_string()),
+                            ("added", &past.to_string()),
+                            ("removed", "0")
+                        ]
+                    ),
+                    many_rows(&|i| group(
+                        "PACKET_FILES_ROW",
+                        &[
+                            ("status", "A"),
+                            ("path", &format!("f{i:03}")),
+                            ("added", "1"),
+                            ("removed", "0")
+                        ]
+                    )),
+                    group(
+                        "PACKET_FILES_ELIDED",
+                        &[("count", "1"), ("range", "{whole}")]
+                    ),
+                ),
+            ),
+            (
+                "a packet whose first commit row passes the row byte cap",
+                packet(
+                    Some(change(vec![long_commit, commit.clone()], Vec::new(), Vec::new())),
+                    &[],
+                ),
+                format!(
+                    "{header}{}{}{}",
+                    group("PACKET_COMMITS_HEADER", &[("count", "2")]),
+                    group(
+                        "PACKET_COMMITS_ELIDED",
+                        &[("count", "2"), ("base", "{base}"), ("head", "{head}")]
+                    ),
+                    group(
+                        "PACKET_FILES_HEADER",
+                        &[
+                            ("range", "{whole}"),
+                            ("count", "0"),
+                            ("added", "0"),
+                            ("removed", "0")
+                        ]
+                    ),
+                ),
+            ),
+            (
+                "a packet whose change could not be read",
+                packet(None, &[]),
+                format!(
+                    "{header}{}",
+                    group("PACKET_UNREADABLE", &[("base", "{base}"), ("head", "{head}")])
+                ),
+            ),
+        ];
+        for (case, render, expected) in cases {
+            assert_renders(case, &render, &expected);
+        }
+    }
+
+    /// The packet's hunks: the REQUIRED items' paths first (a rename's old path counts), then
+    /// the rest, each group smallest patch first, each kept when it fits under both caps beside
+    /// the files kept before it; a file over the bytes left is elided alone and filling goes on,
+    /// every file past the count cap is elided, and a binary file is neither.
+    #[test]
+    fn the_review_packet_keeps_required_hunks_first_then_the_smallest_under_its_caps() {
+        type Row = (
+            &'static str,
+            Vec<crate::worktree::FileDiff>,
+            &'static [&'static str],
+            Vec<String>,
+            Vec<String>,
+        );
+        let sized = |path: &str, bytes: usize| {
+            packet_file(path, None, 'M', Some((1, 1)), &"x".repeat(bytes))
+        };
+        let names = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        let half = PACKET_BUDGET_BYTES / 2;
+        let many: Vec<_> = (0..=PACKET_VERBATIM_N)
+            .map(|i| sized(&format!("f{i:03}"), 10))
+            .collect();
+        let many_kept: Vec<String> = (0..PACKET_VERBATIM_N).map(|i| format!("f{i:03}")).collect();
+        let rows: Vec<Row> = vec![
+            (
+                "every hunk fits, smallest first",
+                vec![sized("a", 30), sized("b", 10), sized("c", 20)],
+                &[],
+                names(&["b", "c", "a"]),
+                Vec::new(),
+            ),
+            (
+                "a REQUIRED path leads the smallest",
+                vec![sized("a", 30), sized("b", 10), sized("c", 20)],
+                &["a"],
+                names(&["a", "b", "c"]),
+                Vec::new(),
+            ),
+            (
+                "a rename's old path is a REQUIRED path",
+                vec![
+                    packet_file("n", Some("o"), 'R', Some((1, 1)), &"x".repeat(30)),
+                    sized("b", 10),
+                ],
+                &["o"],
+                names(&["n", "b"]),
+                Vec::new(),
+            ),
+            (
+                "a binary file is neither kept nor elided",
+                vec![packet_file("bin", None, 'A', None, "x"), sized("b", 10)],
+                &[],
+                names(&["b"]),
+                Vec::new(),
+            ),
+            (
+                "a file over the bytes left is elided",
+                vec![sized("a", half + 1), sized("b", half), sized("c", 10)],
+                &[],
+                names(&["c", "b"]),
+                names(&["a"]),
+            ),
+            (
+                "a REQUIRED file over the cap is elided alone",
+                vec![sized("a", PACKET_BUDGET_BYTES + 1), sized("b", 10)],
+                &["a"],
+                names(&["b"]),
+                names(&["a"]),
+            ),
+            (
+                "a file after one over the bytes left still fills them",
+                vec![sized("a", half + 1), sized("b", half), sized("c", 10)],
+                &["a", "b"],
+                names(&["b", "c"]),
+                names(&["a"]),
+            ),
+            (
+                "the count cap keeps the first files under it",
+                many,
+                &[],
+                many_kept,
+                names(&[&format!("f{PACKET_VERBATIM_N:03}")]),
+            ),
+        ];
+        for (case, delta, required, kept, elided) in rows {
+            let required = names(required);
+            let (got_kept, got_elided) = packet_hunks(&delta, &required);
+            let paths = |files: Vec<&crate::worktree::FileDiff>| {
+                files
+                    .into_iter()
+                    .map(|f| f.path.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                (paths(got_kept), paths(got_elided)),
+                (kept, elided),
+                "{case}"
+            );
         }
     }
 
@@ -55322,9 +57585,12 @@ mod tests {
     /// Over the placeholder fixture the round's findings block is its registry group on each
     /// branch: a lens is listed only the findings its own role recorded at its unit's round, an
     /// adjudicator every one, each in the order first recorded with a re-recorded id's latest
-    /// text and its reviewer the stamped actor or else its `by`, and either renders nothing when
-    /// it has none to list. A finding of another unit,
-    /// another round, no review step, or with no spawn stamp names no finding of the round.
+    /// text and its reviewer the stamped actor or else its `by`, then each role of its roster
+    /// that recorded none; either renders nothing when it has none to list. A finding of another
+    /// unit, another round, no review step, or with no spawn stamp names no finding of the
+    /// round, but a member that recorded a finding with no spawn stamp since the round's start
+    /// mark, or anywhere in the run when the round has no mark, is never called silent: such a
+    /// finding may be the round's.
     #[test]
     fn the_round_findings_block_is_its_group_on_each_branch() {
         use crate::prompt_surface_fixtures::{assert_renders, GroupPicks};
@@ -55362,10 +57628,47 @@ mod tests {
             recorded(None, "n1", "UNSTAMPED"),
         ];
         let found = round_findings(&run, "u", 1);
+        let roster = [
+            lens.clone(),
+            ROLE_ADVERSARY.to_string(),
+            "lens:silent".into(),
+        ];
+        let silent = |role: &str| fill(&group("ROUND_NO_FINDING"), &[("role", role)]);
+        let none = BTreeSet::new();
+        let unstamped = |by: &str| {
+            Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(&json!({"id": "n", "summary": "{s}", "by": by})).unwrap(),
+            )
+        };
+        let mark = |attempt: u32| {
+            Event::new(
+                ledger::TYPE_UNIT_STATUS,
+                serde_json::to_vec(
+                    &json!({"id": "u", "status": STATUS_REVIEW_ROUND_START, "attempt": attempt}),
+                )
+                .unwrap(),
+            )
+        };
+        let marked = [
+            unstamped("lens:early"),
+            mark(0),
+            unstamped("lens:zero"),
+            mark(1),
+            unstamped("lens:silent"),
+            unstamped("{by}").with_meta(contextgraph::META_ACTOR, ROLE_ADVERSARY),
+        ];
+        let wide_roster = [
+            lens.clone(),
+            ROLE_ADVERSARY.to_string(),
+            "lens:silent".into(),
+            "lens:early".into(),
+            "lens:zero".into(),
+        ];
         let cases = [
             (
                 "a lens's own findings",
-                round_findings_block(&found, &lens, false),
+                round_findings_block(&found, &lens, false, &roster, &none),
                 format!(
                     "{}- lens:lens (f1): {{latest}}\n",
                     group("ROUND_FINDINGS_YOURS")
@@ -55373,25 +57676,136 @@ mod tests {
             ),
             (
                 "a role that recorded none",
-                round_findings_block(&found, "lens:other", false),
+                round_findings_block(&found, "lens:other", false, &roster, &none),
                 String::new(),
             ),
             (
-                "the adjudicator's every finding",
-                round_findings_block(&found, ROLE_ADJUDICATOR, true),
+                "the adjudicator's every finding, then each silent member of its roster",
+                round_findings_block(&found, ROLE_ADJUDICATOR, true, &roster, &none),
                 format!(
-                    "{}- lens:lens (f1): {{latest}}\n- {{by}} (a1): {{second}}\n",
-                    group("ROUND_FINDINGS_ALL")
+                    "{}- lens:lens (f1): {{latest}}\n- {{by}} (a1): {{second}}\n{}",
+                    group("ROUND_FINDINGS_ALL"),
+                    silent("lens:silent")
                 ),
             ),
             (
-                "a round that recorded none",
-                round_findings_block(&round_findings(&run, "u", 2), ROLE_ADJUDICATOR, true),
+                "a round that recorded none, under a roster",
+                round_findings_block(
+                    &round_findings(&run, "u", 2),
+                    ROLE_ADJUDICATOR,
+                    true,
+                    &roster,
+                    &none,
+                ),
+                format!(
+                    "{}{}{}{}",
+                    group("ROUND_FINDINGS_ALL"),
+                    silent(&lens),
+                    silent(ROLE_ADVERSARY),
+                    silent("lens:silent")
+                ),
+            ),
+            (
+                "a round that recorded none, under no roster",
+                round_findings_block(
+                    &round_findings(&run, "u", 2),
+                    ROLE_ADJUDICATOR,
+                    true,
+                    &[],
+                    &none,
+                ),
                 String::new(),
+            ),
+            (
+                "a round whose members recorded unstamped findings since its start mark",
+                round_findings_block(
+                    &round_findings(&marked, "u", 1),
+                    ROLE_ADJUDICATOR,
+                    true,
+                    &wide_roster,
+                    &unstamped_round_authors(&marked, "u", 1),
+                ),
+                format!(
+                    "{}{}{}{}",
+                    group("ROUND_FINDINGS_ALL"),
+                    silent(&lens),
+                    silent("lens:early"),
+                    silent("lens:zero")
+                ),
+            ),
+            (
+                "a round with no start mark, whose members recorded unstamped findings in the run",
+                round_findings_block(
+                    &round_findings(&marked, "plan-critique", 0),
+                    ROLE_ADJUDICATOR,
+                    true,
+                    &wide_roster,
+                    &unstamped_round_authors(&marked, "plan-critique", 0),
+                ),
+                format!("{}{}", group("ROUND_FINDINGS_ALL"), silent(&lens)),
             ),
         ];
         for (case, render, expected) in cases {
             assert_renders(case, &render, &expected);
         }
+    }
+
+    /// A finding's line escapes what its reviewer wrote ([`debug_escaped`]) - its id, its
+    /// reviewer and its summary - so a newline in one cannot forge a row, in a round's findings
+    /// and in the findings section alike; spaces and non-ASCII characters read as written.
+    #[test]
+    fn a_finding_line_escapes_what_its_reviewer_wrote() {
+        let forged = "two\n- lens:x (f9): forged";
+        let escaped = "two\\n- lens:x (f9): forged";
+        let stamped = |id: &str, by: &str, summary: &str, actor: Option<&str>| {
+            let e = Event::new(
+                contextgraph::TYPE_REVIEW_FINDING,
+                serde_json::to_vec(&json!({"id": id, "summary": summary, "by": by})).unwrap(),
+            )
+            .with_meta(META_SPAWN, spawn_id("u", &lens_role("lens"), 1));
+            match actor {
+                Some(actor) => e.with_meta(contextgraph::META_ACTOR, actor),
+                None => e,
+            }
+        };
+        let lines = |e: Event| -> String {
+            round_findings(&[e], "u", 1)
+                .into_iter()
+                .map(|f| f.line)
+                .collect()
+        };
+        let cases = [
+            (
+                "a summary with spaces and non-ASCII characters",
+                lines(stamped(
+                    "f1",
+                    "{by}",
+                    "caf\u{e9} au lait",
+                    Some("lens:lens"),
+                )),
+                "- lens:lens (f1): caf\u{e9} au lait\n".to_string(),
+            ),
+            (
+                "a summary holding a newline",
+                lines(stamped("f1", "{by}", forged, Some("lens:lens"))),
+                format!("- lens:lens (f1): {escaped}\n"),
+            ),
+            (
+                "an id and a reviewer holding a newline",
+                lines(stamped("f\n1", "lens:lens\nx", "s", None)),
+                "- lens:lens\\nx (f\\n1): s\n".to_string(),
+            ),
+        ];
+        for (case, got, expected) in cases {
+            assert_eq!(got, expected, "{case}");
+        }
+        let section = render_capped_findings(
+            &[("f-one", "{by}", forged.to_string())],
+            &["core.rs".to_string()],
+        );
+        assert!(
+            section.contains(&format!("- {{by}} (f-one): {escaped}\n")),
+            "the findings section escapes a summary's newline: {section}"
+        );
     }
 }

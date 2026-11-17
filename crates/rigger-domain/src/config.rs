@@ -473,6 +473,25 @@ pub struct ReviewPanel {
     /// ReviewPanel type recursion (a fixed-size pointer instead of an infinite value).
     #[serde(default)]
     pub tiers: Option<Box<ReviewDepth>>,
+    /// The members a LATER review round re-runs ([`LaterRounds`]), `all` when left out. Each
+    /// panel reads its own, so a `tiers` light panel that leaves it out re-runs every member.
+    #[serde(default)]
+    pub later_rounds: LaterRounds,
+}
+
+/// The members of a panel a LATER review round of a unit re-runs: a round whose unit an earlier
+/// round judged and sent back.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LaterRounds {
+    /// Every member, as on the unit's first round.
+    #[default]
+    All,
+    /// The members whose findings, recorded in any earlier round of the unit, the earlier
+    /// round's verdict upheld, and the adjudicator step; every member when the verdict upheld no
+    /// finding a member recorded, when that round ran under another review tier, or when the
+    /// change since that round reaches a file none of its REQUIRED items names.
+    Finders,
 }
 
 /// One entry of a panel's `steps` list, which names its step by the key of that step's kind. A

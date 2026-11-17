@@ -107,6 +107,7 @@ fn model_pinning_takes_effect_through_run_canary_and_the_header_round_trips_and_
         adjudicator: "adj".into(),
         steps: None,
         tiers: None,
+        later_rounds: Default::default(),
     };
 
     let mut pins = ModelPins::new();

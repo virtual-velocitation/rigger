@@ -187,10 +187,7 @@ impl TreeSource for GitTreeSource {
                     .ok_or_else(|| failed(&self.root, &args, peeled.as_bytes()))?;
                 (Some(commit.to_owned()), tree.to_owned())
             }
-            (None, Some(_)) => (
-                None,
-                self.answer(&["hash-object", "-t", "tree", "--stdin"])?,
-            ),
+            (None, Some(_)) => (None, self.answer(&crate::worktree::EMPTY_TREE_QUERY)?),
             (None, None) => {
                 return Err(format!(
                     "{} has no HEAD git can resolve",

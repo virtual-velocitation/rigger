@@ -318,6 +318,14 @@ runs a reduced `light` roster. Risk signals **fail safe**: when risk cannot be m
 The **adjudicator and the full gate suite stay mandatory on every tier**. With no `tiers:`
 block every unit runs the full panel, so existing workflows are unchanged.
 
+**Later rounds (opt-in).** A rejected unit is reviewed again once its fix lands. A panel's
+`later_rounds:` key sets who that later round re-runs: `all` (the default) re-runs every
+member; `finders` re-runs the members whose findings, recorded in any earlier round of the
+unit, the rejecting verdict upheld, plus the adjudicator, each under its own step's role
+token. It **fails safe** to every member: when the verdict upheld no finding a member
+recorded, when the rejecting round ran under another review tier, when the fix reaches a
+file none of the verdict's required items names, or when the log cannot be read.
+
 ### 3.3 Gates are config, not code
 
 A gate is `{ run: <command>, kind: core|elevated|deferred }`. Rigger runs it, captures a
