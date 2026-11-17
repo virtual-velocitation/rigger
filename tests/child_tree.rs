@@ -1,14 +1,15 @@
 //! Table B2: a tree held by the Linux keeper, the built binary re-run as `rigger-keeper`
 //! (`crates/rigger-process/src/child_tree/linux.rs`). The handle answers the main's pid and its
 //! exact status; an end, a drop and a TERM to the keeper each leave nothing the tree started
-//! running; a release after the main's exit leaves what the main left running; the keeper holds
-//! none of the session's streams; and a keeper that is gone or deaf is reported, never trusted,
-//! and a main a gone keeper left is reported, never signalled.
+//! running; a release, before the main's exit or after it, leaves what the main left running; the
+//! keeper holds none of the session's streams; and a keeper that is gone or deaf is reported,
+//! never trusted, and a main a gone keeper left is reported, never signalled.
 //! Every process a row starts is read through the FIFO witness (`common::witness`), and the test
 //! signals none of them.
 
 use crate::common::fixtures::fixture_script;
 use crate::common::rigger_bin;
+use crate::common::wait_until;
 use crate::common::witness::{Reading, Witness};
 use rigger::child_tree::{line_channel, Containment, EndReport, ReapedChild, TreeCommand, Why};
 use rigger::os_process;
@@ -176,6 +177,29 @@ fn a_kept_tree_released_after_its_main_exits_leaves_what_the_main_left_running()
 
     tree.release();
 
+    assert_eq!(
+        witness.read(),
+        Reading::Held,
+        "the holder the main left runs on"
+    );
+    assert_eq!(witness.release(), Reading::Ended);
+}
+
+#[test]
+fn a_kept_tree_released_while_its_main_runs_ends_nothing_when_the_main_exits() {
+    let mut witness = Witness::new();
+    let mut tree = kept(&witness, "holder; up; read -r unused; exit 0");
+    assert!(witness.wait_up(2), "the holder and the main are up");
+    let keeper = os_process::parent(tree.id()).expect("the main's parent, the keeper");
+    let input = tree.take_stdin();
+
+    tree.release();
+    drop(input);
+
+    assert!(
+        wait_until(|| matches!(os_process::state(keeper), Some('Z') | None)),
+        "the keeper exits once the main has"
+    );
     assert_eq!(
         witness.read(),
         Reading::Held,
