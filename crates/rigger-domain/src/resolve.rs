@@ -2763,12 +2763,14 @@ pub(crate) mod tests {
         );
     }
 
-    /// A tree of qualified mentions whose qualifiers keep no candidate of their rule:
+    /// A tree of qualified mentions whose qualifiers keep no candidate of their rule, but one:
     /// `AtomicU64::new` beside the project's `Cursor::new`, in its file and another, and
     /// `AtomicU64::fetch_add`, which nothing defines, from product and test code; `load`
     /// qualified by a module, a C++ type, a test type, a product type and a product trait, and
-    /// the variant reference `ErrorKind::NotFound`; and the C# member qualifiers
-    /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape`.
+    /// the variant reference `ErrorKind::NotFound`; the C# member qualifiers
+    /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape`; the test
+    /// calls `Gauge::unload` and `Atomic::unload`, whose leaf nothing defines; and the one whose
+    /// qualifier keeps a candidate, the test call `FakeStore::open` to a test type's own method.
     pub(crate) fn qualifier_fixture() -> FactsView {
         let cursor = code(
             "src/cursor.rs",
@@ -2898,10 +2900,47 @@ pub(crate) mod tests {
                 ),
             ],
         );
+        let support = code(
+            "tests/support.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("FakeStore", "type", 1, None, true),
+                def("FakeStore::open", "method", 2, Some(0), true),
+            ],
+            vec![],
+        );
+        let store = code(
+            "tests/store.rs",
+            "rust",
+            Scope::Test,
+            vec![def("opens", "function", 1, None, true)],
+            vec![qualified(
+                MentionKind::Call,
+                "FakeStore::open",
+                Some(0),
+                2,
+                true,
+            )],
+        );
+        let gauge = code(
+            "tests/gauge.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("drains", "function", 1, None, true),
+                def("swaps", "function", 4, None, true),
+            ],
+            vec![
+                qualified(MentionKind::Call, "Gauge::unload", Some(0), 2, true),
+                qualified(MentionKind::Call, "Atomic::unload", Some(1), 5, true),
+            ],
+        );
         FactsView::new(
             stamp(),
             vec![
-                cursor, seq, seq_test, loader, atomic, fake, app, app_test, http, handler,
+                cursor, seq, seq_test, loader, atomic, fake, app, app_test, http, handler, support,
+                store, gauge,
             ],
         )
     }
@@ -2916,13 +2955,16 @@ pub(crate) mod tests {
     /// only by a module, a C++ type or a test type, from product and test code alike, and the
     /// variant reference `ErrorKind::NotFound`. `Gauge::load`, `Meter::load`,
     /// `Request.GetClientIp`, `Request.Missing` and the type reference `Models.Shape` keep the
-    /// unqualified rule.
+    /// unqualified rule, and so the test call `Gauge::unload`, which nothing defines, lands on
+    /// its placeholder past every proof, while `Atomic::unload`, its qualifier named only by a
+    /// C++ type, lands nowhere. A qualifier that keeps a candidate links it whatever it names:
+    /// the test call `FakeStore::open`, its qualifier a test type, lands on that type's `open`.
     #[test]
     fn a_qualifier_naming_no_definition_makes_no_link_and_a_member_qualifier_falls_back() {
         let view = qualifier_fixture();
         let r = Resolver::new(&view);
         // (what the answer shows, the question, the whole answer)
-        let cases: [(&str, Ask, &[&str]); 9] = [
+        let cases: [(&str, Ask, &[&str]); 12] = [
             (
                 "a path qualifier naming none, past a same-file call target of its leaf",
                 Ask::Links("src/cursor.rs", false),
@@ -2994,6 +3036,26 @@ pub(crate) mod tests {
                     "src/handler.cs::Handler -CONTAINS/extracted-> \
                      src/handler.cs::Handler.Handle",
                 ],
+            ),
+            (
+                "a test call whose path qualifier, a test type, keeps that type's own method",
+                Ask::Links("tests/store.rs", true),
+                &[
+                    "tests/store.rs::opens -CALLS/extracted-> tests/support.rs::FakeStore::open",
+                    "tests/store.rs -REFERENCES/extracted-> tests/support.rs::FakeStore::open",
+                    "tests/store.rs -CONTAINS/extracted-> tests/store.rs::opens",
+                ],
+            ),
+            (
+                "a test call whose path qualifier names a product type lands on a placeholder, \
+                 one whose qualifier names only another language's type on none",
+                Ask::PlaceholderCalls("tests/gauge.rs"),
+                &["unload tests/gauge.rs::drains"],
+            ),
+            (
+                "the placeholder caller of a leaf nothing defines, by its file's language",
+                Ask::PlaceholderCallers("unload"),
+                &["tests/gauge.rs::drains"],
             ),
         ];
         for (shows, ask, want) in cases {
