@@ -508,21 +508,27 @@ impl Leftover {
 }
 
 /// What an end left: `residue`, the processes it signalled that are still running past
-/// [`END_BOUND`]; and `skipped`, those it found but never signalled, because at signal time their
-/// parent chain no longer reached the tree's root (an escape, or a stranger that took a pid).
+/// [`END_BOUND`]; and `skipped`, those still running that it found but never signalled, because at
+/// signal time their parent chain no longer reached the tree's root (an escape, or a stranger that
+/// took a pid).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndReport {
     /// Signalled, and still running past the bound.
     pub residue: Vec<Leftover>,
-    /// Found, and never signalled.
+    /// Found, never signalled, and still running.
     pub skipped: Vec<Leftover>,
 }
 
 impl EndReport {
-    /// Report `pid` as found and never signalled, once.
-    fn skip(&mut self, pid: u32) {
-        if !self.skipped.iter().any(|leftover| leftover.pid == pid) {
-            self.skipped.push(Leftover::of(pid, false));
+    /// Report `target` as found and never signalled, once, while it is still running: a process
+    /// that is gone by then left nothing to report.
+    fn skip(&mut self, target: &Identity) {
+        let reported = self
+            .skipped
+            .iter()
+            .any(|leftover| leftover.pid == target.pid);
+        if !reported && running(target) {
+            self.skipped.push(Leftover::of(target.pid, false));
         }
     }
 }
@@ -619,7 +625,7 @@ impl Tree {
         for target in &walk {
             let skipped = report.skipped.iter().any(|left| left.pid == target.pid);
             if !skipped && !self.send(os, signal, target) {
-                report.skip(target.pid);
+                report.skip(target);
             }
         }
         walk
@@ -685,9 +691,7 @@ fn end_watched_with(
     let deadline = Instant::now() + bound;
     if !matches!(main.try_wait(), Ok(None)) {
         for target in remembered {
-            if running(target) {
-                report.skip(target.pid);
-            }
+            report.skip(target);
         }
         return report;
     }
@@ -715,7 +719,7 @@ fn end_watched_with(
                     by_depth[depth].push(*target);
                     new.push(target.pid);
                 } else {
-                    report.skip(target.pid);
+                    report.skip(target);
                 }
             }
         }
@@ -752,10 +756,8 @@ fn end_watched_with(
         os.send(Signal::Resume, main_pid);
         report.residue.push(Leftover::of(main_pid, false));
     }
-    for target in remembered {
-        if !frozen.contains(target) && running(target) {
-            report.skip(target.pid);
-        }
+    for target in remembered.iter().filter(|target| !frozen.contains(target)) {
+        report.skip(target);
     }
     report
 }
