@@ -5236,7 +5236,9 @@ impl RunCtx<'_> {
 
     /// The coverage gate, routed through flagSpecDefect (§3.2, §4.4, §8): a remaining
     /// gap is a spec defect, so emit a SpecDefect event with the reason, then halt by
-    /// returning the error (the conductor never silently deviates around a gap).
+    /// returning the error (the conductor never silently deviates around a gap). The error
+    /// adds what a person does about it, since it is the run's fault hold's text
+    /// ([`held_on_a_fault`]) and the hold stands until `rigger release`.
     fn check_coverage_or_flag(
         &self,
         stages: &BTreeMap<String, Stage>,
@@ -5244,7 +5246,10 @@ impl RunCtx<'_> {
     ) -> Result<(), Error> {
         if let Some(reason) = coverage_gap(stages, criteria) {
             self.emit(TYPE_SPEC_DEFECT, json!({"reason": reason}))?;
-            return Err(Error(reason));
+            return Err(Error(format!(
+                "{reason}; to continue, amend the spec or the workflow until a stage with an \
+                 LLM verifier covers every criterion, then `rigger release`"
+            )));
         }
         Ok(())
     }

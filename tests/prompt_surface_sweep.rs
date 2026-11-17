@@ -65,6 +65,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "rigger: the gate request channel failed: {e}",
             "amend the spec and relaunch: plan-critique found a spec defe",
             "{} of {} keyed events of this run were not recorded on {STRE",
+            "{reason}; to continue, amend the spec or the workflow until ",
             "a running stage always reports before the wave ends",
             "stage {name:?} failed in its wave: {msg}",
             "{role} {agent_id:?} would run in the main repo checkout (emp",
