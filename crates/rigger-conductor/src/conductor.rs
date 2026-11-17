@@ -2878,7 +2878,7 @@ fn git_step<T, E: Into<worktree::StepError>>(step: Result<T, E>) -> Result<T, Er
 /// marker stripped from the operator's message, while charging the unit no attempt (no
 /// `UnitFailed`, no `UnitEscalated`) and recording no per-unit lesson that would misattribute
 /// the fault to the unit. A new halt joins this list; it never grows an arm of its own.
-const HALT_MARKERS: [&str; 7] = [
+const HALT_MARKERS: [&str; 8] = [
     DEGENERATE_MARKER,
     MISMATCH_MARKER,
     PLAN_LANDING_MARKER,
@@ -2886,6 +2886,7 @@ const HALT_MARKERS: [&str; 7] = [
     INFRA_MARKER,
     PROBE_FAULT_MARKER,
     GIT_STEP_MARKER,
+    SPAWN_CRASH_MARKER,
 ];
 
 /// `e` with every [`HALT_MARKERS`] sentinel stripped: the operator's message a halt reaches
@@ -2909,10 +2910,11 @@ const INFRA_MARKER: &str = "\u{1}rigger:infra-halt\u{1}";
 /// [`infra_crash`] as an outage of the unit's stage and reruns the stage uncharged under the F3
 /// infra retry ([`CAUSE_INFRA_SPAWN`]), as it does an implementer crash. A conflict-resolver round
 /// a store fault ended before its launch returns it too, and the single lane's integrate doors
-/// ([`RunCtx::integrate_under_infra_retry`]) rerun the merge under the same retry. It is no halt: every
-/// other caller (a standalone review stage, the plan-critique gate, a speculation candidate)
-/// keeps its own crash handling, and the wave's generic arm and the plan-critique gate strip it
-/// from the operator's message.
+/// ([`RunCtx::integrate_under_infra_retry`]) rerun the merge under the same retry. Every other
+/// caller (a standalone review stage, a speculation candidate, the plan-critique gate) has no
+/// infra retry, so the crash reaches the wave or the run as a halt over [`HALT_MARKERS`]: an
+/// outage of the spawn, never the unit's work, so no lesson names the unit, and the marker is
+/// stripped from the operator's message.
 const SPAWN_CRASH_MARKER: &str = "\u{1}rigger:spawn-crashed\u{1}";
 
 /// The error a sdet-author or review-tier spawn crash returns: `message` marked with
@@ -3639,11 +3641,11 @@ fn drive(
                         // fan-out and let the breaker trip below (like the wave's handling).
                         Err(e) if carries_marker(&e, BUDGET_MARKER) => fan_out_released = false,
                         // Any other error propagates and ends the step: a halt - a degenerate
-                        // gate reviewer, a verdict-less or mismatched gate adjudicator - keeps
-                        // its marker, which the run's fault hold strips ([`held_on_a_fault`]),
-                        // and a gate reviewer's crash ([`SPAWN_CRASH_MARKER`]) has no infra
-                        // retry here and loses its marker.
-                        Err(e) => return Err(Error(e.0.replace(SPAWN_CRASH_MARKER, ""))),
+                        // gate reviewer, a verdict-less or mismatched gate adjudicator, a gate
+                        // reviewer's crash ([`SPAWN_CRASH_MARKER`]), which has no infra retry
+                        // here - keeps its marker, which the run's fault hold strips
+                        // ([`held_on_a_fault`]).
+                        Err(e) => return Err(e),
                     }
                 }
             }
@@ -5469,7 +5471,8 @@ impl RunCtx<'_> {
             // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
             // landing refused by the run checkout's local changes, a unit's infra reruns
             // past the taxonomy's infra limit, a gate's failed guard probe, a git step on a
-            // unit's branch or worktree that failed) - is an infrastructure or configuration
+            // unit's branch or worktree that failed, a review or conflict-resolver spawn crash
+            // no infra retry reran) - is an infrastructure or configuration
             // fault, not the unit's failure. ONE arm for all of them: propagate the loud
             // halt as the wave's error with the recognition marker stripped (so the
             // operator's message stays clean), emit NO per-unit lesson here (it would
@@ -5500,10 +5503,8 @@ impl RunCtx<'_> {
                 // wraps), so no current or future call site that lets an `Err`
                 // reach this generic fallback unformatted can leak the raw marker.
                 // A no-op for every marker-free error (every other driver, or text
-                // a leaf site already cleaned). A spawn crash's own marker
-                // ([`SPAWN_CRASH_MARKER`]) reaches here from a review stage outside
-                // the single lane, and is stripped with it.
-                let msg = strip_failure_marker(&e).replace(SPAWN_CRASH_MARKER, "");
+                // a leaf site already cleaned).
+                let msg = strip_failure_marker(&e);
                 let _ = self.emit_lesson(
                     None,
                     &name,
@@ -9300,8 +9301,8 @@ impl RunCtx<'_> {
                     // driver records none), `review_spawn_errored` is false and the genuine
                     // crash surfaces marked ([`SPAWN_CRASH_MARKER`]), so the single lane
                     // reruns the whole review uncharged under its F3 infra retry
-                    // (op-105-sdet-seam-joins-the-infra-retry) while every other caller keeps
-                    // its own handling of a failed review.
+                    // (op-105-sdet-seam-joins-the-infra-retry) while every other caller halts
+                    // on it.
                     if !is_parked_or_refused(&e, BUDGET_MARKER) && self.review_spawn_errored(&id)? {
                         errored = Some(failed(&e));
                         continue;
@@ -48209,43 +48210,95 @@ mod tests {
 
             let halted = run_isolated(&cfg, &deps);
 
-            let Err(err) = halted else {
-                panic!("{step:?}: a refused git step halts the run");
-            };
-            assert!(
-                err.0.contains(refusal) && !err.0.contains('\u{1}'),
-                "{step:?}: the halt names git's refusal, its marker stripped: {}",
-                err.0
-            );
             let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-            let charged = [
-                contextgraph::TYPE_LESSON_LEARNED,
-                ledger::TYPE_UNIT_FAILED,
-                ledger::TYPE_UNIT_ESCALATED,
-            ];
-            assert_eq!(
-                events
-                    .iter()
-                    .filter(|e| charged.contains(&e.type_.as_str()))
-                    .map(|e| String::from_utf8_lossy(&e.data).to_string())
-                    .collect::<Vec<_>>(),
-                Vec::<String>::new(),
-                "{step:?}: no lesson against the unit and no attempt charged"
+            let err = assert_held_with_no_lesson(&format!("{step:?}"), halted, &events);
+            assert!(
+                err.contains(refusal),
+                "{step:?}: the halt names git's refusal: {err}"
             );
-            assert_eq!(
-                holds_in(&events),
-                [conductor_fault_hold(&err.0)],
-                "{step:?}: the fault holds the run for the orchestrator, naming it"
-            );
-            assert_eq!(
-                events
-                    .iter()
-                    .map(|e| String::from_utf8_lossy(&e.data).to_string())
-                    .filter(|data| data.contains('\u{1}') || data.contains("\\u0001"))
-                    .collect::<Vec<_>>(),
-                Vec::<String>::new(),
-                "{step:?}: no record carries the halt's marker"
-            );
+        }
+    }
+
+    /// The run `halted` on a fault of the conductor's own, `row` naming the case: the error it
+    /// returns carries no marker, `events` (its log) record no lesson and charge no attempt, the
+    /// run is held for the orchestrator naming the fault, and no record carries a halt marker.
+    /// Returns the fault's text.
+    fn assert_held_with_no_lesson(
+        row: &str,
+        halted: Result<RunState, Error>,
+        events: &[Event],
+    ) -> String {
+        let Err(err) = halted else {
+            panic!("{row}: the fault halts the run");
+        };
+        assert!(
+            !err.0.contains('\u{1}'),
+            "{row}: the halt's marker is stripped: {}",
+            err.0
+        );
+        let charged = [
+            contextgraph::TYPE_LESSON_LEARNED,
+            ledger::TYPE_UNIT_FAILED,
+            ledger::TYPE_UNIT_ESCALATED,
+        ];
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| charged.contains(&e.type_.as_str()))
+                .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                .collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "{row}: no lesson against the unit and no attempt charged"
+        );
+        assert_eq!(
+            holds_in(events),
+            [conductor_fault_hold(&err.0)],
+            "{row}: the fault holds the run for the orchestrator, naming it"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                .filter(|data| data.contains('\u{1}') || data.contains("\\u0001"))
+                .collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "{row}: no record carries the halt's marker"
+        );
+        err.0
+    }
+
+    /// AN INFRASTRUCTURE FAILURE NAMES NO UNIT: a failure of the run's infrastructure that ends a
+    /// stage - a standalone review stage's lens crashing, which no infra retry reruns - halts the
+    /// run with the failure's text as it was, records no lesson against the unit, charges no
+    /// attempt, and holds the run naming it.
+    #[test]
+    fn an_infrastructure_failure_halts_with_no_lesson_and_holds_the_run() {
+        #[derive(Debug, Clone, Copy)]
+        enum Failure {
+            /// The standalone review stage's one lens crashes.
+            ReviewCrash,
+        }
+        // Each row: the failure, and the text the run halts with.
+        let cases = [(
+            Failure::ReviewCrash,
+            r#"stage "review" lens "lens": simulated mid-spawn crash"#.to_string(),
+        )];
+        for (failure, fault) in cases {
+            // The run's result and the store its log is read from.
+            let (halted, log) = match failure {
+                Failure::ReviewCrash => {
+                    let driver = Stub {
+                        fail_spawn_ids: review_lens_ids(&["lens"]),
+                        ..Stub::new()
+                    };
+                    let (halted, _repo, store) =
+                        standalone_review_run(&["lens"], "", None, &driver);
+                    (halted, store)
+                }
+            };
+            let events = log.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let err = assert_held_with_no_lesson(&format!("{failure:?}"), halted, &events);
+            assert_eq!(err, fault, "{failure:?}: the halt names the failure");
         }
     }
 
