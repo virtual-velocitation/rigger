@@ -21,6 +21,8 @@
 #   eof-then-margin  half a second after stdin EOF a holder starts; the session keeps idling
 #   double           before init, a subshell starts a holder and exits at once, so the holder has
 #                    left the session's process tree before any stop; the session exits at EOF
+#   daemon           `double` from `/`, as daemon(3) leaves a process: out of the session's process
+#                    tree and out of its working directory, where no sweep of that directory sees it
 #   double-slow      after init, a subshell starts a holder and lives 3 s more before it exits;
 #                    the session waits for it, then exits at stdin EOF
 #   setsid           before init, a holder in a session of its own (util-linux setsid)
@@ -97,6 +99,11 @@ eof-then-margin)
     ;;
 double)
     (holder)
+    init
+    drain
+    ;;
+daemon)
+    (cd / && holder)
     init
     drain
     ;;

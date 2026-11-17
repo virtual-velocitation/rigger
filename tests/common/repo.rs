@@ -88,6 +88,10 @@ pub fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
 /// result.
 pub const SILENT_PAST_THE_POLL: &str = "claude-code-silent-past-the-poll-then-result-agent.sh";
 
+/// The checked-in session whose processes start where a stop or an end can miss them, at the
+/// moment its `RIGGER_FORK_AT` names, each read through the FIFO witness (`common::witness`).
+pub const FORKS_AT_STOP_AGENT: &str = "claude-code-forks-at-stop-agent.sh";
+
 /// The checked-in stand-in for the critic's `claude`, which [`write_critique_stub`] puts first on
 /// PATH.
 const CRITIQUE_STUB: &str = "claude-code-critique-agent.sh";

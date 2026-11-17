@@ -1261,11 +1261,9 @@ fn spawn_stop_ends_a_forked_descendant_still_in_the_childs_own_process_tree() {
 #[cfg(unix)]
 mod forks_at_stop {
     use super::*;
+    use crate::common::repo::FORKS_AT_STOP_AGENT;
     use crate::common::witness::{Reading, Witness};
     use rigger::driver::claude_code::STOP_GRACE;
-
-    /// The fixture agent whose processes start where a stop or an end can miss them.
-    const FORKS_AT_STOP_AGENT: &str = "claude-code-forks-at-stop-agent.sh";
 
     /// The end's own rounds: a TERM round's 300 ms grace, then the KILL round's confirmation.
     const END_ROUNDS: Duration = Duration::from_millis(600);

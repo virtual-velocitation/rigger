@@ -7505,6 +7505,67 @@ fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
     assert!(took < SUPERVISOR_BEAT_INTERVAL, "returned after {took:?}");
 }
 
+/// A STOP THROUGH THE BUILT BINARY: given a session that starts a process which leaves its tree and
+/// its working directory at once, as daemon(3) does, holding the session's pipes, and whose rigger
+/// MCP server then reports `failed` at init, when `rigger run` drives it with no infra rule, then
+/// the run gives up on the launch fault well within the stop's grace, and nothing the session
+/// started is still running once `rigger run` has exited: the binary serves the containment the
+/// composition root hands the host. Read through the FIFO witness (`common::witness`), so no
+/// signal of the test's own decides it.
+#[cfg(unix)]
+#[test]
+fn a_run_whose_session_is_stopped_leaves_nothing_the_session_started_running() {
+    use common::witness::{Reading, Witness};
+    use rigger::driver::claude_code::STOP_GRACE;
+
+    let mut witness = Witness::new();
+    let dir = temp_git_project_with_commit();
+    let root = dir.path();
+    write_workflow_fixture(root, &NO_INFRA_RULE_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let fakebin = tempfile::tempdir().unwrap();
+    let path_env = stub_path(
+        fakebin.path(),
+        "claude",
+        Some(common::repo::FORKS_AT_STOP_AGENT),
+    );
+    let witness_env = witness.env();
+    let mut envs = fake_claude_env(&path_env, scratch.path()).to_vec();
+    envs.extend(
+        witness_env
+            .iter()
+            .map(|(var, val)| (var.as_str(), val.as_str())),
+    );
+    envs.extend([
+        ("RIGGER_FORK_AT", "daemon"),
+        ("RIGGER_TEST_MCP_STATUS", "failed"),
+    ]);
+
+    let started = Instant::now();
+    let (out, err, ok) =
+        common::cli::run_rigger_within(root, &["run"], &envs, POLLS_BESIDE_A_RUN, |_| {})
+            .expect("the run gives up on its launch fault");
+    let took = started.elapsed();
+    let reading = witness.read();
+
+    assert!(!ok, "the run fails; stderr: {err}\nstdout: {out}");
+    assert!(
+        witness.up() >= 1,
+        "the session wrote its up byte, so the witness reads its processes; stderr: {err}"
+    );
+    assert_eq!(
+        (reading, took < STOP_GRACE),
+        (Reading::Ended, true),
+        "the witness read {reading:?} (Ended: nothing the session started is still running) and \
+         the run took {took:?}; stderr: {err}"
+    );
+    assert_eq!(
+        witness.release(),
+        Reading::Ended,
+        "the test's release ends every process the session started"
+    );
+}
+
 /// The on-disk `body` decodes to the one [`SupervisorBeat`](rigger::progress::SupervisorBeat) a
 /// beat is.
 fn a_beat_body_decodes(body: &str) {
