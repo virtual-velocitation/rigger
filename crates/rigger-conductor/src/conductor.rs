@@ -2332,7 +2332,7 @@ impl PriorFailure {
 /// unit's branch. A no-op on the worktree-less path (`None`).
 fn checkpoint_attempt(wt: Option<&Worktree>, unit: &str, attempts: u32) -> Result<(), Error> {
     if let Some(w) = wt {
-        w.commit_checkpoint(&format!("rigger: {unit} attempt {}", attempts + 1))?;
+        git_step(w.commit_checkpoint(&format!("rigger: {unit} attempt {}", attempts + 1)))?;
     }
     Ok(())
 }
@@ -2385,7 +2385,7 @@ pub(crate) fn is_store_fault(e: &Error) -> bool {
 
 /// Whether `e` carries the sentinel `marker` ([`PARKED_MARKER`], [`BUDGET_MARKER`],
 /// [`DEGENERATE_MARKER`], [`MISMATCH_MARKER`], [`PLAN_LANDING_MARKER`],
-/// [`LAND_REFUSED_MARKER`], [`PROBE_FAULT_MARKER`] or [`WORKTREE_MARKER`], each a halt's signal,
+/// [`LAND_REFUSED_MARKER`], [`PROBE_FAULT_MARKER`] or [`GIT_STEP_MARKER`], each a halt's signal,
 /// [`EMIT_REFUSED_MARKER`], the emit guard's
 /// refusal of a record the spawn emitted, [`INTERRUPTED_MARKER`], the host's interrupted
 /// close, or [`STORE_FAULT_MARKER`], a store read failing before the launch) rather than a plain
@@ -2825,19 +2825,35 @@ fn probe_fault_halt(fault: gate::ProbeFault) -> Error {
     marked(PROBE_FAULT_MARKER, fault)
 }
 
-/// The sentinel a WORKTREE STEP GIT REFUSES embeds in its error ([`worktree_step`]): git refused
-/// a worktree the conductor makes, re-asserts or discards, or a branch it seeds, for a unit, a
-/// review or a post-merge re-gate, so the stage cannot go on. A fault of the conductor's own
-/// scratch and git state, never of the unit's code, so it is a halt over [`HALT_MARKERS`]: no
-/// lesson names the unit, and it is charged no attempt.
-const WORKTREE_MARKER: &str = "\u{1}rigger:worktree\u{1}";
+/// The sentinel a FAILED GIT STEP embeds in its error ([`git_step`]): a git step the conductor
+/// takes on a unit's branch or worktree, or on the run branch it lands one on, failed - git
+/// refused or could not answer it, or the step refused before git ran (conflict-marker text a
+/// commit will not stage, a cherry-pick an earlier one left in progress) - so the stage cannot go
+/// on. The conductor's git state is not what the stage needs and no further attempt changes
+/// that, so it is a halt over [`HALT_MARKERS`]: no lesson names the unit, it is charged no
+/// attempt, and the run is held for a person ([`held_on_a_fault`]).
+const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
 
-/// THE CONDUCTOR'S WORKTREE STEP: `step`, the result of [`Worktree::create`],
-/// [`Worktree::ensure_present`], [`Worktree::discard`] or [`Worktree::create_branch_at`], its
-/// failure marked with [`WORKTREE_MARKER`]. Every worktree the conductor makes, re-asserts or
-/// discards, and every branch it seeds, passes through here.
-fn worktree_step<T>(step: Result<T, worktree::Error>) -> Result<T, Error> {
-    step.map_err(|e| marked(WORKTREE_MARKER, Error::from(e).0))
+/// THE CONDUCTOR'S GIT STEP: `step`, the result of a fallible git step the conductor takes on a
+/// unit's branch or worktree, or on the run branch it lands one on, its failure marked with
+/// [`GIT_STEP_MARKER`]. The full set: making, re-asserting and discarding a worktree
+/// ([`Worktree::create`], [`Worktree::ensure_present`], [`Worktree::discard`]); reading a
+/// branch, its tip or its ancestry ([`worktree::branch_present`], [`worktree::branch_tip`],
+/// [`worktree::in_history`]); seeding, rolling back and deleting a branch
+/// ([`Worktree::create_branch_at`], [`Worktree::reset_branch_to`],
+/// [`Worktree::restore_reviewed_sha`], [`Worktree::delete_branch`]); committing
+/// ([`Worktree::commit_checkpoint`]); reading what a unit changed ([`Worktree::changed_files`],
+/// [`Worktree::changed_since_base`], [`Worktree::commits_since_base`],
+/// [`Worktree::files_touched_by_commit`], [`Worktree::diff_names`],
+/// [`Worktree::find_landed_by_patch_id`]); merging ([`Worktree::merge_into_worktree`],
+/// [`Worktree::accept_incoming`]); and every move of the run branch, through
+/// [`RunCtx::moving_the_run_branch`] ([`Worktree::land`], [`Worktree::cherry_pick_onto_run_branch`],
+/// [`Worktree::revert_on_base`], [`Worktree::reset_to`]). A worktree result reaches a conductor
+/// error only through here: the agent interface's `Error` has no conversion from the worktree
+/// error, so a step taken outside this helper does not compile. A teardown that discards its
+/// result (`let _ =`) takes no step that can halt.
+fn git_step<T>(step: Result<T, worktree::Error>) -> Result<T, Error> {
+    step.map_err(|e| marked(GIT_STEP_MARKER, e))
 }
 
 /// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
@@ -2852,7 +2868,7 @@ const HALT_MARKERS: [&str; 7] = [
     LAND_REFUSED_MARKER,
     INFRA_MARKER,
     PROBE_FAULT_MARKER,
-    WORKTREE_MARKER,
+    GIT_STEP_MARKER,
 ];
 
 /// `e` with every [`HALT_MARKERS`] sentinel stripped: the operator's message a halt reaches
@@ -3180,8 +3196,8 @@ pub fn run_serving(
 /// `rigger status` and `rigger watch` name it among what needs a person and `rigger release`
 /// continues the run. It is the one home of every error a begun run's drive returns: each
 /// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, a
-/// refused landing, an outage past the infra limit, a failed guard probe, a worktree step git
-/// refused) and every other, but a park ([`is_parked`]): whatever parked a spawn left its own hold
+/// refused landing, an outage past the infra limit, a failed guard probe, a failed git step)
+/// and every other, but a park ([`is_parked`]): whatever parked a spawn left its own hold
 /// standing. A hold it cannot write is said through [`Deps::log`]; `e` is returned either way,
 /// with every [`HALT_MARKERS`] sentinel stripped ([`without_halt_markers`]), so neither the hold
 /// nor the operator's message carries one, whichever path the halt reached here by.
@@ -4231,15 +4247,13 @@ impl RunCtx<'_> {
     /// drift to a relaunch, while an edit from outside the run still is. Called with
     /// `integrate_mu` held, so no other move lands between the two hashes. A crash between the
     /// move and the re-pin leaves the move unpinned, and that relaunch halts on drift as before.
-    fn moving_the_run_branch<T, E>(
+    /// The move is a git step ([`git_step`]): a failed one halts the run.
+    fn moving_the_run_branch<T>(
         &self,
-        move_branch: impl FnOnce() -> Result<T, E>,
-    ) -> Result<T, Error>
-    where
-        Error: From<E>,
-    {
+        move_branch: impl FnOnce() -> Result<T, worktree::Error>,
+    ) -> Result<T, Error> {
         let before = self.checkout_definition();
-        let moved = move_branch()?;
+        let moved = git_step(move_branch())?;
         if let (Some(before), Some(after)) = (before, self.checkout_definition()) {
             if crate::run_store::record_definition_move(
                 &self.deps.folding(),
@@ -5445,8 +5459,8 @@ impl RunCtx<'_> {
             // A HALT - any of the [`HALT_MARKERS`] (a degenerate reviewer, a gating
             // persona's verdict-channel mismatch, a plan-stage commit-landing fault, a
             // landing refused by the run checkout's local changes, a unit's infra reruns
-            // past the taxonomy's infra limit, a gate's failed guard probe, a worktree step
-            // git refused the conductor) - is an infrastructure or configuration
+            // past the taxonomy's infra limit, a gate's failed guard probe, a git step on a
+            // unit's branch or worktree that failed) - is an infrastructure or configuration
             // fault, not the unit's failure. ONE arm for all of them: propagate the loud
             // halt as the wave's error with the recognition marker stripped (so the
             // operator's message stays clean), emit NO per-unit lesson here (it would
@@ -6294,7 +6308,7 @@ impl RunCtx<'_> {
             // criterion 6) - re-assert once more anyway, never relying on either of those
             // to still be valid by the time this line runs.
             if let Some(w) = wt {
-                worktree_step(w.ensure_present())?;
+                git_step(w.ensure_present())?;
             }
             // The adjudicator's verdict reason is folded into the unit's `reviewed`
             // evidence (item 4). Replay-keyed on unit + attempt: a repo-less unit that
@@ -6428,8 +6442,8 @@ impl RunCtx<'_> {
             // file) - nothing to compare against, nothing to restore to.
             return Ok(());
         }
-        worktree_step(w.ensure_present())?;
-        let dirty = w.changed_files()?;
+        git_step(w.ensure_present())?;
+        let dirty = git_step(w.changed_files())?;
         let tip = worktree::head_sha_of(dir);
         let moved = !tip.is_empty() && tip != round_start_sha;
         if dirty.is_empty() && !moved {
@@ -6442,10 +6456,9 @@ impl RunCtx<'_> {
             // non-ancestor moved tip (residue that rewrote history rather than just
             // adding to it) must not have its named paths inflated by merge-base
             // anchoring (sdet-u103c6-committed-diff-names-triple-dot-non-ancestor).
-            residue.extend(
-                w.diff_names(round_start_sha, crate::worktree::DiffMode::Direct)
-                    .unwrap_or_default(),
-            );
+            residue.extend(git_step(
+                w.diff_names(round_start_sha, crate::worktree::DiffMode::Direct),
+            )?);
             residue.sort();
             residue.dedup();
         }
@@ -6466,7 +6479,7 @@ impl RunCtx<'_> {
             None,
             None,
         );
-        w.restore_reviewed_sha(round_start_sha)?;
+        git_step(w.restore_reviewed_sha(round_start_sha))?;
         Ok(())
     }
 
@@ -6902,7 +6915,7 @@ impl RunCtx<'_> {
         // never silently discarded and never silently blended into a LATER,
         // unrelated attempt's own checkpoint commit as if it were that attempt's
         // work. `Worktree::commit` is the single shared authority that refuses
-        // (infra fault, no attempt charged, propagated by `?`) a tree that instead
+        // (a halt through `git_step`, no attempt charged) a tree that instead
         // carries an in-progress merge/cherry-pick or literal conflict-marker text -
         // never staged as if resolved (the other half of this criterion). A no-op
         // ("nothing to commit") on the overwhelmingly common clean tree, exactly like
@@ -6974,10 +6987,10 @@ impl RunCtx<'_> {
                         &named_halt_spawn,
                     )? =>
             {
-                w.commit_checkpoint(&format!(
+                git_step(w.commit_checkpoint(&format!(
                     "wip({}): tree of halted spawn {}",
                     st.name, named_halt_spawn
-                ))?
+                )))?
             }
             _ => String::new(),
         };
@@ -7032,7 +7045,7 @@ impl RunCtx<'_> {
                 // centralized re-assert - so nothing else protects this read. Mirrors the
                 // identical fix already applied to every sibling stamp in this unit.
                 if let Some(w) = wt {
-                    worktree_step(w.ensure_present())?;
+                    git_step(w.ensure_present())?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
                 let cause = full.cause();
@@ -7082,7 +7095,7 @@ impl RunCtx<'_> {
                 // own internal re-assert (which ran BEFORE that re-gate) cannot cover this
                 // read. Re-assert immediately before it, same as every sibling site.
                 if let Some(w) = wt {
-                    worktree_step(w.ensure_present())?;
+                    git_step(w.ensure_present())?;
                 }
                 let failed_sha = worktree::head_sha_of(dir);
                 let failure = PriorFailure {
@@ -7600,7 +7613,7 @@ impl RunCtx<'_> {
                         // judge (adj-u3c3 round-2 reject: sdet-u3c3-verified-sha-stamped-before-
                         // restore).
                         if let Some(w) = wt {
-                            worktree_step(w.ensure_present())?;
+                            git_step(w.ensure_present())?;
                         }
                         // The verified status carries the gate evidence (item 4): each
                         // gate that ran summarized for the ledger's per-unit evidence.
@@ -7845,7 +7858,7 @@ impl RunCtx<'_> {
             // `run_reviewer`'s per-spawn re-assert ran and BEFORE this read. Re-assert
             // immediately before it, mirroring the `verified` stamp's fix.
             if let Some(w) = wt {
-                worktree_step(w.ensure_present())?;
+                git_step(w.ensure_present())?;
             }
             // Stamp the reviewed worktree sha (spec 11, unit 1): on a review reject this
             // is the sha the tiers judged, so the flip-flop fold can pair it with a later
@@ -7935,9 +7948,9 @@ impl RunCtx<'_> {
         let dir = unit_worktree_dir(&scratch, &st.name);
         let branch = unit_branch(&st.name);
         if lane == 0 {
-            return worktree_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch));
+            return git_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch));
         }
-        worktree_step(Worktree::create(
+        git_step(Worktree::create(
             &self.deps.repo,
             &format!("{dir}-spec{lane}"),
             &format!("{branch}-spec{lane}"),
@@ -8128,10 +8141,10 @@ impl RunCtx<'_> {
                     // lane-L candidate spawn id with lane-0 remediation attempt L). Keeping the
                     // unit `Fresh` across phase B makes a resume re-enter `run_speculation`
                     // deterministically (replaying the recorded candidates + gates + review).
-                    wt.commit_checkpoint(&format!(
+                    git_step(wt.commit_checkpoint(&format!(
                         "rigger: {} speculation candidate {lane}",
                         st.name
-                    ))?;
+                    )))?;
                     candidates.push(SpecCandidate {
                         attempt,
                         wt,
@@ -8297,7 +8310,7 @@ impl RunCtx<'_> {
                 // re-gate) cannot cover this read. Re-assert immediately before it, matching
                 // the identical guard `emit_speculation_winner_status` already uses on this
                 // same candidate below.
-                worktree_step(candidates[i].wt.ensure_present())?;
+                git_step(candidates[i].wt.ensure_present())?;
                 // Held until the group's outcome is known ([`LostLanes`]): written as this
                 // lane's own failure when a later lane wins, or carried in the group's one
                 // record when none does, so one loss is never counted twice.
@@ -8457,7 +8470,7 @@ impl RunCtx<'_> {
         // identical bug class already fixed for the single-lane `verified`/`reviewed`/
         // `failed` stamps. Re-assert right before the read, never relying on an earlier
         // spawn-time re-assert to still be valid by the time this line runs.
-        worktree_step(candidate.wt.ensure_present())?;
+        git_step(candidate.wt.ensure_present())?;
         let winner_sha = worktree::head_sha_of(dir);
         self.emit_keyed_meta(
             &verified_key(&st.name, attempt),
@@ -8548,7 +8561,7 @@ impl RunCtx<'_> {
         // AFTER it returns reject and BEFORE this read - the identical bug class already
         // fixed for the single-lane `failed_sha` stamp, mirrored here for the speculation
         // candidate's reject sibling.
-        worktree_step(wt.ensure_present())?;
+        git_step(wt.ensure_present())?;
         self.emit_keyed_meta(
             &format!("{}/spec-rejected#{attempt}", st.name),
             ledger::TYPE_UNIT_STATUS,
@@ -9211,7 +9224,7 @@ impl RunCtx<'_> {
             // could only protect whichever tier ran FIRST). A no-op fast path when nothing
             // disturbed the tree since the LAST re-assert (see [`Worktree::ensure_present`]).
             if let Some(w) = wt {
-                worktree_step(w.ensure_present())?;
+                git_step(w.ensure_present())?;
             }
             // Count the ReviewFindings this spawn emits to the graph - a lens/adversary's
             // REAL work channel (the review_protocol). A reviewer that emitted its findings
@@ -11030,14 +11043,14 @@ impl RunCtx<'_> {
         // uniformly instead of duplicating an inline call at each (adj-u3c3 round-2 reject:
         // adv-u3c3-ensure-present-covers-only-one-of-three-same-function-windows). A no-op
         // fast path when nothing disturbed the tree (see [`Worktree::ensure_present`]).
-        worktree_step(wt.ensure_present())?;
+        git_step(wt.ensure_present())?;
         // The unit's changed files span the commit-before-gates seam (§3.2): the
         // implementer's work is now committed, so a plain `git status` is clean -
         // we take the COMMITTED diff vs base unioned with any residual dirty files,
         // so the landing decisions below see whether the unit has anything left to land,
         // whether or not it was pre-committed. The tail after the landing reads the range
         // that actually landed instead (`landed`, below).
-        let files = wt.changed_since_base()?;
+        let files = git_step(wt.changed_since_base())?;
         // Round 4 fix (`RunCtx::pending_landing`'s own doc): `changed_since_base` diffs
         // against the run branch's CURRENT tip, so it reads EMPTY both for a stage that
         // genuinely never had anything to land AND for one whose `Worktree::land` already
@@ -11226,7 +11239,7 @@ impl RunCtx<'_> {
                 // attempt about to run, whose outcome (row 1's after-record, just below) names
                 // that list if it conflicts.
                 self.record_merge_attempt(&st.name, attempt, pass, &pre_merge)?;
-                match wt.merge_into_worktree(&format!("rigger: integrate {}", st.name))? {
+                match git_step(wt.merge_into_worktree(&format!("rigger: integrate {}", st.name)))? {
                     worktree::MergeOutcome::Ready(c) => {
                         // TABLE row 1's after-record: clean (nothing conflicted).
                         self.record_merge_outcome(&st.name, attempt, pass, &[])?;
@@ -11377,7 +11390,7 @@ impl RunCtx<'_> {
                             // where it stood before this call, so the unit's NEXT
                             // (attempt-charging) remediation round starts from a clean,
                             // uncommitted-merge-free tree.
-                            wt.reset_branch_to(&unit_head_before_merge)?;
+                            git_step(wt.reset_branch_to(&unit_head_before_merge))?;
                             return Ok(Integration {
                                 blocked: Some(vec![format!(
                                     "integrate conflict unresolved after {CONFLICT_RESOLVE_BOUND} \
@@ -11417,7 +11430,7 @@ impl RunCtx<'_> {
                             &regenerable,
                         )?;
                         for p in &regenerable {
-                            wt.accept_incoming(p)?;
+                            git_step(wt.accept_incoming(p))?;
                         }
                         // TABLE row 2's after-record: the placeholder-staging just above is done.
                         self.record_placeholder_staged(&st.name, attempt, retry, &regenerable)?;
@@ -11442,7 +11455,7 @@ impl RunCtx<'_> {
                         // Defense in depth (spec 64 criterion 3): the spawn just above is real
                         // wall-clock time, the window in which an out-of-band actor could
                         // delete the worktree before the next iteration's read consumes it.
-                        worktree_step(wt.ensure_present())?;
+                        git_step(wt.ensure_present())?;
                         lock = self.integrate_mu.lock().unwrap();
                     }
                 }
@@ -11483,13 +11496,13 @@ impl RunCtx<'_> {
             // them, leaving a leftover pinned at a now-stale sha. The safe resume is always
             // discard-then-recreate, exactly like a standalone review's
             // `review_only_worktree` - never adopt a leftover post-merge checkout.
-            worktree_step(Worktree::discard(
+            git_step(Worktree::discard(
                 &self.deps.repo,
                 &pm_dir,
                 &pm_branch,
                 &scratch,
             ))?;
-            worktree_step(Worktree::create_branch_at(
+            git_step(Worktree::create_branch_at(
                 &self.deps.repo,
                 &pm_branch,
                 &commit,
@@ -11505,7 +11518,7 @@ impl RunCtx<'_> {
             // path (`Worktree::create` erred before returning a live worktree), so only
             // the branch needs reaping here - the dir-and-branch pair `run_gates`'s own
             // cleanup reaps below is for the LATER window, once a real `pm_wt` exists.
-            let create_result = worktree_step(Worktree::create(
+            let create_result = git_step(Worktree::create(
                 &self.deps.repo,
                 &pm_dir,
                 &pm_branch,
@@ -11537,8 +11550,8 @@ impl RunCtx<'_> {
                 // own fixture drives, the gate command's own side effect) can delete the
                 // unit's worktree dir before this reset consumes it. A no-op fast path when
                 // nothing disturbed the tree.
-                worktree_step(wt.ensure_present())?;
-                wt.reset_branch_to(&unit_head_before_merge)?;
+                git_step(wt.ensure_present())?;
+                git_step(wt.reset_branch_to(&unit_head_before_merge))?;
                 return Ok(Integration {
                     blocked: Some(merged.evidence),
                     ..Default::default()
@@ -11558,10 +11571,10 @@ impl RunCtx<'_> {
         // before this call's first landing to the landed tip. It holds the unit's own paths AND
         // every path a regeneration committed at landing (which rewrites files beyond the
         // conflicted one), and a fresh landing and a resumed one derive it alike.
-        let landed = wt.diff_names(
+        let landed = git_step(wt.diff_names(
             landed_from.as_deref().unwrap_or(&pre_merge),
             crate::worktree::DiffMode::MergeBase,
-        )?;
+        ))?;
         if !commit.is_empty() {
             // FRESH ON EVERY INTEGRATION: the code store advances to the head the merge just
             // made, so every reader after it describes the landed tree.
@@ -11644,7 +11657,7 @@ impl RunCtx<'_> {
         let Some(w) = wt else {
             return Ok(PlanCommitOutcome::None);
         };
-        let shas = w.commits_since_base()?;
+        let shas = git_step(w.commits_since_base())?;
         if shas.is_empty() {
             return Ok(PlanCommitOutcome::None);
         }
@@ -11657,13 +11670,13 @@ impl RunCtx<'_> {
         // run branch just because a later commit in the same batch undid it - either
         // source flags a violation, and both feed the SAME offending-paths list so the
         // remediation feedback names every path either check caught.
-        let touched = w.changed_since_base()?;
+        let touched = git_step(w.changed_since_base())?;
         let mut offending: Vec<String> = touched
             .into_iter()
             .filter(|p| !p.starts_with("specs/"))
             .collect();
         for sha in &shas {
-            let per_commit = w.files_touched_by_commit(sha)?;
+            let per_commit = git_step(w.files_touched_by_commit(sha))?;
             offending.extend(per_commit.into_iter().filter(|p| !p.starts_with("specs/")));
         }
         if !offending.is_empty() {
@@ -11709,7 +11722,7 @@ impl RunCtx<'_> {
         const SEARCH_WINDOW: usize = 256;
         let mut still_pending: Vec<String> = Vec::new();
         for s in &pending {
-            match w.find_landed_by_patch_id(s, SEARCH_WINDOW)? {
+            match git_step(w.find_landed_by_patch_id(s, SEARCH_WINDOW))? {
                 Some(l) => {
                     landed_map.insert(s.clone(), l);
                 }
@@ -11738,7 +11751,9 @@ impl RunCtx<'_> {
                         // guess contract as the pre-check above, now over the run
                         // branch's state AFTER this call's own mutation.
                         for orig in &still_pending {
-                            if let Some(sha) = w.find_landed_by_patch_id(orig, SEARCH_WINDOW)? {
+                            if let Some(sha) =
+                                git_step(w.find_landed_by_patch_id(orig, SEARCH_WINDOW))?
+                            {
                                 landed_map.insert(orig.clone(), sha);
                             }
                         }
@@ -11973,9 +11988,9 @@ impl RunCtx<'_> {
         for cmd in commands {
             self.run_regenerate_command(&wt.dir, cmd)?;
         }
-        let committed = wt.commit_checkpoint(&format!(
+        let committed = git_step(wt.commit_checkpoint(&format!(
             "rigger: regenerate conflicting artifacts for {unit}"
-        ))?;
+        )))?;
         if committed.is_empty() {
             Ok(worktree::head_sha_of(&wt.dir))
         } else {
@@ -13257,7 +13272,7 @@ impl RunCtx<'_> {
         // A stage that serves no criterion has only the foreign-owner check below, which
         // reads an existing branch alone; with none there is nothing to read the log for
         // (and `prior_criterion_unit` names no candidate for an empty criterion id).
-        if !serves_criterion && !worktree::branch_exists(&self.deps.repo, &branch) {
+        if !serves_criterion && !git_step(worktree::branch_present(&self.deps.repo, &branch))? {
             return Ok(None);
         }
         // Adoption is decided across runs by contract (spec 88: a criterion's abandoned attempt
@@ -13269,13 +13284,13 @@ impl RunCtx<'_> {
             if let Some((prior, tip, prior_spec)) =
                 recorded_adoption(&events, &st.name, &st.criterion_id, &spec)
             {
-                if !worktree::branch_exists(&self.deps.repo, &branch) {
-                    worktree_step(Worktree::create_branch_at(&self.deps.repo, &branch, &tip))?;
+                if !git_step(worktree::branch_present(&self.deps.repo, &branch))? {
+                    git_step(Worktree::create_branch_at(&self.deps.repo, &branch, &tip))?;
                 }
                 return Ok(Some((prior, tip, prior_spec)));
             }
         }
-        if worktree::branch_exists(&self.deps.repo, &branch) {
+        if git_step(worktree::branch_present(&self.deps.repo, &branch))? {
             // No decision was ever recorded for this EXACT (unit, criterion, spec)
             // triple (checked above; a stage that serves no criterion never has one).
             // Before trusting this as "this branch carries only its own prior work",
@@ -13290,9 +13305,10 @@ impl RunCtx<'_> {
                 // (criterion_id, spec) the QUARANTINED content actually belongs to,
                 // never this call's own st.criterion_id/spec.
                 let (owner_criterion, owner_spec) = owner.unwrap_or_default();
-                let tip = worktree::branch_tip(&self.deps.repo, &branch)?;
+                let tip = git_step(worktree::branch_tip(&self.deps.repo, &branch))?;
                 let quarantine = quarantine_branch_name(&st.name, &tip);
-                let quarantine_begun = worktree::branch_exists(&self.deps.repo, &quarantine);
+                let quarantine_begun =
+                    git_step(worktree::branch_present(&self.deps.repo, &quarantine))?;
                 // NOTHING TO MOVE: a foreign tip HEAD already holds carries no commit HEAD
                 // lacks, so a quarantine ref would only be a second name for history HEAD
                 // keeps. The canonical name is deleted (idempotent; it clears the
@@ -13300,8 +13316,10 @@ impl RunCtx<'_> {
                 // unit starts off HEAD. A quarantine ref already at this tip means an earlier
                 // call crashed partway through the quarantine below, which this call finishes
                 // instead, so that ref never stands unrecorded.
-                if !quarantine_begun && worktree::is_ancestor(&self.deps.repo, &tip, "HEAD") {
-                    Worktree::delete_branch(&self.deps.repo, &branch)?;
+                if !quarantine_begun
+                    && git_step(worktree::in_history(&self.deps.repo, &tip, "HEAD"))?
+                {
+                    git_step(Worktree::delete_branch(&self.deps.repo, &branch))?;
                     return Ok(None);
                 }
                 // CRASH-WINDOW GUARD (round 7): a resumed retry recomputes the identical
@@ -13309,7 +13327,7 @@ impl RunCtx<'_> {
                 // create but before the record/delete below must never hard-error on
                 // "branch already exists" - it completes whatever's still pending instead.
                 if !quarantine_begun {
-                    worktree_step(Worktree::create_branch_at(
+                    git_step(Worktree::create_branch_at(
                         &self.deps.repo,
                         &quarantine,
                         &tip,
@@ -13340,7 +13358,7 @@ impl RunCtx<'_> {
                 // already idempotent (a no-op once its target is gone) - so every step
                 // before it can be safely redone by a resumed retry, but this one must
                 // never run before the record it depends on has durably landed.
-                Worktree::delete_branch(&self.deps.repo, &branch)?;
+                git_step(Worktree::delete_branch(&self.deps.repo, &branch))?;
             }
             return Ok(None);
         }
@@ -13348,19 +13366,19 @@ impl RunCtx<'_> {
             return Ok(None);
         };
         let prior_branch = unit_branch(&prior);
-        let tip = if worktree::branch_exists(&self.deps.repo, &prior_branch) {
-            worktree::branch_tip(&self.deps.repo, &prior_branch)?
+        let tip = if git_step(worktree::branch_present(&self.deps.repo, &prior_branch))? {
+            git_step(worktree::branch_tip(&self.deps.repo, &prior_branch))?
         } else if let Some(quarantine) =
             quarantined_branch(&events, &prior, &st.criterion_id, &spec)
         {
             // The candidate's canonical branch was moved aside by a LATER, unrelated
             // slug collision (the quarantine path above) - the durable record proves
             // this criterion's real reviewed work still exists, so failing to find it
-            // here is a genuine defect (a lesson is recorded by the ordinary per-stage
-            // error path), never another silent "nothing to adopt" - spec 88's own
+            // here is a genuine defect (a failed git step: the run halts and is held for
+            // a person), never another silent "nothing to adopt" - spec 88's own
             // Operator rule: "a unit's reviewed history is never discarded by the
             // harness."
-            worktree::branch_tip(&self.deps.repo, &quarantine)?
+            git_step(worktree::branch_tip(&self.deps.repo, &quarantine))?
         } else {
             // The prior unit's durable branch is gone with no quarantine trail either
             // (manually pruned, or the prior process never actually committed one
@@ -13380,7 +13398,7 @@ impl RunCtx<'_> {
             }),
             &[],
         )?;
-        worktree_step(Worktree::create_branch_at(&self.deps.repo, &branch, &tip))?;
+        git_step(Worktree::create_branch_at(&self.deps.repo, &branch, &tip))?;
         Ok(Some((prior, tip, spec)))
     }
 
@@ -13495,7 +13513,7 @@ impl RunCtx<'_> {
             &self.cfg.workflow.defaults.workdir,
         );
         let dir = unit_worktree_dir(&scratch, &st.name);
-        let wt = worktree_step(Worktree::create(
+        let wt = git_step(Worktree::create(
             &self.deps.repo,
             &dir,
             &unit_branch(&st.name),
@@ -13535,8 +13553,8 @@ impl RunCtx<'_> {
         // current HEAD rather than ADOPT the stale checkout and review stale code
         // (adv-u4det-review-adopt-staleness). This is the opposite of the unit worktree,
         // whose durable branch is exactly what `create` reuses.
-        worktree_step(Worktree::discard(&self.deps.repo, &dir, &branch, &scratch))?;
-        let wt = worktree_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch))?;
+        git_step(Worktree::discard(&self.deps.repo, &dir, &branch, &scratch))?;
+        let wt = git_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch))?;
         Ok(Some(wt))
     }
 
@@ -48014,15 +48032,15 @@ mod tests {
         }
     }
 
-    /// A WORKTREE STEP GIT REFUSES IS THE CONDUCTOR'S FAULT: whichever kind of worktree step the
-    /// conductor takes is refused - making a unit's worktree, re-asserting it before a later step,
+    /// A REFUSED GIT STEP IS THE CONDUCTOR'S FAULT: whichever git step the conductor takes on a
+    /// unit's branch or worktree is refused - making a unit's worktree, re-asserting it before a later step,
     /// discarding a throwaway one, seeding a throwaway branch, committing an attempt's
     /// checkpoint, landing on the run branch, rolling a unit's branch back, reading a branch's
     /// tip, deleting a branch - the run halts naming git's refusal, records no lesson against the
     /// unit, charges it no attempt, and is held for a person.
     #[test]
     #[cfg(unix)]
-    fn a_worktree_step_git_refuses_halts_with_no_lesson_and_holds_the_run() {
+    fn a_refused_git_step_halts_with_no_lesson_and_holds_the_run() {
         #[derive(Debug, Clone, Copy)]
         enum Step {
             /// A dangling symlink occupies the unit's path, which no leftover clear sees and
@@ -48185,7 +48203,7 @@ mod tests {
             let _ = std::fs::remove_file(&unit_dir);
 
             let Err(err) = halted else {
-                panic!("{step:?}: a worktree step git refuses halts the run");
+                panic!("{step:?}: a refused git step halts the run");
             };
             assert!(
                 err.0.contains(refusal) && !err.0.contains('\u{1}'),
@@ -48211,6 +48229,15 @@ mod tests {
                 holds_in(&events),
                 [conductor_fault_hold(&err.0)],
                 "{step:?}: the fault holds the run for a person, naming it"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                    .filter(|data| data.contains('\u{1}') || data.contains("\\u0001"))
+                    .collect::<Vec<_>>(),
+                Vec::<String>::new(),
+                "{step:?}: no record carries the halt's marker"
             );
         }
     }

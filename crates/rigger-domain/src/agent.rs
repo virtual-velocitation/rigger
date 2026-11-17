@@ -29,7 +29,9 @@ pub const SPAWN_BOUND_TOOLS: [&str; 3] = [
 #[error("conductor: {0}")]
 pub struct Error(pub String);
 
-/// Each listed error converts into a conductor [`Error`] carrying its display text.
+/// Each listed error converts into a conductor [`Error`] carrying its display text. The worktree
+/// error is not listed: a worktree result reaches a conductor error only through the conductor's
+/// one git step, which marks it as a halt.
 macro_rules! error_from_display {
     ($($source:ty),+) => {
         $(
@@ -41,11 +43,7 @@ macro_rules! error_from_display {
         )+
     };
 }
-error_from_display!(
-    crate::eventstore::Error,
-    crate::worktree::Error,
-    serde_json::Error
-);
+error_from_display!(crate::eventstore::Error, serde_json::Error);
 
 /// What an agent returns when it finishes.
 #[derive(Clone, Debug, Default)]
