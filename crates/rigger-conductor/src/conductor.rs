@@ -2856,7 +2856,8 @@ const HALT_MARKERS: [&str; 7] = [
 ];
 
 /// `e` with every [`HALT_MARKERS`] sentinel stripped: the operator's message a halt reaches
-/// `conductor::run`'s caller with, from the wave's halt arm and the deferred gates alike.
+/// `conductor::run`'s caller with, from the wave's halt arm, the deferred gates and the run's
+/// fault hold ([`held_on_a_fault`]) alike.
 fn without_halt_markers(e: Error) -> Error {
     Error(HALT_MARKERS.iter().fold(e.0, |msg, m| msg.replace(m, "")))
 }
@@ -3181,12 +3182,14 @@ pub fn run_serving(
 /// [`HALT_MARKERS`] halt (a plan landing, a verdict-channel mismatch, a degenerate reviewer, a
 /// refused landing, an outage past the infra limit, a failed guard probe, a worktree step git
 /// refused) and every other, but a park ([`is_parked`]): whatever parked a spawn left its own hold
-/// standing. A hold it cannot write is said through [`Deps::log`]; `e` is returned unchanged
-/// either way.
+/// standing. A hold it cannot write is said through [`Deps::log`]; `e` is returned either way,
+/// with every [`HALT_MARKERS`] sentinel stripped ([`without_halt_markers`]), so neither the hold
+/// nor the operator's message carries one, whichever path the halt reached here by.
 fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
     if is_parked(&e) {
         return e;
     }
+    let e = without_halt_markers(e);
     let fault = strip_failure_marker(&e);
     if let Err(write) = crate::run_store::hold_on_a_fault(&deps.folding(), &fault) {
         (deps.log)(&format!(
