@@ -809,7 +809,7 @@ call), and REFERENCES from F.
 | down-hop | a placeholder | one candidate | a hop to it |
 | | | several candidates | a frontier |
 | up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf | callers |
-| tagged reference | Mention `Tagged(k)` | candidates restricted to `reference_candidate_kinds(k)`: exactly one same-file | EXTRACTED |
+| tagged reference | Mention `Tagged(k)` | definitions of the leaf whose kind `reference_candidate_kinds(k)` names, a non-target kind included (a `field` reference reaches a field or a property): exactly one same-file | EXTRACTED |
 | | | else exactly one in the project | INFERRED |
 | | | else | no edge; counted as unresolved |
 | module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |

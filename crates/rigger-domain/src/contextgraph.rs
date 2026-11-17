@@ -202,8 +202,8 @@ pub const REL_RAISED: &str = "RAISED";
 /// edge from an enum to its variant, a struct, union or variant to its field, an impl or trait
 /// to its associated item, an inline mod or enclosing fn to its item, and from a `file` node to
 /// each `code-entity` node folded from a definition of that file with no parent; and from a
-/// `mod x;` node to the file its module row resolves to (spec 117, A MODULE ROW REACHES ITS
-/// FILE), which declares a module and couples nothing ([`declares_a_module`]).
+/// `mod x;` node to the file its module row resolves to (spec 117, MODULE ROOTS AT READ), which
+/// declares a module and couples nothing ([`declares_a_module`]).
 pub const REL_CONTAINS: &str = "CONTAINS";
 /// A file REFERENCES a code symbol (spec 29a): the structural edge folded from a call reference's
 /// `EdgeInferred` event (one with no `ref_kind`; a tagged one folds none, spec 117), from the
@@ -544,7 +544,7 @@ pub enum Located {
 /// the graph and the attrs it carries, those built by [`entity_site`] alone, so every show surface
 /// prints the entries [`site_fields`] gives, the MCP `around` less its `summary`, and the CLI
 /// bounds the body it reads from the working tree. Only the adapter's site read fills its
-/// [`unresolved`](EntitySite::unresolved) leaves (spec 117, UNRESOLVED REFERENCES ARE A READ).
+/// [`unresolved`](EntitySite::unresolved) leaves (spec 117, READERS).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EntitySite {
     /// The node id (`<file>::<path>` for a definition).
@@ -563,9 +563,9 @@ pub struct EntitySite {
     pub degree: usize,
     /// The node's attrs, whole; [`site_fields`] gives the closed list of them a surface prints.
     pub attrs: BTreeMap<String, String>,
-    /// A `file` node's unresolved references (spec 117, UNRESOLVED REFERENCES ARE A READ): the
-    /// sorted distinct leaves of its live `type`, `const` and `use` rows that resolve to nothing,
-    /// read at its site read; empty for any other node and for a site [`entity_site`] builds.
+    /// A `file` node's unresolved references (spec 117, READERS): the sorted distinct leaves of
+    /// its live `type`, `const` and `use` rows that resolve to nothing, read at its site read;
+    /// empty for any other node and for a site [`entity_site`] builds.
     pub unresolved: Vec<String>,
 }
 
@@ -1484,8 +1484,17 @@ pub const REF_KIND_TYPE: &str = "type";
 pub const REF_KIND_CONST: &str = "const";
 /// The [`EdgeInferred::ref_kind`] of a USE (spec 117): one imported leaf of a Rust `use`.
 pub const REF_KIND_USE: &str = "use";
-/// The [`EdgeInferred::ref_kind`] of a MODULE row (spec 117, A MODULE ROW REACHES ITS FILE): one
-/// Rust `mod x;`, its `name` the candidate files of the declaration joined by
+/// The [`EdgeInferred::ref_kind`] of a FIELD reference (spec 117, NEW TAGS): a member read or
+/// written without a call.
+pub const REF_KIND_FIELD: &str = "field";
+/// The [`EdgeInferred::ref_kind`] of a VARIANT reference (spec 117, NEW TAGS): an enum variant
+/// named outside a call.
+pub const REF_KIND_VARIANT: &str = "variant";
+/// The [`EdgeInferred::ref_kind`] of an IMPL reference (spec 117, NEW TAGS): a trait or type an
+/// implementation header names.
+pub const REF_KIND_IMPL: &str = "impl";
+/// The [`EdgeInferred::ref_kind`] of a MODULE row (spec 117, MODULE ROOTS AT READ): one Rust
+/// `mod x;`, its `name` the candidate files of the declaration joined by
 /// [`MODULE_CANDIDATE_SEPARATOR`].
 pub const REF_KIND_MODULE: &str = "module";
 
@@ -1493,15 +1502,22 @@ pub const REF_KIND_MODULE: &str = "module";
 /// log carries it, so its spelling is fixed.
 pub const MODULE_CANDIDATE_SEPARATOR: &str = "\n";
 
-/// The definition kinds a reference of `ref_kind` resolves onto (spec 117, KIND CANDIDATES): a
-/// [`REF_KIND_TYPE`] a type or a trait, a [`REF_KIND_CONST`] a constant or a static, a
-/// [`REF_KIND_USE`] every kind of [`CODE_KIND_PRECEDENCE`] a `use` can import - all but a method
-/// and the [`NON_TARGET_KINDS`] - and any other value none: a [`REF_KIND_MODULE`] row, which
-/// resolves onto a `file` node instead, and a call.
+/// The definition kinds a reference of `ref_kind` resolves onto (spec 117, RESOLVER AT READ): a
+/// [`REF_KIND_TYPE`] or a [`REF_KIND_IMPL`] a type or a trait, a [`REF_KIND_CONST`] a constant,
+/// a static or a variant, a [`REF_KIND_FIELD`] a field or a property besides what a const reads,
+/// a [`REF_KIND_VARIANT`] a variant alone, a [`REF_KIND_USE`] every kind of
+/// [`CODE_KIND_PRECEDENCE`] a `use` can import - all but a method and the [`NON_TARGET_KINDS`] -
+/// and any other value none: a [`REF_KIND_MODULE`] row, which resolves onto a `file` node
+/// instead, and a call.
 pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
     match ref_kind {
-        REF_KIND_TYPE => vec![CODE_KIND_TYPE, CODE_KIND_TRAIT],
-        REF_KIND_CONST => vec![CODE_KIND_CONSTANT, CODE_KIND_STATIC],
+        REF_KIND_TYPE | REF_KIND_IMPL => vec![CODE_KIND_TYPE, CODE_KIND_TRAIT],
+        REF_KIND_CONST => vec![CODE_KIND_CONSTANT, CODE_KIND_STATIC, CODE_KIND_VARIANT],
+        REF_KIND_FIELD => [CODE_KIND_FIELD, CODE_KIND_PROPERTY]
+            .into_iter()
+            .chain(reference_candidate_kinds(REF_KIND_CONST))
+            .collect(),
+        REF_KIND_VARIANT => vec![CODE_KIND_VARIANT],
         REF_KIND_USE => CODE_KIND_PRECEDENCE
             .into_iter()
             .filter(|kind| *kind != CODE_KIND_METHOD && !NON_TARGET_KINDS.contains(kind))
@@ -1510,9 +1526,9 @@ pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
     }
 }
 
-/// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, A MODULE
-/// ROW REACHES ITS FILE): a [`REL_CONTAINS`] onto a [`KIND_FILE`] node, the edge a `mod x;`
-/// reaches its file by. A declaration is not coupling, so no community or label degree counts it,
+/// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE
+/// ROOTS AT READ): a [`REL_CONTAINS`] onto a [`KIND_FILE`] node, the edge a `mod x;` reaches its
+/// file by. A declaration is not coupling, so no community or label degree counts it,
 /// and the blast radius's reachability walk never crosses it, though the subgraph that walk runs
 /// over may hold the module file.
 pub fn declares_a_module(rel: &str, target_kind: Option<&str>) -> bool {
@@ -1582,11 +1598,13 @@ pub struct EdgeInferred {
     /// `fresh` already rides whichever event happens to be the file's batch boundary.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
-    /// Spec 117 (REFERENCES): the kind of a non-call reference, a Rust type reference, const
-    /// read or imported leaf ([`REF_KIND_TYPE`], [`REF_KIND_CONST`] or [`REF_KIND_USE`]), or a
-    /// module row ([`REF_KIND_MODULE`]); absent for a call, which folds as before the field
-    /// existed. The event arm runs a tagged event's structural head alone (the `fresh` supersede
-    /// and the file node) and folds nothing else from it.
+    /// Spec 117 (NEW TAGS): the kind of a non-call reference, a type reference, const read,
+    /// imported leaf, member read or write, variant named outside a call or trait or type an
+    /// implementation header names ([`REF_KIND_TYPE`], [`REF_KIND_CONST`], [`REF_KIND_USE`],
+    /// [`REF_KIND_FIELD`], [`REF_KIND_VARIANT`] or [`REF_KIND_IMPL`]), or a module row
+    /// ([`REF_KIND_MODULE`]); absent for a call, which folds as before the field existed. The
+    /// event arm runs a tagged event's structural head alone (the `fresh` supersede and the file
+    /// node) and folds nothing else from it.
     /// Serde-defaulted and omitted when absent, so a call's wire form is byte-identical to
     /// before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2423,8 +2441,8 @@ mod site_renderer {
         );
     }
 
-    /// Spec 117, UNRESOLVED REFERENCES ARE A READ: a site's unresolved leaves give the entry
-    /// `unresolved` after `partial`, joined by [`LIST_SEP`].
+    /// Spec 117, READERS: a site's unresolved leaves give the entry `unresolved` after
+    /// `partial`, joined by [`LIST_SEP`].
     #[test]
     fn site_fields_gives_the_unresolved_leaves_after_partial_joined_by_the_list_separator() {
         let file = node_with_attrs("src/lister.rs", KIND_FILE, &[("partial", "true")]);
