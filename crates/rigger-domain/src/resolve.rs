@@ -5,7 +5,7 @@
 //!
 //! | Rule | Resolution |
 //! |---|---|
-//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates whose parent is a definition named `Q`, an implementation whose header names `Q` (a product one for a product mention), or a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule |
+//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates its rule reads whose parent is a definition named `Q` or an implementation enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule |
 //! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
 //! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
@@ -250,8 +250,13 @@ fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
 }
 
 /// The parent definitions a qualifier names ([`Resolver::parents`]), each as (its file, its
-/// index in the file's definitions).
-type Parents<'v> = FxHashSet<(&'v str, u32)>;
+/// index in the file's definitions), in two tiers.
+struct Parents<'v> {
+    /// The definitions named the qualifier and the implementations of it.
+    own: FxHashSet<(&'v str, u32)>,
+    /// The traits those implementations implement, read only when no candidate sits under `own`.
+    traits: FxHashSet<(&'v str, u32)>,
+}
 
 /// `calls` in proof order: by the definition proved, then the calling file, then the evidence
 /// `file:line` as text, then the caller.
@@ -492,10 +497,11 @@ impl<'v> Resolver<'v> {
             .collect()
     }
 
-    /// The candidates a mention written `name` to `leaf`, from `pool`, keeps by its qualifier
-    /// ([`qualifier`]): those whose parent in their file is one of the qualifier's
-    /// [`Self::parents`] in `pool`. Terminal when the mention is unqualified or its qualifier
-    /// keeps none, so the unqualified rule takes it.
+    /// The candidates of its rule, from `pool`, that a mention written `name` to `leaf` keeps by
+    /// its qualifier ([`qualifier`]): those whose parent in their file is in the qualifier's own
+    /// tier of [`Self::parents`] in `pool`, else, when none is, those whose parent is in its
+    /// trait tier. Terminal when the mention is unqualified or its qualifier keeps none, so the
+    /// unqualified rule takes it.
     fn narrowed<'c>(
         &self,
         name: &str,
@@ -507,20 +513,30 @@ impl<'v> Resolver<'v> {
             return Hop::Terminal;
         };
         let parents = self.parents(qualifier, pool);
-        hop(candidates
-            .filter(|c| c.parent.is_some_and(|p| parents.contains(&(c.file, p))))
-            .collect())
+        let (mut own, mut traits) = (Vec::new(), Vec::new());
+        for c in candidates {
+            let Some(at) = c.parent.map(|p| (c.file, p)) else {
+                continue;
+            };
+            if parents.own.contains(&at) {
+                own.push(c);
+            } else if parents.traits.contains(&at) {
+                traits.push(c);
+            }
+        }
+        hop(if own.is_empty() { traits } else { own })
     }
 
-    /// The parent definitions `qualifier` names, as (file, index in the file's definitions):
-    /// every definition whose leaf it is; every implementation (an `impl`-kind definition)
-    /// enclosing an `impl`-tagged mention of it, so `T::new` reaches the methods of `impl T`; and
-    /// every trait an `impl`-tagged mention such an implementation encloses names, so `T::m`
-    /// reaches a trait's method through `impl Tr for T`. A definition of another kind enclosing
-    /// an `impl` mention of it, a class naming its base, adds nothing; nor does an implementation
-    /// that is test code when `pool` does not admit it ([`Pool::admits`]), so a test
-    /// implementation changes no product edge. Gathered once per qualifier and pool, by name
-    /// alone in every language, as the call rule reads.
+    /// The parent definitions `qualifier` names, as (file, index in the file's definitions), in
+    /// two tiers. Its own: every definition whose leaf it is, and every implementation (an
+    /// `impl`-kind definition) enclosing an `impl`-tagged mention of it, so `T::new` reaches the
+    /// methods of `impl T` and `T::m` the `m` that `impl Tr for T` defines. Its traits: every
+    /// trait an `impl`-tagged mention such an implementation encloses names, so `T::m` reaches
+    /// a trait's `m` through `impl Tr for T` when `T` and its implementations define none. A
+    /// definition of another kind enclosing an `impl` mention of it, a class naming its base,
+    /// adds nothing; nor does an implementation that is test code when `pool` does not admit it
+    /// ([`Pool::admits`]), so a test implementation changes no product edge. Gathered once per
+    /// qualifier and pool, by name alone in every language, as the call rule reads.
     fn parents(&self, qualifier: &str, pool: Pool) -> Arc<Parents<'v>> {
         let key = (qualifier.to_string(), pool);
         if let Some(held) = self.parents.borrow().get(&key) {
@@ -528,9 +544,12 @@ impl<'v> Resolver<'v> {
         }
         let is_impl =
             |kind: &MentionKind| matches!(kind, MentionKind::Tagged(tag) if tag == REF_KIND_IMPL);
-        let mut parents: Parents<'v> = (self.view.defs_named(qualifier))
-            .map(|d| (d.file.path, d.index))
-            .collect();
+        let mut parents = Parents {
+            own: (self.view.defs_named(qualifier))
+                .map(|d| (d.file.path, d.index))
+                .collect(),
+            traits: FxHashSet::default(),
+        };
         // The mentions come in path order, so each file is read once.
         let mut facts: Option<Cow<'v, FileFacts>> = None;
         for m in self.view.mentions_named(qualifier) {
@@ -549,11 +568,11 @@ impl<'v> Resolver<'v> {
             if !(facts.defs.get(at as usize)).is_some_and(admitted) {
                 continue;
             }
-            parents.insert((m.file.path, at));
+            parents.own.insert((m.file.path, at));
             let names =
                 (facts.mentions.iter()).filter(|n| n.enclosing == Some(at) && is_impl(&n.kind));
             for named in names {
-                parents.extend(
+                parents.traits.extend(
                     (self.view.defs_named(&named.leaf))
                         .filter(|d| d.kind == CODE_KIND_TRAIT)
                         .map(|d| (d.file.path, d.index)),
@@ -2017,8 +2036,9 @@ pub(crate) mod tests {
 
     /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ): a call or a tagged
     /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates of its leaf whose parent is
-    /// a definition named `Q`, an implementation whose header names `Q`, or a trait such an
-    /// implementation names. One kept candidate takes the edge EXTRACTED in any file, over a
+    /// a definition named `Q` or an implementation enclosing an `impl` mention of `Q`, else,
+    /// when none is, those whose parent is a trait such an implementation names (`FactsView`'s
+    /// `stamp`). One kept candidate takes the edge EXTRACTED in any file, over a
     /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
     /// none leave the unqualified rule. A class whose base is `Q` is no implementation of `Q`.
     /// The placeholder readers resolve each call by its name, so two calls of one leaf that
@@ -2220,7 +2240,8 @@ pub(crate) mod tests {
 
     /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ), what a qualifier
     /// reaches: an implementation is `Q`'s only through an `impl`-tagged mention of `Q` it
-    /// encloses, and it brings only the traits its own `impl`-tagged mentions name. So `Q` in an
+    /// encloses, and it brings only the traits its own `impl`-tagged mentions name, read when no
+    /// candidate sits under `Q` or its implementations (`Wrapper::area`). So `Q` in an
     /// implementation's header that does not implement it (`impl From<Source> for Wrapper`), a
     /// trait bound in its header (`impl<T: Draw> Holder<T>`), a trait another implementation in
     /// the file implements, and a type implementing the trait `Q` each add no parent, and the
