@@ -221,10 +221,12 @@ pub fn split_id(id: &str) -> (&str, Option<&str>) {
 }
 
 /// The leaf an id alone names (spec 119): [`split_id`]'s rest half less exactly one leading
-/// [`PLACEHOLDER_SIGIL`] (`<file>::%x` gives `x`, `<file>::%%x` gives `%x`), `None` for an id
-/// holding no `::` and for a rest half not beginning with the sigil (`<file>::x`, a definition's
-/// or a bare node's id): the one decision of what is a placeholder. Read only where an id is all
-/// a reader holds; a reader holding a node reads [`node_leaf`].
+/// [`PLACEHOLDER_SIGIL`] (`<file>::%x` gives `x`, `<file>::%%x` gives `%x`), the qualified name as
+/// written for a placeholder keyed by one (spec 117: `<file>::%T.x` gives `T.x`, whose leaf is
+/// [`path_leaf`]'s `x`), `None` for an id holding no `::` and for a rest half not beginning with
+/// the sigil (`<file>::x`, a definition's or a bare node's id): the one decision of what is a
+/// placeholder. Read only where an id is all a reader holds; a reader holding a node reads
+/// [`node_leaf`].
 pub fn leaf_of(id: &str) -> Option<&str> {
     split_id(id).1?.strip_prefix(PLACEHOLDER_SIGIL)
 }
@@ -280,12 +282,13 @@ fn joined_id(file: &str, rest: &[&str]) -> String {
     id
 }
 
-/// The id of the placeholder a reference to `leaf` from `file` lands on when the file holds no
-/// one candidate for it (spec 119): `<file>::%<leaf>` ([`entity_id`]), the leaf behind one
-/// [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `leaf` back whatever it begins with.
-pub fn placeholder_id(file: &str, leaf: &str) -> String {
+/// The id of the placeholder a reference to `name` from `file` lands on when the file holds no
+/// one candidate for it (spec 119), `name` a leaf or, for a call whose qualifier keeps several
+/// candidates, the qualified name as written (spec 117): `<file>::%<name>` ([`entity_id`]), the
+/// name behind one [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `name` back whatever it begins with.
+pub fn placeholder_id(file: &str, name: &str) -> String {
     let mut sigil = [0; 4];
-    joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), leaf])
+    joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), name])
 }
 
 /// The `name` attr a node carries when it is non-empty: an empty `name` reads as absent, the one
@@ -300,8 +303,9 @@ pub fn node_name(node: &Node) -> Option<&str> {
 
 /// A node's leaf (spec 119): its non-empty `name` attr whatever it holds ([`node_name`]: `new` for
 /// `a.rs::T::new`, `A.B`, `a::b`, a C# `operator %`'s `%`, so a named node is never read as a
-/// placeholder), else [`leaf_of`] its id. The store's pinned twin is the adapter's
-/// `node_leaf_sql()`, NULL exactly where this reads the id.
+/// placeholder), else [`leaf_of`] its id (the qualified name as written, for a placeholder keyed
+/// by one). The store's pinned twin is the adapter's `node_leaf_sql()`, NULL exactly where this
+/// reads the id.
 pub fn node_leaf(node: &Node) -> Option<&str> {
     node_name(node).or_else(|| leaf_of(&node.id))
 }

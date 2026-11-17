@@ -1087,8 +1087,9 @@ hidden test.
   - a show counts the hidden tests its query names and those proving the node it locates;
   - a neighbourhood counts the hidden tests proving a node it shows and, for a definition its
     callers walk steps from, the callers of the test calls that land on a placeholder bound to
-    its leaf. A walk never steps from a hidden test, so a test reaching a shown node only through
-    another hidden test is not counted.
+    its leaf, one keyed by a qualified name only when its down-hop holds that definition. A walk
+    never steps from a hidden test, so a test reaching a shown node only through another hidden
+    test is not counted.
 - **The filter is a parameter of the view:**
   - the dash takes `tests=exclude|include|only` on `/api/graph`, and the explorer's "Show tests"
     toggle sets it; each reply that draws nodes names the drawn ones that are test code
