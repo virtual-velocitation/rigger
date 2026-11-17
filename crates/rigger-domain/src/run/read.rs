@@ -144,6 +144,14 @@ pub fn read_current_hold(store: &dyn EventStore, stream: &str) -> Result<Option<
     Ok(state.hold)
 }
 
+/// THE HOLD FOR A PERSON ON THE CURRENT RUN: [`read_current_hold`] when that hold is
+/// [`Hold::manual`], the operator's or the conductor's on a fault of its own, which only
+/// `rigger release` ends; `None` when the run is unheld or held for a probe to release. A read
+/// that fails answers the store's error, and each caller decides what an unread hold means to it.
+pub fn read_hold_for_a_person(store: &dyn EventStore, stream: &str) -> Result<Option<Hold>, Error> {
+    Ok(read_current_hold(store, stream)?.filter(|hold| hold.manual))
+}
+
 /// The current run's [`HOLD_TYPES`] events ([`read_current_run_typed`]): what the hold read folds
 /// and what the hold controller finds the open hold and its run in.
 fn read_current_hold_events(store: &dyn EventStore, stream: &str) -> Result<Vec<Event>, Error> {

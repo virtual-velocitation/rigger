@@ -535,8 +535,8 @@ fn held_for_a_person(site: &Site, run: &str) -> bool {
         .and_then(|(loc, selection)| {
             over_the_run_store_at(&loc, &selection, |store| {
                 let current = runscope::read::read_current_run_id(store, conductor::STREAM)?;
-                let hold = runscope::read::read_current_hold(store, conductor::STREAM)?;
-                Ok(current.as_deref() == Some(run) && hold.is_some_and(|hold| hold.manual))
+                let hold = runscope::read::read_hold_for_a_person(store, conductor::STREAM)?;
+                Ok(current.as_deref() == Some(run) && hold.is_some())
             })
         })
         .unwrap_or(false)

@@ -1216,9 +1216,16 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         let rs = match driven {
             Ok(rs) => rs,
             Err(e) => {
-                if let Some(reason) = held_for_a_person(&folding) {
+                // Only a hold read leaves a failed driver's record for `rigger release`.
+                if let Ok(Some(hold)) =
+                    runscope::read::read_hold_for_a_person(&folding, conductor::STREAM)
+                {
                     step_record.leave_for_release();
-                    stderr_line(&ended_held_for_a_person(command, &run, &reason));
+                    stderr_line(&ended_held_for_a_person(
+                        command,
+                        &run,
+                        Some(&hold.reason()),
+                    ));
                 }
                 return Err(e.into());
             }
@@ -1227,18 +1234,20 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         if !held.take_parked() {
             break rs;
         }
-        if !a_hold_for_a_person_stands(&folding) {
+        // A hold read that fails is read as standing: a run not proved free of one launches
+        // nothing.
+        if matches!(
+            runscope::read::read_hold_for_a_person(&folding, conductor::STREAM),
+            Ok(None)
+        ) {
             continue;
         }
         step_record.leave_for_release();
         if let Some(fault) = refused {
-            stderr_line(&ended_held_for_a_person(command, &run, &fault));
+            stderr_line(&ended_held_for_a_person(command, &run, Some(&fault)));
             return Err(fault.into());
         }
-        stderr_line(&format!(
-            "{command}: run {run} is held for a person, so this driver parked its next launch \
-             and ended; `rigger release` relaunches it"
-        ));
+        stderr_line(&ended_held_for_a_person(command, &run, None));
         break rs;
     };
     // A done run releases its open hold, an operator hold included (spec 105); any other exit
@@ -1363,31 +1372,15 @@ fn reclaim_orphans_at_start(
     }
 }
 
-/// The line `command`'s driver says as it ends on its failed drive, `run` held for a person on
-/// `reason`, leaving its record for `rigger release`.
-fn ended_held_for_a_person(command: &str, run: &str, reason: &str) -> String {
-    format!(
-        "{command}: run {run} is held for a person ({reason}), so this driver ended; \
-         `rigger release` relaunches it"
-    )
-}
-
-/// Whether a hold for a person, the operator's or the conductor's, stands on the current run in
-/// `store`: true when the read fails, since a run not proved free of one launches nothing.
-fn a_hold_for_a_person_stands(store: &dyn EventStore) -> bool {
-    runscope::read::read_current_hold(store, conductor::STREAM)
-        .map_or(true, |hold| hold.is_some_and(|hold| hold.manual))
-}
-
-/// The reason of the hold for a person standing on the current run in `store`, the operator's or
-/// the conductor's; `None` with none standing or a read that fails, since only a hold read leaves
-/// a failed driver's record for `rigger release`.
-fn held_for_a_person(store: &dyn EventStore) -> Option<String> {
-    runscope::read::read_current_hold(store, conductor::STREAM)
-        .ok()
-        .flatten()
-        .filter(|hold| hold.manual)
-        .map(|hold| hold.reason())
+/// The line `command`'s driver says as it ends with `run` held for a person, leaving its record
+/// for `rigger release`: `failed_on` names the fault its failed drive ended on, `None` when it
+/// parked its next launch on the hold.
+fn ended_held_for_a_person(command: &str, run: &str, failed_on: Option<&str>) -> String {
+    let ended = match failed_on {
+        Some(reason) => format!(" ({reason}), so this driver ended"),
+        None => ", so this driver parked its next launch and ended".to_string(),
+    };
+    format!("{command}: run {run} is held for a person{ended}; `rigger release` relaunches it")
 }
 
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
