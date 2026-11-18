@@ -9135,38 +9135,45 @@ mod tests {
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
-    /// A DISCARD KEEPS A TREE GIT MARKS LOCKED: a throwaway's tree a person locked, or whose add
-    /// git did not finish, its tree there or gone and its path spelled as git lists it or as it
-    /// resolves through a link git lists, is an error naming the mark, the path as the discard was
-    /// given it and the commands that recover it, and nothing there is reaped or removed: the tree
-    /// and its work when there, its registration and its branch stay.
+    /// A DISCARD KEEPS A TREE GIT MARKS LOCKED OR PRUNABLE: a throwaway's tree a person locked, or
+    /// whose add git did not finish, its tree there or gone and its path spelled as git lists it or
+    /// as it resolves through a link git lists, or one whose remove git did not finish after it
+    /// deleted the tree's link, its tree still there, is an error naming the mark, the path as the
+    /// discard was given it and the commands that recover it, and nothing there is reaped or
+    /// removed: the tree and its work when there, its registration and its branch stay.
     #[test]
-    fn a_discard_keeps_a_tree_git_marks_locked() {
-        // Each row: the case, and what is done to the tree, answering the path the discard is at.
-        type Row = (&'static str, fn(&HeldElsewhere) -> String);
+    fn a_discard_keeps_a_tree_git_marks_locked_or_prunable() {
+        // Each row: the case, the mark git gives the tree, and what is done to the tree, answering
+        // the path the discard is at.
+        type Row = (&'static str, &'static str, fn(&HeldElsewhere) -> String);
         #[cfg_attr(not(unix), allow(unused_mut))]
         let mut rows: Vec<Row> = vec![
-            ("a person's lock", |h| {
+            ("a person's lock", "locked", |h| {
                 h.lock();
                 h.at().to_string()
             }),
-            ("an add cut off", |h| {
+            ("an add cut off", "locked", |h| {
                 add_cut_off(h);
                 h.at().to_string()
             }),
-            ("a person's lock, its tree deleted", |h| {
+            ("a person's lock, its tree deleted", "locked", |h| {
                 h.lock();
                 std::fs::remove_dir_all(&h.at).unwrap();
                 h.at().to_string()
             }),
-            ("an add cut off, its tree cleared", |h| {
+            ("an add cut off, its tree cleared", "locked", |h| {
                 add_cut_off_then_cleared(h);
+                h.at().to_string()
+            }),
+            ("a remove cut off, its tree still there", "prunable", |h| {
+                unlink(h);
                 h.at().to_string()
             }),
         ];
         #[cfg(unix)]
         rows.push((
             "a person's lock, the tree moved behind a link git lists",
+            "locked",
             |h| {
                 h.lock();
                 let moved = h.root.join("held-moved");
@@ -9176,7 +9183,7 @@ mod tests {
             },
         ));
         let mut violations = Vec::new();
-        for (row, spoil) in rows {
+        for (row, mark, spoil) in rows {
             let h = held_elsewhere(Held::Under);
             let dir = spoil(&h);
             let present = std::path::Path::new(&dir).exists();
@@ -9185,7 +9192,7 @@ mod tests {
                 Ok(()) => violations.push(format!("{row}: the discard went through")),
                 Err(e) => {
                     let (first, rest) = e.0.split_once('\n').unwrap_or((&e.0, ""));
-                    if !first.starts_with("a worktree git marks `locked")
+                    if !first.starts_with(&format!("a worktree git marks `{mark}"))
                         || !first.ends_with(&format!(
                             "` is registered at {dir}: nothing there is cleared or adopted"
                         ))
@@ -9194,7 +9201,11 @@ mod tests {
                             "{row}: the first line does not name the mark and where: {first}"
                         ));
                     }
-                    let recovery = locked_recovery(repo, &dir);
+                    let recovery = if mark == "locked" {
+                        locked_recovery(repo, &dir)
+                    } else {
+                        prunable_recovery(repo, &dir)
+                    };
                     if rest != recovery {
                         violations.push(format!(
                             "{row}: the recovery reads {rest:?}, not {recovery:?}"
