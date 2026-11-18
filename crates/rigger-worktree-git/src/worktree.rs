@@ -9636,6 +9636,40 @@ mod tests {
         }
     }
 
+    /// A HELD REF IS READ BY ITS FULL NAME: a tag or a remote's ref with the same short name as a
+    /// held ref leaves it listed under its own name and reaped as one HEAD holds, the other ref
+    /// left as it stands.
+    #[test]
+    fn a_held_ref_beside_a_same_named_ref_is_listed_and_reaped_by_its_own_name() {
+        const KEPT: &str = "rigger/kept/unit-twin";
+        // Each row: the ref with the held ref's short name planted beside it.
+        let cases = [
+            ("a tag", "refs/tags/rigger/kept/unit-twin"),
+            ("a remote's ref", "refs/remotes/rigger/kept/unit-twin"),
+        ];
+        for (row, twin) in cases {
+            let (_repo, repo_path, _root) = scratch_repo(true);
+            let head = run_git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+            let head = head.trim();
+            run_git(&repo_path, &["update-ref", &format!("refs/heads/{KEPT}"), head]).unwrap();
+            run_git(&repo_path, &["update-ref", twin, head]).unwrap();
+            assert_eq!(
+                held_refs(&repo_path).unwrap(),
+                [(KEPT.to_string(), head.to_string())],
+                "{row}: the held ref is listed by its own name"
+            );
+            assert_eq!(
+                reap_held_refs(&repo_path, "HEAD").unwrap(),
+                [KEPT],
+                "{row}: the held ref is reaped by its own name"
+            );
+            assert!(
+                run_git(&repo_path, &["rev-parse", "--verify", "-q", twin]).is_ok(),
+                "{row}: the other ref stays"
+            );
+        }
+    }
+
     /// A MERGE KEPT ASIDE IS STILL A CONFLICT: a tree kept while its merge of the run branch stood
     /// conflicted leaves the unit's branch without that merge, so the tree recreated from the
     /// branch meets the same conflict when it merges again, and both marker checks still refuse
