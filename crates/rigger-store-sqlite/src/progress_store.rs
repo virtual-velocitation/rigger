@@ -12,8 +12,9 @@
 
 use crate::eventstore::{Error, EventStore, ExpectedRevision, Position, TypeSelection};
 use crate::progress::{
-    latest_launch_of, launch_records_of, next_launch_after, stream_of, AgentProgress, RunStamped,
-    SpawnLaunched, StopFailure, TYPE_SPAWN_LAUNCHED,
+    latest_launch_of, launch_records_of, next_launch_after, stop_holds_since_launch, stream_of,
+    AgentProgress, RunStamped, SpawnLaunched, StopFailure, TYPE_AGENT_PROGRESS,
+    TYPE_SPAWN_LAUNCHED,
 };
 
 /// Record one progress report to the progress `store`, stamped with `run_id`. Append-only
@@ -104,6 +105,18 @@ pub fn launch_records(
         TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]),
     )?;
     Ok(launch_records_of(&recorded, spawn))
+}
+
+/// How many times `rigger hook stop` held the latest session of `spawn` in the run `run_id` from
+/// stopping: [`stop_holds_since_launch`] over the run's launch records and progress lines, read
+/// from its progress stream. A failed read is the caller's to surface.
+pub fn stop_holds(store: &dyn EventStore, run_id: &str, spawn: &str) -> Result<u32, Error> {
+    let recorded = store.read_stream_typed(
+        &stream_of(run_id),
+        0,
+        TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED, TYPE_AGENT_PROGRESS]),
+    )?;
+    Ok(stop_holds_since_launch(&recorded, spawn))
 }
 
 /// Record one [`StopFailure`] hook firing to the progress `store`, stamped with `run_id`

@@ -6810,6 +6810,13 @@ impl RunCtx<'_> {
                 // An opts-guard error is a crash of the seam: the spawn cannot run.
                 Err(e) => return Err(crashed(&e)),
             };
+            // The caller's checkpoint commits the files the author wrote onto the unit's branch
+            // once its session ends, so the session is asked before it stops whether that commit
+            // would be refused.
+            let opts = SpawnOpts {
+                checkpoint_branch: wt.map(|w| w.branch.clone()).unwrap_or_default(),
+                ..opts
+            };
             match self
                 .deps
                 .driver
@@ -7450,6 +7457,14 @@ impl RunCtx<'_> {
                     // Set below when there is a session to continue.
                     resumed_from: String::new(),
                     resume_task: String::new(),
+                    // The attempt's checkpoint commits this tree onto the unit's branch once
+                    // the session ends, so the session is asked before it stops whether that
+                    // commit would be refused. A producer's work is integrated from its own
+                    // commits alone, never a checkpoint, so it is not asked.
+                    checkpoint_branch: wt
+                        .filter(|_| !is_producer(st))
+                        .map(|w| w.branch.clone())
+                        .unwrap_or_default(),
                     ..SpawnOpts::new(self.spawn_host())
                 };
                 let opts = match missed_session.as_deref().filter(|s| !s.is_empty()) {
@@ -8247,6 +8262,9 @@ impl RunCtx<'_> {
                             settings_json: String::new(),
                             resumed_from: String::new(),
                             resume_task: String::new(),
+                            // The candidate's checkpoint commits its lane's tree onto the
+                            // lane's branch once the session ends.
+                            checkpoint_branch: wt.branch.clone(),
                             ..SpawnOpts::new(self.spawn_host())
                         },
                         &emit,
@@ -12598,6 +12616,11 @@ impl RunCtx<'_> {
                 settings_json: String::new(),
                 resumed_from: String::new(),
                 resume_task: String::new(),
+                // The resolver concludes the merge, as its task asks, and the checkpoint after it
+                // commits this tree onto the unit's branch once the session ends, so the session
+                // is asked before it stops whether the merge is still unfinished or that commit
+                // would be refused.
+                checkpoint_branch: wt.branch.clone(),
                 ..SpawnOpts::new(self.spawn_host())
             },
             &emit,

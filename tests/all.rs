@@ -240,6 +240,7 @@ mod statusline_command_periphery;
 mod stderr_whole_line_audit;
 mod step_sheds_the_freshen;
 mod stop_failure_hook_periphery;
+mod stop_hook_periphery;
 mod store_append_order_periphery;
 mod store_config;
 mod store_content_identity_periphery;

@@ -226,7 +226,10 @@ const ALLOW_LIST: &[Allowed] = &[
     (
         "crates/rigger-driver/src/hooks.rs",
         OperatorMessage,
-        &["{bin} hook stop-failure --spawn {spawn} --class {class}"],
+        &[
+            "{bin} hook stop-failure --spawn {spawn} --class {class}",
+            "{bin} hook stop --spawn {spawn} --dir {} --branch {}",
+        ],
     ),
     (
         "src/cli/critique.rs",
@@ -296,6 +299,11 @@ const ALLOW_LIST: &[Allowed] = &[
             "hook stop-failure: --spawn must be non-empty",
             "hook stop-failure: unrecognized --class {class:?}; known cat",
             "stop-failure recorded for {spawn_id} (class {class}, positio",
+            "rigger hook stop: {e}; the stop is allowed",
+            "--spawn, --dir and --branch are each required",
+            "stop allowed: the check could not read: {e}",
+            "stop allowed: nothing refuses the checkpoint",
+            "stop allowed with the refusal standing after {bound} holds: ",
         ],
     ),
     (

@@ -862,7 +862,7 @@ impl Worktree {
     /// worktree's current state instead - the crash-resume idempotency spec 88, criterion
     /// 1 requires.
     pub fn merge_in_progress(&self) -> bool {
-        run_git(&self.dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok()
+        ref_resolves(&self.dir, "MERGE_HEAD")
     }
 
     /// Resolve `path`'s unmerged conflict by accepting the INCOMING (run branch) side, then
@@ -2751,6 +2751,56 @@ pub fn commit_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> 
             "refusing to commit in {dir}: conflict-marker text is present in tracked file \
              content - resolve it before committing"
         )));
+    }
+    Ok(None)
+}
+
+/// Why the conductor's next content steps on the tree rooted at `dir`, for the unit's `branch`,
+/// would be refused, one line naming each cause, empty when none would: an operation git has
+/// left unfinished there ([`unfinished_operation`]), which refuses every later merge into the
+/// tree until it is concluded, then the commit's own refusal ([`commit_refusal`]). Read-only: it
+/// changes nothing in the tree and runs nothing but git's reads. `rigger hook stop` asks it
+/// before a writing session may end, so the session that left the tree so is the one told.
+pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error> {
+    let mut refusals = Vec::new();
+    if let Some(operation) = unfinished_operation(dir)? {
+        refusals.push(format!(
+            "{operation} is in progress in {dir} - git refuses the next merge into this tree \
+             until it is concluded"
+        ));
+    }
+    refusals.extend(commit_refusal(dir, branch)?);
+    Ok(refusals)
+}
+
+/// The operation git has left unfinished in the tree rooted at `dir`, or `None`: a merge
+/// (`MERGE_HEAD` resolves, [`Worktree::merge_in_progress`]'s read), a cherry-pick
+/// (`CHERRY_PICK_HEAD`), a revert (`REVERT_HEAD`), or a rebase (git's `rebase-merge` or
+/// `rebase-apply` state directory exists). Read fail-closed: a read git cannot answer is an
+/// error, never a no.
+pub fn unfinished_operation(dir: &str) -> Result<Option<&'static str>, Error> {
+    for (head, operation) in [
+        ("MERGE_HEAD", "a merge"),
+        ("CHERRY_PICK_HEAD", "a cherry-pick"),
+        ("REVERT_HEAD", "a revert"),
+    ] {
+        if ref_present(dir, head)? {
+            return Ok(Some(operation));
+        }
+    }
+    for state in ["rebase-merge", "rebase-apply"] {
+        let args = ["rev-parse", "--git-path", state];
+        let at = finish_git_query(start_git(dir, &args))
+            .ok()
+            .flatten()
+            .ok_or_else(|| git_failed(&args, "git did not name the path"))?;
+        let at = std::path::Path::new(dir).join(String::from_utf8_lossy(&at).trim());
+        if at
+            .try_exists()
+            .map_err(|e| Error(format!("read {}: {e}", at.display())))?
+        {
+            return Ok(Some("a rebase"));
+        }
     }
     Ok(None)
 }
@@ -7453,6 +7503,106 @@ mod tests {
                 "{leave:?}: back on the branch, the checkpoint carries the work onto it"
             );
             adopted.remove().unwrap();
+        }
+    }
+
+    /// A TREE IS READY FOR THE CHECKPOINT ONLY WITH NOTHING LEFT UNFINISHED AND NOTHING THE COMMIT
+    /// REFUSES: an unfinished merge, cherry-pick (an empty one git stopped on included), revert or
+    /// rebase is a refusal, as is conflict-marker text the commit would carry; a clean tree, and
+    /// one with uncommitted work the checkpoint sweeps, is none. Each refusal names the tree, and
+    /// the read leaves the index's bytes as they were.
+    #[test]
+    fn a_tree_is_ready_for_the_checkpoint_only_with_nothing_unfinished_and_nothing_refused() {
+        const BRANCH: &str = "rigger/u/unit-stop";
+        // A git step that may end in the failure that stops its operation, which is the point.
+        fn step(dir: &str, args: &[&str]) {
+            let _ = run_git_with_status(dir, args);
+        }
+        fn write(dir: &str, file: &str, text: &str) {
+            std::fs::write(std::path::Path::new(dir).join(file), text).unwrap();
+        }
+        // Each row: what leaves the unit's tree in its state, and the start of every refusal
+        // expected, in order.
+        type Row = (&'static str, fn(&str), &'static [&'static str]);
+        let cases: [Row; 7] = [
+            ("clean", |_| {}, &[]),
+            (
+                "uncommitted work",
+                |dir| {
+                    write(dir, "unit.txt", "edited\n");
+                    write(dir, "new.txt", "new\n");
+                },
+                &[],
+            ),
+            (
+                "conflict markers",
+                |dir| {
+                    write(
+                        dir,
+                        "unit.txt",
+                        "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n",
+                    )
+                },
+                &["refusing to commit in "],
+            ),
+            (
+                "merge",
+                |dir| step(dir, &["merge", "-q", "--no-ff", "--no-commit", "side"]),
+                &["a merge is in progress in "],
+            ),
+            (
+                "empty cherry-pick",
+                |dir| step(dir, &["cherry-pick", "empty"]),
+                &["a cherry-pick is in progress in "],
+            ),
+            (
+                "revert",
+                |dir| {
+                    write(dir, "unit.txt", "second\n");
+                    step(dir, &["commit", "-qam", "second"]);
+                    step(dir, &["revert", "--no-edit", "HEAD~1"]);
+                },
+                &["a revert is in progress in "],
+            ),
+            (
+                "rebase",
+                |dir| step(dir, &["rebase", "-x", "false", "HEAD~1"]),
+                &["a rebase is in progress in ", "refusing to commit in "],
+            ),
+        ];
+        for (row, leave, expected) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            for args in [
+                &["checkout", "-q", "-b", "side"][..],
+                &["commit", "-q", "--allow-empty", "-m", "side"],
+                &["checkout", "-q", "-b", "empty"],
+                &["commit", "-q", "--allow-empty", "-m", "empty"],
+                &["checkout", "-q", "rigger-run"],
+            ] {
+                run_git(&repo_path, args).unwrap();
+            }
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-stop");
+            write(&dir, "unit.txt", "committed\n");
+            wt.commit("unit work").unwrap();
+            leave(&dir);
+            let index = git(&dir, &["rev-parse", "--git-path", "index"]).unwrap();
+            let index = std::path::Path::new(&dir).join(index.trim());
+            let before = std::fs::read(&index).unwrap();
+
+            let refusals = checkpoint_refusals(&dir, BRANCH).unwrap();
+            assert_eq!(refusals.len(), expected.len(), "{row}: {refusals:?}");
+            for (refusal, start) in refusals.iter().zip(expected) {
+                assert!(refusal.starts_with(start), "{row}: {refusal}");
+                assert!(
+                    refusal.contains(&dir),
+                    "{row}: the refusal names the tree: {refusal}"
+                );
+            }
+            assert_eq!(
+                std::fs::read(&index).unwrap(),
+                before,
+                "{row}: the read leaves the index as it was"
+            );
         }
     }
 

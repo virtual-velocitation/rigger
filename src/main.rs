@@ -519,6 +519,7 @@ mod prompt_surface_registry {
         ("GUARD_WRITE_UNKNOWN_ARG", "FRAMING"),
         ("GUARD_WRITE_NO_ROOT", "FRAMING"),
         ("GUARD_WRITE_PAYLOAD_UNREADABLE", "FRAMING"),
+        ("STOP_HOOK_HELD", "FRAMING"),
         ("PRIME_IN_FORCE", "FRAMING"),
         ("PRIME_OPERATOR_FILES", "FRAMING"),
         ("PRIME_NO_STORE", "FRAMING"),

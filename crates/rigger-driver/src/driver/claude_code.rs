@@ -2218,6 +2218,8 @@ pub fn build_args(
             rigger_bin,
             &opts.id,
             write_roots,
+            &opts.dir,
+            &opts.checkpoint_branch,
         ),
         "settings",
     )?;

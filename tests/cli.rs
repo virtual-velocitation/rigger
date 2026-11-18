@@ -3871,7 +3871,17 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
         let settings: serde_json::Value =
             serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
         let bin = std::fs::canonicalize(rigger_bin()).unwrap();
-        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), row.spawn, &roots, false);
+        let stop = row
+            .worktree
+            .map(|_| (session_cwd.to_str().unwrap(), "rigger/u/solo"));
+        assert_carries_spawn_hooks(
+            &settings,
+            bin.to_str().unwrap(),
+            row.spawn,
+            &roots,
+            false,
+            stop,
+        );
 
         let mut targets = vec![
             (session_cwd.join("new.rs"), true),
@@ -4113,6 +4123,231 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             run_hook_verb(&root, &guard, &payload.to_string()),
             serde_json::json!({}),
             "{name}: the launch's guard admits the scratch its server names"
+        );
+    }
+}
+
+/// An arm of [`install_fake_claude`] standing in for the real host's `Stop` contract over a `Do
+/// the unit.` session that leaves its tree where the checkpoint refuses it: the session writes its
+/// work, leaves HEAD off the unit's branch and finishes; the host runs through a shell the `Stop`
+/// command the launch's `--settings` names, `stop_hook_active` false, and on its
+/// `"decision":"block"` the session continues, moves back onto its branch and finishes again, and
+/// the host runs the hook again, `stop_hook_active` true. The hook's two answers are left in the
+/// fake's directory.
+fn held_then_fixed_worker_arm() -> String {
+    format!(
+        r#"  *"Do the unit."*)
+    echo "pub fn work() {{}}" > work.rs
+    git checkout -q --detach
+{READ_LAUNCH_CONFIG}    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+    printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
+        sh -c "$hook" > "$here/stop-held"
+    case "$(cat "$here/stop-held")" in
+        *'"decision":"block"'*) git switch -q rigger/u/solo ;;
+    esac
+    printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":true}}' |
+        sh -c "$hook" > "$here/stop-allowed"
+    ;;
+"#
+    )
+}
+
+/// A WRITING SESSION FIXES WHAT ITS STOP HOOK HOLDS IT ON, end to end: given a unit session that
+/// leaves HEAD off its branch, when the host runs the `Stop` hook its launch's `--settings` names,
+/// then the hook holds the session once with the checkpoint's refusal, the session moves back onto
+/// its branch, the hook allows the next stop, and the conductor's checkpoint and merge land the
+/// work on the run branch with no hold and no failed unit.
+#[cfg(unix)]
+#[test]
+fn a_session_held_by_its_stop_hook_fixes_its_tree_and_the_unit_lands() {
+    let dir = temp_git_project_with_commit();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    write_workflow_fixture(&root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = common::cli::run_on_arms(
+        &root,
+        &["run"],
+        scratch.path(),
+        &held_then_fixed_worker_arm(),
+    );
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let read = |file: &str| {
+        std::fs::read_to_string(fake.path().join("bin").join(file))
+            .unwrap_or_else(|e| panic!("the session left {file}: {e}\nstderr: {err}"))
+    };
+    let held: serde_json::Value = serde_json::from_str(read("stop-held").trim())
+        .unwrap_or_else(|e| panic!("the first stop is held ({e}): stderr: {err}"));
+    assert_eq!(held["decision"], "block", "{held}");
+    assert!(
+        held["reason"]
+            .as_str()
+            .unwrap()
+            .contains("HEAD is not on the unit's branch rigger/u/solo"),
+        "the hold names the refusal: {held}"
+    );
+    assert_eq!(
+        read("stop-allowed"),
+        "",
+        "the stop after the fix is allowed"
+    );
+
+    let lines: Vec<String> =
+        common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
+            .into_iter()
+            .filter(|line| line.id == "solo/implementer#0" && line.activity.starts_with("stop "))
+            .map(|line| line.activity)
+            .collect();
+    let starts = [
+        "stop check: ",
+        "stop held (1 of 3): refusing to commit in ",
+        "stop check: ",
+        "stop allowed: nothing refuses the checkpoint",
+    ];
+    assert_eq!(lines.len(), starts.len(), "{lines:#?}");
+    for (line, start) in lines.iter().zip(starts) {
+        assert!(line.starts_with(start), "{line:?} begins {start:?}");
+    }
+    assert!(
+        lines[2].ends_with(", continuing after a hold"),
+        "{lines:#?}"
+    );
+
+    assert!(
+        run_git(&root, &["cat-file", "-e", "rigger-run:work.rs"])
+            .status
+            .success(),
+        "the session's work landed on the run branch"
+    );
+    let types: Vec<String> = common::cli::read_run_events(&root)
+        .into_iter()
+        .map(|event| event.type_)
+        .collect();
+    for absent in ["RunHeld", "UnitFailed", "UnitEscalated"] {
+        assert!(
+            !types.iter().any(|t| t == absent),
+            "no {absent} in the run: {types:?}"
+        );
+    }
+}
+
+/// The arms of [`install_fake_claude`] for [`BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW`] standing in
+/// for the real host's `Stop` contract over a conflict resolver: each implementer meets the other
+/// before it writes its own working directory to `shared.rs`, so the unit integrating second meets
+/// a real merge conflict there. Its resolver stages `resolved` and finishes with the merge
+/// unfinished; the host runs through a shell the `Stop` command the launch's `--settings` names,
+/// `stop_hook_active` false, and on its `"decision":"block"` the resolver concludes the merge, as
+/// its task asks, and finishes again, and the host runs the hook again, `stop_hook_active` true.
+/// The hook's two answers are left in the fake's directory. Each unit's reviewers approve it.
+fn resolver_held_until_its_merge_is_concluded_arm() -> String {
+    let met = rendezvous("edited", 2);
+    format!(
+        r#"  *"Do the unit."*)
+    case "$RIGGER_SPAWN" in
+      *"~retry"*)
+        echo resolved > shared.rs
+        git add shared.rs
+{READ_LAUNCH_CONFIG}        hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+        printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
+            sh -c "$hook" > "$here/stop-held"
+        case "$(cat "$here/stop-held")" in
+            *'"decision":"block"'*) git commit -q --no-edit ;;
+        esac
+        printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":true}}' |
+            sh -c "$hook" > "$here/stop-allowed"
+        ;;
+      *)
+{met}        pwd -P > shared.rs
+        ;;
+    esac
+    ;;
+{APPROVING_REVIEWER_ARMS}"#
+    )
+}
+
+/// A CONFLICT RESOLVER IS HELD UNTIL ITS MERGE IS CONCLUDED, end to end: given two approved units
+/// of one wave writing one file, when the unit integrating second meets a real merge conflict and
+/// its resolver stages a resolution but leaves the merge unfinished, then the resolver's `Stop`
+/// hook holds it once with the unfinished merge, the resolver concludes the merge, the hook allows
+/// the next stop, and the conductor lands the resolution with no hold and no failed unit.
+#[cfg(unix)]
+#[test]
+fn a_conflict_resolver_is_held_until_its_merge_is_concluded_and_the_unit_lands() {
+    let dir = temp_git_project_with_commit();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    write_workflow_fixture(&root, &BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW);
+    write_agent(&root, "lens", "Read", "Review it.");
+    write_agent(&root, "judge", "Read", "Adjudicate it.");
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = common::cli::run_on_arms(
+        &root,
+        &["run"],
+        scratch.path(),
+        &resolver_held_until_its_merge_is_concluded_arm(),
+    );
+    assert!(
+        !fake.path().join("bin/alone").exists(),
+        "both implementers met before either wrote; stderr: {err}"
+    );
+    assert_eq!(
+        (ok, how_the_run_ended(&out)),
+        (true, vec!["done: every unit integrated"]),
+        "the run lands both units; stderr: {err}"
+    );
+    let read = |file: &str| {
+        std::fs::read_to_string(fake.path().join("bin").join(file))
+            .unwrap_or_else(|e| panic!("the resolver left {file}: {e}\nstderr: {err}"))
+    };
+    let held: serde_json::Value = serde_json::from_str(read("stop-held").trim())
+        .unwrap_or_else(|e| panic!("the first stop is held ({e}): stderr: {err}"));
+    assert_eq!(held["decision"], "block", "{held}");
+    assert!(
+        held["reason"]
+            .as_str()
+            .unwrap()
+            .contains("a merge is in progress in "),
+        "the hold names the unfinished merge: {held}"
+    );
+    assert_eq!(
+        read("stop-allowed"),
+        "",
+        "the stop after the merge is concluded is allowed"
+    );
+
+    let resolver = closed_launches(&root)
+        .into_iter()
+        .map(|close| close.0)
+        .find(|spawn| spawn.ends_with("~retry1"))
+        .unwrap_or_else(|| panic!("a resolution round closed; stderr: {err}"));
+    let lines: Vec<String> =
+        common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
+            .into_iter()
+            .filter(|line| line.id == resolver && line.activity.starts_with("stop "))
+            .map(|line| line.activity)
+            .collect();
+    let starts = [
+        "stop check: ",
+        "stop held (1 of 3): a merge is in progress in ",
+        "stop check: ",
+        "stop allowed: nothing refuses the checkpoint",
+    ];
+    assert_eq!(lines.len(), starts.len(), "{lines:#?}");
+    for (line, start) in lines.iter().zip(starts) {
+        assert!(line.starts_with(start), "{line:?} begins {start:?}");
+    }
+
+    assert_eq!(
+        String::from_utf8(run_git(&root, &["show", "rigger-run:shared.rs"]).stdout).unwrap(),
+        "resolved\n",
+        "the resolution landed on the run branch"
+    );
+    let types: Vec<String> = common::cli::read_run_events(&root)
+        .into_iter()
+        .map(|event| event.type_)
+        .collect();
+    for absent in ["RunHeld", "UnitFailed", "UnitEscalated"] {
+        assert!(
+            !types.iter().any(|t| t == absent),
+            "no {absent} in the run: {types:?}"
         );
     }
 }
@@ -7035,12 +7270,17 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
             let roots = [launch.cwd.as_str(), container.to_str().unwrap()].map(str::to_string);
             let settings: serde_json::Value =
                 serde_json::from_str(flag_value(&launch.argv, "--settings")).unwrap();
+            // The implementer's tree is the one the conductor commits; a reviewer's is not.
+            let stop = spawn
+                .contains("/implementer#")
+                .then_some((launch.cwd.as_str(), "rigger/u/solo"));
             assert_carries_spawn_hooks(
                 &settings,
                 bin.to_str().unwrap(),
                 &spawn,
                 &roots,
                 grep_guard,
+                stop,
             );
             launches.push((spawn, launch.argv.iter().any(|word| word == "--resume")));
         }

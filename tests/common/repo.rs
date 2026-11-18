@@ -257,14 +257,17 @@ pub fn grep_guard_hook() -> (String, Vec<String>) {
 
 /// A launch's `settings` carry its per-spawn hooks: under `PreToolUse` the write guard running
 /// `bin` with `roots` in order, then the session's grep guard exactly when `grep_guard` (the
-/// workflow's `defaults.grep_guard`) declares it, and under `StopFailure` one entry per category
-/// running `bin` for `spawn`, in category order.
+/// workflow's `defaults.grep_guard`) declares it; under `StopFailure` one entry per category
+/// running `bin` for `spawn`, in category order; and under `Stop` the one `hook stop` asking of
+/// the tree at the `(dir, branch)` of `stop` for `spawn`, with its timeout, exactly when the
+/// launch's tree is one the conductor commits (`stop` names one), and no `Stop` entry otherwise.
 pub fn assert_carries_spawn_hooks(
     settings: &serde_json::Value,
     bin: &str,
     spawn: &str,
     roots: &[String],
     grep_guard: bool,
+    stop: Option<(&str, &str)>,
 ) {
     let words = |text: &[&str]| -> Vec<String> { text.iter().map(|w| w.to_string()).collect() };
     let mut guard = words(&[bin, "guard-write"]);
@@ -301,6 +304,28 @@ pub fn assert_carries_spawn_hooks(
         stop_failures,
         "one entry per category: {settings}"
     );
+    match stop {
+        Some((dir, branch)) => {
+            let command = [
+                bin, "hook", "stop", "--spawn", spawn, "--dir", dir, "--branch", branch,
+            ];
+            assert_eq!(
+                hook_words(settings, "Stop"),
+                [(String::new(), words(&command))],
+                "{spawn}: the stop check on its tree: {settings}"
+            );
+            assert_eq!(
+                settings["hooks"]["Stop"][0]["hooks"][0]["timeout"],
+                rigger::hooks::STOP_HOOK_TIMEOUT_SECS,
+                "{spawn}: the stop check's timeout"
+            );
+        }
+        None => assert!(
+            settings["hooks"]["Stop"].is_null(),
+            "{spawn}: a launch whose tree the conductor does not commit has no stop check: \
+             {settings}"
+        ),
+    }
 }
 
 /// The rigger tools the embedded helpers declare, once each in helper then declaration order,

@@ -150,7 +150,7 @@ fn installed_session_settings(base: &[u8]) -> Value {
 /// by the same `hooks` installer, under [`installed_session_settings`].
 fn installed_spawn_settings(base: &[u8], dir: &Path) -> Value {
     let roots = [dir.to_str().expect("a utf-8 path").to_string()];
-    let hooked = hooks::install_spawn_hooks(base, RIGGER_BIN, SPAWN_ID, &roots).unwrap();
+    let hooked = hooks::install_spawn_hooks(base, RIGGER_BIN, SPAWN_ID, &roots, "", "").unwrap();
     installed_session_settings(&hooked)
 }
 

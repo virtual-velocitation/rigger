@@ -148,6 +148,17 @@ Per-spawn, through `--settings`:
 - `StopFailure`, one entry per error category, runs `rigger hook stop-failure --spawn <id>
   --class <category>`: the category that ended a turn is recorded even when the stream's
   last line is lost.
+- `Stop`, for a spawn whose tree the conductor commits once its session ends (an implementer
+  that is not a producer, a speculation candidate, the test author, the conflict resolver),
+  runs `rigger hook stop --spawn <id> --dir <dir> --branch <branch>` with a 60-second timeout.
+  It asks, read-only and through the conductor's own checks, whether that commit and the next
+  merge into the tree would be refused: HEAD off the unit's branch, conflict-marker text the
+  commit would carry, or a merge, cherry-pick, revert or rebase left unfinished. When one
+  would, it blocks the stop (`{"decision": "block", "reason": ...}`) with the refusal and
+  `git status` in git's words, so the session that left the tree so fixes it before it ends.
+  It holds a launch at most three times, counted from its own progress lines; past that, and
+  on any error, it allows the stop and records why, and the refusal reaches the run's hold.
+  Reviewers and producers get no `Stop` hook: the conductor commits nothing of theirs.
 
 ### 4.5 Verdicts are data
 

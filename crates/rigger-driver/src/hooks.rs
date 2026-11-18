@@ -192,6 +192,7 @@ pub fn install_grep_guard(existing: &[u8]) -> Result<Vec<u8>, Error> {
         "PreToolUse",
         GREP_GUARD_MATCHER,
         GREP_GUARD_COMMAND,
+        None,
     )?;
     encode_settings(&settings)
 }
@@ -264,17 +265,27 @@ fn strip_grep_guard(
     stripped
 }
 
+/// The seconds Claude Code gives a spawn's `Stop` hook (`rigger hook stop`) before it cancels
+/// the hook and lets the session stop. The hook only reads git, so a minute is far past any
+/// answer it gives; without it a hung read would hold the session for Claude Code's ten-minute
+/// default.
+pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
+
 /// Merge the hooks bound to one spawn into `existing` settings JSON, preserving every other
-/// setting: under `PreToolUse` the write guard, `guard-write` rooted at `roots` in order, and
-/// under `StopFailure` one entry per [`AgentFailure::CATEGORIES`], `hook stop-failure` recording
-/// that category for `spawn`. Both run `rigger_bin`, and the shell a hook command runs under reads
-/// `rigger_bin`, `spawn` and each root as one word whatever they hold ([`shell_quote`]). `existing`
-/// may be empty.
+/// setting: under `PreToolUse` the write guard, `guard-write` rooted at `roots` in order; under
+/// `StopFailure` one entry per [`AgentFailure::CATEGORIES`], `hook stop-failure` recording that
+/// category for `spawn`; and, for a spawn whose tree at `dir` the conductor commits onto
+/// `checkpoint_branch` once its session ends (a non-empty branch), under `Stop` the `hook stop`
+/// asking whether that commit would be refused, with [`STOP_HOOK_TIMEOUT_SECS`]. Each runs
+/// `rigger_bin`, and the shell a hook command runs under reads `rigger_bin`, `spawn`, each root,
+/// `dir` and the branch as one word whatever they hold ([`shell_quote`]). `existing` may be empty.
 pub fn install_spawn_hooks(
     existing: &[u8],
     rigger_bin: &str,
     spawn: &str,
     roots: &[String],
+    dir: &str,
+    checkpoint_branch: &str,
 ) -> Result<Vec<u8>, Error> {
     let bin = shell_quote(rigger_bin);
     let spawn = shell_quote(spawn);
@@ -286,7 +297,15 @@ pub fn install_spawn_hooks(
     for category in AgentFailure::CATEGORIES {
         let class = category.as_str();
         let command = format!("{bin} hook stop-failure --spawn {spawn} --class {class}");
-        merged = merge_hook_block(&merged, "StopFailure", class, &command)?;
+        merged = merge_hook_block(&merged, "StopFailure", class, &command, None)?;
+    }
+    if !checkpoint_branch.is_empty() {
+        let command = format!(
+            "{bin} hook stop --spawn {spawn} --dir {} --branch {}",
+            shell_quote(dir),
+            shell_quote(checkpoint_branch)
+        );
+        merged = merge_hook_block(&merged, "Stop", "", &command, Some(STOP_HOOK_TIMEOUT_SECS))?;
     }
     Ok(merged)
 }
@@ -356,13 +375,14 @@ pub fn helper_mcp_tools(helpers: &[HelperCopy]) -> Result<Vec<String>, Error> {
 /// `SessionStart` event with an empty matcher (rigger installs the only entry that will
 /// ever exist there).
 pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, Error> {
-    merge_hook_block(existing, "SessionStart", "", command)
+    merge_hook_block(existing, "SessionStart", "", command, None)
 }
 
 /// Merge one hook block that runs `command` into `existing` settings JSON, under the
 /// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), filtered by
 /// `matcher` (tool names under `PreToolUse`, a failure class under `StopFailure`, empty for
-/// an event `rigger` never matcher-filters, e.g. `SessionStart`). Idempotent (installing the
+/// an event `rigger` never matcher-filters, e.g. `SessionStart`), given `timeout` seconds when
+/// one is named (Claude Code's own default otherwise). Idempotent (installing the
 /// same `command` under the same `event_key` twice does not duplicate the block) and preserves
 /// every other setting, every other event key, and every other block already present under
 /// THIS event key - a general-purpose event (`PreToolUse`) may already carry entries for a
@@ -377,9 +397,10 @@ fn merge_hook_block(
     event_key: &str,
     matcher: &str,
     command: &str,
+    timeout: Option<u32>,
 ) -> Result<Vec<u8>, Error> {
     let mut settings = parse_settings(existing)?;
-    push_hook_block(&mut settings, event_key, matcher, command)?;
+    push_hook_block(&mut settings, event_key, matcher, command, timeout)?;
     encode_settings(&settings)
 }
 
@@ -397,12 +418,14 @@ fn parse_settings(existing: &[u8]) -> Result<Map<String, Value>, Error> {
 }
 
 /// Append a block running `command` under `matcher` to the `event_key` array of `settings`'
-/// `hooks`, creating either when absent, unless a block of that array already runs `command`.
+/// `hooks`, creating either when absent, unless a block of that array already runs `command`;
+/// the inner hook carries `timeout` seconds when one is named.
 fn push_hook_block(
     settings: &mut Map<String, Value>,
     event_key: &str,
     matcher: &str,
     command: &str,
+    timeout: Option<u32>,
 ) -> Result<(), Error> {
     let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
     let hooks_obj = hooks
@@ -413,10 +436,11 @@ fn push_hook_block(
         .as_array_mut()
         .ok_or_else(|| Error(format!("\"{event_key}\" is not an array")))?;
     if !has_command(event_arr, command) {
-        event_arr.push(json!({
-            "matcher": matcher,
-            "hooks": [{"type": "command", "command": command}],
-        }));
+        let mut hook = json!({"type": "command", "command": command});
+        if let Some(timeout) = timeout {
+            hook["timeout"] = json!(timeout);
+        }
+        event_arr.push(json!({"matcher": matcher, "hooks": [hook]}));
     }
     Ok(())
 }
@@ -455,7 +479,7 @@ pub fn install_pretooluse_hook(
     matcher: &str,
     command: &str,
 ) -> Result<Vec<u8>, Error> {
-    merge_hook_block(existing, "PreToolUse", matcher, command)
+    merge_hook_block(existing, "PreToolUse", matcher, command, None)
 }
 
 /// Merge one stdio MCP server entry into `.mcp.json`'s `mcpServers` object (spec 92,
@@ -600,11 +624,14 @@ mod tests {
             &[("rigger grep-guard", 1)],
         );
         spawn_hooks_install_and_are_idempotent: assert_installs_idempotently(
-            |existing| install_spawn_hooks(existing, "rigger", "u/i#0", &["/wt".to_string()]),
-            &["PreToolUse", "StopFailure", "'rigger' guard-write --root '/wt'"],
+            |existing| {
+                install_spawn_hooks(existing, "rigger", "u/i#0", &["/wt".to_string()], "/wt", "rigger/u/u")
+            },
+            &["PreToolUse", "StopFailure", "'rigger' guard-write --root '/wt'", "\"Stop\""],
             &[
                 ("guard-write", 1),
                 ("hook stop-failure", AgentFailure::CATEGORIES.len()),
+                ("hook stop ", 1),
             ],
         );
     }
@@ -652,27 +679,41 @@ mod tests {
         );
     }
 
-    /// A spawn's hooks over a bare and a hostile `rigger_bin`, one and two roots: the whole
-    /// `PreToolUse` and `StopFailure` arrays, every category in order, on the settings kept.
+    /// A spawn's hooks over a bare and a hostile `rigger_bin`, one and two roots, with and
+    /// without a checkpoint branch: the whole `PreToolUse`, `StopFailure` and `Stop` arrays, every
+    /// category in order, on the settings kept. Only a spawn naming a branch gets the `Stop` hook,
+    /// with its timeout.
     #[test]
-    fn spawn_hooks_are_the_write_guard_and_one_stop_failure_entry_per_category() {
+    fn spawn_hooks_are_the_write_guard_one_stop_failure_entry_per_category_and_the_stop_check() {
         let rows = [
             (
                 "rigger",
                 "u/implementer#0",
                 vec!["/wt"],
+                ("/wt", "rigger/u/u"),
                 "'rigger' guard-write --root '/wt'",
                 "'rigger' hook stop-failure --spawn 'u/implementer#0' --class",
+                json!([{
+                    "matcher": "",
+                    "hooks": [{
+                        "type": "command",
+                        "command": "'rigger' hook stop --spawn 'u/implementer#0' --dir '/wt' \
+                                    --branch 'rigger/u/u'",
+                        "timeout": STOP_HOOK_TIMEOUT_SECS,
+                    }],
+                }]),
             ),
             (
                 "/opt/it's here/rigger",
                 "u/reviewer#1",
                 vec!["/wt tree", "/scratch/s"],
+                ("/wt tree", ""),
                 r"'/opt/it'\''s here/rigger' guard-write --root '/wt tree' --root '/scratch/s'",
                 r"'/opt/it'\''s here/rigger' hook stop-failure --spawn 'u/reviewer#1' --class",
+                Value::Null,
             ),
         ];
-        for (bin, spawn, roots, guard, stop_failure) in rows {
+        for (bin, spawn, roots, (dir, branch), guard, stop_failure, stop) in rows {
             let roots: Vec<String> = roots.into_iter().map(str::to_string).collect();
             let stop_failures: Vec<Value> = crate::agent::AgentFailure::CATEGORIES
                 .iter()
@@ -681,8 +722,16 @@ mod tests {
                     hook_block(class, &format!("{stop_failure} {class}"))
                 })
                 .collect();
+            let settings =
+                install_spawn_hooks(br#"{"model":"opus"}"#, bin, spawn, &roots, dir, branch)
+                    .unwrap();
+            assert_eq!(
+                serde_json::from_slice::<Value>(&settings).unwrap()["hooks"]["Stop"],
+                stop,
+                "{spawn}"
+            );
             assert_settings(
-                install_spawn_hooks(br#"{"model":"opus"}"#, bin, spawn, &roots).unwrap(),
+                settings,
                 &[
                     ("/model", Value::from("opus")),
                     (
@@ -1187,7 +1236,8 @@ mod tests {
     /// Spawn settings that are not a JSON object refuse the merge.
     #[test]
     fn spawn_hooks_refuse_settings_that_are_not_an_object() {
-        let refused = install_spawn_hooks(b"[]", "rigger", "u/implementer#0", &[]).unwrap_err();
+        let refused =
+            install_spawn_hooks(b"[]", "rigger", "u/implementer#0", &[], "", "").unwrap_err();
         assert_eq!(
             refused.to_string(),
             "hooks: settings.json is not a JSON object"

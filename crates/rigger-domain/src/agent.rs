@@ -202,6 +202,14 @@ pub struct SpawnOpts {
     /// with [`resumed_from`](Self::resumed_from); a host whose resume finds no such session
     /// falls back to a fresh launch with the full `prompt`.
     pub resume_task: String,
+    /// The branch the conductor commits this spawn's worktree ([`dir`](Self::dir)) onto once
+    /// its session ends - the attempt's checkpoint, or the conflict resolution's merge and the
+    /// checkpoint after it - empty for a spawn whose tree it does not commit (a reviewer, a
+    /// producer, a spawn with no worktree). Set at the conductor's writing spawn sites alone. A
+    /// session host that installs per-spawn hooks gives a spawn that names one a `Stop` hook
+    /// (`rigger hook stop`) asking whether that commit, or the merge after it, would be refused,
+    /// so the session that left the tree so fixes it before it ends.
+    pub checkpoint_branch: String,
 }
 
 impl SpawnOpts {
@@ -227,6 +235,7 @@ impl SpawnOpts {
             host,
             resumed_from: String::new(),
             resume_task: String::new(),
+            checkpoint_branch: String::new(),
         }
     }
 }

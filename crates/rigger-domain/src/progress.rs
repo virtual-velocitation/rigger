@@ -446,6 +446,43 @@ pub fn latest_stop_failure_class(progress_events: &[Event], spawn_id: &str) -> O
     found
 }
 
+/// How many times `rigger hook stop` may hold one session of a writing spawn from stopping on a
+/// tree its checkpoint would refuse, after which it lets the session stop with the refusal
+/// standing (for the conductor's own handling to meet). Three, as the conductor's bound on
+/// conflict-resolution rounds (`CONFLICT_RESOLVE_BOUND`) is: room for a session to fix a cause
+/// and take a second look, while a refusal no session can clear costs at most three turns.
+/// Below Claude Code's own cap on consecutive stop-hook continuations, so the hook's bound is
+/// the one that ends the loop.
+pub const STOP_HOLD_BOUND: u32 = 3;
+
+/// The prefix of the progress line `rigger hook stop` records each time it holds a session from
+/// stopping: the one definition of a hold line, shared by the hook that writes it and
+/// [`stop_holds_since_launch`], which counts them against [`STOP_HOLD_BOUND`].
+pub const STOP_HELD_PREFIX: &str = "stop held";
+
+/// How many times `rigger hook stop` held `spawn_id`'s latest session from stopping: its progress
+/// lines that begin with [`STOP_HELD_PREFIX`] since that spawn's last open [`SpawnLaunched`],
+/// which starts the count over, since a relaunch or a resume is a new session with its own
+/// bound. Scoped by stream order, as [`latest_stop_failure_class`] scopes its records. PURE (no
+/// IO): `progress_events` is already-read progress-store events.
+pub fn stop_holds_since_launch(progress_events: &[Event], spawn_id: &str) -> u32 {
+    let mut holds = 0;
+    for e in progress_events {
+        if let Some(launch) = decode_launch(e) {
+            if launch.spawn == spawn_id && launch.is_open() {
+                holds = 0;
+            }
+        } else if e.type_ == TYPE_AGENT_PROGRESS {
+            if let Ok(line) = serde_json::from_slice::<AgentProgress>(&e.data) {
+                if line.id == spawn_id && line.activity.starts_with(STOP_HELD_PREFIX) {
+                    holds += 1;
+                }
+            }
+        }
+    }
+    holds
+}
+
 /// The event type an [`ApiRetry`] record serializes as (spec 105 LIVENESS). Recorded to the
 /// progress store - never the run stream, same file boundary as [`TYPE_SPAWN_LAUNCHED`] - by
 /// the Claude Code host, once per `system/api_retry` line of a session's stream.
@@ -1119,6 +1156,67 @@ mod tests {
                 expected,
                 "{name}"
             );
+        }
+    }
+
+    /// The holds `rigger hook stop` counts against its bound: this spawn's hold lines since its
+    /// latest launch opened. A launch opening starts the count over; a close, another spawn's
+    /// lines or launch, and this spawn's other lines count nothing.
+    #[test]
+    fn stop_holds_count_this_spawns_hold_lines_since_its_latest_launch() {
+        const SPAWN: &str = "u/implementer#0";
+        const OTHER: &str = "other/implementer#0";
+        let line = |id: &str, activity: &str| {
+            AgentProgress {
+                id: id.into(),
+                activity: activity.into(),
+                revision: None,
+            }
+            .to_stamped_event("run-1")
+            .unwrap()
+        };
+        let held = |id: &str| line(id, &format!("{STOP_HELD_PREFIX} (1 of 3): refused"));
+        let rows: [(&str, Vec<Event>, u32); 6] = [
+            ("no line at all", vec![opened(SPAWN, 0)], 0),
+            (
+                "two holds behind the launch",
+                vec![opened(SPAWN, 0), held(SPAWN), held(SPAWN)],
+                2,
+            ),
+            (
+                "an earlier launch's holds",
+                vec![opened(SPAWN, 0), held(SPAWN), held(SPAWN), opened(SPAWN, 1)],
+                0,
+            ),
+            (
+                "the later launch's own hold",
+                vec![opened(SPAWN, 0), held(SPAWN), opened(SPAWN, 1), held(SPAWN)],
+                1,
+            ),
+            (
+                "another spawn's hold and launch, and this spawn's close",
+                vec![
+                    opened(SPAWN, 0),
+                    held(SPAWN),
+                    held(OTHER),
+                    opened(OTHER, 0),
+                    closing(ENDED_FAULT, None),
+                ],
+                1,
+            ),
+            (
+                "this spawn's other lines",
+                vec![
+                    opened(SPAWN, 0),
+                    line(SPAWN, "stop check: reading the tree"),
+                    line(SPAWN, "building"),
+                    line(SPAWN, &format!("not {STOP_HELD_PREFIX}")),
+                ],
+                0,
+            ),
+        ];
+        for (name, events, expected) in rows {
+            assert_eq!(stop_holds_since_launch(&events, SPAWN), expected, "{name}");
         }
     }
 
