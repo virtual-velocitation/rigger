@@ -2282,6 +2282,7 @@ Unclosed"#,
         ("rust", "#[doc = r#\"Raw \"open", "Raw \"open"),
         ("rust", "#[doc = \"a\n  b\"]\n/// c", "a\nb\nc"),
         ("rust", "/** Unclosed\n", "Unclosed"),
+        ("rust", "/** Open\n *", "Open\n"),
     ];
 
     /// `extractor`'s doc text of each [`DOC_TEXT_ROWS`] span is the row's, `name` naming the
