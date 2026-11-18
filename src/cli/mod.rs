@@ -5321,7 +5321,11 @@ fn read_project_skill(
 /// copy. Through [`install_file_if_changed`], each entry writes ONLY when its file is absent or
 /// differs, so a `rigger setup` rerun on an up-to-date repo is a true no-op that does not even
 /// move a file's mtime.
+///
+/// A `specs_location` every later command refuses ([`declared_specs_location`]) fails the
+/// install before any skill renders it.
 fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
+    declared_specs_location(root)?;
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
     // Every entry no project copy has claimed yet; what is left after the loop is the strays.
