@@ -2361,6 +2361,21 @@ fn live_branches_for_sweep(
     }
 }
 
+/// Why git's registry keeps the unit worktree `dir` out of the orphan sweep: git lists a worktree
+/// there it marks `locked` or `prunable` ([`rigger::worktree::git_mark_at`]), or the list cannot
+/// be read, so nothing there is reaped or removed on a guess. `None` lets the sweep reclaim `dir`.
+/// An empty `repo` names no registry to read, so `dir` is reclaimed as any leftover dir is.
+fn kept_by_git(repo: &str, dir: &std::path::Path) -> Option<String> {
+    if repo.is_empty() {
+        return None;
+    }
+    match rigger::worktree::git_mark_at(repo, &dir.to_string_lossy()) {
+        Ok(None) => None,
+        Ok(Some(mark)) => Some(format!("git marks it `{mark}`")),
+        Err(e) => Some(e.0),
+    }
+}
+
 /// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
 /// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
 /// scratch entry git may still track. A killed run can leave a `rigger-wt-<slug>` worktree
@@ -4006,6 +4021,10 @@ fn live_slugs(
 /// once no spawn is live, never by this run-start backstop, so it can never delete a target a
 /// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
 ///
+/// A unit worktree git marks `locked` or `prunable` (a person's lock, an add or remove git did not
+/// finish) is kept and named on stderr, as [`rigger::worktree::sweep_terminal`] keeps it: nothing
+/// in it is reaped or removed ([`kept_by_git`]).
+///
 /// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
 /// `rigger/u/<slug>` stages - config, never the event log, the SAME set `run_cli` also hands
 /// `sweep_terminal` - narrowing this backstop's own dirty-spare exception (see the worktree arm
@@ -4072,8 +4091,15 @@ fn reclaim_orphan_scratch(
                 && path.join(".git").exists()
                 && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
-                reap_then_remove_worktree(repo, &path, root_path);
-                removed += 1;
+                match kept_by_git(repo, &path) {
+                    None => {
+                        reap_then_remove_worktree(repo, &path, root_path);
+                        removed += 1;
+                    }
+                    Some(why) => rigger::whole_line::say(format_args!(
+                        "rigger run: orphan sweep: kept {path:?} - {why}"
+                    )),
+                }
             }
         } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
             // A per-unit / ad-hoc `cargo-target-<slug>` cache, a unit's review cache
