@@ -9185,6 +9185,111 @@ mod tests {
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
+    /// Where a worktree git lists at a path no one can resolve sits, beside a unit's create.
+    #[derive(Clone, Copy, Debug)]
+    enum Unresolvable {
+        /// Outside the work root on another branch, the unit's own tree registered at its path.
+        Unrelated,
+        /// Outside the work root on another branch, a leftover holding work at the unit's path.
+        UnrelatedBesideALeftover,
+        /// Outside the work root on the unit's branch, a leftover holding work at the unit's path.
+        OnTheUnitsBranch,
+        /// Under the work root on another branch, the unit's own tree registered at its path.
+        UnderTheRoot,
+    }
+
+    /// A WORKTREE NO ONE CAN RESOLVE HOLDS A CREATE ONLY WHEN IT COULD BE THE UNIT'S: one naming
+    /// the unit's branch, or listed under the work root, makes `create` fail naming it; any other
+    /// is passed over, so the unit's own registered tree is adopted beside it, but a leftover at
+    /// the unit's path is never cleared on it. The unit's work and every registration stay.
+    #[test]
+    #[cfg(unix)]
+    fn create_is_held_by_a_worktree_no_one_can_resolve_only_when_it_could_be_the_units() {
+        const BRANCH: &str = "rigger/u/unit-unresolved";
+        let rows = [
+            (Unresolvable::Unrelated, true),
+            (Unresolvable::UnrelatedBesideALeftover, false),
+            (Unresolvable::OnTheUnitsBranch, false),
+            (Unresolvable::UnderTheRoot, false),
+        ];
+        let mut violations = Vec::new();
+        for (row, adopts) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap();
+            let place = tempfile::tempdir().unwrap();
+            let place = place.path().canonicalize().unwrap();
+            let root = place.join("r");
+            std::fs::create_dir_all(&root).unwrap();
+            let root_s = root.to_str().unwrap();
+            let dir = root.join(format!("{UNIT_WORKTREE_PREFIX}unit-unresolved"));
+            let dir_s = dir.to_str().unwrap();
+            // Each sealed tree's path sorts before the unit's, so git lists it first.
+            let (sealed, its_branch) = match row {
+                Unresolvable::Unrelated | Unresolvable::UnrelatedBesideALeftover => {
+                    (place.join("a"), "other")
+                }
+                Unresolvable::OnTheUnitsBranch => (place.join("a"), BRANCH),
+                Unresolvable::UnderTheRoot => (root.join("a"), "other"),
+            };
+            match row {
+                Unresolvable::Unrelated | Unresolvable::UnderTheRoot => {
+                    Worktree::create(repo_path, dir_s, BRANCH, root_s).unwrap();
+                }
+                Unresolvable::UnrelatedBesideALeftover => {
+                    run_git(repo_path, &["branch", "-q", BRANCH]).unwrap();
+                    std::fs::create_dir_all(&dir).unwrap();
+                }
+                Unresolvable::OnTheUnitsBranch => std::fs::create_dir_all(&dir).unwrap(),
+            }
+            std::fs::write(dir.join("work.txt"), "work\n").unwrap();
+            let at = sealed.join("wt");
+            run_git(
+                repo_path,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    its_branch,
+                    at.to_str().unwrap(),
+                ],
+            )
+            .unwrap();
+            let admin = repo.path().join(".git").join("worktrees").join("wt");
+            let denied = unreadable(&sealed);
+
+            let created = Worktree::create(repo_path, dir_s, BRANCH, root_s);
+            if let Some(path) = denied {
+                full_access(&path);
+            }
+
+            match (&created, adopts) {
+                (Ok(wt), true) if wt.dir == dir_s => {}
+                (Ok(wt), _) => {
+                    violations.push(format!("{row:?}: create returned the tree at {}", wt.dir))
+                }
+                (Err(e), true) => violations.push(format!("{row:?}: create failed: {}", e.0)),
+                (Err(e), false) if !e.0.contains(at.to_str().unwrap()) => violations.push(format!(
+                    "{row:?}: the error does not name {}: {}",
+                    at.display(),
+                    e.0
+                )),
+                (Err(_), false) => {}
+            }
+            if std::fs::read_to_string(dir.join("work.txt"))
+                .ok()
+                .as_deref()
+                != Some("work\n")
+            {
+                violations.push(format!("{row:?}: the work at the unit's path is gone"));
+            }
+            if !admin.is_dir() {
+                violations.push(format!("{row:?}: the sealed tree's registration is gone"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
     /// A TREE IS READY FOR THE CHECKPOINT ONLY WITH NOTHING LEFT UNFINISHED AND NOTHING THE COMMIT
     /// REFUSES: an unfinished merge, cherry-pick (an empty one git stopped on included), revert or
     /// rebase is a refusal, as is conflict-marker text the commit would carry; a clean tree, and
