@@ -174,6 +174,13 @@ fn discipline_body(ctx: &DocsContext) -> String {
         "- Hand-implementing a unit the loop parked. That leaves the loop still stuck for \
          the next unit and forks the code from the log - fix the loop instead (see below).\n"
     );
+    let _ = writeln!(
+        s,
+        "Everything an agent's session starts ends with the session (on macOS, and wherever its \
+         containment is degraded, what its main process leaves running past its exit is reported, \
+         not ended), so a daemon meant to outlive sessions, such as a shared build server, is \
+         started outside them.\n"
+    );
 
     let _ = writeln!(s, "## Looking things up\n");
     let _ = writeln!(
