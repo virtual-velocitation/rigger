@@ -611,6 +611,15 @@ pub fn fault_detail(fault: &str) -> String {
         .join("\n")
 }
 
+/// A fault's text in the shape a hold tells one fault from another by
+/// ([`RunHeld::same_fault`]): `what` failed on the first line, which reads alone and reads the
+/// same each time the fault recurs, and what `varied` between two occurrences of it - a spawn id,
+/// a spawn's output, an error's own words, a count, a revision - on the lines below, so the same
+/// fault met again after a release is the recurrence a person is held for.
+pub fn fault_text(what: impl std::fmt::Display, varied: impl std::fmt::Display) -> String {
+    format!("{what}\n{varied}")
+}
+
 impl RunReleased {
     /// Build the appendable [`TYPE_RUN_RELEASED`] event carrying this body, `pub` for the same
     /// adapter-crate writers [`RunHeld::to_event`] serves.

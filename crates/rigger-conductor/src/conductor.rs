@@ -27,6 +27,7 @@ use crate::ledger::{self, RequiredItem, RunState};
 use crate::liveness;
 use crate::playbooks::fnv1a_64;
 use crate::prompt_surface::*;
+use crate::run::fault_text;
 use crate::safety;
 use crate::spawn::{
     self, review_step_role, spawn_id, spawn_retry_id, speculation_group_id, ReviewKind,
@@ -2753,15 +2754,6 @@ fn degenerate_reviewer(
              corrected result replays the recorded empties and halts here again."
         ),
     ))
-}
-
-/// A conductor fault's text in the shape a hold tells one fault from another by
-/// ([`RunHeld::same_fault`](crate::run::RunHeld::same_fault)): `what` failed on the first line,
-/// which reads alone and reads the same each time the fault recurs, and what `varied` between two
-/// occurrences of it - a spawn id, a spawn's output, an error's own words, a count - on the lines
-/// below, so the same fault met again after a release is the recurrence a person is held for.
-fn fault_text(what: impl std::fmt::Display, varied: impl std::fmt::Display) -> String {
-    format!("{what}\n{varied}")
 }
 
 /// The most of a verdict-less reviewer's output [`output_tail`] carries as evidence.
