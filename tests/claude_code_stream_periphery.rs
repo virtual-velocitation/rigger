@@ -1316,9 +1316,18 @@ mod forks_at_stop {
     /// Drives the fixture in RIGGER_FORK_AT `mode`, its tree held as `held`, to `window`'s ending,
     /// THE STOP's grace `grace`, and reads the witness the moment the spawn returns: `Ended` once
     /// nothing the session started is still running, `Held` while one process still is. The
-    /// ending returns within its bound, whoever holds the session's pipes, and the test's release
-    /// then ends what is left.
-    fn ends_held_at(held: Held, window: Window, mode: &str, grace: Duration, leaves: Leaves) {
+    /// witness holds exactly `up` bytes then, the main's and one for each process the session
+    /// started, so a row whose process was never started fails rather than reads `Ended` over
+    /// nothing. The ending returns within its bound, whoever holds the session's pipes, and the
+    /// test's release then ends what is left.
+    fn ends_held_at(
+        held: Held,
+        window: Window,
+        mode: &str,
+        grace: Duration,
+        up: usize,
+        leaves: Leaves,
+    ) {
         let mut witness = Witness::new();
         let fx = Fixture::new();
         let status = match window {
@@ -1376,10 +1385,11 @@ mod forks_at_stop {
             }
             (window, outcome) => panic!("{window:?} {mode}: the spawn returned {outcome:?}"),
         };
-        assert!(
-            witness.up() >= 1,
-            "{mode}: the fixture wrote its up byte, so the witness reads its processes and not a \
-             FIFO no process opened"
+        assert_eq!(
+            witness.up(),
+            up,
+            "{held:?} {window:?} {mode}: the up bytes of the main and of every process the session \
+             started"
         );
         let expected = match leaves {
             Leaves::Nothing => Reading::Ended,
@@ -1411,69 +1421,82 @@ mod forks_at_stop {
     }
 
     /// [`ends_held_at`] with the tree kept, as the composition root holds it.
-    fn ends_at(window: Window, mode: &str, grace: Duration, leaves: Leaves) {
-        ends_held_at(Held::Kept, window, mode, grace, leaves);
+    fn ends_at(window: Window, mode: &str, grace: Duration, up: usize, leaves: Leaves) {
+        ends_held_at(Held::Kept, window, mode, grace, up, leaves);
     }
 
     /// [`ends_held_at`] with the tree watched.
-    fn ends_watched_at(window: Window, mode: &str, grace: Duration, leaves: Leaves) {
-        ends_held_at(Held::Watched, window, mode, grace, leaves);
+    fn ends_watched_at(window: Window, mode: &str, grace: Duration, up: usize, leaves: Leaves) {
+        ends_held_at(Held::Watched, window, mode, grace, up, leaves);
     }
 
     rigger::test_cases! {
         // The launch fault's stop: the session is ended at once, so a process it starts as the end
         // reaches it is still the session's to end.
         an_init_fault_ends_what_the_sessions_term_trap_starts:
-            ends_at(Window::InitFault, "term", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::InitFault, "term", Duration::from_secs(1), 2, Leaves::Nothing);
         an_init_fault_ends_what_the_sessions_term_trap_starts_as_it_exits:
-            ends_at(Window::InitFault, "term-exit", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::InitFault, "term-exit", Duration::from_secs(1), 2, Leaves::Nothing);
         an_init_fault_ends_what_the_session_starts_at_its_input_end:
-            ends_at(Window::InitFault, "eof", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::InitFault, "eof", Duration::from_secs(1), 2, Leaves::Nothing);
         an_init_fault_ends_what_the_session_starts_at_its_input_end_as_it_exits:
-            ends_at(Window::InitFault, "eof-exit", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::InitFault, "eof-exit", Duration::from_secs(1), 2, Leaves::Nothing);
         // A grace of 15 s: joins that waited the stop's grace would wait it twice and break the
         // bound, which the ending's own 2 s join bound keeps.
         an_init_fault_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
-            ends_at(Window::InitFault, "double", Duration::from_secs(15), Leaves::Nothing);
+            ends_at(Window::InitFault, "double", Duration::from_secs(15), 2, Leaves::Nothing);
         // THE STOP: input closed, the grace waited, then the end.
         a_stop_ends_what_the_sessions_term_trap_starts:
-            ends_at(Window::Silence(1), "term", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::Silence(1), "term", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_what_the_sessions_term_trap_starts_as_it_exits:
-            ends_at(Window::Silence(1), "term-exit", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::Silence(1), "term-exit", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_what_the_session_starts_at_its_input_end:
-            ends_at(Window::Silence(1), "eof", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::Silence(1), "eof", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_what_the_session_starts_at_its_input_end_as_it_exits:
-            ends_at(Window::Silence(1), "eof-exit", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::Silence(1), "eof-exit", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_what_the_session_starts_during_the_grace:
-            ends_at(Window::Silence(1), "eof-then-margin", Duration::from_secs(4), Leaves::Nothing);
+            ends_at(
+                Window::Silence(1),
+                "eof-then-margin",
+                Duration::from_secs(4),
+                2,
+                Leaves::Nothing,
+            );
         a_stop_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
-            ends_at(Window::Silence(1), "double", Duration::from_secs(15), Leaves::Nothing);
+            ends_at(Window::Silence(1), "double", Duration::from_secs(15), 2, Leaves::Nothing);
         // The process leaves the tree 3 s after init, before the stop at 5 s.
         a_stop_ends_a_process_that_left_the_sessions_tree_while_it_ran:
-            ends_at(Window::Silence(5), "double-slow", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::Silence(5), "double-slow", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_a_process_in_a_session_of_its_own:
-            ends_at(Window::Silence(1), "setsid", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::Silence(1), "setsid", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_a_process_started_in_another_directory:
-            ends_at(Window::Silence(1), "chdir", Duration::from_secs(1), Leaves::Nothing);
+            ends_at(Window::Silence(1), "chdir", Duration::from_secs(1), 2, Leaves::Nothing);
         // An ordinary end at the production grace, which it never waits: the result returns within
         // the read's 1 s and two 2 s joins, and the process still holding the pipes runs on.
         a_result_returns_promptly_and_leaves_a_leftover_alone:
-            ends_at(Window::Result, "clean-exit", STOP_GRACE, Leaves::TheLeftover);
+            ends_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::TheLeftover);
         // Watched: the end freezes the tree and asks nothing of it, so no trap of the session's
         // runs.
         a_watched_init_fault_ends_the_session_without_running_its_term_trap:
-            ends_watched_at(Window::InitFault, "term", Duration::from_secs(1), Leaves::Nothing);
+            ends_watched_at(Window::InitFault, "term", Duration::from_secs(1), 1, Leaves::Nothing);
         a_watched_stop_ends_what_the_session_starts_at_its_input_end:
-            ends_watched_at(Window::Silence(1), "eof", Duration::from_secs(1), Leaves::Nothing);
+            ends_watched_at(Window::Silence(1), "eof", Duration::from_secs(1), 2, Leaves::Nothing);
         a_watched_stop_ends_what_the_session_starts_during_the_grace:
             ends_watched_at(
                 Window::Silence(1),
                 "eof-then-margin",
                 Duration::from_secs(4),
+                2,
                 Leaves::Nothing,
             );
         a_watched_stop_ends_a_process_in_a_session_of_its_own:
-            ends_watched_at(Window::Silence(1), "setsid", Duration::from_secs(1), Leaves::Nothing);
+            ends_watched_at(
+                Window::Silence(1),
+                "setsid",
+                Duration::from_secs(1),
+                2,
+                Leaves::Nothing,
+            );
         // What a watch cannot hold: a process that left the tree before the stop runs on, and the
         // stop still returns within its bound.
         a_watched_stop_leaves_a_process_that_left_the_tree_without_waiting_on_its_pipes:
@@ -1481,6 +1504,7 @@ mod forks_at_stop {
                 Window::Silence(1),
                 "double",
                 Duration::from_secs(15),
+                2,
                 Leaves::TheLeftover,
             );
         a_watched_stop_names_a_process_it_saw_leave_the_tree_and_never_signals_it:
@@ -1488,10 +1512,11 @@ mod forks_at_stop {
                 Window::Silence(5),
                 "double-slow",
                 Duration::from_secs(1),
+                2,
                 Leaves::TheEscapee,
             );
         a_watched_result_returns_promptly_and_leaves_a_leftover_alone:
-            ends_watched_at(Window::Result, "clean-exit", STOP_GRACE, Leaves::TheLeftover);
+            ends_watched_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::TheLeftover);
     }
 }
 

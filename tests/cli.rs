@@ -7589,9 +7589,10 @@ fn a_run_whose_session_is_stopped_leaves_nothing_the_session_started_running() {
     let reading = witness.read();
 
     assert!(!ok, "the run fails; stderr: {err}\nstdout: {out}");
-    assert!(
-        witness.up() >= 1,
-        "the session wrote its up byte, so the witness reads its processes; stderr: {err}"
+    assert_eq!(
+        witness.up(),
+        2,
+        "the up bytes of the session's main and of the process it started; stderr: {err}"
     );
     assert_eq!(
         (reading, took < STOP_GRACE),
