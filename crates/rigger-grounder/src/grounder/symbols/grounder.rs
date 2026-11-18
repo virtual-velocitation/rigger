@@ -2439,6 +2439,7 @@ mod tests {
             end_line: line,
             parent: None,
             test: false,
+            doc: None,
         }
     }
 

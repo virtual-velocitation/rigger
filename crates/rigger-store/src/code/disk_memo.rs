@@ -200,6 +200,7 @@ mod tests {
                 end_line: at as u32 + 1,
                 parent: None,
                 test: false,
+                doc: None,
             })
             .collect();
         FileFacts {

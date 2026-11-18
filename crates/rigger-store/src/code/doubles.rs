@@ -99,6 +99,7 @@ impl Extract for ToyExtract {
                         end_line: line_no,
                         parent,
                         test: facts.scope == Scope::Test,
+                        doc: None,
                     });
                 }
                 ["call", name] | ["use", _, name] => facts.mentions.push(Mention {

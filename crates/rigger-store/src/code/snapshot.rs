@@ -5,17 +5,20 @@
 //! The file is a [`crate::format`] container. Its header payload is the stamp: the extractor
 //! fingerprint, the tip's head, commit and tree as strings, and the sequence number. A string is
 //! a (u32 offset, u32 length) pair into the STRINGS pool, which holds each distinct string once;
-//! an absent commit is the offset `u32::MAX`. Each other section is fixed-width rows:
+//! an absent commit is the offset `u32::MAX`. A doc span is the u32 first and last line of a doc
+//! comment; lines count from 1, so 0, 0 is no doc comment. Each other section is fixed-width rows:
 //!
 //! ```text
 //! FILES        path, blob, lang, half u8, scope u8, flags u8 (partial 1, test file 2),
-//!              then [start, end) into DEFS, MENTIONS, MODULES, DOC_CONCEPTS, DOC_LINKS,
-//!              WF_NODES, WF_RELATIONS                  (rows sorted by path; one run a file)
-//! DEFS         local, leaf, kind, line, end_line, parent (u32::MAX: none), flags (test)
+//!              doc span, then [start, end) into DEFS, MENTIONS, MODULES, DOC_CONCEPTS,
+//!              DOC_LINKS, WF_NODES, WF_RELATIONS       (rows sorted by path; one run a file)
+//! DEFS         local, leaf, kind, line, end_line, parent (u32::MAX: none), flags (test),
+//!              doc span
 //! MENTIONS     enclosing (u32::MAX: none), name, leaf, kind u8 (0 call, 1 tagged), tag,
 //!              line, flags (test)
-//! MODULES      name, def (its declaring DEFS row in the file), flags (test),
-//!              [start, end) into CANDIDATES
+//! MODULES      name, def (its declaring DEFS row in the file), flags (test 1, path
+//!              attribute 2), then start, mid, end into CANDIDATES: as_root is [start, mid),
+//!              as_child [mid, end)
 //! CANDIDATES   path
 //! DOC_*, WF_*  three strings each, as written
 //! IDX_LEAF     u32 key count, keys (leaf, [start, end) into the postings) sorted by leaf,
@@ -50,7 +53,7 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
-pub(crate) const VERSION: u16 = 4;
+pub(crate) const VERSION: u16 = 5;
 /// An absent index (parent, enclosing definition) or an absent string (commit).
 const NONE: u32 = u32::MAX;
 
@@ -73,11 +76,13 @@ const IDX_PROOF_FILE: u16 = 15;
 /// The width of a string reference.
 const STR: usize = 8;
 
-/// FILES row: three strings, half, scope, flags, then one [start, end) pair per list.
+/// FILES row: three strings, half, scope, flags, the doc span, then one [start, end) pair per
+/// list.
 const F_HALF: usize = 3 * STR;
 const F_SCOPE: usize = F_HALF + 1;
 const F_FLAGS: usize = F_SCOPE + 1;
-const F_LISTS: usize = F_FLAGS + 1;
+const F_DOC: usize = F_FLAGS + 1;
+const F_LISTS: usize = F_DOC + 8;
 /// The lists a file row ranges into, in row order.
 const LISTS: [u16; 7] = [
     DEFS,
@@ -100,7 +105,8 @@ const D_LINE: usize = 3 * STR;
 const D_END: usize = D_LINE + 4;
 const D_PARENT: usize = D_END + 4;
 const D_FLAGS: usize = D_PARENT + 4;
-const DEF_ROW: usize = D_FLAGS + 1;
+const D_DOC: usize = D_FLAGS + 1;
+const DEF_ROW: usize = D_DOC + 8;
 
 /// MENTIONS row.
 const M_NAME: usize = 4;
@@ -111,11 +117,11 @@ const M_LINE: usize = M_TAG + STR;
 const M_FLAGS: usize = M_LINE + 4;
 const MENTION_ROW: usize = M_FLAGS + 1;
 
-/// MODULES row.
+/// MODULES row: name, def, flags, then start, mid and end into CANDIDATES.
 const MOD_DEF: usize = STR;
 const MOD_FLAGS: usize = MOD_DEF + 4;
 const MOD_CANDS: usize = MOD_FLAGS + 1;
-const MODULE_ROW: usize = MOD_CANDS + 8;
+const MODULE_ROW: usize = MOD_CANDS + 12;
 
 /// A row of three strings (DOC_*, WF_*), and an index key (leaf, start, end).
 const TRIPLE_ROW: usize = 3 * STR;
@@ -131,6 +137,8 @@ const KIND_TAGGED: u8 = 1;
 const FLAG_SET: u8 = 1;
 /// A FILES row's flag: test code, by its scope or the test-module closure.
 const FLAG_TEST: u8 = 2;
+/// A MODULES row's flag: the declaration carries an explicit path attribute.
+const FLAG_PATH_ATTR: u8 = 2;
 
 /// The string pool being written: each distinct string once, in first-use order.
 #[derive(Default)]
@@ -170,16 +178,28 @@ impl Pool {
     }
 }
 
-fn flag(set: bool) -> u8 {
+/// The flag bit `mask` when `set`, else no bit.
+fn bit(set: bool, mask: u8) -> u8 {
     if set {
-        FLAG_SET
+        mask
     } else {
         0
     }
 }
 
+fn flag(set: bool) -> u8 {
+    bit(set, FLAG_SET)
+}
+
 fn opt_index(i: Option<u32>) -> u32 {
     i.unwrap_or(NONE)
+}
+
+/// Writes a doc span: its first and last line, or 0, 0 when there is none.
+fn put_span(out: &mut Vec<u8>, span: Option<(u32, u32)>) {
+    let (first, last) = span.unwrap_or((0, 0));
+    put_u32(out, first);
+    put_u32(out, last);
 }
 
 /// The sections being written, one byte buffer per kind.
@@ -234,6 +254,7 @@ impl Encoder {
             put_u32(&mut defs, def.end_line);
             put_u32(&mut defs, opt_index(def.parent));
             put_u8(&mut defs, flag(def.test));
+            put_span(&mut defs, def.doc);
             self.leaf_defs
                 .entry(def.leaf.clone())
                 .or_default()
@@ -264,18 +285,23 @@ impl Encoder {
         for module in &facts.modules {
             self.pool.put(&mut modules, &module.name)?;
             put_u32(&mut modules, module.def);
-            put_u8(&mut modules, flag(module.test));
+            put_u8(
+                &mut modules,
+                flag(module.test) | bit(module.path_attr, FLAG_PATH_ATTR),
+            );
             put_u32(
                 &mut modules,
                 narrow(candidates.len() / STR, "candidate row")?,
             );
-            for candidate in &module.candidates {
-                self.pool.put(&mut candidates, candidate)?;
+            for list in [&module.as_root, &module.as_child] {
+                for candidate in list {
+                    self.pool.put(&mut candidates, candidate)?;
+                }
+                put_u32(
+                    &mut modules,
+                    narrow(candidates.len() / STR, "candidate row")?,
+                );
             }
-            put_u32(
-                &mut modules,
-                narrow(candidates.len() / STR, "candidate row")?,
-            );
         }
         self.sections.insert(MODULES, modules);
         self.sections.insert(CANDIDATES, candidates);
@@ -313,10 +339,8 @@ impl Encoder {
         }
         put_u8(&mut files, facts.half as u8);
         put_u8(&mut files, facts.scope as u8);
-        put_u8(
-            &mut files,
-            flag(facts.partial) | if test { FLAG_TEST } else { 0 },
-        );
+        put_u8(&mut files, flag(facts.partial) | bit(test, FLAG_TEST));
+        put_span(&mut files, facts.doc);
         for (&kind, start) in LISTS.iter().zip(starts) {
             put_u32(&mut files, start);
             put_u32(&mut files, self.rows(kind, width_of(kind))?);
@@ -458,6 +482,18 @@ fn byte(row: &[u8], at: usize) -> u8 {
 
 fn opt(i: u32) -> Option<u32> {
     (i != NONE).then_some(i)
+}
+
+/// The doc span at `at` in `row`; none when it is 0, 0 ([`put_span`]).
+fn span(row: &[u8], at: usize) -> Option<(u32, u32)> {
+    let lines = (le32(row, at), le32(row, at + 4));
+    (lines != (0, 0)).then_some(lines)
+}
+
+/// A MODULES row's start, mid and end into CANDIDATES: its `as_root` list is [start, mid), its
+/// `as_child` list [mid, end).
+fn candidate_bounds(row: &[u8]) -> [usize; 3] {
+    [0, 4, 8].map(|at| le32(row, MOD_CANDS + at) as usize)
 }
 
 fn half_of(b: u8) -> Option<Half> {
@@ -683,12 +719,8 @@ impl Snapshot {
         let modules = self.table(MODULES);
         let mut next_candidate = 0;
         for i in 0..modules.rows {
-            let row = self.row(modules, i);
-            let (start, end) = (
-                le32(row, MOD_CANDS) as usize,
-                le32(row, MOD_CANDS + 4) as usize,
-            );
-            if start != next_candidate || end < start {
+            let [start, mid, end] = candidate_bounds(self.row(modules, i));
+            if start != next_candidate || mid < start || end < mid {
                 return Err("module candidates are not one run a module".into());
             }
             next_candidate = end;
@@ -789,6 +821,7 @@ impl Snapshot {
                         end_line: le32(r, D_END),
                         parent: opt(le32(r, D_PARENT)),
                         test: byte(r, D_FLAGS) & FLAG_SET != 0,
+                        doc: span(r, D_DOC),
                     }
                 })
                 .collect(),
@@ -815,16 +848,21 @@ impl Snapshot {
     fn modules_of(&self, row: &[u8]) -> Vec<ModuleDecl> {
         let modules = self.table(MODULES);
         let candidates = self.table(CANDIDATES);
+        let paths = |run: Range<usize>| -> Vec<String> {
+            run.map(|c| self.text(self.row(candidates, c), 0).to_owned())
+                .collect()
+        };
         self.list(row, L_MODULES)
             .map(|m| {
                 let r = self.row(modules, m);
+                let [start, mid, end] = candidate_bounds(r);
                 ModuleDecl {
                     name: self.text(r, 0).to_owned(),
                     def: le32(r, MOD_DEF),
                     test: byte(r, MOD_FLAGS) & FLAG_SET != 0,
-                    candidates: (le32(r, MOD_CANDS) as usize..le32(r, MOD_CANDS + 4) as usize)
-                        .map(|c| self.text(self.row(candidates, c), 0).to_owned())
-                        .collect(),
+                    as_root: paths(start..mid),
+                    as_child: paths(mid..end),
+                    path_attr: byte(r, MOD_FLAGS) & FLAG_PATH_ATTR != 0,
                 }
             })
             .collect()
@@ -840,6 +878,7 @@ impl Snapshot {
             half: half_of(byte(row, F_HALF)).unwrap_or_default(),
             scope: scope_of(byte(row, F_SCOPE)).unwrap_or_default(),
             partial: byte(row, F_FLAGS) & FLAG_SET != 0,
+            doc: span(row, F_DOC),
             defs: Vec::new(),
             mentions: Vec::new(),
             modules: Vec::new(),

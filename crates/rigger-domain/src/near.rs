@@ -1232,7 +1232,9 @@ mod tests {
             name: "it".into(),
             def: 0,
             test: false,
-            candidates: vec!["tests/missing.rs".into(), "tests/it.rs".into()],
+            as_root: vec!["tests/missing.rs".into(), "tests/it.rs".into()],
+            as_child: vec!["tests/missing.rs".into(), "tests/it.rs".into()],
+            path_attr: false,
         });
         let groupings = Groupings {
             communities: vec![

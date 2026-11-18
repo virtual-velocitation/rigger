@@ -72,6 +72,7 @@ fn declared_facts(root: &Path, path: &str, lang: &str, leaves: &[&str]) -> FileF
                 end_line: 1,
                 parent: None,
                 test: false,
+                doc: None,
             })
             .collect(),
         ..declared_identity(path, &committed_blob(root, path), lang)

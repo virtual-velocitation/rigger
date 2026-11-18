@@ -253,10 +253,11 @@ FileFacts
   scope       Product | Test               (path rule, see section 8)
   partial     true when the parse held an error or the declared extractor said so, so defs
               and mentions cover only as far as the extraction reached
+  doc         the doc span of the file's own doc comment (//! in Rust), or none
   defs        [Def]                        (in the extractor's order)
   mentions    [Mention]                    (in the extractor's order)
   modules     [ModuleDecl]
-  doc         [DocConcept], [DocLink]      (design half; names and targets as written. A code
+  doc_*       [DocConcept], [DocLink]      (design half; names and targets as written. A code
                                             file also holds the rationale concepts and links
                                             found in its source)
   workflow    [WfNode], [WfRelation]       (workflow half; names as written)
@@ -268,6 +269,7 @@ Def
   line, end_line
   parent      index of the enclosing Def, or none
   test        true when the language marks it test-only (a #[test] fn, a #[cfg(test)] module, ...)
+  doc         the doc span of its doc comment, or none
 
 Mention
   enclosing   index of the enclosing Def, or the file
@@ -281,13 +283,19 @@ ModuleDecl
   name        "foo"
   def         the index in this file's defs of the module definition that declares it
   test        true for a test-only module
-  candidates  ["crates/x/src/foo.rs", "crates/x/src/foo/mod.rs"]   (from this file's path and
-                                                                   any explicit path attribute)
+  as_root     ["crates/x/src/foo.rs", "crates/x/src/foo/mod.rs"]   (the module's file when this
+                                                                   file is a crate root or a
+                                                                   mod.rs, in the order tried)
+  as_child    ["crates/x/src/a/foo.rs", "crates/x/src/a/foo/mod.rs"]   (when it is any other
+                                                                   file, in the order tried)
+  path_attr   true when the declaration carries an explicit path attribute (#[path = ".."])
 ```
 
-A module's candidate paths depend only on the declaring file, so they are computed at
-extraction. Picking the first candidate that is a file in the tree is a cross-file question, so
-it happens at read (section 6).
+A doc span is the 1-based, inclusive first and last line of a doc comment; the comment's text is
+never stored. A module's two lists depend only on the declaring file, so they are computed at
+extraction, an explicit path attribute placed by the same two rules. Which list applies, and the
+first path in it that is a file in the tree, are cross-file questions, so they are answered at
+read (section 6).
 
 ### 4.2 How a name-reference is stored
 
@@ -347,12 +355,13 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | section table: [u16 kind | u64 offset | u64 length | u32 crc32] x count       |
  +-------------------------------------------------------------------------------+
  | STRINGS    the pool                                                           |
- | FILES      path, blob, lang, half, scope, flags (partial, test file), then    |
- |            [start, end) into each of                                          |
+ | FILES      path, blob, lang, half, scope, flags (partial, test file), doc     |
+ |            span, then [start, end) into each of                               |
  |            DEFS, MENTIONS, MODULES, DOC, WORKFLOW        (rows sorted by path) |
- | DEFS       local, leaf, kind, line, end_line, parent, flags   (one run a file) |
+ | DEFS       local, leaf, kind, line, end_line, parent, flags, doc span         |
+ |                                                              (one run a file) |
  | MENTIONS   enclosing, name, leaf, kind, line, flags            (one run a file) |
- | MODULES    name, flags, candidates                                            |
+ | MODULES    name, flags (test, path attribute), as_root, as_child              |
  | DOC        concepts and links as written                                      |
  | WORKFLOW   nodes and relations as written                                     |
  | IDX_LEAF   leaf -> [def row]       (sorted by leaf; binary search)            |
@@ -368,12 +377,13 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
 - A reader parses the file from a byte slice it owns. Reading the whole file into memory is
   the access path. A memory mapping is a different owner of the same slice, so the format needs
   no change for one.
+- A doc span is two u32 lines; lines count from 1, so 0, 0 is no doc comment.
 - **Size.** The tree holds 18,202 definitions and 164,734 mentions.
 
   | Section | Estimate |
   |---|---|
   | mentions | ~4.0 MB |
-  | definitions | ~0.6 MB |
+  | definitions | ~0.8 MB |
   | string pool | ~0.6 MB |
   | indexes | ~0.7 MB |
   | **total** | **~6 MB** |
@@ -822,7 +832,7 @@ call), and REFERENCES from F. A call the qualified-mention rule gives no edge yi
 | | | else | no edge; counted as unresolved |
 | | | for `k` = `field`, the same-file step skipped and a constant, static or variant left to the qualified-mention rule: exactly one `field` or `property` definition in the project, in F or not | INFERRED |
 | | | else | no edge; counted as unresolved |
-| module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
+| module | ModuleDecl in F | the first path of its `as_child` list that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
 | proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | written `Q::leaf` or `Q.leaf`, the qualified-mention rule over every candidate, product and test: exactly one kept, that definition when it is product, none when it is test; none for several kept, or for a call that rule gives no edge; otherwise exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |

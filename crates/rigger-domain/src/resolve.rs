@@ -74,10 +74,10 @@ const INTENT_RELS: [&str; 9] = [
     REL_REVIEWS_LIGHT,
 ];
 
-/// The file a module declaration reaches: the first of its candidate paths that is a code file.
-/// The module rule and the test-module closure both read it, so they cannot disagree.
+/// The file a module declaration reaches: the first path of its `as_child` list that is a code
+/// file. The module rule and the test-module closure both read it, so they cannot disagree.
 pub fn module_target(decl: &ModuleDecl, is_code_file: impl Fn(&str) -> bool) -> Option<&str> {
-    decl.candidates
+    decl.as_child
         .iter()
         .map(String::as_str)
         .find(|path| is_code_file(path))
@@ -1401,6 +1401,7 @@ pub(crate) mod tests {
             end_line: line,
             parent,
             test,
+            doc: None,
         }
     }
 
@@ -1465,12 +1466,16 @@ pub(crate) mod tests {
         qualified(MentionKind::Call, name, Some(enclosing), line, true)
     }
 
+    /// A module declaration whose `as_root` and `as_child` lists both hold `candidates`.
     fn decl(name: &str, def: u32, test: bool, candidates: &[&str]) -> ModuleDecl {
+        let paths: Vec<String> = candidates.iter().map(|c| c.to_string()).collect();
         ModuleDecl {
             name: name.into(),
             def,
             test,
-            candidates: candidates.iter().map(|c| c.to_string()).collect(),
+            as_root: paths.clone(),
+            as_child: paths,
+            path_attr: false,
         }
     }
 

@@ -46,7 +46,7 @@ use crate::grounder::workflowdef;
 /// which the store's fingerprint ([`store_fingerprint`]) folds with the grouper's generation. A golden
 /// test pins it beside the digest of the facts read over a fixture set, so a change that is not
 /// bumped fails there.
-const FACTS_GENERATION: &str = "facts-v2";
+const FACTS_GENERATION: &str = "facts-v3";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
 /// stores it and a later process compares against it.
@@ -405,6 +405,7 @@ fn code_facts(
             end_line: d.end_line,
             parent: d.parent.as_deref().and_then(index_of),
             test: d.is_test,
+            doc: None,
         })
         .collect();
     facts.mentions = refs
@@ -426,11 +427,18 @@ fn code_facts(
     facts.modules = defs
         .iter()
         .filter(|d| d.is_out_of_line_module)
-        .map(|d| ModuleDecl {
-            name: d.name.clone(),
-            def: by_path[d.path.as_str()],
-            test: d.is_test,
-            candidates: module_candidates(path, d),
+        .map(|d| {
+            // `module_candidates` gives one list, placed by the declaring file's own module
+            // directory, and both lists hold it.
+            let candidates = module_candidates(path, d);
+            ModuleDecl {
+                name: d.name.clone(),
+                def: by_path[d.path.as_str()],
+                test: d.is_test,
+                as_root: candidates.clone(),
+                as_child: candidates,
+                path_attr: false,
+            }
         })
         .collect();
 }
@@ -946,7 +954,8 @@ mod tests {
 
     #[test]
     fn module_candidates_come_from_the_declaring_file_alone() {
-        // (declaring path, source, the (name, test, candidates) of each declaration)
+        // (declaring path, source, the (name, test, candidates) of each declaration, the
+        // candidates both its `as_root` and its `as_child` list hold)
         type Row = (
             &'static str,
             &'static str,
@@ -1002,20 +1011,18 @@ mod tests {
         ];
         for (path, source, modules) in table {
             let facts = facts_of(path, source.as_bytes());
-            let held: Vec<(&str, bool, Vec<&str>)> = facts
-                .modules
-                .iter()
+            let held: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (facts.modules.iter())
                 .map(|m| {
                     (
                         m.name.as_str(),
                         m.test,
-                        m.candidates.iter().map(String::as_str).collect(),
+                        m.as_root.iter().map(String::as_str).collect(),
+                        m.as_child.iter().map(String::as_str).collect(),
                     )
                 })
                 .collect();
-            let expected: Vec<(&str, bool, Vec<&str>)> = modules
-                .iter()
-                .map(|(name, test, candidates)| (*name, *test, candidates.to_vec()))
+            let expected: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (modules.iter())
+                .map(|(name, test, paths)| (*name, *test, paths.to_vec(), paths.to_vec()))
                 .collect();
             assert_eq!(held, expected, "{path}: {source:?}");
         }
@@ -1221,7 +1228,7 @@ mod tests {
     #[test]
     fn a_change_to_the_facts_ships_with_a_generation_bump() {
         use crate::grounder::symbols::registry::tests::GOLDEN_SOURCES;
-        const PINNED: (&str, &str, &str) = ("ts-tags-v5", "facts-v2", "ec3d0eb0685882b8");
+        const PINNED: (&str, &str, &str) = ("ts-tags-v5", "facts-v3", "e00fa4d014412262");
         let mut fixtures: Vec<(String, &str)> = GOLDEN_SOURCES
             .iter()
             .enumerate()
@@ -1595,6 +1602,7 @@ mod tests {
                         end_line: 4,
                         parent: None,
                         test: false,
+                        doc: None,
                     },
                     Def {
                         local: "T::new".into(),
@@ -1604,6 +1612,7 @@ mod tests {
                         end_line: 4,
                         parent: Some(0),
                         test: true,
+                        doc: None,
                     },
                 ],
                 mentions: vec![
@@ -1716,6 +1725,7 @@ mod tests {
                         end_line: 2,
                         parent: None,
                         test: false,
+                        doc: None,
                     }],
                     mentions: vec![Mention {
                         enclosing: Some(0),
