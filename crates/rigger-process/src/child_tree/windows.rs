@@ -14,7 +14,7 @@
 //! starts before it runs.
 
 use super::{Contain, Containment, Hold, ReapedChild, Why};
-use crate::reap::{self, EndReport};
+use crate::reap::{self, EndReport, Identity};
 use crate::subprocess;
 use std::ffi::OsStr;
 use std::io;
@@ -220,6 +220,21 @@ fn resume_thread(id: u32) -> io::Result<()> {
 struct Jobbed(Option<Job>);
 
 impl Hold for Jobbed {
+    /// The job's running processes but the main ([`crate::reap::job_members`]); none once the
+    /// end or the release has taken the job.
+    fn members(&mut self, main: &mut Child) -> Vec<Identity> {
+        let Some(job) = &self.0 else {
+            return Vec::new();
+        };
+        let main = main.id();
+        reap::job_members(job.0.as_raw_handle())
+            .0
+            .into_iter()
+            .map(|member| member.identity)
+            .filter(|member| member.pid != main)
+            .collect()
+    }
+
     /// Ends the job and every process in it ([`crate::reap::end_job`]); an end after the first
     /// ends nothing.
     fn end(&mut self, main: &mut Child) -> EndReport {

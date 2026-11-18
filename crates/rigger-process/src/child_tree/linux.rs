@@ -542,6 +542,14 @@ impl Hold for Kept {
         self.main
     }
 
+    /// The keeper's running descendants but the main: every process the keeper's end reaches.
+    fn members(&mut self, keeper: &mut Child) -> Vec<Identity> {
+        reap::descendants_of(keeper.id())
+            .into_iter()
+            .filter(|member| member.pid != self.main && reap::running(member))
+            .collect()
+    }
+
     fn try_wait(&mut self, _keeper: &mut Child) -> io::Result<Option<ExitStatus>> {
         while self.status.is_none() {
             match self.records.try_recv() {

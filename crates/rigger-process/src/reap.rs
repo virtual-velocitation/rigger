@@ -245,7 +245,7 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// Best-effort and platform-tolerant like every other scan in this module: an OS the process
 /// interface cannot read, or a process the listing could not read, contributes nothing, never a
 /// hard error.
-fn descendants_of(root_pid: u32) -> Vec<Identity> {
+pub(crate) fn descendants_of(root_pid: u32) -> Vec<Identity> {
     descendants_in(&os_process::table(), root_pid)
 }
 

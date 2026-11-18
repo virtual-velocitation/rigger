@@ -163,7 +163,9 @@ grace period, then ends the session's process tree through the handle the driver
 created for that child. Never a pid read from elsewhere, a group or a shell-out.
 
 An ordinary end, once the session's main has exited, ends the same tree through the same
-handle, so on Linux and Windows nothing a session starts outlives it. A watched tree (macOS, or
+handle, so on Linux and Windows nothing a session starts outlives it. The end first waits, for
+at most its bound, while a process in the tree names the spawn on its command line, so a
+`StopFailure` hook still writing its record finishes before the end. A watched tree (macOS, or
 a launch whose containment degraded to a watch) signals nothing once its main has exited: what
 the main left running is reported, never signalled.
 

@@ -277,6 +277,8 @@ trait Hold: Send {
     fn wait(&mut self, child: &mut Child) -> io::Result<ExitStatus> {
         child.wait()
     }
+    /// The processes the tree's end would reach now that are still running, its main aside.
+    fn members(&mut self, child: &mut Child) -> Vec<Identity>;
     /// Ends the tree, answering what the end left running and what it never signalled.
     fn end(&mut self, child: &mut Child) -> EndReport;
     /// Lets the tree go, ending nothing, and answers what the OS refused the release
@@ -288,6 +290,18 @@ trait Hold: Send {
 struct Watched(Option<Watcher>);
 
 impl Hold for Watched {
+    /// The main's running descendants while the main runs, and none once it has exited, when the
+    /// end signals nothing ([`crate::reap::end_watched`]).
+    fn members(&mut self, main: &mut Child) -> Vec<Identity> {
+        if !matches!(main.try_wait(), Ok(None)) {
+            return Vec::new();
+        }
+        reap::descendants_of(main.id())
+            .into_iter()
+            .filter(reap::running)
+            .collect()
+    }
+
     /// Stops the watcher, then ends the tree ([`crate::reap::end_watched`]), the processes the
     /// watcher remembered among the end's own.
     fn end(&mut self, main: &mut Child) -> EndReport {
@@ -458,7 +472,13 @@ impl ReapedChild {
     /// main has exited signals nothing, and answers what the main left running as never
     /// signalled ([`crate::reap::end_watched`]). Answers what the end left.
     pub fn finish(mut self, writing: Option<&str>) -> EndReport {
-        let _ = writing;
+        if let Some(spawn) = writing {
+            if matches!(self.try_wait(), Ok(Some(_))) {
+                reap::poll_until(std::time::Instant::now() + reap::END_BOUND, || {
+                    !names_the_spawn(&self.hold.members(&mut self.child), spawn)
+                });
+            }
+        }
         self.end()
     }
 
@@ -481,6 +501,15 @@ impl ReapedChild {
             stderr: joined(stderr)?,
         })
     }
+}
+
+/// Whether a process among `members` names the spawn `spawn` on its command line
+/// ([`os_process::command_line`]), as a hook still writing that spawn's record does. A command
+/// line that cannot be read names nothing.
+fn names_the_spawn(members: &[Identity], spawn: &str) -> bool {
+    members
+        .iter()
+        .any(|member| os_process::command_line(member.pid).is_some_and(|line| line.contains(spawn)))
 }
 
 /// Reads `pipe` to its end on a thread of its own.
