@@ -10,7 +10,9 @@
 //! extractor for the worktree's text of a declared file it changed; and `rigger graph --show`
 //! bounds a declared definition's body by the `end_line` the root's extractor answers for the
 //! shown tree's text, in a session of its own, a failed answer leaving a note and never the
-//! bundled grammar's bound.
+//! bundled grammar's bound; and a reference the answer qualifies by a path or a member is held as
+//! the mention named as written, of its leaf (spec 117, CAPTURES), and lands on the definition its
+//! qualifier keeps.
 
 use std::path::Path;
 
@@ -21,7 +23,7 @@ use common::fixtures::{
     root_dir_of, workflow_declaring_extractors, write_files, StubExtractor,
 };
 use common::git::linked_worktree;
-use rigger_domain::code_facts::{Def, FileFacts};
+use rigger_domain::code_facts::{Def, FileFacts, Mention, MentionKind};
 use rigger_domain::code_view::{CodeView, Entry, Extract};
 use rigger_grounder::facts::FactsExtractor;
 
@@ -660,4 +662,95 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
             case.query
         );
     }
+}
+
+/// A Zig file whose `main`, over its lines 7 to 11, calls the `area` of `Shape` through a path,
+/// the `area` of `Disk` through a member access and an `area` by its name alone.
+const AREAS_ZIG: &str = concat!(
+    "const Shape = struct {\n    fn area() void {}\n};\n",
+    "const Disk = struct {\n    fn area() void {}\n};\n",
+    "pub fn main() void {\n    Shape::area();\n    Disk.area();\n    area();\n}\n",
+);
+
+/// The answer to `src/q.zig` holding [`AREAS_ZIG`]: the definitions `Shape`, `Shape::area`,
+/// `Disk`, `Disk::area` and `main`, and `main`'s three calls of `area` on lines 8 to 10, the first
+/// qualified by the path `Shape`, the second by the member `Disk`, the third carrying no qualifier.
+const AREAS_ANSWER: &str = concat!(
+    r#"{"path":"src/q.zig","defs":["#,
+    r#"{"kind":"Type","name":"Shape","line":1,"end_line":3,"path":"Shape"},"#,
+    r#"{"kind":"Method","name":"area","line":2,"end_line":2,"path":"Shape::area","parent":"Shape"},"#,
+    r#"{"kind":"Type","name":"Disk","line":4,"end_line":6,"path":"Disk"},"#,
+    r#"{"kind":"Method","name":"area","line":5,"end_line":5,"path":"Disk::area","parent":"Disk"},"#,
+    r#"{"kind":"Function","name":"main","line":7,"end_line":11,"path":"main"}"#,
+    r#"],"refs":["#,
+    r#"{"name":"area","line":8,"enclosing":"main","qualifier":{"name":"Shape","path":true}},"#,
+    r#"{"name":"area","line":9,"enclosing":"main","qualifier":{"name":"Disk","path":false}},"#,
+    r#"{"name":"area","line":10,"enclosing":"main"}"#,
+    r#"]}"#
+);
+
+/// Given a committed repository whose workflow declares the stub for `zig`, and a file whose
+/// answer gives `main` three calls of the leaf `area` - qualified by the path `Shape`, by the
+/// member `Disk`, and by nothing - when the operator builds the graph, A QUALIFIER CAPTURE NAMES
+/// THE MENTION (spec 117, CAPTURES) through THE EXTRACTOR PROTOCOL: the store holds the mentions
+/// `Shape::area`, `Disk.area` and `area`, each of the leaf `area`, and the graph lands the first
+/// two, `extracted`, on the `area` their qualifier keeps, while the third, which neither of its
+/// same-file candidates takes alone, lands `inferred` on its placeholder; nothing is said on
+/// stderr.
+#[test]
+fn graph_build_names_a_declared_reference_by_its_qualifier_and_lands_it_where_that_reaches() {
+    use rigger::contextgraph::query::{entity_id, placeholder_id};
+    use rigger::contextgraph::{TIER_EXTRACTED, TIER_INFERRED};
+
+    let path = "src/q.zig";
+    let (_dir, root) = source_repository();
+    let kept = tempfile::tempdir().expect("tempdir");
+    let stub = StubExtractor::new(kept.path());
+    declare(&root, &stub, "zig", "[zig]");
+    commit(&root, &[(path, AREAS_ZIG)]);
+    stub.answers(path, AREAS_ANSWER);
+    let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+    let graph = BuiltGraph::of(&root);
+    let found = (
+        ok,
+        err,
+        graph
+            .view
+            .file(path)
+            .map(|facts| facts.into_owned().mentions),
+        common::fixtures::landed(&graph),
+    );
+
+    let in_main = |name: &str, line| Mention {
+        enclosing: Some(4),
+        name: name.to_string(),
+        leaf: "area".to_string(),
+        kind: MentionKind::Call,
+        line,
+        test: false,
+    };
+    let mut edges: Vec<_> = [
+        (entity_id(path, "Shape::area"), TIER_EXTRACTED),
+        (entity_id(path, "Disk::area"), TIER_EXTRACTED),
+        (placeholder_id(path, "area"), TIER_INFERRED),
+    ]
+    .iter()
+    .flat_map(|(to, tier)| common::fixtures::a_call_from(path, "main", to, tier))
+    .collect();
+    edges.sort();
+    assert_eq!(
+        found,
+        (
+            true,
+            String::new(),
+            Some(vec![
+                in_main("Shape::area", 8),
+                in_main("Disk.area", 9),
+                in_main("area", 10),
+            ]),
+            edges,
+        ),
+        "each declared reference is named as written and lands where that name reaches; stdout: \
+         {out}"
+    );
 }
