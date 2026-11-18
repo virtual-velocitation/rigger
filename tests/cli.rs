@@ -14499,9 +14499,10 @@ fn validate_spec_flags_shape_defects_as_named_advisories_and_is_silent_on_a_clea
 }
 
 /// Spec 06 done-when line 60 (Gap 14d): `rigger validate` reports residue - scratch
-/// worktrees with no live unit, orphaned build caches, shadow stores, and `rigger/u/*`
-/// branches with no live unit - each with a size, as warnings that NEVER fail validation
-/// and NEVER delete anything. Driving the real binary is the only way to prove the store +
+/// worktrees with no live unit, orphaned build caches, shadow stores, `rigger/u/*`
+/// branches with no live unit and every ref rigger holds aside (`rigger/kept/*`,
+/// `rigger/orphaned/*`, each with its tip) - each with a size, as warnings that NEVER fail
+/// validation and NEVER delete anything. Driving the real binary is the only way to prove the store +
 /// git + filesystem read wiring; the pure scan is unit-tested in `src/main.rs`.
 #[test]
 fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
@@ -14551,6 +14552,11 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     )
     .unwrap();
     git_ok(root, &["branch", "rigger/u/unit-99-ghost"]);
+    // Refs rigger holds aside: a kept tree and one set aside under the quarantine namespace.
+    let tip = common::git::git_out(root, &["rev-parse", "HEAD"]);
+    let aside = format!("rigger/orphaned/unit-98-gone-{}", &tip[..12]);
+    git_ok(root, &["branch", "rigger/kept/unit-99-ghost"]);
+    git_ok(root, &["branch", &aside]);
 
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
     assert!(
@@ -14581,6 +14587,12 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
         err.contains("rigger/u/unit-99-ghost"),
         "the dead `rigger/u/*` branch must be named; stderr:\n{err}"
     );
+    for held in ["rigger/kept/unit-99-ghost", aside.as_str()] {
+        assert!(
+            err.contains(&format!("ref held aside: {held} at {}", &tip[..12])),
+            "each ref held aside is named with its tip; stderr:\n{err}"
+        );
+    }
     // Sizes accompany the disk-bearing items (a parenthesized human size).
     assert!(
         err.contains("(4.0K)") || err.contains("(4.5K)"),
