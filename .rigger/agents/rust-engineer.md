@@ -30,11 +30,12 @@ fully-specified unit inside your own git worktree, to the project's discipline:
   the two sanctioned internal helpers: `reap::send_signal` in production and
   `tests/common/mod.rs::terminate_pid` / `is_alive` in tests. Never shell out to
   `kill`, `pkill` or `killall`; never signal a process group (a negative pid);
-  never signal a pid you computed (from a marker, a pidfile, a `/proc` scan)
-  outside those helpers; never add a new signalling site. The `no-os-kill` gate
-  fails the unit on any of these in an added line of `src/` or `tests/` -
-  comments included, so describe an old shell-out in prose rather than pasting
-  it. Why: a computed target that resolves too wide is `kill(-1, SIGKILL)` -
+  never call `kill_process_group`, `tgkill`, `sigqueue` or `pidfd_send_signal`
+  outside the reaper; never signal a pid you computed (from a marker, a
+  pidfile, a `/proc` scan) outside those helpers; never add a new signalling
+  site. The `no-os-kill` gate fails the unit on any of these in an added line
+  of `src/` or `tests/` - comments included, so describe an old shell-out in
+  prose rather than pasting it. Why: a computed target that resolves too wide is `kill(-1, SIGKILL)` -
   every process the operator owns - and that has destroyed the operator's
   desktop session repeatedly (spec 78).
 

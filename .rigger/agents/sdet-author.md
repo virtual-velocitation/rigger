@@ -23,8 +23,9 @@ handle-bound. End a process ONLY through the `std::process::Child` handle you sp
 (`kill()` + `wait()`), through a job object this process created, ended through
 `reap::end_job`, or through the shared helpers `tests/common/mod.rs::terminate_pid` /
 `is_alive`. Never shell out to `kill`/`pkill`/`killall`, never signal a process group, never
-signal a pid you read from a marker or pidfile except through `terminate_pid`, never add a new
-signalling helper. Every test binary runs inside its own pid namespace: pids you read back are
+call `kill_process_group`, `tgkill`, `sigqueue` or `pidfd_send_signal`, never signal a pid you
+read from a marker or pidfile except through `terminate_pid`, never add a new signalling
+helper. Every test binary runs inside its own pid namespace: pids you read back are
 namespace pids, nothing you start outlives the binary, and nothing outside the namespace is
 visible to you. The `no-os-kill` gate fails the unit on any violation in an added line (spec 78).
 

@@ -13,11 +13,12 @@
 #     (tests/common/mod.rs). Everywhere else in src/, crates/ and tests/, an added line that shells
 #     out to kill/pkill/killall/xkill/taskkill (the name in any case), formats a negative
 #     (process-group) pid, uses the `--` argv separator, or calls a signal API directly FAILS.
-#     Inside the two sanctioned files a shell-out is still a failure. The Windows termination
-#     calls each have one site, both in the reaper: TerminateProcess in send_signal, and
-#     TerminateJobObject in end_job, which ends a job object this process created. An added call
-#     of either anywhere else, the test helper included, FAILS. Scoped to code: prose in docs/,
-#     specs/ and .rigger/ may name the rule.
+#     Inside the two sanctioned files a shell-out is still a failure. Some calls only the reaper
+#     may make: the Windows termination calls, TerminateProcess in send_signal and
+#     TerminateJobObject in end_job, which ends a job object this process created; and the signal
+#     calls by another route than the sanctioned one, kill_process_group, tgkill, sigqueue and
+#     pidfd_send_signal. An added one anywhere else, the test helper included, FAILS. Scoped to
+#     code: prose in docs/, specs/ and .rigger/ may name the rule.
 #     WHY: computed kill targets (a pgid, a marker pid, a /proc scan) resolved to kill(-1) and
 #     destroyed the operator's whole desktop session seven-plus times; the review panel approved
 #     each site because nothing mechanical forbade it. Now something does.
@@ -80,8 +81,10 @@ no-os-kill)
         echo "no-os-kill gate FAILED: a sanctioned lifecycle file shelled out to kill or formatted a process-group target; use the internal guarded signal call only"
         exit 1
     fi
-    if added src crates tests ":(exclude)crates/rigger-process/src/reap.rs" | grep -qE "Terminate(Process|JobObject)\("; then
-        echo "no-os-kill gate FAILED: a Windows termination call (TerminateProcess or TerminateJobObject) was introduced outside crates/rigger-process/src/reap.rs, whose send_signal and end_job are their sanctioned sites. See specs/78-no-os-level-kills.md"
+    # The calls only the reaper may make.
+    reaper_only="Terminate(Process|JobObject)\(|kill_process_group\(|tgkill|sigqueue|pidfd_send_signal"
+    if added src crates tests ":(exclude)crates/rigger-process/src/reap.rs" | grep -qE "$reaper_only"; then
+        echo "no-os-kill gate FAILED: a call only the reaper may make (TerminateProcess, TerminateJobObject, kill_process_group, tgkill, sigqueue or pidfd_send_signal) was introduced outside crates/rigger-process/src/reap.rs, the one file that may make them. See specs/78-no-os-level-kills.md"
         exit 1
     fi
     ;;
