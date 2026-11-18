@@ -7651,7 +7651,9 @@ impl RunCtx<'_> {
                     // commits alone, never a checkpoint, so it is asked instead whether work of
                     // its output is left outside a commit.
                     tree_duty: match wt {
-                        Some(_) if is_producer(st) => TreeDuty::OwnCommits,
+                        Some(_) if is_producer(st) => TreeDuty::OwnCommits {
+                            output: self.deps.spawn_host.producer_output.clone(),
+                        },
                         Some(w) => TreeDuty::Checkpoint {
                             branch: w.branch.clone(),
                         },

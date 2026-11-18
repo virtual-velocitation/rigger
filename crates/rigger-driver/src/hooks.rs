@@ -20,7 +20,7 @@ use std::path::Path;
 use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
 
-use crate::agent::{AgentFailure, HelperCopy, SpawnHost, TreeDuty};
+use crate::agent::{AgentFailure, HelperCopy, SpawnHost, TreeDuty, PRODUCER_OUTPUT};
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
@@ -85,6 +85,7 @@ pub fn resolve_spawn_host(
     Ok(SpawnHost {
         grep_guard: defaults.grep_guard,
         helpers: resolved_helpers(repo_root)?,
+        producer_output: PRODUCER_OUTPUT.to_string(),
     })
 }
 
@@ -322,7 +323,7 @@ pub fn install_spawn_hooks(
     let asks = match duty {
         TreeDuty::None => None,
         TreeDuty::Checkpoint { branch } => Some(vec!["--branch", branch.as_str()]),
-        TreeDuty::OwnCommits => Some(vec!["--own-commits"]),
+        TreeDuty::OwnCommits { .. } => Some(vec!["--own-commits"]),
     };
     if let Some(asks) = asks {
         let mut args = vec!["hook", "stop", "--spawn", spawn, "--dir", dir];
@@ -750,7 +751,9 @@ mod tests {
                     "/scratch/\u{65e5} \u{2019}$HOME %PATH%\nnext",
                 ],
                 r"C:\wt\a b\",
-                TreeDuty::OwnCommits,
+                TreeDuty::OwnCommits {
+                    output: "specs/".to_string(),
+                },
                 vec!["--own-commits"],
             ),
         ];
@@ -856,7 +859,9 @@ mod tests {
                     "plan/implementer#0",
                     vec!["/wt plan"],
                     "/wt plan",
-                    TreeDuty::OwnCommits,
+                    TreeDuty::OwnCommits {
+                        output: "specs/".to_string(),
+                    },
                 ),
                 Some(vec!["--own-commits"]),
             ),
@@ -1084,6 +1089,7 @@ mod tests {
                 Ok(SpawnHost {
                     grep_guard: row.grep_guard,
                     helpers: row.helpers,
+                    producer_output: "specs/".to_string(),
                 }),
                 "{}",
                 row.name

@@ -88,6 +88,10 @@ pub struct SpawnHost {
     /// its order: the operator's copy under `.claude/agents/` where the checkout holds one, else
     /// the embedded text.
     pub helpers: Vec<HelperCopy>,
+    /// The one directory, relative to the tree's root and ending in `/`, a producer's commits
+    /// may touch: what a producer's `Stop` hook and the conductor's landing of its commits each
+    /// take as the stage's output.
+    pub producer_output: String,
 }
 
 /// One fan-out helper's definition as a spawn host resolved it.
@@ -230,7 +234,10 @@ pub enum TreeDuty {
     /// The conductor lands only the commits the session made in the tree - a producer's - and
     /// never commits the tree itself, so the hook asks whether work of the producer's output,
     /// the only work that lands, is left outside a commit.
-    OwnCommits,
+    OwnCommits {
+        /// The producer's output: [`SpawnHost::producer_output`].
+        output: String,
+    },
 }
 
 /// The one directory a producer's commits may touch: the conductor refuses a producer's commit

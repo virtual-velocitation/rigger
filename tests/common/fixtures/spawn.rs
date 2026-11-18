@@ -39,6 +39,7 @@ pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
                 present: true,
             })
             .collect(),
+        producer_output: "specs/".to_string(),
     }
 }
 

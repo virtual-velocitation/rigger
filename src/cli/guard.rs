@@ -789,7 +789,9 @@ fn parse_hook_stop_args(args: &[String]) -> Result<StopCheck, Box<dyn std::error
     }
     let duty = match (branch, own_commits) {
         (Some(branch), false) => TreeDuty::Checkpoint { branch },
-        (None, true) => TreeDuty::OwnCommits,
+        (None, true) => TreeDuty::OwnCommits {
+            output: PRODUCER_OUTPUT.to_string(),
+        },
         _ => return Err(STOP_ARGS_REQUIRED.into()),
     };
     match (spawn, dir) {
@@ -817,7 +819,7 @@ fn hold_the_stop(
             STOP_HOOK_HELD,
             branch.as_str(),
         ),
-        TreeDuty::OwnCommits => (
+        TreeDuty::OwnCommits { .. } => (
             "for its own commits".to_string(),
             format!("no work in {PRODUCER_OUTPUT} is left outside a commit"),
             STOP_HOOK_UNCOMMITTED,
@@ -845,7 +847,7 @@ fn hold_the_stop(
                 TreeDuty::Checkpoint { branch } => {
                     rigger::worktree::checkpoint_refusals(&check.dir, branch)
                 }
-                TreeDuty::OwnCommits => rigger::worktree::own_commits_refusals(&check.dir),
+                TreeDuty::OwnCommits { .. } => rigger::worktree::own_commits_refusals(&check.dir),
                 TreeDuty::None => Ok(Vec::new()),
             }
             .map(|refusals| (holds, refusals))
@@ -1957,7 +1959,9 @@ mod tests {
         let producer = StopCheck {
             spawn: "plan/implementer#0".to_string(),
             dir: "/wt".to_string(),
-            duty: TreeDuty::OwnCommits,
+            duty: TreeDuty::OwnCommits {
+                output: "specs/".to_string(),
+            },
         };
         let rows: [(&str, &[&str], Result<&StopCheck, &str>); 9] = [
             (
