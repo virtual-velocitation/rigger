@@ -40645,131 +40645,9 @@ stage "implement" adjudicator "adj" failed
         // width refuses stays ready, and a PARKED unit keeps its slot for the whole process, so
         // with `max_parallel_units: 1`, "a" parked and "b" refused, no later wave in this
         // process can admit anything: the step must end and leave "b" to a later step. The
-        // store double counts the whole-stream reads and fails past a cap, so a loop that
-        // re-reads the stream once per futile wave ends in an error instead of spinning.
-        struct CappedReads<'a> {
-            inner: &'a dyn EventStore,
-            reads: AtomicU32,
-        }
-        impl CappedReads<'_> {
-            /// Count one read of the stream, failing once the cap is spent.
-            fn charge(&self) -> Result<(), crate::eventstore::Error> {
-                if self.reads.fetch_add(1, Ordering::SeqCst) >= READ_CAP {
-                    return Err(crate::eventstore::Error::Backend(
-                        "read cap reached: the step re-reads the stream without progress".into(),
-                    ));
-                }
-                Ok(())
-            }
-        }
-        impl EventStore for CappedReads<'_> {
-            fn append(
-                &self,
-                stream: &str,
-                expected: ExpectedRevision,
-                events: &[Event],
-            ) -> Result<crate::eventstore::Appended, crate::eventstore::Error> {
-                self.inner.append(stream, expected, events)
-            }
-            fn read_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                dir: Direction,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.charge()?;
-                self.inner.read_stream(stream, from, dir)
-            }
-            fn read_all(
-                &self,
-                from: crate::eventstore::Position,
-                dir: Direction,
-                filter: &crate::eventstore::Filter,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_all(from, dir, filter)
-            }
-            fn read_all_page(
-                &self,
-                from: crate::eventstore::Position,
-                filter: &crate::eventstore::Filter,
-                max: usize,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_all_page(from, filter, max)
-            }
-            fn log_head(
-                &self,
-            ) -> Result<Option<crate::eventstore::Position>, crate::eventstore::Error> {
-                self.inner.log_head()
-            }
-            fn subscribe_all(
-                &self,
-                from: crate::eventstore::Position,
-                filter: &crate::eventstore::Filter,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_all(from, filter)
-            }
-            fn subscribe_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_stream(stream, from)
-            }
-            fn last_position(
-                &self,
-                stream: &str,
-                event_type: &str,
-            ) -> Result<Option<crate::eventstore::Revision>, crate::eventstore::Error> {
-                self.inner.last_position(stream, event_type)
-            }
-            fn read_stream_typed(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                selection: crate::eventstore::TypeSelection,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.charge()?;
-                self.inner.read_stream_typed(stream, from, selection)
-            }
-            fn read_stream_positions(
-                &self,
-                stream: &str,
-                batch: usize,
-                sink: &mut dyn FnMut(
-                    &[crate::eventstore::Position],
-                ) -> Result<(), crate::eventstore::Error>,
-            ) -> Result<(), crate::eventstore::Error> {
-                self.charge()?;
-                self.inner.read_stream_positions(stream, batch, sink)
-            }
-            fn read_stream_batched(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                batch: usize,
-                sink: &mut crate::eventstore::EventBatchSink,
-            ) -> Result<(), crate::eventstore::Error> {
-                self.charge()?;
-                self.inner.read_stream_batched(stream, from, batch, sink)
-            }
-            fn latest_in_group(
-                &self,
-                stream: &str,
-                group: &str,
-            ) -> Result<Option<crate::eventstore::GroupHead>, crate::eventstore::Error>
-            {
-                self.inner.latest_in_group(stream, group)
-            }
-            fn read_by_record_id(
-                &self,
-                stream: &str,
-                types: &[&str],
-                id: &str,
-            ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
-                self.inner.read_by_record_id(stream, types, id)
-            }
-        }
-        const READ_CAP: u32 = 200;
+        // counting store double fails every call past a cap, so a loop that re-reads the stream
+        // once per futile wave ends in an error instead of spinning.
+        const READ_CAP: usize = 200;
 
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_parallel_units = 1;
@@ -40787,19 +40665,16 @@ stage "implement" adjudicator "adj" failed
             );
         }
         let inner = Store::open(":memory:").unwrap();
-        let store = CappedReads {
-            inner: &inner,
-            reads: AtomicU32::new(0),
-        };
+        let store = crate::test_support::ReadCountingStore::new(&inner).capped(READ_CAP);
         let driver = Stub {
             park_spawn_ids: [spawn_id("a", ROLE_IMPLEMENTER, 0)].into_iter().collect(),
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
         let rs = run_isolated(&cfg, &deps);
-        let reads = store.reads.load(Ordering::SeqCst);
+        let reads = store.reads().len();
         let rs = rs.unwrap_or_else(|e| {
-            panic!("the step must end once no wave can admit a stage; it failed after {reads} whole-stream reads: {e}")
+            panic!("the step must end once no wave can admit a stage; it failed after {reads} store calls: {e}")
         });
         assert!(
             !rs.units.contains_key("b"),
