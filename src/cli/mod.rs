@@ -9074,6 +9074,68 @@ mod tests {
         assert!(!done.exists(), "the tree beside it is reclaimed");
     }
 
+    /// The orphan sweep's removal never answers a refusal from git by removing the dir another
+    /// way: a tree git tracks goes through git, a dir git never tracked goes off disk, and a tree
+    /// git marks locked or prunable, refused by git, keeps its work and its registration.
+    #[test]
+    fn reap_then_remove_worktree_removes_off_disk_only_a_dir_git_registers_nothing_at() {
+        // Each row: the case, what is done to the dir, and whether its work is kept.
+        type Row = (&'static str, fn(&str, &Path), bool);
+        let rows: [Row; 4] = [
+            (
+                "a dir git never tracked",
+                |_, dir| write_file(&dir.join("work.txt"), b"work\n"),
+                false,
+            ),
+            ("a tree git tracks", |repo, dir| add_tree(repo, dir), false),
+            (
+                "a tree git marks prunable, its dir still there",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    std::fs::remove_file(dir.join(".git")).unwrap();
+                },
+                true,
+            ),
+            (
+                "a tree git marks locked",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    let at = dir.to_str().unwrap();
+                    git_ok(repo, &["worktree", "lock", "--reason", "a person's lock", at]);
+                },
+                true,
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (row, plant, kept) in rows {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            init_committed_repo(&root, "README.md", "seed\n");
+            let repo = root.to_str().unwrap();
+            let dir = root.join("rigger-wt-unit");
+            plant(repo, &dir);
+            reap_then_remove_worktree(repo, &dir, &root);
+            if dir.join("work.txt").exists() != kept {
+                violations.push(format!("{row}: its work is kept: {}", !kept));
+            }
+            let listed = run_git(&root, &["worktree", "list", "--porcelain"]);
+            let listed = String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .any(|line| line == format!("worktree {}", dir.display()));
+            if listed != kept {
+                violations.push(format!("{row}: its registration is kept: {listed}"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// Add a tree on the unit branch `rigger/u/unit` of `repo` at `dir`, holding work in
+    /// `work.txt`.
+    fn add_tree(repo: &str, dir: &Path) {
+        Worktree::create(repo, dir.to_str().unwrap(), "rigger/u/unit", "").unwrap();
+        write_file(&dir.join("work.txt"), b"work\n");
+    }
+
     #[test]
     fn reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally() {
         // spec 77 criterion 5 (BOUNDED SHARED CACHE), Design: "a failed tombstone delete
