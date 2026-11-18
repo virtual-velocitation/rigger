@@ -15417,6 +15417,29 @@ fn relaunch_line(record: &str) -> String {
     )
 }
 
+/// `text` with each elapsed age `rigger status` prints, the seconds before `s ago` and the value
+/// of a `_age_s":` key, spelled `N`: two invocations a clock tick apart then read alike, and
+/// every other number stays as it was printed.
+fn without_ages(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(|c: char| c.is_ascii_digit()) {
+        let end = rest[at..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(rest.len(), |len| at + len);
+        let (before, digits, after) = (&rest[..at], &rest[at..end], &rest[end..]);
+        out.push_str(before);
+        if after.starts_with("s ago") || before.ends_with("_age_s\":") {
+            out.push('N');
+        } else {
+            out.push_str(digits);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The `register` and `unregister` lines this test's rigger invocations recorded
 /// ([`common::login_start_record`]).
 fn recorded_login_starts() -> Vec<String> {
@@ -16088,12 +16111,16 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
             "{case} relaunches nothing with no dead driver; stderr: {}",
             quiet.err
         );
-        // `validate`'s footprint lines measure the store, which each invocation's own reads grow.
+        // `validate`'s footprint lines measure the store, which each invocation's own reads grow,
+        // and `status`'s ages count to each invocation's own clock, which a loaded machine can
+        // tick past a second between the two.
         let answer = |out: &str| {
-            out.lines()
-                .filter(|line| !line.starts_with("footprint: "))
-                .collect::<Vec<_>>()
-                .join("\n")
+            without_ages(
+                &out.lines()
+                    .filter(|line| !line.starts_with("footprint: "))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
         };
         assert_eq!(
             (answer(&died.out), died.ok),
