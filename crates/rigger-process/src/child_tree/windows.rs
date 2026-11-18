@@ -6,8 +6,7 @@
 //! last handle closes (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), so a driver that dies leaves nothing
 //! of the tree running. The main is created suspended, joins the job, and is then resumed, so it
 //! starts nothing before it is in the job. The handle's end ends the job
-//! ([`crate::reap::end_job`]); its release clears the limit, then closes the handle, ending
-//! nothing, or says in its report that the limit could not be cleared.
+//! ([`crate::reap::end_job`]).
 //!
 //! A job that cannot be created, or a main that cannot join one, leaves that launch watched, and
 //! the handle says why ([`ReapedChild::degraded`]): the main is still suspended, so its watcher
@@ -142,20 +141,6 @@ impl Job {
             Err(io::Error::last_os_error())
         }
     }
-
-    /// Lets the job go: clears its limit, so closing its handle ends nothing, then closes it. A
-    /// limit that cannot be cleared is the report's fault, since the close then ends what still
-    /// runs in the job.
-    fn release(self, main: u32) -> EndReport {
-        let mut report = EndReport::default();
-        if let Err(error) = self.limit(0) {
-            report.faults.push(format!(
-                "the job of session {main} could not be let go ({error}); closing it ends what \
-                 still runs in it"
-            ));
-        }
-        report
-    }
 }
 
 /// Resumes each thread of the suspended process `pid`, found in a ToolHelp thread snapshot: no
@@ -215,13 +200,13 @@ fn resume_thread(id: u32) -> io::Result<()> {
     }
 }
 
-/// A jobbed tree: the handle's process is the main, and the job, until the end or the release
-/// takes it, holds every process the tree starts.
+/// A jobbed tree: the handle's process is the main, and the job, until the end takes it, holds
+/// every process the tree starts.
 struct Jobbed(Option<Job>);
 
 impl Hold for Jobbed {
     /// The job's running processes but the main ([`crate::reap::job_members`]); none once the
-    /// end or the release has taken the job.
+    /// end has taken the job.
     fn members(&mut self, main: &mut Child) -> Vec<Identity> {
         let Some(job) = &self.0 else {
             return Vec::new();
@@ -242,17 +227,6 @@ impl Hold for Jobbed {
             .take()
             .map(|job| reap::end_job(job.0, main))
             .unwrap_or_default()
-    }
-
-    /// Lets the job go ([`Job::release`]) and reaps the main if it has exited.
-    fn release(&mut self, main: &mut Child) -> EndReport {
-        let report = self
-            .0
-            .take()
-            .map(|job| job.release(main.id()))
-            .unwrap_or_default();
-        let _ = main.try_wait();
-        report
     }
 }
 
@@ -366,28 +340,6 @@ mod tests {
         drop(job);
 
         assert!(ends(&lines), "nothing the main started holds its output");
-        let _ = main.wait();
-    }
-
-    /// A release through a handle the OS will not clear the job's limit through answers the
-    /// refusal and that closing the handle ends what still runs in the job; the job's own handle
-    /// still holds the main until it closes.
-    #[test]
-    fn a_job_the_os_will_not_let_go_says_so_in_the_report() {
-        let job = Job::new().expect("a job");
-        let (mut main, lines) = in_job(&job, "echo up& ping -n 60 127.0.0.1 >NUL");
-        assert!(read_until(&lines, "up"), "the main is up");
-
-        let report = Job(query_only(&job)).release(main.id());
-
-        assert_eq!((report.residue, report.skipped), (vec![], vec![]));
-        assert!(
-            matches!(&report.faults[..], [fault] if fault.contains("could not be let go")),
-            "the report says the job could not be let go: {:?}",
-            report.faults
-        );
-        drop(job);
-        assert!(ends(&lines), "closing the job's own handle ends the main");
         let _ = main.wait();
     }
 
@@ -617,30 +569,5 @@ mod tests {
             (report.ended.len(), report.residue, report.skipped),
             (1, vec![], vec![])
         );
-    }
-
-    // The ping replies once a second, so two replies read after the lines already sent are drained
-    // were written after the release, by a ping the release left running.
-    #[test]
-    fn a_released_jobbed_tree_leaves_what_its_main_started_running() {
-        let (mut tree, lines) = jobbed("start /b ping -n 8 127.0.0.1 & echo up");
-        assert!(read_until(&lines, "up"), "the main is up");
-        let deadline = Instant::now() + BOUND;
-        while matches!(tree.try_wait(), Ok(None)) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        assert!(
-            matches!(tree.try_wait(), Ok(Some(_))),
-            "the main exits on its own"
-        );
-
-        tree.release();
-
-        while lines.try_recv().is_ok() {}
-        assert!(
-            read_until(&lines, "127.0.0.1") && read_until(&lines, "127.0.0.1"),
-            "the background ping writes on after the release"
-        );
-        assert!(ends(&lines), "the background ping ends on its own");
     }
 }

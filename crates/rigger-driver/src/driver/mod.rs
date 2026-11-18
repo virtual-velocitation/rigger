@@ -778,9 +778,10 @@ mod tests {
             &[],
             &[(41, "sleep", false)],
             &[],
-            &["the job of session 7 could not be let go (denied)"],
-            &["stream: the job of session 7 could not be let go (denied); the end of the session \
-               left processes running; 1 it signalled and could not end: 41 (sleep)"],
+            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
+            &["stream: the job of session 7 could not be ended (denied), so the end did not wait \
+               for it; the end of the session left processes running; 1 it signalled and could \
+               not end: 41 (sleep)"],
         );
     }
 }

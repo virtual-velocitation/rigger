@@ -5,15 +5,13 @@
 //! the session's spawn; a wait for the main's output ends, once the main exits, what it left
 //! holding that output; a daemon one session started ends with it under the keeper, so a sibling
 //! session waiting on its answer sees the answers end and its next request fail, and runs on, while
-//! a watched session's exited main leaves it running; a release, before the main's exit or after
-//! it, leaves what the main left running; the keeper holds none of the session's streams; and a
-//! keeper that is gone or deaf is reported, never trusted, and a main a gone keeper left is
-//! reported, never signalled. Every process a row starts is read through the FIFO witness
+//! a watched session's exited main leaves it running; the keeper holds none of the session's
+//! streams; and a keeper that is gone or deaf is reported, never trusted, and a main a gone keeper
+//! left is reported, never signalled. Every process a row starts is read through the FIFO witness
 //! (`common::witness`), and the test signals none of them.
 
 use crate::common::fixtures::fixture_script;
 use crate::common::rigger_bin;
-use crate::common::wait_until;
 use crate::common::witness::{make_fifo, Reading, Witness};
 use rigger::child_tree::{line_channel, Containment, EndReport, ReapedChild, TreeCommand, Why};
 use rigger::os_process;
@@ -438,46 +436,6 @@ fn a_dropped_kept_tree_is_ended() {
 }
 
 #[test]
-fn a_kept_tree_released_after_its_main_exits_leaves_what_the_main_left_running() {
-    let mut witness = Witness::new();
-    let mut tree = kept(&witness, "holder; up");
-    assert!(witness.wait_up(2), "the holder and the main are up");
-    tree.wait().expect("wait on the main");
-
-    tree.release();
-
-    assert_eq!(
-        witness.read(),
-        Reading::Held,
-        "the holder the main left runs on"
-    );
-    assert_eq!(witness.release(), Reading::Ended);
-}
-
-#[test]
-fn a_kept_tree_released_while_its_main_runs_ends_nothing_when_the_main_exits() {
-    let mut witness = Witness::new();
-    let mut tree = kept(&witness, "holder; up; read -r unused; exit 0");
-    assert!(witness.wait_up(2), "the holder and the main are up");
-    let keeper = os_process::parent(tree.id()).expect("the main's parent, the keeper");
-    let input = tree.take_stdin();
-
-    tree.release();
-    drop(input);
-
-    assert!(
-        wait_until(|| matches!(os_process::state(keeper), Some('Z') | None)),
-        "the keeper exits once the main has"
-    );
-    assert_eq!(
-        witness.read(),
-        Reading::Held,
-        "the holder the main left runs on"
-    );
-    assert_eq!(witness.release(), Reading::Ended);
-}
-
-#[test]
 fn a_term_to_the_keeper_from_the_working_directory_sweep_ends_the_whole_tree() {
     let root = tempfile::tempdir().expect("an authorized root");
     let work = root.path().join("work");
@@ -526,8 +484,8 @@ rigger::test_cases! {
 }
 
 /// The descriptors from 3 to 12 the main of a tree contained as `how` holds, read by the main
-/// itself, once its output reaches its end with the tree neither ended nor released: no process
-/// besides the main holds the main's output.
+/// itself, once its output reaches its end with the tree not yet ended: no process besides the
+/// main holds the main's output.
 fn the_mains_descriptors(how: &Containment) -> String {
     let witness = Witness::new();
     let mut tree = command(
