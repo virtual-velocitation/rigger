@@ -2192,6 +2192,16 @@ impl IntegrationApproval {
     }
 }
 
+/// The attempt a unit's single-lane drive is on, kept current by `run_single_stage` so
+/// `run_stage` charges a content step's refusal to it ([`RunCtx::charge_refused_work`]): the
+/// attempts failed before it, and the REQUIRED list it owes, which stays open until a review
+/// round rules on it, as a red gate carries it.
+#[derive(Default)]
+struct OpenAttempt {
+    attempts: u32,
+    required: Vec<RequiredItem>,
+}
+
 /// The specifics of a unit's previous failed attempt, threaded into the next
 /// attempt's prompt (spec 02, targeted remediation). Empty on the first attempt.
 #[derive(Clone, Default)]
@@ -5794,15 +5804,16 @@ impl RunCtx<'_> {
         // While the unit's lifecycle drives its worktree, a `rigger gate <id>` request from it
         // may be answered (signed verdicts).
         let live = (!dir.is_empty()).then(|| self.live_unit(&dir, &st.name));
-        let attempt = std::cell::Cell::new(0);
-        let result = self.run_single_stage(st, wt.as_ref(), &dir, phase, &any_parked, &attempt);
+        let mut open = OpenAttempt::default();
+        let result = self.run_single_stage(st, wt.as_ref(), &dir, phase, &any_parked, &mut open);
         drop(live);
-        // Git refusing a step on the unit's own work ended the attempt `attempt` holds: it is
-        // charged like a failed gate, and the tree is kept for the next attempt, which a
-        // release of the run's hold launches with the refusal in its prompt.
+        // Git refusing a step on the unit's own work ended the attempt `open` holds: it is
+        // charged like a failed gate, the REQUIRED list it owed still owed, and the tree is kept
+        // for the next attempt, which a release of the run's hold launches with the refusal in
+        // its prompt.
         let refused = matches!(&result, Err(e) if refused_unit_work(e));
         let result = match result {
-            Err(e) if refused => self.charge_refused_work(st, wt.as_ref(), &dir, attempt.get(), &e),
+            Err(e) if refused => self.charge_refused_work(st, wt.as_ref(), &dir, &open, &e),
             other => other,
         };
         // A PARKED return is not the stage ending - it is the stage HANDING WORK to
@@ -7026,8 +7037,9 @@ impl RunCtx<'_> {
     /// [`Self::review_unit`] call below - it is `run_stage`'s out-of-band any-parked
     /// signal, read there AFTER this function returns, independently of whatever `Result`
     /// this function itself propagates (see `run_stage`'s doc comment at its call site).
-    /// `attempt` is set to the unit's attempt count each time it moves, so `run_stage` charges
-    /// a content step's refusal to the attempt it ended ([`Self::charge_refused_work`]).
+    /// `open` is kept on the attempt the unit is on - its count and the REQUIRED list it owes -
+    /// so `run_stage` charges a content step's refusal to the attempt it ended
+    /// ([`Self::charge_refused_work`]).
     fn run_single_stage(
         &self,
         st: &Stage,
@@ -7035,7 +7047,7 @@ impl RunCtx<'_> {
         dir: &str,
         phase: ResumePhase,
         any_parked: &std::sync::atomic::AtomicBool,
-        attempt: &std::cell::Cell<u32>,
+        open: &mut OpenAttempt,
     ) -> Result<bool, Error> {
         // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1): `stage_worktree`'s call
         // to `Worktree::create`, just before this call, ADOPTS a worktree already
@@ -7096,7 +7108,7 @@ impl RunCtx<'_> {
         // REPLAYING the condemned pass's stale verdict - the reverse gear genuinely re-verifies
         // the fix, never a content-blind false green.
         let mut attempts = self.effective_attempts(&st.name);
-        attempt.set(attempts);
+        open.attempts = attempts;
         // The infra reruns this attempt already recorded (F3): the stage resumes under the
         // next retry ordinal, so an earlier process's spoiled run is never replayed.
         let mut infra = InfraRetries::recorded(&events, &st.name, attempts);
@@ -7147,7 +7159,7 @@ impl RunCtx<'_> {
             // exhaustive suite, never the narrowed subset (R6). Cheap: every gate the prior
             // window already ran replays its recorded verdict; only gates it skipped run now.
             let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
-            attempt.set(attempts);
+            open.attempts = attempts;
             // An all-infra red is an outage, not the approved code (F3): the suite reruns
             // uncharged under the next retry ordinal until the taxonomy's infra limit halts
             // the step.
@@ -7332,6 +7344,7 @@ impl RunCtx<'_> {
                 required: prior.required.clone(),
                 ..PriorFailure::default()
             };
+            open.required = next.required.clone();
             if skip_implement {
                 // Reuse the prior window's committed implementation: re-record the
                 // `green` status (the ledger reflects the reused diff) without
@@ -7829,6 +7842,7 @@ impl RunCtx<'_> {
                                 // The round has ruled on the REQUIRED list: what stays open is what
                                 // its verdict requires (nothing, on an approve).
                                 next.required = std::mem::take(&mut review.required);
+                                open.required = next.required.clone();
                                 // A contradiction against a PRIOR integrated unit (spec 12, unit
                                 // 4): the adjudicator named another, already-integrated unit as the
                                 // real defect source. QUEUE the rollback for the run loop to drain
@@ -8009,7 +8023,7 @@ impl RunCtx<'_> {
                 return Ok(false);
             }
             attempts = rem.attempts;
-            attempt.set(attempts);
+            open.attempts = attempts;
             // The new attempt's infra reruns, from the log read at entry (none, unless an
             // earlier process already ran it).
             infra = InfraRetries::recorded(&events, &st.name, attempts);
@@ -8083,9 +8097,10 @@ impl RunCtx<'_> {
 
     /// RUNG ONE AFTER THE SESSION ENDED: git refused a step on unit `st`'s own work (`e`, a
     /// [`refused_unit_work`] error) after its agent's session ended, so no agent saw it. The
-    /// refusal is the failure of the attempt it ended (`attempts` failed before it), charged
-    /// like a failed gate's ([`Self::charge_failed_attempt`], cause [`CAUSE_GIT_REFUSED`]): git's
-    /// message is the failure's refusal, so the next attempt's prompt carries it on its own line. The caller
+    /// refusal is the failure of the attempt it ended (`open`), charged like a failed gate's
+    /// ([`Self::charge_failed_attempt`], cause [`CAUSE_GIT_REFUSED`]): git's message is the
+    /// failure's refusal, so the next attempt's prompt carries it on its own line, and the
+    /// REQUIRED list the attempt owed stays owed, as a red gate leaves it. The caller
     /// keeps the unit's worktree, so the work in the tree at the refusal is there for that
     /// attempt. A spent bound escalates the unit (`Ok(false)`, no hold); otherwise the drive
     /// ends on the refusal marked with [`UNIT_RETRY_MARKER`], its first line naming the attempt,
@@ -8095,15 +8110,17 @@ impl RunCtx<'_> {
         st: &Stage,
         wt: Option<&Worktree>,
         dir: &str,
-        attempts: u32,
+        open: &OpenAttempt,
         e: &Error,
     ) -> Result<bool, Error> {
         let refusal = without_halt_markers(Error(strip_failure_marker(e))).0;
         let failure = PriorFailure {
             refusal: refusal.clone(),
+            required: open.required.clone(),
             ..Default::default()
         };
-        let rem = self.charge_failed_attempt(st, wt, dir, attempts, &failure, CAUSE_GIT_REFUSED)?;
+        let rem =
+            self.charge_failed_attempt(st, wt, dir, open.attempts, &failure, CAUSE_GIT_REFUSED)?;
         if rem.decision == safety::Decision::Escalate {
             return Ok(false);
         }
