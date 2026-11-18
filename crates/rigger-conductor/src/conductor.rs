@@ -30592,6 +30592,93 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
+    /// A driver that answers each spawn `faulted` names with a store read failing before its
+    /// launch ([`store_fault`]), as the held-run decorator does when the run's hold read fails,
+    /// hands every other spawn to `inner`, and records the id of every spawn it is asked for.
+    struct StoreFaultsBeforeLaunch<'a> {
+        inner: &'a Stub,
+        faulted: Vec<String>,
+        asked: Mutex<Vec<String>>,
+    }
+    impl AgentDriver for StoreFaultsBeforeLaunch<'_> {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            self.asked.lock().unwrap().push(opts.id.clone());
+            if self.faulted.contains(&opts.id) {
+                return Err(store_fault(Error(STORE_REFUSED_THE_HOLD_READ.into())));
+            }
+            self.inner.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    /// The store's words for the failed read [`StoreFaultsBeforeLaunch`] answers with.
+    const STORE_REFUSED_THE_HOLD_READ: &str = "the store refused the run's hold read";
+
+    /// A store read that fails before a speculation lane's implementer launches is a fault no
+    /// lane made: the drive ends at that lane, held for the orchestrator with no lesson and no
+    /// attempt charged, and no later lane is asked, whether every lane's read fails or only the
+    /// first lane's. Lost as a candidate, it would charge the group a loss no lane made, and
+    /// escalate the unit once every lane's read failed.
+    #[test]
+    fn a_store_fault_before_a_speculation_lanes_launch_holds_the_run() {
+        #[derive(Debug, Clone, Copy)]
+        enum Faulted {
+            /// Every lane's read fails.
+            EveryLane,
+            /// Only the first lane's read fails; the next lane's would succeed.
+            FirstLane,
+        }
+        for row in [Faulted::EveryLane, Faulted::FirstLane] {
+            let repo = temp_git_project_with_commit();
+            let store = Store::open(":memory:").unwrap();
+            let stub = Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                ..Stub::new()
+            };
+            let lanes = match row {
+                Faulted::EveryLane => 0..2,
+                Faulted::FirstLane => 0..1,
+            };
+            let driver = StoreFaultsBeforeLaunch {
+                inner: &stub,
+                faulted: lanes
+                    .map(|lane| spawn_id("s", ROLE_IMPLEMENTER, lane))
+                    .collect(),
+                asked: Mutex::new(Vec::new()),
+            };
+            let deps = Deps {
+                repo: repo.path().to_str().unwrap().to_string(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let halted = run_isolated(&spec_cfg(2), &deps);
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let err = assert_held_with_no_lesson(&format!("{row:?}"), halted, &events);
+            assert!(
+                err.contains(STORE_REFUSED_THE_HOLD_READ),
+                "{row:?}: the hold names the store's fault: {err}"
+            );
+            let implementers = format!("s/{ROLE_IMPLEMENTER}#");
+            assert_eq!(
+                driver
+                    .asked
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .filter(|id| id.starts_with(&implementers))
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                [spawn_id("s", ROLE_IMPLEMENTER, 0)],
+                "{row:?}: the drive ends at the faulted lane, and no later lane is asked"
+            );
+        }
+    }
+
     /// A speculation lane whose request the run recorded before the
     /// handover contract existed, answered with a result that names no line, keeps its candidate:
     /// it races in the group (the winner or a recorded loser), never lost and torn down.
@@ -31551,9 +31638,9 @@ stage "implement" adjudicator "adj" failed
     }
 
     /// The one decision point for a speculation lane's error reads its markers: a park is
-    /// collected, an outage of the run's infrastructure and git not answering end the drive,
-    /// git's refusal of the lane's own work loses the lane with the refusal, and anything else
-    /// loses it with no feedback.
+    /// collected, an outage of the run's infrastructure, a store read failing before the launch
+    /// and git not answering end the drive, git's refusal of the lane's own work loses the lane
+    /// with the refusal, and anything else loses it with no feedback.
     #[test]
     fn a_speculation_lanes_error_is_classed_by_its_markers() {
         for (row, e, class) in [
@@ -31581,7 +31668,7 @@ stage "implement" adjudicator "adj" failed
             (
                 "a store read failing before the launch",
                 store_fault(Error("the read failed".into())),
-                LaneError::Failed,
+                LaneError::Fault,
             ),
             (
                 "a plain error",
