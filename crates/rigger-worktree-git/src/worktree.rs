@@ -3639,10 +3639,16 @@ fn conflict_markers_present(
     }
     // The pathspec separator joins the SAME argument list, never its own single-argument
     // call, so the no-os-kill audit's whole-tree argv-separator shape - aimed at a
-    // negative-pid kill target, not a git pathspec - never matches here.
+    // negative-pid kill target, not a git pathspec - never matches here. Each path is read
+    // literally, so a file named like pathspec magic (`:notes.md`, `:(x).md`) is scanned as
+    // itself.
     args.push("--");
     let out = crate::subprocess::git_in(dir)
-        .and_then(|mut git| git.args(&args).args(scope).output())
+        .and_then(|mut git| {
+            git.args(&args)
+                .args(scope.iter().map(|path| literal_pathspec(path)))
+                .output()
+        })
         .map_err(|e| step_failed("git grep conflict markers", e))?;
     match out.status.code() {
         Some(0) => {}
@@ -3881,7 +3887,7 @@ pub fn own_commits_refusals(dir: &str, output: &str) -> Result<Vec<String>, Erro
             &status_read(dir, options, pathspecs)?.records,
         ))
     };
-    let mut inside = changed(&[], &[&format!(":(literal){scope}")])?;
+    let mut inside = changed(&[], &[&literal_pathspec(&scope)])?;
     if inside.is_empty() {
         return Ok(Vec::new());
     }
@@ -3889,7 +3895,7 @@ pub fn own_commits_refusals(dir: &str, output: &str) -> Result<Vec<String>, Erro
     let mut outside = Vec::new();
     for path in changed(&[], &[&not_scope])? {
         if path.ends_with('/') && scope.starts_with(&path) {
-            let parent = format!(":(literal){path}");
+            let parent = literal_pathspec(&path);
             let files = changed(&["--untracked-files=all"], &[&parent, &not_scope])?;
             outside.extend(files.iter().map(|file| beside_scope(file, &scope)));
         } else {
@@ -4106,6 +4112,13 @@ const STATUS_Z: [&str; 5] = [
 struct StatusRead {
     records: String,
     warning: String,
+}
+
+/// `path` as a git pathspec that names it and nothing else: git reads a path that starts with `:`
+/// as pathspec magic (`:notes.md` names `notes.md`, and `:(x).md` is refused as unknown magic)
+/// and one holding a glob character as a pattern, unless it is marked literal.
+fn literal_pathspec(path: &str) -> String {
+    format!(":(literal){path}")
 }
 
 /// [`STATUS_Z`] in `dir` with the `options` after it, which git reads over its own
