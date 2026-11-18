@@ -582,6 +582,10 @@ impl Worktree {
     /// (spec 79 round-2 fix) - it gates the reap-before-removal of both `dir` and its
     /// reclaimed siblings, never re-derived from `dir`'s own position. Pass `""` when the
     /// caller has no such root; the reap is then a no-op.
+    ///
+    /// A tree git marks `locked` at `dir`, there or gone ([`refuse_locked_at`]: a person's lock,
+    /// an add git did not finish), is an error naming git's own commands that recover it, and
+    /// nothing is reaped, removed or deleted: the tree, its registration and the branch stay.
     pub fn discard(
         repo: &str,
         dir: &str,
@@ -599,7 +603,9 @@ impl Worktree {
         if occupant(dir)?.is_some() {
             clear_worktree_dir(repo, dir, authorized_root)?;
         } else {
-            // No dir to clear, but a killed process may still leave a dangling admin entry.
+            // No dir to clear, but a killed process may still leave a dangling admin entry, which
+            // the prune drops; a locked one it keeps, and the discard with it.
+            refuse_locked_at(repo, dir)?;
             git(repo, &["worktree", "prune"])?;
         }
         reclaim_cache_sibling(dir, authorized_root);
@@ -2630,10 +2636,8 @@ fn registered_at(
         Some(found) if !found.file_type().is_symlink() => {}
         Some(_) => return Ok(false),
         None => {
-            return match git_mark_at(repo, dir)? {
-                Some(mark) if mark_word(&mark) == "locked" => Err(marked_entry(repo, &mark, dir)),
-                _ => Ok(false),
-            };
+            refuse_locked_at(repo, dir)?;
+            return Ok(false);
         }
     }
     let want =
@@ -2669,7 +2673,8 @@ fn registered_at(
 /// The mark git gives the worktree it lists at `dir` (its `locked` or `prunable` line, reason
 /// included), when git lists one there that it marks: a tree a person locked, or one whose add or
 /// remove git did not finish ([`marked_entry`] names how each is recovered). The entry is matched
-/// by `dir` as given or resolved ([`spellings`]). A list git refuses is an error.
+/// when a spelling of its path, as git lists it or resolved, is a spelling of `dir`, as given or
+/// resolved ([`spellings`]). A list git refuses is an error.
 pub fn git_mark_at(repo: &str, dir: &str) -> Result<Option<String>, Error> {
     let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
         step_failed(
@@ -2679,18 +2684,23 @@ pub fn git_mark_at(repo: &str, dir: &str) -> Result<Option<String>, Error> {
     })?;
     let spelled = spellings(dir);
     let mark = listed(&out)
-        .filter(|entry| {
-            spelled
-                .iter()
-                .any(|s| s == std::path::Path::new(entry.path))
-        })
+        .filter(|entry| spellings(entry.path).iter().any(|s| spelled.contains(s)))
         .find_map(|entry| entry.mark.map(str::to_string));
     Ok(mark)
 }
 
-/// The spellings a worktree git lists at `dir` can carry: `dir` as given, and `dir` resolved or,
-/// with nothing at `dir` to resolve, its parent resolved and joined with its name, since git
-/// records the path it resolved when it added the tree.
+/// Refuse `dir` when git lists a worktree there it marks `locked` ([`git_mark_at`]): a person's
+/// lock, or an add git did not finish. The error names how to recover it ([`marked_entry`]).
+fn refuse_locked_at(repo: &str, dir: &str) -> Result<(), Error> {
+    match git_mark_at(repo, dir)? {
+        Some(mark) if mark_word(&mark) == "locked" => Err(marked_entry(repo, &mark, dir)),
+        _ => Ok(()),
+    }
+}
+
+/// The spellings of the place `dir` names: `dir` as given, and `dir` resolved or, with nothing at
+/// `dir` to resolve, its parent resolved and joined with its name, since git records the path it
+/// resolved when it added the tree.
 fn spellings(dir: &str) -> Vec<std::path::PathBuf> {
     let given = std::path::Path::new(dir);
     let resolved = given.canonicalize().ok().or_else(|| {
@@ -2820,7 +2830,7 @@ fn metadata_at(
 /// unlinked like a file; a Windows directory link, which the file call refuses, is removed as a
 /// directory entry, which removes the link alone.
 ///
-/// A tree git marks `locked` at `dir` ([`git_mark_at`]: a person's lock, an add git did not
+/// A tree git marks `locked` at `dir` ([`refuse_locked_at`]: a person's lock, an add git did not
 /// finish) is an error naming git's own commands that recover it ([`marked_entry`]), and nothing
 /// there is reaped, deregistered or removed: the lock says the tree is kept.
 fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
@@ -2835,9 +2845,7 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
             .or_else(|_| std::fs::remove_dir(dir))
             .map_err(|e| step_failed(format!("removing the link at {dir}"), e))?;
     } else {
-        if let Some(mark) = git_mark_at(repo, dir)?.filter(|mark| mark_word(mark) == "locked") {
-            return Err(marked_entry(repo, &mark, dir));
-        }
+        refuse_locked_at(repo, dir)?;
         reap_dir_before_removal(dir, authorized_root);
         if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
             && std::path::Path::new(dir).exists()
