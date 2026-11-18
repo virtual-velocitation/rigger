@@ -578,9 +578,10 @@ impl Worktree {
     /// reclaimed siblings, never re-derived from `dir`'s own position. Pass `""` when the
     /// caller has no such root; the reap is then a no-op.
     ///
-    /// A tree git marks `locked` at `dir`, there or gone ([`refuse_locked_at`]: a person's lock,
-    /// an add git did not finish), is an error naming git's own commands that recover it, and
-    /// nothing is reaped, removed or deleted: the tree, its registration and the branch stay.
+    /// A tree git marks `locked` at `dir`, there or gone, or `prunable` with its dir there
+    /// ([`refuse_marked_at`]: a person's lock, an add or remove git did not finish, a lost link),
+    /// is an error naming git's own commands that recover it, and nothing is reaped, removed or
+    /// deleted: the tree, its work, its registration and the branch stay.
     pub fn discard(
         repo: &str,
         dir: &str,
@@ -600,7 +601,7 @@ impl Worktree {
         } else {
             // No dir to clear, but a killed process may still leave a dangling admin entry, which
             // the prune drops; a locked one it keeps, and the discard with it.
-            refuse_locked_at(repo, dir)?;
+            refuse_marked_at(repo, dir)?;
             git(repo, &["worktree", "prune"])?;
         }
         reclaim_cache_sibling(dir, authorized_root);
@@ -1513,8 +1514,9 @@ impl Worktree {
     /// partition. Reclamation is best-effort - a review worktree or an un-built unit has no
     /// such sibling and it is a no-op there - and never changes the removal's result.
     ///
-    /// A tree git marks `locked` ([`refuse_locked_at`]: a lock a person set during the stage) is an
-    /// error naming git's own commands that recover it, and nothing in it is reaped or removed.
+    /// A tree git marks `locked`, or `prunable` with its dir there ([`refuse_marked_at`]: a lock a
+    /// person set during the stage, a lost link), is an error naming git's own commands that
+    /// recover it, and nothing in it is reaped or removed.
     pub fn remove(&self) -> Result<(), Error> {
         // Serialize this WHOLE call against every other in-process admin-directory mutation
         // this process makes for the SAME repository (spec 103 checkin round 4: this call's
@@ -1522,7 +1524,7 @@ impl Worktree {
         // `Worktree::create`'s heal-scan-then-add does; see `repo_admin_lock`'s doc comment).
         let repo_lock = repo_admin_lock(&self.repo);
         let _repo_guard = repo_lock.lock().unwrap();
-        refuse_locked_at(&self.repo, &self.dir)?;
+        refuse_marked_at(&self.repo, &self.dir)?;
         // Reap any process still rooted inside this worktree BEFORE git removes the dir (spec
         // 23): otherwise a build or tool an agent left running holds a now-deleted cwd and
         // outlives its worktree, leaking memory. Scoped to this EXACT dir, so a process rooted
@@ -2707,7 +2709,7 @@ fn registered_at(
         Some(found) if !found.file_type().is_symlink() => {}
         Some(_) => return Ok(false),
         None => {
-            refuse_locked_at(repo, dir)?;
+            refuse_marked_at(repo, dir)?;
             return Ok(false);
         }
     }
@@ -2744,28 +2746,99 @@ fn registered_at(
 /// The mark git gives the worktree it lists at `dir` (its `locked` or `prunable` line, reason
 /// included), when git lists one there that it marks: a tree a person locked, or one whose add or
 /// remove git did not finish ([`marked_entry`] names how each is recovered). The entry is matched
-/// when a spelling of its path, as git lists it or resolved, is a spelling of `dir`, as given or
-/// resolved ([`spellings`]). A list git refuses is an error.
+/// as [`listed_at`] matches it. A list git refuses is an error.
 pub fn git_mark_at(repo: &str, dir: &str) -> Result<Option<String>, Error> {
+    Ok(listed_at(repo, dir)?.flatten())
+}
+
+/// Whether git lists a worktree at `dir`, and the mark it gives it: `None` when git lists none
+/// there, `Some(None)` for one it does not mark, and `Some(Some(mark))` for one it marks `locked`
+/// or `prunable` (that line, reason included), a marked entry answering before an unmarked one.
+/// An entry is matched when a spelling of its path, as git lists it or resolved, is a spelling of
+/// `dir`, as given or resolved ([`spellings`]). A list git refuses is an error.
+fn listed_at(repo: &str, dir: &str) -> Result<Option<Option<String>>, Error> {
     let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
         step_failed(
-            format!("reading whether git marks a worktree at {dir}"),
+            format!("reading whether git lists a worktree at {dir}"),
             e.0,
         )
     })?;
     let spelled = spellings(dir);
-    let mark = listed(&out)
-        .filter(|entry| spellings(entry.path).iter().any(|s| spelled.contains(s)))
-        .find_map(|entry| entry.mark.map(str::to_string));
-    Ok(mark)
+    let mut found = None;
+    for entry in
+        listed(&out).filter(|entry| spellings(entry.path).iter().any(|s| spelled.contains(s)))
+    {
+        if let Some(mark) = entry.mark {
+            return Ok(Some(Some(mark.to_string())));
+        }
+        found = Some(None);
+    }
+    Ok(found)
 }
 
-/// Refuse `dir` when git lists a worktree there it marks `locked` ([`git_mark_at`]): a person's
-/// lock, or an add git did not finish. The error names how to recover it ([`marked_entry`]).
-fn refuse_locked_at(repo: &str, dir: &str) -> Result<(), Error> {
+/// Refuse `dir` when git lists a worktree there whose mark keeps what is at it ([`git_mark_at`]):
+/// `locked` (a person's lock, or an add git did not finish), there or gone, or `prunable` with
+/// something still at `dir` (a remove git did not finish after it deleted the tree's link, or a
+/// link that was lost), whose files are work git no longer tracks. A `prunable` entry with nothing
+/// at `dir` is git's own leftover, which a prune or a remove drops. The error names how to recover
+/// the tree ([`marked_entry`]).
+fn refuse_marked_at(repo: &str, dir: &str) -> Result<(), Error> {
     match git_mark_at(repo, dir)? {
-        Some(mark) if mark_word(&mark) == "locked" => Err(marked_entry(repo, &mark, dir)),
+        Some(mark) if mark_word(&mark) == "locked" || occupant(dir)?.is_some() => {
+            Err(marked_entry(repo, &mark, dir))
+        }
         _ => Ok(()),
+    }
+}
+
+/// Remove the worktree at `dir`, as [`remove_tree_or_leftover`] does, holding the repository's
+/// admin lock ([`repo_admin_lock`]) across the call. The refusals it accepts, and the one case it
+/// removes `dir` off disk, are [`remove_tree_or_leftover`]'s.
+pub fn remove_worktree_at(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
+    let repo_lock = repo_admin_lock(repo);
+    let _repo_guard = repo_lock.lock().unwrap();
+    remove_tree_or_leftover(repo, dir, authorized_root)
+}
+
+/// Remove the worktree at `dir` with `git worktree remove --force`, which deregisters it and
+/// tolerates a dirty tree. A tree git marks `locked`, or `prunable` with its dir there
+/// ([`refuse_marked_at`]), is refused first, its error naming git's commands that recover it, and
+/// nothing in it is reaped or removed; otherwise what runs in `dir` is reaped
+/// ([`reap_dir_before_removal`], under the caller's `authorized_root`) before git is asked.
+///
+/// A refusal from git is answered by reading git's list again ([`listed_at`]) and what `dir`
+/// holds, never by what git said, and `dir` goes off disk another way in one case alone:
+/// - git lists a worktree at `dir` it marks (a mark set since the first read): an error naming
+///   git's commands that recover it ([`marked_entry`]), and nothing is removed;
+/// - git lists one at `dir` it does not mark: git's refusal is the error, and nothing is removed;
+/// - git lists none at `dir`, and nothing is there: done, nothing to remove;
+/// - git lists none at `dir`, and `dir`'s `.git` names a registration still on disk
+///   ([`unlisted_registration`]): an error, and nothing is removed;
+/// - git lists none at `dir`, and `dir` names no registration (git's "not a working tree": a
+///   leftover a killed process left, or a tree whose registration was pruned): `dir` is removed
+///   off disk.
+///
+/// A list git cannot give, on either read, or a `dir` the filesystem cannot read, is an error,
+/// and nothing is removed. An empty `repo` names no repository: the first read fails, so nothing
+/// is reaped or removed.
+///
+/// CALLER-LOCKED, as [`clear_worktree_dir`] is.
+fn remove_tree_or_leftover(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
+    refuse_marked_at(repo, dir)?;
+    reap_dir_before_removal(dir, authorized_root);
+    let refused = match git(repo, &["worktree", "remove", "--force", dir]) {
+        Ok(_) => return Ok(()),
+        Err(refused) => refused,
+    };
+    match listed_at(repo, dir)? {
+        Some(Some(mark)) => Err(marked_entry(repo, &mark, dir)),
+        Some(None) => Err(refused),
+        None if occupant(dir)?.is_none() => Ok(()),
+        None => {
+            unlisted_registration(dir)?;
+            std::fs::remove_dir_all(dir)
+                .map_err(|e| step_failed(format!("removing leftover worktree dir {dir}"), e))
+        }
     }
 }
 
@@ -2872,8 +2945,10 @@ fn metadata_at(
 /// hard-fail on a pre-existing path, then prune dangling worktree admin entries. Handles
 /// BOTH a worktree git still tracks (deregistered cleanly via `git worktree remove
 /// --force`, which also tolerates a dirty tree) AND a bare leftover directory a killed
-/// process left behind (`git worktree remove` refuses it - "not a working tree" - so we
-/// delete it off disk). Used to defend the now-DETERMINISTIC unit dir in
+/// process left behind (`git worktree remove` refuses it - "not a working tree" - and git's
+/// list, read again, names nothing there, so it goes off disk). Every other refusal from git
+/// keeps `dir` and is the error ([`remove_tree_or_leftover`] lists them). Used to defend the
+/// now-DETERMINISTIC unit dir in
 /// [`Worktree::create`] and to reset a throwaway review worktree in [`Worktree::discard`],
 /// and (via [`reclaim_worktree_on_branch`]) to tear down a lingering worktree on resume.
 ///
@@ -2901,9 +2976,10 @@ fn metadata_at(
 /// unlinked like a file; a Windows directory link, which the file call refuses, is removed as a
 /// directory entry, which removes the link alone.
 ///
-/// A tree git marks `locked` at `dir` ([`refuse_locked_at`]: a person's lock, an add git did not
-/// finish) is an error naming git's own commands that recover it ([`marked_entry`]), and nothing
-/// there is reaped, deregistered or removed: the lock says the tree is kept.
+/// A tree git marks `locked` at `dir`, or `prunable` with its dir there ([`refuse_marked_at`]: a
+/// person's lock, an add or remove git did not finish, a lost link), is an error naming git's own
+/// commands that recover it ([`marked_entry`]), and nothing there is reaped, deregistered or
+/// removed: the mark says the tree is kept.
 fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
     if repo.is_empty() {
         return Err(step_failed(
@@ -2916,14 +2992,7 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
             .or_else(|_| std::fs::remove_dir(dir))
             .map_err(|e| step_failed(format!("removing the link at {dir}"), e))?;
     } else {
-        refuse_locked_at(repo, dir)?;
-        reap_dir_before_removal(dir, authorized_root);
-        if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
-            && std::path::Path::new(dir).exists()
-        {
-            std::fs::remove_dir_all(dir)
-                .map_err(|e| step_failed(format!("removing leftover worktree dir {dir}"), e))?;
-        }
+        remove_tree_or_leftover(repo, dir, authorized_root)?;
     }
     git(repo, &["worktree", "prune"])?;
     Ok(())

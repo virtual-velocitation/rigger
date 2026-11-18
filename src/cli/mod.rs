@@ -2379,24 +2379,39 @@ fn kept_by_git(repo: &str, dir: &std::path::Path) -> Option<String> {
 /// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
 /// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
 /// scratch entry git may still track. A killed run can leave a `rigger-wt-<slug>` worktree
-/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; `git
-/// worktree remove --force` deregisters it (and tolerates a dirty tree). A bare leftover dir
-/// git never tracked makes that command fail, so it falls through to the plain removal, and any
-/// dangling admin entry a partial removal leaves is pruned by [`rigger::worktree::sweep_terminal`]
-/// at the next run start. Best-effort - a failed reclaim never aborts the sweep.
-/// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
-fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
-    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
-    let deregistered = subprocess::git_in(repo)
-        .and_then(|mut git| {
-            git.args(["worktree", "remove", "--force"])
-                .arg(dir)
-                .output()
-        })
-        .is_ok_and(|o| o.status.success());
-    if !deregistered {
-        let _ = std::fs::remove_dir_all(dir);
+/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; the removal
+/// goes through [`rigger::worktree::remove_worktree_at`], which reaps `dir` first and whose `git
+/// worktree remove --force` deregisters it (and tolerates a dirty tree).
+///
+/// A refusal from git is never answered by removing `dir` another way: git's list is read again,
+/// and `dir` goes off disk only when git lists no worktree there and `dir` names no registration
+/// (git's "not a working tree", a bare leftover dir). Every other refusal keeps `dir` and is the
+/// error: a tree git marks `locked`, or `prunable` with its dir there; a tree git lists unmarked
+/// yet refuses to remove; a tree whose registration git does not list; a list git cannot give,
+/// including git failing to spawn. An empty `repo` names no repository a tree could be registered
+/// with (a run always passes its own, [`kept_by_git`] reads none), so `dir` is reaped and goes off
+/// disk as any leftover dir does. `Ok` means `dir` is gone. `authorized_root` is the resolved
+/// scratch root `dir` was enumerated from (spec 78 round 2).
+fn reap_then_remove_worktree(
+    repo: &str,
+    dir: &std::path::Path,
+    authorized_root: &std::path::Path,
+) -> Result<(), String> {
+    if repo.is_empty() {
+        rigger::reap::reap_processes_rooted_under(dir, authorized_root);
+        return std::fs::remove_dir_all(dir).map_err(|e| {
+            format!(
+                "removing leftover worktree dir {} failed: {e}",
+                dir.display()
+            )
+        });
     }
+    rigger::worktree::remove_worktree_at(
+        repo,
+        &dir.to_string_lossy(),
+        &authorized_root.to_string_lossy(),
+    )
+    .map_err(|e| e.0)
 }
 
 /// Run `run_id`'s progress reports out of `project`'s namespace of the progress store
@@ -4091,11 +4106,12 @@ fn reclaim_orphan_scratch(
                 && path.join(".git").exists()
                 && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
-                match kept_by_git(repo, &path) {
-                    None => {
-                        reap_then_remove_worktree(repo, &path, root_path);
-                        removed += 1;
-                    }
+                let kept = match kept_by_git(repo, &path) {
+                    None => reap_then_remove_worktree(repo, &path, root_path).err(),
+                    why => why,
+                };
+                match kept {
+                    None => removed += 1,
                     Some(why) => rigger::whole_line::say(format_args!(
                         "rigger run: orphan sweep: kept {path:?} - {why}"
                     )),
@@ -9101,7 +9117,10 @@ mod tests {
                 |repo, dir| {
                     add_tree(repo, dir);
                     let at = dir.to_str().unwrap();
-                    git_ok(repo, &["worktree", "lock", "--reason", "a person's lock", at]);
+                    git_ok(
+                        repo,
+                        &["worktree", "lock", "--reason", "a person's lock", at],
+                    );
                 },
                 true,
             ),
@@ -9114,7 +9133,10 @@ mod tests {
             let repo = root.to_str().unwrap();
             let dir = root.join("rigger-wt-unit");
             plant(repo, &dir);
-            reap_then_remove_worktree(repo, &dir, &root);
+            let removed = reap_then_remove_worktree(repo, &dir, &root);
+            if removed.is_ok() == kept {
+                violations.push(format!("{row}: the removal answers {removed:?}"));
+            }
             if dir.join("work.txt").exists() != kept {
                 violations.push(format!("{row}: its work is kept: {}", !kept));
             }
