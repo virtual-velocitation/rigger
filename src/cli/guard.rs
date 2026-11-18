@@ -1945,8 +1945,8 @@ mod tests {
     }
 
     /// `rigger hook stop` takes `--spawn` and `--dir`, each with a non-empty value, and exactly
-    /// one duty, `--branch` with a non-empty value or `--own-commits`, in any order; anything else
-    /// is an error the verb answers by allowing the stop.
+    /// one duty, `--branch` with a non-empty value or `--own-commits` with the producer's output,
+    /// in any order; anything else is an error the verb answers by allowing the stop.
     #[test]
     fn rigger_hook_stop_reads_its_spawn_its_tree_and_one_duty() {
         let check = StopCheck {
@@ -1960,10 +1960,10 @@ mod tests {
             spawn: "plan/implementer#0".to_string(),
             dir: "/wt".to_string(),
             duty: TreeDuty::OwnCommits {
-                output: "specs/".to_string(),
+                output: "requirements/".to_string(),
             },
         };
-        let rows: [(&str, &[&str], Result<&StopCheck, &str>); 9] = [
+        let rows: [(&str, &[&str], Result<&StopCheck, &str>); 11] = [
             (
                 "a branch",
                 &[
@@ -1992,12 +1992,36 @@ mod tests {
                 "own commits",
                 &[
                     "--own-commits",
+                    "requirements/",
                     "--spawn",
                     "plan/implementer#0",
                     "--dir",
                     "/wt",
                 ],
                 Ok(&producer),
+            ),
+            (
+                "own commits naming no output",
+                &[
+                    "--spawn",
+                    "plan/implementer#0",
+                    "--dir",
+                    "/wt",
+                    "--own-commits",
+                ],
+                Err("--own-commits expects a non-empty value"),
+            ),
+            (
+                "own commits naming an empty output",
+                &[
+                    "--spawn",
+                    "plan/implementer#0",
+                    "--own-commits",
+                    " ",
+                    "--dir",
+                    "/wt",
+                ],
+                Err("--own-commits expects a non-empty value"),
             ),
             (
                 "no duty",
@@ -2014,12 +2038,13 @@ mod tests {
                     "--branch",
                     "rigger/u/u",
                     "--own-commits",
+                    "specs/",
                 ],
                 Err(STOP_ARGS_REQUIRED),
             ),
             (
                 "a missing dir",
-                &["--spawn", "plan/implementer#0", "--own-commits"],
+                &["--spawn", "plan/implementer#0", "--own-commits", "specs/"],
                 Err(STOP_ARGS_REQUIRED),
             ),
             (

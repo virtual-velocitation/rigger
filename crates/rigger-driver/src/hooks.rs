@@ -752,9 +752,9 @@ mod tests {
                 ],
                 r"C:\wt\a b\",
                 TreeDuty::OwnCommits {
-                    output: "specs/".to_string(),
+                    output: "spe cs/it's $HOME \"q\" %PATH%/".to_string(),
                 },
-                vec!["--own-commits"],
+                vec!["--own-commits", "spe cs/it's $HOME \"q\" %PATH%/"],
             ),
         ];
         for (spawn, roots, dir, duty, asks) in rows {
@@ -860,10 +860,10 @@ mod tests {
                     vec!["/wt plan"],
                     "/wt plan",
                     TreeDuty::OwnCommits {
-                        output: "specs/".to_string(),
+                        output: "requirements/".to_string(),
                     },
                 ),
-                Some(vec!["--own-commits"]),
+                Some(vec!["--own-commits", "requirements/"]),
             ),
             (
                 (

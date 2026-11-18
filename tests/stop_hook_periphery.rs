@@ -1,4 +1,5 @@
-//! Periphery for `rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | --own-commits)`,
+//! Periphery for `rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | --own-commits
+//! <output>)`,
 //! the `Stop` hook a writing session carries: drives the REAL COMPILED binary, with Claude Code's
 //! `Stop` payload on its stdin, against a real `.rigger/progress.db` and a real git tree left in
 //! each state the conductor's next step on it refuses or accepts.
@@ -243,9 +244,9 @@ fn each_refusal_holds_the_stop_with_gits_words_and_an_accepted_tree_allows_it() 
 }
 
 /// A PRODUCER'S STOP IS HELD WHILE ITS TREE HOLDS WORK OF ITS OUTPUT OUTSIDE A COMMIT: with
-/// `--own-commits` (a stage the conductor lands only the commits of), an untracked plan in the
-/// stage's output `specs/`, alone or beside a changed file outside it, holds the session once, the
-/// reason naming the tree and the paths sorted by the output and carrying `git status` as git
+/// `--own-commits specs/` (a stage the conductor lands only the commits of), an untracked plan in
+/// the stage's output `specs/`, alone or beside a changed file outside it, holds the session once,
+/// the reason naming the tree and the paths sorted by the output and carrying `git status` as git
 /// prints it; a changed file or an untracked one outside the output alone never lands, so it
 /// allows the stop, as a clean tree and one whose work is committed do. Each check records its
 /// line, then the hold or the allowance, and leaves the index as it was.
@@ -313,7 +314,7 @@ fn a_producers_stop_is_held_while_its_tree_holds_work_of_its_output_outside_a_co
 
         let out = stop_hook(
             project.path(),
-            &["--spawn", SPAWN, "--dir", dir, "--own-commits"],
+            &["--spawn", SPAWN, "--dir", dir, "--own-commits", "specs/"],
             false,
         );
         let reason = held(case, &out);
@@ -343,6 +344,94 @@ fn a_producers_stop_is_held_while_its_tree_holds_work_of_its_output_outside_a_co
             index,
             "{case}: the check leaves the index as it was"
         );
+    }
+}
+
+/// A PRODUCER'S STOP IS HELD ON THE OUTPUT ITS HOOK NAMES: with `--own-commits requirements/`, a
+/// project's declared output other than `specs/`, an untracked plan in `requirements/` holds the
+/// session, the reason naming that output, and work under `specs/` beside it is named as outside
+/// the output; work under `specs/` alone never lands, so it allows the stop. The output is a
+/// directory whether or not it is named with its closing `/`: with `--own-commits requirements`,
+/// an untracked plan in `requirements/` holds the session and one in `requirements-old/` allows
+/// the stop.
+#[test]
+fn a_producers_stop_is_held_on_the_output_its_hook_names() {
+    // Each row: the case, the output the hook names, the files left untracked in the tree, and
+    // the words after the tree of each line the reason carries (none for a stop allowed).
+    type Row = (
+        &'static str,
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+    );
+    let rows: [Row; 5] = [
+        (
+            "a plan in the declared output",
+            "requirements/",
+            &["requirements/plan.md"],
+            &["holds work in requirements/ that no commit records: requirements/ - "],
+        ),
+        (
+            "a plan in the declared output beside work under specs/",
+            "requirements/",
+            &["requirements/plan.md", "specs/draft.md"],
+            &[
+                "holds work in requirements/ that no commit records: requirements/ - ",
+                "also holds work outside requirements/ that no commit records: specs/ - it never \
+                 lands",
+            ],
+        ),
+        (
+            "work under specs/ alone",
+            "requirements/",
+            &["specs/plan.md"],
+            &[],
+        ),
+        (
+            "a plan in the output named without its closing slash",
+            "requirements",
+            &["requirements/plan.md"],
+            &["holds work in requirements that no commit records: requirements/ - "],
+        ),
+        (
+            "a plan in a sibling whose name the output's begins",
+            "requirements",
+            &["requirements-old/plan.md"],
+            &[],
+        ),
+    ];
+    for (case, output, files, refusals) in rows {
+        let project = courier_project();
+        seed_a_run(project.path());
+        let tree = unit_tree();
+        for file in files {
+            let path = tree.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "planned\n").unwrap();
+        }
+        let dir = tree.path().to_str().unwrap();
+
+        let args = ["--spawn", SPAWN, "--dir", dir, "--own-commits", output];
+        let reason = held(case, &stop_hook(project.path(), &args, false));
+
+        let check = format!("stop check: {dir} for its own commits");
+        match (refusals.first(), reason) {
+            (Some(first), Some(reason)) => {
+                for words in refusals {
+                    assert!(
+                        reason.contains(&format!("{dir} {words}")),
+                        "{case}: {reason}"
+                    );
+                }
+                let hold = format!("stop held (1 of {STOP_HOLD_BOUND}): {dir} {first}");
+                assert_lines(case, &spawn_lines(project.path()), &[check, hold]);
+            }
+            (None, None) => {
+                let allowed = format!("stop allowed: no work in {output} is left outside a commit");
+                assert_lines(case, &spawn_lines(project.path()), &[check, allowed]);
+            }
+            (first, reason) => panic!("{case}: expected {first:?}, held {reason:?}"),
+        }
     }
 }
 
@@ -421,13 +510,24 @@ fn every_error_allows_the_stop() {
         &'static str,
         &'static [&'static str],
     );
-    let rows: [Row; 3] = [
+    let rows: [Row; 4] = [
         (
             "a missing argument",
             courier_project,
             |_| vec!["--spawn".into(), SPAWN.into(), "--dir".into(), "/wt".into()],
             "--spawn and --dir are required, with exactly one of --branch <branch> and \
-             --own-commits",
+             --own-commits <output>",
+            &[],
+        ),
+        (
+            "own commits naming no output",
+            courier_project,
+            |_| {
+                ["--spawn", SPAWN, "--dir", "/wt", "--own-commits"]
+                    .map(String::from)
+                    .to_vec()
+            },
+            "--own-commits expects a non-empty value",
             &[],
         ),
         (

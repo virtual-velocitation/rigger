@@ -4393,8 +4393,8 @@ fn a_conflict_resolver_is_held_until_its_merge_is_concluded_and_the_unit_lands()
     }
 }
 
-/// A producer stage alone, its git-isolated worker landing only the commits it makes under
-/// `specs/`.
+/// A producer stage alone, its git-isolated worker landing only the commits it makes under its
+/// output: the project's declared `specs_location`, `specs/` when it declares none.
 const PRODUCER_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
     body: r#"defaults:
@@ -4411,6 +4411,10 @@ stages:
 /// holds it there, how the session settles the tree.
 struct ProducerLeaves {
     name: &'static str,
+    /// The project's docs overlay, empty when the project writes none.
+    declares: &'static str,
+    /// The stage's output the overlay declares, `specs/` when it declares none.
+    output: &'static str,
     /// The shell leaving the tree, in the session's working directory.
     leaves: &'static str,
     /// The shell settling it once the hook holds the session.
@@ -4424,11 +4428,14 @@ struct ProducerLeaves {
 /// The producer trees [`a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands`]
 /// walks: its plan alone outside a commit, which the hold says to commit; its plan beside a
 /// leftover outside the stage's output, which the hold says never lands and may be taken out of
-/// the tree, and which the session leaves where it is; and its committed plan beside such a
-/// leftover, which the hook never holds.
+/// the tree, and which the session leaves where it is; its committed plan beside such a
+/// leftover, which the hook never holds; and, in a project declaring `requirements/` its output,
+/// its plan there beside a draft under `specs/`, which the hold names as outside that output.
 const PRODUCER_LEAVES: &[ProducerLeaves] = &[
     ProducerLeaves {
         name: "its plan outside a commit",
+        declares: "",
+        output: "specs/",
         leaves: "mkdir -p specs && echo planned > specs/plan.md",
         settles: "git add specs/plan.md && git commit -q -m plan",
         says: &["holds work in specs/ that no commit records: specs/ - "],
@@ -4436,6 +4443,8 @@ const PRODUCER_LEAVES: &[ProducerLeaves] = &[
     },
     ProducerLeaves {
         name: "its plan and a leftover outside its output",
+        declares: "",
+        output: "specs/",
         leaves: "mkdir -p specs && echo planned > specs/plan.md && echo scratch > notes.txt",
         settles: "git add specs/plan.md && git commit -q -m plan",
         says: &[
@@ -4447,10 +4456,26 @@ const PRODUCER_LEAVES: &[ProducerLeaves] = &[
     },
     ProducerLeaves {
         name: "its committed plan beside a leftover outside its output",
+        declares: "",
+        output: "specs/",
         leaves: "mkdir -p specs && echo planned > specs/plan.md && git add specs/plan.md && \
                  git commit -q -m plan && echo scratch > notes.txt",
         settles: "",
         says: &[],
+        never_says: &[],
+    },
+    ProducerLeaves {
+        name: "its plan in a declared output beside a draft under specs/",
+        declares: "specs_location: requirements/\n",
+        output: "requirements/",
+        leaves: "mkdir -p requirements specs && echo planned > requirements/plan.md && \
+                 echo draft > specs/draft.md",
+        settles: "git add requirements/plan.md && git commit -q -m plan",
+        says: &[
+            "holds work in requirements/ that no commit records: requirements/ - ",
+            "also holds work outside requirements/ that no commit records: specs/ - it never \
+             lands",
+        ],
         never_says: &[],
     },
 ];
@@ -4505,8 +4530,9 @@ fn producer_held_until_its_tree_is_settled_arm(case: &ProducerLeaves) -> String 
 }
 
 /// A PRODUCER IS HELD ONLY ON WORK OF ITS OUTPUT OUTSIDE A COMMIT, end to end: given a producer
-/// stage whose launch carries the `Stop` hook asking of its tree for its own commits, in a
-/// repository with no `.gitignore`, when its session runs rigger's tooling in its fresh tree, then
+/// stage whose launch carries the `Stop` hook asking of its tree for its own commits in the output
+/// the project declares (`specs/` when it declares none), in a repository with no `.gitignore`,
+/// when its session runs rigger's tooling in its fresh tree, then
 /// the tree reads clean; and when the session leaves its plan outside a commit, alone or beside a
 /// leftover outside the stage's output, then the hook holds it once, saying of the plan to commit
 /// it and of the leftover that it never lands and may be taken out of the tree, the session
@@ -4525,6 +4551,9 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
             "{name}: precondition: the repository ignores nothing"
         );
         write_workflow_fixture(&root, &PRODUCER_WORKFLOW);
+        if !case.declares.is_empty() {
+            std::fs::write(root.join(".rigger").join("docs-overlay.yml"), case.declares).unwrap();
+        }
         let held = tempfile::tempdir().unwrap();
         let scratch = std::fs::canonicalize(held.path()).unwrap();
         let (out, err, ok, fake) = common::cli::run_on_arms(
@@ -4565,7 +4594,7 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
             &launch.spawn,
             &roots,
             false,
-            Some((launch.cwd.as_str(), &["--own-commits"][..])),
+            Some((launch.cwd.as_str(), &["--own-commits", case.output][..])),
         );
 
         let read = |file: &str| {
@@ -4628,15 +4657,18 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
                 })
                 .map(|line| line.activity)
                 .collect();
-        let allowed = "stop allowed: no work in specs/ is left outside a commit";
+        let allowed = format!(
+            "stop allowed: no work in {} is left outside a commit",
+            case.output
+        );
         let starts: &[&str] = if case.says.is_empty() {
-            &["stop check: ", allowed]
+            &["stop check: ", &allowed]
         } else {
             &[
                 "stop check: ",
                 "stop held (1 of 3): ",
                 "stop check: ",
-                allowed,
+                &allowed,
             ]
         };
         assert_eq!(lines.len(), starts.len(), "{name}: {lines:#?}");
@@ -4649,8 +4681,14 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
         );
 
         assert_eq!(
-            String::from_utf8(run_git(&root, &["show", "rigger-run:specs/plan.md"]).stdout)
-                .unwrap(),
+            String::from_utf8(
+                run_git(
+                    &root,
+                    &["show", &format!("rigger-run:{}plan.md", case.output)]
+                )
+                .stdout
+            )
+            .unwrap(),
             "planned\n",
             "{name}: the plan's commit landed on the run branch"
         );

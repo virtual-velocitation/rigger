@@ -202,7 +202,7 @@ use common::fixtures::agent;
 use common::fixtures::plan_stage;
 use common::fixtures::test_spawn_host;
 use rigger::conductor::{
-    run, AgentDriver, AgentResult, Deps, Error, SpawnOpts, META_COMPENSATED,
+    run, AgentDriver, AgentResult, Deps, Error, SpawnHost, SpawnOpts, META_COMPENSATED,
     META_COMPENSATE_TARGET, REVIEW_ONLY_NO_ARTIFACT, STREAM,
 };
 use rigger::config::{AgentDef, Config, Gate, ReviewPanel, Stage};
@@ -684,6 +684,147 @@ fn plan_stage_commit_mixing_an_in_scope_and_out_of_scope_path_is_rejected_and_na
     // ride onto the branch just because it shares a commit with the violation.
     assert!(!repo.path().join("specs").join("93-mixed.md").exists());
     assert!(!repo.path().join("docs").join("rogue.md").exists());
+}
+
+/// A PLAN STAGE LANDS ONLY IN THE OUTPUT ITS HOST DECLARES: with the spawn host's producer output
+/// `requirements/`, a plan committed there lands on the run branch; one committed under `specs/`
+/// is refused as outside `requirements/`, naming the path, and lands nothing; and an amendment in
+/// `requirements/` conflicting with a concurrent operator commit there is refused as a conflict
+/// with a concurrent `requirements/` change.
+#[test]
+fn a_plan_stage_lands_only_in_the_output_its_host_declares() {
+    let host = SpawnHost {
+        producer_output: "requirements/".to_string(),
+        ..test_spawn_host()
+    };
+    // Each row: the case, the planner's one commit, and the review reason its failure records
+    // (none for a plan that lands).
+    let rows: [(&str, &str, Option<&str>); 2] = [
+        (
+            "a plan in the declared output",
+            "requirements/93-plan.md",
+            None,
+        ),
+        (
+            "a plan under specs/",
+            "specs/93-plan.md",
+            Some("a plan-stage commit touched paths outside requirements/: specs/93-plan.md"),
+        ),
+    ];
+    for (case, path, refused) in rows {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.stages.insert("plan".into(), plan_stage());
+        let store = Store::open(":memory:").unwrap();
+        let driver = PlanAmendDriver::new("planner").commit(&[(path, "planned\n")]);
+        let deps = Deps {
+            store: &store,
+            driver: &driver,
+            gates: &ExecRunner,
+            repo: repo_path.clone(),
+            grounder: None,
+            graph: None,
+            criteria: Vec::new(),
+            log: &|_| {},
+            check_emit: &rigger::contextgraph::check_emit,
+            spawn_host: host.clone(),
+            code_store: None,
+            context: None,
+        };
+        let rs = run(&cfg, &deps).unwrap();
+
+        let landed = std::fs::read_to_string(repo.path().join(path)).ok();
+        match refused {
+            None => {
+                assert_eq!(
+                    rs.units["plan"].status,
+                    ledger::Status::Integrated,
+                    "{case}"
+                );
+                assert_eq!(
+                    landed.as_deref(),
+                    Some("planned\n"),
+                    "{case}: the plan landed"
+                );
+            }
+            Some(reason) => {
+                assert_eq!(rs.units["plan"].status, ledger::Status::Escalated, "{case}");
+                assert_eq!(failure_reason(&store), reason, "{case}");
+                assert_eq!(landed, None, "{case}: nothing landed");
+            }
+        }
+    }
+
+    let repo = init_repo();
+    let repo_path = repo.path().to_str().unwrap().to_string();
+    let seed_dir = tempfile::tempdir().unwrap();
+    let seed = Worktree::create(
+        &repo_path,
+        seed_dir.path().to_str().unwrap(),
+        "rigger/u/plan",
+        "",
+    )
+    .unwrap();
+    std::fs::create_dir_all(seed_dir.path().join("requirements")).unwrap();
+    std::fs::write(
+        seed_dir.path().join("requirements/94-contested.md"),
+        "planner amend\n",
+    )
+    .unwrap();
+    git_ok(seed_dir.path(), &["add", "-A"]);
+    git_ok(seed_dir.path(), &["commit", "-q", "-m", "planner amend"]);
+    seed.remove().unwrap();
+    std::fs::create_dir_all(repo.path().join("requirements")).unwrap();
+    std::fs::write(
+        repo.path().join("requirements/94-contested.md"),
+        "operator edit\n",
+    )
+    .unwrap();
+    git_ok(repo.path(), &["add", "-A"]);
+    git_ok(repo.path(), &["commit", "-q", "-m", "operator edit"]);
+    let mut cfg = Config::default();
+    cfg.workflow.defaults.workdir = common::isolated_workdir(repo.path());
+    cfg.agents.insert("planner".into(), agent("planner"));
+    cfg.workflow.stages.insert("plan".into(), plan_stage());
+    let store = Store::open(":memory:").unwrap();
+    let driver = PlanAmendDriver::new("planner");
+    let deps = Deps {
+        store: &store,
+        driver: &driver,
+        gates: &ExecRunner,
+        repo: repo_path.clone(),
+        grounder: None,
+        graph: None,
+        criteria: Vec::new(),
+        log: &|_| {},
+        check_emit: &rigger::contextgraph::check_emit,
+        spawn_host: host,
+        code_store: None,
+        context: None,
+    };
+    let rs = run(&cfg, &deps).unwrap();
+    assert_eq!(rs.units["plan"].status, ledger::Status::Escalated);
+    let reason = failure_reason(&store);
+    assert!(
+        reason.starts_with("the plan amendment conflicts with a concurrent requirements/ change: "),
+        "{reason}"
+    );
+}
+
+/// The review reason the first `UnitFailed` in `store` records.
+fn failure_reason(store: &Store) -> String {
+    let events = store
+        .read_all(0, Direction::Forward, &Filter::default())
+        .unwrap();
+    let failed = events
+        .iter()
+        .find(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+        .expect("a UnitFailed");
+    let body: Value = serde_json::from_slice(&failed.data).unwrap();
+    body["review_reason"].as_str().unwrap().to_string()
 }
 
 /// Criterion 4, gap 4 (the cross-module seam's Conflict branch, plus the "cause wire" spec 69

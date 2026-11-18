@@ -285,8 +285,8 @@ fn timed_exec_hook(argv: &[String], timeout: Option<u32>) -> serde_json::Value {
 /// workflow's `defaults.grep_guard`) declares it; under `StopFailure` one entry per category
 /// running `bin` for `spawn`, in category order; and under `Stop` the one `hook stop` asking of
 /// the tree at the `dir` of `stop` for `spawn` by the duty words `stop` names after it
-/// (`--branch <branch>` or `--own-commits`), with its timeout, exactly when the conductor takes
-/// something from the launch's tree (`stop` names one), and no `Stop` entry otherwise.
+/// (`--branch <branch>` or `--own-commits <output>`), with its timeout, exactly when the conductor
+/// takes something from the launch's tree (`stop` names one), and no `Stop` entry otherwise.
 pub fn assert_carries_spawn_hooks(
     settings: &serde_json::Value,
     bin: &str,
