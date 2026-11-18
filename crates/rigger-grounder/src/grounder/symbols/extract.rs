@@ -4119,6 +4119,121 @@ fn product() {}
         }
     }
 
+    /// RUST WRITES THE QUALIFIER (spec 117, RUST REFERENCES): a Rust call is qualified by the
+    /// path segment before its leaf when that segment starts uppercase, generics and turbofish
+    /// stripped, by the trait of a qualified-self path, and by `Self`'s enclosing impl's self
+    /// type, generics stripped, or inside a trait body the trait; a call whose receiver is exactly
+    /// `self` is a member access qualified by that same type or trait. A lowercase segment, a
+    /// `self` or `super` path, a bracketed type naming no trait, any other receiver, an enclosing
+    /// generic parameter (a blanket impl's self type among them), a self type naming no single
+    /// type and a `Self` outside every impl and trait write none, and an impl header's trait and
+    /// self type rows stay unqualified.
+    #[test]
+    fn rust_writes_the_qualifier() {
+        let path = |name: &str| Some(qualifier(name, true));
+        let member = |name: &str| Some(qualifier(name, false));
+        // (the source, its call references' names and qualifiers in order)
+        type Row = (&'static str, Vec<(&'static str, Option<Qualifier>)>);
+        let table: [Row; 18] = [
+            ("fn f() { Store::open(); }\n", vec![("open", path("Store"))]),
+            (
+                "impl<T> Store<T> { fn f() { Self::new(); } }\n",
+                vec![("new", path("Store")), ("Store", None)],
+            ),
+            (
+                "trait CodeView { fn file(&self); fn modules(&self) { self.file(); } }\n",
+                vec![("file", member("CodeView"))],
+            ),
+            (
+                "impl Store { fn f(&self) { self.inner.open(); } }\n",
+                vec![("open", None), ("Store", None)],
+            ),
+            (
+                "fn f() { paths::module_dir(); }\n",
+                vec![("module_dir", None)],
+            ),
+            ("fn f() { Memo::<K>::new(); }\n", vec![("new", path("Memo"))]),
+            (
+                "fn f() { Store::open::<u8>(); }\n",
+                vec![("open", path("Store"))],
+            ),
+            (
+                "fn f() { crate::store::Store::open(); }\n",
+                vec![("open", path("Store"))],
+            ),
+            (
+                "fn f() { <Store as CodeView>::file(); }\n",
+                vec![("file", path("CodeView"))],
+            ),
+            ("fn f() { <Store>::open(); }\n", vec![("open", None)]),
+            (
+                "fn f() { self::helper(); super::helper(); }\n",
+                vec![("helper", None), ("helper", None)],
+            ),
+            (
+                "impl Store { fn f(&self, store: Store) { self.open(); store.open(); } }\n",
+                vec![("open", member("Store")), ("open", None), ("Store", None)],
+            ),
+            (
+                "impl CodeView for Store { fn f(&self) { Self::open(); self.file(); } }\n",
+                vec![
+                    ("open", path("Store")),
+                    ("file", member("Store")),
+                    ("CodeView", None),
+                    ("Store", None),
+                ],
+            ),
+            (
+                "trait CodeView { fn new() -> Self; fn make() { Self::new(); } }\n",
+                vec![("new", path("CodeView"))],
+            ),
+            (
+                "fn f<T: Default>() { T::default(); }\n",
+                vec![("default", None)],
+            ),
+            (
+                "impl<T> CodeView for T { fn f(&self) { Self::open(); self.file(); } }\n",
+                vec![
+                    ("open", None),
+                    ("file", None),
+                    ("CodeView", None),
+                    ("T", None),
+                ],
+            ),
+            (
+                "impl CodeView for [u8] { fn f(&self) { Self::open(); self.file(); } }\n",
+                vec![("open", None), ("file", None), ("CodeView", None)],
+            ),
+            ("fn f() { Self::new(); }\n", vec![("new", None)]),
+        ];
+        for (source, expected) in table {
+            let symbols = crate::symbol_index::extracted("rs", source);
+            let found: Vec<(&str, Option<Qualifier>)> = symbols
+                .calls()
+                .map(|r| (r.name.as_str(), r.qualifier.clone()))
+                .collect();
+            assert_eq!(found, expected, "{source:?}");
+        }
+    }
+
+    #[test]
+    fn zz_dump_trees() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        for src in [
+            "fn f() { Memo::<K>::new(); }",
+            "fn f() { <Store as CodeView>::file(); }",
+            "fn f() { <Store>::open(); }",
+            "fn f() { Self::new(); self.file(); self::helper(); }",
+            "fn f() { a::Store::open::<T>(); crate::store::Store::open(); }",
+            "fn f() { Store::open().close(); }",
+        ] {
+            let mut parser = tree_sitter::Parser::new();
+            parser.set_language(&language).unwrap();
+            let tree = parser.parse(src, None).unwrap();
+            println!("{src}\n{}\n", tree.root_node().to_sexp());
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
