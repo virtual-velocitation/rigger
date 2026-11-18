@@ -758,8 +758,8 @@ impl Worktree {
                 parents.push(reached);
             }
         }
-        let git_dir = git(&self.dir, &["rev-parse", "--absolute-git-dir"])?;
-        let index = std::path::Path::new(git_dir.trim()).join("rigger-kept-index");
+        let index = git(&self.dir, &["rev-parse", "--git-path", "rigger-kept-index"])?;
+        let index = std::path::Path::new(&self.dir).join(index.trim());
         let staged = staged_tree(&self.dir, &index);
         let _ = std::fs::remove_file(&index);
         let tree = staged?;
