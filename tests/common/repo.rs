@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 pub use super::fixtures::table_lines;
-use super::fixtures::{recorded_argv, recorded_task};
+use super::fixtures::{exec_hook, recorded_argv, recorded_task};
 
 /// The repository root (the package's manifest directory).
 pub fn repo_root() -> PathBuf {
@@ -269,19 +269,18 @@ pub fn grep_guard_hook() -> (String, Vec<String>) {
     ("Grep|Bash".to_string(), words.to_vec())
 }
 
-/// The inner hook running `argv` in exec form: the program `argv[0]`, which the host spawns with
-/// the rest of `argv` as its argument vector and no shell, given `timeout` seconds where one is
+/// The inner hook running `argv` in exec form ([`exec_hook`]), given `timeout` seconds where one is
 /// named.
-fn exec_hook(argv: &[String], timeout: Option<u32>) -> serde_json::Value {
-    let mut hook = serde_json::json!({"type": "command", "command": argv[0], "args": argv[1..]});
+fn timed_exec_hook(argv: &[String], timeout: Option<u32>) -> serde_json::Value {
+    let mut hook = exec_hook(&argv.iter().map(String::as_str).collect::<Vec<_>>());
     if let Some(timeout) = timeout {
         hook["timeout"] = timeout.into();
     }
     hook
 }
 
-/// A launch's `settings` carry its per-spawn hooks, each in exec form ([`exec_hook`]): under
-/// `PreToolUse` the write guard running
+/// A launch's `settings` carry its per-spawn hooks, each in exec form ([`exec_hook`]), as is the
+/// session's grep guard: under `PreToolUse` the write guard running
 /// `bin` with `roots` in order, then the session's grep guard exactly when `grep_guard` (the
 /// workflow's `defaults.grep_guard`) declares it; under `StopFailure` one entry per category
 /// running `bin` for `spawn`, in category order; and under `Stop` the one `hook stop` asking of
@@ -312,9 +311,16 @@ pub fn assert_carries_spawn_hooks(
     );
     assert_eq!(
         settings["hooks"]["PreToolUse"][0]["hooks"][0],
-        exec_hook(&pre_tool_use[0].1, None),
+        timed_exec_hook(&pre_tool_use[0].1, None),
         "the write guard in exec form: {settings}"
     );
+    if grep_guard {
+        assert_eq!(
+            settings["hooks"]["PreToolUse"][1]["hooks"][0],
+            exec_hook(&["rigger", "grep-guard"]),
+            "the session's grep guard in exec form: {settings}"
+        );
+    }
     let stop_failures: Vec<(String, Vec<String>)> = rigger::conductor::AgentFailure::CATEGORIES
         .iter()
         .map(|category| {
@@ -344,7 +350,7 @@ pub fn assert_carries_spawn_hooks(
         .collect();
     let exec: Vec<serde_json::Value> = stop_failures
         .iter()
-        .map(|(_, argv)| exec_hook(argv, None))
+        .map(|(_, argv)| timed_exec_hook(argv, None))
         .collect();
     assert_eq!(
         inner,
@@ -355,7 +361,7 @@ pub fn assert_carries_spawn_hooks(
         Some((dir, duty)) => {
             let mut command = words(&[bin, "hook", "stop", "--spawn", spawn, "--dir", dir]);
             command.extend(words(duty));
-            let exec = exec_hook(&command, Some(rigger::hooks::STOP_HOOK_TIMEOUT_SECS));
+            let exec = timed_exec_hook(&command, Some(rigger::hooks::STOP_HOOK_TIMEOUT_SECS));
             assert_eq!(
                 hook_words(settings, "Stop"),
                 [(String::new(), command)],

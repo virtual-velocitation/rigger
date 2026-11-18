@@ -5631,13 +5631,15 @@ mod tests {
     /// `Installed`, an existing file the edit changes is `Refreshed`, a file the edit leaves as it
     /// is (or no file with the guard undeclared, which creates no `.claude/`) is `AlreadyCurrent`.
     /// An UNRELATED PreToolUse hook and every other event survive either way; an entry under a
-    /// drifted matcher is replaced.
+    /// drifted matcher, or carried as one shell-form command line, is replaced by the one in exec
+    /// form.
     #[test]
     fn install_lookup_hook_installs_or_removes_only_riggers_own_entry_as_declared() {
-        use crate::test_support::hook_block as block;
-        let guard = block(hooks::GREP_GUARD_MATCHER, hooks::GREP_GUARD_COMMAND);
+        use crate::test_support::{exec_block, hook_block as block};
+        let guard = exec_block(hooks::GREP_GUARD_MATCHER, &["rigger", "grep-guard"]);
+        let line_guard = block(hooks::GREP_GUARD_MATCHER, "rigger grep-guard");
         let foreign = block("Write", "prettier --write");
-        let prime = serde_json::json!({"SessionStart": [block("", "rigger prime")]});
+        let prime = serde_json::json!({"SessionStart": [exec_block("", &["rigger", "prime"])]});
         let rows = [
             (
                 "no file, declared",
@@ -5676,7 +5678,7 @@ mod tests {
             (
                 "the guard under a drifted matcher, declared",
                 Some(serde_json::json!({"hooks": {"PreToolUse": [
-                    block("Grep", hooks::GREP_GUARD_COMMAND),
+                    exec_block("Grep", &["rigger", "grep-guard"]),
                     foreign.clone(),
                 ]}})),
                 true,
@@ -5684,6 +5686,26 @@ mod tests {
                 Some(
                     serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
                 ),
+            ),
+            (
+                "the guard as one shell-form line beside a foreign hook, declared",
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [line_guard.clone(), foreign.clone()]}}),
+                ),
+                true,
+                InstallOutcome::Refreshed,
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
+                ),
+            ),
+            (
+                "the guard as one shell-form line beside a foreign hook, undeclared",
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), line_guard.clone()]}}),
+                ),
+                false,
+                InstallOutcome::Refreshed,
+                Some(serde_json::json!({"hooks": {"PreToolUse": [foreign.clone()]}})),
             ),
             (
                 "the guard beside a foreign hook, undeclared",

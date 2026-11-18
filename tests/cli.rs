@@ -28966,17 +28966,16 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
     .unwrap();
     let pretool = settings["hooks"]["PreToolUse"].as_array().unwrap();
     assert!(
-        pretool
-            .iter()
-            .any(|b| b["hooks"][0]["command"] == "rigger grep-guard"
-                && b["matcher"] == "Grep|Bash"),
-        "the lookup hook must be installed under PreToolUse; got:\n{settings}"
+        pretool.iter().any(|b| b["hooks"][0]
+            == common::fixtures::exec_hook(&["rigger", "grep-guard"])
+            && b["matcher"] == "Grep|Bash"),
+        "the lookup hook must be installed under PreToolUse, in exec form; got:\n{settings}"
     );
     // The pre-existing SessionStart hook (installed by the same setup run) must survive
     // untouched - the two merges share one settings.json and must not clobber each other.
     assert_eq!(
-        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "rigger prime"
+        settings["hooks"]["SessionStart"][0]["hooks"][0],
+        common::fixtures::exec_hook(&["rigger", "prime"])
     );
 
     // A rerun on an up-to-date repo is a silent no-op for both new artifacts.
@@ -29076,6 +29075,60 @@ fn setup_edits_only_its_own_lookup_hook_whether_the_grep_guard_is_declared_or_no
              (declared: {declared}); stdout:\n{out}\nstderr:\n{err}"
         );
     }
+}
+
+/// Given a project set up with the scaffolded workflow, which declares `defaults.grep_guard`,
+/// whose `.claude/settings.json` then carries the SessionStart prime hook and the PreToolUse
+/// grep-guard each as one shell-form command line (`rigger prime`, `rigger grep-guard`): when the
+/// operator runs `rigger validate`, then `rigger setup`, then `rigger validate` again, then the
+/// first validate warns that the file lacks rigger's session hooks, setup leaves each hook once,
+/// in exec form (the program `rigger` and its one argument), every other setting kept, and the
+/// second validate warns of nothing in the file.
+#[test]
+fn setup_rewrites_a_session_hook_carried_as_a_shell_line_in_exec_form() {
+    let dir = temp_project();
+    let root = dir.path();
+    setup_ok(root, &[]);
+    let settings_path = root.join(".claude").join("settings.json");
+    let read_settings = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
+    };
+    let mut in_lines = read_settings();
+    let line = |matcher: &str, command: &str| {
+        serde_json::json!([common::fixtures::hook_block(matcher, command)])
+    };
+    in_lines["hooks"]["SessionStart"] = line("", "rigger prime");
+    in_lines["hooks"]["PreToolUse"] = line("Grep|Bash", "rigger grep-guard");
+    std::fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&in_lines).unwrap(),
+    )
+    .unwrap();
+    let settings_warnings = || -> Vec<String> {
+        let (out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(ok, "validate succeeds; stderr:\n{err}");
+        out.lines()
+            .chain(err.lines())
+            .filter(|line| line.contains(".claude/settings.json"))
+            .map(str::to_string)
+            .collect()
+    };
+    let before = settings_warnings();
+    assert!(
+        before.len() == 1 && before[0].contains("does not carry rigger's session hooks"),
+        "validate reads shell-form hooks as missing: {before:?}"
+    );
+
+    setup_ok(root, &[]);
+    let mut expected = in_lines.clone();
+    expected["hooks"]["SessionStart"] =
+        serde_json::json!([common::fixtures::exec_block("", &["rigger", "prime"])]);
+    expected["hooks"]["PreToolUse"] = serde_json::json!([common::fixtures::exec_block(
+        "Grep|Bash",
+        &["rigger", "grep-guard"]
+    )]);
+    assert_eq!(read_settings(), expected);
+    assert_eq!(settings_warnings(), Vec::<String>::new());
 }
 
 /// A live `rigger mcp` session over a store holding one decision, its workflow pinning

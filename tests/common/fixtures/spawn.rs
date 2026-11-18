@@ -52,6 +52,18 @@ pub fn hook(command: &str) -> serde_json::Value {
     serde_json::json!({"type": "command", "command": command})
 }
 
+/// One hook block running `argv` in exec form under `matcher` ([`exec_hook`]).
+pub fn exec_block(matcher: &str, argv: &[&str]) -> serde_json::Value {
+    serde_json::json!({"matcher": matcher, "hooks": [exec_hook(argv)]})
+}
+
+/// One inner hook running `argv` in exec form, as the settings installers write every command
+/// rigger installs: the program `argv[0]`, which the host spawns with the rest of `argv` as its
+/// argument vector and no shell.
+pub fn exec_hook(argv: &[&str]) -> serde_json::Value {
+    serde_json::json!({"type": "command", "command": argv[0], "args": argv[1..]})
+}
+
 /// An operator's helper copy as its `(file, text)` under `.claude/agents/`.
 pub type HelperFile<'a> = (&'a str, &'a str);
 

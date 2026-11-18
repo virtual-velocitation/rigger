@@ -2250,8 +2250,8 @@ mod tests {
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
     use crate::test_support::{
-        captured, fixture_script, hook, no_emit, operator_helpers_agents_json, spawn_result_rows,
-        PROMPT_CAPTURE_DIR,
+        captured, exec_hook, fixture_script, no_emit, operator_helpers_agents_json,
+        spawn_result_rows, PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
     use std::time::Duration;
@@ -2313,8 +2313,9 @@ mod tests {
             "the spawn's own settings survive the merge"
         );
         assert_eq!(
-            settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            hooks::PRIME_COMMAND
+            settings["hooks"]["SessionStart"][0]["hooks"][0],
+            exec_hook(&["rigger", "prime"]),
+            "the prime hook in exec form: {settings}"
         );
     }
 
@@ -2648,23 +2649,19 @@ mod tests {
         );
     }
 
-    /// A launch's settings carry its own hooks ahead of the session's, on its own settings: the
-    /// spawn's in exec form, `rigger_bin` spawned with its argv and no shell, and the session's
-    /// as the commands they are.
+    /// A launch's settings carry its own hooks ahead of the session's, on its own settings, every
+    /// one in exec form: the spawn's `rigger_bin` spawned with its argv and no shell, and the
+    /// session's `rigger` found on `PATH`.
     #[test]
     fn build_args_settings_carry_the_spawn_hooks_ahead_of_the_session_ones() {
         // The spawn's inner hook running `/custom/rigger` with `args` in exec form.
-        let exec = |args: &[&str]| {
-            let mut exec = hook("/custom/rigger");
-            exec["args"] = serde_json::json!(args);
-            exec
-        };
+        let exec = |args: &[&str]| exec_hook(&[["/custom/rigger"].as_slice(), args].concat());
         let write_guard = exec(&["guard-write", "--root", "/wt", "--root", "/scratch/s"]);
         for (grep_guard, pre_tool_use) in [
             (false, vec![write_guard.clone()]),
             (
                 true,
-                vec![write_guard.clone(), hook(hooks::GREP_GUARD_COMMAND)],
+                vec![write_guard.clone(), exec_hook(&["rigger", "grep-guard"])],
             ),
         ] {
             let mut o = opts("u/implementer#0");
@@ -2693,7 +2690,7 @@ mod tests {
             assert_eq!(inner("PreToolUse"), pre_tool_use, "grep_guard {grep_guard}");
             assert_eq!(
                 inner("SessionStart"),
-                [hook(hooks::PRIME_COMMAND)],
+                [exec_hook(&["rigger", "prime"])],
                 "grep_guard {grep_guard}"
             );
             let stop_failures = inner("StopFailure");
