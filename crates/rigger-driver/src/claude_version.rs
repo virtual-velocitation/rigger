@@ -65,10 +65,9 @@ pub fn parse(printed: &str) -> Option<HostVersion> {
 pub fn too_old(host: &SessionHost, version: HostVersion) -> Option<String> {
     (version < MIN_HOST_VERSION).then(|| {
         format!(
-            "the session host `{}` is {version}, below {MIN_HOST_VERSION}, the first \
-             version that runs rigger's exec-form hooks (their `args` field): on it every tool \
-             call a hook guards is blocked and every stop is held, with no word why; update it to \
-             {MIN_HOST_VERSION} or later",
+            "the session host `{}` is {version}, below {MIN_HOST_VERSION}, the version that \
+             added the hook `args` field rigger's exec-form hooks are written with; update it \
+             to {MIN_HOST_VERSION} or later",
             host.bin()
         )
     })

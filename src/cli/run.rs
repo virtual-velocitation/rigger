@@ -970,12 +970,11 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(&project.to_string_lossy())?;
-    // THE SESSION HOST RUNS THE HOOKS: a host below the version the exec-form hooks need fails
-    // closed on every one of them with no word why, so the run refuses on one here, before any
-    // start effect, with the line `rigger validate` warns with; a version it cannot read refuses
-    // nothing.
-    // The one session host the run's driver starts every session from, built here so the
-    // version checked is the binary launched.
+    // THE SESSION HOST RUNS THE HOOKS: the exec-form hooks are written with the hook `args`
+    // field, which the host added at the minimum version, so the run refuses a host below it
+    // here, before any start effect and so before any session starts, with the line `rigger
+    // validate` warns with; a version it cannot read refuses nothing. The host is the one the
+    // run's driver starts every session from, so the version checked is the binary launched.
     let host = rigger::claude_auth::SessionHost::default();
     if let Ok(version) = rigger::claude_version::read(&host, rigger::claude_version::READ_BOUND) {
         if let Some(line) = rigger::claude_version::too_old(&host, version) {

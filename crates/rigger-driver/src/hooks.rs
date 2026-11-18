@@ -292,12 +292,11 @@ fn strip_hooks(
 /// default.
 pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 
-/// The first session host version that runs an exec-form hook, the hook `args` field every hook
+/// The session host version that added the hook `args` field, the exec form every hook
 /// [`install_spawn_hooks`] merges is written with. The host's changelog adds the field under its
 /// `## 2.1.139` heading: "Added hook `args: string[]` field (exec form) that spawns the command
-/// directly without a shell, so path placeholders never need quoting". An older host fails
-/// closed on these hooks: every tool call a hook guards is blocked and every stop is held, with
-/// no word why, so `rigger validate` warns of one and `rigger run` refuses to launch on one
+/// directly without a shell, so path placeholders never need quoting". `rigger validate` warns
+/// of an older host, and `rigger run`'s version check refuses one before any session starts
 /// ([`crate::claude_version::too_old`]).
 pub const MIN_HOST_VERSION: HostVersion = HostVersion {
     major: 2,
