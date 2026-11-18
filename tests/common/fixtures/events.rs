@@ -134,8 +134,8 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 /// The read, subscribe and boundary-lookup methods of an `EventStore` decorator that intercepts only
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
 /// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
-/// for a decorator that also intercepts `latest_in_group`, and `(group)` that lookup alone; `(rest)`
-/// expands every one of `(stream)`'s but the stream read, for a decorator that intercepts
+/// for a decorator that also intercepts `latest_in_group`, and `(group)` that lookup alone;
+/// `(rest)` expands every one of `(stream)`'s but the stream read, for a decorator that intercepts
 /// `read_stream`; `(append)` expands the append alone, forwarded the same way, for a decorator that
 /// intercepts reads instead; `(typed)` expands the typed stream read alone, for a decorator that
 /// intercepts the boundary lookup ahead of it; and `(record)` expands the record-id read alone.
