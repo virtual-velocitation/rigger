@@ -2942,10 +2942,13 @@ pub fn remove_worktree_at(repo: &str, dir: &str, authorized_root: &str) -> Resul
 /// ([`reap_dir_before_removal`], under the caller's `authorized_root`) before git is asked.
 ///
 /// A refusal from git is answered by reading git's list again ([`listed_at`]) and what `dir`
-/// holds, never by what git said, and `dir` goes off disk another way in one case alone:
+/// holds, never by what git said ([`after_refusal`]), and `dir` goes off disk another way in one
+/// case alone, or, for a throwaway ([`Removing::Throwaway`]), three:
 /// - git lists a worktree at `dir` it marks (a mark set since the first read): an error naming
-///   git's commands that recover it ([`marked_entry`]), and nothing is removed;
+///   git's commands that recover it ([`marked_entry`]), and nothing is removed; for a throwaway
+///   only under a `locked` mark, a `prunable` one being cleared in place ([`clear_throwaway`]);
 /// - git lists one at `dir` it does not mark: git's refusal is the error, and nothing is removed;
+///   a throwaway is taken off disk ([`clear_throwaway`]), its one line saying what git answered;
 /// - git lists none at `dir`, and nothing is there: done, nothing to remove;
 /// - git lists none at `dir`, and `dir`'s `.git` names a registration still on disk
 ///   ([`unlisted_registration`]): an error, and nothing is removed;
@@ -3024,9 +3027,12 @@ enum AfterRefusal<'m> {
 /// a `locked` mark: it holds nothing kept, so one git lists unmarked or marks `prunable` is taken
 /// off disk.
 fn after_refusal(relisted: Option<Option<&str>>, throwaway: bool) -> AfterRefusal<'_> {
-    let _ = throwaway;
     match relisted {
+        Some(Some(mark)) if throwaway && mark_word(mark) == "prunable" => {
+            AfterRefusal::ClearThrowaway { unmarked: false }
+        }
         Some(Some(mark)) => AfterRefusal::KeepMarked(mark),
+        Some(None) if throwaway => AfterRefusal::ClearThrowaway { unmarked: true },
         Some(None) => AfterRefusal::KeepRefused,
         None => AfterRefusal::Leftover,
     }
