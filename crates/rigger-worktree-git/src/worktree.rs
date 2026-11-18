@@ -10511,7 +10511,9 @@ mod tests {
     /// file git ignores are none. A nested output (`docs/specs/`) under a parent git tracks
     /// nothing in is read by its own scope, never by the parent git's status names alone: a plan
     /// in it is work in the output, named by the output, and work beside it in that parent is
-    /// work outside it. The read leaves the index's bytes as they were.
+    /// work outside it, named by its own path or its first directory beside the output, never by
+    /// the parent that holds the output too, which a session told to take it out of the tree
+    /// would take its plan out with. The read leaves the index's bytes as they were.
     #[test]
     fn a_producers_tree_is_ready_only_with_no_output_work_outside_a_commit() {
         fn write(dir: &str, file: &str, text: &str) {
@@ -10605,7 +10607,7 @@ mod tests {
                 "docs/specs/",
                 |dir| write(dir, "docs/scratch.md", "scratch\n"),
                 &[],
-                &["docs/"],
+                &["docs/scratch.md"],
             ),
             (
                 "a plan beside work in a nested output's wholly untracked parent",
@@ -10613,9 +10615,10 @@ mod tests {
                 |dir| {
                     write(dir, "docs/specs/plan.md", "planned\n");
                     write(dir, "docs/scratch.md", "scratch\n");
+                    write(dir, "docs/notes/deep/note.md", "noted\n");
                 },
                 &["docs/specs/"],
-                &["docs/"],
+                &["docs/notes/", "docs/scratch.md"],
             ),
         ];
         for (row, output, leave, inside, outside) in cases {
