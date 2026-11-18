@@ -1909,6 +1909,64 @@ mod tests {
         init_is_never_addressed: never_addressed(1);
     }
 
+    /// Process handles, this OS's process descriptors: a handle opened on a process keeps that
+    /// process's pid its own until the handle closes, so what is read and sent through it reaches
+    /// that process or none.
+    #[cfg(windows)]
+    mod handles {
+        use super::*;
+
+        /// Two running processes and an address naming the second's pid that holds a handle
+        /// opened on the first: whether the identity check reads each one's start time through
+        /// it, and which of them a hard end sent through it ends.
+        #[test]
+        fn a_handle_opened_on_the_first_reaches_the_first_whatever_pid_is_named() {
+            let mut held = [sleeper_in(Path::new("/")), sleeper_in(Path::new("/"))];
+            let starts = held
+                .each_ref()
+                .map(|child| pid_starttime(child.id()).expect("a running process's start time"));
+            let to = Addressee {
+                pid: held[1].id(),
+                descriptor: address(held[0].id(), true).and_then(|to| to.descriptor),
+            };
+            assert!(to.descriptor.is_some(), "a handle opens on a running process");
+
+            let read = starts.map(|start| started(&to) == Some(start));
+            send_signal(Signal::Hard, &to);
+            wait_until(|| {
+                held.iter_mut()
+                    .any(|child| matches!(child.try_wait(), Ok(Some(_))))
+            });
+            let ended = held
+                .each_mut()
+                .map(|child| matches!(child.try_wait(), Ok(Some(_))));
+
+            for child in &mut held {
+                cleanup(child);
+            }
+            assert_eq!((read, ended), ([true, false], [true, false]));
+        }
+
+        /// A running process is addressed through a handle opened on it, and one already gone,
+        /// its last handle closed, is not addressed.
+        #[test]
+        fn a_running_process_is_held_by_a_handle_and_a_gone_one_is_not_addressed() {
+            let mut running = sleeper_in(Path::new("/"));
+            let gone = {
+                let mut gone = sleeper_in(Path::new("/"));
+                cleanup(&mut gone);
+                gone.id()
+            };
+            let pids = [running.id(), gone];
+
+            let answers =
+                pids.map(|pid| address(pid, true).map(|to| (to.pid, to.descriptor.is_some())));
+
+            cleanup(&mut running);
+            assert_eq!(answers, [Some((pids[0], true)), None]);
+        }
+    }
+
     // Unix only: on Windows the fixture shell's `$!` is a pid of the shell's own, not the OS's.
     #[cfg(unix)]
     #[test]
