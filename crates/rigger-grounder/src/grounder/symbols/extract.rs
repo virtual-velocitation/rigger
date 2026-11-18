@@ -4636,10 +4636,11 @@ pub fn f() -> u8 {
     /// outside it, over a tuple field's `pub`, an enum variant's, an impl block's and a method's
     /// alike, and up to the first other node only; a file opening with inner doc lines - `//!`,
     /// `/*! */`, `#![doc = ".."]` - has its file span from the first to the last of them; a
-    /// `#[doc(hidden)]`, `////`, `/**/` and `/***/` is no doc line; and under a fixture query a
-    /// `@doc` capture in a definition's match gives that definition the captured span, over the
-    /// rule's, while a capture in the match of a definition the extraction drops gives no other
-    /// definition a span.
+    /// `#[doc(hidden)]`, a doc attribute whose value is no string literal (`include_str!(..)`,
+    /// `concat!(..)`), `////`, `/**/` and `/***/` is no doc line, while a raw string value is
+    /// one; and under a fixture query a `@doc` capture in a definition's match gives that
+    /// definition the captured span, over the rule's, while a capture in the match of a
+    /// definition the extraction drops gives no other definition a span.
     #[test]
     fn rust_doc_spans_are_extracted() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -4685,6 +4686,20 @@ pub fn f() -> u8 {
                 "#[doc(hidden)]\nfn h() {}\n////\nfn i() {}\n/**/\nfn j() {}\n/***/\nfn k() {}\n",
                 None,
                 vec![("h", None), ("i", None), ("j", None), ("k", None)],
+            ),
+            (
+                "a doc value that is no string literal",
+                false,
+                "#![doc = include_str!(\"../README.md\")]\n#[doc = include_str!(\"x.md\")]\nfn d() {}\n/// A.\n#[doc = concat!(\"B\", \".\")]\n/// C.\nfn e() {}\n",
+                None,
+                vec![("d", None), ("e", Some((4, 6)))],
+            ),
+            (
+                "raw string doc values",
+                false,
+                "#![doc = r\"Crate.\"]\n#[doc = r#\"Raw.\"#]\nfn r() {}\n",
+                Some((1, 1)),
+                vec![("r", Some((2, 2)))],
             ),
             (
                 "an inner doc attribute and block, then an item's doc",
