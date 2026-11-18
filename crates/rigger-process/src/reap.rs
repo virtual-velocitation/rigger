@@ -333,21 +333,21 @@ fn is_signal_eligible(pid: u32, self_pid: u32, self_ancestors: &HashSet<u32>) ->
     pid > 1 && pid != self_pid && !self_ancestors.contains(&pid)
 }
 
-/// Whether `target`, addressed as `to`, is still safe to signal RIGHT NOW, independent of any
-/// cwd/base match: [`is_signal_eligible`] AND the start time of the process `to` addresses,
-/// re-read this instant ([`started`]), still matches what the scan recorded. This is the
-/// pid-identity half of the TOCTOU guard (spec 78) - a pid that exited and was recycled onto an
-/// unrelated process in the gap since the scan reads a DIFFERENT start time and is refused -
-/// shared by both the cwd-scanned signal path ([`signal_if_unchanged`]) and the pid-tree-walked
-/// one ([`Tree::send`]), so there is exactly ONE TOCTOU recheck regardless of which kind of
-/// snapshot found the candidate.
+/// Whether `target` is still safe to signal RIGHT NOW, independent of any cwd/base match:
+/// [`is_signal_eligible`] AND `start`, the start time of the process its signal addresses read
+/// this instant ([`started`]), still matches what the scan recorded. This is the pid-identity
+/// half of the TOCTOU guard (spec 78) - a pid that exited and was recycled onto an unrelated
+/// process in the gap since the scan reads a DIFFERENT start time and is refused - shared by the
+/// cwd-scanned signal path ([`signal_if_unchanged`]), the pid-tree-walked one ([`Tree::send`])
+/// and the undo of a freeze that reached another process, so there is exactly ONE TOCTOU recheck
+/// regardless of which kind of snapshot found the candidate.
 fn toctou_still_same_process(
     target: &Identity,
-    to: &Addressee,
+    start: Option<u64>,
     self_pid: u32,
     self_ancestors: &HashSet<u32>,
 ) -> bool {
-    is_signal_eligible(target.pid, self_pid, self_ancestors) && started(to) == Some(target.start)
+    is_signal_eligible(target.pid, self_pid, self_ancestors) && start == Some(target.start)
 }
 
 /// Address `target` through `os` ([`EndOs::address`]), then re-read its cwd
@@ -371,17 +371,24 @@ fn signal_if_unchanged(
     if !os_process::cwd_lies_in(target.pid, base) {
         return;
     }
-    if toctou_still_same_process(target, &to, self_pid, self_ancestors) {
+    if toctou_still_same_process(target, started(&to), self_pid, self_ancestors) {
         os.send(signal, &to);
     }
 }
 
 /// The fault an end reports when a freeze it sent to `pid` by the pid alone reached another
-/// process than the one its checks passed ([`Tree::send`]).
-fn freeze_reached_another(pid: u32) -> String {
+/// process than the one its checks passed ([`Tree::send`]): that process was `resumed` once a
+/// second read confirmed it still held the pid, and was sent nothing more where none did.
+fn freeze_reached_another(pid: u32, resumed: bool) -> String {
+    let undo = if resumed {
+        "it was resumed at once"
+    } else {
+        "its pid did not read as that process again, so it was sent nothing more and may stay \
+         frozen"
+    };
     format!(
         "a freeze sent to pid {pid} by the pid alone reached another process, one that took the \
-         pid after the freeze's checks; it was resumed at once"
+         pid after the freeze's checks; {undo}"
     )
 }
 
@@ -824,8 +831,9 @@ impl EndReport {
 /// The OS facilities an end and a sweep use, so a test can add a stranger to the table an end
 /// walks, fail a parent read the chain check makes, see what is addressed, or keep one signal from
 /// landing. A test can break a chain this way, never make one. The start-time check every signal
-/// passes reads the live OS and is never part of this; the read that confirms where a freeze sent
-/// by pid landed is, since an answer there can only undo that freeze.
+/// passes reads the live OS and is never part of this; the reads that confirm where a freeze sent
+/// by pid landed, and that a process it reached instead still holds the pid, are, since an answer
+/// there can only undo that freeze, or keep it from being undone.
 trait EndOs {
     /// The process table ([`crate::os_process::table`]).
     fn table(&mut self) -> Vec<os_process::Entry>;
@@ -838,7 +846,8 @@ trait EndOs {
     fn send(&mut self, signal: Signal, to: &Addressee);
     /// The start time of the process `to` addresses ([`started`]), read again right after a
     /// freeze sent to it by its pid alone, to confirm the freeze reached the process its checks
-    /// passed.
+    /// passed, and once more before a freeze that reached another process is undone, to confirm
+    /// that process still holds the pid.
     fn start_after_freeze(&mut self, to: &Addressee) -> Option<u64>;
     /// How a walk of [`EndOs::table`] reads a child started in its parent's own tick
     /// ([`os_process::TIES`]).
@@ -944,10 +953,13 @@ impl Tree {
     /// ([`toctou_still_same_process`]). A freeze sent by the pid alone, with no descriptor to keep
     /// the pid its process's, is confirmed by reading the start time again
     /// ([`EndOs::start_after_freeze`]): one that reached another process, which took the pid
-    /// between the checks and the freeze, is resumed at once, reported in `report`'s faults, and
-    /// counts as not sent. A hard end or a TERM sent to a target still running just before it is
-    /// reported as sent the end ([`EndReport::sent`]), named as it read then. Answers whether it
-    /// was sent: a process that cannot be addressed, or fails either check, is never signalled.
+    /// between the checks and the freeze, is reported in `report`'s faults and counts as not
+    /// sent. That process is resumed through the identity check every signal passes, against the
+    /// start the read answered, read once more: only while the pid still names it, and otherwise
+    /// it is sent nothing more and the fault says so. A hard end or a TERM sent to a target still
+    /// running just before it is reported as sent the end ([`EndReport::sent`]), named as it read
+    /// then. Answers whether it was sent: a process that cannot be addressed, or fails either
+    /// check, is never signalled.
     fn send(
         &self,
         os: &mut impl EndOs,
@@ -959,7 +971,7 @@ impl Tree {
             return false;
         };
         let holds = chain_reaches(target.pid, self.root, |pid| os.parent(pid))
-            && toctou_still_same_process(target, &to, self.self_pid, &self.self_ancestors);
+            && toctou_still_same_process(target, started(&to), self.self_pid, &self.self_ancestors);
         if !holds {
             return false;
         }
@@ -969,9 +981,23 @@ impl Tree {
         os.send(signal, &to);
         if signal == Signal::Stop && to.descriptor.is_none() {
             let reached = os.start_after_freeze(&to);
-            if reached.is_some_and(|start| start != target.start) {
-                os.send(Signal::Resume, &to);
-                report.faults.push(freeze_reached_another(target.pid));
+            if let Some(start) = reached.filter(|start| *start != target.start) {
+                let another = Identity {
+                    pid: target.pid,
+                    start,
+                };
+                let confirmed = toctou_still_same_process(
+                    &another,
+                    os.start_after_freeze(&to),
+                    self.self_pid,
+                    &self.self_ancestors,
+                );
+                if confirmed {
+                    os.send(Signal::Resume, &to);
+                }
+                report
+                    .faults
+                    .push(freeze_reached_another(target.pid, confirmed));
                 return false;
             }
         }
@@ -3028,11 +3054,12 @@ mod tests {
         /// of each read of the table or each hard end, as its [`ForkAt`] says. `tied`'s parent's
         /// record reads `tied`'s start, and `ties`, where some, is the tie rule a walk reads the
         /// table by. Every process is addressed by its pid alone where `by_pid` holds, as on an OS
-        /// without process descriptors, and the first freeze sent to `misfire_once` by its pid is
-        /// read, right after, as having reached another process. Where `no_freeze` holds, the OS
-        /// has no freeze, as on Windows: every freeze and resume is dropped. Every signal the end sends is
-        /// recorded, dropped or not, and so is each process sent a freeze while its parent did not
-        /// read frozen, and each address and parent read, in order.
+        /// without process descriptors, and the next reads, as many as `misfires` names, of where a
+        /// freeze sent to its pid by the pid alone landed read another process's start. Where
+        /// `no_freeze` holds, the OS has no freeze, as on Windows: every freeze and resume is
+        /// dropped. Every signal the end sends is recorded, dropped or not, and so is each process
+        /// sent a freeze while its parent did not read frozen, and each address and parent read, in
+        /// order.
         #[derive(Default)]
         struct Rigged {
             tied: Option<u32>,
@@ -3046,7 +3073,7 @@ mod tests {
             swallowed: Option<u32>,
             forker: Option<Forker>,
             by_pid: bool,
-            misfire_once: Option<u32>,
+            misfires: Option<(u32, usize)>,
             no_freeze: bool,
             sent: Vec<(Signal, u32)>,
             frozen_under_a_running_parent: Vec<u32>,
@@ -3185,11 +3212,13 @@ mod tests {
 
             fn start_after_freeze(&mut self, to: &Addressee) -> Option<u64> {
                 let start = started(to);
-                if self.misfire_once == Some(to.pid) {
-                    self.misfire_once = None;
-                    return start.map(|start| start + 1);
+                match &mut self.misfires {
+                    Some((pid, left)) if *pid == to.pid && *left > 0 => {
+                        *left -= 1;
+                        start.map(|start| start + 1)
+                    }
+                    _ => start,
                 }
-                start
             }
 
             fn ties(&self) -> Ties {
@@ -3239,18 +3268,24 @@ mod tests {
 
         /// The watched end of a tree whose one member's first freeze is read, right after, as having
         /// reached another process, as when one took the member's pid between the freeze's checks
-        /// and the freeze, addressed `by_pid` alone or through a process descriptor: by the pid,
-        /// the process the freeze reached is resumed at once (`resumed`) and the end says so;
-        /// through a descriptor, which reaches the member or none, nothing is read again. The tree
-        /// is ended either way.
-        fn a_freeze_read_as_reaching_another_process(by_pid: bool, resumed: bool) {
+        /// and the freeze, with the next of `misfires` reads reading that process again,
+        /// addressed `by_pid` alone or through a process descriptor. By the pid, the process the
+        /// freeze reached is resumed at once only where a second read confirms it still holds the
+        /// pid, and is sent nothing more where none does (`resumed`), and the end says which;
+        /// through a descriptor, which reaches the member or none, nothing is read again
+        /// (`resumed` is `None`). The tree is ended either way.
+        fn a_freeze_read_as_reaching_another_process(
+            by_pid: bool,
+            misfires: usize,
+            resumed: Option<bool>,
+        ) {
             let mut witness = Witness::new();
             let mut main = tree(&witness, "holder; up; held");
             assert!(witness.wait_up(2), "the fixture's two processes are up");
             let holder = only_child(main.id());
             let mut os = Rigged {
                 by_pid,
-                misfire_once: Some(holder),
+                misfires: Some((holder, misfires)),
                 ..Rigged::default()
             };
 
@@ -3258,11 +3293,10 @@ mod tests {
 
             let freeze = position(&os.sent, (Signal::Stop, holder));
             let next = os.sent.get(freeze + 1).copied();
-            let faults = if resumed {
-                vec![freeze_reached_another(holder)]
-            } else {
-                Vec::new()
-            };
+            let faults: Vec<String> = resumed
+                .map(|resumed| freeze_reached_another(holder, resumed))
+                .into_iter()
+                .collect();
             assert_eq!(
                 (
                     next == Some((Signal::Resume, holder)),
@@ -3270,7 +3304,7 @@ mod tests {
                     witness.read()
                 ),
                 (
-                    resumed,
+                    resumed == Some(true),
                     (
                         vec![holder],
                         EndReport {
@@ -3286,11 +3320,13 @@ mod tests {
         }
 
         crate::test_cases! {
-            a_freeze_by_pid_that_reached_another_process_resumes_it_at_once_and_says_so:
-                a_freeze_read_as_reaching_another_process(true, true);
+            a_freeze_by_pid_that_reached_another_process_resumes_it_once_confirmed:
+                a_freeze_read_as_reaching_another_process(true, 2, Some(true));
+            a_freeze_by_pid_that_reached_another_process_unconfirmed_sends_nothing_more:
+                a_freeze_read_as_reaching_another_process(true, 1, Some(false));
             #[cfg(target_os = "linux")]
             a_freeze_through_a_descriptor_is_never_read_again:
-                a_freeze_read_as_reaching_another_process(false, false);
+                a_freeze_read_as_reaching_another_process(false, 2, None);
         }
 
         /// Process descriptors, on the one OS that has them.
