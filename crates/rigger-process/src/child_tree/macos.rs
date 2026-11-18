@@ -88,8 +88,9 @@ impl Wake {
     }
 
     /// Waits up to `timeout` for a watched process to fork or exit; false once the stop is
-    /// dropped. A wait the kqueue fails waits out `timeout` instead, so a failing kqueue never
-    /// turns the watcher into a busy loop.
+    /// dropped. A wait the kqueue fails waits out `timeout` instead and then reads the stop
+    /// without blocking ([`Wake::stopped`]), so a failing kqueue never turns the watcher into a
+    /// busy loop, and never keeps it from its stop.
     pub(super) fn wait(&mut self, timeout: Duration) -> bool {
         let limit = libc::timespec {
             tv_sec: libc::time_t::try_from(timeout.as_secs()).unwrap_or(libc::time_t::MAX),
@@ -110,11 +111,67 @@ impl Wake {
         };
         let Ok(count) = usize::try_from(count) else {
             std::thread::sleep(timeout);
-            return true;
+            return !self.stopped();
         };
         let stop = self.stop.as_raw_fd() as usize;
         !events[..count.min(EVENTS)]
             .iter()
             .any(|event| event.filter == libc::EVFILT_READ && event.ident == stop)
+    }
+
+    /// Whether the stop is dropped, read without blocking: its pipe then reads its end.
+    fn stopped(&self) -> bool {
+        let mut stop = libc::pollfd {
+            fd: self.stop.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: one `pollfd`, which lives across the call, is read and written, and a timeout
+        // of 0 never blocks.
+        let ready = unsafe { libc::poll(&mut stop, 1, 0) };
+        ready > 0 && stop.revents & (libc::POLLIN | libc::POLLHUP) != 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    /// How long a row's wait may wait for a fork or an exit.
+    const TIMEOUT: Duration = Duration::from_millis(200);
+
+    /// What a row's wake waits on: a kqueue, or a descriptor that is none, so every wait on it
+    /// fails.
+    enum Queue {
+        Kqueue,
+        NotAQueue,
+    }
+
+    /// A wait on a wake waiting on `queue`, with its stop dropped where `stopped`, answers
+    /// `goes_on` within a bound of the timeout.
+    fn waits(queue: Queue, stopped: bool, goes_on: bool) {
+        let (mut wake, stopper) = Wake::new().expect("a wake");
+        if let Queue::NotAQueue = queue {
+            let file = std::fs::File::open("/dev/null").expect("open /dev/null");
+            wake.queue = OwnedFd::from(file);
+        }
+        let _held = (!stopped).then_some(stopper);
+        let started = Instant::now();
+
+        let answered = wake.wait(TIMEOUT);
+
+        assert_eq!(
+            (answered, started.elapsed() < TIMEOUT * 10),
+            (goes_on, true)
+        );
+    }
+
+    crate::test_cases! {
+        a_wait_ends_once_the_stop_is_dropped: waits(Queue::Kqueue, true, false);
+        a_wait_the_kqueue_fails_ends_once_the_stop_is_dropped:
+            waits(Queue::NotAQueue, true, false);
+        a_wait_the_kqueue_fails_goes_on_while_the_stop_is_held:
+            waits(Queue::NotAQueue, false, true);
     }
 }
