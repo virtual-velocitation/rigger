@@ -762,15 +762,16 @@ impl Leftover {
 }
 
 /// What an end ended and what it left: `ended`, the processes an ordinary end
-/// (`ReapedChild::finish`) found running besides the main and ended, which a stop's end does not
-/// count; `residue`, the processes it signalled that are still running past [`END_BOUND`];
+/// (`ReapedChild::finish`) found running besides the main and sent the end to, which a stop's
+/// end does not count; `residue`, the processes it signalled that are still running past [`END_BOUND`];
 /// `skipped`, those still running that it found but never signalled, because at signal time their
 /// parent chain no longer reached the tree's root (an escape, or a stranger that took a pid), or
 /// because the walk could not tell them from strangers ([`Walk::untrusted`]); `faults`, what the
 /// OS refused it; and `by_pid_because`, why it signalled by pid.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndReport {
-    /// Found running besides the main by an ordinary end, and gone once it ended.
+    /// Found running besides the main by an ordinary end, sent the end, and gone after it: one
+    /// may have exited on its own between the end's reading of the tree and its signal.
     pub ended: Vec<Leftover>,
     /// Signalled, and still running past the bound.
     pub residue: Vec<Leftover>,

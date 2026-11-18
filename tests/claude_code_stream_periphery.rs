@@ -1422,12 +1422,12 @@ mod forks_at_stop {
         if let (Window::Result, Leaves::Nothing) = (window, leaves) {
             let holder = format!(" ({})", shell_name());
             let named = fx.activities().into_iter().any(|line| {
-                line.contains("the end of the session ended 1 process besides its main: ")
+                line.contains("the end of the session was sent to 1 process besides its main: ")
                     && line.ends_with(&holder)
             });
             assert!(
                 named,
-                "{mode}: the ordinary end names the holder it ended: {:?}",
+                "{mode}: the ordinary end names the holder it was sent to: {:?}",
                 fx.activities()
             );
         }

@@ -429,8 +429,8 @@ pub(crate) fn spawn_config_args(
 }
 
 /// The lines an end of a session's tree is said in ([`crate::child_tree::EndReport`]), each led
-/// by `host`, the host that says it: first how many processes an ordinary end ended besides the
-/// main, so a daemon ended with its session shows in the log; then, in a line of its own, each
+/// by `host`, the host that says it: first how many processes besides the main an ordinary end
+/// was sent to, so a daemon ended with its session shows in the log; then, in a line of its own, each
 /// call the OS refused the end, as the report says it, and how many processes the end signalled
 /// and could not end, and how many it found outside the tree and never signalled. Each process is
 /// named by pid and program, a still-frozen one marked so. Empty when the end ended and left
@@ -475,7 +475,7 @@ pub(crate) fn end_lines(report: &crate::child_tree::EndReport, host: &str) -> Ve
             "processes"
         };
         lines.push(format!(
-            "{host}: the end of the session ended {} {noun} besides its main: {}",
+            "{host}: the end of the session was sent to {} {noun} besides its main: {}",
             report.ended.len(),
             named(&report.ended)
         ));
@@ -735,22 +735,23 @@ mod tests {
             &["stream: the end of the session left processes running; 2 it signalled and could \
                not end: 41 (sleep), 42 (node, stopped)"],
         );
-        an_ordinary_end_that_ended_processes_names_each_by_pid_and_program: assert_end_lines(
+        an_ordinary_end_names_each_process_it_was_sent_to_by_pid_and_program: assert_end_lines(
             &[(41, "sleep", false), (42, "node", false)],
             &[],
             &[],
             &[],
-            &["stream: the end of the session ended 2 processes besides its main: 41 (sleep), 42 \
-               (node)"],
+            &["stream: the end of the session was sent to 2 processes besides its main: 41 \
+               (sleep), 42 (node)"],
         );
-        an_ordinary_end_that_ended_one_process_and_left_one_says_each_in_a_line_of_its_own:
+        an_ordinary_end_sent_to_one_process_that_left_one_says_each_in_a_line_of_its_own:
             assert_end_lines(
                 &[(41, "sleep", false)],
                 &[],
                 &[(77, "daemon", false)],
                 &[],
                 &[
-                    "stream: the end of the session ended 1 process besides its main: 41 (sleep)",
+                    "stream: the end of the session was sent to 1 process besides its main: 41 \
+                     (sleep)",
                     "stream: the end of the session left processes running; 1 outside the \
                      session's tree, never signalled: 77 (daemon)",
                 ],
