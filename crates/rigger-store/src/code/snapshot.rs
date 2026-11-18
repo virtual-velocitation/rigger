@@ -1509,6 +1509,50 @@ mod tests {
         );
     }
 
+    /// Each row: the bounds into CANDIDATES of the second module of [`code_file`]'s snapshot,
+    /// written over its MODULES row with every crc recomputed, and what decoding gives: that
+    /// module's `as_root` [start, mid) and `as_child` [mid, end) lists, or the refusal of a run
+    /// that does not start where the first module's [0, 4) ends or whose mid lies outside it.
+    #[test]
+    fn a_module_decodes_only_as_one_run_of_candidates() {
+        let view = FactsView::new(stamp(None, 1), vec![code_file()]);
+        let bytes = encode(&view, &Groupings::default()).expect("encodes");
+        let rewrite = |bounds: [u32; 3]| {
+            let parsed = Container::parse(&bytes, MAGIC, VERSION).expect("parses");
+            let sections: Vec<(u16, Vec<u8>)> = (STRINGS..=IDX_PROOF_FILE)
+                .map(|kind| {
+                    let mut section = parsed.section(kind).expect("every section").to_vec();
+                    if kind == MODULES {
+                        let at = MODULE_ROW + MOD_CANDS;
+                        let row: Vec<u8> = bounds.iter().flat_map(|b| b.to_le_bytes()).collect();
+                        section[at..at + 12].copy_from_slice(&row);
+                    }
+                    (kind, section)
+                })
+                .collect();
+            write_container(MAGIC, VERSION, parsed.payload, &sections).expect("writes")
+        };
+        assert_eq!(rewrite([4, 5, 5]), bytes, "the bounds as encoded");
+        const REFUSED: &str = "module candidates are not one run a module";
+        let cases: [(&str, [u32; 3], Result<[&[&str]; 2], &str>); 5] = [
+            ("as encoded", [4, 5, 5], Ok([&["src/p/y.rs"], &[]])),
+            ("an empty as_root", [4, 4, 5], Ok([&[], &["src/p/y.rs"]])),
+            ("a gap before the run", [5, 5, 5], Err(REFUSED)),
+            ("mid before start", [4, 3, 5], Err(REFUSED)),
+            ("end before mid", [4, 5, 4], Err(REFUSED)),
+        ];
+        for (name, bounds, want) in cases {
+            let got = Snapshot::decode(rewrite(bounds)).map(|snap| {
+                let modules = snap.modules("src/ünï.rs").expect("the code file");
+                [modules[1].as_root.clone(), modules[1].as_child.clone()]
+            });
+            let want = want
+                .map(|lists| lists.map(|list| list.iter().map(|p| p.to_string()).collect()))
+                .map_err(String::from);
+            assert_eq!(got, want, "{name}");
+        }
+    }
+
     /// Each row: a stamp, the files and the groupings a view holds. Every section must read back
     /// as written: the stamp, the file list, each file's facts, both leaf indexes and the
     /// groupings; and re-encoding the snapshot yields the same bytes.
