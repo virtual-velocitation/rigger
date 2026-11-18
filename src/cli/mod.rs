@@ -8985,6 +8985,65 @@ mod tests {
         );
     }
 
+    /// The orphan sweep keeps a tree git marks locked (a person's lock, an add git did not
+    /// finish) out of its reclaim: nothing in it is reaped or removed and its registration stays,
+    /// and the trees beside it are still reclaimed.
+    #[test]
+    fn reclaim_orphan_scratch_keeps_a_tree_git_marks_locked_and_reclaims_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_committed_repo(&root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+        let locked = root.join("rigger-wt-a-locked");
+        let done = root.join("rigger-wt-done");
+        Worktree::create(repo, locked.to_str().unwrap(), "rigger/u/a-locked", "").unwrap();
+        Worktree::create(repo, done.to_str().unwrap(), "rigger/u/done", "").unwrap();
+        write_file(&locked.join("work.txt"), b"a person's work\n");
+        git_ok(&locked, &["add", "work.txt"]);
+        git_ok(&locked, &["commit", "-q", "-m", "work"]);
+        git_ok(
+            &root,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "a person's lock",
+                locked.to_str().unwrap(),
+            ],
+        );
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs(["a-locked", "done"]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        let removed = reclaim_orphan_scratch(
+            repo,
+            root.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(removed, 1, "only the tree git does not mark is reclaimed");
+        assert!(
+            locked.join("work.txt").exists(),
+            "the tree git marks locked keeps its work"
+        );
+        let listed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&listed.stdout);
+        assert!(
+            listed
+                .lines()
+                .any(|line| line == format!("worktree {}", locked.display())),
+            "the tree git marks locked keeps its registration: {listed}"
+        );
+        assert!(!done.exists(), "the tree beside it is reclaimed");
+    }
+
     #[test]
     fn reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally() {
         // spec 77 criterion 5 (BOUNDED SHARED CACHE), Design: "a failed tombstone delete
