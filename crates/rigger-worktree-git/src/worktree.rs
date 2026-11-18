@@ -3410,11 +3410,13 @@ enum Standing {
 }
 
 /// Each conflict-marker line [`conflict_markers_present`] reads, by path, [`Standing`] and line
-/// text, with the number of times it stands so at that path.
+/// text without its line ending, with the number of times it stands so at that path.
 type MarkerLines = std::collections::BTreeMap<(String, Standing, String), usize>;
 
-/// Count `line` once more as standing `standing` at `path` in `lines`.
+/// Count `line` once more as standing `standing` at `path` in `lines`, keyed without the trailing
+/// `\r` of a CRLF file, so a line a CRLF checkout of an LF commit reads is the commit's own.
 fn stand(lines: &mut MarkerLines, path: &str, standing: Standing, line: &str) {
+    let line = line.strip_suffix('\r').unwrap_or(line);
     *lines
         .entry((path.to_string(), standing, line.to_string()))
         .or_default() += 1;
