@@ -4086,7 +4086,8 @@ fn reclaim_orphan_scratch(
             // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
             // explicitly - makes that divergence structurally impossible to reintroduce.
             let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
-            let dirty = declared_slugs.contains(slug)
+            let dirty = rigger::worktree::owner_names(slug)
+                .any(|owner| declared_slugs.contains(owner))
                 && path.join(".git").exists()
                 && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
@@ -4197,7 +4198,7 @@ fn scan_residue(
         report.shadow_stores.push((rel, size));
     }
     for b in local_unit_branches {
-        if !live_branches.contains(b) {
+        if !rigger::worktree::owner_names(b).any(|owner| live_branches.contains(owner)) {
             report.branches.push(b.clone());
         }
     }
@@ -4217,7 +4218,9 @@ fn scan_residue(
 /// deterministic `rigger-wt-foo-deadbeef` worktree that would otherwise decompose as
 /// live-`foo` + uuid-`deadbeef` and be spared. `dead_slugs` (the current run's terminal
 /// units) resolves it - an exact dead slug is its OWN (dead) unit's worktree, never a live
-/// unit's per-process tail (adv-u6res-uuid8-tail-false-match), so it stays residue.
+/// unit's per-process tail (adv-u6res-uuid8-tail-false-match), so it stays residue. A speculation
+/// lane's tree belongs to a live unit as the unit's own tree does
+/// ([`rigger::worktree::owner_names`]).
 fn worktree_belongs_to_live(
     name: &str,
     live_slugs: &std::collections::HashSet<String>,
@@ -4229,12 +4232,14 @@ fn worktree_belongs_to_live(
     if dead_slugs.contains(rest) {
         return false;
     }
-    live_slugs.iter().any(|slug| {
-        rest == slug.as_str()
-            || rest
-                .strip_prefix(slug.as_str())
-                .and_then(|s| s.strip_prefix('-'))
-                .is_some_and(is_uuid8)
+    rigger::worktree::owner_names(rest).any(|owner| {
+        live_slugs.iter().any(|slug| {
+            owner == slug.as_str()
+                || owner
+                    .strip_prefix(slug.as_str())
+                    .and_then(|s| s.strip_prefix('-'))
+                    .is_some_and(is_uuid8)
+        })
     })
 }
 

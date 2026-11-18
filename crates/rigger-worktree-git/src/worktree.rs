@@ -113,6 +113,39 @@ pub enum LandOutcome {
 /// The namespace a unit's branch stands in: `rigger/u/<unit>`.
 pub const UNIT_BRANCHES: &str = "rigger/u/";
 
+/// What a speculation lane's tree dir and branch carry after their unit's ([`lane_name`]).
+const LANE_SUFFIX: &str = "-spec";
+
+/// The name speculation lane `lane` of a unit gives its tree dir or its branch, from the unit's
+/// own (`rigger-wt-<unit>`, `rigger/u/<unit>`): lane 0 works the unit's own tree on the unit's
+/// own branch, and every other lane `<name>-spec<lane>`, so no two lanes share either.
+pub fn lane_name(unit_name: &str, lane: u32) -> String {
+    if lane == 0 {
+        unit_name.to_string()
+    } else {
+        format!("{unit_name}{LANE_SUFFIX}{lane}")
+    }
+}
+
+/// The unit's own name inside a name [`lane_name`] gives a lane past 0, read over a tree dir's
+/// name, its slug or a branch alike, or `None` for a name no such lane gives.
+pub fn lane_unit(name: &str) -> Option<&str> {
+    let (unit, lane) = name.rsplit_once(LANE_SUFFIX)?;
+    let numbered = lane
+        .parse::<u32>()
+        .is_ok_and(|n| n > 0 && n.to_string() == lane);
+    (numbered && !unit.is_empty()).then_some(unit)
+}
+
+/// The names a unit's tree or branch named `name` answers the sweeps' questions as (is it live,
+/// does the workflow declare it, is a spawn of it in flight): its own, then, for a speculation
+/// lane's ([`lane_unit`]), its unit's, since a lane works for its unit and its sessions are
+/// recorded as the unit's. A run held with a lane's tree in place so finds the tree at its
+/// release; a name that only looks like a lane's is still answered as its own first.
+pub fn owner_names(name: &str) -> impl Iterator<Item = &str> {
+    std::iter::once(name).chain(lane_unit(name))
+}
+
 /// The namespace a unit's kept tree stands in ([`Worktree::keep_tree_aside`]): `rigger/kept/<unit>`.
 pub const KEPT_REFS: &str = "rigger/kept/";
 
@@ -2489,9 +2522,11 @@ pub fn sweep_terminal_logged(
         // whose path merely begins with the root's text is not under it.
         let under =
             crate::reap::strictly_under(std::path::Path::new(d), std::path::Path::new(root));
+        // A speculation lane's tree answers as its unit's too ([`owner_names`]).
+        let owners: Vec<&str> = owner_names(branch).collect();
         if under.is_none()
             || branch == run_branch
-            || live_branches.contains(branch)
+            || owners.iter().any(|owner| live_branches.contains(*owner))
             || !is_ancestor(repo, branch, run_branch)
         {
             continue;
@@ -2541,7 +2576,8 @@ pub fn sweep_terminal_logged(
         // each growing its own inline `git status` call that can silently pick a
         // different failure direction. `unwrap_or(true)`: an unreadable status fails
         // CLOSED (dirty), never open - see that function's own doc comment for why.
-        let dirty = declared_units.contains(branch) && path_is_dirty(d).unwrap_or(true);
+        let dirty = owners.iter().any(|owner| declared_units.contains(*owner))
+            && path_is_dirty(d).unwrap_or(true);
         if dirty {
             log(&format!(
                 "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - \
@@ -2551,17 +2587,26 @@ pub fn sweep_terminal_logged(
         }
         // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
         // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
-        // dead/live-slug split already makes for a branch in this exact shape.
-        let unit = branch.strip_prefix(UNIT_BRANCHES).unwrap_or(branch);
-        let fence = spawn_fence(events, unit);
-        if !fence.permits_reclaim() {
+        // dead/live-slug split already makes for a branch in this exact shape. A lane's tree
+        // is fenced by its unit's spawns too, which are recorded as the unit's.
+        let fences: Vec<(&str, SpawnFence)> = owners
+            .iter()
+            .map(|owner| {
+                let unit = owner.strip_prefix(UNIT_BRANCHES).unwrap_or(owner);
+                (unit, spawn_fence(events, unit))
+            })
+            .collect();
+        if let Some((unit, fence)) = fences.iter().find(|(_, fence)| !fence.permits_reclaim()) {
             log(&format!(
                 "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
                 fence.evidence(unit)
             ));
             continue;
         }
-        if !matches!(fence, SpawnFence::NoSpawn) {
+        if let Some((unit, fence)) = fences
+            .iter()
+            .find(|(_, fence)| !matches!(fence, SpawnFence::NoSpawn))
+        {
             log(&format!(
                 "rigger run: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
                 fence.evidence(unit)

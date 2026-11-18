@@ -8490,17 +8490,9 @@ impl RunCtx<'_> {
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
         );
-        let dir = unit_worktree_dir(&scratch, &st.name);
-        let branch = unit_branch(&st.name);
-        if lane == 0 {
-            return git_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch));
-        }
-        git_step(Worktree::create(
-            &self.deps.repo,
-            &format!("{dir}-spec{lane}"),
-            &format!("{branch}-spec{lane}"),
-            &scratch,
-        ))
+        let dir = worktree::lane_name(&unit_worktree_dir(&scratch, &st.name), lane);
+        let branch = worktree::lane_name(&unit_branch(&st.name), lane);
+        git_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch))
     }
 
     /// First-green-wins speculation (spec 13, unit 3). A unit class declaring
