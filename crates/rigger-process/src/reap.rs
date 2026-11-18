@@ -1142,8 +1142,8 @@ std::cfg_select! {
             report
         }
 
-        /// How many processes the job `job` holds that are still running, or `None` when it
-        /// cannot be read.
+        /// How many processes the job `job` counts as active, or `None` when it cannot be read. A
+        /// process stops counting once the OS marks it ended, which can be before it has exited.
         fn job_active(job: windows_sys::Win32::Foundation::HANDLE) -> Option<u32> {
             use windows_sys::Win32::Foundation::FALSE;
             use windows_sys::Win32::System::JobObjects::{
