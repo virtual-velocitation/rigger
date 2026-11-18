@@ -2862,13 +2862,15 @@ rigger::test_cases! {
             EarlierTip::InHead,
             None,
         );
-    /// A quarantine a crashed call began on such a branch, its ref already made, is finished
-    /// and recorded rather than its canonical name deleted with that ref left unrecorded.
-    a_criterion_less_stages_begun_quarantine_of_a_tip_head_holds_is_finished_and_recorded:
+    /// A quarantine a crashed call began on such a branch, its ref already made, carries
+    /// nothing HEAD lacks either: branch collection reaps the ref as the run starts, and the
+    /// stage deletes the branch with no ref and no mark, as it does any branch whose tip HEAD
+    /// holds, so no ref stands unrecorded.
+    a_criterion_less_stages_begun_quarantine_of_a_tip_head_holds_is_reaped_unrecorded:
         assert_a_criterion_less_stage_meets_an_earlier_branch(
             Some("specs/124-another-spec.md"),
             EarlierTip::InHeadWithQuarantineBegun,
-            Some("124-another-spec"),
+            None,
         );
     /// A check-in branch last started under this run's own spec is this stage's own earlier
     /// work, and the stage adopts it.
