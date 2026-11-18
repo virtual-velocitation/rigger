@@ -57,6 +57,7 @@
 use rigger::grounder::grounder_for;
 use std::collections::BTreeMap;
 use std::fs;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -115,6 +116,8 @@ fn seed_embedding_index_poison(root: &Path) -> BTreeMap<String, FileFingerprint>
 struct FileFingerprint {
     is_dir: bool,
     len: u64,
+    // Unix only: Windows has no mode bits.
+    #[cfg(unix)]
     mode: u32,
     content: Option<Vec<u8>>,
 }
@@ -143,6 +146,7 @@ fn fingerprint_subtree(dir: &Path) -> BTreeMap<String, FileFingerprint> {
                     FileFingerprint {
                         is_dir,
                         len: meta.len(),
+                        #[cfg(unix)]
                         mode: meta.permissions().mode(),
                         content: fs::read(&path).ok(),
                     },

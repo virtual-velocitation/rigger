@@ -14,10 +14,13 @@ use common::fixtures::{
 };
 use common::git::{build_unit_branch, commit_files, init_repo, unit_branch_repo};
 use common::repo::{repo_root, run_gate_script, run_sh, stub_path};
+#[cfg(unix)]
 use common::shell_outcome;
+#[cfg(unix)]
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
+#[cfg(unix)]
 use std::process::Command;
 
 /// A fixture project holding a root `Cargo.toml`, after `rigger init --template <this repository's
@@ -491,6 +494,8 @@ fn labelled_listing() -> String {
 
 /// Sources the shipped container runtime snippet as a gate does, with XDG_RUNTIME_DIR naming
 /// the scratch directory the snippet runs in ([`source_container_snippet_with`]).
+// Unix only: the stand-in podman socket is a unix socket.
+#[cfg(unix)]
 fn source_container_snippet(
     runtime: bool,
     cli: bool,
@@ -512,6 +517,8 @@ type RuntimeDirOf = fn(&Path) -> Option<OsString>;
 /// RIGGER_TEST_AS_BYTES reaches the snippet. The snippet must source cleanly; returns its output,
 /// one line per `podman` call, and the environment it leaves exported to the tests the gate runs
 /// next.
+// Unix only: the stand-in podman socket is a unix socket.
+#[cfg(unix)]
 fn source_container_snippet_with(
     runtime_dir: RuntimeDirOf,
     runtime: bool,
@@ -567,6 +574,8 @@ fn source_container_snippet_with(
 /// runner's per-process address-space cap as the caller left it (unset here, so the runner's own
 /// default): the gate judges the container-backed tests under the same cap as a plain
 /// `cargo test` run with DOCKER_HOST already set, never under a raised one.
+// Unix only: the stand-in podman socket is a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_container_snippet_exports_the_found_socket_and_leaves_the_test_runner_cap_alone() {
     let (out, _, exported) = source_container_snippet(true, true, None);
@@ -579,6 +588,8 @@ fn the_container_snippet_exports_the_found_socket_and_leaves_the_test_runner_cap
 /// path, as the XDG base directory specification requires; an unset, empty or relative value
 /// falls back to `/run/user/<uid>`. Each row runs the snippet from a directory holding a podman
 /// socket, so a relative value naming that directory, if honoured, would find it.
+// Unix only: the stand-in podman socket is a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_container_snippet_honours_only_an_absolute_runtime_dir() {
     let uid = Command::new("id").arg("-u").output().unwrap().stdout;
@@ -616,6 +627,8 @@ fn the_container_snippet_honours_only_an_absolute_runtime_dir() {
 
 /// Once it has found the runtime, the snippet removes the labelled test containers an earlier
 /// run left behind past the default max age of 600 s, and only those: a fresh one stays.
+// Unix only: the stand-in podman socket is a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_container_snippet_removes_only_the_labelled_test_containers_past_their_age() {
     let (out, calls, _) = source_container_snippet(true, true, None);
@@ -623,6 +636,8 @@ fn the_container_snippet_removes_only_the_labelled_test_containers_past_their_ag
 }
 
 /// With RIGGER_TEST_CONTAINER_MAX_AGE_S=0 every labelled test container goes, the fresh one too.
+// Unix only: the stand-in podman socket is a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_container_snippet_removes_every_labelled_test_container_at_a_zero_max_age() {
     let (out, calls, _) = source_container_snippet(true, true, Some("0"));
@@ -662,6 +677,8 @@ fn the_kurrentdb_fixture_labels_its_container_for_the_snippet() {
 }
 
 /// With no runtime found the snippet lists and removes nothing.
+// Unix only: the stand-in podman socket is a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_container_snippet_removes_nothing_when_it_finds_no_runtime() {
     let (out, calls, _) = source_container_snippet(false, true, Some("0"));
@@ -670,6 +687,8 @@ fn the_container_snippet_removes_nothing_when_it_finds_no_runtime() {
 
 /// A runtime with neither a podman nor a docker CLI on PATH costs one line of output, never
 /// a failed gate.
+// Unix only: the stand-in podman socket is a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_container_snippet_goes_on_without_a_container_cli() {
     let (out, _, _) = source_container_snippet(true, false, Some("0"));

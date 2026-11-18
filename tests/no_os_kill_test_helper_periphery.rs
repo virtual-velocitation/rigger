@@ -142,7 +142,6 @@ fn terminate_pid_on_an_already_exited_pid_is_a_silent_no_op() {
 
 /// A dropped [`common::OwnedPid`] whose pid still carries the start time it was read with ends
 /// that process through [`common::terminate_pid`], so by SIGKILL exactly.
-#[cfg(unix)]
 #[test]
 fn a_dropped_owned_pid_ends_its_process_by_sigkill() {
     use std::os::unix::process::ExitStatusExt;
@@ -165,7 +164,6 @@ fn a_dropped_owned_pid_ends_its_process_by_sigkill() {
 /// a pid recycled onto another process reads, leaves that process running: the drop re-reads the
 /// witness and refuses a pid whose start time moved. The half-second bound is the wait a wrongly
 /// ended process would need to be seen gone.
-#[cfg(unix)]
 #[test]
 fn a_dropped_owned_pid_whose_start_time_moved_leaves_its_process_running() {
     let mut child = spawn_sleeper();

@@ -43,6 +43,8 @@ mod canary_unattributed_rejects_periphery;
 mod cause_wire_periphery;
 #[cfg(feature = "symbols")]
 mod change_path_revert_periphery;
+// Unix only: its fixture bin is symlinks ([`common::cli::ambient_tools_bin`]).
+#[cfg(unix)]
 mod checkin_mutation_diff_base_periphery;
 mod checkpoint_commit_hook_bypass_periphery;
 #[cfg(target_os = "linux")]
@@ -170,6 +172,8 @@ mod name_filter_drops_a_nameless_definition_periphery;
 mod near_folds_qualified_callers_periphery;
 mod new_run_critique_refusal_periphery;
 mod no_os_kill_audit;
+// Unix only: it pins the unix signal helpers.
+#[cfg(unix)]
 mod no_os_kill_test_helper_periphery;
 mod one_path_is_one_event_periphery;
 mod one_shot_reads_periphery;

@@ -1106,6 +1106,8 @@ fn spawn_stop_grace_loop_actually_waits_out_the_injected_duration() {
     );
 }
 
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_closing() {
     // The escalation half of THE STOP: a session that ignores its stdin closing entirely
@@ -1139,6 +1141,8 @@ fn spawn_escalates_to_the_sanctioned_reap_when_a_silent_child_ignores_its_input_
     );
 }
 
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn a_concurrent_sibling_spawns_process_in_the_same_worktree_survives_a_wall_clock_stop() {
     // The gap `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree` named: a worktree-wide

@@ -13431,6 +13431,8 @@ fn assert_refuses_before_output(root: &Path, args: &[&str], path: &str, refusal:
 /// executable elsewhere, when the operator runs `rigger validate`, then the gate's line names
 /// each requirement in its LIST order (not name order) at the PATH directory that holds it -
 /// the symlink at its own path, never its target - joined by `, `.
+// Unix only: the symlink is made by std's unix call.
+#[cfg(unix)]
 #[test]
 fn validate_reports_a_block_list_requirement_set_in_list_order_with_a_symlink_at_its_own_path() {
     let dir = initialized_project();
@@ -22842,6 +22844,8 @@ fn setup_selfhosting_repo_with_fresh_docs(root: &Path) {
 /// render over them. A binary older than the tree that re-renders committed docs to the OLD
 /// text and stages them strips a branch's rendered changes from every later commit. Drives the
 /// REAL `rigger` binary (via a `rigger` shim on PATH, spec 24) and REAL git.
+// Unix only: the hook is made executable by its mode bits.
+#[cfg(unix)]
 #[test]
 fn setup_precommit_hook_refuses_when_the_staged_render_has_drifted() {
     use std::os::unix::fs::PermissionsExt;
@@ -27618,6 +27622,8 @@ fn pid_reaches_stopped_state(pid: u32) -> bool {
 /// exemption is scoped to that one file). The stop is confirmed landed before anything races
 /// the held port; dropping the holder reaps it (SIGKILL terminates a stopped process
 /// unconditionally).
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 fn stopped_dash_holder(root: &Path) -> WatchedDash {
     let holder = WatchedDash::launch(&[], None, |cmd| cmd.current_dir(root));
     assert!(
@@ -27664,6 +27670,8 @@ fn assert_the_stopped_holder_diagnosis(err: &str, holder_pid: u32, port: u16) {
 /// stopped with `SIGSTOP` through `common::stop_pid`, the test side's one signal call; a second
 /// `rigger dash` against the SAME port must fail naming the first one's pid, its STOPPED state,
 /// and the resume-or-kill remedy - never a bare `Address already in use`.
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn cmd_dash_gives_the_stopped_listener_diagnosis_naming_resume_or_kill() {
     if !Path::new("/proc").is_dir() {
@@ -28737,6 +28745,8 @@ fn guard_write_denies_a_dot_dot_escape_from_inside_the_root() {
 
 /// A symlink planted INSIDE the root but pointing OUTSIDE it must not smuggle a write past
 /// the guard - the target's REAL location decides, not the raw text of the path.
+// Unix only: the symlink is made by std's unix call.
+#[cfg(unix)]
 #[test]
 fn guard_write_denies_a_symlink_escape() {
     let outside = tempfile::tempdir().unwrap();

@@ -1318,6 +1318,8 @@ mod tests {
         );
     }
 
+    // Unix only: the symlink is made by std's unix call.
+    #[cfg(unix)]
     #[test]
     fn resolve_write_target_follows_a_symlinked_ancestor_directory() {
         // A root-relative `..` that walks back out through an ancestor symlink must land

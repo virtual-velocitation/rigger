@@ -72,16 +72,17 @@ pub fn stub_path(work: &Path, tool: &str, stub: Option<&str>) -> String {
     let Some(stub) = stub else {
         return bin.display().to_string();
     };
-    std::os::unix::fs::symlink(
-        repo_root().join("tests/fixtures").join(stub),
-        bin.join(tool),
-    )
-    .unwrap();
-    format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
+    let script = repo_root().join("tests/fixtures").join(stub);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(script, bin.join(tool)).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(script, bin.join(tool)).unwrap();
+    let ambient = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::iter::once(bin).chain(std::env::split_paths(&ambient));
+    std::env::join_paths(path)
+        .expect("no PATH entry holds the separator")
+        .into_string()
+        .expect("the PATH is UTF-8")
 }
 
 /// The checked-in session silent 7 s, past the host's unbounded wake-up interval, then ending in a

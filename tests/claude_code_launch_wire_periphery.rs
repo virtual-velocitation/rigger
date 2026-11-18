@@ -53,17 +53,21 @@
 mod common;
 use common::fixtures::fixture_script;
 use common::fixtures::implementer_opts as opts;
+#[cfg(unix)]
 use common::fixtures::no_emit;
 
 use std::io::Read;
 use std::sync::Mutex;
 
 use rigger::child_tree::ReapedChild;
+#[cfg(unix)]
 use rigger::conductor::AgentDriver;
 use rigger::config::AgentDef;
 use rigger::driver::claude_code::Driver;
 use rigger::eventstore::sqlite::Store;
-use rigger::progress::{AgentProgress, SpawnLaunched, TYPE_AGENT_PROGRESS, TYPE_SPAWN_LAUNCHED};
+#[cfg(unix)]
+use rigger::progress::{AgentProgress, TYPE_AGENT_PROGRESS};
+use rigger::progress::{SpawnLaunched, TYPE_SPAWN_LAUNCHED};
 
 /// The checked-in fixture `crates/rigger-driver/src/driver/claude_code.rs`'s own tests already point `bin` at -
 /// see its header comment (`tests/fixtures/claude-code-echo-agent.sh`) for why it is
@@ -376,6 +380,8 @@ fn launch_resolves_an_empty_bin_to_the_literal_claude_found_on_path() {
 
 // ---- spawn(): a failed task write ends the launch through its reaper ----
 
+// Unix only: it reads or signals a process through the unix signal helpers.
+#[cfg(unix)]
 #[test]
 fn a_failed_task_write_reaps_the_child_and_names_its_error() {
     // The host writes the first message on a thread of its own, so a write that fails ends
