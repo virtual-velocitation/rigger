@@ -771,7 +771,8 @@ rigger::test_cases! {
     /// `op-u86c1-r7-out-of-line-module-resolution-follows-rust`: `module_dir` reads the file's
     /// name alone and gives a `mod.rs` FLAT sibling children, which is where rustc puts a
     /// `mod.rs`'s children too, while a declaring file named anything but `mod.rs`/`lib.rs`/
-    /// `main.rs` has its children resolved under a subdirectory named after its stem, see
+    /// `main.rs` that a declaration reaches has its children resolved under a subdirectory named
+    /// after its stem, see
     /// `an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly`) so
     /// the guarantee criterion 1 makes about this very tree is proven by a fixture, not merely
     /// inferred from the flat-root case generalizing.

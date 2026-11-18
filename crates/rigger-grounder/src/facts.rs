@@ -50,7 +50,7 @@ use crate::grounder::workflowdef;
 /// design, a rationale and a workflow fixture, so a change that is not bumped fails there; a
 /// conversion change that moves a language's facts re-pins that language's row of the same golden
 /// with the bump.
-const FACTS_GENERATION: &str = "facts-v5";
+const FACTS_GENERATION: &str = "facts-v6";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
 /// stores it and a later process compares against it.
@@ -631,16 +631,16 @@ fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
         .iter()
         .filter(|d| d.is_out_of_line_module)
         .map(|d| {
-            // `module_candidates` gives one list, placed by the declaring file's own module
-            // directory, and both lists hold it.
-            let candidates = module_candidates(path, d);
+            // Spec 117, MODULE ROOTS AT READ: both lists, off the declaring file alone, and the
+            // `#[path]` mark the resolver reads to place the file this declaration reaches.
+            let (as_root, as_child) = module_candidates(path, d);
             ModuleDecl {
                 name: d.name.clone(),
                 def: by_path[d.path.as_str()],
                 test: d.is_test,
-                as_root: candidates.clone(),
-                as_child: candidates,
-                path_attr: false,
+                as_root,
+                as_child,
+                path_attr: d.path_override.is_some(),
             }
         })
         .collect();
@@ -2021,7 +2021,7 @@ pub(crate) mod tests {
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v2", "7ffb605da6fb93dd"),
+            ("rs", "rust-tags-v2", "927b635405339750"),
             // C#
             ("cs", "csharp-tags-v4", "a6e816e8572b143e"),
             // TypeScript
@@ -2035,7 +2035,7 @@ pub(crate) mod tests {
             // Python
             ("py", "python-tags-v1", "4c940d044409c6d8"),
         ];
-        const PINNED_FACTS: (&str, &str) = ("facts-v5", "006133eb2aae6c76");
+        const PINNED_FACTS: (&str, &str) = ("facts-v6", "006133eb2aae6c76");
         fn digest(facts: &impl std::fmt::Debug) -> String {
             format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()))
         }
@@ -2107,6 +2107,14 @@ pub(crate) mod tests {
                 any(&|f| f.mentions.iter().any(|m| m.name != m.leaf)),
             ),
             ("a module declaration", any(&|f| !f.modules.is_empty())),
+            (
+                "a module's two lists apart",
+                any(&|f| f.modules.iter().any(|m| m.as_root != m.as_child)),
+            ),
+            (
+                "a module's `#[path]` mark",
+                any(&|f| f.modules.iter().any(|m| m.path_attr)),
+            ),
             (
                 "a definition's doc span",
                 any(&|f| f.defs.iter().any(|d| d.doc.is_some())),

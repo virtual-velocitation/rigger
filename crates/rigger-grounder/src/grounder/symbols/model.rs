@@ -128,9 +128,10 @@ pub struct Def {
     /// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`):
     /// the `/`-joined chain of enclosing INLINE `mod name { .. }` names (outermost first) this
     /// out-of-line declaration sits nested inside, when any - the EXTRA directory-component chain
-    /// its file resolves under, `#[path]` override or convention alike (spec 117 criterion 8), one
-    /// level per enclosing inline module, on top of the declaring file's own module directory, so
-    /// `mod outer { mod x; }` in `src/lib.rs` names `src/outer/x.rs`. Each level is the inline
+    /// its file resolves under, `#[path]` override or convention alike (spec 117, MODULE ROOTS AT
+    /// READ), one level per enclosing inline module, on top of the module directory each of the
+    /// declaration's two lists places it under, so `mod outer { mod x; }` in `src/lib.rs` names
+    /// `src/outer/x.rs`. Each level is the inline
     /// name as written, so the chain names rustc's directory only where that name is the
     /// directory. Among the departures: an inline parent with its own `#[path]` (under
     /// `#[path = "dir"] mod outer { .. }` rustc looks in `dir/`) and a raw identifier
