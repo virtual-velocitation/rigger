@@ -1,8 +1,8 @@
 //! Shared fixtures for the symbol extraction suites: building a one-file set of symbols, building
 //! them from Rust sources, a reference of a tagged kind or a call, a reference's qualifier, a
 //! mention the facts hold of a tagged kind or a call, a tree whose inline mod declares a
-//! `#[cfg(test)]` mod out of line, the `mod x;` declaration sources, the one-fn source the
-//! module-row tests extract, the one-`use` source and the source whose function reads one
+//! `#[cfg(test)]` mod out of line, the out-of-line `mod` declaration sources, the one-fn source
+//! the module-row tests extract, the one-`use` source and the source whose function reads one
 //! constant three times and calls one function three times, projecting a file's definitions, its
 //! test-marked definitions and references and its call references with their callers, checking a
 //! language's definition types against a file's definitions, checking a language's definitions
@@ -178,6 +178,11 @@ pub const PATH_MOD_X: &str = "#[path = \"gen/real.rs\"]\nmod x;\n";
 pub const ABSOLUTE_PATH_MOD_X: &str = "#[path = \"/etc/x.rs\"]\nmod x;\n";
 /// [`MOD_X`] inside the inline `mod outer`.
 pub const INLINE_MOD_X: &str = "mod outer {\n    mod x;\n}\n";
+/// A Rust source declaring the module `z` out of line.
+pub const MOD_Z: &str = "mod z;\n";
+/// A Rust source declaring the module `b` out of line inside the inline `mod a`, through a
+/// `#[path]` override naming `b.rs`.
+pub const INLINE_PATH_MOD_B: &str = "mod a {\n    #[path = \"b.rs\"]\n    mod b;\n}\n";
 /// A Rust source defining the fn `y`.
 pub const FN_Y: &str = "fn y() {}\n";
 /// A Rust file holding one `use` and nothing else: its whole extraction is one tagged reference.

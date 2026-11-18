@@ -253,7 +253,9 @@ mod tests {
     #[test]
     fn module_candidates_name_the_candidates_of_each_tabled_declaration_in_order() {
         use crate::graph_fixtures::{DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE};
-        use crate::symbol_index::{ABSOLUTE_PATH_MOD_X, INLINE_MOD_X, MOD_X, PATH_MOD_X};
+        use crate::symbol_index::{
+            ABSOLUTE_PATH_MOD_X, INLINE_MOD_X, INLINE_PATH_MOD_B, MOD_X, MOD_Z, PATH_MOD_X,
+        };
         // (declaring path, source, as_root, as_child)
         let cases: [(&str, &str, &[&str], &[&str]); 19] = [
             (
@@ -282,7 +284,7 @@ mod tests {
             ),
             (
                 "src/m.rs",
-                "mod a {\n    #[path = \"b.rs\"]\n    mod b;\n}\n",
+                INLINE_PATH_MOD_B,
                 &["src/a/b.rs"],
                 &["src/m/a/b.rs"],
             ),
@@ -332,7 +334,7 @@ mod tests {
             ),
             (
                 "src/gen/real.rs",
-                "mod z;\n",
+                MOD_Z,
                 &["src/gen/z.rs", "src/gen/z/mod.rs"],
                 &["src/gen/real/z.rs", "src/gen/real/z/mod.rs"],
             ),
