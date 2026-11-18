@@ -2,8 +2,9 @@
 //! has exited, and the release that ends whatever outlived the code under test.
 //!
 //! A fixture opens the witness FIFO's write end (`exec 9>"$RIGGER_TEST_WITNESS"`) before it starts
-//! anything, so every process it starts inherits that descriptor, and a process writes one byte
-//! there when it is up. The test holds the only read end, opened before the fixture starts, and
+//! anything, so every process it starts inherits that descriptor, and one byte goes there for each
+//! process that is up: the process's own, or for a holder the byte its starting shell writes once
+//! the fork has returned. The test holds the only read end, opened before the fixture starts, and
 //! close-on-exec, so no process the test or the code under test spawns inherits it. A process
 //! drops its descriptors when it exits, as a zombie too, so a read answers end-of-file only once
 //! every fixture process has exited, and "would block" while any one is still running.

@@ -15,6 +15,8 @@
 #   term-exit        the TERM trap starts a holder and the session exits
 #   eof              at stdin EOF a holder starts; the session keeps idling
 #   eof-exit         at stdin EOF a holder starts and the session exits
+#                    (both ignore TERM, so an end's TERM round finds the session still reading its
+#                    input and starting its holder, which ignores TERM too and is ended by KILL)
 #   eof-then-margin  half a second after stdin EOF a holder starts; the session keeps idling
 #   double           before init, a subshell starts a holder and exits at once, so the holder has
 #                    left the session's process tree before any stop; the session exits at EOF
@@ -53,12 +55,14 @@ term-exit)
     idle
     ;;
 eof)
+    trap '' TERM
     init
     drain
     holder
     idle
     ;;
 eof-exit)
+    trap '' TERM
     init
     drain
     holder
