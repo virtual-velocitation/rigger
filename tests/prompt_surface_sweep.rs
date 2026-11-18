@@ -56,6 +56,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "{trees} kept as {}, off the unit's branch",
             "all {width} speculation candidates crashed or lost to infras",
             "wip({}): tree of speculation lane {lane}, which git refused",
+            "rigger: left speculation lane {lane} of {} in its worktree a",
             "rigger: kept the worktree at {} (branch {}): {}",
             "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budg",
             "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned N",

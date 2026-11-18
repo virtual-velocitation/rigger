@@ -1720,13 +1720,16 @@ struct SpecCandidate {
 /// `UnitFailed` when a later lane wins, and carried in the group's one record when none does.
 /// For the same reason a lane Phase A lost to git refusing its work keeps its tree and branch in
 /// `left` until that outcome: a win or the escalation tail removes them, and a park or a hold
-/// leaves them for the re-entry, which meets the same refusal in the same tree.
+/// leaves them for the re-entry, which meets the same refusal in the same tree. `keep_fault` is
+/// the first keep of a refused lane git could not make ([`RunCtx::lane_refused`]): the group
+/// races on, and holds the run on it only when no lane wins.
 #[derive(Default)]
 struct LostLanes {
     cause: Option<String>,
     failure: PriorFailure,
     breaks: Vec<LaneBreak>,
     left: Vec<Worktree>,
+    keep_fault: Option<Error>,
 }
 
 /// A speculation lane whose merge broke post-merge: its attempt, the re-gate's evidence and the
@@ -8400,22 +8403,31 @@ impl RunCtx<'_> {
     /// kept ref ([`Worktree::keep_lane_aside`]): `rigger/kept/<unit>` for lane 0 and
     /// `rigger/kept/<unit>-spec<lane>` for lane `lane`, as its branch is named. The refusal and
     /// the keep join the group's loss ([`LostLanes::refused`]): a group with no winner records
-    /// and names each keep, and a lane that wins drops them. A keep git cannot make ends the drive
-    /// on that fault, uncharged, the lane's tree and branch kept.
-    fn lane_refused(
-        &self,
-        st: &Stage,
-        lane: u32,
-        w: &Worktree,
-        e: &Error,
-        lost: &mut LostLanes,
-    ) -> Result<(), Error> {
-        let kept = git_step(w.keep_lane_aside(&format!(
+    /// and names each keep, and a lane that wins drops them. A keep git cannot make does not stop
+    /// the lanes that can still win: it is said through [`Deps::log`], naming the lane's tree, its
+    /// branch and the fault, and held as the group's [`LostLanes::keep_fault`], the lane's tree and
+    /// branch staying with the group's losses. A win removes them with its other losers; a group
+    /// with no winner holds the run on that fault, uncharged, every tree in place for the release,
+    /// whose re-entry meets the refusal in the same tree and tries the keep again.
+    fn lane_refused(&self, st: &Stage, lane: u32, w: &Worktree, e: &Error, lost: &mut LostLanes) {
+        match git_step(w.keep_lane_aside(&format!(
             "wip({}): tree of speculation lane {lane}, which git refused",
             st.name
-        )))?;
-        lost.refused(e, kept.into_iter().collect());
-        Ok(())
+        ))) {
+            Ok(kept) => lost.refused(e, kept.into_iter().collect()),
+            Err(fault) => {
+                (self.deps.log)(&format!(
+                    "rigger: left speculation lane {lane} of {} in its worktree at {} (branch {}): \
+                     its keep failed, and the run holds on it if no other lane wins: {}",
+                    st.name,
+                    w.dir,
+                    w.branch,
+                    without_halt_markers(Error(fault.0.clone())).0
+                ));
+                lost.refused(e, Vec::new());
+                lost.keep_fault.get_or_insert(fault);
+            }
+        }
     }
 
     /// REMOVE A TREE ITS STAGE IS DONE WITH, OR SAY WHY IT STAYS: `w`'s removal where its stage
@@ -8764,7 +8776,7 @@ impl RunCtx<'_> {
                 // same refusal again; a fresh one would commit nothing and race empty.
                 Err((class, e)) => {
                     if class == LaneError::Refused {
-                        self.lane_refused(st, lane, &wt, &e, &mut lost)?;
+                        self.lane_refused(st, lane, &wt, &e, &mut lost);
                         lost.left.push(wt);
                     } else {
                         self.remove_lane(&wt);
@@ -8901,7 +8913,7 @@ impl RunCtx<'_> {
                 // next is tried.
                 Err(e) if self.lane_error(&st.name, attempt, &e) == LaneError::Refused => {
                     let wt = &candidates[i].wt;
-                    self.lane_refused(st, attempt - base, wt, &e, &mut lost)?;
+                    self.lane_refused(st, attempt - base, wt, &e, &mut lost);
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -8974,9 +8986,15 @@ impl RunCtx<'_> {
         // NO candidate won: every candidate was gate-red, review-rejected, crashed, refused by
         // git, or its winning merge broke post-merge (its evidence held in `lost` above). The K candidates
         // were the unit's parallel attempts, so it ESCALATES rather than re-fanning out forever
-        // on the fresh re-entry. Clean up the losing lanes' worktrees, the candidates' and those
-        // Phase A lost to a refusal: each lane git refused was kept when it was refused, and its
-        // record below names where.
+        // on the fresh re-entry. A refused lane whose keep failed holds the run instead, uncharged,
+        // before any tree goes: the release re-enters the group in the same trees, where the
+        // lane meets its refusal again and its keep is tried again.
+        if let Some(fault) = lost.keep_fault.take() {
+            return Err(fault);
+        }
+        // Clean up the losing lanes' worktrees, the candidates' and those Phase A lost to a
+        // refusal: each lane git refused was kept when it was refused, and its record below
+        // names where.
         for wt in candidates.iter().map(|c| &c.wt).chain(&lost.left) {
             self.remove_lane(wt);
         }
