@@ -7385,6 +7385,15 @@ impl RunCtx<'_> {
         // mid-remediation unit) starts from that failure, read back from the log, so
         // its prompt carries the block an in-process retry would.
         let mut prior = self.re_entry_failure(&st.name, attempts);
+        // What a relaunch of the halted spawn's interrupted session is told after its note: the
+        // capture of the tree it left, or git's refusal to capture it, the passages of this
+        // prompt that session never saw. Only this stage's first spawn can be that relaunch.
+        let mut relaunch_task = PriorFailure {
+            halted_commit: halted_commit.clone(),
+            refusal: capture_refused.clone(),
+            ..PriorFailure::default()
+        }
+        .block(&st.name, attempts);
         if !halted_commit.is_empty() {
             prior.halted_commit = halted_commit;
         }
@@ -7608,6 +7617,7 @@ impl RunCtx<'_> {
                     // Set below when there is a session to continue.
                     resumed_from: String::new(),
                     resume_task: String::new(),
+                    relaunch_task: std::mem::take(&mut relaunch_task),
                     // The attempt's checkpoint commits this tree onto the unit's branch once
                     // the session ends, so the session is asked before it stops whether that
                     // commit would be refused. A producer's work is integrated from its own

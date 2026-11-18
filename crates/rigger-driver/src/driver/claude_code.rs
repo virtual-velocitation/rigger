@@ -427,7 +427,8 @@ impl Driver<'_> {
     /// [`progress::next_launch_after`]). When that latest launch ended `interrupted`, whichever
     /// site closed it, it is a relaunch ([`LaunchSession::relaunch`]) in `opts.dir`, a fork of
     /// the session that launch's close names under a minted id, charged no attempt, sent the
-    /// [`Driver::interruption_note`] in front of what [`LaunchSession::task`] sends, the
+    /// [`Driver::interruption_note`], then the [`SpawnOpts::relaunch_task`] unless what
+    /// [`LaunchSession::task`] sends already holds it, then that task, the
     /// [`SpawnOpts::resume_task`] when that launch carried it: its record, its open record unless
     /// it was lost, and the records its chain of sessions leads back through decide. Any other
     /// spawn runs as [`Driver::launch`] would launch it, [`LaunchSession::of`] its `opts`.
@@ -450,10 +451,18 @@ impl Driver<'_> {
         let note = self.interruption_note(interrupted)?;
         let launched = records.first().unwrap_or(interrupted);
         let session = LaunchSession::relaunch(launched, interrupted, &chain, opts);
-        let task = match session.task(prompt, opts) {
-            "" => note,
-            carried => format!("{note}\n\n{carried}"),
-        };
+        let carried = session.task(prompt, opts);
+        let told = opts.relaunch_task.trim();
+        let told = (!told.is_empty() && !carried.contains(told)).then_some(told);
+        let task = [
+            Some(note.as_str()),
+            told,
+            Some(carried).filter(|t| !t.is_empty()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n");
         Ok(FirstLaunch {
             session,
             task,

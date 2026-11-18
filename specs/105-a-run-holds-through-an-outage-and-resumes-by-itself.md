@@ -323,11 +323,13 @@ session (the `resumed_from` path, `SpawnOpts`, `crates/rigger-domain/src/agent.r
 `--fork-session --session-id` of an id it mints, so an orphan of a supervisor that died without
 unwinding keeps that transcript to itself, its record carrying the minted id with `resumed_from`
 naming the interrupted session, in the same `dir`, its first user message stating the hold's
-cause and duration, or the supervisor's restart, followed by the `resume_task` when the
-interrupted launch carried it, read from the spawn's launch records in the run: a record carried
-it when its session or its `resumed_from` is the spawn's non-empty `resumed_from`, or when its
-`resumed_from` names another session whose record carried it, so the task keeps travelling along
-a chain of relaunches, and a fresh launch's record, the fallback's among them, did not; a
+cause and duration, or the supervisor's restart, followed by the spawn's `relaunch_task`, what
+the conductor learned since that launch began (a halted implementer's captured tree, or git's
+refusal to capture it), unless the `resume_task` it sends already holds that text, then the
+`resume_task` when the interrupted launch carried it, read from the spawn's launch records in
+the run: a record carried it when its session or its `resumed_from` is the spawn's non-empty
+`resumed_from`, or when its `resumed_from` names another session whose record carried it, so the
+task keeps travelling along a chain of relaunches, and a fresh launch's record, the fallback's among them, did not; a
 `continue_prior_session` launch does not fork. Every relaunch of a spawn id, by this path, the
 decorator of HELD or the fallback, takes the ordinal after the highest the progress store
 records for that id, never `opts.launch`. When `read_stream`
@@ -544,7 +546,8 @@ beat gap and the resume carry the run.
   it from the log, and a conflict resolver's error, live or answered, spends a round with no
   attempt charged; after a release or that restart, an `interrupted` launch relaunches at the
   next ordinal with `--resume <session-id>` in the same cwd and a first message naming the hold
-  or the restart, then its `resume_task` when it carried one, and charges no attempt. This
+  or the restart, then its `relaunch_task` once, then its `resume_task` when it carried one, and
+  charges no attempt. This
   criterion OWNS start-up reconciliation, the answer from the log, the host's park and
   real-result write, the decorator's error write, the conflict site's read of an error and the
   host's relaunch of an `interrupted` launch only.
