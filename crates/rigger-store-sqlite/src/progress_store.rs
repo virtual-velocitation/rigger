@@ -108,14 +108,16 @@ pub fn launch_records(
 }
 
 /// How many times `rigger hook stop` held the latest session of `spawn` in the run `run_id` from
-/// stopping: [`stop_holds_since_launch`] over the run's launch records and progress lines, read
-/// from its progress stream. A failed read is the caller's to surface.
+/// stopping: [`stop_holds_since_launch`] over the run's launch records and `spawn`'s own progress
+/// lines, merged in stream order. The lines are read by their record id (an [`AgentProgress`]'s
+/// `id` is its spawn), so a stop costs the run's launch records and this spawn's lines, never
+/// every spawn's lines of the run. A failed read is the caller's to surface.
 pub fn stop_holds(store: &dyn EventStore, run_id: &str, spawn: &str) -> Result<u32, Error> {
-    let recorded = store.read_stream_typed(
-        &stream_of(run_id),
-        0,
-        TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED, TYPE_AGENT_PROGRESS]),
-    )?;
+    let stream = stream_of(run_id);
+    let mut recorded =
+        store.read_stream_typed(&stream, 0, TypeSelection::Only(&[TYPE_SPAWN_LAUNCHED]))?;
+    recorded.extend(store.read_by_record_id(&stream, &[TYPE_AGENT_PROGRESS], spawn)?);
+    recorded.sort_by_key(|e| e.position);
     Ok(stop_holds_since_launch(&recorded, spawn))
 }
 
@@ -524,6 +526,151 @@ mod tests {
                     ("run-1", "u/reviewer#0", 3, Some("completed")),
                 ],
                 Some(3),
+            );
+    }
+
+    /// One seeded record of `run-1`'s progress stream: a spawn's open or closing launch record,
+    /// a hold line `rigger hook stop` records, or another line of the spawn.
+    #[derive(Clone, Copy)]
+    enum Recorded {
+        Opened(&'static str),
+        Closed(&'static str),
+        Held(&'static str),
+        Said(&'static str, &'static str),
+    }
+
+    const OTHER: &str = "v/implementer#0";
+
+    /// Append `recorded` to `run-1`'s progress stream of `progress`.
+    fn seed(progress: &Store, recorded: &[Recorded]) {
+        for (place, record_of) in recorded.iter().enumerate() {
+            match *record_of {
+                Recorded::Opened(spawn) => record_launch(
+                    progress,
+                    "run-1",
+                    &SpawnLaunched {
+                        spawn: spawn.into(),
+                        launch: 0,
+                        session_id: format!("s{place}"),
+                        started: 1,
+                        ..Default::default()
+                    },
+                ),
+                Recorded::Closed(spawn) => record_launch(
+                    progress,
+                    "run-1",
+                    &SpawnLaunched::closed(spawn, 0, format!("s{place}"), "fault", ""),
+                ),
+                Recorded::Held(spawn) => record(
+                    progress,
+                    "run-1",
+                    spawn,
+                    &format!("{} (1 of 3): refused", crate::progress::STOP_HELD_PREFIX),
+                ),
+                Recorded::Said(spawn, activity) => record(progress, "run-1", spawn, activity),
+            }
+            .unwrap();
+        }
+    }
+
+    /// `u/implementer#0`'s stop holds in `run-1` are the count [`stop_holds_since_launch`] folds
+    /// over the whole stream, read as the run's launch records and that spawn's own lines alone:
+    /// another spawn's lines, however many a run holds, are never handed back, and neither is a
+    /// line of another run.
+    fn stop_holds_reads_the_launches_and_the_spawns_own_lines_alone(
+        recorded: &[Recorded],
+        holds: u32,
+    ) {
+        let progress = Store::open(":memory:").unwrap();
+        record(&progress, "run-0", SPAWN, "stop held (1 of 3): another run").unwrap();
+        seed(&progress, recorded);
+        let counting = crate::test_support::ReadCountingStore::new(&progress);
+
+        assert_eq!(stop_holds(&counting, "run-1", SPAWN).unwrap(), holds);
+        let whole = progress
+            .read_stream(&stream_of("run-1"), 0, Direction::Forward)
+            .unwrap();
+        assert_eq!(
+            stop_holds_since_launch(&whole, SPAWN),
+            holds,
+            "the fold over the whole stream counts the same holds"
+        );
+        let read = recorded
+            .iter()
+            .filter(|r| match r {
+                Recorded::Opened(_) | Recorded::Closed(_) => true,
+                Recorded::Held(spawn) | Recorded::Said(spawn, _) => *spawn == SPAWN,
+            })
+            .count();
+        assert_eq!(
+            counting.materialized(),
+            read,
+            "only the launch records and the spawn's own lines are handed back: {:?}",
+            counting.reads()
+        );
+    }
+
+    crate::test_cases! {
+        another_spawns_lines_are_never_read:
+            stop_holds_reads_the_launches_and_the_spawns_own_lines_alone(
+                &[
+                    Recorded::Opened(SPAWN),
+                    Recorded::Held(SPAWN),
+                    Recorded::Held(OTHER),
+                    Recorded::Said(OTHER, "building"),
+                    Recorded::Opened(OTHER),
+                    Recorded::Said(OTHER, "testing"),
+                ],
+                1,
+            );
+        a_relaunch_starts_the_count_over:
+            stop_holds_reads_the_launches_and_the_spawns_own_lines_alone(
+                &[
+                    Recorded::Opened(SPAWN),
+                    Recorded::Held(SPAWN),
+                    Recorded::Held(SPAWN),
+                    Recorded::Held(OTHER),
+                    Recorded::Opened(SPAWN),
+                    Recorded::Held(SPAWN),
+                ],
+                1,
+            );
+        a_closing_record_moves_no_boundary:
+            stop_holds_reads_the_launches_and_the_spawns_own_lines_alone(
+                &[
+                    Recorded::Opened(SPAWN),
+                    Recorded::Held(SPAWN),
+                    Recorded::Said(OTHER, "building"),
+                    Recorded::Closed(SPAWN),
+                    Recorded::Held(SPAWN),
+                ],
+                2,
+            );
+        another_spawns_relaunch_moves_no_boundary:
+            stop_holds_reads_the_launches_and_the_spawns_own_lines_alone(
+                &[
+                    Recorded::Opened(SPAWN),
+                    Recorded::Held(SPAWN),
+                    Recorded::Opened(OTHER),
+                    Recorded::Held(OTHER),
+                    Recorded::Held(SPAWN),
+                ],
+                2,
+            );
+        the_spawns_other_lines_hold_nothing:
+            stop_holds_reads_the_launches_and_the_spawns_own_lines_alone(
+                &[
+                    Recorded::Opened(SPAWN),
+                    Recorded::Said(SPAWN, "stop check: reading the tree"),
+                    Recorded::Said(SPAWN, "not stop held"),
+                    Recorded::Held(OTHER),
+                ],
+                0,
+            );
+        holds_before_any_launch_count_from_the_start:
+            stop_holds_reads_the_launches_and_the_spawns_own_lines_alone(
+                &[Recorded::Held(SPAWN), Recorded::Held(OTHER), Recorded::Held(SPAWN)],
+                2,
             );
     }
 
