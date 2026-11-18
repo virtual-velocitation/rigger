@@ -2368,6 +2368,17 @@ impl PriorFailure {
         parts.join("; ")
     }
 
+    /// Why a unit escalated on this failure, for its escalation lesson (spec 02: the concrete
+    /// reason, never a generic placeholder when one is available): the [`summary`](Self::summary),
+    /// or that its gates or review would not pass when the failure names nothing.
+    fn escalation_reason(&self) -> String {
+        if self.is_empty() {
+            "its gates or review would not pass".to_string()
+        } else {
+            self.summary()
+        }
+    }
+
     /// The first-class, clearly-delimited prior-failure block prepended to a retry
     /// prompt. Empty when there is no prior failure, so the first attempt's prompt is
     /// byte-identical to the historical prompt. A REQUIRED pattern item's line names its shape
@@ -8219,14 +8230,9 @@ impl RunCtx<'_> {
             &[(META_WORKTREE_SHA, &failed_sha)],
         )?;
         if rem.decision == safety::Decision::Escalate {
-            // The escalation lesson carries the CONCRETE final failure (spec 02): the specific
-            // gate/review reason, never a generic placeholder when one is available. A spawn
-            // crash never reaches here - it is infra (F3).
-            let why = if failure.is_empty() {
-                "its gates or review would not pass".to_string()
-            } else {
-                failure.summary()
-            };
+            // The escalation lesson carries the CONCRETE final failure. A spawn crash never
+            // reaches here - it is infra (F3).
+            let why = failure.escalation_reason();
             let attempts = rem.attempts;
             let _ = self.emit_lesson(
                 wt,
@@ -8874,8 +8880,9 @@ impl RunCtx<'_> {
                 None,
                 &st.name,
                 &format!(
-                    "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work",
-                    st.name
+                    "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work; {}",
+                    st.name,
+                    failure.escalation_reason()
                 ),
                 None,
                 None,
