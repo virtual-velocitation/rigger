@@ -4643,10 +4643,11 @@ pub fn f() -> u8 {
     /// `/*! */`, `#![doc = ".."]` - has its file span from the first to the last of them, an inner
     /// doc inside an item's body joining neither the file's span nor the item's; a
     /// `#[doc(hidden)]`, a doc attribute whose value is no string literal (`include_str!(..)`,
-    /// `concat!(..)`), `////`, `/**/` and `/***/` is no doc line, while a raw string value is
-    /// one; and under a fixture query a `@doc` capture in a definition's match gives that
-    /// definition the captured span, over the rule's, while a capture in the match of a
-    /// definition the extraction drops gives no other definition a span.
+    /// `concat!(..)`), a name-value attribute not naming `doc` (`#[must_use = ".."]`), `////`,
+    /// `/**/` and `/***/` is no doc line, while a raw string value is one; and under a fixture
+    /// query a `@doc` capture in a definition's match gives that definition the captured span,
+    /// over the rule's, while a capture in the match of a definition the extraction drops gives no
+    /// other definition a span.
     #[test]
     fn rust_doc_spans_are_extracted() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -4699,6 +4700,13 @@ pub fn f() -> u8 {
                 "#[doc(hidden)]\nfn h() {}\n////\nfn i() {}\n/**/\nfn j() {}\n/***/\nfn k() {}\n",
                 None,
                 vec![("h", None), ("i", None), ("j", None), ("k", None)],
+            ),
+            (
+                "a name-value attribute not naming doc",
+                false,
+                "#[must_use = \"use it\"]\nfn m() {}\n",
+                None,
+                vec![("m", None)],
             ),
             (
                 "a doc value that is no string literal",
