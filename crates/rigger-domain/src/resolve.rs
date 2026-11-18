@@ -5,15 +5,15 @@
 //!
 //! | Rule | Resolution |
 //! |---|---|
-//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates its rule reads whose parent is a definition named `Q` or an implementation enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder `F::%<leaf>`, `inferred`, and no tagged edge; none leave the call or tagged-reference rule under a member qualifier (`Q.leaf`) or a path qualifier (`Q::leaf`) naming a product type or trait in the mention's language, and make no edge and no placeholder under any other path qualifier |
+//! | qualified mention | a call or tagged reference written `Q::leaf` or `Q.leaf` keeps the candidates its rule reads whose parent is a definition named `Q` or an implementation enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait such an implementation names: one is an `extracted` edge to it in any file; several make a call's placeholder keyed by its qualified name (`F::%Q::leaf`, `F::%Q.leaf`), `inferred`, never one of them in its own file, and no tagged edge; none leave the call or tagged-reference rule under a member qualifier (`Q.leaf`) or a path qualifier (`Q::leaf`) naming a product type or trait in the mention's language, and make no edge and no placeholder under any other path qualifier |
 //! | call | one same-file call-target candidate: an `extracted` edge to it; otherwise the placeholder `F::%<leaf>`, `inferred` when a candidate exists anywhere, `ambiguous` when none does |
-//! | down-hop | a placeholder's call-target candidates: none, one, or a frontier |
+//! | down-hop | a placeholder's call-target candidates, those of the leaf after the last `::` or `.` of the name it is keyed by, and for a qualified name those its qualifier keeps: none, one, or a frontier |
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
-//! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge |
-//! | held reference | a tagged reference whose node already references the target, or its placeholder from that node, writes no edge |
+//! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge; a `field` reference no qualifier narrows reads its field and property candidates alone and skips the same-file step: one in the view, in its file or not, is `inferred`, else no edge, so it reaches a constant, a static or a variant only through a qualifier that keeps it |
+//! | held reference | a tagged reference whose node already references the target, or the placeholder of its leaf from that node, keyed by the leaf or by a call's qualified name, writes no edge |
 //! | module | the first candidate path that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
-//! | proof | a test call: one same-file product call-target candidate, else one in the view |
+//! | proof | a test call its qualifier narrows, among every call-target candidate, test ones too: the one it keeps when that one is product, and none when it is test, it keeps several, or its qualifier makes it no link; any other test call: the one same-file call-target candidate when it is product and none when it is test, else one same-file product call-target candidate, else one in the view |
 //! | duplicate id, kind precedence | one entity per id, its kind, line and `CONTAINS` parent by [`definition_precedence`] |
 //! | test-ness | a definition's test mark, a Test-scope file, or a file in the test-module closure; any node in such a file, whatever fact names it, and any link onto one |
 //! | design link, workflow relation | the node kinds and relations an intent fact may name |
@@ -36,18 +36,19 @@ use crate::contextgraph::query::{
 use crate::contextgraph::{
     definition_precedence, is_call_target, reference_candidate_kinds, CODE_KIND_IMPL,
     CODE_KIND_TRAIT, KIND_AGENT, KIND_ARCH_DECISION, KIND_DESIGN_DOC, KIND_GATE,
-    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_IMPL, REF_KIND_TYPE, REL_CALLS,
-    REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS, REL_GOVERNS, REL_NEEDS,
-    REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS, REL_SPECIFIES, TIER_AMBIGUOUS,
-    TIER_EXTRACTED, TIER_INFERRED,
+    KIND_HANDBOOK_RULE, KIND_RATIONALE, KIND_STAGE, REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL,
+    REF_KIND_TYPE, REL_CALLS, REL_CONSTRAINS, REL_CONTAINS, REL_DOC_REFERENCES, REL_EXPLAINS,
+    REL_GOVERNS, REL_NEEDS, REL_REFERENCES, REL_REVIEWS, REL_REVIEWS_LIGHT, REL_RUNS,
+    REL_SPECIFIES, TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED,
 };
 
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
 /// the test-module closure and the proof rule. Bump it whenever either can settle other rows for
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
-/// one is computed anew. A golden test pins it beside a digest of the rows over a fixture, so a
-/// change that is not bumped fails there.
-pub const SETTLED_GENERATION: u64 = 3;
+/// one is computed anew. A golden test pins it beside a digest of the rows two fixtures settle,
+/// so a change that moves those rows fails there until the generation is bumped and the pair
+/// re-pinned.
+pub const SETTLED_GENERATION: u64 = 4;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -88,6 +89,17 @@ pub enum Hop<T> {
     Terminal,
     One(T),
     Frontier(Vec<T>),
+}
+
+impl<T> Hop<T> {
+    /// The candidates the hop holds: none for a terminal, else the one or the frontier's.
+    pub fn into_vec(self) -> Vec<T> {
+        match self {
+            Hop::Terminal => Vec::new(),
+            Hop::One(c) => vec![c],
+            Hop::Frontier(cs) => cs,
+        }
+    }
 }
 
 /// The one "exactly one" decision the rules take over a candidate set.
@@ -246,9 +258,15 @@ fn one_here_else_one_anywhere<'c, 'v>(
     }
 }
 
+/// Whether a mention of `kind` is `impl`-tagged: it names a trait or type in an implementation's
+/// header.
+fn is_impl(kind: &MentionKind) -> bool {
+    matches!(kind, MentionKind::Tagged(tag) if tag == REF_KIND_IMPL)
+}
+
 /// The qualifier of a mention written `name` whose leaf is `leaf`: the text before its last
 /// `::` or `.` ([`split_path`]); none when it is written as its leaf alone.
-fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
+pub(crate) fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
     if name == leaf {
         return None;
     }
@@ -522,6 +540,22 @@ impl<'v> Resolver<'v> {
         let Some(qualifier) = qualifier(name, leaf) else {
             return Some(Hop::Terminal);
         };
+        let kept = self.kept(qualifier, pool, candidates);
+        if kept.is_empty() && is_path_qualified(name) && !self.names_a_type(qualifier, lang) {
+            return None;
+        }
+        Some(hop(kept))
+    }
+
+    /// The `candidates` `qualifier` keeps in `pool`: those whose parent in their file is in its
+    /// own tier of [`Self::parents`], else, when none is, those whose parent is in its trait
+    /// tier, in the order given. The one split [`Self::narrowed`] and [`Self::down_hop`] read.
+    fn kept<'c>(
+        &self,
+        qualifier: &str,
+        pool: Pool,
+        candidates: impl Iterator<Item = &'c Candidate<'v>>,
+    ) -> Vec<&'c Candidate<'v>> {
         let parents = self.parents(qualifier, pool);
         let (mut own, mut traits) = (Vec::new(), Vec::new());
         for c in candidates {
@@ -534,11 +568,11 @@ impl<'v> Resolver<'v> {
                 traits.push(c);
             }
         }
-        let kept = if own.is_empty() { traits } else { own };
-        if kept.is_empty() && is_path_qualified(name) && !self.names_a_type(qualifier, lang) {
-            return None;
+        if own.is_empty() {
+            traits
+        } else {
+            own
         }
-        Some(hop(kept))
     }
 
     /// Whether `qualifier`, whole, names a product type or trait in `lang`: a definition a
@@ -565,8 +599,6 @@ impl<'v> Resolver<'v> {
         if let Some(held) = self.parents.borrow().get(&key) {
             return Arc::clone(held);
         }
-        let is_impl =
-            |kind: &MentionKind| matches!(kind, MentionKind::Tagged(tag) if tag == REF_KIND_IMPL);
         let mut parents = Parents {
             own: (self.view.defs_named(qualifier))
                 .map(|d| (d.file.path, d.index))
@@ -609,9 +641,11 @@ impl<'v> Resolver<'v> {
 
     /// The call rule: the target and tier of a call written `name` to `leaf` from `file`, in
     /// `lang`. A qualified call its qualifier narrows ([`Self::narrowed`]) lands on the one call
-    /// target it keeps, EXTRACTED wherever it is, or on the placeholder `F::%<leaf>`, INFERRED,
-    /// when it keeps several, and lands nowhere when its qualifier makes it no link; any other
-    /// call lands on its one same-file call target, EXTRACTED, else on the placeholder.
+    /// target it keeps, EXTRACTED wherever it is, or, when it keeps several, on the placeholder
+    /// `F::%<name>` keyed by its qualified name (`F::%Q::leaf`, `F::%Q.leaf`), INFERRED, never on
+    /// a kept target in `file`; it lands nowhere when its qualifier makes it no link. Any other
+    /// call lands on its one same-file call target, EXTRACTED, else on the placeholder
+    /// `F::%<leaf>`.
     fn call(
         &self,
         file: &str,
@@ -624,7 +658,7 @@ impl<'v> Resolver<'v> {
         let in_pool = candidates.iter().filter(|c| pool.calls(c));
         match self.narrowed(lang, name, leaf, pool, in_pool.clone())? {
             Hop::One(one) => return Some((one.id.clone(), TIER_EXTRACTED)),
-            Hop::Frontier(_) => return Some((placeholder_id(file, leaf), TIER_INFERRED)),
+            Hop::Frontier(_) => return Some((placeholder_id(file, name), TIER_INFERRED)),
             Hop::Terminal => {}
         }
         let (mut targets, mut here, mut one_here) = (0, 0, None);
@@ -651,8 +685,11 @@ impl<'v> Resolver<'v> {
     /// tagged `tag`, from `file`, written in `lang`, over the candidates of the tag's kinds in
     /// `lang` ([`Pool::references`]): the one its qualifier narrows them to
     /// ([`Self::narrowed`]), EXTRACTED wherever it is, and none when it narrows them to several
-    /// or its qualifier makes it no link; else the one same-file candidate, EXTRACTED, else the
-    /// one in the view, INFERRED; none when no one candidate takes it.
+    /// or its qualifier makes it no link; else, for a `field` reference, the one field or
+    /// property candidate in the view, INFERRED even in `file`, so it never prefers its file and
+    /// reaches a constant, a static or a variant only through a qualifier that keeps it; else
+    /// the one same-file candidate, EXTRACTED, else the one in the view, INFERRED; none when no
+    /// one candidate takes it.
     fn tagged(
         &self,
         file: &str,
@@ -673,22 +710,37 @@ impl<'v> Resolver<'v> {
             Hop::Frontier(_) => return None,
             Hop::Terminal => {}
         }
+        if tag == REF_KIND_FIELD {
+            let consts = reference_candidate_kinds(REF_KIND_CONST);
+            let members = targets.into_iter().filter(|c| !consts.contains(&c.kind));
+            return match hop(members.collect()) {
+                Hop::One(one) => Some((one.id.clone(), TIER_INFERRED)),
+                Hop::Terminal | Hop::Frontier(_) => None,
+            };
+        }
         one_here_else_one_anywhere(&targets, file).map(|(c, here)| {
             let tier = if here { TIER_EXTRACTED } else { TIER_INFERRED };
             (c.id.clone(), tier)
         })
     }
 
-    /// The proof rule: the product definition a test call to `leaf` from `file` proves. A call
-    /// from a `file` holding one call target of `leaf` proves that definition when it is product
-    /// and none when it is test, so an unqualified test call's edge and its proof name one
-    /// definition; any other call proves the one product call target in `file`, else the one in
-    /// the view. It reads the leaf alone: no qualifier narrows a proof.
-    pub(crate) fn proof(&self, file: &str, leaf: &str) -> Option<String> {
+    /// The proof rule: the product definition a test call written `name` to `leaf` from `file`,
+    /// in `lang`, proves. Its qualifier narrows every call target of `leaf`, test ones too, as
+    /// the call rule narrows a test call ([`Self::narrowed`]): the call proves the one it keeps
+    /// when that one is product, and none when it is test, it keeps several, or its qualifier
+    /// makes the call no link. Any other call, one the unqualified rule takes, from a `file`
+    /// holding one call target of `leaf` proves that definition when it is product and none when
+    /// it is test, and otherwise the one product call target in `file`, else the one in the view.
+    /// So a test call's edge and its proof name one definition, or the proof none.
+    pub(crate) fn proof(&self, file: &str, lang: &str, name: &str, leaf: &str) -> Option<String> {
         let candidates = self.candidates(leaf);
-        let mut here = candidates
-            .iter()
-            .filter(|c| c.file == file && Pool::All.calls(c));
+        let calls = candidates.iter().filter(|c| Pool::All.calls(c));
+        match self.narrowed(lang, name, leaf, Pool::All, calls.clone())? {
+            Hop::One(one) => return (!one.test).then(|| one.id.clone()),
+            Hop::Frontier(_) => return None,
+            Hop::Terminal => {}
+        }
+        let mut here = calls.filter(|c| c.file == file);
         if let (Some(one), None) = (here.next(), here.next()) {
             return (!one.test).then(|| one.id.clone());
         }
@@ -703,11 +755,11 @@ impl<'v> Resolver<'v> {
     /// `lang`, lands, and its tier. A product call, and a test call the call rule resolves
     /// EXTRACTED, take the call rule. A test call the call rule sends to a placeholder lands,
     /// INFERRED, on the definition the proof rule credits with it, so a test's call edge and its
-    /// proof name one definition; on the placeholder when the proof rule credits none. INFERRED
-    /// even when that definition is in `file`, where the call rule found no one target: a
-    /// same-file test definition of the leaf contested it, or the call's qualifier narrowed it
-    /// to several. None when the call rule makes the call no link, a test call too, though the
-    /// proof rule, which reads the leaf alone, may still credit a definition with it.
+    /// proof name one definition; on the placeholder when the proof rule credits none, as it
+    /// credits none for a call its qualifier narrows to several. INFERRED even when that
+    /// definition is in `file`, where the call rule found no one target: a same-file test
+    /// definition of the leaf contested it. None when the call rule makes the call no link, a
+    /// test call too, which the proof rule then credits to no definition either.
     fn call_edge(
         &self,
         file: &str,
@@ -721,7 +773,7 @@ impl<'v> Resolver<'v> {
             return Some((to, tier));
         }
         Some(
-            self.proof(file, leaf)
+            self.proof(file, lang, name, leaf)
                 .map_or((to, tier), |id| (id, TIER_INFERRED)),
         )
     }
@@ -729,6 +781,15 @@ impl<'v> Resolver<'v> {
     /// Whether `m`, a mention in `facts`, is test code.
     pub(crate) fn mention_is_test(&self, facts: &FileFacts, m: &Mention) -> bool {
         self.is_test(m.test, &facts.path)
+    }
+
+    /// The test calls of `facts`: its call mentions that are test code, in source order.
+    fn test_calls<'a>(
+        &'a self,
+        facts: &'a FileFacts,
+    ) -> impl Iterator<Item = &'a Mention> + use<'a, 'v> {
+        (facts.mentions.iter())
+            .filter(move |m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
     }
 
     /// Whether a fact in `path` that its own mark calls test code when `marked` is test code: by
@@ -829,8 +890,10 @@ impl<'v> Resolver<'v> {
         let from_of = |i: Option<u32>| i.and_then(entity).unwrap_or(file);
         // A product reference is held only by a product edge, so showing tests changes no
         // product edge. A call's reference runs from the file, so only one from the file is held;
-        // each target maps to whether a product call references it.
+        // each target maps to whether a product call references it, and a call landing on a
+        // placeholder, under its leaf or its qualified name, references its leaf's `F::%<leaf>`.
         let mut referenced: FxHashMap<String, bool> = FxHashMap::default();
+        let mut note = |to: String, test: bool| *referenced.entry(to).or_default() |= !test;
         for m in mentions.clone() {
             let test = self.mention_is_test(facts, m);
             if m.kind != MentionKind::Call || (test && !tests) {
@@ -841,12 +904,10 @@ impl<'v> Resolver<'v> {
             };
             sink(from_of(m.enclosing), REL_CALLS, &to, tier, test);
             sink(file, REL_REFERENCES, &to, tier, test);
-            match referenced.get_mut(&to) {
-                Some(product) => *product |= !test,
-                None => {
-                    referenced.insert(to, !test);
-                }
+            if leaf_of(&to).is_some() {
+                note(placeholder_id(file, &m.leaf), test);
             }
+            note(to, test);
         }
         let held = |from: &str, to: &str, test: bool| {
             from == file && referenced.get(to).is_some_and(|&product| test || product)
@@ -948,12 +1009,9 @@ impl<'v> Resolver<'v> {
     pub fn file_proofs(&self, facts: &FileFacts) -> Vec<ProofCall> {
         let path = facts.path.as_str();
         let test_entity = self.test_entity_of(facts);
-        facts
-            .mentions
-            .iter()
-            .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
+        self.test_calls(facts)
             .filter_map(|m| {
-                let target = self.proof(path, &m.leaf)?;
+                let target = self.proof(path, &facts.lang, &m.name, &m.leaf)?;
                 Some(ProofCall {
                     target,
                     caller: test_entity(m.enclosing),
@@ -1062,17 +1120,20 @@ impl<'v> Resolver<'v> {
     }
 
     /// The test calls to `leaf` in code files that the proof rule credits to `id`, read from the
-    /// mentions of `leaf` alone. The rule credits a call by its file and leaf, so each file is
-    /// asked once.
+    /// mentions of `leaf` alone. The rule credits a call by its file and its name as written, so
+    /// each pair is asked once.
     pub(crate) fn proving_calls<'s>(
         &'s self,
         id: &'s str,
         leaf: &'s str,
     ) -> impl Iterator<Item = MentionRef<'v>> + 's {
-        let mut credits: FxHashMap<&'v str, bool> = FxHashMap::default();
+        let mut credits: FxHashMap<(&'v str, &'v str), bool> = FxHashMap::default();
         self.test_calls_named(leaf).filter(move |m| {
-            *(credits.entry(m.file.path))
-                .or_insert_with(|| self.proof(m.file.path, leaf).as_deref() == Some(id))
+            *(credits.entry((m.file.path, m.name))).or_insert_with(|| {
+                self.proof(m.file.path, m.file.lang, m.name, leaf)
+                    .as_deref()
+                    == Some(id)
+            })
         })
     }
 
@@ -1085,45 +1146,64 @@ impl<'v> Resolver<'v> {
         })
     }
 
-    /// Whether a test call written `name` to `leaf` from `file`, in `lang`, lands on a
-    /// placeholder ([`Self::call_edge`]): the call rule sends it to one and the proof rule
-    /// credits none. A call the call rule makes no link lands on none.
-    fn lands_on_placeholder(&self, file: &str, lang: &str, name: &str, leaf: &str) -> bool {
-        (self.call_edge(file, lang, name, leaf, true)).is_some_and(|(to, _)| leaf_of(&to).is_some())
+    /// The keys a test call written `name` to `leaf` from `file`, in `lang`, is filed under when
+    /// it lands on a placeholder ([`Self::call_edge`]: the call rule sends it to one and the proof
+    /// rule credits none): `leaf` for the placeholder `F::%<leaf>`, and for one keyed by a
+    /// qualified name the id of each candidate its down-hop keeps in [`Pool::All`]
+    /// ([`Self::down_hop`]). None when the call lands elsewhere, or nowhere because the call rule
+    /// makes it no link.
+    fn placeholder_keys(&self, file: &str, lang: &str, name: &str, leaf: &str) -> Vec<String> {
+        let Some((to, _)) = self.call_edge(file, lang, name, leaf, true) else {
+            return Vec::new();
+        };
+        match leaf_of(&to) {
+            None => Vec::new(),
+            Some(written) if written == leaf => vec![leaf.to_string()],
+            Some(_) => (self.down_hop(&to, Pool::All).into_iter())
+                .flat_map(Hop::into_vec)
+                .map(|c| c.id)
+                .collect(),
+        }
     }
 
-    /// The test calls in `facts`, a code file, that land on a placeholder, as (leaf, caller)
-    /// pairs, unordered: [`Self::placeholder_callers`] of every leaf `facts` calls at once. Where
-    /// a call lands depends only on its file and name, its leaf and qualifier, so each name is
-    /// resolved once.
+    /// The test calls in `facts`, a code file, that land on a placeholder, as (key, caller)
+    /// pairs, one per key the call is filed under ([`Self::placeholder_keys`]), in mention then
+    /// key order: [`Self::placeholder_callers`] of every leaf `facts` calls at once. Where a call
+    /// lands depends only on its file and name, its leaf and qualifier, so each name is resolved
+    /// once.
     pub fn file_placeholder_calls(&self, facts: &FileFacts) -> Vec<(String, String)> {
         let path = facts.path.as_str();
         let test_entity = self.test_entity_of(facts);
-        let mut lands: FxHashMap<&str, bool> = FxHashMap::default();
-        (facts.mentions.iter())
-            .filter(|m| m.kind == MentionKind::Call && self.mention_is_test(facts, m))
-            .filter(|m| {
-                *(lands.entry(&m.name)).or_insert_with(|| {
-                    self.lands_on_placeholder(path, &facts.lang, &m.name, &m.leaf)
-                })
-            })
-            .filter_map(|m| Some((m.leaf.clone(), test_entity(m.enclosing)?)))
-            .collect()
+        let mut keys: FxHashMap<&str, Vec<String>> = FxHashMap::default();
+        let mut calls = Vec::new();
+        for m in self.test_calls(facts) {
+            let filed = (keys.entry(&m.name))
+                .or_insert_with(|| self.placeholder_keys(path, &facts.lang, &m.name, &m.leaf));
+            if filed.is_empty() {
+                continue;
+            }
+            if let Some(caller) = test_entity(m.enclosing) {
+                calls.extend(filed.iter().map(|key| (key.clone(), caller.clone())));
+            }
+        }
+        calls
     }
 
-    /// The distinct callers of the test calls to `leaf` that land on a placeholder, in order: the
-    /// test entities ([`Self::test_entity_of`]) a callers walk reaches through a placeholder bound
-    /// to `leaf` and no proof names, read from the mentions of `leaf` alone. Where a call lands
-    /// depends only on its file and name, its leaf and qualifier, so each name in each file is
-    /// resolved once.
-    pub fn placeholder_callers(&self, leaf: &str) -> Vec<String> {
+    /// The distinct callers of the test calls to `leaf` that land on a placeholder and are filed
+    /// under `leaf` or under `id` ([`Self::placeholder_keys`]), in order: the test entities
+    /// ([`Self::test_entity_of`]) a callers walk from the definition `id` named `leaf` reaches
+    /// through a placeholder no proof names, read from the mentions of `leaf` alone. Where a call
+    /// lands depends only on its file and name, its leaf and qualifier, so each name in each file
+    /// is resolved once.
+    pub fn placeholder_callers(&self, id: &str, leaf: &str) -> Vec<String> {
         let mut lands: FxHashMap<(&str, &str), bool> = FxHashMap::default();
         let mut enclosing: BTreeMap<&str, BTreeSet<Option<u32>>> = BTreeMap::new();
         for m in self.test_calls_named(leaf) {
             let (path, name) = (m.file.path, m.name);
-            if *(lands.entry((path, name)))
-                .or_insert_with(|| self.lands_on_placeholder(path, m.file.lang, name, leaf))
-            {
+            if *(lands.entry((path, name))).or_insert_with(|| {
+                let keys = self.placeholder_keys(path, m.file.lang, name, leaf);
+                keys.iter().any(|key| key == leaf || key == id)
+            }) {
                 enclosing.entry(path).or_default().insert(m.enclosing);
             }
         }
@@ -1152,10 +1232,21 @@ impl<'v> Resolver<'v> {
         proofs
     }
 
-    /// The down-hop of `id`: what its placeholder's call-target candidates in `pool` resolve to;
-    /// none when `id` is no placeholder.
+    /// The down-hop of `id`: what its placeholder's call-target candidates in `pool` resolve to,
+    /// those of its leaf, the text after the last `::` or `.` of the name it is keyed by, and for
+    /// a name a qualifier writes, the ones that qualifier keeps ([`Self::kept`]); none when `id`
+    /// is no placeholder.
     pub fn down_hop(&self, id: &str, pool: Pool) -> Option<Hop<Candidate<'v>>> {
-        leaf_of(id).map(|leaf| hop(self.call_targets(leaf, pool)))
+        let (qualifier, leaf) = split_path(leaf_of(id)?);
+        let targets = self.call_targets(leaf, pool);
+        Some(match qualifier {
+            None => hop(targets),
+            Some(q) => hop(self
+                .kept(q, pool, targets.iter())
+                .into_iter()
+                .cloned()
+                .collect()),
+        })
     }
 
     /// The up-hop of the definition `id` named `leaf`: every call and reference edge that lands
@@ -1168,11 +1259,8 @@ impl<'v> Resolver<'v> {
             .collect();
         let reaches = |l: &Link| {
             l.to == id
-                || match self.down_hop(&l.to, Pool::of(l.test)) {
-                    Some(Hop::One(c)) => c.id == id,
-                    Some(Hop::Frontier(cs)) => cs.iter().any(|c| c.id == id),
-                    Some(Hop::Terminal) | None => false,
-                }
+                || (self.down_hop(&l.to, Pool::of(l.test)))
+                    .is_some_and(|h| h.into_vec().iter().any(|c| c.id == id))
         };
         files
             .into_iter()
@@ -1224,10 +1312,15 @@ impl<'v> Resolver<'v> {
 /// The rows a store settles ([`Settled`]) for `view`, which holds `base`'s facts but for the
 /// files at `differing`, from the rows `base` settled: what settling `view` whole computes,
 /// re-settling only where a difference reaches. Its test files are `view`'s test-module closure.
-/// Its proof calls are `base`'s but for those in a file that differs, flipped test-ness or makes a
-/// test call to a leaf whose product call targets ([`Resolver::proof`]'s candidates) differ,
-/// which are read from `view`. Only a definition in a file that differs or flipped can move a
-/// leaf's targets, so no other proof call can change.
+/// Its proof calls are `base`'s but for those in a file a difference reaches, which are read from
+/// `view`: a file that differs or flipped test-ness; one that makes a test call to a leaf whose
+/// call targets ([`Resolver::proof`]'s candidates, product and test) differ; and one that makes a
+/// test call whose qualifier ([`qualifier`]) is the leaf of a definition or of an `impl` mention
+/// in either version of a file that differs or flipped, or a name an implementation's header
+/// holds beside such a definition's leaf, since what a qualifier keeps ([`Resolver::narrowed`])
+/// moves with its definitions, its implementations and the traits they name. Only a file that
+/// differs or flipped holds a definition or an `impl` mention that moved, so no other proof call
+/// can change.
 pub fn resettle(
     base: &dyn CodeView,
     view: &dyn CodeView,
@@ -1236,27 +1329,43 @@ pub fn resettle(
     let (was, now) = (Resolver::new(base), Resolver::new(view));
     let flipped = (was.test_files.symmetric_difference(&now.test_files)).copied();
     let reached: BTreeSet<&str> = differing.iter().copied().chain(flipped).collect();
-    let mut leaves = BTreeSet::new();
+    let (mut leaves, mut qualifiers) = (BTreeSet::new(), BTreeSet::new());
     for path in &reached {
         for facts in [base.file(path), view.file(path)].into_iter().flatten() {
             leaves.extend(facts.defs.iter().map(|d| d.leaf.clone()));
+            let impls = facts.mentions.iter().filter(|m| is_impl(&m.kind));
+            qualifiers.extend(impls.map(|m| m.leaf.clone()));
         }
     }
-    let targets = |r: &Resolver, leaf: &str| -> Vec<String> {
+    // A trait a reached file gains, loses or flips moves what each name an implementation's
+    // header holds beside it keeps, wherever that implementation is.
+    for leaf in &leaves {
+        for m in view.mentions_named(leaf).filter(|m| is_impl(&m.kind)) {
+            let header = |n: &&Mention| n.enclosing == m.enclosing && is_impl(&n.kind);
+            if let Some(facts) = view.file(m.file.path) {
+                qualifiers.extend(facts.mentions.iter().filter(header).map(|n| n.leaf.clone()));
+            }
+        }
+    }
+    qualifiers.extend(leaves.iter().cloned());
+    let targets = |r: &Resolver, leaf: &str| -> Vec<(String, bool)> {
         let candidates = r.candidates(leaf);
-        let calls = candidates.iter().filter(|c| Pool::Product.calls(c));
-        calls.map(|c| c.id.clone()).collect()
+        let calls = candidates.iter().filter(|c| Pool::All.calls(c));
+        calls.map(|c| (c.id.clone(), c.test)).collect()
     };
     let mut redo: BTreeSet<String> = reached.iter().map(|p| p.to_string()).collect();
     for leaf in leaves
         .iter()
         .filter(|l| targets(&was, l) != targets(&now, l))
     {
-        for m in view.mentions_named(leaf) {
-            let test = now.is_test(m.test, m.file.path);
-            if m.file.half == Half::Code && m.kind == MentionKind::Call && test {
-                redo.insert(m.file.path.to_string());
-            }
+        redo.extend(now.test_calls_named(leaf).map(|m| m.file.path.to_string()));
+    }
+    let qualified =
+        |m: &Mention| qualifier(&m.name, &m.leaf).is_some_and(|q| qualifiers.contains(q));
+    for &path in &now.code_files {
+        let facts = view.file(path);
+        if facts.is_some_and(|facts| now.test_calls(&facts).any(qualified)) {
+            redo.insert(path.to_string());
         }
     }
     let redone = |c: &ProofCall| c.file().is_some_and(|file| redo.contains(file));
@@ -1277,8 +1386,11 @@ pub fn resettle(
 pub(crate) mod tests {
     use super::*;
     use crate::code_facts::{Def, DocConcept, DocLink, Stamp, Tip, WfNode, WfRelation};
-    use crate::code_view::FactsView;
+    use crate::code_graph::CodeGraph;
+    use crate::code_view::{Compared, FactsView, Tests, ViewFilter};
+    use crate::composed::{Composed, Honesty, Indexed};
     use crate::contextgraph::query::path_leaf;
+    use crate::contextgraph::{ContextGraph, Direction};
 
     fn def(local: &str, kind: &str, line: u32, parent: Option<u32>, test: bool) -> Def {
         Def {
@@ -1292,12 +1404,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// A method whose local path is dotted, as a Python or C# method's is (`Base.area`): its
-    /// leaf the text after its type's `.`, its parent the definition at `parent`.
-    fn dotted_method(local: &str, line: u32, parent: u32) -> Def {
+    /// A member of kind `kind` whose local path is dotted, as a Python or C# member's is
+    /// (`Base.area`): its leaf the text after its type's `.`, its parent the definition at
+    /// `parent`.
+    fn dotted(local: &str, kind: &str, line: u32, parent: u32) -> Def {
         Def {
             leaf: path_leaf(local).into(),
-            ..def(local, "method", line, Some(parent), false)
+            ..def(local, kind, line, Some(parent), false)
         }
     }
 
@@ -1345,6 +1458,11 @@ pub(crate) mod tests {
             name: name.into(),
             ..mention(kind, path_leaf(name), enclosing, line, test)
         }
+    }
+
+    /// A test's call written `name` (`Q::leaf`) from the definition at `enclosing`.
+    fn test_call(name: &str, enclosing: u32, line: u32) -> Mention {
+        qualified(MentionKind::Call, name, Some(enclosing), line, true)
     }
 
     fn decl(name: &str, def: u32, test: bool, candidates: &[&str]) -> ModuleDecl {
@@ -1582,7 +1700,7 @@ pub(crate) mod tests {
         TestFiles,
         Intent(&'static str),
         PlaceholderCalls(&'static str),
-        PlaceholderCallers(&'static str),
+        PlaceholderCallers(&'static str, &'static str),
     }
 
     fn render_link(l: &Link) -> String {
@@ -1645,9 +1763,9 @@ pub(crate) mod tests {
             Ask::PlaceholderCalls(path) => r
                 .file_placeholder_calls(&view.file(path).unwrap())
                 .into_iter()
-                .map(|(leaf, caller)| format!("{leaf} {caller}"))
+                .map(|(key, caller)| format!("{key} {caller}"))
                 .collect(),
-            Ask::PlaceholderCallers(leaf) => r.placeholder_callers(leaf),
+            Ask::PlaceholderCallers(id, leaf) => r.placeholder_callers(id, leaf),
         }
     }
 
@@ -1682,12 +1800,35 @@ pub(crate) mod tests {
 
     /// The files of [`fixture`], `change` applied to them.
     fn changed(change: impl FnOnce(&mut Vec<FileFacts>)) -> FactsView {
-        let view = fixture();
-        let mut files: Vec<FileFacts> = (view.files())
-            .map(|f| view.file(f.path).unwrap().into_owned())
+        changed_from(&fixture(), change)
+    }
+
+    /// The files of `base`, `change` applied to them.
+    fn changed_from(base: &FactsView, change: impl FnOnce(&mut Vec<FileFacts>)) -> FactsView {
+        let mut files: Vec<FileFacts> = (base.files())
+            .map(|f| base.file(f.path).unwrap().into_owned())
             .collect();
         change(&mut files);
         FactsView::new(stamp(), files)
+    }
+
+    /// The rows a store settles from `view` alone, settling it whole: its test files and its
+    /// proof calls.
+    fn settled_rows(view: &FactsView) -> (Vec<String>, Vec<ProofCall>) {
+        let whole = Resolver::new(view);
+        let test_files = whole.test_files().into_iter().map(str::to_string).collect();
+        (test_files, whole.proof_calls().to_vec())
+    }
+
+    /// Re-settling `view`, which holds `base`'s facts but for the files at `differing`, from the
+    /// rows `base` settled computes the test files and proof calls settling `view` whole
+    /// computes, and those rows move from `base`'s exactly when a file differs: `case` fails
+    /// otherwise.
+    fn assert_resettles(case: &str, base: &FactsView, view: &FactsView, differing: &[&str]) {
+        let (was, want) = (settled_rows(base), settled_rows(view));
+        let differing: BTreeSet<&str> = differing.iter().copied().collect();
+        assert_eq!(differing.is_empty(), want == was, "{case}: the rows move");
+        assert_eq!(resettle(base, view, &differing), want, "{case}");
     }
 
     /// The file at `path` among `files`.
@@ -1741,18 +1882,316 @@ pub(crate) mod tests {
                 }),
             ),
         ];
-        let settled = |view: &FactsView| -> (Vec<String>, Vec<ProofCall>) {
-            let whole = Resolver::new(view);
-            let test_files = whole.test_files().into_iter().map(str::to_string).collect();
-            (test_files, whole.proof_calls().to_vec())
-        };
         let base = fixture();
-        let was = settled(&base);
         for (case, differing, view) in cases {
-            let want = settled(&view);
-            let differing: BTreeSet<&str> = differing.iter().copied().collect();
-            assert_eq!(differing.is_empty(), want == was, "{case}: the rows move");
-            assert_eq!(resettle(&base, &view, &differing), want, "{case}");
+            assert_resettles(case, &base, &view, differing);
+        }
+    }
+
+    /// A tree of qualified test calls, one for each outcome of the narrowed match in the proof
+    /// rule ([`Resolver::proof`]): its qualifier keeps one product method (`Cursor::new`,
+    /// `Store::new`), one test method (`Bell::ring`), or several (`Lamp::glow`, called from a
+    /// test module beside one of them); it keeps none but names a type (`Gauge::read`), so the
+    /// unqualified rule takes the call; or it keeps none and names nothing (`AtomicU64::new`,
+    /// called from a test module beside a `new`, `Reader::new`, `Valve::shut`), so the call
+    /// proves none.
+    fn qualified_proof_fixture() -> FactsView {
+        let fn_def = |name: &str| vec![def(name, "function", 1, None, true)];
+        FactsView::new(
+            stamp(),
+            vec![
+                code(
+                    "src/cursor.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Cursor", "impl", 1, None, false),
+                        def("Cursor::new", "method", 2, Some(0), false),
+                    ],
+                    vec![tagged("impl", "Cursor", Some(0), 1)],
+                ),
+                code(
+                    "src/store.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Store", "impl", 1, None, false),
+                        def("Store::new", "method", 2, Some(0), false),
+                        def("tests", "module", 10, None, true),
+                        def("tests::counts", "function", 11, Some(2), true),
+                    ],
+                    vec![
+                        tagged("impl", "Store", Some(0), 1),
+                        test_call("AtomicU64::new", 3, 12),
+                    ],
+                ),
+                code(
+                    "src/gauge.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![def("Gauge", "type", 1, None, false)],
+                    vec![],
+                ),
+                code(
+                    "src/lamp.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Lamp", "impl", 1, None, false),
+                        def("Lamp::glow", "method", 2, Some(0), false),
+                        def("tests", "module", 10, None, true),
+                        def("tests::lit", "function", 11, Some(2), true),
+                    ],
+                    vec![
+                        tagged("impl", "Lamp", Some(0), 1),
+                        test_call("Lamp::glow", 3, 12),
+                    ],
+                ),
+                code(
+                    "src/lamp_ext.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Lamp", "impl", 1, None, false),
+                        def("Lamp::glow", "method", 2, Some(0), false),
+                    ],
+                    vec![tagged("impl", "Lamp", Some(0), 1)],
+                ),
+                code(
+                    "src/meter.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Meter", "impl", 1, None, false),
+                        def("Meter::read", "method", 2, Some(0), false),
+                    ],
+                    vec![tagged("impl", "Meter", Some(0), 1)],
+                ),
+                code(
+                    "src/seal.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("Seal", "type", 1, None, false),
+                        def("impl Seal", "impl", 2, None, false),
+                        def("Seal::shut", "method", 3, Some(1), false),
+                    ],
+                    vec![tagged("impl", "Seal", Some(1), 2)],
+                ),
+                code(
+                    "tests/bell.rs",
+                    "rust",
+                    Scope::Test,
+                    vec![
+                        def("impl Bell", "impl", 1, None, true),
+                        def("Bell::ring", "method", 2, Some(0), true),
+                        def("rings", "function", 5, None, true),
+                    ],
+                    vec![
+                        tagged("impl", "Bell", Some(0), 1),
+                        test_call("Bell::ring", 2, 6),
+                    ],
+                ),
+                code(
+                    "tests/gauge.rs",
+                    "rust",
+                    Scope::Test,
+                    vec![
+                        def("impl Probe for Gauge", "impl", 1, None, true),
+                        def("probes", "function", 5, None, true),
+                    ],
+                    vec![
+                        tagged("impl", "Probe", Some(0), 1),
+                        tagged("impl", "Gauge", Some(0), 1),
+                        test_call("Gauge::read", 1, 6),
+                    ],
+                ),
+                code(
+                    "tests/probe.rs",
+                    "rust",
+                    Scope::Test,
+                    vec![def("Probe", "trait", 1, None, true)],
+                    vec![],
+                ),
+                code(
+                    "tests/read.rs",
+                    "rust",
+                    Scope::Test,
+                    fn_def("reads"),
+                    vec![test_call("Reader::new", 0, 2)],
+                ),
+                code(
+                    "tests/seq.rs",
+                    "rust",
+                    Scope::Test,
+                    fn_def("steps"),
+                    vec![
+                        test_call("Cursor::new", 0, 2),
+                        test_call("Store::new", 0, 3),
+                    ],
+                ),
+                code(
+                    "tests/valve.rs",
+                    "rust",
+                    Scope::Test,
+                    vec![
+                        def("impl Seal for Valve", "impl", 1, None, true),
+                        def("shuts", "function", 5, None, true),
+                    ],
+                    vec![
+                        tagged("impl", "Seal", Some(0), 1),
+                        tagged("impl", "Valve", Some(0), 1),
+                        test_call("Valve::shut", 1, 6),
+                    ],
+                ),
+            ],
+        )
+    }
+
+    /// A QUALIFIED PROOF RESETTLES (spec 117, RESOLVER AT READ): a test call's proof narrows by
+    /// its qualifier as its call edge does, so a second `impl Cursor` holding `new` moves the
+    /// proof of a test's `Cursor::new()` from the first `new` to none, and a test beside the
+    /// second `new` proves neither; and re-settling reaches every proof a qualifier moves, after
+    /// a file that only adds the type `AtomicU64` a test's `AtomicU64::new()` names, one that only
+    /// renames an `impl` mention over unchanged method ids, one that adds a test trait's method a
+    /// qualifier keeps through an implementation in another file, one that turns test the call
+    /// target a qualified call proves, and one that turns a type into a trait over unchanged
+    /// method ids, a qualifier reaching it only through an implementation in a file it does not
+    /// touch. The proofs of each definition say what the proof calls say.
+    #[test]
+    fn a_qualified_proof_resettles() {
+        let base = qualified_proof_fixture();
+        // (case, the files that differ, the change, the proofs settled after it)
+        let cases: [(&str, &[&str], FactsView, &[&str]); 7] = [
+            (
+                "no file differs: a qualified call proves the one product call target its \
+                 qualifier keeps, and none when that one is test, it keeps several, or it keeps \
+                 none and its path qualifier names nothing",
+                &[],
+                changed_from(&base, |_| {}),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a second `impl Cursor` holding `new` moves the proof of `Cursor::new()` to none, \
+                 and a test beside the second `new` proves neither",
+                &["src/cursor_ext.rs"],
+                changed_from(&base, |files| {
+                    files.push(code(
+                        "src/cursor_ext.rs",
+                        "rust",
+                        Scope::Product,
+                        vec![
+                            def("impl Cursor", "impl", 1, None, false),
+                            def("Cursor::new", "method", 2, Some(0), false),
+                            def("tests", "module", 10, None, true),
+                            def("tests::opens", "function", 11, Some(2), true),
+                        ],
+                        vec![
+                            tagged("impl", "Cursor", Some(0), 1),
+                            test_call("Cursor::new", 3, 12),
+                        ],
+                    ));
+                }),
+                &[
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a file that only adds `struct AtomicU64` lets `AtomicU64::new()` take the \
+                 unqualified rule in a file it does not touch",
+                &["src/atomic.rs"],
+                changed_from(&base, |files| {
+                    let atomic = vec![def("AtomicU64", "type", 1, None, false)];
+                    files.push(code(
+                        "src/atomic.rs",
+                        "rust",
+                        Scope::Product,
+                        atomic,
+                        vec![],
+                    ));
+                }),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/store.rs::Store::new <- src/store.rs:12 tests/seq.rs:3",
+                ],
+            ),
+            (
+                "an `impl` mention renamed over unchanged method ids moves the proof between the \
+                 files calling its old and its new name",
+                &["src/cursor.rs"],
+                changed_from(&base, |files| {
+                    at(files, "src/cursor.rs").mentions[0] = tagged("impl", "Reader", Some(0), 1);
+                }),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/read.rs:2",
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a test trait's method, kept through an implementation in another file, moves \
+                 the proof of `Gauge::read()` to none",
+                &["tests/probe.rs"],
+                changed_from(&base, |files| {
+                    let read = def("Probe::read", "method", 2, Some(0), true);
+                    at(files, "tests/probe.rs").defs.push(read);
+                }),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a call target turned test moves the proof of `Gauge::read()` to none",
+                &["src/meter.rs"],
+                changed_from(&base, |files| at(files, "src/meter.rs").defs[1].test = true),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+            (
+                "a type turned trait over unchanged method ids gives `Valve::shut()` its method \
+                 through an implementation, in a file it does not touch, that names both",
+                &["src/seal.rs"],
+                changed_from(&base, |files| {
+                    let seal = at(files, "src/seal.rs");
+                    seal.defs = vec![
+                        def("Seal", "trait", 1, None, false),
+                        def("Seal::shut", "method", 2, Some(0), false),
+                    ];
+                    seal.mentions.clear();
+                }),
+                &[
+                    "src/cursor.rs::Cursor::new <- tests/seq.rs:2",
+                    "src/meter.rs::Meter::read <- tests/gauge.rs:6",
+                    "src/seal.rs::Seal::shut <- tests/valve.rs:6",
+                    "src/store.rs::Store::new <- tests/seq.rs:3",
+                ],
+            ),
+        ];
+        let ids = [
+            "src/cursor.rs::Cursor::new",
+            "src/cursor_ext.rs::Cursor::new",
+            "src/meter.rs::Meter::read",
+            "src/seal.rs::Seal::shut",
+            "src/store.rs::Store::new",
+        ];
+        for (case, differing, view, proofs) in cases {
+            let r = Resolver::new(&view);
+            assert_eq!(answer(&view, &r, &Ask::Proofs), proofs, "{case}");
+            for id in ids {
+                let calls = r.proof_calls().iter().filter(|c| c.target == id);
+                let want: Vec<ProofCall> = calls.cloned().collect();
+                assert_eq!(r.proofs_of(id), want, "{case}: the proofs of {id}");
+            }
+            assert_resettles(case, &base, &view, differing);
         }
     }
 
@@ -1920,31 +2359,26 @@ pub(crate) mod tests {
         ]);
     }
 
-    /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): of same-path twins of one kind the lower
-    /// line settles the id wherever it sits among them, and of twins on one line the first.
-    /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the fixture's test files and proof
-    /// calls are pinned by digest beside the generation the store's fingerprint folds in, so a
-    /// change to the test-module closure or the proof rule fails here until `SETTLED_GENERATION`
-    /// is bumped and the pair re-pinned.
+    /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the test files and proof calls of
+    /// [`fixture`], and of [`qualified_proof_fixture`], whose qualified test calls take each
+    /// outcome of the narrowed match in [`Resolver::proof`], are pinned by digest beside the
+    /// generation the store's fingerprint folds in, so a change that moves the rows these two
+    /// fixtures settle fails here until `SETTLED_GENERATION` is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (3, "6126b9cf9571d2f0");
-        let view = fixture();
-        let resolver = Resolver::new(&view);
-        let test_files: Vec<&str> = (view.files())
-            .map(|f| f.path)
-            .filter(|path| resolver.is_test_file(path))
-            .collect();
-        let proofs = resolver.proof_calls();
+        const PINNED: (u64, &str) = (4, "66ea4c83fbdb81c6");
+        let (test_files, proofs) = settled_rows(&fixture());
         assert!(
             !proofs.is_empty() && test_files.iter().any(|p| !p.starts_with("tests/")),
             "the fixture holds proofs and a test file by the closure alone"
         );
-        let digest = crate::community::fnv1a_hex(&format!("{test_files:#?}{proofs:#?}"));
+        let qualified = settled_rows(&qualified_proof_fixture());
+        let rows = format!("{test_files:#?}{proofs:#?}{qualified:#?}");
+        let digest = crate::community::fnv1a_hex(&rows);
         assert_eq!(
             (SETTLED_GENERATION, digest.as_str()),
             PINNED,
-            "this build's settled generation and the digest of the fixture's settled rows (left) \
+            "this build's settled generation and the digest of the fixtures' settled rows (left) \
              differ from the pinned pair: a change to what a store settles ships with a bump, so \
              bump `SETTLED_GENERATION` and re-pin the pair to this build's values together"
         );
@@ -2001,11 +2435,14 @@ pub(crate) mod tests {
         let cases: [(&str, Vec<String>); 4] = [
             ("proof calls", calls(resolver.proof_calls().to_vec())),
             ("proofs of", calls(resolver.proofs_of("src/p.rs::target"))),
-            ("placeholder callers", resolver.placeholder_callers("draw")),
+            (
+                "placeholder callers",
+                resolver.placeholder_callers("src/d1.rs::draw", "draw"),
+            ),
             (
                 "file placeholder calls",
                 (resolver.file_placeholder_calls(&facts).into_iter())
-                    .map(|(leaf, caller)| format!("{leaf} {caller}"))
+                    .map(|(key, caller)| format!("{key} {caller}"))
                     .collect(),
             ),
         ];
@@ -2088,18 +2525,15 @@ pub(crate) mod tests {
         );
     }
 
-    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ): a call or a tagged
-    /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates its rule reads whose parent
-    /// is a definition named `Q` or an implementation enclosing an `impl` mention of `Q`, else,
-    /// when none is, those whose parent is a trait such an implementation names (`FactsView`'s
-    /// `stamp`). One kept candidate takes the edge EXTRACTED in any file, over a
-    /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
-    /// none, under a `Q` that names a type, leave the unqualified rule. A class whose base is `Q`
-    /// is no implementation of `Q`.
-    /// The placeholder readers resolve each call by its name, so two calls of one leaf that
-    /// land apart are read apart.
-    #[test]
-    fn a_qualified_call_narrows_its_candidates() {
+    /// A tree of qualified mentions narrowing their candidates: `FactsView`'s inherent `new` and
+    /// the `files` its `CodeView` implementation defines, beside `Snapshot`'s and `Composed`'s
+    /// `files`; `src/composed.rs`'s `Composed::open`, calling `FactsView::new` (one candidate, in
+    /// another file), `FactsView::stamp` (the trait's), `CodeView::files` (several) and
+    /// `Composed::decode` (none under `Composed`), and referencing `Located::Many`,
+    /// `Located::One` and `Composed::MAX`; a Python class whose base is the qualifier
+    /// (`Base.area` from `main`); and the test function `tests/open.rs::opens`, calling
+    /// `FactsView::files` and `CodeView::files`.
+    pub(crate) fn narrowing_fixture() -> FactsView {
         let qualified_call = |name: &str, enclosing, line, test| {
             qualified(MentionKind::Call, name, enclosing, line, test)
         };
@@ -2177,9 +2611,9 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("Base", "type", 1, None, false),
-                dotted_method("Base.area", 2, 0),
+                dotted("Base.area", "method", 2, 0),
                 def("Child", "type", 5, None, false),
-                dotted_method("Child.area", 6, 2),
+                dotted("Child.area", "method", 6, 2),
                 def("main", "function", 10, None, false),
             ],
             vec![
@@ -2197,7 +2631,23 @@ pub(crate) mod tests {
                 qualified_call("CodeView::files", Some(0), 3, true),
             ],
         );
-        let view = FactsView::new(stamp(), vec![code_view, snapshot, composed, shapes, open]);
+        FactsView::new(stamp(), vec![code_view, snapshot, composed, shapes, open])
+    }
+
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ): a call or a tagged
+    /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates its rule reads whose parent
+    /// is a definition named `Q` or an implementation enclosing an `impl` mention of `Q`, else,
+    /// when none is, those whose parent is a trait such an implementation names (`FactsView`'s
+    /// `stamp`). One kept candidate takes the edge EXTRACTED in any file, over a
+    /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
+    /// none, under a `Q` that names a type, leave the unqualified rule. A class whose base is `Q`
+    /// is no implementation of `Q`.
+    /// A call's placeholder for several kept candidates is keyed by its qualified name, and the
+    /// placeholder readers file a test call under each candidate it keeps, so two calls of one
+    /// leaf that land apart are read apart.
+    #[test]
+    fn a_qualified_call_narrows_its_candidates() {
+        let view = narrowing_fixture();
         let r = Resolver::new(&view);
         // (what the answer shows, the question, the whole answer)
         let cases: [(&str, Ask, &[&str]); 6] = [
@@ -2211,8 +2661,9 @@ pub(crate) mod tests {
                     "src/composed.rs::Composed::open -CALLS/extracted-> \
                      src/code_view.rs::CodeView::stamp",
                     "src/composed.rs -REFERENCES/extracted-> src/code_view.rs::CodeView::stamp",
-                    "src/composed.rs::Composed::open -CALLS/inferred-> src/composed.rs::%files",
-                    "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%files",
+                    "src/composed.rs::Composed::open -CALLS/inferred-> \
+                     src/composed.rs::%CodeView::files",
+                    "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%CodeView::files",
                     "src/composed.rs::Composed::open -CALLS/inferred-> src/composed.rs::%decode",
                     "src/composed.rs -REFERENCES/inferred-> src/composed.rs::%decode",
                     "src/composed.rs::impl Composed -REFERENCES/extracted-> \
@@ -2258,8 +2709,8 @@ pub(crate) mod tests {
                 &[
                     "tests/open.rs::opens -CALLS/extracted-> src/code_view.rs::FactsView::files",
                     "tests/open.rs -REFERENCES/extracted-> src/code_view.rs::FactsView::files",
-                    "tests/open.rs::opens -CALLS/inferred-> tests/open.rs::%files",
-                    "tests/open.rs -REFERENCES/inferred-> tests/open.rs::%files",
+                    "tests/open.rs::opens -CALLS/inferred-> tests/open.rs::%CodeView::files",
+                    "tests/open.rs -REFERENCES/inferred-> tests/open.rs::%CodeView::files",
                     "tests/open.rs -CONTAINS/extracted-> tests/open.rs::opens",
                 ],
             ),
@@ -2273,13 +2724,17 @@ pub(crate) mod tests {
                 ],
             ),
             (
-                "a test file's calls landing on a placeholder, by name",
+                "a test file's call landing on a placeholder, filed under each candidate it keeps",
                 Ask::PlaceholderCalls("tests/open.rs"),
-                &["files tests/open.rs::opens"],
+                &[
+                    "src/code_view.rs::FactsView::files tests/open.rs::opens",
+                    "src/composed.rs::Composed::files tests/open.rs::opens",
+                    "src/snapshot.rs::Snapshot::files tests/open.rs::opens",
+                ],
             ),
             (
-                "a leaf's placeholder callers, by name",
-                Ask::PlaceholderCallers("files"),
+                "a kept candidate's placeholder callers",
+                Ask::PlaceholderCallers("src/snapshot.rs::Snapshot::files", "files"),
                 &["tests/open.rs::opens"],
             ),
         ];
@@ -2875,7 +3330,7 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("HttpExtensions", "type", 1, None, false),
-                dotted_method("HttpExtensions.GetClientIp", 2, 0),
+                dotted("HttpExtensions.GetClientIp", "method", 2, 0),
                 def("Shape", "type", 5, None, false),
             ],
             vec![],
@@ -2886,7 +3341,7 @@ pub(crate) mod tests {
             Scope::Product,
             vec![
                 def("Handler", "type", 1, None, false),
-                dotted_method("Handler.Handle", 2, 0),
+                dotted("Handler.Handle", "method", 2, 0),
             ],
             vec![
                 qualified(MentionKind::Call, "Request.GetClientIp", Some(1), 3, false),
@@ -2993,7 +3448,7 @@ pub(crate) mod tests {
             ),
             (
                 "no placeholder caller of a leaf nothing defines",
-                Ask::PlaceholderCallers("fetch_add"),
+                Ask::PlaceholderCallers("tests/seq.rs::%fetch_add", "fetch_add"),
                 &[],
             ),
             (
@@ -3054,7 +3509,7 @@ pub(crate) mod tests {
             ),
             (
                 "the placeholder caller of a leaf nothing defines, by its file's language",
-                Ask::PlaceholderCallers("unload"),
+                Ask::PlaceholderCallers("tests/gauge.rs::%unload", "unload"),
                 &["tests/gauge.rs::drains"],
             ),
         ];
@@ -3063,6 +3518,713 @@ pub(crate) mod tests {
         }
     }
 
+    /// SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE (spec 117, RESOLVER AT READ): a call
+    /// whose qualifier keeps several candidates lands on the placeholder keyed by its qualified
+    /// name (`F::%Q.leaf`), never on the candidate in its own file, and that placeholder's
+    /// down-hop is the kept set alone. So `CodeView.file`, written in the trait's default method
+    /// `describe` beside `FactsView`'s `file`, with `Snapshot`'s `file` in another file, reaches
+    /// both implementations and never `Store`'s `file`: in the resolver's links, down-hop,
+    /// up-hops and hidden test callers, and in `Composed`'s call walk over either code half,
+    /// which lists both as `describe`'s callees and `describe` as the caller of each. A shown
+    /// test call keeps the test implementation `Fake` beside them, and a file-level reference
+    /// to the leaf stays held by the call. The walk reads a product call's placeholder in the
+    /// product pool under every filter, as the resolver's up-hop reads a link in its own: so
+    /// `Cube.size` keeps its traits' `size` methods, and a test-only `Cube`'s own `size`, which
+    /// the test pool keeps in their place, joins them only when tests are shown, the set its
+    /// node's `candidates` attribute carries.
+    #[test]
+    fn several_narrowed_candidates_never_prefer_their_file() {
+        let qualified_call = |enclosing, line, test| {
+            qualified(
+                MentionKind::Call,
+                "CodeView.file",
+                Some(enclosing),
+                line,
+                test,
+            )
+        };
+        let code_view = code(
+            "src/code_view.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("CodeView", "trait", 1, None, false),
+                def("CodeView::describe", "method", 2, Some(0), false),
+                def("FactsView", "type", 10, None, false),
+                def("impl CodeView for FactsView", "impl", 12, None, false),
+                def("FactsView::file", "method", 13, Some(3), false),
+            ],
+            vec![
+                qualified_call(1, 3, false),
+                tagged("field", "file", None, 5),
+                tagged("impl", "CodeView", Some(3), 12),
+                tagged("impl", "FactsView", Some(3), 12),
+            ],
+        );
+        let snapshot = code(
+            "src/snapshot.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Snapshot", "type", 1, None, false),
+                def("impl CodeView for Snapshot", "impl", 3, None, false),
+                def("Snapshot::file", "method", 4, Some(1), false),
+            ],
+            vec![
+                tagged("impl", "CodeView", Some(1), 3),
+                tagged("impl", "Snapshot", Some(1), 3),
+            ],
+        );
+        let store = code(
+            "src/store.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Store", "type", 1, None, false),
+                def("impl Store", "impl", 3, None, false),
+                def("Store::file", "method", 4, Some(1), false),
+                def("Config", "type", 10, None, false),
+                def("Config::file", "field", 11, Some(3), false),
+            ],
+            vec![tagged("impl", "Store", Some(1), 3)],
+        );
+        let describe = code(
+            "tests/describe.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("describes", "function", 1, None, true),
+                def("Fake", "type", 5, None, true),
+                def("impl CodeView for Fake", "impl", 6, None, true),
+                def("Fake::file", "method", 7, Some(2), true),
+            ],
+            vec![
+                qualified_call(0, 2, true),
+                tagged("impl", "CodeView", Some(2), 6),
+                tagged("impl", "Fake", Some(2), 6),
+            ],
+        );
+        // `Cube.size`, written in `report`, whose qualifier's own tier holds no product `size`, so
+        // its traits' methods are its product set, beside a test-only `Cube` whose own `size`
+        // fills that tier in the test pool.
+        let shape = code(
+            "src/shape.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Area", "trait", 1, None, false),
+                def("Area::size", "method", 2, Some(0), false),
+                def("Volume", "trait", 5, None, false),
+                def("Volume::size", "method", 6, Some(2), false),
+            ],
+            vec![],
+        );
+        let cube = code(
+            "src/cube.rs",
+            "rust",
+            Scope::Product,
+            vec![
+                def("Cube", "type", 1, None, false),
+                def("impl Area for Cube", "impl", 3, None, false),
+                def("impl Volume for Cube", "impl", 5, None, false),
+            ],
+            vec![
+                tagged("impl", "Area", Some(1), 3),
+                tagged("impl", "Cube", Some(1), 3),
+                tagged("impl", "Volume", Some(2), 5),
+                tagged("impl", "Cube", Some(2), 5),
+            ],
+        );
+        let report = code(
+            "src/report.rs",
+            "rust",
+            Scope::Product,
+            vec![def("report", "function", 1, None, false)],
+            vec![qualified(MentionKind::Call, "Cube.size", Some(0), 2, false)],
+        );
+        let test_cube = code(
+            "tests/cube.rs",
+            "rust",
+            Scope::Test,
+            vec![
+                def("Cube", "type", 1, None, true),
+                def("impl Cube", "impl", 3, None, true),
+                def("Cube::size", "method", 4, Some(1), true),
+            ],
+            vec![tagged("impl", "Cube", Some(1), 3)],
+        );
+        let view = FactsView::new(
+            stamp(),
+            vec![
+                code_view, snapshot, store, describe, shape, cube, report, test_cube,
+            ],
+        );
+        let r = Resolver::new(&view);
+        // (what the answer shows, the question, the whole answer)
+        let asks: [(&str, Ask, &[&str]); 13] = [
+            (
+                "a product call keeping two implementations, one in its own file, and a \
+                 file-level reference to the leaf held by it",
+                Ask::Links("src/code_view.rs", false),
+                &[
+                    "src/code_view.rs::CodeView::describe -CALLS/inferred-> \
+                     src/code_view.rs::%CodeView.file",
+                    "src/code_view.rs -REFERENCES/inferred-> src/code_view.rs::%CodeView.file",
+                    "src/code_view.rs::impl CodeView for FactsView -REFERENCES/extracted-> \
+                     src/code_view.rs::CodeView",
+                    "src/code_view.rs::impl CodeView for FactsView -REFERENCES/extracted-> \
+                     src/code_view.rs::FactsView",
+                    "src/code_view.rs -CONTAINS/extracted-> src/code_view.rs::CodeView",
+                    "src/code_view.rs::CodeView -CONTAINS/extracted-> \
+                     src/code_view.rs::CodeView::describe",
+                    "src/code_view.rs -CONTAINS/extracted-> src/code_view.rs::FactsView",
+                    "src/code_view.rs::impl CodeView for FactsView -CONTAINS/extracted-> \
+                     src/code_view.rs::FactsView::file",
+                    "src/code_view.rs -CONTAINS/extracted-> \
+                     src/code_view.rs::impl CodeView for FactsView",
+                ],
+            ),
+            (
+                "a test call keeping the test implementation too, past its proof",
+                Ask::Links("tests/describe.rs", true),
+                &[
+                    "tests/describe.rs::describes -CALLS/inferred-> \
+                     tests/describe.rs::%CodeView.file",
+                    "tests/describe.rs -REFERENCES/inferred-> tests/describe.rs::%CodeView.file",
+                    "tests/describe.rs::impl CodeView for Fake -REFERENCES/inferred-> \
+                     src/code_view.rs::CodeView",
+                    "tests/describe.rs::impl CodeView for Fake -REFERENCES/extracted-> \
+                     tests/describe.rs::Fake",
+                    "tests/describe.rs -CONTAINS/extracted-> tests/describe.rs::Fake",
+                    "tests/describe.rs::impl CodeView for Fake -CONTAINS/extracted-> \
+                     tests/describe.rs::Fake::file",
+                    "tests/describe.rs -CONTAINS/extracted-> tests/describe.rs::describes",
+                    "tests/describe.rs -CONTAINS/extracted-> \
+                     tests/describe.rs::impl CodeView for Fake",
+                ],
+            ),
+            (
+                "the product placeholder's down-hop, the product implementations",
+                Ask::DownHop("src/code_view.rs::%CodeView.file", Pool::Product),
+                &["frontier src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file"],
+            ),
+            (
+                "the test placeholder's down-hop, the test implementation too",
+                Ask::DownHop("tests/describe.rs::%CodeView.file", Pool::All),
+                &[
+                    "frontier src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file \
+                     tests/describe.rs::Fake::file",
+                ],
+            ),
+            (
+                "the caller of the implementation in the call's file",
+                Ask::UpHop("src/code_view.rs::FactsView::file", "file"),
+                &[
+                    "src/code_view.rs::CodeView::describe -CALLS/inferred-> \
+                     src/code_view.rs::%CodeView.file",
+                    "src/code_view.rs -REFERENCES/inferred-> src/code_view.rs::%CodeView.file",
+                ],
+            ),
+            (
+                "the caller of the implementation in another file",
+                Ask::UpHop("src/snapshot.rs::Snapshot::file", "file"),
+                &[
+                    "src/code_view.rs::CodeView::describe -CALLS/inferred-> \
+                     src/code_view.rs::%CodeView.file",
+                    "src/code_view.rs -REFERENCES/inferred-> src/code_view.rs::%CodeView.file",
+                ],
+            ),
+            (
+                "no caller of another type's method of the leaf",
+                Ask::UpHop("src/store.rs::Store::file", "file"),
+                &[],
+            ),
+            (
+                "the test call's placeholder filed under each candidate it keeps",
+                Ask::PlaceholderCalls("tests/describe.rs"),
+                &[
+                    "src/code_view.rs::FactsView::file tests/describe.rs::describes",
+                    "src/snapshot.rs::Snapshot::file tests/describe.rs::describes",
+                    "tests/describe.rs::Fake::file tests/describe.rs::describes",
+                ],
+            ),
+            (
+                "the hidden test caller of an implementation",
+                Ask::PlaceholderCallers("src/snapshot.rs::Snapshot::file", "file"),
+                &["tests/describe.rs::describes"],
+            ),
+            (
+                "no hidden test caller of another type's method of the leaf",
+                Ask::PlaceholderCallers("src/store.rs::Store::file", "file"),
+                &[],
+            ),
+            (
+                "a product call's down-hop in its own pool, its qualifier's traits' methods",
+                Ask::DownHop("src/report.rs::%Cube.size", Pool::Product),
+                &["frontier src/shape.rs::Area::size src/shape.rs::Volume::size"],
+            ),
+            (
+                "the same placeholder in the test pool, the test type's own method alone",
+                Ask::DownHop("src/report.rs::%Cube.size", Pool::All),
+                &["one tests/cube.rs::Cube::size"],
+            ),
+            (
+                "the product caller of a trait method, read in its link's pool",
+                Ask::UpHop("src/shape.rs::Area::size", "size"),
+                &[
+                    "src/report.rs::report -CALLS/inferred-> src/report.rs::%Cube.size",
+                    "src/report.rs -REFERENCES/inferred-> src/report.rs::%Cube.size",
+                ],
+            ),
+        ];
+        for (shows, ask, want) in asks {
+            assert_eq!(answer(&view, &r, &ask), want, "{shows}");
+        }
+        let records = Indexed::default();
+        let honesty = Honesty {
+            worktree: "wt".into(),
+            compared: Compared::Overlaid(0),
+            behind: None,
+        };
+        // The walk from `seed` as lines: each node by layer, with the frontier it is when it is
+        // one, each edge, each file referencing a seed's leaf and calling it from nowhere, and
+        // the hidden test callers of the seed.
+        let walk = |graph: &dyn ContextGraph, seed: &str, direction| -> Vec<String> {
+            let seed = [seed.to_string()];
+            let walked = graph.calls(&seed, direction, 2, TIER_INFERRED).unwrap();
+            let nodes = walked.nodes.iter().map(|n| match &n.frontier {
+                Some(cands) => format!("{} {} frontier {}", n.layer, n.node.id, cands.join(" ")),
+                None => format!("{} {}", n.layer, n.node.id),
+            });
+            let edges = (walked.edges.iter())
+                .map(|e| format!("{} -{}-> {}", e.edge.from, e.edge.tier, e.edge.to));
+            let referenced =
+                (walked.referenced_not_called.iter()).map(|n| format!("referenced {}", n.id));
+            let hidden = graph.hidden_placeholder_callers(&seed).unwrap();
+            (nodes.chain(edges).chain(referenced))
+                .chain([format!("hidden {hidden:?}")])
+                .collect()
+        };
+        // (what the walk shows, the tests shown, the seed, the direction, the whole walk)
+        let walks: [(&str, Tests, &str, Direction, &[&str]); 9] = [
+            (
+                "the trait method's callees: both implementations, a frontier",
+                Tests::Exclude,
+                "src/code_view.rs::CodeView::describe",
+                Direction::Down,
+                &[
+                    "0 src/code_view.rs::CodeView::describe",
+                    "1 src/code_view.rs::%CodeView.file frontier \
+                     src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file",
+                    "src/code_view.rs::CodeView::describe -inferred-> \
+                     src/code_view.rs::%CodeView.file",
+                    "hidden []",
+                ],
+            ),
+            (
+                "the caller of the implementation in the call's file, and its hidden test caller",
+                Tests::Exclude,
+                "src/code_view.rs::FactsView::file",
+                Direction::Up,
+                &[
+                    "0 src/code_view.rs::FactsView::file",
+                    "1 src/code_view.rs::CodeView::describe frontier \
+                     src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file",
+                    "src/code_view.rs::CodeView::describe -inferred-> \
+                     src/code_view.rs::FactsView::file",
+                    "hidden [\"tests/describe.rs::describes\"]",
+                ],
+            ),
+            (
+                "the caller of the implementation in another file, and its hidden test caller",
+                Tests::Exclude,
+                "src/snapshot.rs::Snapshot::file",
+                Direction::Up,
+                &[
+                    "0 src/snapshot.rs::Snapshot::file",
+                    "1 src/code_view.rs::CodeView::describe frontier \
+                     src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file",
+                    "src/code_view.rs::CodeView::describe -inferred-> \
+                     src/snapshot.rs::Snapshot::file",
+                    "hidden [\"tests/describe.rs::describes\"]",
+                ],
+            ),
+            (
+                "no caller of another type's method of the leaf",
+                Tests::Exclude,
+                "src/store.rs::Store::file",
+                Direction::Up,
+                &["0 src/store.rs::Store::file", "hidden []"],
+            ),
+            (
+                "a shown test call's callees: the test implementation beside both",
+                Tests::Include,
+                "tests/describe.rs::describes",
+                Direction::Down,
+                &[
+                    "0 tests/describe.rs::describes",
+                    "1 tests/describe.rs::%CodeView.file frontier \
+                     src/code_view.rs::FactsView::file src/snapshot.rs::Snapshot::file \
+                     tests/describe.rs::Fake::file",
+                    "tests/describe.rs::describes -inferred-> tests/describe.rs::%CodeView.file",
+                    "hidden []",
+                ],
+            ),
+            (
+                "a product call's callees with tests hidden: its traits' methods",
+                Tests::Exclude,
+                "src/report.rs::report",
+                Direction::Down,
+                &[
+                    "0 src/report.rs::report",
+                    "1 src/report.rs::%Cube.size frontier \
+                     src/shape.rs::Area::size src/shape.rs::Volume::size",
+                    "src/report.rs::report -inferred-> src/report.rs::%Cube.size",
+                    "hidden []",
+                ],
+            ),
+            (
+                "a product call's callees with tests shown: the test type's own method beside \
+                 its traits' methods, never in their place",
+                Tests::Include,
+                "src/report.rs::report",
+                Direction::Down,
+                &[
+                    "0 src/report.rs::report",
+                    "1 src/report.rs::%Cube.size frontier \
+                     src/shape.rs::Area::size src/shape.rs::Volume::size \
+                     tests/cube.rs::Cube::size",
+                    "src/report.rs::report -inferred-> src/report.rs::%Cube.size",
+                    "hidden []",
+                ],
+            ),
+            (
+                "a trait method's product caller with tests hidden",
+                Tests::Exclude,
+                "src/shape.rs::Area::size",
+                Direction::Up,
+                &[
+                    "0 src/shape.rs::Area::size",
+                    "1 src/report.rs::report frontier \
+                     src/shape.rs::Area::size src/shape.rs::Volume::size",
+                    "src/report.rs::report -inferred-> src/shape.rs::Area::size",
+                    "hidden []",
+                ],
+            ),
+            (
+                "a trait method's product caller with tests shown, under the frontier holding \
+                 the test type's own method too",
+                Tests::Include,
+                "src/shape.rs::Area::size",
+                Direction::Up,
+                &[
+                    "0 src/shape.rs::Area::size",
+                    "1 src/report.rs::report frontier \
+                     src/shape.rs::Area::size src/shape.rs::Volume::size \
+                     tests/cube.rs::Cube::size",
+                    "src/report.rs::report -inferred-> src/shape.rs::Area::size",
+                    "hidden []",
+                ],
+            ),
+        ];
+        for (shows, tests, seed, direction, want) in walks {
+            let filter = ViewFilter { tests };
+            let whole = Composed::new(&records, &view, filter, honesty.clone()).unwrap();
+            assert_eq!(walk(&whole, seed, direction), want, "whole: {shows}");
+            let near = Composed::near(&records, &view, filter, honesty.clone()).unwrap();
+            assert_eq!(walk(&near, seed, direction), want, "near: {shows}");
+        }
+        // (the tests shown, a node, the candidates its down-hop keeps and its `candidates`
+        // attribute carries, none for a node that is no qualified placeholder)
+        let product = ["src/shape.rs::Area::size", "src/shape.rs::Volume::size"];
+        let implementations = [
+            "src/code_view.rs::FactsView::file",
+            "src/snapshot.rs::Snapshot::file",
+        ];
+        let carried: [(Tests, &str, Option<Vec<&str>>); 5] = [
+            (
+                Tests::Exclude,
+                "src/report.rs::%Cube.size",
+                Some(product.to_vec()),
+            ),
+            (
+                Tests::Include,
+                "src/report.rs::%Cube.size",
+                Some([&product[..], &["tests/cube.rs::Cube::size"]].concat()),
+            ),
+            (
+                Tests::Exclude,
+                "src/code_view.rs::%CodeView.file",
+                Some(implementations.to_vec()),
+            ),
+            (
+                Tests::Include,
+                "tests/describe.rs::%CodeView.file",
+                Some([&implementations[..], &["tests/describe.rs::Fake::file"]].concat()),
+            ),
+            (Tests::Include, "src/shape.rs::Area::size", None),
+        ];
+        for (tests, id, want) in carried {
+            let graph = CodeGraph::new(&view, ViewFilter { tests });
+            let want: Option<Vec<String>> = want.map(|w| w.iter().map(|c| c.to_string()).collect());
+            assert_eq!(graph.down_hop(id), want, "{tests:?} {id}");
+            let whole = graph.whole();
+            let node = whole.nodes.iter().find(|n| n.id == id).unwrap();
+            let attr = node.attrs.get("candidates").cloned();
+            let json = want.map(|w| serde_json::to_string(&w).unwrap());
+            assert_eq!(attr, json, "{tests:?} {id}");
+        }
+    }
+
+    /// AN UNQUALIFIED FIELD USE NEVER PREFERS ITS FILE (spec 117, RESOLVER AT READ): a `field`
+    /// reference the unqualified rule takes - written unqualified (`x.lang`), or behind a member
+    /// or type-path qualifier that keeps no candidate - reads the field and property definitions
+    /// of its leaf alone and skips the same-file step: exactly one in the view is INFERRED,
+    /// wherever it sits, and several or none give no edge. So `x.lang` beside a same-file `lang`
+    /// field and one in another file lands nowhere, beside one in another file lands on it
+    /// INFERRED, and beside one in its own file alone lands on that INFERRED too; a constant, a
+    /// static or a variant of the leaf neither takes it nor contests the field, nor does a test
+    /// field or another language's; a property takes it like a field. A qualifier that keeps a
+    /// constant still links it, EXTRACTED: C#'s `Square.SIDES`.
+    #[test]
+    fn an_unqualified_field_use_never_prefers_its_file() {
+        // `describe` reads `mention`, beside `Config`'s own `lang` field and the type `Opts`.
+        let config = |mention: Mention| {
+            code(
+                "src/config.rs",
+                "rust",
+                Scope::Product,
+                vec![
+                    def("Config", "type", 1, None, false),
+                    def("Config::lang", "field", 2, Some(0), false),
+                    def("Opts", "type", 4, None, false),
+                    def("describe", "function", 5, None, false),
+                ],
+                vec![mention],
+            )
+        };
+        let unqualified = || tagged("field", "lang", Some(3), 6);
+        let type_path = || {
+            let field = MentionKind::Tagged("field".into());
+            qualified(field, "Opts::lang", Some(3), 6, false)
+        };
+        let config_contains = [
+            "src/config.rs -CONTAINS/extracted-> src/config.rs::Config",
+            "src/config.rs::Config -CONTAINS/extracted-> src/config.rs::Config::lang",
+            "src/config.rs -CONTAINS/extracted-> src/config.rs::Opts",
+            "src/config.rs -CONTAINS/extracted-> src/config.rs::describe",
+        ];
+        let user = || {
+            code(
+                "src/user.rs",
+                "rust",
+                Scope::Product,
+                vec![def("render", "function", 1, None, false)],
+                vec![tagged("field", "lang", Some(0), 2)],
+            )
+        };
+        let locale = || {
+            code(
+                "src/locale.rs",
+                "rust",
+                Scope::Product,
+                vec![
+                    def("Locale", "type", 1, None, false),
+                    def("Locale::lang", "field", 2, Some(0), false),
+                ],
+                vec![],
+            )
+        };
+        let fake_locale = || {
+            code(
+                "tests/locale.rs",
+                "rust",
+                Scope::Test,
+                vec![
+                    def("FakeLocale", "type", 1, None, true),
+                    def("FakeLocale::lang", "field", 2, Some(0), true),
+                ],
+                vec![],
+            )
+        };
+        let tags = || {
+            code(
+                "src/tags.rs",
+                "rust",
+                Scope::Product,
+                vec![
+                    def("lang", "constant", 1, None, false),
+                    def("Tag", "type", 3, None, false),
+                    def("Tag::lang", "variant", 4, Some(1), false),
+                ],
+                vec![],
+            )
+        };
+        let cache = || {
+            code(
+                "src/cache.rs",
+                "rust",
+                Scope::Product,
+                vec![def("lang", "static", 1, None, false)],
+                vec![],
+            )
+        };
+        // `Handle` reads `Request.lang`, whose qualifier names nothing, and `Square.SIDES`.
+        let handler = |members: Vec<Def>| {
+            let field = || MentionKind::Tagged("field".into());
+            code(
+                "src/handler.cs",
+                "csharp",
+                Scope::Product,
+                [
+                    vec![
+                        def("Handler", "type", 1, None, false),
+                        dotted("Handler.Handle", "method", 2, 0),
+                    ],
+                    members,
+                ]
+                .concat(),
+                vec![
+                    qualified(field(), "Request.lang", Some(1), 3, false),
+                    qualified(field(), "Square.SIDES", Some(1), 4, false),
+                ],
+            )
+        };
+        let locale_cs = || {
+            code(
+                "src/locale.cs",
+                "csharp",
+                Scope::Product,
+                vec![
+                    def("Locale", "type", 1, None, false),
+                    dotted("Locale.lang", "property", 2, 0),
+                ],
+                vec![],
+            )
+        };
+        let square = || {
+            code(
+                "src/square.cs",
+                "csharp",
+                Scope::Product,
+                vec![
+                    def("Square", "type", 1, None, false),
+                    dotted("Square.SIDES", "constant", 2, 0),
+                ],
+                vec![],
+            )
+        };
+        let user_infers = [
+            "src/user.rs::render -REFERENCES/inferred-> src/locale.rs::Locale::lang",
+            "src/user.rs -CONTAINS/extracted-> src/user.rs::render",
+        ];
+        let user_contains = ["src/user.rs -CONTAINS/extracted-> src/user.rs::render"];
+        let handler_contains = [
+            "src/handler.cs -CONTAINS/extracted-> src/handler.cs::Handler",
+            "src/handler.cs::Handler -CONTAINS/extracted-> src/handler.cs::Handler.Handle",
+        ];
+        let sides = "src/handler.cs::Handler.Handle -REFERENCES/extracted-> \
+                     src/square.cs::Square.SIDES";
+        // (what the answer shows, the view's files, the file asked, its whole answer)
+        let cases: [(&str, Vec<FileFacts>, &str, Vec<&str>); 10] = [
+            (
+                "`x.lang` beside a same-file `lang` field and one in another file: no edge",
+                vec![config(unqualified()), locale()],
+                "src/config.rs",
+                config_contains.to_vec(),
+            ),
+            (
+                "`x.lang` beside one `lang` field in another file: INFERRED",
+                vec![user(), locale()],
+                "src/user.rs",
+                user_infers.to_vec(),
+            ),
+            (
+                "`x.lang` beside one `lang` field in its own file alone: INFERRED, not EXTRACTED",
+                vec![config(unqualified())],
+                "src/config.rs",
+                [
+                    &["src/config.rs::describe -REFERENCES/inferred-> \
+                       src/config.rs::Config::lang"][..],
+                    &config_contains[..],
+                ]
+                .concat(),
+            ),
+            (
+                "a test field and another language's property contest no product field use",
+                vec![user(), locale(), fake_locale(), locale_cs()],
+                "src/user.rs",
+                user_infers.to_vec(),
+            ),
+            (
+                "a static of the leaf alone takes no field use",
+                vec![user(), cache()],
+                "src/user.rs",
+                user_contains.to_vec(),
+            ),
+            (
+                "a constant, a static and a variant of the leaf contest no field",
+                vec![user(), locale(), tags(), cache()],
+                "src/user.rs",
+                user_infers.to_vec(),
+            ),
+            (
+                "no definition of the leaf: no edge",
+                vec![user()],
+                "src/user.rs",
+                user_contains.to_vec(),
+            ),
+            (
+                "a type-path qualifier keeping none falls back to the field rule: `Opts::lang` \
+                 beside a same-file `lang` field and one in another file, no edge",
+                vec![config(type_path()), locale()],
+                "src/config.rs",
+                config_contains.to_vec(),
+            ),
+            (
+                "a member qualifier keeping none falls back to the field rule: `Request.lang` \
+                 beside a same-file field and a property in another file, no edge; a member \
+                 qualifier keeping a constant links it, EXTRACTED",
+                vec![
+                    handler(vec![dotted("Handler.lang", "field", 6, 0)]),
+                    locale_cs(),
+                    square(),
+                ],
+                "src/handler.cs",
+                [
+                    &[sides][..],
+                    &handler_contains[..],
+                    &["src/handler.cs::Handler -CONTAINS/extracted-> \
+                       src/handler.cs::Handler.lang"][..],
+                ]
+                .concat(),
+            ),
+            (
+                "a member qualifier keeping none, beside one property in another file: INFERRED",
+                vec![handler(vec![]), locale_cs(), square()],
+                "src/handler.cs",
+                [
+                    &["src/handler.cs::Handler.Handle -REFERENCES/inferred-> \
+                       src/locale.cs::Locale.lang"][..],
+                    &[sides][..],
+                    &handler_contains[..],
+                ]
+                .concat(),
+            ),
+        ];
+        for (shows, files, asked, want) in cases {
+            let view = FactsView::new(stamp(), files);
+            let r = Resolver::new(&view);
+            assert_eq!(
+                answer(&view, &r, &Ask::Links(asked, false)),
+                want,
+                "{shows}"
+            );
+        }
+    }
+
+    /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): of same-path twins of one kind the lower
+    /// line settles the id wherever it sits among them, and of twins on one line the first.
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {

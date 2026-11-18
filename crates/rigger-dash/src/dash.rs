@@ -52,8 +52,8 @@ use crate::contextgraph::{
 // them.
 use crate::contextgraph::query::{
     bucket_label_index, count_tests, defs_by_entity_suffix, fold_buckets, member_set,
-    memory_rail_of, neighborhood_of, node_file, node_label, node_leaf, node_name, referenced_id,
-    withheld_reached, Buckets,
+    memory_rail_of, neighborhood_of, node_file, node_label, node_name, placeholder_candidates,
+    referenced_id, withheld_reached, Buckets,
 };
 pub use crate::contextgraph::query::{
     card, cluster_detail, cluster_key, clustered_overview, explain, memory_rail, neighborhood,
@@ -1506,7 +1506,8 @@ pub const REPROJECT_FILES_UNRESOLVED: &str = "no member resolves to a file";
 /// Under [`Lens::Files`] the fold resolves CROSS-GRAIN honestly ([`Reprojection::unresolved`]): a
 /// member that is a real definition (or a doc / file path) folds under its own file; a BARE
 /// cross-file placeholder (no `name` attr) resolves by its leaf to the call-target DEFINITION of
-/// that leaf - EXACTLY ONE folds under that definition's file (standing in for it, not counted
+/// that leaf, of those its down-hop keeps when it is keyed by a qualified name - EXACTLY ONE
+/// folds under that definition's file (standing in for it, not counted
 /// again, when that definition is itself a member), MORE THAN ONE (or zero) is surfaced
 /// as a marked-unresolved entry carrying the sorted candidate ids, never a wrong attribution to the
 /// referencing file its id encodes; a member naming NO file under its kind's arm of [`node_file`]
@@ -1652,11 +1653,12 @@ fn reproject_derived(graph: &Graph, subject: &str, lens: &Lens, members: &[&Node
 /// - a member that IS a definition (a non-empty `name` attr, [`node_name`]) or a doc / file
 ///   node folds under its OWN file ([`node_file`], read by its kind);
 /// - a BARE cross-file code-entity placeholder (no `name` attr, or an empty one) resolves by its
-///   leaf ([`node_leaf`]) over the call-target DEFINITION nodes sharing it (never a data member or a declaration, which
-///   folds under its own file as every definition does): EXACTLY ONE folds under that definition's
-///   file, and when that definition is itself a member the placeholder stands in for it, carrying
-///   its edges but not counted again; MORE THAN ONE (or zero) is marked-unresolved with the sorted
-///   candidate ids;
+///   leaf ([`node_leaf`](crate::contextgraph::query::node_leaf)) over the call-target DEFINITION
+///   nodes sharing it (never a data member or a declaration, which folds under its own file as
+///   every definition does), those its down-hop keeps for one keyed by a qualified name
+///   ([`placeholder_candidates`]): EXACTLY ONE folds under that definition's file, and when that
+///   definition is itself a member the placeholder stands in for it, carrying its edges but not
+///   counted again; MORE THAN ONE (or zero) is marked-unresolved with the sorted candidate ids;
 /// - a member naming NO file under its kind's arm of [`node_file`] (a decision, or a `::`-less code
 ///   entity) is marked unresolved too, with an EMPTY candidate frontier - the same honesty shape a
 ///   zero-candidate bare placeholder already carries - rather than falling back to its raw KIND as
@@ -1682,12 +1684,10 @@ fn reproject_files(graph: &Graph, subject: &str, members: &[&Node]) -> Reproject
     for m in members {
         let is_bare = m.kind == KIND_CODE_ENTITY && node_name(m).is_none();
         if is_bare {
-            // A bare placeholder resolves by its leaf; the honesty rule decides.
-            let cands = node_leaf(m)
-                .and_then(|leaf| defs_by_suffix.get(leaf))
-                .map(Vec::as_slice)
-                .unwrap_or_default();
-            match cands {
+            // A bare placeholder resolves by its leaf, keeping those its down-hop keeps when it
+            // is keyed by a qualified name; the honesty rule decides.
+            let cands = placeholder_candidates(m, &defs_by_suffix);
+            match cands.as_slice() {
                 [only] => {
                     if let Some(file) = node_file(KIND_CODE_ENTITY, only) {
                         resolved.insert(m.id.as_str(), file.to_string());
@@ -13589,5 +13589,78 @@ mod file_half_c13 {
             vec![("Makefile", 1), ("src/utils/Makefile", 1)]
         );
         assert_eq!(unresolved_frontiers(&re), vec![("v1.2-choice", Vec::new())]);
+    }
+}
+
+/// Spec 117, SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE, at the files re-projection: a
+/// placeholder keyed by a qualified name binds by its leaf.
+#[cfg(test)]
+mod qualified_placeholder_c2 {
+    use super::reprojection_views::{cluster_counts, unresolved_frontiers};
+    use super::*;
+    use crate::test_support::ONE_COMMUNITY;
+    use crate::test_support::{def_node, node_with_optional_attrs, one_community_graph};
+
+    /// One row: the case, the `candidates` attribute the placeholder carries, and the file
+    /// buckets and marked-unresolved frontiers the files re-projection gives.
+    type QualifiedCase<'a> = (
+        &'a str,
+        Option<&'a str>,
+        Vec<(&'a str, usize)>,
+        Vec<(&'a str, Vec<String>)>,
+    );
+
+    /// Each row: a community holding the placeholder `src/report.rs::%Cube.size` alone, with the
+    /// definitions of its leaf `size` outside it. The placeholder keeps those of its leaf its
+    /// `candidates` attribute carries, the resolver's down-hop, and every one when it carries
+    /// none or one that does not parse: exactly one folds under that definition's file, more are
+    /// marked unresolved with those candidates.
+    #[test]
+    fn reproject_files_binds_a_qualified_placeholder_by_its_leaf_over_its_down_hop() {
+        let (area, other, volume) = (
+            "src/area.rs::Area::size",
+            "src/other.rs::size",
+            "src/volume.rs::Volume::size",
+        );
+        let placeholder = "src/report.rs::%Cube.size";
+        let frontier =
+            |cands: &[&str]| vec![(placeholder, cands.iter().map(|c| c.to_string()).collect())];
+        let cases: [QualifiedCase<'_>; 4] = [
+            (
+                "a down-hop of two shown definitions: a frontier of those two",
+                Some(r#"["src/area.rs::Area::size","src/volume.rs::Volume::size"]"#),
+                vec![],
+                frontier(&[area, volume]),
+            ),
+            (
+                "a down-hop of one shown definition and one the graph does not hold",
+                Some(r#"["src/volume.rs::Volume::size","tests/cube.rs::Cube::size"]"#),
+                vec![("src/volume.rs", 1)],
+                vec![],
+            ),
+            (
+                "no down-hop carried: every definition of the leaf",
+                None,
+                vec![],
+                frontier(&[area, other, volume]),
+            ),
+            (
+                "a down-hop that does not parse reads as none carried",
+                Some("src/area.rs::Area::size"),
+                vec![],
+                frontier(&[area, other, volume]),
+            ),
+        ];
+        for (case, carried, clusters, unresolved) in cases {
+            let ph =
+                node_with_optional_attrs(placeholder, KIND_CODE_ENTITY, &[("candidates", carried)]);
+            let mut g = one_community_graph(ONE_COMMUNITY, vec![ph]);
+            g.nodes
+                .extend([area, other, volume].map(|d| def_node(d, "size")));
+            let re = reproject(&g, ONE_COMMUNITY, &Lens::Files);
+            assert_eq!(cluster_counts(&re), clusters, "{case}");
+            assert_eq!(unresolved_frontiers(&re), unresolved, "{case}");
+            assert_eq!(re.total, 1, "{case}");
+        }
     }
 }

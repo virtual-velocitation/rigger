@@ -46,8 +46,10 @@ pub const KIND_FINDING: &str = "finding";
 /// LANGUAGE'S PATH: `T::new`, `S.field`, a file-level definition's own name); its attrs carry the
 /// name, its leaf, the rigger `Kind` string, the 1-based line, and the language it was parsed as.
 pub const KIND_CODE_ENTITY: &str = "code-entity";
-/// The sigil that marks a placeholder's leaf in its id, `<file>::%<leaf>` (spec 119): `%`
-/// begins no identifier in any registered grammar. [`query::leaf_of`] strips exactly one.
+/// The sigil that marks a placeholder's leaf in its id, `<file>::%<leaf>` (spec 119), or the
+/// qualified name a call keeping several candidates writes, `<file>::%<Q>::<leaf>` or
+/// `<file>::%<Q>.<leaf>` (spec 117): `%` begins no identifier in any registered grammar.
+/// [`query::leaf_of`] strips exactly one.
 pub const PLACEHOLDER_SIGIL: char = '%';
 /// The code kind (a code entity's `kind` attr) of a constructor: function-like, so a reference
 /// inside one has it as caller.
@@ -318,6 +320,9 @@ pub const TIER_EXTRACTED: &str = "extracted";
 /// define: in another file, more than once in its own, or once in its own when that definition
 /// folded after the reference (the definition arm's upgrade promotes it). The reference is
 /// inferred to reach a definition - real, but one confidence step below an EXTRACTED reference.
+/// A tagged reference lands on the definition itself (spec 117, RESOLVER AT READ): the one
+/// candidate of its tag's kinds in the view, which lies in another file, or, for a `field`
+/// reference, the one field or property in the view, its own file included.
 pub const TIER_INFERRED: &str = "inferred";
 /// A text-only occurrence: a reference whose name no call target ([`is_call_target`]) defines
 /// ANYWHERE the graph knows - a macro body, a reflection string, a dynamic name, an external
@@ -1029,9 +1034,10 @@ pub trait ContextGraph: Send + Sync {
     /// follows - [`TIER_INFERRED`] (the default the route passes) excludes the unresolved
     /// [`TIER_AMBIGUOUS`] tier, and passing [`TIER_AMBIGUOUS`] opts it in. A hop that lands on a
     /// BARE placeholder node, or on a named field, property or declaration, resolves by the leaf
-    /// its id names onto the call-target definition(s) of that leaf alone ([`is_call_target`]): a
-    /// hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked frontier the walk
-    /// does NOT descend (honest by construction). Reached nodes dedup into a
+    /// its id names onto the call-target definition(s) of that leaf alone ([`is_call_target`]), a
+    /// placeholder keyed by a qualified name onto those of its leaf the resolver's narrowed
+    /// down-hop keeps: a hop with EXACTLY ONE is auto-followed, a hop with more becomes a marked
+    /// frontier the walk does NOT descend (honest by construction). Reached nodes dedup into a
     /// layered DAG; a recursion edge is marked ([`CallEdge::back`]) rather than duplicated.
     ///
     /// The default returns an empty [`CallGraph`], so a graph with no directed-walk support (a
@@ -1116,8 +1122,9 @@ pub trait ContextGraph: Send + Sync {
     }
 
     /// The distinct test entities the graph's `tests` filter hides whose calls land on a
-    /// placeholder bound to the leaf of a definition of `ids`, in id order: the hidden tests a
-    /// callers walk stepping from those nodes reaches through a placeholder rather than by a
+    /// placeholder bound to the leaf of a definition of `ids`, a placeholder keyed by a qualified
+    /// name only when its narrowed down-hop holds that definition, in id order: the hidden tests
+    /// a callers walk stepping from those nodes reaches through a placeholder rather than by a
     /// proof. None when tests are shown, the worktree cannot be compared, or by default (a graph
     /// that holds no code, a test double).
     fn hidden_placeholder_callers(&self, _ids: &[String]) -> Result<Vec<String>, Error> {

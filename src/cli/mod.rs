@@ -5408,9 +5408,11 @@ if [ -n "$main_worktree" ]; then
 fi
 # The relocated per-unit target (spec 89): a unit's build cache is the sibling
 # `cargo-target-<unit>` of its worktree under `<cache home>/rigger/<encoded repo root>`,
-# where the repo root is encoded byte by byte - alphanumerics and `-` kept, every other
-# byte as `_xx` hex - exactly as the binary encodes it, so this shell derivation and the
-# Rust one name the same directory.
+# where the cache home is XDG_CACHE_HOME when it is an absolute path (the XDG base directory
+# specification makes a relative value invalid) and `.cache` under the home otherwise, and
+# the repo root is encoded byte by byte - alphanumerics and `-` kept, every other byte as
+# `_xx` hex - each exactly as the binary resolves it, so this shell derivation and the Rust
+# one name the same directory.
 encode_repo_path() {
     p="$1"; out=""
     while [ -n "$p" ]; do
@@ -5431,7 +5433,11 @@ if [ -n "$repo_root" ]; then
     if [ -n "$unit" ]; then
         unit_release="$repo_root/.rigger/tmp/cargo-target-$unit/release/rigger"
         unit_debug="$repo_root/.rigger/tmp/cargo-target-$unit/debug/rigger"
-        cache_root="${XDG_CACHE_HOME:-$HOME/.cache}/rigger/$(encode_repo_path "$repo_root")"
+        case "${XDG_CACHE_HOME:-}" in
+            /*) cache_home=$XDG_CACHE_HOME ;;
+            *) cache_home="$HOME/.cache" ;;
+        esac
+        cache_root="$cache_home/rigger/$(encode_repo_path "$repo_root")"
         relocated_release="$cache_root/cargo-target-$unit/release/rigger"
         relocated_debug="$cache_root/cargo-target-$unit/debug/rigger"
     fi
@@ -6367,10 +6373,8 @@ mod tests {
             "relocated candidates sit after the local target and before the pre-relocation \
              unit paths; got:\n{candidates}"
         );
-        assert!(
-            hook.contains("XDG_CACHE_HOME:-$HOME/.cache") && hook.contains("/rigger/"),
-            "the relocated root honors XDG_CACHE_HOME and nests under rigger/; got:\n{hook}"
-        );
+        // Where the relocated root lies under each XDG_CACHE_HOME value is pinned by running
+        // the block (`relocated_build_under`).
 
         let fn_start = hook.find("encode_repo_path() {").unwrap();
         let fn_end = fn_start + hook[fn_start..].find("\n}\n").unwrap() + "\n}\n".len();
@@ -6486,23 +6490,27 @@ mod tests {
     }
 
     /// The candidate builds the managed block derives where git runs it, at the top of the
-    /// worktree `top` with the cache home at `cache`: the unit-derived debug build, its relocated
-    /// copy and the shared build cache's, each resolved where it lies, or named missing, and empty
-    /// where the block derives none.
-    fn precommit_candidates(top: &Path, cache: &Path) -> Vec<String> {
+    /// worktree `top` with `XDG_CACHE_HOME` set to `cache_home` (unset when it is `None`) and the
+    /// home at `home`: the unit-derived debug build, its relocated copy and the shared build
+    /// cache's, each resolved where it lies, or named missing, and empty where the block derives
+    /// none.
+    fn precommit_candidates(top: &Path, cache_home: Option<&str>, home: &Path) -> Vec<String> {
         let hook = compose_precommit(None);
         let derived = &hook[..hook
             .find("\nrigger_bin=\n")
             .expect("the block derives its candidates before it resolves a binary")];
-        let out = std::process::Command::new("sh")
-            .arg("-c")
+        let mut sh = std::process::Command::new("sh");
+        sh.arg("-c")
             .arg(format!(
                 "{derived}\nprintf '%s\\n' \"$unit_debug\" \"$relocated_debug\" \"$shared_debug\""
             ))
             .current_dir(top)
-            .env("XDG_CACHE_HOME", cache)
-            .output()
-            .expect("sh runs the block's derivation");
+            .env("HOME", home);
+        match cache_home {
+            Some(value) => sh.env("XDG_CACHE_HOME", value),
+            None => sh.env_remove("XDG_CACHE_HOME"),
+        };
+        let out = sh.output().expect("sh runs the block's derivation");
         String::from_utf8(out.stdout)
             .unwrap()
             .lines()
@@ -6580,13 +6588,61 @@ mod tests {
                 built(scratch.join("cargo-target")),
             ];
             assert_eq!(
-                precommit_candidates(&top, &cache),
+                precommit_candidates(&top, cache.to_str(), &at.join("home")),
                 expected,
                 "from {}, the block looks under the root {}",
                 top.display(),
                 root.display()
             );
         }
+    }
+
+    /// From a unit worktree of the main checkout, the managed block looks for the unit's
+    /// relocated debug build under the cache home rigger resolves
+    /// ([`rigger_process::home::xdg_or_home`]) with `XDG_CACHE_HOME` set to `cache_home` (unset
+    /// when it is `None`; `{at}` stands for the fixture's directory) and the home at `<at>/home`:
+    /// the cache home is `<at>/<expected>`.
+    fn relocated_build_under(cache_home: Option<&str>, expected: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let at = std::fs::canonicalize(dir.path()).unwrap();
+        let main = at.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+        init_committed_repo(&main, "README.md", "seed\n");
+        git_ok(
+            &main,
+            &["worktree", "add", "-q", "../rigger-wt-u", "-b", "u"],
+        );
+        let encoded = rigger::liveness::marker_filename(main.to_str().unwrap()).unwrap();
+        let build = at
+            .join(expected)
+            .join("rigger")
+            .join(encoded)
+            .join("cargo-target-u")
+            .join("debug")
+            .join("rigger");
+        write_file(&build, b"");
+        let cache_home = cache_home.map(|v| v.replace("{at}", at.to_str().unwrap()));
+        assert_eq!(
+            precommit_candidates(
+                &at.join("rigger-wt-u"),
+                cache_home.as_deref(),
+                &at.join("home")
+            )[1],
+            build.display().to_string(),
+            "XDG_CACHE_HOME {cache_home:?} puts the cache home at {expected}"
+        );
+    }
+
+    // GIVEN a unit worktree, WHEN the managed block derives the unit's relocated build, THEN it
+    // looks under an absolute XDG_CACHE_HOME, and under `.cache` in the home when the value is
+    // unset, empty or relative (the XDG base directory specification makes a relative value
+    // invalid), as the binary resolves the cache home.
+    rigger::test_cases! {
+        an_absolute_cache_home_holds_the_relocated_build: relocated_build_under(Some("{at}/xdg"), "xdg");
+        an_unset_cache_home_falls_to_the_home: relocated_build_under(None, "home/.cache");
+        an_empty_cache_home_falls_to_the_home: relocated_build_under(Some(""), "home/.cache");
+        a_relative_cache_home_falls_to_the_home: relocated_build_under(Some("xdg"), "home/.cache");
+        a_dot_relative_cache_home_falls_to_the_home: relocated_build_under(Some("./xdg"), "home/.cache");
     }
 
     /// spec 24, crit 1 (idempotency, pure): re-composing an already-installed hook is a

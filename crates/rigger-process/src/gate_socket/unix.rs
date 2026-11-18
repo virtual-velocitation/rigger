@@ -12,11 +12,10 @@ use super::{canonical_root_bytes, root_digest};
 /// The gate socket path for the project rooted at `repo_root`, the one rule the driver binds by
 /// and `rigger gate` asks by when no driver addressed it
 /// ([`socket_to_ask`](super::socket_to_ask)): [`socket_path_under`] the runtime directory,
-/// `$XDG_RUNTIME_DIR` when it is set to an absolute path and the OS temp directory otherwise.
+/// `$XDG_RUNTIME_DIR` when [`crate::home::xdg_dir`] takes it (an absolute path) and the OS temp
+/// directory otherwise.
 pub fn socket_path(repo_root: &Path) -> io::Result<PathBuf> {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
+    let runtime = crate::home::xdg_dir(std::env::var_os("XDG_RUNTIME_DIR"))
         .unwrap_or_else(std::env::temp_dir);
     socket_path_under(&runtime, repo_root)
 }

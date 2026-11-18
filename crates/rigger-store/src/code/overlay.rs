@@ -525,16 +525,21 @@ mod tests {
     /// What a store advanced to a commit of `FILES` with `changes` applied answers whole, less its
     /// groupings: the fresh extraction an overlaid answer of that worktree must equal.
     fn fresh(changes: Changes) -> String {
-        let mut files: std::collections::BTreeMap<&str, &str> = FILES.iter().copied().collect();
+        let (_store, head) = committed(&applied(FILES, changes));
+        ungrouped(&answer(&head).0)
+    }
+
+    /// The files of `base` with `changes` applied, by path: a path given text holds it, one given
+    /// none is deleted.
+    fn applied<'f>(base: &[(&'f str, &'f str)], changes: Changes<'f>) -> Vec<(&'f str, &'f str)> {
+        let mut files: std::collections::BTreeMap<&str, &str> = base.iter().copied().collect();
         for &(path, text) in changes {
             match text {
                 Some(text) => files.insert(path, text),
                 None => files.remove(path),
             };
         }
-        let files: Vec<(&str, &str)> = files.into_iter().collect();
-        let (_store, head) = committed(&files);
-        ungrouped(&answer(&head).0)
+        files.into_iter().collect()
     }
 
     /// What a store advanced to a commit of `files` answers, with the store it reads from.
@@ -553,8 +558,8 @@ mod tests {
         (root, head)
     }
 
-    /// The graph `head` answers whole with every test shown, and its label.
-    fn answer(head: &Head) -> (Graph, String) {
+    /// The filter a read of `head` shows every test under, and the label of its worktree `W`.
+    fn shown(head: &Head) -> (ViewFilter, Honesty) {
         let honesty = Honesty {
             worktree: "W".into(),
             compared: head.compared,
@@ -563,6 +568,12 @@ mod tests {
         let filter = ViewFilter {
             tests: Tests::Include,
         };
+        (filter, honesty)
+    }
+
+    /// The graph `head` answers whole with every test shown, and its label.
+    fn answer(head: &Head) -> (Graph, String) {
+        let (filter, honesty) = shown(head);
         let records = Indexed::default();
         let graph = Composed::new(&records, &*head.view, filter, honesty).unwrap();
         let whole = graph.whole().unwrap();
@@ -571,14 +582,7 @@ mod tests {
 
     /// What `head` answers read whole with every test shown, through `held` when one is given.
     fn whole_read(head: &Head, held: Option<&WholeMemo>) -> String {
-        let honesty = Honesty {
-            worktree: "W".into(),
-            compared: head.compared,
-            behind: head.behind.clone(),
-        };
-        let filter = ViewFilter {
-            tests: Tests::Include,
-        };
+        let (filter, honesty) = shown(head);
         let (records, resolution) = (
             Indexed::default(),
             rigger_domain::community::DEFAULT_RESOLUTION,
@@ -1073,6 +1077,146 @@ mod tests {
             let read = PROOF_ROWS_READ.with(std::cell::Cell::get) - before;
             assert_eq!(got, want, "{of:?}");
             assert_eq!(read, want.len(), "rows read for {of:?}");
+        }
+    }
+
+    /// A QUALIFIED PROOF RESETTLES under the overlay: GIVEN a commit whose tests call `new`
+    /// qualified by `Cursor`, `Store`, `Reader` or `AtomicU64`, WHEN the worktree adds a second
+    /// `impl Cursor` holding `new`, adds a file holding only the type `AtomicU64`, or renames an
+    /// `impl` mention over unchanged method ids, THEN each `new` is proved by exactly the test
+    /// calls the proof rule credits it with, its qualifier narrowing each, those of a test file the
+    /// worktree leaves alone included; the head's test files and proof calls are a fresh advance's
+    /// of the worktree's content, its whole graph too; and the whole and near reads carry each
+    /// `new` the worktree defines, with its proofs.
+    #[test]
+    fn a_qualified_proof_resettles_under_the_overlay() {
+        let cursor = (
+            "src/cursor.rs",
+            "def cursor_impl impl\nuse impl Cursor\n def new\n",
+        );
+        let qualified = [
+            cursor,
+            (
+                "src/store.rs",
+                "def store_impl impl\nuse impl Store\n def new\n",
+            ),
+            ("tests/read.rs", "def reads\ncall Reader::new\n"),
+            (
+                "tests/seq.rs",
+                "def steps\ncall Cursor::new\ncall Store::new\n",
+            ),
+        ];
+        let atomic = [
+            cursor,
+            ("tests/count.rs", "def counts\ncall AtomicU64::new\n"),
+        ];
+        let (cursor_new, store_new, ext_new) = (
+            "src/cursor.rs::cursor_impl::new",
+            "src/store.rs::store_impl::new",
+            "src/cursor_ext.rs::cursor_ext_impl::new",
+        );
+        let (steps, reads, counts) = (
+            "tests/seq.rs::steps",
+            "tests/read.rs::reads",
+            "tests/count.rs::counts",
+        );
+        let both = [
+            (cursor_new, "tests/seq.rs:2", steps),
+            (store_new, "tests/seq.rs:3", steps),
+        ];
+        type Proved<'a> = &'a [(&'a str, &'a str, &'a str)];
+        // (case, the commit's files, the worktree's changes, the proof calls at the commit and in
+        // the worktree, each as (target, evidence, caller) in proof order)
+        type Row<'a> = (
+            &'a str,
+            &'a [(&'a str, &'a str)],
+            Changes<'a>,
+            Proved<'a>,
+            Proved<'a>,
+        );
+        let rows: [Row; 3] = [
+            (
+                "a second impl Cursor holding new",
+                &qualified,
+                &[(
+                    "src/cursor_ext.rs",
+                    Some("def cursor_ext_impl impl\nuse impl Cursor\n def new\n"),
+                )],
+                &both,
+                &[(store_new, "tests/seq.rs:3", steps)],
+            ),
+            (
+                "a file holding only the type AtomicU64",
+                &atomic,
+                &[("src/atomic.rs", Some("def AtomicU64 type\n"))],
+                &[],
+                &[(cursor_new, "tests/count.rs:2", counts)],
+            ),
+            (
+                "an impl mention renamed over unchanged method ids",
+                &qualified,
+                &[(
+                    "src/cursor.rs",
+                    Some("def cursor_impl impl\nuse impl Reader\n def new\n"),
+                )],
+                &both,
+                &[
+                    (cursor_new, "tests/read.rs:2", reads),
+                    (store_new, "tests/seq.rs:3", steps),
+                ],
+            ),
+        ];
+        // The proof attrs of the node `id` in `graph`, or none when the graph holds no such node.
+        let attrs = |graph: &Graph, id: &str| -> Option<[Option<String>; 2]> {
+            let node = graph.nodes.iter().find(|n| n.id == id)?;
+            let attr = |key: &str| node.attrs.get(key).cloned();
+            Some([attr("proven_by"), attr("proof_evidence")])
+        };
+        for (case, files, changes, at_commit, in_worktree) in rows {
+            let (fx, memo) = (Fixture::new(files), Memo::new(Memo::BOUND));
+            for (changes, want) in [(&[][..], at_commit), (changes, in_worktree)] {
+                let case = format!("{case}, {changes:?}");
+                let head = fx.head(changes, &memo);
+                let settled = head.view.settled().expect("the head holds settled rows");
+                let got: Vec<(String, String, Option<String>)> = (settled.proofs(Proofs::All))
+                    .into_iter()
+                    .map(|c| (c.target, c.evidence, c.caller))
+                    .collect();
+                let owned = |&(target, evidence, caller): &(&str, &str, &str)| {
+                    (target.into(), evidence.into(), Some(caller.into()))
+                };
+                assert_eq!(got, want.iter().map(owned).collect::<Vec<_>>(), "{case}");
+                let worktree = applied(files, changes);
+                let (_store, fresh) = committed(&worktree);
+                let rows_of = |settled: &dyn Settled| {
+                    (settled.test_files().join(" "), settled.proofs(Proofs::All))
+                };
+                let full = fresh.view.settled().expect("a snapshot holds settled rows");
+                assert_eq!(rows_of(settled), rows_of(full), "{case}: the settled rows");
+                let whole = answer(&head).0;
+                assert_eq!(ungrouped(&whole), ungrouped(&answer(&fresh).0), "{case}");
+                let (filter, honesty) = shown(&head);
+                let records = Indexed::default();
+                let near = Composed::near(&records, &*head.view, filter, honesty).unwrap();
+                for id in [cursor_new, store_new, ext_new] {
+                    let held =
+                        (worktree.iter()).any(|(path, _)| id.starts_with(&format!("{path}::")));
+                    let evidence: Vec<String> = (want.iter())
+                        .filter(|(target, ..)| *target == id)
+                        .map(|(_, evidence, _)| format!("{evidence:?}"))
+                        .collect();
+                    let proof = (!evidence.is_empty()).then(|| {
+                        [
+                            evidence.len().to_string(),
+                            format!("[{}]", evidence.join(",")),
+                        ]
+                    });
+                    let want = held.then(|| proof.map_or([None, None], |p| p.map(Some)));
+                    assert_eq!(attrs(&whole, id), want, "{case}: {id} read whole");
+                    let seen = near.subgraph(&[id.to_string()], 0).unwrap();
+                    assert_eq!(attrs(&seen, id), want, "{case}: {id} read near");
+                }
+            }
         }
     }
 
