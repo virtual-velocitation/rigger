@@ -140,7 +140,9 @@ result.
 
 ### 4.4 Hooks
 
-Per-spawn, through `--settings`:
+Per-spawn, through `--settings`, each an exec-form hook: `command` is the rigger binary's path
+and `args` the words after it, so Claude Code spawns rigger with that argument vector and no
+shell on every OS, and a path, spawn id or branch reaches it as written whatever it holds.
 
 - `PreToolUse` on `Edit|MultiEdit|Write|NotebookEdit` runs `rigger guard-write --root <dir>...`,
   rooted at the spawn's `dir` (the session's cwd when `dir` is empty) and its scratch

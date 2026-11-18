@@ -17,7 +17,6 @@
 
 use std::path::Path;
 
-use rigger_domain::quoting::single_quoted;
 use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
 
@@ -230,7 +229,7 @@ pub fn carries_grep_guard(existing: &[u8]) -> bool {
         settings
             .pointer("/hooks/PreToolUse")
             .and_then(Value::as_array)
-            .is_some_and(|blocks| has_command(blocks, GREP_GUARD_COMMAND))
+            .is_some_and(|blocks| has_command(blocks, GREP_GUARD_COMMAND, None))
     })
 }
 
@@ -258,7 +257,7 @@ fn strip_grep_guard(
             return true;
         };
         let before = inner.len();
-        inner.retain(|hook| !runs(hook, GREP_GUARD_COMMAND));
+        inner.retain(|hook| !runs(hook, GREP_GUARD_COMMAND, None));
         let removed = inner.len() < before;
         stripped |= removed;
         !(removed && inner.is_empty())
@@ -279,10 +278,11 @@ pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 /// of once its session ends (its `duty`), under `Stop` the `hook stop` asking whether the tree is
 /// one that step takes, with [`STOP_HOOK_TIMEOUT_SECS`]: `--branch <branch>` for a tree the
 /// conductor commits onto that branch, `--own-commits` for one it lands only the commits of. Each
-/// runs `rigger_bin` under `shell`, which reads `rigger_bin`, `spawn`, each root, `dir` and the
-/// branch as one word whatever they hold ([`HookShell::word`]), each command exits with the
-/// program's own status ([`HookShell::command`]), and each entry names `shell` where Claude Code
-/// would not pick it alone ([`HookShell::field`]). `existing` may be empty.
+/// is an exec-form hook, `command` the program `rigger_bin` and `args` the words after it, which
+/// Claude Code spawns with that argument vector and no shell on every OS
+/// (<https://code.claude.com/docs/en/hooks>), so `rigger_bin`, `spawn`, each root, `dir` and the
+/// branch reach rigger as written whatever they hold, and the hook's exit status is rigger's own.
+/// `existing` may be empty.
 pub fn install_spawn_hooks(
     existing: &[u8],
     rigger_bin: &str,
@@ -290,117 +290,37 @@ pub fn install_spawn_hooks(
     roots: &[String],
     dir: &str,
     duty: &TreeDuty,
-    shell: HookShell,
 ) -> Result<Vec<u8>, Error> {
-    let bin = shell.program(rigger_bin);
-    let spawn = shell.word(spawn);
-    let field = shell.field();
-    let mut guard = format!("{bin} guard-write");
+    let mut guard = vec!["guard-write"];
     for root in roots {
-        guard.push_str(&format!(" --root {}", shell.word(root)));
+        guard.extend(["--root", root.as_str()]);
     }
-    let guard = shell.command(guard);
     let matcher = write_guard_matcher();
-    let mut merged = merge_hook_block(existing, "PreToolUse", &matcher, &guard, None, field)?;
+    let mut merged = merge_hook_block(
+        existing,
+        "PreToolUse",
+        &matcher,
+        rigger_bin,
+        Some(&guard),
+        None,
+    )?;
     for category in AgentFailure::CATEGORIES {
         let class = category.as_str();
-        let command = shell.command(format!(
-            "{bin} hook stop-failure --spawn {spawn} --class {class}"
-        ));
-        merged = merge_hook_block(&merged, "StopFailure", class, &command, None, field)?;
+        let args = ["hook", "stop-failure", "--spawn", spawn, "--class", class];
+        merged = merge_hook_block(&merged, "StopFailure", class, rigger_bin, Some(&args), None)?;
     }
     let asks = match duty {
         TreeDuty::None => None,
-        TreeDuty::Checkpoint { branch } => Some(format!("--branch {}", shell.word(branch))),
-        TreeDuty::OwnCommits => Some("--own-commits".to_string()),
+        TreeDuty::Checkpoint { branch } => Some(vec!["--branch", branch.as_str()]),
+        TreeDuty::OwnCommits => Some(vec!["--own-commits"]),
     };
     if let Some(asks) = asks {
-        let dir = shell.word(dir);
-        let command = shell.command(format!(
-            "{bin} hook stop --spawn {spawn} --dir {dir} {asks}"
-        ));
+        let mut args = vec!["hook", "stop", "--spawn", spawn, "--dir", dir];
+        args.extend(asks);
         let timeout = Some(STOP_HOOK_TIMEOUT_SECS);
-        merged = merge_hook_block(&merged, "Stop", "", &command, timeout, field)?;
+        merged = merge_hook_block(&merged, "Stop", "", rigger_bin, Some(&args), timeout)?;
     }
     Ok(merged)
-}
-
-/// The shell Claude Code runs a hook's `command` under, which decides how the command spells
-/// each word. Claude Code hands a command to `sh -c` on macOS and Linux, and on Windows to Git
-/// Bash, or to PowerShell where Git Bash is not installed, unless the hook's `shell` field names
-/// one (<https://code.claude.com/docs/en/hooks>).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HookShell {
-    /// POSIX `sh`, Claude Code's own pick on macOS and Linux.
-    Posix,
-    /// PowerShell, which the hook names, so whether Git Bash is installed changes nothing.
-    PowerShell,
-}
-
-/// The characters PowerShell reads as a single quote: `'`, U+2018, U+2019, U+201A and U+201B
-/// (PowerShell's `CharExtensions.IsSingleQuote`).
-const POWERSHELL_SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
-
-impl HookShell {
-    /// The shell the hooks rigger installs on this OS run under: PowerShell on Windows, POSIX
-    /// `sh` everywhere else.
-    pub const HOST: HookShell = if cfg!(windows) {
-        HookShell::PowerShell
-    } else {
-        HookShell::Posix
-    };
-
-    /// `arg` as one word this shell reads back as exactly `arg`: between single quotes, inside
-    /// which neither shell expands anything, each single quote `arg` holds spelled as the shell
-    /// reads one there. POSIX `sh` reads none, so each `'` closes the quote, is escaped and
-    /// reopens it; PowerShell reads a single-quote character doubled as one, as its own
-    /// `CodeGeneration.EscapeSingleQuotedStringContent` writes it, for each of
-    /// [`POWERSHELL_SINGLE_QUOTES`].
-    fn word(self, arg: &str) -> String {
-        match self {
-            HookShell::Posix => single_quoted(arg, r"'\''"),
-            HookShell::PowerShell => {
-                let mut quoted = String::from("'");
-                for c in arg.chars() {
-                    if POWERSHELL_SINGLE_QUOTES.contains(&c) {
-                        quoted.push(c);
-                    }
-                    quoted.push(c);
-                }
-                quoted.push('\'');
-                quoted
-            }
-        }
-    }
-
-    /// The start of a command running the program at `path`: its [`word`](Self::word), behind
-    /// PowerShell's call operator `&`, without which PowerShell reads a quoted path as a string.
-    fn program(self, path: &str) -> String {
-        match self {
-            HookShell::Posix => self.word(path),
-            HookShell::PowerShell => format!("& {}", self.word(path)),
-        }
-    }
-
-    /// The hook command running `body`, whose exit status is the program's own. PowerShell run
-    /// with `-Command` turns a program's last exit status other than 0 or 1 into 1, which would
-    /// make the write guard's blocking 2 a non-blocking error, so its command ends by exiting with
-    /// `$LASTEXITCODE`, as PowerShell's own documentation says to (`about_pwsh`, `-Command`).
-    fn command(self, body: String) -> String {
-        match self {
-            HookShell::Posix => body,
-            HookShell::PowerShell => format!("{body}; exit $LASTEXITCODE"),
-        }
-    }
-
-    /// The `shell` field a hook names this shell by: none for POSIX `sh`, which Claude Code picks
-    /// wherever rigger runs it, `powershell` for PowerShell.
-    fn field(self) -> Option<&'static str> {
-        match self {
-            HookShell::Posix => None,
-            HookShell::PowerShell => Some("powershell"),
-        }
-    }
 }
 
 /// Whether the settings JSON `existing` already carries every session setting
@@ -469,10 +389,11 @@ pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, 
 /// Merge one hook block that runs `command` into `existing` settings JSON, under the
 /// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), filtered by
 /// `matcher` (tool names under `PreToolUse`, a failure class under `StopFailure`, empty for
-/// an event `rigger` never matcher-filters, e.g. `SessionStart`), given `timeout` seconds when
-/// one is named (Claude Code's own default otherwise) and run under the `shell` it names
-/// ([`HookShell::field`]; Claude Code's own pick otherwise). Idempotent (installing the
-/// same `command` under the same `event_key` twice does not duplicate the block) and preserves
+/// an event `rigger` never matcher-filters, e.g. `SessionStart`), in exec form with `args` as
+/// the program's argument vector when they are named (a command line the host hands a shell
+/// otherwise), and given `timeout` seconds when one is named (Claude Code's own default
+/// otherwise). Idempotent (installing the same `command` with the same `args` under the same
+/// `event_key` twice does not duplicate the block) and preserves
 /// every other setting, every other event key, and every other block already present under
 /// THIS event key - a general-purpose event (`PreToolUse`) may already carry entries for a
 /// different tool, matcher, or command a person or another tool installed, so this always
@@ -486,11 +407,11 @@ fn merge_hook_block(
     event_key: &str,
     matcher: &str,
     command: &str,
+    args: Option<&[&str]>,
     timeout: Option<u32>,
-    shell: Option<&str>,
 ) -> Result<Vec<u8>, Error> {
     let mut settings = parse_settings(existing)?;
-    push_hook_block(&mut settings, event_key, matcher, command, timeout, shell)?;
+    push_hook_block(&mut settings, event_key, matcher, command, args, timeout)?;
     encode_settings(&settings)
 }
 
@@ -508,15 +429,16 @@ fn parse_settings(existing: &[u8]) -> Result<Map<String, Value>, Error> {
 }
 
 /// Append a block running `command` under `matcher` to the `event_key` array of `settings`'
-/// `hooks`, creating either when absent, unless a block of that array already runs `command`;
-/// the inner hook carries `timeout` seconds and the `shell` when either is named.
+/// `hooks`, creating either when absent, unless a block of that array already runs `command`
+/// with `args` ([`runs`]); the inner hook carries `args`, which make it an exec-form hook, and
+/// `timeout` seconds, each when named.
 fn push_hook_block(
     settings: &mut Map<String, Value>,
     event_key: &str,
     matcher: &str,
     command: &str,
+    args: Option<&[&str]>,
     timeout: Option<u32>,
-    shell: Option<&str>,
 ) -> Result<(), Error> {
     let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
     let hooks_obj = hooks
@@ -526,13 +448,13 @@ fn push_hook_block(
     let event_arr = event
         .as_array_mut()
         .ok_or_else(|| Error(format!("\"{event_key}\" is not an array")))?;
-    if !has_command(event_arr, command) {
+    if !has_command(event_arr, command, args) {
         let mut hook = json!({"type": "command", "command": command});
+        if let Some(args) = args {
+            hook["args"] = json!(args);
+        }
         if let Some(timeout) = timeout {
             hook["timeout"] = json!(timeout);
-        }
-        if let Some(shell) = shell {
-            hook["shell"] = json!(shell);
         }
         event_arr.push(json!({"matcher": matcher, "hooks": [hook]}));
     }
@@ -547,19 +469,21 @@ fn encode_settings(settings: &Map<String, Value>) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-/// Whether any block of `blocks` holds an inner hook running `command`.
-fn has_command(blocks: &[Value], command: &str) -> bool {
+/// Whether any block of `blocks` holds an inner hook running `command` with `args` ([`runs`]).
+fn has_command(blocks: &[Value], command: &str, args: Option<&[&str]>) -> bool {
     blocks.iter().any(|block| {
         block
             .get("hooks")
             .and_then(Value::as_array)
-            .is_some_and(|inner| inner.iter().any(|hook| runs(hook, command)))
+            .is_some_and(|inner| inner.iter().any(|hook| runs(hook, command, args)))
     })
 }
 
-/// Whether the inner hook `hook` runs `command`.
-fn runs(hook: &Value, command: &str) -> bool {
+/// Whether the inner hook `hook` runs `command` with `args`: the same `command`, and in exec form
+/// the same `args` or in shell form none.
+fn runs(hook: &Value, command: &str, args: Option<&[&str]>) -> bool {
     hook.get("command").and_then(Value::as_str) == Some(command)
+        && hook.get("args") == args.map(|args| json!(args)).as_ref()
 }
 
 /// Merge one stdio MCP server entry into `.mcp.json`'s `mcpServers` object (spec 92,
@@ -692,7 +616,7 @@ mod tests {
         assert_eq!(installed, counted, "installing twice must not duplicate");
     }
 
-    /// Merge a `PreToolUse` block with no timeout and no shell field into `existing`.
+    /// Merge a shell-form `PreToolUse` block with no timeout into `existing`.
     fn pretooluse(existing: &[u8], matcher: &str, command: &str) -> Result<Vec<u8>, Error> {
         merge_hook_block(existing, "PreToolUse", matcher, command, None, None)
     }
@@ -712,7 +636,7 @@ mod tests {
             |existing| {
                 let duty = TreeDuty::Checkpoint { branch: "rigger/u/u".to_string() };
                 let roots = ["/wt".to_string()];
-                install_spawn_hooks(existing, "rigger", "u/i#0", &roots, "/wt", &duty, HookShell::Posix)
+                install_spawn_hooks(existing, "rigger", "u/i#0", &roots, "/wt", &duty)
             },
             &["PreToolUse", "StopFailure", "\"Stop\"", "\"command\": \"rigger\""],
             &[
@@ -746,49 +670,6 @@ mod tests {
             assert_eq!(install_no_advisor(&once).unwrap(), once, "idempotent");
         }
         assert!(install_no_advisor(b"[]").is_err(), "not an object");
-    }
-
-    /// One argument of a hook command as each shell's word: between single quotes, inside which
-    /// neither shell expands `"`, `\`, `$`, a backtick, `;`, `&`, `|` or non-ASCII, with each single
-    /// quote it holds spelled as that shell reads one there. POSIX `sh` closes the quote, escapes
-    /// the `'` and reopens it; PowerShell doubles every character it reads as a single quote, which
-    /// are `'` and U+2018, U+2019, U+201A and U+201B (its own
-    /// `CodeGeneration.EscapeSingleQuotedStringContent` over `CharExtensions.IsSingleQuote`).
-    #[test]
-    fn a_hook_word_is_single_quoted_by_its_shells_rule() {
-        let rows = [
-            ("rigger", "'rigger'", "'rigger'"),
-            ("/a b/rigger", "'/a b/rigger'", "'/a b/rigger'"),
-            ("it's", r"'it'\''s'", "'it''s'"),
-            ("a'b'c", r"'a'\''b'\''c'", "'a''b''c'"),
-            (r#"say "hi""#, r#"'say "hi"'"#, r#"'say "hi"'"#),
-            (
-                r"C:\Program Files\r.exe",
-                r"'C:\Program Files\r.exe'",
-                r"'C:\Program Files\r.exe'",
-            ),
-            (
-                "/wt/\u{fc}ber/\u{65e5}",
-                "'/wt/\u{fc}ber/\u{65e5}'",
-                "'/wt/\u{fc}ber/\u{65e5}'",
-            ),
-            (
-                "\u{2018}a\u{2019} \u{201A}b\u{201B}",
-                "'\u{2018}a\u{2019} \u{201A}b\u{201B}'",
-                "'\u{2018}\u{2018}a\u{2019}\u{2019} \u{201A}\u{201A}b\u{201B}\u{201B}'",
-            ),
-            (
-                "rigger/u/a;b&c$d`e|f",
-                "'rigger/u/a;b&c$d`e|f'",
-                "'rigger/u/a;b&c$d`e|f'",
-            ),
-            ("u/implementer#0", "'u/implementer#0'", "'u/implementer#0'"),
-            ("", "''", "''"),
-        ];
-        assert_eq!(
-            rows.map(|(arg, _, _)| (HookShell::Posix.word(arg), HookShell::PowerShell.word(arg))),
-            rows.map(|(_, posix, powershell)| (posix.to_string(), powershell.to_string()))
-        );
     }
 
     /// Every hook a spawn carries, its `command` spawned with its `args` as the argument vector and
@@ -832,16 +713,7 @@ mod tests {
         ];
         for (spawn, roots, dir, duty, asks) in rows {
             let settings: Value = serde_json::from_slice(
-                &install_spawn_hooks(
-                    b"",
-                    bin,
-                    spawn,
-                    &owned(&roots),
-                    dir,
-                    &duty,
-                    HookShell::Posix,
-                )
-                .unwrap(),
+                &install_spawn_hooks(b"", bin, spawn, &owned(&roots), dir, &duty).unwrap(),
             )
             .unwrap();
             let guard = ["guard-write"]
@@ -993,7 +865,6 @@ mod tests {
                 &owned(&roots),
                 dir,
                 &duty,
-                HookShell::HOST,
             )
             .unwrap();
             assert_eq!(
@@ -1513,9 +1384,7 @@ mod tests {
     #[test]
     fn spawn_hooks_refuse_settings_that_are_not_an_object() {
         let none = TreeDuty::None;
-        let refused =
-            install_spawn_hooks(b"[]", "rigger", "u/i#0", &[], "", &none, HookShell::HOST)
-                .unwrap_err();
+        let refused = install_spawn_hooks(b"[]", "rigger", "u/i#0", &[], "", &none).unwrap_err();
         assert_eq!(
             refused.to_string(),
             "hooks: settings.json is not a JSON object"
