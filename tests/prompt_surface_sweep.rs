@@ -193,8 +193,6 @@ const ALLOW_LIST: &[Allowed] = &[
             "claude_code driver: {:?}: its {} MCP server reported status",
             "stream: a process outside the child's tree still holds the {",
             "launch: session containment unavailable ({reason}); the sess",
-            "{} outside the session's tree, never signalled: {}",
-            "the end of the session left processes running; {}",
             "waiting: {category} (attempt {attempt}, retrying in {delay_m",
             "spawn {spawn_id:?} stopped: its agent stream stayed silent f",
             "claude_code driver: {:?}: read agent stream: {e}",
@@ -212,6 +210,8 @@ const ALLOW_LIST: &[Allowed] = &[
         &[
             "driver: compose the spawn's allowed tools: {e}",
             "driver: write the spawn's system prompt under {}: {e}",
+            "{} outside the session's tree, never signalled: {}",
+            "the end of the session left processes running; {}",
         ],
     ),
     (

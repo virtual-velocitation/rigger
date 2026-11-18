@@ -1523,10 +1523,10 @@ impl Driver<'_> {
         self.join_pipes(opts, pipes);
     }
 
-    /// Say on the spawn's progress what an end of its session's tree left ([`end_line`]), when
-    /// it left anything.
+    /// Say on the spawn's progress what an end of its session's tree left ([`super::end_lines`]),
+    /// a line each.
     fn record_end(&self, opts: &SpawnOpts, report: &crate::child_tree::EndReport) {
-        if let Some(line) = end_line(report) {
+        for line in super::end_lines(report, "stream") {
             self.record_progress(opts, &line);
         }
     }
@@ -1844,8 +1844,8 @@ impl HoldProbe for Driver<'_> {
             });
             // The canary's tree is ended, its main with it where the main still runs. It runs
             // with every hook off and no server, so the end waits for no writer, and it writes
-            // no store, so what the end left is said on stderr ([`canary_end_line`]).
-            if let Some(line) = canary_end_line(&canary.finish(None)) {
+            // no store, so what the end left is said on stderr ([`canary_end_lines`]).
+            for line in canary_end_lines(&canary.finish(None)) {
                 rigger_process::whole_line::say(format_args!("{line}"));
             }
         }
@@ -2017,55 +2017,10 @@ fn api_retry_line(v: &Value) -> String {
     format!("waiting: {category} (attempt {attempt}, retrying in {delay_ms}ms)")
 }
 
-/// The progress line an end of a session's tree records: what it left ([`end_text`]), on the
-/// stream. `None` when it left nothing and nothing was refused.
-fn end_line(report: &crate::child_tree::EndReport) -> Option<String> {
-    end_text(report).map(|text| format!("stream: {text}"))
-}
-
-/// The line the hold probe says on stderr when its canary's end left anything ([`end_text`]),
-/// since the probe writes no store. `None` when it left nothing and nothing was refused.
-fn canary_end_line(report: &crate::child_tree::EndReport) -> Option<String> {
-    end_text(report).map(|text| format!("rigger: the hold probe's canary: {text}"))
-}
-
-/// What an end of a session's tree left ([`crate::child_tree::EndReport`]): each call the OS
-/// refused it, as the report says it; then how many processes it signalled and could not end, and
-/// how many it found outside the tree and never signalled, each named by pid and program, a
-/// still-frozen one marked so. `None` when it left nothing and nothing was refused.
-fn end_text(report: &crate::child_tree::EndReport) -> Option<String> {
-    let named = |left: &[crate::child_tree::Leftover]| {
-        left.iter()
-            .map(|left| {
-                let frozen = if left.stopped { ", stopped" } else { "" };
-                format!("{} ({}{frozen})", left.pid, left.program)
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let mut parts = Vec::new();
-    if !report.residue.is_empty() {
-        parts.push(format!(
-            "{} it signalled and could not end: {}",
-            report.residue.len(),
-            named(&report.residue)
-        ));
-    }
-    if !report.skipped.is_empty() {
-        parts.push(format!(
-            "{} outside the session's tree, never signalled: {}",
-            report.skipped.len(),
-            named(&report.skipped)
-        ));
-    }
-    let left = (!parts.is_empty()).then(|| {
-        format!(
-            "the end of the session left processes running; {}",
-            parts.join("; ")
-        )
-    });
-    let said: Vec<String> = report.faults.iter().cloned().chain(left).collect();
-    (!said.is_empty()).then(|| said.join("; "))
+/// The lines the hold probe says on stderr for its canary's end ([`super::end_lines`]), since the
+/// probe writes no store. Empty when the end left nothing and nothing was refused.
+fn canary_end_lines(report: &crate::child_tree::EndReport) -> Vec<String> {
+    super::end_lines(report, "rigger: the hold probe's canary")
 }
 
 /// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the
@@ -3870,92 +3825,22 @@ mod tests {
         );
     }
 
-    /// The line an end that answered `residue`, `skipped` and `faults` is recorded as, if any.
-    fn assert_end_line(
-        residue: &[(u32, &str, bool)],
-        skipped: &[(u32, &str, bool)],
-        faults: &[&str],
-        expected: Option<&str>,
-    ) {
-        let left = |rows: &[(u32, &str, bool)]| {
-            rows.iter()
-                .map(|&(pid, program, stopped)| crate::child_tree::Leftover {
-                    pid,
-                    program: program.to_string(),
-                    stopped,
-                })
-                .collect()
-        };
-        let report = crate::child_tree::EndReport {
-            residue: left(residue),
-            skipped: left(skipped),
-            faults: faults.iter().map(|fault| fault.to_string()).collect(),
-            by_pid_because: None,
-        };
-        assert_eq!(end_line(&report).as_deref(), expected);
-    }
-
-    crate::test_cases! {
-        an_end_that_left_nothing_is_no_line: assert_end_line(&[], &[], &[], None);
-        an_end_that_could_not_end_a_process_names_it_and_whether_it_is_stopped: assert_end_line(
-            &[(41, "sleep", false), (42, "node", true)],
-            &[],
-            &[],
-            Some(
-                "stream: the end of the session left processes running; 2 it signalled and \
-                 could not end: 41 (sleep), 42 (node, stopped)",
-            ),
-        );
-        an_end_that_found_a_process_outside_the_tree_names_it_as_never_signalled:
-            assert_end_line(
-                &[(41, "sleep", false)],
-                &[(77, "daemon", false)],
-                &[],
-                Some(
-                    "stream: the end of the session left processes running; 1 it signalled and \
-                     could not end: 41 (sleep); 1 outside the session's tree, never signalled: \
-                     77 (daemon)",
-                ),
-            );
-        an_end_the_os_refused_says_why: assert_end_line(
-            &[],
-            &[],
-            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
-            Some(
-                "stream: the job of session 7 could not be ended (denied), so the end did not \
-                 wait for it",
-            ),
-        );
-        an_end_that_hit_a_fault_and_left_a_process_says_both: assert_end_line(
-            &[(41, "sleep", false)],
-            &[],
-            &["the job of session 7 could not be let go (denied)"],
-            Some(
-                "stream: the job of session 7 could not be let go (denied); the end of the \
-                 session left processes running; 1 it signalled and could not end: 41 (sleep)",
-            ),
-        );
-    }
-
     crate::test_cases! {
         a_canary_end_that_left_nothing_says_nothing: assert_eq!(
-            canary_end_line(&crate::child_tree::EndReport::default()),
-            None
+            canary_end_lines(&crate::child_tree::EndReport::default()),
+            Vec::<String>::new()
         );
         a_canary_end_that_left_a_process_says_so_naming_the_canary: assert_eq!(
-            canary_end_line(&crate::child_tree::EndReport {
+            canary_end_lines(&crate::child_tree::EndReport {
                 residue: vec![crate::child_tree::Leftover {
                     pid: 41,
                     program: "claude".to_string(),
                     stopped: false,
                 }],
                 ..crate::child_tree::EndReport::default()
-            })
-            .as_deref(),
-            Some(
-                "rigger: the hold probe's canary: the end of the session left processes \
-                 running; 1 it signalled and could not end: 41 (claude)"
-            )
+            }),
+            ["rigger: the hold probe's canary: the end of the session left processes running; 1 \
+              it signalled and could not end: 41 (claude)"]
         );
     }
 
