@@ -30254,6 +30254,206 @@ stage "implement" adjudicator "adj" failed
                 },
                 "a lane that did not hand over",
             );
+        /// Lane 0's implementer leaves its tree's HEAD off the lane's branch, so git refuses the
+        /// lane's checkpoint: a refused lane is a lost candidate, as a crashed one is.
+        speculation_lane_git_refused_is_absent_and_a_sibling_still_wins:
+            assert_lost_lane_is_absent_and_a_sibling_still_wins(
+                |driver| driver.git_by_spawn_id = HashMap::from([(
+                    spawn_id("s", ROLE_IMPLEMENTER, 0),
+                    detach_head(),
+                )]),
+                "a lane git refused",
+            );
+    }
+
+    /// The git commands that leave a tree's HEAD off its branch, at the commit it was on.
+    fn detach_head() -> Vec<Vec<String>> {
+        vec![["checkout", "-q", "--detach"].map(String::from).to_vec()]
+    }
+
+    /// Every lane of a speculation group leaves its tree's HEAD off its branch, so git refuses
+    /// every lane's checkpoint and no candidate survives: the group escalates with one recorded
+    /// failure, cause `git-refused`, whose refusal carries git's refusal of each lane, so an
+    /// operator's grant re-drives every lane told it. The run is not held.
+    #[test]
+    fn speculation_escalates_with_each_refusal_when_git_refuses_every_lane() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            git_by_spawn_id: (0..2)
+                .map(|lane| (spawn_id("s", ROLE_IMPLEMENTER, lane), detach_head()))
+                .collect(),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Escalated);
+        assert_eq!(occurrences(&driver.call_order, "worker"), 2);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let failed: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+            .map(|e| serde_json::from_slice(&e.data).unwrap())
+            .collect();
+        assert_eq!(failed.len(), 1, "the group records one failure: {failed:?}");
+        assert_eq!(failed[0]["cause"], CAUSE_GIT_REFUSED, "{failed:?}");
+        let refusal = failed[0]["refusal"].as_str().unwrap_or_default();
+        for branch in [unit_branch("s"), format!("{}-spec1", unit_branch("s"))] {
+            assert!(
+                refusal.contains(&format!("HEAD is not on the unit's branch {branch} ")),
+                "the failure carries git's refusal of the lane on {branch}: {refusal:?}"
+            );
+        }
+        assert!(!refusal.contains('\u{1}'), "no marker: {refusal:?}");
+        assert!(events
+            .iter()
+            .any(|e| e.type_ == ledger::TYPE_UNIT_ESCALATED));
+        assert!(events.iter().any(|e| {
+            e.type_ == contextgraph::TYPE_LESSON_LEARNED
+                && String::from_utf8_lossy(&e.data).contains("escalated")
+        }));
+        assert_eq!(holds_in(&events), Vec::new(), "the run is not held");
+    }
+
+    /// A speculation group whose first approved lane's merge git refuses (its tree's HEAD left
+    /// off the lane's branch during its review) loses that lane, and the next lane wins: the
+    /// refused merge landed nothing, so the next lane merges onto the run branch as it was.
+    #[test]
+    fn a_speculation_lane_whose_merge_git_refuses_loses_and_the_next_lane_wins() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            git_by_spawn_id: HashMap::from([(
+                spawn_retry_id("s", ROLE_ADJUDICATOR, 0, 0),
+                detach_head(),
+            )]),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+        assert_eq!(rs.units["s"].status, ledger::Status::Integrated);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let integrated = events
+            .iter()
+            .find(|e| e.type_ == ledger::TYPE_UNIT_INTEGRATED)
+            .expect("the group integrated");
+        assert_eq!(
+            integrated.meta.get(META_SPEC_WINNER).map(String::as_str),
+            Some(spawn_id("s", ROLE_IMPLEMENTER, 1).as_str()),
+            "the next lane won"
+        );
+        assert!(integrated
+            .meta
+            .get(META_SPEC_LOSERS)
+            .is_some_and(|l| l.contains(&spawn_id("s", ROLE_IMPLEMENTER, 0))));
+        assert_eq!(holds_in(&events), Vec::new(), "the run is not held");
+        assert!(
+            !branch_present(&repo_path, &unit_branch("s")),
+            "the refused lane's branch is torn down with the group's other losers"
+        );
+    }
+
+    /// A store that fails the run's spawn read a missed handover takes
+    /// ([`RunCtx::handover_miss`]), counting each failure, and forwards every other call.
+    struct HandoverReadFails<'a> {
+        inner: &'a dyn EventStore,
+        failed: AtomicU32,
+    }
+    impl EventStore for HandoverReadFails<'_> {
+        crate::delegate_event_store_reads!(append);
+        crate::delegate_event_store_reads!(untyped);
+        fn read_stream_typed(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+            selection: crate::eventstore::TypeSelection,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            let spawn_read = [
+                crate::run::TYPE_RUN_STARTED,
+                spawn::TYPE_SPAWN_REQUESTED,
+                spawn::TYPE_SPAWN_RESULT,
+            ];
+            if matches!(selection, crate::eventstore::TypeSelection::Only(types) if *types == spawn_read)
+            {
+                self.failed.fetch_add(1, Ordering::SeqCst);
+                return Err(crate::eventstore::Error::Backend(
+                    "simulated failure reading the run's spawns".into(),
+                ));
+            }
+            self.inner.read_stream_typed(stream, from, selection)
+        }
+    }
+
+    /// A speculation lane that ends on a fault of the run's infrastructure, or on git not
+    /// answering, ends the drive: the run is held for the orchestrator with no lesson and no
+    /// attempt charged, the lane's tree is kept with its work for the release, and no later lane
+    /// is spawned. Lost as a candidate, such a fault would charge the group a loss no lane made.
+    #[test]
+    fn a_speculation_lane_fault_holds_the_run_and_keeps_the_lanes_tree() {
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Fault {
+            /// The store fails the read of the run's spawns a missed handover takes.
+            HandoverRead,
+            /// A lock on the lane's index stops git answering its checkpoint.
+            IndexLock,
+        }
+        for fault in [Fault::HandoverRead, Fault::IndexLock] {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let real = Store::open(":memory:").unwrap();
+            let store = HandoverReadFails {
+                inner: &real,
+                failed: AtomicU32::new(0),
+            };
+            let reads = fault == Fault::HandoverRead;
+            let driver = Stub {
+                write_file: Some("feature.rs".into()),
+                output: r#"{"verdict":"approve"}"#.into(),
+                sessions: reads,
+                withhold_handover_ids: reads
+                    .then(|| spawn_id("s", ROLE_IMPLEMENTER, 0))
+                    .into_iter()
+                    .collect(),
+                lock_index_by_agent: (!reads).then(|| "worker".to_string()).into_iter().collect(),
+                ..Stub::new()
+            };
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let halted = run_isolated(&spec_cfg(2), &deps);
+            assert_eq!(
+                store.failed.load(Ordering::SeqCst) > 0,
+                reads,
+                "{fault:?}: precondition: the store failed the spawn read only in its row"
+            );
+            let events = real.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert_held_with_no_lesson(&format!("{fault:?}"), halted, &events);
+            assert_eq!(
+                occurrences(&driver.call_order, "worker"),
+                1,
+                "{fault:?}: no lane after the fault is spawned"
+            );
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            assert!(
+                Path::new(&unit_worktree_dir(&scratch, "s"))
+                    .join("feature.rs")
+                    .exists(),
+                "{fault:?}: the lane's tree is kept with its work"
+            );
+        }
     }
 
     /// A speculation lane whose request the run recorded before the
