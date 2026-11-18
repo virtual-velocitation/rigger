@@ -683,8 +683,10 @@ mod tests {
         }
     }
 
-    /// The lines the stream host says an end that answered `residue`, `skipped` and `faults` in.
+    /// The lines the stream host says an end that answered `ended`, `residue`, `skipped` and
+    /// `faults` in.
     fn assert_end_lines(
+        ended: &[(u32, &str, bool)],
         residue: &[(u32, &str, bool)],
         skipped: &[(u32, &str, bool)],
         faults: &[&str],
@@ -700,6 +702,7 @@ mod tests {
                 .collect()
         };
         let report = crate::child_tree::EndReport {
+            ended: left(ended),
             residue: left(residue),
             skipped: left(skipped),
             faults: faults.iter().map(|fault| fault.to_string()).collect(),
@@ -709,16 +712,39 @@ mod tests {
     }
 
     crate::test_cases! {
-        an_end_that_left_nothing_is_no_line: assert_end_lines(&[], &[], &[], &[]);
+        an_end_that_ended_and_left_nothing_is_no_line: assert_end_lines(&[], &[], &[], &[], &[]);
         an_end_that_could_not_end_a_process_names_it_and_whether_it_is_stopped: assert_end_lines(
+            &[],
             &[(41, "sleep", false), (42, "node", true)],
             &[],
             &[],
             &["stream: the end of the session left processes running; 2 it signalled and could \
                not end: 41 (sleep), 42 (node, stopped)"],
         );
+        an_ordinary_end_that_ended_processes_names_each_by_pid_and_program: assert_end_lines(
+            &[(41, "sleep 300", false), (42, "node server.js", false)],
+            &[],
+            &[],
+            &[],
+            &["stream: the end of the session ended 2 processes besides its main: 41 (sleep 300), \
+               42 (node server.js)"],
+        );
+        an_ordinary_end_that_ended_one_process_and_left_one_says_each_in_a_line_of_its_own:
+            assert_end_lines(
+                &[(41, "sleep 300", false)],
+                &[],
+                &[(77, "daemon", false)],
+                &[],
+                &[
+                    "stream: the end of the session ended 1 process besides its main: 41 (sleep \
+                     300)",
+                    "stream: the end of the session left processes running; 1 outside the \
+                     session's tree, never signalled: 77 (daemon)",
+                ],
+            );
         an_end_that_found_a_process_outside_the_tree_names_it_as_never_signalled:
             assert_end_lines(
+                &[],
                 &[(41, "sleep", false)],
                 &[(77, "daemon", false)],
                 &[],
@@ -729,11 +755,13 @@ mod tests {
         an_end_the_os_refused_says_why: assert_end_lines(
             &[],
             &[],
+            &[],
             &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
             &["stream: the job of session 7 could not be ended (denied), so the end did not wait \
                for it"],
         );
         an_end_that_hit_a_fault_and_left_a_process_says_both: assert_end_lines(
+            &[],
             &[(41, "sleep", false)],
             &[],
             &["the job of session 7 could not be let go (denied)"],

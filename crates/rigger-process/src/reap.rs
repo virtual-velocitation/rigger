@@ -738,7 +738,7 @@ const CHAIN_STEPS: usize = 4096;
 /// without freezing it first, and confirms no freeze.
 const FREEZES: bool = cfg!(unix);
 
-/// A process an end left running, or never signalled.
+/// A process an end ended, left running, or never signalled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Leftover {
     /// The process's pid when the end saw it.
@@ -760,13 +760,17 @@ impl Leftover {
     }
 }
 
-/// What an end left: `residue`, the processes it signalled that are still running past
-/// [`END_BOUND`]; `skipped`, those still running that it found but never signalled, because at
-/// signal time their parent chain no longer reached the tree's root (an escape, or a stranger that
-/// took a pid), or because the walk could not tell them from strangers ([`Walk::untrusted`]); and
-/// `faults`, what the OS refused it; and `by_pid_because`, why it signalled by pid.
+/// What an end ended and what it left: `ended`, the processes an ordinary end
+/// (`ReapedChild::finish`) found running besides the main and ended, which a stop's end does not
+/// count; `residue`, the processes it signalled that are still running past [`END_BOUND`];
+/// `skipped`, those still running that it found but never signalled, because at signal time their
+/// parent chain no longer reached the tree's root (an escape, or a stranger that took a pid), or
+/// because the walk could not tell them from strangers ([`Walk::untrusted`]); `faults`, what the
+/// OS refused it; and `by_pid_because`, why it signalled by pid.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndReport {
+    /// Found running besides the main by an ordinary end, and ended by it.
+    pub ended: Vec<Leftover>,
     /// Signalled, and still running past the bound.
     pub residue: Vec<Leftover>,
     /// Found, never signalled, and still running.

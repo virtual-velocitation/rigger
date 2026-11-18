@@ -141,13 +141,15 @@ fn by_the_finish(tree: ReapedChild) -> EndReport {
 }
 
 /// The kept fixture `body`, with `up` of its processes up and then `before` done to it, is ended
-/// by `ending`, which leaves nothing running and reports nothing: a process that ignores the end's
-/// request to exit is ended without asking once the grace passes.
+/// by `ending`, which leaves nothing running, reports `ended` processes it ended besides the main,
+/// and reports nothing left: a process that ignores the end's request to exit is ended without
+/// asking once the grace passes.
 fn ends_the_tree(
     body: &str,
     up: usize,
     before: fn(&mut ReapedChild, &mut Witness),
     ending: fn(ReapedChild) -> EndReport,
+    ended: usize,
 ) {
     let mut witness = Witness::new();
     let mut tree = kept(&witness, body);
@@ -157,8 +159,14 @@ fn ends_the_tree(
     let report = ending(tree);
 
     assert_eq!(
-        (witness.read(), report),
-        (Reading::Ended, EndReport::default())
+        (
+            witness.read(),
+            report.ended.len(),
+            report.residue,
+            report.skipped,
+            report.faults
+        ),
+        (Reading::Ended, ended, vec![], vec![], vec![]),
     );
 }
 
@@ -178,30 +186,32 @@ fn after_the_input_closes(tree: &mut ReapedChild, _witness: &mut Witness) {
     drop(tree.take_stdin());
 }
 
+// A stop's end counts nothing it ended; an ordinary end counts the holder, the main aside.
 rigger::test_cases! {
     a_kept_end_ends_a_running_tree:
-        ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_end);
+        ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_end, 0);
     a_kept_end_ends_what_an_exited_main_left:
-        ends_the_tree("holder; up", 2, after_the_main_exits, by_the_end);
+        ends_the_tree("holder; up", 2, after_the_main_exits, by_the_end, 0);
     a_kept_end_ends_what_the_main_starts_as_it_exits_at_the_end_of_its_input:
         ends_the_tree(
             "up; read -r unused; holder; exit 0",
             1,
             after_the_input_closes,
             by_the_end,
+            0,
         );
     a_kept_end_ends_a_process_started_in_another_directory:
-        ends_the_tree("cd / && holder; up; held", 2, |_, _| {}, by_the_end);
+        ends_the_tree("cd / && holder; up; held", 2, |_, _| {}, by_the_end, 0);
     a_kept_end_ends_a_process_in_a_session_of_its_own:
-        ends_the_tree("holder setsid; up; held", 2, |_, _| {}, by_the_end);
+        ends_the_tree("holder setsid; up; held", 2, |_, _| {}, by_the_end, 0);
     a_kept_end_ends_a_process_that_ignores_the_request_to_exit:
-        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {}, by_the_end);
+        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {}, by_the_end, 0);
     a_kept_end_ends_a_main_that_ignores_the_request_to_exit:
-        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {}, by_the_end);
+        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {}, by_the_end, 0);
     a_kept_finish_ends_a_running_tree:
-        ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_finish);
+        ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_finish, 1);
     a_kept_finish_ends_what_an_exited_main_left:
-        ends_the_tree("holder; up", 2, after_the_main_exits, by_the_finish);
+        ends_the_tree("holder; up", 2, after_the_main_exits, by_the_finish, 1);
 }
 
 /// The spawn the writer rows finish their tree for. A writer names it on its command line as its
@@ -210,8 +220,16 @@ const SPAWN: &str = "u-late-writer";
 
 /// The kept fixture `body`, with `up` of its processes up and, where `exited`, its main exited,
 /// finished for [`SPAWN`]: once the finish answers, `ups` of the fixture's processes have written
-/// their up byte, the finish took a time within `took`, and nothing is left running or reported.
-fn finishes_for_the_spawn(body: &str, up: usize, exited: bool, ups: usize, took: Range<Duration>) {
+/// their up byte, the finish took a time within `took` and reports `ended` processes it ended, and
+/// nothing is left running or reported left.
+fn finishes_for_the_spawn(
+    body: &str,
+    up: usize,
+    exited: bool,
+    ups: usize,
+    took: Range<Duration>,
+    ended: usize,
+) {
     let mut witness = Witness::new();
     let mut tree = kept(&witness, body);
     assert!(witness.wait_up(up), "the fixture's {up} processes are up");
@@ -224,15 +242,24 @@ fn finishes_for_the_spawn(body: &str, up: usize, exited: bool, ups: usize, took:
 
     let elapsed = started.elapsed();
     assert_eq!(
-        (witness.read(), report, witness.up()),
-        (Reading::Ended, EndReport::default(), ups)
+        (
+            witness.read(),
+            witness.up(),
+            report.ended.len(),
+            report.residue,
+            report.skipped,
+            report.faults
+        ),
+        (Reading::Ended, ups, ended, vec![], vec![], vec![])
     );
     assert!(took.contains(&elapsed), "the finish took {elapsed:?}");
 }
 
+// A held writer never exits on its own, so a finish that waited for it would take the whole
+// bound.
 rigger::test_cases! {
     // The writer writes its up byte a second after it starts, then exits: the byte is read only
-    // if the finish waited for it.
+    // if the finish waited for it, and the finish has nothing left to end.
     a_kept_finish_waits_for_a_writer_its_exited_main_left:
         finishes_for_the_spawn(
             "sh -c 'sleep 1; printf u >&9' u-late-writer & up",
@@ -240,6 +267,7 @@ rigger::test_cases! {
             true,
             2,
             Duration::ZERO..END_BOUND,
+            0,
         );
     a_kept_finish_ends_a_writer_still_running_at_its_bound:
         finishes_for_the_spawn(
@@ -248,22 +276,25 @@ rigger::test_cases! {
             true,
             2,
             END_BOUND..END_BOUND * 2,
+            1,
         );
     a_kept_finish_waits_for_no_writer_while_its_main_runs:
         finishes_for_the_spawn(
-            "sh -c 'sleep 1; printf u >&9' u-late-writer & up; held",
-            1,
+            "sh -c \"$witness_up; $witness_held\" u-late-writer & up; held",
+            2,
             false,
-            1,
+            2,
             Duration::ZERO..END_BOUND,
+            1,
         );
     a_kept_finish_waits_for_no_process_naming_another_spawn:
         finishes_for_the_spawn(
-            "sh -c 'sleep 1; printf u >&9' u-other & up",
-            1,
+            "sh -c \"$witness_up; $witness_held\" u-other & up",
+            2,
             true,
-            1,
+            2,
             Duration::ZERO..END_BOUND,
+            1,
         );
 }
 

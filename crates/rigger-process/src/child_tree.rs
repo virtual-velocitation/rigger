@@ -714,14 +714,16 @@ mod tests {
 
     /// A watched tree running `body`, finished for the spawn `writing` once `up` of its
     /// processes are up and, where `exited`, once its main has exited, leaves the witness reading
-    /// `left`, reports `skipped` processes it found and never signalled, leaves nothing it
-    /// signalled running, and never waits out the writers' bound.
+    /// `left`, reports `ended` processes it ended besides the main and `skipped` it found and
+    /// never signalled, leaves nothing it signalled running, and never waits out the writers'
+    /// bound.
     fn finishes(
         body: &str,
         up: usize,
         exited: bool,
         writing: Option<&str>,
         left: Reading,
+        ended: usize,
         skipped: usize,
     ) {
         let mut witness = Witness::new();
@@ -744,8 +746,13 @@ mod tests {
             "the finish took {elapsed:?}"
         );
         assert_eq!(
-            (witness.read(), report.residue, report.skipped.len()),
-            (left, vec![], skipped)
+            (
+                witness.read(),
+                report.ended.len(),
+                report.residue,
+                report.skipped.len()
+            ),
+            (left, ended, vec![], skipped)
         );
         assert_eq!(witness.release(), Reading::Ended);
     }
@@ -754,9 +761,9 @@ mod tests {
         // The main outlives the holder's start by a second, four of the watch's walks, so the
         // watch has seen the holder before the main exits; the end then signals nothing.
         a_finished_tree_whose_main_exited_reports_what_it_left_and_signals_nothing:
-            finishes("holder; up; sleep 1", 2, true, None, Reading::Held, 1);
+            finishes("holder; up; sleep 1", 2, true, None, Reading::Held, 0, 1);
         a_finished_tree_whose_main_runs_is_ended:
-            finishes("holder; up; held", 2, false, None, Reading::Ended, 0);
+            finishes("holder; up; held", 2, false, None, Reading::Ended, 1, 0);
         // A watched end signals nothing once the main has exited, so it waits for no writer.
         a_finished_tree_whose_main_exited_waits_for_no_process_naming_its_spawn:
             finishes(
@@ -765,6 +772,7 @@ mod tests {
                 true,
                 Some("u-late-writer"),
                 Reading::Held,
+                0,
                 1,
             );
     }
