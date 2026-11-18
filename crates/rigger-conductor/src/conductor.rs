@@ -30768,6 +30768,142 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
+    /// Lane `lane`'s implementer leaves its tree's HEAD off the lane's branch, so git refuses the
+    /// lane's checkpoint.
+    fn refuse_checkpoint(driver: &mut Stub, lane: u32) {
+        driver
+            .git_by_spawn_id
+            .insert(spawn_id("s", ROLE_IMPLEMENTER, lane), detach_head());
+    }
+
+    /// Lane `lane`'s adjudicator leaves the candidate's tree HEAD off the lane's branch, so git
+    /// refuses the approved lane's merge.
+    fn refuse_merge(driver: &mut Stub, lane: u32) {
+        driver
+            .git_by_spawn_id
+            .insert(spawn_retry_id("s", ROLE_ADJUDICATOR, lane, 0), detach_head());
+    }
+
+    /// A SPECULATION GROUP WITH NO WINNER KEEPS EACH TREE GIT REFUSED: every lane git refused, at
+    /// its checkpoint or at its merge, has its work kept on its own kept ref (`rigger/kept/<unit>`
+    /// for lane 0, `rigger/kept/<unit>-spec<n>` for lane n) before its tree and branch go, the
+    /// group's one `UnitFailed` records each keep, and its escalation lesson names each commit
+    /// and ref.
+    #[test]
+    fn a_speculation_group_with_no_winner_keeps_each_tree_git_refused() {
+        type Row = (&'static str, fn(&mut Stub, u32));
+        let cases: [Row; 2] = [
+            ("every lane's checkpoint refused", refuse_checkpoint),
+            ("every lane's merge refused", refuse_merge),
+        ];
+        for (row, refuse) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let mut driver = approving_speculation_stub();
+            for lane in 0..2 {
+                refuse(&mut driver, lane);
+            }
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+            assert_eq!(rs.units["s"].status, ledger::Status::Escalated, "{row}");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let failed: Vec<Value> = events
+                .iter()
+                .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+                .map(|e| serde_json::from_slice(&e.data).unwrap())
+                .collect();
+            assert_eq!(failed.len(), 1, "{row}: the group records one failure");
+            assert_eq!(failed[0]["cause"], CAUSE_GIT_REFUSED, "{row}");
+            let kept: Vec<ledger::Kept> =
+                serde_json::from_value(failed[0]["kept"].clone()).unwrap();
+            let lanes = [
+                worktree::kept_ref(&unit_branch("s")),
+                worktree::kept_ref(&format!("{}-spec1", unit_branch("s"))),
+            ];
+            assert_eq!(
+                kept.iter().map(|k| k.reference.clone()).collect::<Vec<_>>(),
+                lanes,
+                "{row}: each lane's keep is recorded under its own kept ref"
+            );
+            assert_eq!(
+                worktree::held_refs(&repo_path).unwrap(),
+                kept.iter()
+                    .map(|k| (k.reference.clone(), k.commit.clone()))
+                    .collect::<Vec<_>>(),
+                "{row}: each kept ref holds its recorded keep"
+            );
+            let lesson = events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+                .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                .find(|lesson| lesson.contains("escalated"))
+                .unwrap_or_default();
+            for k in &kept {
+                assert!(
+                    git_out(&repo_path, &["ls-tree", "--name-only", &k.commit])
+                        .lines()
+                        .any(|path| path == "feature.rs"),
+                    "{row}: {} holds the lane's work",
+                    k.reference
+                );
+                assert!(
+                    lesson.contains(&format!("commit {} on {}", k.commit, k.reference)),
+                    "{row}: the lesson names {}: {lesson}",
+                    k.reference
+                );
+            }
+        }
+    }
+
+    /// A SPECULATION GROUP A LANE SETTLED LEAVES NO KEEP: a lane git refused, at its checkpoint or
+    /// at its merge, is kept while the group races, and its keep goes once another lane wins,
+    /// whether the winner lands or settles the unit without landing (`on_pass: none`).
+    #[test]
+    fn a_speculation_group_a_lane_settled_leaves_no_keep() {
+        type Row = (&'static str, &'static str, fn(&mut Stub, u32));
+        let cases: [Row; 3] = [
+            (
+                "lane 0's checkpoint refused, lane 1 lands",
+                "merge",
+                refuse_checkpoint,
+            ),
+            ("lane 0's merge refused, lane 1 lands", "merge", refuse_merge),
+            (
+                "lane 0's checkpoint refused, lane 1 settles without landing",
+                "none",
+                refuse_checkpoint,
+            ),
+        ];
+        for (row, on_pass, refuse) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let mut driver = approving_speculation_stub();
+            refuse(&mut driver, 0);
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let mut cfg = spec_cfg(2);
+            cfg.workflow.stages.get_mut("s").unwrap().on_pass = on_pass.into();
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_ne!(
+                rs.units["s"].status,
+                ledger::Status::Escalated,
+                "{row}: premise, lane 1 settled the group"
+            );
+            assert_eq!(
+                worktree::held_refs(&repo_path).unwrap(),
+                Vec::<(String, String)>::new(),
+                "{row}: no keep is left"
+            );
+        }
+    }
+
     /// A store that fails the run's spawn read a missed handover takes
     /// ([`RunCtx::handover_miss`]), counting each failure, and forwards every other call.
     struct HandoverReadFails<'a> {
