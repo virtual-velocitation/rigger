@@ -180,8 +180,9 @@ impl Worktree {
     /// the BRANCH is the checkpoint. A branch that already exists cannot be
     /// `worktree add -b`'d (git refuses to clobber a ref), so we detect it and check
     /// it out instead. A read deciding whether `dir` is cleared - whether the branch exists, where
-    /// it is checked out, whether that worktree is there - that cannot be answered is this call's
-    /// error, and nothing at `dir`, and no registration, is cleared on it.
+    /// it is checked out, whether that worktree is there, whether a tree at `dir` is registered
+    /// ([`registered_at`]) - that cannot be answered is this call's error, and nothing at `dir`, and
+    /// no registration, is cleared on it.
     ///
     /// `authorized_root` is the scratch root the CALLER independently resolved `dir`
     /// under (the same value [`crate::worktree::scratch_root_from_env`] or an
@@ -213,8 +214,12 @@ impl Worktree {
             // is a no-op, and a healthy registered worktree is never touched.
             heal_corrupt_worktree_admin(repo);
             // Read fail-closed: both arms below may clear what sits at `dir`, so a read git
-            // cannot answer stops here, never reads as "no branch".
-            if branch_present(repo, branch)? {
+            // cannot answer stops here, never reads as "no branch", and a tree at `dir` is
+            // adopted or cleared only on a plain answer of whether it is registered there
+            // ([`registered_at`]).
+            let present = branch_present(repo, branch)?;
+            let registered = registered_at(repo, dir)?;
+            if present {
                 // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
                 // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
                 // uuid), so a resume - or a step that SUPERSEDES a prior one that died -
@@ -235,7 +240,7 @@ impl Worktree {
                 // [`Self::ensure_present`]'s OWN repeat calls on the SAME instance are a
                 // different shape - N threads that already share one `&Worktree` - and that one
                 // IS serialized, by `reassert_mu`.)
-                if worktree_on_branch(dir, branch) {
+                if registered && worktree_on_branch(dir, branch) {
                     return Ok(Worktree {
                         dir: dir.to_string(),
                         branch: branch.to_string(),
@@ -273,7 +278,7 @@ impl Worktree {
                 // is adopted as it stands: every commit in it is refused ([`commit_refusal`])
                 // until its HEAD is back on the branch, and that refusal is what the unit's next
                 // attempt is told.
-                if registered_at(repo, dir)? {
+                if registered {
                     return Ok(Worktree {
                         dir: dir.to_string(),
                         branch: branch.to_string(),
@@ -2274,13 +2279,23 @@ fn registration_for(repo: &str, branch: &str) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
-/// Whether `repo` has a worktree registered at `dir` that git can still use: an entry of `git
-/// worktree list --porcelain` naming `dir` (compared canonically, so neither spelling of a linked
-/// path hides it) that git does not mark `prunable`. What the worktree has checked out is not
-/// asked. A link at `dir` is no worktree, whatever it names ([`clear_worktree_dir`] removes it
-/// as a link). Read fail-closed, since [`Worktree::create`] clears `dir` on a no: a list git
-/// refuses, or a `dir` the filesystem cannot read or resolve, is an error; nothing at `dir` is a
-/// no.
+/// Whether `repo` has a worktree registered at `dir` that git can use: an entry of `git worktree
+/// list --porcelain` naming `dir`, by the path git lists or by where that path resolves, so
+/// neither spelling of a linked path hides it. What the worktree has checked out is not asked. A
+/// link at `dir` is no worktree, whatever it names ([`clear_worktree_dir`] removes it as a link),
+/// and nothing at `dir` is a no.
+///
+/// Read fail-closed, since [`Worktree::create`] clears `dir` on a no, and anything but a plain yes
+/// or no is an error, so nothing at `dir` is cleared or adopted on it:
+/// - a list git refuses, or a `dir` the filesystem cannot read or resolve;
+/// - a listed path that cannot be resolved for a reason other than nothing being there, since it
+///   may be `dir` ([`names_dir`]);
+/// - an entry at `dir` git marks `locked` (an add git has not finished, or a lock a person set) or
+///   `prunable` (a tree git can no longer use, its dir still there): git's own prune and the heal
+///   ([`worktree_admin_is_corrupt`]) leave a locked entry untouched, and a prunable one at a dir
+///   that is there still holds what is in it;
+/// - a tree at `dir` whose registration git does not list ([`unlisted_registration`]): git leaves
+///   out an entry it cannot read, saying nothing.
 fn registered_at(repo: &str, dir: &str) -> Result<bool, Error> {
     match occupant(dir)? {
         Some(found) if !found.file_type().is_symlink() => {}
@@ -2293,15 +2308,73 @@ fn registered_at(repo: &str, dir: &str) -> Result<bool, Error> {
             e.0
         ))
     })?;
-    Ok(out.split("\n\n").any(|entry| {
+    for entry in out.split("\n\n") {
         let mut lines = entry.lines();
-        lines
+        let Some(path) = lines
             .next()
             .and_then(|first| first.strip_prefix("worktree "))
-            .and_then(|path| std::fs::canonicalize(path).ok())
-            .is_some_and(|path| path == want)
-            && !lines.any(|line| line == "prunable" || line.starts_with("prunable "))
-    }))
+        else {
+            continue;
+        };
+        if !names_dir(path, dir, &want)? {
+            continue;
+        }
+        if let Some(mark) = lines.find(|line| {
+            let word = line.split_once(' ').map_or(*line, |(word, _)| word);
+            word == "locked" || word == "prunable"
+        }) {
+            return Err(Error(format!(
+                "a worktree git marks `{mark}` is registered at {dir}: nothing there is cleared or \
+                 adopted"
+            )));
+        }
+        return Ok(true);
+    }
+    unlisted_registration(dir)
+}
+
+/// Whether `path`, a worktree `git worktree list` names, is `dir`: the same spelling, or the same
+/// place once resolved (`want` is `dir` resolved). A path with nothing at it is not `dir`; one that
+/// cannot be resolved any other way (a permission, a link to itself on the way) may be, and is an
+/// error naming both.
+fn names_dir(path: &str, dir: &str, want: &std::path::Path) -> Result<bool, Error> {
+    if path == dir {
+        return Ok(true);
+    }
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => Ok(resolved == want),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(Error(format!(
+            "resolve {path}, a worktree git lists, to tell whether it is {dir}: {e}"
+        ))),
+    }
+}
+
+/// The answer for a `dir` no listed worktree names: an error when `dir` is a tree whose
+/// registration is still there, or cannot be read, though git does not list it; otherwise no.
+/// A tree's `.git` file names its registration (`gitdir: <path>`, relative to `dir` when not
+/// absolute). No `.git` file, no `gitdir` line, or a registration with nothing at it is a
+/// leftover, as is what the heal ([`heal_corrupt_worktree_admin`]) removed the registration of.
+fn unlisted_registration(dir: &str) -> Result<bool, Error> {
+    let gitfile = std::path::Path::new(dir).join(".git");
+    let gitfile_s = gitfile.to_string_lossy();
+    if !metadata_at(&gitfile_s, std::fs::metadata(&gitfile))?.is_some_and(|m| m.is_file()) {
+        return Ok(false);
+    }
+    let named = std::fs::read_to_string(&gitfile)
+        .map_err(|e| Error(format!("read the worktree link {gitfile_s}: {e}")))?;
+    let Some(admin) = named.trim_end().strip_prefix("gitdir: ") else {
+        return Ok(false);
+    };
+    let admin = std::path::Path::new(dir).join(admin);
+    let admin_s = admin.to_string_lossy();
+    match metadata_at(&admin_s, std::fs::metadata(&admin))? {
+        Some(_) => Err(Error(format!(
+            "{dir} is a worktree whose registration {admin_s} git does not list: nothing there is \
+             cleared or adopted"
+        ))),
+        None => Ok(false),
+    }
 }
 
 /// What sits at `dir`, read from the path's own entry and never by following a link, so a link -
@@ -7844,9 +7917,19 @@ mod tests {
         }
     }
 
-    /// A tree the create-misread table plants: its registration (admin) directory.
+    /// A tree the create-misread table plants: the tree's dir and its registration (admin)
+    /// directory.
     struct Plant {
+        dir: std::path::PathBuf,
         admin: std::path::PathBuf,
+    }
+
+    /// Take every access to `path` away (mode 000), returning it for [`full_access`].
+    #[cfg(unix)]
+    fn unreadable(path: &std::path::Path) -> Option<std::path::PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Some(path.to_path_buf())
     }
 
     /// Give `path` back its owner's full access, after a row took it away.
@@ -7891,6 +7974,69 @@ mod tests {
                     None
                 },
             ),
+            // git leaves an entry it cannot read out of its list, saying nothing.
+            #[cfg(unix)]
+            (
+                "a registration no one can read, old enough to heal",
+                true,
+                false,
+                |p| {
+                    backdate(&p.admin, 120);
+                    unreadable(&p.admin)
+                },
+            ),
+            #[cfg(unix)]
+            (
+                "a registrations directory no one can read",
+                true,
+                false,
+                |p| unreadable(p.admin.parent().unwrap()),
+            ),
+            (
+                "a registration git marks prunable, the tree still there",
+                true,
+                false,
+                |p| {
+                    std::fs::remove_file(p.dir.join(".git")).unwrap();
+                    None
+                },
+            ),
+            #[cfg(unix)]
+            (
+                "a registration whose path cannot be resolved (a link to itself on the way)",
+                true,
+                false,
+                |p| {
+                    let place = p.dir.parent().unwrap();
+                    std::os::unix::fs::symlink("loop", place.join("loop")).unwrap();
+                    let respelled = place.join("loop").join("..").join("wt").join(".git");
+                    std::fs::write(p.admin.join("gitdir"), format!("{}\n", respelled.display()))
+                        .unwrap();
+                    std::fs::remove_file(p.dir.join(".git")).unwrap();
+                    None
+                },
+            ),
+            // git locks the entry before it writes anything else, so an add cut off keeps the
+            // lock, with HEAD a placeholder until the checkout.
+            (
+                "an add git has not finished, detached at its placeholder HEAD",
+                true,
+                false,
+                |p| {
+                    std::fs::write(p.admin.join("locked"), "initializing").unwrap();
+                    std::fs::write(p.admin.join("HEAD"), format!("{}\n", "0".repeat(40))).unwrap();
+                    None
+                },
+            ),
+            (
+                "an add git has not finished, on the unit's branch",
+                true,
+                true,
+                |p| {
+                    std::fs::write(p.admin.join("locked"), "initializing").unwrap();
+                    None
+                },
+            ),
         ];
         let mut violations = Vec::new();
         for (state, branch_present, on_branch, put) in rows {
@@ -7914,6 +8060,7 @@ mod tests {
             .unwrap();
             std::fs::write(dir.join("work.txt"), "work\n").unwrap();
             let plant = Plant {
+                dir: dir.clone(),
                 admin: repo.path().join(".git").join("worktrees").join("wt"),
             };
             let denied = put(&plant);
@@ -8191,8 +8338,8 @@ mod tests {
 
     /// A READ DECIDING THE CLEAR THAT GOES UNANSWERED CLEARS NOTHING: when git cannot say whether
     /// the unit's branch exists (no repository path, a path that is not there, a configuration git
-    /// refuses), or where the existing branch is checked out (a registration list git refuses),
-    /// or the filesystem cannot say whether the branch's registered worktree is there, `create`
+    /// refuses), or which worktrees are registered (a registration list git refuses), or the
+    /// filesystem cannot say whether the branch's registered worktree is there, `create`
     /// fails with that read's error and leaves what sits at the unit's path as it was - a plain
     /// directory, or a registered worktree of the branch, each holding an uncommitted file - and
     /// every registration as it was.
@@ -8261,6 +8408,9 @@ mod tests {
                     .unwrap();
                     let admin = repo.path().join(".git/worktrees/rigger-wt-other");
                     std::fs::create_dir(admin.join("locked")).unwrap();
+                    // The first read the refused list leaves unanswered is whether a worktree
+                    // is registered at the unit's path.
+                    named = dir.clone();
                     repo_path.clone()
                 }
                 Unanswered::RegisteredDir => {
