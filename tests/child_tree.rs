@@ -2,12 +2,12 @@
 //! (`crates/rigger-process/src/child_tree/linux.rs`). The handle answers the main's pid and its
 //! exact status; an end, a finish, a drop and a TERM to the keeper each leave nothing the tree
 //! started running; a finish after the main's exit first waits, to a bound, for the session's
-//! stop-failure hook; a wait for the main's output ends, once the main exits, what it left
-//! holding that output; a daemon one session started ends with it under the keeper, so a sibling
-//! session waiting on its answer sees the answers end and its next request fail, and runs on, while
-//! a watched session's exited main leaves it running; the keeper holds none of the session's
-//! streams; and a keeper that is gone or deaf is reported, never trusted, and a main a gone keeper
-//! left is reported, never signalled. Every process a row starts is read through the FIFO witness
+//! writers, its stop-failure hook and its tool server; a wait for the main's output ends, once the
+//! main exits, what it left holding that output; a daemon one session started ends with it under
+//! the keeper, so a sibling session waiting on its answer sees the answers end and its next
+//! request fail, and runs on, while a watched session's exited main leaves it running; the keeper
+//! holds none of the session's streams; and a keeper that is gone or deaf is reported, never
+//! trusted, and a main a gone keeper left is reported, never signalled. Every process a row starts is read through the FIFO witness
 //! (`common::witness`), and the test signals none of them.
 
 use crate::common::fixtures::fixture_script;
@@ -217,8 +217,8 @@ rigger::test_cases! {
         ends_the_tree("holder; up", 2, after_the_main_exits, by_the_finish, 1);
 }
 
-/// The spawn the writer rows finish their tree for. A writer carries the stop-failure hook's words
-/// for it as its shell's arguments, as the hook does.
+/// The spawn the writer rows finish their tree for. A writer carries a writer's words for it as
+/// its shell's arguments: the stop-failure hook's, or the tool server's, as each does.
 const SPAWN: &str = "u-late-writer";
 
 /// Whether `line` is a writer of [`SPAWN`], one a finish for it waits for.
@@ -306,10 +306,27 @@ rigger::test_cases! {
             Duration::ZERO..END_BOUND,
             1,
         );
-    // The spawn's own MCP server names the spawn too, and is no writer.
-    a_kept_finish_waits_for_no_mcp_server_of_its_spawn:
+    a_kept_finish_waits_for_the_tool_server_its_exited_main_left:
+        finishes_for_the_spawn(
+            "sh -c 'sleep 1; printf u >&9' rigger mcp --spawn u-late-writer & up",
+            1,
+            true,
+            2,
+            Duration::ZERO..END_BOUND,
+            0,
+        );
+    a_kept_finish_ends_a_tool_server_still_running_at_its_bound:
         finishes_for_the_spawn(
             "sh -c \"$witness_up; $witness_held\" rigger mcp --spawn u-late-writer & up",
+            2,
+            true,
+            2,
+            END_BOUND..END_BOUND * 2,
+            1,
+        );
+    a_kept_finish_waits_for_no_tool_server_of_a_spawn_whose_id_starts_with_its_own:
+        finishes_for_the_spawn(
+            "sh -c \"$witness_up; $witness_held\" rigger mcp --spawn u-late-writer2 & up",
             2,
             true,
             2,

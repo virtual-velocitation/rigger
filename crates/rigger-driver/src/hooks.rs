@@ -727,11 +727,11 @@ mod tests {
 
     /// Each stop-failure command a spawn's hooks install, for a bare and a hostile binary and
     /// spawn, is the hook for its spawn as the OS reports a process running it: as the shell that
-    /// runs the command carries it, and as that shell hands it on with each word unquoted. The
-    /// spawn's MCP server, a hook for a spawn that merely starts with the spawn, a hook for another
-    /// spawn and the write guard are not.
+    /// runs the command carries it, and as that shell hands it on with each word unquoted. A hook
+    /// for a spawn whose id merely starts with the spawn's, a hook for another spawn and the write
+    /// guard are not.
     #[test]
-    fn the_writer_an_end_waits_for_is_the_stop_failure_hook_installed_for_its_spawn() {
+    fn a_writer_an_end_waits_for_is_the_stop_failure_hook_installed_for_its_spawn() {
         for (bin, spawn) in [
             ("rigger", "u/implementer#0"),
             ("/opt/it's here/rigger", "u/a b'c#1"),
@@ -760,10 +760,42 @@ mod tests {
             }
         }
         for line in [
-            "rigger mcp --spawn u/implementer#0",
             "rigger hook stop-failure --spawn u/implementer#01 --class rate_limit",
             "rigger hook stop-failure --spawn u/reviewer#1 --class rate_limit",
             "rigger guard-write --root /wt",
+        ] {
+            assert!(
+                !is_spawn_writer(line, "u/implementer#0"),
+                "{line:?} is no writer for u/implementer#0"
+            );
+        }
+    }
+
+    /// The tool server bound to a spawn, for a bare and a hostile binary and spawn, is a writer of
+    /// the spawn as the OS reports it: its binary and [`tool_server_args`]'s words, the binary's
+    /// path double-quoted as Windows shows one holding a space. The spawn-less server `rigger
+    /// setup` installs, a server for a spawn whose id merely starts with the spawn's and a server
+    /// for another spawn are not.
+    #[test]
+    fn a_writer_an_end_waits_for_is_the_tool_server_bound_to_its_spawn() {
+        for (bin, spawn) in [
+            ("rigger", "u/implementer#0"),
+            ("/opt/it's here/rigger", "u/a b'c#1"),
+            (
+                r#""C:\Program Files\rigger\rigger.exe""#,
+                "u7-launch/implementer#2",
+            ),
+        ] {
+            let line = format!("{bin} {}", tool_server_args(spawn).join(" "));
+            assert!(
+                is_spawn_writer(&line, spawn),
+                "{line:?} is the tool server for {spawn:?}"
+            );
+        }
+        for line in [
+            "rigger mcp",
+            "rigger mcp --spawn u/implementer#01",
+            "rigger mcp --spawn u/reviewer#1",
         ] {
             assert!(
                 !is_spawn_writer(line, "u/implementer#0"),
