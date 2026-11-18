@@ -4469,4 +4469,139 @@ pub fn f() -> u8 {
             "no prelude name is tagged",
         );
     }
+
+    /// A doc span: its first and last 1-based line.
+    type DocSpan = Option<(u32, u32)>;
+
+    /// The doc span of `fs` and each of its definitions' as `(name, span)`, the definitions in
+    /// line order: the one projection the doc-span tests compare whole.
+    fn doc_spans(fs: &FileSymbols) -> (DocSpan, Vec<(&str, DocSpan)>) {
+        let mut defs: Vec<_> = fs
+            .defs
+            .iter()
+            .map(|d| (d.line, d.name.as_str(), d.doc))
+            .collect();
+        defs.sort();
+        (
+            fs.doc,
+            defs.into_iter().map(|(_, name, doc)| (name, doc)).collect(),
+        )
+    }
+
+    /// RUST DOC SPANS ARE EXTRACTED: a definition's span runs from its first outer doc line - a
+    /// `///` line, a `/** */` block or a name-value `#[doc = ".."]` - to its last, the attributes
+    /// and plain comments between them inside it and those before the first or after the last
+    /// outside it, over a tuple field's `pub`, an enum variant's, an impl block's and a method's
+    /// alike, and up to the first other node only; a file opening with inner doc lines - `//!`,
+    /// `/*! */`, `#![doc = ".."]` - has its file span from the first to the last of them; a
+    /// `#[doc(hidden)]`, `////`, `/**/` and `/***/` is no doc line; and under a fixture query a
+    /// `@doc` capture in a definition's match gives that definition the captured span, over the
+    /// rule's, while a capture in the match of a definition the extraction drops gives no other
+    /// definition a span.
+    #[test]
+    fn rust_doc_spans_are_extracted() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fixture = compiled(
+            &language,
+            "((line_comment)* @doc . (function_item name: (identifier) @name) @definition.function)\n\
+             ((line_comment)* @doc . (const_item name: (identifier) @name) @definition.constant)\n",
+        );
+        // (case, whether the fixture query reads the source - else the registered one does -, the
+        // source, its file span, each definition's span)
+        let rows = [
+            (
+                "doc lines around a doc(hidden) attribute",
+                false,
+                "/// First.\n#[doc(hidden)]\n/// Last.\npub fn f() {}\n",
+                None,
+                vec![("f", Some((1, 3)))],
+            ),
+            (
+                "inner line docs after a plain comment open the file",
+                false,
+                "// Licence.\n//! The crate.\n//! More.\n\nfn g() {}\n",
+                Some((2, 3)),
+                vec![("g", None)],
+            ),
+            (
+                "plain comments and attributes inside the span and outside it",
+                false,
+                "// plain\n/// A.\n// plain\n#[doc = \"B.\"]\n// trail\n#[derive(Debug)]\nstruct S;\n",
+                None,
+                vec![("S", Some((2, 4)))],
+            ),
+            (
+                "an outer doc block",
+                false,
+                "/**\n * Block.\n */\nfn b() {}\n",
+                None,
+                vec![("b", Some((1, 3)))],
+            ),
+            (
+                "no doc line",
+                false,
+                "#[doc(hidden)]\nfn h() {}\n////\nfn i() {}\n/**/\nfn j() {}\n/***/\nfn k() {}\n",
+                None,
+                vec![("h", None), ("i", None), ("j", None), ("k", None)],
+            ),
+            (
+                "an inner doc attribute and block, then an item's doc",
+                false,
+                "#![doc = \"Crate.\"]\n/*! More. */\n/// Item.\nfn i() {}\n",
+                Some((1, 2)),
+                vec![("i", Some((3, 3)))],
+            ),
+            (
+                "a tuple field, a variant, an impl block and a method",
+                false,
+                "/// T.\npub struct T(\n    /// Zero.\n    pub u8,\n);\n/// E.\nenum E {\n    /// A.\n    A,\n}\n/// Impl.\nimpl E {\n    /// M.\n    fn m() {}\n}\n",
+                None,
+                vec![
+                    ("T", Some((1, 1))),
+                    ("0", Some((3, 3))),
+                    ("E", Some((6, 6))),
+                    ("A", Some((8, 8))),
+                    ("impl E", Some((11, 11))),
+                    ("m", Some((13, 13))),
+                ],
+            ),
+            (
+                "a doc line above another node",
+                false,
+                "/// Use.\nuse x;\nfn u() {}\n",
+                None,
+                vec![("u", None)],
+            ),
+            ("an empty file", false, "", None, vec![]),
+            (
+                "a capture gives its definition the span",
+                true,
+                "// One.\n// Two.\nfn f() {}\nfn g() {}\n",
+                None,
+                vec![("f", Some((1, 2))), ("g", None)],
+            ),
+            (
+                "a capture wins over the rule",
+                true,
+                "/// R.\n// plain\nfn r() {}\n",
+                None,
+                vec![("r", Some((1, 2)))],
+            ),
+            (
+                "a dropped definition's capture",
+                true,
+                "fn f() {}\n// Gone.\nconst _: u8 = 0;\n",
+                None,
+                vec![("f", None)],
+            ),
+        ];
+        for (case, under_fixture, src, file, defs) in rows {
+            let fs = if under_fixture {
+                extract(src, Lang::Rust, &fixture).expect("the fixture query extracts the source")
+            } else {
+                crate::symbol_index::extracted("rs", src)
+            };
+            assert_eq!(doc_spans(&fs), (file, defs), "{case}");
+        }
+    }
 }

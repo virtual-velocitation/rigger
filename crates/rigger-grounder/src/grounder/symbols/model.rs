@@ -389,6 +389,7 @@ mod tests {
                 is_out_of_line_module: false,
                 path_override: None,
                 enclosing_inline_module_path: None,
+                doc: Some((5, 6)),
             }],
             refs: vec![SymRef {
                 name: "clamp".into(),
@@ -398,9 +399,61 @@ mod tests {
                 ref_kind: None,
             }],
             partial: false,
+            doc: Some((1, 2)),
         };
         let json = serde_json::to_string(&file).expect("model serializes with plain serde");
         let back: FileSymbols = serde_json::from_str(&json).expect("model round-trips");
         assert_eq!(back, file);
+    }
+
+    /// Spec 117 (DOC FACTS): a definition's and a file's doc span serialize as the `[first, last]`
+    /// line pair, are omitted when there is none, and read back from that wire form, a record
+    /// with no `doc` key reading as no span.
+    #[test]
+    fn a_doc_span_is_its_line_pair_on_the_wire_and_omitted_when_none() {
+        // (the file's span, the definition's span, the file's wire form)
+        let rows = [
+            (
+                None,
+                None,
+                r#"{"lang":"Rust","defs":[{"kind":"Function","name":"f","line":3,"end_line":4,"path":"f"}],"refs":[]}"#,
+            ),
+            (
+                Some((1, 1)),
+                Some((2, 2)),
+                r#"{"lang":"Rust","defs":[{"kind":"Function","name":"f","line":3,"end_line":4,"path":"f","doc":[2,2]}],"refs":[],"doc":[1,1]}"#,
+            ),
+        ];
+        for (file_doc, def_doc, json) in rows {
+            let file = FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![Def {
+                    kind: Kind::Function,
+                    name: "f".into(),
+                    line: 3,
+                    end_line: 4,
+                    path: "f".into(),
+                    parent: None,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
+                    doc: def_doc,
+                }],
+                refs: Vec::new(),
+                partial: false,
+                doc: file_doc,
+            };
+            assert_eq!(
+                serde_json::to_string(&file).expect("the file serializes"),
+                json,
+                "{file_doc:?} {def_doc:?}"
+            );
+            assert_eq!(
+                serde_json::from_str::<FileSymbols>(json).expect("the wire form reads back"),
+                file,
+                "{file_doc:?} {def_doc:?}"
+            );
+        }
     }
 }

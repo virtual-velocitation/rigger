@@ -18,8 +18,8 @@
 use rigger::grounder::symbols::model::SymbolIndex;
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 
-/// A line-1 file-level definition of `kind` named `name` with every optional field unset,
-/// `end_line` 0 and `path` its name - the shape a product-only definition takes; a caller sets the
+/// A line-1 file-level definition of `kind` named `name` with every optional field unset, its doc
+/// span included, `end_line` 0 and `path` its name - the shape a product-only definition takes; a caller sets the
 /// one field its case is about with struct-update syntax.
 pub fn def(kind: Kind, name: &str) -> Def {
     Def {
@@ -33,6 +33,7 @@ pub fn def(kind: Kind, name: &str) -> Def {
         is_out_of_line_module: false,
         path_override: None,
         enclosing_inline_module_path: None,
+        doc: None,
     }
 }
 
@@ -47,13 +48,14 @@ pub fn sym_ref(name: &str, line: u32, enclosing: Option<&str>, is_test: bool) ->
     }
 }
 
-/// A fully-parsed Rust file holding `defs` and `refs`.
+/// A fully-parsed Rust file holding `defs` and `refs`, with no doc span.
 pub fn rust_file(defs: Vec<Def>, refs: Vec<SymRef>) -> FileSymbols {
     FileSymbols {
         lang: Lang::Rust,
         defs,
         refs,
         partial: false,
+        doc: None,
     }
 }
 

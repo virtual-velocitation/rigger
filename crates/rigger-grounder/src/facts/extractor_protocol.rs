@@ -248,7 +248,8 @@ mod tests {
 
     /// THE EXTRACTOR PROTOCOL, the answer: over a request for `a.zig`, an answer holding defs and
     /// refs within the text's lines - the last one more than the `\n` the text holds - gives them
-    /// and its partial flag as written; every answer the protocol refuses gives the exact why:
+    /// and its partial flag as written, and no doc span, the file's or a def's, whatever it
+    /// writes; every answer the protocol refuses gives the exact why:
     /// one that does not parse, that is for another path, that is an error - its text quoted, a
     /// line break or terminal escape in it escaped - that lacks a list, a
     /// def or ref outside the lines or with an empty name, a def with an empty path, an end line
@@ -274,6 +275,7 @@ mod tests {
             defs: Vec::new(),
             refs: Vec::new(),
             partial: false,
+            doc: None,
         };
         let refused = |why: &str| Err(why.to_string());
         // (the request's text, the answer line, its symbols or why it is refused)
@@ -323,6 +325,7 @@ mod tests {
                         answered_ref("u", 4, None, Some("use"), false),
                     ],
                     partial: false,
+                    doc: None,
                 }),
             ),
             ("", answer_with_defs(&def_on(1, 1)), {
@@ -331,6 +334,15 @@ mod tests {
                     ..empty()
                 })
             }),
+            (
+                TEXT,
+                r#"{"path":"a.zig","defs":[{"kind":"Function","name":"f","line":2,"end_line":2,"path":"f","doc":[1,1]}],"refs":[],"doc":[1,1]}"#
+                    .into(),
+                Ok(CodeSymbols {
+                    defs: vec![answered_def("f", "f", (2, 2), None, false)],
+                    ..empty()
+                }),
+            ),
             (
                 "",
                 answer_with_defs(&def_on(2, 2)),

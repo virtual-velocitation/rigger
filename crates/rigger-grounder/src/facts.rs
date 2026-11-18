@@ -1044,6 +1044,41 @@ mod tests {
         }
     }
 
+    /// Spec 117 (DOC FACTS): the doc spans the bundled extraction gives a code file reach its
+    /// facts, the file's as the file's doc span and each definition's as that definition's: a Rust
+    /// file's by the Rust rule, a Go file's through its query's `@doc` capture, and a file with no
+    /// doc line has none.
+    #[test]
+    fn a_files_doc_spans_reach_its_facts() {
+        // (path, source, the file's doc span, the (leaf, doc span) of each definition)
+        type Spans = &'static [(&'static str, Option<(u32, u32)>)];
+        type Row = (&'static str, &'static str, Option<(u32, u32)>, Spans);
+        let table: [Row; 3] = [
+            (
+                "src/lib.rs",
+                "//! The crate.\n\n/// F.\nfn f() {}\nfn g() {}\n",
+                Some((1, 1)),
+                &[("f", Some((3, 3))), ("g", None)],
+            ),
+            ("src/lib.rs", "fn plain() {}\n", None, &[("plain", None)]),
+            (
+                "p.go",
+                "package p\n\n// F reads.\n// It reads.\nfunc F() {}\n",
+                None,
+                &[("F", Some((3, 4)))],
+            ),
+        ];
+        for (path, source, doc, defs) in table {
+            let facts = facts_of(path, source.as_bytes());
+            let held: Vec<_> = facts
+                .defs
+                .iter()
+                .map(|d| (d.leaf.as_str(), d.doc))
+                .collect();
+            assert_eq!((facts.doc, held.as_slice()), (doc, defs), "{path}");
+        }
+    }
+
     #[test]
     fn a_file_the_parser_cannot_fully_read_is_partial() {
         let table = [
