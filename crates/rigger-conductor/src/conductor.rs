@@ -7232,7 +7232,9 @@ impl RunCtx<'_> {
         );
         // Git's refusal of the halted spawn's tree, when it refused to capture it: no attempt
         // is charged for a halt, so the same attempt goes on in that tree, its prompt naming
-        // the refusal.
+        // the refusal. That prompt is always built: a halted implementer has no result, so the
+        // unit cannot resume past implementing, and an infra rerun after its gates requests no
+        // implementer that could have halted.
         let mut capture_refused = String::new();
         let halted_commit = match wt {
             // THE HALTED-SPAWN CHECKPOINT (spec 103), decided: capturing a dirty tree as
