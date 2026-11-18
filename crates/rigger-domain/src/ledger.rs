@@ -742,6 +742,10 @@ struct UnitFailed {
     review_reason: String,
     #[serde(default)]
     required: Vec<RequiredItem>,
+    /// The trees kept aside for the unit on this failure ([`Unit::keeps`]), additive and
+    /// serde-defaulted like `cause`.
+    #[serde(default)]
+    kept: Vec<Kept>,
 }
 #[derive(Deserialize)]
 struct UnitEscalated {
@@ -881,6 +885,11 @@ impl RunState {
                 u.refusal = p.refusal;
                 u.review_reason = p.review_reason;
                 u.required = p.required;
+                for kept in p.kept {
+                    if !u.keeps.contains(&kept) {
+                        u.keeps.push(kept);
+                    }
+                }
             }
             TYPE_UNIT_ESCALATED => {
                 let p: UnitEscalated = serde_json::from_slice(&e.data)?;
