@@ -18659,6 +18659,11 @@ mod tests {
         /// silently absorbed - the PRIOR commit still stands, exactly as a real agent's
         /// repeated identical commit would be.
         commits_by_agent: HashMap<String, Vec<(String, String)>>,
+        /// Per-SPAWN-ID git commands, run in order in the spawn's worktree dir after its writes
+        /// and commits, as an agent's own git use runs: lets one attempt move its tree's HEAD off
+        /// the unit's branch and a later attempt move it back. Isolation-guarded like
+        /// `write_file`.
+        git_by_spawn_id: HashMap<String, Vec<Vec<String>>>,
         /// Per-agent relative path (spec 88, criterion 4): on spawn, the named agent
         /// reads THIS path from its OWN worktree dir, recording what it found into
         /// `read_results` - so a test can prove a LATER stage's worktree (branched off
@@ -18740,6 +18745,7 @@ mod tests {
                 lock_index_by_agent: std::collections::HashSet::new(),
                 dir_existed_at_spawn: Mutex::new(HashMap::new()),
                 commits_by_agent: HashMap::new(),
+                git_by_spawn_id: HashMap::new(),
                 read_file_by_agent: HashMap::new(),
                 read_results: Mutex::new(HashMap::new()),
                 sessions: false,
@@ -18951,6 +18957,19 @@ mod tests {
                             .arg(&opts.dir)
                             .args(["commit", "-q", "-m", &format!("agent amend {path}")])
                             .output();
+                    }
+                }
+            }
+            if let Some(commands) = self.git_by_spawn_id.get(&opts.id) {
+                if !opts.dir.is_empty() {
+                    for args in commands {
+                        let ran = std::process::Command::new("git")
+                            .arg("-C")
+                            .arg(&opts.dir)
+                            .args(args)
+                            .output()
+                            .unwrap();
+                        assert!(ran.status.success(), "{} git {args:?}: {ran:?}", opts.id);
                     }
                 }
             }
@@ -48685,8 +48704,9 @@ mod tests {
     /// RELEASE RETRIES THE UNIT: when git refuses a step on the unit's own work after its
     /// session ended - a hook refusing the attempt's checkpoint commit (the first attempt's, or
     /// the second's after a red gate), a merge of the run branch refused over an untracked file
-    /// in the worktree, a commit refused over conflict-marker text, the merge's conclusion
-    /// refused by a hook - the attempt is charged (`UnitFailed`, cause `git-refused`, git's
+    /// in the worktree, a commit refused over conflict-marker text or over a HEAD the implementer
+    /// moved off the unit's branch, the merge's conclusion refused by a hook - the attempt is
+    /// charged (`UnitFailed`, cause `git-refused`, git's
     /// message its evidence), a lesson names the unit and its refusal, the drive ends, and the
     /// run is held for the orchestrator on the unit-work row, the hold's first line naming the
     /// attempt. Released, the relaunch launches the next implementer attempt (never one the log
@@ -48732,6 +48752,10 @@ mod tests {
             /// earlier attempt left in progress with an empty sequencer, so the landing's
             /// cherry-pick is refused before git picks anything.
             PlanCherryPick,
+            /// The first attempt's implementer detaches its worktree's HEAD from the unit's
+            /// branch after writing its work, so the attempt's checkpoint commit is refused
+            /// before git runs; the retry's implementer, told so, switches back to the branch.
+            HeadOffBranch,
         }
         /// How the step's refusal leaves the drive.
         #[derive(Debug, Clone, Copy, PartialEq)]
@@ -48779,6 +48803,12 @@ mod tests {
                 "CHERRY_PICK_HEAD left in progress",
                 false,
                 Drive::Ends,
+            ),
+            (
+                Step::HeadOffBranch,
+                "HEAD is not on the unit's branch rigger/u/unit-a (git status: HEAD detached at ",
+                true,
+                Drive::Retries,
             ),
         ];
         for (step, named, lesson, drive) in cases {
@@ -48828,9 +48858,10 @@ mod tests {
                 Step::LandRefused => {
                     format!("[ -e '{mark}' ] || {{ touch '{mark}' && echo stray > '{repo_path}/f.txt'; }}")
                 }
-                Step::CheckpointHook | Step::ConflictMarkers | Step::PlanCherryPick => {
-                    "true".to_string()
-                }
+                Step::CheckpointHook
+                | Step::ConflictMarkers
+                | Step::PlanCherryPick
+                | Step::HeadOffBranch => "true".to_string(),
             };
             match step {
                 Step::CheckpointHook | Step::CheckpointAfterRed => hook(
@@ -48865,7 +48896,7 @@ mod tests {
                     std::fs::create_dir_all(git_dir.join("sequencer")).unwrap();
                     std::fs::write(git_dir.join("sequencer").join("todo"), "").unwrap();
                 }
-                Step::MergeConflict | Step::LandRefused => {}
+                Step::MergeConflict | Step::LandRefused | Step::HeadOffBranch => {}
             }
             let mut cfg = Config::default();
             for id in ["worker", "lens", "adversary", "judge", "planner"] {
@@ -48922,6 +48953,21 @@ mod tests {
                     .then(|| (refused_spawn.clone(), vec!["kept.txt".to_string()]))
                     .into_iter()
                     .collect(),
+                git_by_spawn_id: if step == Step::HeadOffBranch {
+                    let git = |args: &[&str]| args.iter().map(|a| a.to_string()).collect();
+                    HashMap::from([
+                        (
+                            refused_spawn.clone(),
+                            vec![git(&["checkout", "-q", "--detach"])],
+                        ),
+                        (
+                            retry_spawn.clone(),
+                            vec![git(&["switch", "-q", &unit_branch(unit)])],
+                        ),
+                    ])
+                } else {
+                    HashMap::new()
+                },
                 commits_by_agent,
                 output_by_agent: HashMap::from([
                     ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),

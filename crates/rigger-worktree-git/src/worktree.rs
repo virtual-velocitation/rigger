@@ -131,7 +131,7 @@ pub enum MergeOutcome {
     Conflict(Vec<String>),
 }
 
-/// Where [`Worktree::conflict_markers_present`] reads a path's content.
+/// Where [`conflict_markers_present`] reads a path's content.
 #[derive(Clone, Copy)]
 enum ScanAt<'a> {
     /// The worktree copy, staged or not.
@@ -263,6 +263,23 @@ impl Worktree {
                         });
                     }
                     git(repo, &["worktree", "prune"])?;
+                }
+                // ADOPT A TREE LEFT OFF ITS BRANCH. With the branch checked out nowhere, a
+                // worktree still registered at `dir` is the unit's own tree whose HEAD was moved
+                // off the branch (a detach, a rebase stopped mid-way, a switch to another
+                // branch), and it can hold work the branch does not, committed there or not.
+                // Clearing it to re-add the branch would discard that work without a word, so it
+                // is adopted as it stands: every commit in it is refused ([`commit_refusal`])
+                // until its HEAD is back on the branch, and that refusal is what the unit's next
+                // attempt is told.
+                if registered_at(repo, dir)? {
+                    return Ok(Worktree {
+                        dir: dir.to_string(),
+                        branch: branch.to_string(),
+                        repo: repo.to_string(),
+                        authorized_root: authorized_root.to_string(),
+                        reassert_mu: std::sync::Mutex::new(()),
+                    });
                 }
                 // DEFEND THE DETERMINISTIC DIR before re-adding. Because the path no longer
                 // carries a per-process uuid, a SIGKILL mid `git worktree add` (dir populated,
@@ -644,7 +661,7 @@ impl Worktree {
     /// subsequent [`Self::integrate`] merges. Without it a gate could pass on
     /// uncommitted files that never reach the base - a false green.
     ///
-    /// This runs [`Self::conflict_markers_present`]'s refusal (spec 89, criterion 1: A
+    /// This runs [`commit_refusal`]'s refusal (spec 89, criterion 1: A
     /// CHECKPOINT NEVER COMMITS A HALF-MERGE) and the repository's own git hooks - the
     /// hook-RESPECTING half of the pair with [`Self::commit_checkpoint`], for a commit
     /// an agent or a person actually MEANS to make. Every commit rigger itself makes as
@@ -676,26 +693,8 @@ impl Worktree {
     }
 
     fn commit_with(&self, message: &str, no_verify: bool) -> Result<String, StepError> {
-        // The scan's scope (spec 89, criterion 1, round 2 fix
-        // `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`)
-        // MUST be read before `git add -A` below stages anything - staging is exactly what
-        // clears a conflicted path's UNMERGED index flag (see `conflict_markers_present`'s own
-        // doc comment on why the content check exists at all), and `changed_files` itself
-        // (`git status --porcelain`) would otherwise report zero pending changes for a path
-        // this very call is about to stage.
-        let mut scope = self.changed_files()?;
-        scope.extend(self.conflicting_paths()?);
-        scope.sort();
-        scope.dedup();
-        if !self
-            .conflict_markers_present(ScanAt::Worktree, &scope)?
-            .is_empty()
-        {
-            return Err(StepError::Refused(format!(
-                "refusing to commit in {}: conflict-marker text is present in tracked \
-                 file content - resolve it before committing",
-                self.dir
-            )));
+        if let Some(why) = commit_refusal(&self.dir, &self.branch)? {
+            return Err(StepError::Refused(why));
         }
         git(&self.dir, &["add", "-A"])?;
         let args: &[&str] = if no_verify {
@@ -711,102 +710,9 @@ impl Worktree {
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    /// The literal git conflict-marker lines (`<<<<<<<`, `=======`, `>>>>>>>`, each anchored at
-    /// line-start so ordinary prose mentioning the symbols in passing cannot match) that
-    /// `scope`'s TRACKED files carry at `at`, as `(path, line)` pairs: the marker scan's one
-    /// home. [`ScanAt::Worktree`] reads the worktree copy (staged or not), [`ScanAt::Index`]
-    /// what the next `git commit` takes, and [`ScanAt::Commit`] a commit's tree. Read at the
-    /// worktree, a non-empty answer is [`Self::commit`]'s refusal; read at the index and at
-    /// both parents, it is [`Self::merge_into_worktree`]'s finalize refusal, through
-    /// [`Self::markers_the_merge_introduced`].
-    ///
-    /// At the worktree this is [`Self::commit`]'s ENTIRE guard (spec 89, criterion 1: A
-    /// CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a CONTENT check, not an
-    /// index-state one: `commit`'s own `git add -A` is what clears a conflicted path's
-    /// UNMERGED index flag the instant it is staged, REGARDLESS of whether the staged content
-    /// is a genuine resolution or still the raw marker text (exactly what let the 2026-09-12
-    /// incident's checkpoint treat a conflicted file as "resolved") - so an index-state check
-    /// taken right before that same `add` cannot tell a still-broken path from one a caller
-    /// (an implementer's edit, or [`crate::conductor`]'s `regenerate_conflicted_paths`
-    /// overwriting a registered-regenerable path) has ALREADY fixed on disk but not yet
-    /// staged; both look identically "unmerged" at that instant. Content is the one signal
-    /// that is true regardless of staging order.
-    ///
-    /// `scope` (round 2 fix, spec 89 criterion 1 -
-    /// `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`) is
-    /// the CALLER's own path list (`commit`'s `changed_files` union `conflicting_paths`, both
-    /// read before `git add -A` can clear either signal; the finalize's staged paths) - never
-    /// an unconditional whole-tracked-tree scan: a pre-existing, untouched file ELSEWHERE in
-    /// the repo that merely happens to contain a line matching one of these patterns (a
-    /// Markdown Setext heading's `=======` underline, say) must never block a commit that never
-    /// touches it. An empty `scope` (nothing pending) is a no-op - never even shells out -
-    /// matching the unconditional call's own no-op on a genuinely clean tree. `git grep` exits
-    /// 1 (not an error) when nothing matches, distinct from a real invocation failure.
-    fn conflict_markers_present(
-        &self,
-        at: ScanAt<'_>,
-        scope: &[String],
-    ) -> Result<std::collections::BTreeSet<(String, String)>, Error> {
-        let mut lines = std::collections::BTreeSet::new();
-        if scope.is_empty() {
-            return Ok(lines);
-        }
-        // `-z` ends each path with a NUL, so a path is read whole whatever it spells; the
-        // line-number and column flags are pinned off so no git config adds either to a line.
-        let mut args = vec![
-            "grep",
-            "-I",
-            "-z",
-            "--no-line-number",
-            "--no-column",
-            "-e",
-            "^<<<<<<< ",
-            "-e",
-            "^=======$",
-            "-e",
-            "^>>>>>>> ",
-        ];
-        match at {
-            ScanAt::Worktree => {}
-            ScanAt::Index => args.push("--cached"),
-            ScanAt::Commit(rev) => args.push(rev),
-        }
-        // The pathspec separator joins the SAME argument list, never its own single-argument
-        // call, so the no-os-kill audit's whole-tree argv-separator shape - aimed at a
-        // negative-pid kill target, not a git pathspec - never matches here.
-        args.push("--");
-        let out = crate::subprocess::git_in(&self.dir)
-            .and_then(|mut git| git.args(&args).args(scope).output())
-            .map_err(|e| Error(format!("git grep conflict markers: {e}")))?;
-        match out.status.code() {
-            Some(0) => {}
-            Some(1) => return Ok(lines),
-            _ => {
-                return Err(Error(format!(
-                    "git grep conflict markers: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                )));
-            }
-        }
-        // A commit's hits name `<rev>:<path>`; the worktree's and the index's name the path.
-        let prefix = match at {
-            ScanAt::Commit(rev) => format!("{rev}:"),
-            ScanAt::Worktree | ScanAt::Index => String::new(),
-        };
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let mut rest: &str = &stdout;
-        while let Some((name, tail)) = rest.split_once('\0') {
-            let (line, next) = tail.split_once('\n').unwrap_or((tail, ""));
-            let path = name.strip_prefix(prefix.as_str()).unwrap_or(name);
-            lines.insert((path.to_string(), line.to_string()));
-            rest = next;
-        }
-        Ok(lines)
-    }
-
     /// The staged paths whose index content carries conflict-marker text the in-progress merge
     /// introduced, sorted (op-105-merge-finalize-refuses-markers): a marker line
-    /// [`Self::conflict_markers_present`] reads in the index at a staged path counts unless
+    /// [`conflict_markers_present`] reads in the index at a staged path counts unless
     /// either parent - `HEAD`, the unit's own side, or `MERGE_HEAD`, the run branch's tip -
     /// already carries that same line at that path, so a Setext underline a parent holds never
     /// refuses while a resolution staged with the merge's markers still in it does. The index
@@ -817,11 +723,15 @@ impl Worktree {
             .filter(|path| !path.is_empty())
             .map(str::to_string)
             .collect();
-        let in_index = self.conflict_markers_present(ScanAt::Index, &staged)?;
+        let in_index = conflict_markers_present(&self.dir, ScanAt::Index, &staged)?;
         let mut hit: Vec<String> = in_index.iter().map(|(path, _)| path.clone()).collect();
         hit.dedup();
-        let mut carried = self.conflict_markers_present(ScanAt::Commit("HEAD"), &hit)?;
-        carried.extend(self.conflict_markers_present(ScanAt::Commit("MERGE_HEAD"), &hit)?);
+        let mut carried = conflict_markers_present(&self.dir, ScanAt::Commit("HEAD"), &hit)?;
+        carried.extend(conflict_markers_present(
+            &self.dir,
+            ScanAt::Commit("MERGE_HEAD"),
+            &hit,
+        )?);
         let mut introduced: Vec<String> = in_index
             .difference(&carried)
             .map(|(path, _)| path.clone())
@@ -941,16 +851,7 @@ impl Worktree {
     /// `git merge` at all (spec 88, criterion 1: "the merge is worktree state, not log
     /// state"). Empty when nothing is unmerged.
     pub fn conflicting_paths(&self) -> Result<Vec<String>, Error> {
-        let out = git(&self.dir, &["diff", "--name-only", "--diff-filter=U"])?;
-        let mut paths: Vec<String> = out
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect();
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
+        unmerged_paths(&self.dir)
     }
 
     /// Whether this worktree currently has a merge IN PROGRESS (`MERGE_HEAD` resolves) -
@@ -2307,6 +2208,36 @@ fn registration_for(repo: &str, branch: &str) -> Result<Option<String>, Error> {
     Ok(None)
 }
 
+/// Whether `repo` has a worktree registered at `dir` that git can still use: an entry of `git
+/// worktree list --porcelain` naming `dir` (compared canonically, so neither spelling of a linked
+/// path hides it) that git does not mark `prunable`. What the worktree has checked out is not
+/// asked. A link at `dir` is no worktree, whatever it names ([`clear_worktree_dir`] removes it
+/// as a link). Read fail-closed, since [`Worktree::create`] clears `dir` on a no: a list git
+/// refuses, or a `dir` the filesystem cannot read or resolve, is an error; nothing at `dir` is a
+/// no.
+fn registered_at(repo: &str, dir: &str) -> Result<bool, Error> {
+    match occupant(dir)? {
+        Some(found) if !found.file_type().is_symlink() => {}
+        _ => return Ok(false),
+    }
+    let want = std::fs::canonicalize(dir).map_err(|e| Error(format!("resolve {dir}: {e}")))?;
+    let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
+        Error(format!(
+            "read whether a worktree is registered at {dir}: {}",
+            e.0
+        ))
+    })?;
+    Ok(out.split("\n\n").any(|entry| {
+        let mut lines = entry.lines();
+        lines
+            .next()
+            .and_then(|first| first.strip_prefix("worktree "))
+            .and_then(|path| std::fs::canonicalize(path).ok())
+            .is_some_and(|path| path == want)
+            && !lines.any(|line| line == "prunable" || line.starts_with("prunable "))
+    }))
+}
+
 /// What sits at `dir`, read from the path's own entry and never by following a link, so a link -
 /// dangling or not - is itself what sits there ([`metadata_at`]).
 fn occupant(dir: &str) -> Result<Option<std::fs::Metadata>, Error> {
@@ -2694,6 +2625,169 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
         std::thread::sleep(wait);
     }
     git(dir, &["update-index", "-q", "--refresh"]).map(drop)
+}
+
+/// The literal git conflict-marker lines (`<<<<<<<`, `=======`, `>>>>>>>`, each anchored at
+/// line-start so ordinary prose mentioning the symbols in passing cannot match) that
+/// `scope`'s TRACKED files carry at `at`, as `(path, line)` pairs: the marker scan's one
+/// home. [`ScanAt::Worktree`] reads the worktree copy (staged or not), [`ScanAt::Index`]
+/// what the next `git commit` takes, and [`ScanAt::Commit`] a commit's tree. Read at the
+/// worktree, a non-empty answer is [`commit_refusal`]'s; read at the index and at
+/// both parents, it is [`Worktree::merge_into_worktree`]'s finalize refusal, through
+/// [`Worktree::markers_the_merge_introduced`].
+///
+/// At the worktree this is [`commit_refusal`]'s half-merge guard (spec 89, criterion 1: A
+/// CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a CONTENT check, not an
+/// index-state one: the commit's own `git add -A` is what clears a conflicted path's
+/// UNMERGED index flag the instant it is staged, REGARDLESS of whether the staged content
+/// is a genuine resolution or still the raw marker text (exactly what let the 2026-09-12
+/// incident's checkpoint treat a conflicted file as "resolved") - so an index-state check
+/// taken right before that same `add` cannot tell a still-broken path from one a caller
+/// (an implementer's edit, or [`crate::conductor`]'s `regenerate_conflicted_paths`
+/// overwriting a registered-regenerable path) has ALREADY fixed on disk but not yet
+/// staged; both look identically "unmerged" at that instant. Content is the one signal
+/// that is true regardless of staging order.
+///
+/// `scope` (round 2 fix, spec 89 criterion 1 -
+/// `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`) is
+/// the CALLER's own path list ([`commit_refusal`]'s uncommitted union unmerged paths, both
+/// read before the commit's `git add -A` can clear either signal; the finalize's staged
+/// paths) - never an unconditional whole-tracked-tree scan: a pre-existing, untouched file ELSEWHERE in
+/// the repo that merely happens to contain a line matching one of these patterns (a
+/// Markdown Setext heading's `=======` underline, say) must never block a commit that never
+/// touches it. An empty `scope` (nothing pending) is a no-op - never even shells out -
+/// matching the unconditional call's own no-op on a genuinely clean tree. `git grep` exits
+/// 1 (not an error) when nothing matches, distinct from a real invocation failure.
+fn conflict_markers_present(
+    dir: &str,
+    at: ScanAt<'_>,
+    scope: &[String],
+) -> Result<std::collections::BTreeSet<(String, String)>, Error> {
+    let mut lines = std::collections::BTreeSet::new();
+    if scope.is_empty() {
+        return Ok(lines);
+    }
+    // `-z` ends each path with a NUL, so a path is read whole whatever it spells; the
+    // line-number and column flags are pinned off so no git config adds either to a line.
+    let mut args = vec![
+        "grep",
+        "-I",
+        "-z",
+        "--no-line-number",
+        "--no-column",
+        "-e",
+        "^<<<<<<< ",
+        "-e",
+        "^=======$",
+        "-e",
+        "^>>>>>>> ",
+    ];
+    match at {
+        ScanAt::Worktree => {}
+        ScanAt::Index => args.push("--cached"),
+        ScanAt::Commit(rev) => args.push(rev),
+    }
+    // The pathspec separator joins the SAME argument list, never its own single-argument
+    // call, so the no-os-kill audit's whole-tree argv-separator shape - aimed at a
+    // negative-pid kill target, not a git pathspec - never matches here.
+    args.push("--");
+    let out = crate::subprocess::git_in(dir)
+        .and_then(|mut git| git.args(&args).args(scope).output())
+        .map_err(|e| Error(format!("git grep conflict markers: {e}")))?;
+    match out.status.code() {
+        Some(0) => {}
+        Some(1) => return Ok(lines),
+        _ => {
+            return Err(Error(format!(
+                "git grep conflict markers: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+    }
+    // A commit's hits name `<rev>:<path>`; the worktree's and the index's name the path.
+    let prefix = match at {
+        ScanAt::Commit(rev) => format!("{rev}:"),
+        ScanAt::Worktree | ScanAt::Index => String::new(),
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut rest: &str = &stdout;
+    while let Some((name, tail)) = rest.split_once('\0') {
+        let (line, next) = tail.split_once('\n').unwrap_or((tail, ""));
+        let path = name.strip_prefix(prefix.as_str()).unwrap_or(name);
+        lines.insert((path.to_string(), line.to_string()));
+        rest = next;
+    }
+    Ok(lines)
+}
+
+/// Why a commit of the tree rooted at `dir` for the unit's `branch` would be refused before it
+/// runs, in words naming the cause, or `None` when nothing would refuse it: the HEAD is off
+/// `branch` ([`head_off_branch`]: a commit there would never reach the branch that lands, and
+/// the landing would carry the branch without it), or conflict-marker text sits in a changed or
+/// unmerged path ([`conflict_markers_present`], spec 89 criterion 1: A CHECKPOINT NEVER COMMITS
+/// A HALF-MERGE). Read-only: it changes nothing in the tree. [`Worktree::commit`] and
+/// [`Worktree::commit_checkpoint`] refuse on it, and a writing session's Stop hook asks it before
+/// the session may end.
+///
+/// The marker scan's scope (spec 89, criterion 1, round 2 fix
+/// `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`) is read
+/// before the commit's `git add -A` stages anything - staging is exactly what clears a
+/// conflicted path's UNMERGED index flag (see [`conflict_markers_present`]'s doc comment
+/// on why the content check exists at all), and the changed paths themselves (`git status
+/// --porcelain`) would otherwise report nothing pending for a path the commit is about to stage.
+pub fn commit_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> {
+    if let Some(on) = head_off_branch(dir, branch)? {
+        return Ok(Some(format!(
+            "refusing to commit in {dir}: HEAD is not on the unit's branch {branch} (git status: \
+             {on}) - a commit here would not reach the branch that lands"
+        )));
+    }
+    let mut scope = uncommitted_paths(dir)?;
+    scope.extend(unmerged_paths(dir)?);
+    scope.sort();
+    scope.dedup();
+    if !conflict_markers_present(dir, ScanAt::Worktree, &scope)?.is_empty() {
+        return Ok(Some(format!(
+            "refusing to commit in {dir}: conflict-marker text is present in tracked file \
+             content - resolve it before committing"
+        )));
+    }
+    Ok(None)
+}
+
+/// Where the HEAD of the tree rooted at `dir` stands when it is not on `branch`, in git's own
+/// words (the first line of `git status`: `HEAD detached at ...`, `interactive rebase in
+/// progress; onto ...`, `On branch ...`), or `None` when it is on `branch`. A HEAD git cannot
+/// read is an error, never an answer.
+pub fn head_off_branch(dir: &str, branch: &str) -> Result<Option<String>, Error> {
+    let on = match run_git_with_status(dir, &["symbolic-ref", "-q", "HEAD"]) {
+        Ok(head) => head.trim().strip_prefix("refs/heads/") == Some(branch),
+        // `symbolic-ref -q` exits 1, saying nothing, exactly when HEAD is detached.
+        Err((Some(1), _)) => false,
+        Err((_, out)) => return Err(git_failed(&["symbolic-ref", "-q", "HEAD"], out)),
+    };
+    if on {
+        return Ok(None);
+    }
+    let status = git(dir, &["--no-optional-locks", "status"])?;
+    Ok(Some(
+        status.lines().next().unwrap_or_default().trim().to_string(),
+    ))
+}
+
+/// The unmerged paths of the tree rooted at `dir`, sorted, each once:
+/// [`Worktree::conflicting_paths`]'s read.
+fn unmerged_paths(dir: &str) -> Result<Vec<String>, Error> {
+    let out = git(dir, &["diff", "--name-only", "--diff-filter=U"])?;
+    let mut paths: Vec<String> = out
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .map(|l| l.to_string())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
@@ -7265,6 +7359,101 @@ mod tests {
             "the leftover's nested store directory is cleared, never carried into the checkout"
         );
         wt.remove().unwrap();
+    }
+
+    /// A TREE LEFT OFF ITS BRANCH KEEPS ITS WORK AND COMMITS NOTHING UNTIL IT IS BACK: a unit's
+    /// worktree whose HEAD was moved off the unit's branch (a detach, a rebase stopped mid-way, a
+    /// switch to another branch) with work still uncommitted has every commit refused, the
+    /// refusal naming where its HEAD stands in git's own words (`git status`'s first line), with
+    /// nothing staged and the branch where it was; `create` adopts the tree as it stands with its
+    /// work, never clears it to re-add the branch; and once its HEAD is back on the branch the
+    /// checkpoint commits that work onto the branch.
+    #[test]
+    fn a_tree_left_off_its_branch_keeps_its_work_and_commits_nothing_until_it_is_back() {
+        const BRANCH: &str = "rigger/u/unit-off";
+        // Each row: how the HEAD leaves the branch, the start of git's words for where it then
+        // stands, and how it comes back.
+        let cases: [(&[&str], &str, &[&str]); 3] = [
+            (
+                &["checkout", "-q", "--detach"],
+                "HEAD detached at ",
+                &["switch", "-q", BRANCH],
+            ),
+            (
+                &["rebase", "-x", "false", "HEAD~1"],
+                "interactive rebase in progress; onto ",
+                &["rebase", "--abort"],
+            ),
+            (
+                &["switch", "-q", "-c", "elsewhere"],
+                "On branch elsewhere",
+                &["switch", "-q", BRANCH],
+            ),
+        ];
+        type Commit = fn(&Worktree, &str) -> Result<String, StepError>;
+        for (leave, stands, back) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-off");
+            let at = |file: &str| std::path::Path::new(&dir).join(file);
+            std::fs::write(at("f.txt"), "committed\n").unwrap();
+            wt.commit("unit work").unwrap();
+            let tip = run_git(&repo_path, &["rev-parse", BRANCH]).unwrap();
+            // A stopped rebase ends its command with a failure, which is the point.
+            let _ = run_git_with_status(&dir, leave);
+            std::fs::write(at("late.txt"), "late\n").unwrap();
+
+            let why = commit_refusal(&dir, BRANCH)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{leave:?}: a commit off the branch is refused"));
+            assert!(
+                why.contains(&format!(
+                    "HEAD is not on the unit's branch {BRANCH} (git status: {stands}"
+                )),
+                "{leave:?}: the refusal names where HEAD stands in git's words: {why}"
+            );
+            for commit in [Worktree::commit as Commit, Worktree::commit_checkpoint] {
+                match commit(&wt, "rigger: unit-off attempt 1") {
+                    Err(StepError::Refused(e)) => assert_eq!(e, why, "{leave:?}"),
+                    other => panic!("{leave:?}: a commit off the branch is refused: {other:?}"),
+                }
+            }
+            assert_eq!(
+                run_git(&dir, &["status", "--porcelain"]).unwrap(),
+                "?? late.txt\n",
+                "{leave:?}: the refused commit staged nothing"
+            );
+            assert_eq!(
+                run_git(&repo_path, &["rev-parse", BRANCH]).unwrap(),
+                tip,
+                "{leave:?}: the branch did not move"
+            );
+
+            let adopted = Worktree::create(&repo_path, &dir, BRANCH, "").unwrap();
+            assert_eq!(
+                adopted.dir, dir,
+                "{leave:?}: the tree is adopted where it is"
+            );
+            assert!(
+                at("late.txt").exists(),
+                "{leave:?}: the adopted tree keeps its work"
+            );
+            assert!(
+                head_off_branch(&dir, BRANCH).unwrap().is_some(),
+                "{leave:?}: the tree is adopted as it stands, its HEAD where it was left"
+            );
+
+            run_git(&dir, back).unwrap();
+            assert_eq!(commit_refusal(&dir, BRANCH).unwrap(), None, "{leave:?}");
+            adopted
+                .commit_checkpoint("rigger: unit-off attempt 2")
+                .unwrap();
+            assert_eq!(
+                run_git(&repo_path, &["show", &format!("{BRANCH}:late.txt")]).unwrap(),
+                "late\n",
+                "{leave:?}: back on the branch, the checkpoint carries the work onto it"
+            );
+            adopted.remove().unwrap();
+        }
     }
 
     /// A READ DECIDING THE CLEAR THAT GOES UNANSWERED CLEARS NOTHING: when git cannot say whether
