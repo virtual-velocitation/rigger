@@ -8079,16 +8079,41 @@ mod tests {
         }
     }
 
-    /// A TREE GIT REFUSED IS KEPT ON ITS BRANCH AS IT STANDS: `keep_tree_on_branch` commits every
-    /// path `git add -A` would stage onto the unit's branch whatever stopped the checkpoint - a
-    /// hook that refuses every commit, a detached HEAD with a commit of its own, a merge left
-    /// with its conflict markers, a lock on the tree's index - the commit's first parent the
-    /// branch's old tip and the commit HEAD or the merge reached a further parent, so all of it
-    /// stays reachable from the branch; with nothing the branch lacks the branch stays where it
-    /// was. The tree's own index keeps its bytes and the capture's own index is gone after.
+    /// Keep the tree of `wt` aside, answering the kept ref and the commit it holds, or `None`
+    /// when the tree holds nothing its branch lacks.
+    fn keep(wt: &Worktree) -> Result<Option<(String, String)>, Error> {
+        let unit = wt.branch.strip_prefix("rigger/u/").unwrap();
+        let commit = wt.keep_tree_on_branch(&format!("wip({unit}): kept"))?;
+        Ok(Some((format!("rigger/kept/{unit}"), commit)))
+    }
+
+    /// [`keep`], which must succeed.
+    fn keep_aside(wt: &Worktree) -> Option<(String, String)> {
+        keep(wt).unwrap()
+    }
+
+    /// The parents of `commit` in `repo`, first to last.
+    fn parents_of(repo: &str, commit: &str) -> Vec<String> {
+        let line = run_git(repo, &["rev-list", "--parents", "-n1", commit]).unwrap();
+        line.split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A TREE GIT REFUSED IS KEPT ASIDE AS IT STANDS: the keep commits every path `git add -A`
+    /// would stage onto the unit's kept ref (`rigger/kept/<unit>`), on one commit whose one
+    /// parent is the tree's HEAD, and never moves the unit's branch, whatever stopped the
+    /// checkpoint and wherever HEAD stands: a hook that refuses every commit, a detached HEAD or
+    /// another branch with a commit of its own, a rebase or a merge stopped on its conflict, a
+    /// lock on the tree's index or on the keep's own. A merge in progress is no parent, so the
+    /// kept commit never records it as finished. A clean tree whose HEAD holds commits the
+    /// branch lacks is kept as HEAD itself, and a clean tree at the branch's tip keeps nothing.
+    /// The tree's own index keeps its bytes, and the keep's own index and its lock are gone after.
     #[test]
-    fn a_tree_git_refused_is_kept_on_its_branch_as_it_stands() {
+    fn a_tree_git_refused_is_kept_aside_as_it_stands() {
         const BRANCH: &str = "rigger/u/unit-keep";
+        const KEPT: &str = "rigger/kept/unit-keep";
         fn write(dir: &str, file: &str, text: &str) {
             let path = std::path::Path::new(dir).join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -8098,17 +8123,36 @@ mod tests {
             let at = run_git(dir, &["rev-parse", "--absolute-git-dir"]).unwrap();
             std::path::PathBuf::from(at.trim())
         }
-        // Each row: what leaves the unit's tree in its state (given the tree and the repo),
-        // then each path the branch then holds with text its content carries, the ref whose
-        // commit is the further parent, and whether the branch moves.
+        fn commit_own(dir: &str, file: &str) {
+            write(dir, file, &format!("{file}\n"));
+            run_git(dir, &["add", file]).unwrap();
+            run_git(dir, &["commit", "-qm", file]).unwrap();
+        }
+        fn run_side(repo: &str) {
+            write(repo, "unit.txt", "run\n");
+            run_git(repo, &["add", "unit.txt"]).unwrap();
+            run_git(repo, &["commit", "-qm", "run side"]).unwrap();
+        }
+        /// How the kept commit stands to the tree's HEAD.
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        enum Kept {
+            /// A new commit whose one parent is HEAD.
+            ChildOfHead,
+            /// HEAD itself.
+            Head,
+            /// Nothing is kept.
+            Nothing,
+        }
+        // Each row: what leaves the unit's tree in its state (given the tree and the repo), then
+        // each path the kept commit holds with text its content carries, and how it stands to
+        // HEAD.
         type Row = (
             &'static str,
             fn(&str, &str),
             &'static [(&'static str, &'static str)],
-            Option<&'static str>,
-            bool,
+            Kept,
         );
-        let cases: [Row; 6] = [
+        let cases: [Row; 10] = [
             (
                 "a hook that refuses every commit",
                 |dir, repo| {
@@ -8131,43 +8175,58 @@ mod tests {
                     write(dir, "unit.txt", "refused\n");
                 },
                 &[("unit.txt", "refused\n")],
-                None,
-                true,
+                Kept::ChildOfHead,
             ),
             (
                 "an untracked file in a subdirectory",
                 |dir, _| write(dir, "deep/er/new.txt", "new\n"),
                 &[("deep/er/new.txt", "new\n"), ("unit.txt", "committed\n")],
-                None,
-                true,
+                Kept::ChildOfHead,
             ),
             (
                 "a detached HEAD with a commit of its own",
                 |dir, _| {
                     run_git(dir, &["checkout", "-q", "--detach"]).unwrap();
-                    write(dir, "detached.txt", "detached\n");
-                    run_git(dir, &["add", "detached.txt"]).unwrap();
-                    run_git(dir, &["commit", "-qm", "detached"]).unwrap();
+                    commit_own(dir, "detached.txt");
                     write(dir, "late.txt", "late\n");
                 },
-                &[("detached.txt", "detached\n"), ("late.txt", "late\n")],
-                Some("HEAD"),
-                true,
+                &[("detached.txt", "detached.txt\n"), ("late.txt", "late\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "another branch with a commit of its own",
+                |dir, _| {
+                    run_git(dir, &["checkout", "-q", "-b", "elsewhere"]).unwrap();
+                    commit_own(dir, "other.txt");
+                    write(dir, "late.txt", "late\n");
+                },
+                &[("other.txt", "other.txt\n"), ("late.txt", "late\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "a rebase stopped on its conflict, a pick not yet replayed",
+                |dir, repo| {
+                    commit_own(dir, "second.txt");
+                    run_side(repo);
+                    assert!(
+                        run_git_with_status(dir, &["rebase", "-q", "rigger-run"]).is_err(),
+                        "the rebase stops on its conflict"
+                    );
+                },
+                &[("unit.txt", "<<<<<<< "), ("unit.txt", "run\n")],
+                Kept::ChildOfHead,
             ),
             (
                 "a merge left with its conflict",
                 |dir, repo| {
-                    write(repo, "unit.txt", "run\n");
-                    run_git(repo, &["add", "unit.txt"]).unwrap();
-                    run_git(repo, &["commit", "-qm", "run side"]).unwrap();
+                    run_side(repo);
                     assert!(
                         run_git_with_status(dir, &["merge", "-q", "rigger-run"]).is_err(),
                         "the merge stops on its conflict"
                     );
                 },
                 &[("unit.txt", "<<<<<<< "), ("unit.txt", "run\n")],
-                Some("MERGE_HEAD"),
-                true,
+                Kept::ChildOfHead,
             ),
             (
                 "a lock on the tree's index",
@@ -8176,60 +8235,179 @@ mod tests {
                     std::fs::write(git_dir(dir).join("index.lock"), "").unwrap();
                 },
                 &[("locked.txt", "locked\n")],
-                None,
-                true,
+                Kept::ChildOfHead,
             ),
             (
-                "nothing the branch lacks",
-                |_, _| {},
-                &[("unit.txt", "committed\n")],
-                None,
-                false,
+                "a lock a cut-off keep left on its own index",
+                |dir, _| {
+                    write(dir, "stray.txt", "stray\n");
+                    std::fs::write(git_dir(dir).join("rigger-kept-index.lock"), "").unwrap();
+                },
+                &[("stray.txt", "stray\n")],
+                Kept::ChildOfHead,
             ),
+            (
+                "a clean detached HEAD with a commit of its own",
+                |dir, _| {
+                    run_git(dir, &["checkout", "-q", "--detach"]).unwrap();
+                    commit_own(dir, "clean.txt");
+                },
+                &[("clean.txt", "clean.txt\n")],
+                Kept::Head,
+            ),
+            ("nothing the branch lacks", |_, _| {}, &[], Kept::Nothing),
         ];
-        for (row, leave, holds, further, moves) in cases {
+        for (row, leave, holds, kept_as) in cases {
             let (_repo, repo_path, root) = scratch_repo(true);
             let (dir, wt) = unit_wt(&repo_path, &root, "unit-keep");
             write(&dir, "unit.txt", "committed\n");
             wt.commit("unit work").unwrap();
             leave(&dir, &repo_path);
             let tip = run_git(&repo_path, &["rev-parse", BRANCH]).unwrap();
-            let tip = tip.trim();
-            let further = further.map(|at| run_git(&dir, &["rev-parse", at]).unwrap());
+            let head = run_git(&dir, &["rev-parse", "HEAD"]).unwrap();
             let index = git_dir(&dir).join("index");
             let before = std::fs::read(&index).unwrap();
 
-            let kept = wt.keep_tree_on_branch("wip(unit-keep): kept").unwrap();
-            let now = run_git(&repo_path, &["rev-parse", BRANCH]).unwrap();
-            assert_eq!(kept, now.trim(), "{row}: it returns the branch's tip");
-            assert_eq!(kept != tip, moves, "{row}: whether the branch moves");
-            for (path, text) in holds {
-                let content = run_git(&repo_path, &["show", &format!("{BRANCH}:{path}")]).unwrap();
-                assert!(
-                    content.contains(text),
-                    "{row}: the branch holds {path} with {text:?}: {content:?}"
-                );
-            }
-            if moves {
-                let line = run_git(&repo_path, &["rev-list", "--parents", "-n1", BRANCH]).unwrap();
-                let parents: Vec<&str> = line.split_whitespace().skip(1).collect();
-                let expected: Vec<&str> = std::iter::once(tip)
-                    .chain(further.as_deref().map(str::trim))
-                    .collect();
-                assert_eq!(parents, expected, "{row}: the commit's parents");
+            let kept = keep_aside(&wt);
+            assert_eq!(
+                run_git(&repo_path, &["rev-parse", BRANCH]).unwrap(),
+                tip,
+                "{row}: the unit's branch does not move"
+            );
+            match (kept_as, kept) {
+                (Kept::Nothing, kept) => {
+                    assert_eq!(kept, None, "{row}: nothing is kept");
+                    assert!(!ref_resolves(&repo_path, KEPT), "{row}: no kept ref");
+                }
+                (_, None) => panic!("{row}: the tree is kept"),
+                (kept_as, Some((reference, commit))) => {
+                    assert_eq!(reference, KEPT, "{row}: the kept ref");
+                    assert_eq!(
+                        run_git(&repo_path, &["rev-parse", KEPT]).unwrap().trim(),
+                        commit,
+                        "{row}: the kept ref holds the kept commit"
+                    );
+                    if kept_as == Kept::Head {
+                        assert_eq!(commit, head.trim(), "{row}: HEAD itself is kept");
+                    } else {
+                        assert_eq!(
+                            parents_of(&repo_path, &commit),
+                            [head.trim().to_string()],
+                            "{row}: the kept commit's one parent is HEAD"
+                        );
+                    }
+                    for (path, text) in holds {
+                        let content =
+                            run_git(&repo_path, &["show", &format!("{KEPT}:{path}")]).unwrap();
+                        assert!(
+                            content.contains(text),
+                            "{row}: the kept commit holds {path} with {text:?}: {content:?}"
+                        );
+                    }
+                }
             }
             assert_eq!(
                 std::fs::read(&index).unwrap(),
                 before,
                 "{row}: the tree's own index keeps its bytes"
             );
-            assert!(
-                !git_dir(&dir).join("rigger-kept-index").exists(),
-                "{row}: the capture's own index is gone"
-            );
+            for own in ["rigger-kept-index", "rigger-kept-index.lock"] {
+                assert!(
+                    !git_dir(&dir).join(own).exists(),
+                    "{row}: the keep's {own} is gone"
+                );
+            }
             let _ = std::fs::remove_file(git_dir(&dir).join("index.lock"));
             wt.remove().unwrap();
         }
+    }
+
+    /// A SECOND KEEP SETS THE FIRST ASIDE, AND A KEEP GIT CANNOT FINISH NAMES ITS STEP: a unit's
+    /// tree kept again while its kept ref holds an earlier commit moves that commit to
+    /// `rigger/orphaned/<unit>-<its 12-char sha>` before the kept ref takes the new one, so no
+    /// kept tree is lost; and a keep whose ref git cannot write fails on a first line naming the
+    /// step, the branch and the ref, with no sha, the same line each time it fails.
+    #[test]
+    fn a_second_keep_sets_the_first_aside_and_a_failed_keep_names_its_step() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-again");
+        let path = std::path::Path::new(&dir);
+        std::fs::write(path.join("one.txt"), "one\n").unwrap();
+        let (_, first) = keep_aside(&wt).expect("the first tree is kept");
+        std::fs::write(path.join("two.txt"), "two\n").unwrap();
+        let (kept, second) = keep_aside(&wt).expect("the second tree is kept");
+        assert_eq!(
+            run_git(&repo_path, &["rev-parse", &kept]).unwrap().trim(),
+            second,
+            "the kept ref holds the second keep"
+        );
+        let aside = format!("rigger/orphaned/unit-again-{}", &first[..12]);
+        assert_eq!(
+            run_git(&repo_path, &["rev-parse", &aside]).unwrap().trim(),
+            first,
+            "the first keep stands at {aside}"
+        );
+        wt.remove().unwrap();
+
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-stuck");
+        run_git(&repo_path, &["branch", "rigger/kept/unit-stuck/blocker"]).unwrap();
+        let failures: Vec<String> = ["a.txt", "b.txt"]
+            .into_iter()
+            .map(|file| {
+                std::fs::write(std::path::Path::new(&dir).join(file), "x\n").unwrap();
+                keep(&wt).unwrap_err().0
+            })
+            .collect();
+        let first_lines: Vec<&str> = failures.iter().map(|f| f.lines().next().unwrap()).collect();
+        assert_eq!(
+            first_lines,
+            ["keeping the tree of rigger/u/unit-stuck on rigger/kept/unit-stuck failed"; 2],
+            "the failed keep names its step the same way each time: {failures:?}"
+        );
+        wt.remove().unwrap();
+    }
+
+    /// A MERGE KEPT ASIDE IS STILL A CONFLICT: a tree kept while its merge of the run branch stood
+    /// conflicted leaves the unit's branch without that merge, so the tree recreated from the
+    /// branch meets the same conflict when it merges again, and both marker checks still refuse
+    /// it: the commit guard while the conflict stands, the merge finalize once the marker text is
+    /// staged as a resolution.
+    #[test]
+    fn a_merge_kept_aside_is_still_a_conflict_when_its_tree_is_recreated() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-merge");
+        std::fs::write(std::path::Path::new(&dir).join("unit.txt"), "unit\n").unwrap();
+        wt.commit("unit work").unwrap();
+        std::fs::write(std::path::Path::new(&repo_path).join("unit.txt"), "run\n").unwrap();
+        run_git(&repo_path, &["add", "unit.txt"]).unwrap();
+        run_git(&repo_path, &["commit", "-qm", "run side"]).unwrap();
+        let conflict = |wt: &Worktree, what: &str| match wt.merge_into_worktree("checkpoint") {
+            Ok(MergeOutcome::Conflict(paths)) => assert_eq!(paths, ["unit.txt"], "{what}"),
+            Ok(MergeOutcome::Ready(commit)) => panic!("{what}: the merge is ready at {commit:?}"),
+            Err(e) => panic!("{what}: {e:?}"),
+        };
+        conflict(&wt, "the first merge conflicts");
+        keep_aside(&wt).expect("the conflicted tree is kept");
+        wt.remove().unwrap();
+
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-merge");
+        conflict(
+            &wt,
+            "the tree recreated from the branch meets the same conflict",
+        );
+        assert!(
+            matches!(
+                wt.commit_checkpoint("checkpoint"),
+                Err(StepError::Refused(_))
+            ),
+            "the commit guard refuses the conflicted tree"
+        );
+        run_git(&dir, &["add", "unit.txt"]).unwrap();
+        conflict(
+            &wt,
+            "the finalize refuses marker text staged as a resolution",
+        );
+        wt.remove().unwrap();
     }
 
     /// A tree the create-misread table plants: the tree's dir and its registration (admin)
