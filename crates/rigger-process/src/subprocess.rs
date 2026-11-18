@@ -262,8 +262,9 @@ mod tests {
             assert_eq!(cwd_of(&command_in("sh", "/x")), Some(std::path::Path::new("/x")));
     }
 
-    /// `git_in` is exactly `git -C <dir>` with every variable naming a repository removed from
-    /// the child's environment, and nothing else added.
+    /// `git_in` is exactly `git -C <dir>` with every variable naming a repository, and the one
+    /// carrying the agents' login token, removed from the child's environment, and nothing else
+    /// added: no git child rigger starts, nor any hook git runs, is handed the token.
     #[test]
     fn git_in_anchors_git_at_the_directory() {
         let cmd = git_in("/repo").unwrap();
@@ -274,6 +275,7 @@ mod tests {
         let envs: Vec<(&OsStr, Option<&OsStr>)> = cmd.get_envs().collect();
         let mut removed: Vec<(&OsStr, Option<&OsStr>)> = GIT_REPOSITORY_VARIABLES
             .iter()
+            .chain([&rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR])
             .map(|variable| (OsStr::new(variable), None))
             .collect();
         removed.sort();
