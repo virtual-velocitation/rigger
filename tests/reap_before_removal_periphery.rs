@@ -375,30 +375,11 @@ fn create_reaps_a_process_rooted_in_a_leftover_dir_at_the_deterministic_path_bef
     wt2.remove().unwrap();
 }
 
+/// `reclaim_worktree_on_branch` takes nothing from a worktree its supplied work root does not
+/// contain: it reaps no process rooted there and removes neither the tree nor its work, and its
+/// error names the tree's path.
 #[test]
-fn reclaim_worktree_on_branch_never_reaps_a_process_when_the_supplied_authorized_root_does_not_actually_contain_it(
-) {
-    // `reclaim_worktree_on_branch` is the third new/changed public API item the mechanical
-    // probe names, and the ONE call site the round-2 diff added a wholly NEW authority
-    // resolution for: `RunCtx::gc_integrated_branches` (src/conductor.rs) previously called
-    // this function with no authorized root at all (a bare `(repo, branch)` signature); round
-    // 2 added a fresh `scratch_root_from_env` call INSIDE that function purely to feed this
-    // new parameter (decision `u79c1r2-reap-dir-before-removal-authorized-root-param`). Every
-    // other conductor.rs call site the diff touches (unit-worktree creation, the resume
-    // review-worktree discard+create) only threads an ALREADY-computed `scratch` variable it
-    // was already using to build `dir` in that same function - mechanical wiring with no new
-    // derivation to independently break, and already exercised by every `Worktree::create`/
-    // `discard` test in this file (each constructs `dir` directly under the `authorized_root`
-    // it passes).
-    //
-    // `discard_never_reaps_a_dir_when_the_supplied_authorized_root_does_not_actually_contain_
-    // it` above proves the SHARED `reap_dir_before_removal` containment check refuses a wrong
-    // root via `discard`'s call path; `reclaim_worktree_on_branch` forwards its own
-    // `authorized_root` straight through to the identical chain
-    // (`clear_worktree_dir`/`reclaim_cache_sibling`/`reap_dir_before_removal`) with no
-    // transformation - but this is the one public API path no existing test, unit or
-    // periphery, ever drove with a MISMATCHED root; `src/worktree.rs`'s own inline tests for
-    // this function only ever pass `""` (no-op) or the dir's own correct parent.
+fn reclaim_worktree_on_branch_takes_nothing_from_a_worktree_its_supplied_root_does_not_contain() {
     let repo = tempfile::tempdir().unwrap();
     let repo_path = repo.path().canonicalize().unwrap();
     init_repo(&repo_path);
@@ -417,9 +398,7 @@ fn reclaim_worktree_on_branch_never_reaps_a_process_when_the_supplied_authorized
     .expect("create a lingering worktree for the branch");
     std::fs::write(dir.join("work.rs"), "fn work() {}\n").unwrap();
     wt.commit("rigger: prior window work").unwrap();
-    // Drop the handle without calling remove()/discard() - the git registration and dir
-    // survive, exactly the "step process killed before Worktree::remove ran" precondition
-    // gc_integrated_branches's resume-path reclaim exists to clean up.
+    // The handle is dropped without a remove, so the registration and the dir stay.
     drop(wt);
 
     let mut child = sigterm_ignorer_in(&dir);
@@ -431,7 +410,7 @@ fn reclaim_worktree_on_branch_never_reaps_a_process_when_the_supplied_authorized
          reclaim_worktree_on_branch() runs"
     );
 
-    // An UNRELATED root - not an ancestor of `dir` at all.
+    // An unrelated root, not an ancestor of `dir`.
     let unrelated_root = tempfile::tempdir().unwrap();
     let unrelated_root_path = unrelated_root.path().canonicalize().unwrap();
     assert!(
@@ -439,33 +418,30 @@ fn reclaim_worktree_on_branch_never_reaps_a_process_when_the_supplied_authorized
         "test setup: the wrong root must not actually contain dir"
     );
 
-    reclaim_worktree_on_branch(
+    let reclaimed = reclaim_worktree_on_branch(
         repo_path.to_str().unwrap(),
         branch,
         unrelated_root_path.to_str().unwrap(),
-    )
-    .expect(
-        "reclaim_worktree_on_branch itself must still succeed even when the reap it gates is refused",
     );
 
-    // Give the (wrongly-authorized-would-have-been) SIGTERM/SIGKILL sequence every chance to
-    // have fired if the containment check were a no-op, then assert the process is UNTOUCHED.
+    // Give a reap every chance to have fired before the process is read.
     std::thread::sleep(std::time::Duration::from_millis(500));
     let still_alive = matches!(child.try_wait(), Ok(None));
     cleanup(&mut child);
+    let e = reclaimed.expect_err("a reclaim of a worktree outside its work root is refused");
     assert!(
-        still_alive,
-        "a process rooted in the lingering worktree must be LEFT ALONE when the caller- \
-         supplied authorized_root does not actually contain it - reclaim_worktree_on_branch \
-         forwards authorized_root straight through to the same reap_dir_before_removal \
-         containment check discard() uses, and this is the one call path no existing test \
-         drove with a mismatched root"
+        e.0.contains(dir.to_str().unwrap()),
+        "the refusal names the tree's path: {}",
+        e.0
     );
     assert!(
-        !dir.exists(),
-        "the lingering worktree is still torn down even though its reap was refused - reap- \
-         refusal must never block the removal itself, matching every other reap call site's \
-         best-effort contract"
+        still_alive,
+        "a process rooted in a worktree outside the work root is left alone"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("work.rs")).ok().as_deref(),
+        Some("fn work() {}\n"),
+        "the worktree and its work stay"
     );
 }
 

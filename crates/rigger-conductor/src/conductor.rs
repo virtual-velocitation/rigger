@@ -26455,20 +26455,22 @@ mod tests {
     }
 
     /// A registered one-file worktree on `branch` holding `file` = `content` committed as prior
-    /// window work - the worktree left in place.
+    /// window work - the worktree left in place under the scratch root a default-configured run
+    /// in `repo` works in, where that run may take it.
     fn seed_branch_worktree(
         repo: &str,
         branch: &str,
         file: &str,
         content: &str,
     ) -> crate::worktree::Worktree {
-        let dir = std::env::temp_dir().join(format!(
+        let scratch = crate::worktree::scratch_root_from_env(repo, "");
+        let dir = Path::new(&scratch).join(format!(
             "rigger-seed-{}-{}",
             sanitize_for_path(branch),
             &uuid::Uuid::new_v4().to_string()[..8]
         ));
-        let wt =
-            crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), branch, "").unwrap();
+        let wt = crate::worktree::Worktree::create(repo, dir.to_str().unwrap(), branch, &scratch)
+            .unwrap();
         std::fs::write(Path::new(&wt.dir).join(file), content).unwrap();
         let committed = wt.commit("rigger: prior window work").unwrap();
         assert!(!committed.is_empty(), "the prior window must commit work");
@@ -27066,6 +27068,55 @@ mod tests {
             "a real vanish must be logged exactly once across the whole campaign - never \
              re-claimed on every future step after the branch/worktree are already gone: \
              {second:?}"
+        );
+    }
+
+    /// An integrated unit whose branch is checked out in a tree outside the run's scratch root,
+    /// as a person working a handed-back unit checks it out, is not the collection's to take:
+    /// the tree, its work and the branch stay, and the log says the branch was kept and where it
+    /// is checked out.
+    #[test]
+    fn gc_integrated_branches_logged_keeps_a_branch_checked_out_outside_the_work_root_naming_where()
+    {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let outside = tempfile::tempdir().unwrap();
+        let by_hand = outside.path().canonicalize().unwrap().join("by-hand");
+        let by_hand_s = by_hand.to_str().unwrap();
+        git_ok(
+            &repo_path,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &unit_branch("by-hand"),
+                by_hand_s,
+            ],
+        );
+        std::fs::write(by_hand.join("by-hand.rs"), "fn by_hand() {}\n").unwrap();
+
+        let lines = gc_logged(&repo_path, &integrated_with_straggler("by-hand", true));
+        assert_eq!(
+            std::fs::read_to_string(by_hand.join("by-hand.rs"))
+                .ok()
+                .as_deref(),
+            Some("fn by_hand() {}\n"),
+            "the person's work stays: {lines:?}"
+        );
+        assert!(
+            branch_present(&repo_path, &unit_branch("by-hand")),
+            "the branch stays: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|l| l.contains("kept branch")
+                && l.contains(r#""rigger/u/by-hand""#)
+                && l.contains(by_hand_s)),
+            "the log says the branch was kept and where it is checked out: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("removing")),
+            "nothing is logged as removed: {lines:?}"
         );
     }
 
@@ -49836,6 +49887,62 @@ stage "implement" adjudicator "adj" failed
             "{row}: no record carries the halt's marker"
         );
         err.0
+    }
+
+    /// A UNIT'S BRANCH CHECKED OUT OUTSIDE THE WORK ROOT HOLDS THE RUN: a person working a
+    /// handed-back unit checks its branch out in a tree of their own. The run neither adopts that
+    /// tree nor makes the unit's worktree: the tree, its work and its registration stay, and the
+    /// run is held for the orchestrator on a fault that says where the branch is checked out and
+    /// how to free it.
+    #[test]
+    fn a_units_branch_checked_out_outside_the_work_root_holds_the_run_naming_where() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let outside = tempfile::tempdir().unwrap();
+        let by_hand = outside.path().canonicalize().unwrap().join("by-hand");
+        let by_hand_s = by_hand.to_str().unwrap();
+        let branch = unit_branch("s");
+        git_ok(
+            &repo_path,
+            &["worktree", "add", "-q", "-b", &branch, by_hand_s],
+        );
+        std::fs::write(by_hand.join("by-hand.rs"), "fn by_hand() {}\n").unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+
+        let halted = run_isolated(&one_gated_stage_cfg("s"), &deps);
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let err = assert_held_with_no_lesson("outside", halted, &events);
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        assert_eq!(
+            err,
+            format!(
+                "branch {branch} is checked out at {by_hand_s}, which is not a directory under \
+                 rigger's work root {scratch}: nothing there is cleared or adopted\n\
+                 the run takes the branch once it is checked out nowhere: \
+                 `git -C {by_hand_s} switch --detach` frees it and keeps that tree and its work \
+                 as they are"
+            ),
+            "the hold says where the branch is checked out and how to free it"
+        );
+        assert_eq!(
+            std::fs::read_to_string(by_hand.join("by-hand.rs"))
+                .ok()
+                .as_deref(),
+            Some("fn by_hand() {}\n"),
+            "the person's work stays"
+        );
+        assert!(
+            git_out(&repo_path, &["worktree", "list", "--porcelain"])
+                .lines()
+                .any(|line| line == format!("worktree {by_hand_s}")),
+            "the person's tree stays registered"
+        );
     }
 
     /// AN INFRASTRUCTURE FAILURE NAMES NO UNIT: a failure of the run's infrastructure that ends a

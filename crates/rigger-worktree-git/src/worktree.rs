@@ -7019,6 +7019,26 @@ mod tests {
         );
     }
 
+    /// The sweep takes only worktrees inside its root, compared path component by path
+    /// component: a terminal worktree in a sibling dir whose name merely begins with the root's
+    /// name is outside it and stays.
+    #[test]
+    fn sweep_terminal_leaves_a_worktree_beside_its_root_whose_path_merely_begins_with_it() {
+        let (_repo, repo_path, _) = scratch_repo(true);
+        let place = tempfile::tempdir().unwrap();
+        let root = place.path().canonicalize().unwrap().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.to_str().unwrap();
+        let (beside_dir, _) = unit_wt(&repo_path, &format!("{root}-beside"), "beside");
+
+        assert_eq!(
+            sweep(&repo_path, root, &[]),
+            0,
+            "a worktree outside the root is not the sweep's to take"
+        );
+        assert!(exists(&beside_dir), "the worktree beside the root stays");
+    }
+
     #[test]
     fn sweep_terminal_spares_a_live_units_worktree_even_at_the_empty_diff_run_tip() {
         // Spec 64 criterion 4: the merged-only ancestry rule alone is NOT sufficient. A
@@ -7783,9 +7803,10 @@ mod tests {
         );
     }
 
-    /// `reclaim_worktree_on_branch` deregisters whatever held `branch`, leaving it deletable.
-    fn assert_reclaim_frees_the_branch(repo_path: &str, branch: &str) {
-        reclaim_worktree_on_branch(repo_path, branch, "").unwrap();
+    /// `reclaim_worktree_on_branch` under the work root `root` deregisters whatever held
+    /// `branch`, leaving it deletable.
+    fn assert_reclaim_frees_the_branch(repo_path: &str, branch: &str, root: &str) {
+        reclaim_worktree_on_branch(repo_path, branch, root).unwrap();
         assert_eq!(
             registered_worktree_for(repo_path, branch),
             None,
@@ -7809,12 +7830,12 @@ mod tests {
         // worktree holds the branch, so a reclaim that skipped the teardown would strand it.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let (_parent, wt_dir, branch) = committed_unit_wt(&repo_path, "lingered");
+        let (parent, wt_dir, branch) = committed_unit_wt(&repo_path, "lingered");
         let cache = unit_cache_sibling(&wt_dir).expect("a unit worktree owns a cache sibling");
         populate(&cache, &["built.rlib"]);
         assert_branch_held_by(&repo_path, &branch, &wt_dir);
 
-        assert_reclaim_frees_the_branch(&repo_path, &branch);
+        assert_reclaim_frees_the_branch(&repo_path, &branch, parent.path().to_str().unwrap());
         assert!(
             !exists(&wt_dir),
             "the lingering worktree dir is torn down off disk"
@@ -7860,7 +7881,9 @@ mod tests {
         assert_teardown_reaps_what_is_rooted_inside(
             &wt_path,
             None,
-            || reclaim_worktree_on_branch(&repo_path, branch, &parent_str).unwrap(),
+            || {
+                reclaim_worktree_on_branch(&repo_path, branch, &parent_str).unwrap();
+            },
             "reclaim_worktree_on_branch",
         );
         assert!(
@@ -7958,13 +7981,13 @@ mod tests {
         // the dir off disk, without pruning, would leave the branch permanently un-deletable.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let (_parent, wt_dir, branch) = committed_unit_wt(&repo_path, "vanished");
+        let (parent, wt_dir, branch) = committed_unit_wt(&repo_path, "vanished");
 
         // The dir vanishes WITHOUT deregistration; the registration dangles on.
         std::fs::remove_dir_all(&wt_dir).unwrap();
         assert_branch_held_by(&repo_path, &branch, &wt_dir);
 
-        assert_reclaim_frees_the_branch(&repo_path, &branch);
+        assert_reclaim_frees_the_branch(&repo_path, &branch, parent.path().to_str().unwrap());
     }
 
     #[test]
@@ -8010,23 +8033,26 @@ mod tests {
     fn create_adopts_a_branch_still_checked_out_in_a_prior_processes_worktree() {
         // Driver-process disposability (Gap 12): a killed `rigger run` leaves its
         // worktree REGISTERED with the branch checked out. A later process derives a
-        // DIFFERENT dir for the same branch; git refuses a second checkout, so
-        // `create` must ADOPT the surviving registration (returning ITS dir with the
-        // committed work present) instead of failing - and when the registered dir
+        // DIFFERENT dir for the same branch under the same work root; git refuses a second
+        // checkout, so `create` must ADOPT the surviving registration (returning ITS dir
+        // with the committed work present) instead of failing - and when the registered dir
         // was deleted out from under git, it must prune and re-create.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let branch = "rigger/u/unit-adopt";
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let root_s = root_path.to_str().unwrap();
 
         // Process 1: create, commit, and do NOT remove - the process "died".
-        let dir1 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch, "").unwrap();
+        let dir1 = root_path.join("rigger-wt-first");
+        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch, root_s).unwrap();
         std::fs::write(dir1.join("inflight.txt"), "wave-1 work\n").unwrap();
         wt1.commit("rigger: in-flight work").unwrap();
 
         // Process 2: same branch, different dir. Must ADOPT dir1, not fail.
-        let dir2 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch, "").unwrap();
+        let dir2 = root_path.join("rigger-wt-second");
+        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch, root_s).unwrap();
         assert_eq!(
             wt2.dir,
             dir1.to_str().unwrap(),
@@ -8041,8 +8067,8 @@ mod tests {
         // cleaner). create must prune the stale registration and re-create at the
         // requested dir, with the branch's committed work checked out.
         std::fs::remove_dir_all(&dir1).unwrap();
-        let dir3 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt3 = Worktree::create(&repo_path, dir3.to_str().unwrap(), branch, "").unwrap();
+        let dir3 = root_path.join("rigger-wt-third");
+        let wt3 = Worktree::create(&repo_path, dir3.to_str().unwrap(), branch, root_s).unwrap();
         assert_eq!(
             wt3.dir,
             dir3.to_str().unwrap(),
@@ -8053,6 +8079,176 @@ mod tests {
             "the re-created worktree checks out the branch's committed work"
         );
         wt3.remove().unwrap();
+    }
+
+    /// Where [`held_elsewhere`] checks its branch out: a tree under rigger's work root, a tree
+    /// outside it, or the repository's main checkout.
+    #[derive(Clone, Copy)]
+    enum Held {
+        Under,
+        Outside,
+        Main,
+    }
+
+    /// The branch [`held_elsewhere`] checks out.
+    const HELD_BRANCH: &str = "rigger/u/unit-held";
+
+    /// A repository whose [`HELD_BRANCH`] is checked out at `at`, a tree holding work in
+    /// `work.txt`, and rigger's work root `root`, resolved.
+    struct HeldElsewhere {
+        repo: tempfile::TempDir,
+        root: std::path::PathBuf,
+        at: std::path::PathBuf,
+        _places: [tempfile::TempDir; 2],
+    }
+
+    impl HeldElsewhere {
+        fn repo(&self) -> &str {
+            self.repo.path().to_str().unwrap()
+        }
+
+        fn root(&self) -> &str {
+            self.root.to_str().unwrap()
+        }
+
+        fn at(&self) -> &str {
+            self.at.to_str().unwrap()
+        }
+
+        /// The work at `at`, or `None` once nothing is there.
+        fn work(&self) -> Option<String> {
+            std::fs::read_to_string(self.at.join("work.txt")).ok()
+        }
+
+        /// Whether git still lists a worktree at `at`.
+        fn listed(&self) -> bool {
+            let listed =
+                run_git(self.repo(), &["worktree", "list", "--porcelain"]).unwrap_or_default();
+            listed
+                .lines()
+                .any(|line| line == format!("worktree {}", self.at()))
+        }
+
+        /// Lock the tree at `at`, as a person does.
+        fn lock(&self) {
+            run_git(
+                self.repo(),
+                &["worktree", "lock", "--reason", "a person's lock", self.at()],
+            )
+            .unwrap();
+        }
+    }
+
+    /// [`HELD_BRANCH`] checked out where `held` says, its tree holding work.
+    fn held_elsewhere(held: Held) -> HeldElsewhere {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let places = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        let root = places[0].path().canonicalize().unwrap();
+        let at = match held {
+            Held::Under => root.join("held"),
+            Held::Outside => places[1].path().canonicalize().unwrap().join("held"),
+            Held::Main => repo.path().canonicalize().unwrap(),
+        };
+        let at_s = at.to_str().unwrap();
+        match held {
+            Held::Main => run_git(&repo_path, &["checkout", "-q", "-b", HELD_BRANCH]),
+            Held::Under | Held::Outside => run_git(
+                &repo_path,
+                &["worktree", "add", "-q", "-b", HELD_BRANCH, at_s],
+            ),
+        }
+        .unwrap();
+        std::fs::write(at.join("work.txt"), "work\n").unwrap();
+        HeldElsewhere {
+            repo,
+            root,
+            at,
+            _places: places,
+        }
+    }
+
+    /// A tree git marks `prunable` with its dir still there: its link to the repository is gone.
+    fn unlink(h: &HeldElsewhere) {
+        std::fs::remove_file(h.at.join(".git")).unwrap();
+    }
+
+    /// A create takes over the tree its branch is already checked out in only when that tree is
+    /// a usable directory under its work root. A branch checked out outside the root (a person's
+    /// tree, the main checkout) or in a tree git marks locked or prunable is an error naming where,
+    /// and the tree, its work and its registration stay.
+    #[test]
+    fn create_takes_a_branch_checked_out_elsewhere_only_from_a_usable_tree_under_its_work_root() {
+        let rows: [(&str, Held, fn(&HeldElsewhere)); 5] = [
+            ("a tree outside the work root", Held::Outside, |_| {}),
+            ("the main checkout", Held::Main, |_| {}),
+            ("a locked tree", Held::Under, HeldElsewhere::lock),
+            ("a locked tree whose dir is gone", Held::Under, |h| {
+                h.lock();
+                std::fs::remove_dir_all(&h.at).unwrap();
+            }),
+            ("a prunable tree whose dir is there", Held::Under, unlink),
+        ];
+        let mut violations = Vec::new();
+        for (row, held, spoil) in rows {
+            let h = held_elsewhere(held);
+            spoil(&h);
+            let present = h.at.exists();
+            let dir = h.root.join(format!("{UNIT_WORKTREE_PREFIX}unit-held"));
+            match Worktree::create(h.repo(), dir.to_str().unwrap(), HELD_BRANCH, h.root()) {
+                Ok(wt) => violations.push(format!("{row}: the create took the tree at {}", wt.dir)),
+                Err(e) if !e.0.contains(h.at()) => {
+                    violations.push(format!("{row}: the error does not say where: {}", e.0))
+                }
+                Err(_) => {}
+            }
+            if present && h.work().as_deref() != Some("work\n") {
+                violations.push(format!("{row}: the work at {} is gone", h.at()));
+            }
+            if !h.listed() {
+                violations.push(format!("{row}: the registration at {} is gone", h.at()));
+            }
+            if dir.exists() {
+                violations.push(format!("{row}: a worktree was made at {}", dir.display()));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// A reclaim takes down the tree its branch is checked out in only when that tree is
+    /// rigger's to take. A tree outside the work root (a person's tree, the main checkout) or one
+    /// git marks locked or prunable is an error naming where, and the tree, its work, its
+    /// registration and the branch stay.
+    #[test]
+    fn reclaim_worktree_on_branch_takes_nothing_from_a_tree_where_rigger_may_not_take_it() {
+        let rows: [(&str, Held, fn(&HeldElsewhere)); 4] = [
+            ("a tree outside the work root", Held::Outside, |_| {}),
+            ("the main checkout", Held::Main, |_| {}),
+            ("a locked tree", Held::Under, HeldElsewhere::lock),
+            ("a prunable tree whose dir is there", Held::Under, unlink),
+        ];
+        let mut violations = Vec::new();
+        for (row, held, spoil) in rows {
+            let h = held_elsewhere(held);
+            spoil(&h);
+            match reclaim_worktree_on_branch(h.repo(), HELD_BRANCH, h.root()) {
+                Ok(_) => violations.push(format!("{row}: the reclaim took the tree")),
+                Err(e) if !e.0.contains(h.at()) => {
+                    violations.push(format!("{row}: the error does not say where: {}", e.0))
+                }
+                Err(_) => {}
+            }
+            if h.work().as_deref() != Some("work\n") {
+                violations.push(format!("{row}: the work at {} is gone", h.at()));
+            }
+            if !h.listed() {
+                violations.push(format!("{row}: the registration at {} is gone", h.at()));
+            }
+            if !branch_exists(h.repo(), HELD_BRANCH) {
+                violations.push(format!("{row}: the branch is gone"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
     #[test]
