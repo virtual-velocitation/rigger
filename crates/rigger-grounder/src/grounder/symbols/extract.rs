@@ -4640,7 +4640,8 @@ pub fn f() -> u8 {
     /// and plain comments between them inside it and those before the first or after the last
     /// outside it, over a tuple field's `pub`, an enum variant's, an impl block's and a method's
     /// alike, and up to the first other node only; a file opening with inner doc lines - `//!`,
-    /// `/*! */`, `#![doc = ".."]` - has its file span from the first to the last of them; a
+    /// `/*! */`, `#![doc = ".."]` - has its file span from the first to the last of them, an inner
+    /// doc inside an item's body joining neither the file's span nor the item's; a
     /// `#[doc(hidden)]`, a doc attribute whose value is no string literal (`include_str!(..)`,
     /// `concat!(..)`), `////`, `/**/` and `/***/` is no doc line, while a raw string value is
     /// one; and under a fixture query a `@doc` capture in a definition's match gives that
@@ -4670,6 +4671,13 @@ pub fn f() -> u8 {
                 "// Licence.\n//! The crate.\n//! More.\n\nfn g() {}\n",
                 Some((2, 3)),
                 vec![("g", None)],
+            ),
+            (
+                "an inner doc inside a module's body",
+                false,
+                "//! Crate.\n\n/// M.\nmod m {\n    //! Inner.\n    fn b() {}\n}\n",
+                Some((1, 1)),
+                vec![("m", Some((3, 3))), ("b", None)],
             ),
             (
                 "plain comments and attributes inside the span and outside it",
