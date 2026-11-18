@@ -32,7 +32,7 @@ use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output};
-use std::sync::{Mutex, Once, PoisonError};
+use std::sync::{mpsc, Mutex, Once, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -449,7 +449,9 @@ impl ReapedChild {
     /// [`crate::reap::END_BOUND`], while a process it would reach is a writer: one whose
     /// arguments, read while its pid still names it ([`os_process::arguments_of`]), `writer`
     /// accepts, as a hook or a tool server still writing the spawn's record is, so that write
-    /// finishes before the end; a main that still runs is ended at once with all it started, as a
+    /// finishes before the end. The bound holds whatever OS call a read of arguments waits in:
+    /// processes whose arguments were not read by then are no writers, and the end reports why
+    /// ([`ArgumentReads`]). A main that still runs is ended at once with all it started, as a
     /// stop ends it. A watched tree whose main has exited signals nothing, and answers what the
     /// main left running as never signalled ([`crate::reap::end_watched`]). Answers what the end
     /// signalled and what it left ([`ReapedChild::end`]).
@@ -512,8 +514,12 @@ impl ReapedChild {
 pub type IsWriter<'a> = dyn Fn(&[String]) -> bool + 'a;
 
 /// How a finish reads the arguments of the processes its end would reach, to find a writer
-/// among them ([`ReapedChild::finish`]): each process's by `read`, and the reads a finish gave up
-/// that have not returned yet.
+/// among them ([`ReapedChild::finish`]): each process's by `read`, on a thread of its own, so the
+/// finish gives the read up at the end of its wait whatever OS call the read waits in, as a read
+/// of a process stuck in the kernel waits on that process's memory. A read given up runs on until
+/// its call returns, and then its answer is dropped and its thread exits; while one has not
+/// returned, no finish starts another, so given-up reads never pile up behind a process that
+/// stays stuck.
 struct ArgumentReads {
     /// Reads one process's arguments; `None` where they cannot be read, which no writer's are.
     read: fn(&Identity) -> Option<Vec<String>>,
@@ -539,20 +545,61 @@ const ARGUMENTS_GIVEN_UP: &str = "the arguments of the processes this end would 
      read by the end of its wait for a writer, as when one of them is stuck in the kernel; it \
      took none of them for a writer, and no end reads arguments until that read returns";
 
+/// The fault a finish reports where the arguments of the processes its end would reach could not
+/// be read, for the reason `why` ([`ArgumentReads::of`]).
+fn arguments_unread(why: &str) -> String {
+    format!(
+        "the arguments of the processes this end would reach could not be read ({why}), so it \
+         took none of them for a writer"
+    )
+}
+
 /// The fault a finish reports where a read of arguments an earlier finish gave up had not
 /// returned, so it read none ([`ArgumentReads::of`]).
 const ARGUMENTS_HELD: &str = "a read of arguments an earlier end gave up has not returned, so \
      this end read none and took none of the processes it would reach for a writer";
 
 impl ArgumentReads {
-    /// The arguments of each of `members`, in their order, read ([`ArgumentReads::read`]) by
-    /// `deadline`, the end of the finish's wait for a writer.
+    /// The arguments of each of `members`, in their order, read ([`ArgumentReads::read`]) on a
+    /// thread of its own by `deadline`, the end of the finish's wait for a writer; none once
+    /// `deadline` has passed, and none where there are no members. Where they were not read by
+    /// `deadline`, the read is given up ([`ArgumentReads::given_up`]); where a read given up
+    /// before has not returned, none is started; and where no thread could be started, or the
+    /// read ended without an answer, none is read. Each answers why.
     fn of(
         &self,
         members: Vec<Identity>,
-        _deadline: Instant,
+        deadline: Instant,
     ) -> Result<Vec<Option<Vec<String>>>, String> {
-        Ok(members.iter().map(self.read).collect())
+        if members.is_empty() || Instant::now() >= deadline {
+            return Ok(Vec::new());
+        }
+        if self.still_given_up() > 0 {
+            return Err(ARGUMENTS_HELD.to_string());
+        }
+        let read = self.read;
+        let (answer, answered) = mpsc::channel();
+        let reader = std::thread::Builder::new()
+            .name("rigger-tree-arguments".to_string())
+            .spawn(move || {
+                let _ = answer.send(members.iter().map(read).collect());
+            })
+            .map_err(|error| {
+                arguments_unread(&format!("no thread to read them started: {error}"))
+            })?;
+        match answered.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(arguments) => Ok(arguments),
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err(arguments_unread("their read ended without an answer"))
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                self.given_up
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(reader);
+                Err(ARGUMENTS_GIVEN_UP.to_string())
+            }
+        }
     }
 
     /// How many reads a finish gave up have not returned yet; the threads of those that have
