@@ -1743,7 +1743,9 @@ pub fn delete_kept(repo: &str, branch: &str) -> Result<(), Error> {
 }
 
 /// Every ref rigger holds aside in `repo`, kept ([`KEPT_REFS`]) and orphaned ([`ORPHANED_REFS`]),
-/// each with its tip, sorted by name.
+/// each with its tip, sorted by name. Each is read by its full name and named without
+/// `refs/heads/`, never by git's short name, which grows a prefix beside a same-named tag or
+/// remote ref.
 pub fn held_refs(repo: &str) -> Result<Vec<(String, String)>, Error> {
     let kept = format!("refs/heads/{KEPT_REFS}");
     let orphaned = format!("refs/heads/{ORPHANED_REFS}");
@@ -1751,7 +1753,7 @@ pub fn held_refs(repo: &str) -> Result<Vec<(String, String)>, Error> {
         repo,
         &[
             "for-each-ref",
-            "--format=%(refname:short) %(objectname)",
+            "--format=%(refname) %(objectname)",
             &kept,
             &orphaned,
         ],
@@ -1759,6 +1761,7 @@ pub fn held_refs(repo: &str) -> Result<Vec<(String, String)>, Error> {
     let mut held: Vec<(String, String)> = listed
         .lines()
         .filter_map(|line| line.trim().rsplit_once(' '))
+        .filter_map(|(full, tip)| Some((full.strip_prefix("refs/heads/")?, tip)))
         .map(|(name, tip)| (name.to_string(), tip.to_string()))
         .collect();
     held.sort();
