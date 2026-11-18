@@ -1205,7 +1205,7 @@ pub(crate) mod tests {
         write_container(MAGIC, version, parsed.payload, &sections).expect("writes")
     }
 
-    fn stamp(commit: Option<&str>, seq: u64) -> Stamp {
+    pub(crate) fn stamp(commit: Option<&str>, seq: u64) -> Stamp {
         Stamp {
             tip: Tip {
                 head: "main".into(),
@@ -1364,7 +1364,7 @@ pub(crate) mod tests {
     /// A code file of `path` and `scope` holding `defs` (local = leaf, a function each), the
     /// calls `calls` (leaf, enclosing def, line) and the module declarations `modules` (name,
     /// declaring def, test, and the one path its `as_root` and `as_child` lists both hold).
-    fn proving_file(
+    pub(crate) fn proving_file(
         path: &str,
         scope: Scope,
         defs: &[&str],

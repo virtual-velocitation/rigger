@@ -11,7 +11,7 @@
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
 //! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge; a `field` reference no qualifier narrows reads its field and property candidates alone and skips the same-file step: one in the view, in its file or not, is `inferred`, else no edge, so it reaches a constant, a static or a variant only through a qualifier that keeps it |
 //! | held reference | a tagged reference whose node already references the target, or the placeholder of its leaf from that node, keyed by the leaf or by a call's qualified name, writes no edge |
-//! | module | the first path of its `as_child` list that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
+//! | module | the first path that is a code file in the view of its `as_child` list when the first declaration reaching the declaring file carries no `#[path]` attribute, walking down from the files no declaration names a depth at a time in path order, else of its `as_root` list ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
 //! | proof | a test call its qualifier narrows, among every call-target candidate, test ones too: the one it keeps when that one is product, and none when it is test, it keeps several, or its qualifier makes it no link; any other test call: the one same-file call-target candidate when it is product and none when it is test, else one same-file product call-target candidate, else one in the view |
 //! | duplicate id, kind precedence | one entity per id, its kind, line and `CONTAINS` parent by [`definition_precedence`] |
@@ -45,10 +45,10 @@ use crate::contextgraph::{
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
 /// the test-module closure and the proof rule. Bump it whenever either can settle other rows for
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
-/// one is computed anew. A golden test pins it beside a digest of the rows two fixtures settle,
-/// so a change that moves those rows fails there until the generation is bumped and the pair
-/// re-pinned.
-pub const SETTLED_GENERATION: u64 = 4;
+/// one is computed anew. A golden test pins it beside a digest of the rows three fixtures
+/// settle, so a change that moves those rows fails there until the generation is bumped and the
+/// pair re-pinned.
+pub const SETTLED_GENERATION: u64 = 5;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -74,10 +74,16 @@ const INTENT_RELS: [&str; 9] = [
     REL_REVIEWS_LIGHT,
 ];
 
-/// The file a module declaration reaches: the first path of its `as_child` list that is a code
-/// file. The module rule and the test-module closure both read it, so they cannot disagree.
-pub fn module_target(decl: &ModuleDecl, is_code_file: impl Fn(&str) -> bool) -> Option<&str> {
-    decl.as_child
+/// The file a module declaration reaches: the first path that is a code file of its `as_child`
+/// list when its declaring file is a `child` ([`reach`]), else of its `as_root` list. The module
+/// rule and the test-module closure both read it, so they cannot disagree.
+pub fn module_target(
+    decl: &ModuleDecl,
+    child: bool,
+    is_code_file: impl Fn(&str) -> bool,
+) -> Option<&str> {
+    let paths = if child { &decl.as_child } else { &decl.as_root };
+    paths
         .iter()
         .map(String::as_str)
         .find(|path| is_code_file(path))
@@ -337,41 +343,86 @@ pub(crate) fn def_leaves(facts: &FileFacts, local: &str) -> Vec<String> {
     leaves
 }
 
-/// The test files of `view`, whose code files are `code_files`, `declaring` those that declare a
-/// module held elsewhere: the Test-scope files (`scoped`), then the test-module closure: every
-/// file a test-only module declaration, or any declaration in a test file, reaches, unless a
-/// product declaration reaches it. The product files are a fixed point from the roots, the code
-/// files no declaration reaches outside Test scope, through every declaration not marked test
-/// that a product file makes; a Test-scope file is never product.
-fn test_closure<'v>(
+/// Where the module declarations of `view`, whose code files are `code_files`, `declaring` those
+/// that declare a module held elsewhere, place their files: the files each reaches as a child,
+/// and every declaration that reaches a code file, as (declaring file, test mark, target). The
+/// walk starts at the roots, the declaring files no declaration's list names, and goes down a
+/// depth at a time, each depth in path order. The first declaration to reach a file decides its
+/// place: a child, whose declarations read their `as_child` lists, unless that declaration
+/// carries a `#[path]` attribute. When a depth runs out, the first declaring file in path order
+/// the walk has not visited starts the next as a root, so a cycle no root reaches is walked.
+fn reach<'v>(
     view: &'v dyn CodeView,
     code_files: &BTreeSet<&'v str>,
     declaring: &[&'v str],
-    mut test_files: BTreeSet<&'v str>,
-) -> BTreeSet<&'v str> {
-    let mut declared: Vec<(&'v str, bool, &'v str)> = Vec::new();
-    for &path in declaring {
-        let Some(modules) = view.modules(path) else {
-            continue;
-        };
-        for decl in modules.iter() {
-            if let Some(target) = module_target(decl, |p| code_files.contains(p))
-                .and_then(|target| code_files.get(target))
-            {
-                declared.push((path, decl.test, target));
+) -> (FxHashSet<&'v str>, Vec<(&'v str, bool, &'v str)>) {
+    let modules: BTreeMap<&'v str, Cow<'v, [ModuleDecl]>> = (declaring.iter())
+        .filter_map(|&path| Some((path, view.modules(path)?)))
+        .collect();
+    let named: FxHashSet<&str> = (modules.values().flat_map(|decls| decls.iter()))
+        .flat_map(|decl| decl.as_root.iter().chain(&decl.as_child))
+        .map(String::as_str)
+        .collect();
+    let mut depth: BTreeSet<&'v str> = (modules.keys().copied())
+        .filter(|path| !named.contains(path))
+        .collect();
+    let mut known = depth.clone();
+    let (mut children, mut declared) = (FxHashSet::default(), Vec::new());
+    loop {
+        if depth.is_empty() {
+            let Some(&root) = modules.keys().find(|path| !known.contains(*path)) else {
+                break;
+            };
+            known.insert(root);
+            depth.insert(root);
+        }
+        let mut next = BTreeSet::new();
+        for from in std::mem::take(&mut depth) {
+            let child = children.contains(from);
+            for decl in modules[from].iter() {
+                let Some(&to) = module_target(decl, child, |p| code_files.contains(p))
+                    .and_then(|to| code_files.get(to))
+                else {
+                    continue;
+                };
+                declared.push((from, decl.test, to));
+                if known.insert(to) {
+                    if !decl.path_attr {
+                        children.insert(to);
+                    }
+                    if modules.contains_key(to) {
+                        next.insert(to);
+                    }
+                }
             }
         }
+        depth = next;
     }
+    (children, declared)
+}
+
+/// The test files of a view whose code files are `code_files` and whose module declarations
+/// reach the files `declared` names ([`reach`]): the Test-scope files it is passed
+/// (`test_files`), then the test-module closure: every file a test-only module declaration, or
+/// any declaration in a test file, reaches, unless a product declaration reaches it. The product
+/// files are a fixed point from the roots, the code files no declaration reaches outside Test
+/// scope, through every declaration not marked test that a product file makes; a Test-scope
+/// file is never product.
+fn test_closure<'v>(
+    code_files: &BTreeSet<&'v str>,
+    declared: &[(&'v str, bool, &'v str)],
+    mut test_files: BTreeSet<&'v str>,
+) -> BTreeSet<&'v str> {
     let reached: BTreeSet<&str> = declared.iter().map(|&(_, _, to)| to).collect();
     let mut product: BTreeSet<&str> = code_files
         .iter()
         .copied()
         .filter(|path| !reached.contains(path) && !test_files.contains(path))
         .collect();
-    grow(&declared, &mut product, |from, test, to, product| {
+    grow(declared, &mut product, |from, test, to, product| {
         !test && product.contains(from) && !test_files.contains(to)
     });
-    grow(&declared, &mut test_files, |from, test, to, test_files| {
+    grow(declared, &mut test_files, |from, test, to, test_files| {
         (test || test_files.contains(from)) && !product.contains(to)
     });
     test_files
@@ -384,6 +435,8 @@ pub struct Resolver<'v> {
     settled: Option<&'v dyn Settled>,
     /// Every code-half file of the view.
     code_files: BTreeSet<&'v str>,
+    /// Every file a module declaration reaches as a child ([`reach`]).
+    children: FxHashSet<&'v str>,
     /// Every test file: Test-scope by path, or in the test-module closure.
     test_files: FxHashSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
@@ -396,8 +449,9 @@ pub struct Resolver<'v> {
 }
 
 impl<'v> Resolver<'v> {
-    /// The resolver of `view`. Its test files are the ones the view settled, else
-    /// [`test_closure`]'s.
+    /// The resolver of `view`. Where its module declarations place their files is walked once
+    /// ([`reach`]); its test files are the ones the view settled, else [`test_closure`]'s over
+    /// that walk.
     pub fn new(view: &'v dyn CodeView) -> Self {
         let settled = view.settled();
         let mut code_files = BTreeSet::new();
@@ -415,9 +469,10 @@ impl<'v> Resolver<'v> {
                 scoped.insert(f.path);
             }
         }
+        let (children, declared) = reach(view, &code_files, &declaring);
         let test_files = match settled {
             Some(settled) => settled.test_files().into_iter().collect(),
-            None => test_closure(view, &code_files, &declaring, scoped)
+            None => test_closure(&code_files, &declared, scoped)
                 .into_iter()
                 .collect(),
         };
@@ -425,6 +480,7 @@ impl<'v> Resolver<'v> {
             view,
             settled,
             code_files,
+            children,
             test_files,
             candidates: RefCell::default(),
             parents: RefCell::default(),
@@ -467,9 +523,10 @@ impl<'v> Resolver<'v> {
         self.code_files.contains(path)
     }
 
-    /// The file `decl` reaches in this view.
-    pub fn module_target<'d>(&self, decl: &'d ModuleDecl) -> Option<&'d str> {
-        module_target(decl, |p| self.is_code_file(p))
+    /// The file `decl`, a declaration of the file at `file`, reaches in this view: through its
+    /// `as_child` list when `file` is a child ([`reach`]), else through its `as_root` list.
+    pub fn module_target<'d>(&self, file: &str, decl: &'d ModuleDecl) -> Option<&'d str> {
+        module_target(decl, self.children.contains(file), |p| self.is_code_file(p))
     }
 
     /// Every entity id the leaf `leaf` names in the view's code, in id order. An id a product
@@ -948,7 +1005,7 @@ impl<'v> Resolver<'v> {
             None => file.to_string(),
         };
         for decl in &facts.modules {
-            let Some(target) = self.module_target(decl) else {
+            let Some(target) = self.module_target(file, decl) else {
                 continue;
             };
             // A declaration reaching a test file is test code wherever it is written.
@@ -2365,20 +2422,23 @@ pub(crate) mod tests {
     }
 
     /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the test files and proof calls of
-    /// [`fixture`], and of [`qualified_proof_fixture`], whose qualified test calls take each
-    /// outcome of the narrowed match in [`Resolver::proof`], are pinned by digest beside the
-    /// generation the store's fingerprint folds in, so a change that moves the rows these two
-    /// fixtures settle fails here until `SETTLED_GENERATION` is bumped and the pair re-pinned.
+    /// [`fixture`], of [`qualified_proof_fixture`], whose qualified test calls take each outcome
+    /// of the narrowed match in [`Resolver::proof`], and of [`module_root_fixture`], whose
+    /// test-only declaration reaches a file through the list its declaring file's place picks,
+    /// are pinned by digest beside the generation the store's fingerprint folds in, so a change
+    /// that moves the rows these three fixtures settle fails here until `SETTLED_GENERATION` is
+    /// bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (4, "66ea4c83fbdb81c6");
+        const PINNED: (u64, &str) = (5, "a9202848617a9138");
         let (test_files, proofs) = settled_rows(&fixture());
         assert!(
             !proofs.is_empty() && test_files.iter().any(|p| !p.starts_with("tests/")),
             "the fixture holds proofs and a test file by the closure alone"
         );
         let qualified = settled_rows(&qualified_proof_fixture());
-        let rows = format!("{test_files:#?}{proofs:#?}{qualified:#?}");
+        let rooted = settled_rows(&module_root_fixture());
+        let rows = format!("{test_files:#?}{proofs:#?}{qualified:#?}{rooted:#?}");
         let digest = crate::community::fnv1a_hex(&rows);
         assert_eq!(
             (SETTLED_GENERATION, digest.as_str()),
@@ -4362,7 +4422,8 @@ pub(crate) mod tests {
 
     #[test]
     fn module_target_is_shared_by_the_module_rule_and_the_closure() {
-        // Each row: the case, the declaration's candidates, the code files, the target.
+        // Each row: the case, the declaration's candidates in both its lists, the code files, the
+        // target.
         type Case = (
             &'static str,
             &'static [&'static str],
@@ -4387,7 +4448,7 @@ pub(crate) mod tests {
         for (name, candidates, code_files, want) in cases {
             let d = decl("m", 0, false, candidates);
             assert_eq!(
-                module_target(&d, |p| code_files.contains(&p)),
+                module_target(&d, true, |p| code_files.contains(&p)),
                 *want,
                 "{name}"
             );
@@ -4408,6 +4469,352 @@ pub(crate) mod tests {
                 &["src/a/a_tests.rs"],
             ),
         ]);
+    }
+
+    /// A module declaration placed `as_root` as a crate root or a `mod.rs` file declares it and
+    /// `as_child` as any other file does, `path_attr` when it carries a `#[path]` attribute.
+    fn placed(
+        name: &str,
+        test: bool,
+        as_root: &[&str],
+        as_child: &[&str],
+        path_attr: bool,
+    ) -> ModuleDecl {
+        ModuleDecl {
+            as_child: as_child.iter().map(|c| c.to_string()).collect(),
+            path_attr,
+            ..decl(name, 0, test, as_root)
+        }
+    }
+
+    /// A tree whose declarations place a module apart as a root and as a child, most with a code
+    /// file at the first path of both lists, so the list read decides the file reached: crate
+    /// roots, `#[path]` declarations in a root and in a child, files a root or a child reaches
+    /// through a plain declaration, a file only an `as_child` list names, a `mod.rs` file, one
+    /// file two roots reach and one a root and a deeper file reach, a test-only declaration, and
+    /// a cycle no root reaches.
+    pub(crate) fn module_root_fixture() -> FactsView {
+        let file = |path: &str, modules: Vec<ModuleDecl>| FileFacts {
+            modules,
+            ..code(path, "rust", Scope::Product, vec![], vec![])
+        };
+        let both = |name: &str, paths: &[&str]| decl(name, 0, false, paths);
+        let declaring = vec![
+            file(
+                "src/bin/tool.rs",
+                vec![
+                    placed(
+                        "x",
+                        false,
+                        &["src/bin/x.rs", "src/bin/x/mod.rs"],
+                        &["src/bin/tool/x.rs", "src/bin/tool/x/mod.rs"],
+                        false,
+                    ),
+                    placed(
+                        "tests",
+                        true,
+                        &["src/bin/tests.rs", "src/bin/tests/mod.rs"],
+                        &["src/bin/tool/tests.rs", "src/bin/tool/tests/mod.rs"],
+                        false,
+                    ),
+                ],
+            ),
+            file(
+                "src/lib.rs",
+                vec![
+                    placed("y", false, &["src/p/y.rs"], &["src/p/y.rs"], true),
+                    both("code", &["src/code.rs", "src/code/mod.rs"]),
+                    both("a", &["src/a.rs", "src/a/mod.rs"]),
+                    both("deep", &["src/deep.rs", "src/deep/mod.rs"]),
+                    placed("m", false, &["src/m.rs"], &["src/m.rs"], true),
+                ],
+            ),
+            file(
+                "src/main.rs",
+                vec![both("m", &["src/m.rs", "src/m/mod.rs"])],
+            ),
+            file(
+                "src/p/y.rs",
+                vec![placed(
+                    "z",
+                    false,
+                    &["src/p/z.rs", "src/p/z/mod.rs"],
+                    &["src/p/y/z.rs", "src/p/y/z/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/p/z.rs",
+                vec![placed(
+                    "w",
+                    false,
+                    &["src/p/w.rs", "src/p/w/mod.rs"],
+                    &["src/p/z/w.rs", "src/p/z/w/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/code/mod.rs",
+                vec![both(
+                    "advance",
+                    &["src/code/advance.rs", "src/code/advance/mod.rs"],
+                )],
+            ),
+            file(
+                "src/a.rs",
+                vec![
+                    placed(
+                        "b",
+                        false,
+                        &["src/b.rs", "src/b/mod.rs"],
+                        &["src/a/b.rs", "src/a/b/mod.rs"],
+                        false,
+                    ),
+                    placed("alias", false, &["src/deep.rs"], &["src/deep.rs"], true),
+                ],
+            ),
+            file(
+                "src/a/b.rs",
+                vec![
+                    placed(
+                        "c",
+                        false,
+                        &["src/a/c.rs", "src/a/c/mod.rs"],
+                        &["src/a/b/c.rs", "src/a/b/c/mod.rs"],
+                        false,
+                    ),
+                    placed("q", false, &["src/a/b/q.rs"], &["src/a/b/q.rs"], true),
+                ],
+            ),
+            file(
+                "src/a/b/q.rs",
+                vec![placed(
+                    "r",
+                    false,
+                    &["src/a/b/r.rs", "src/a/b/r/mod.rs"],
+                    &["src/a/b/q/r.rs", "src/a/b/q/r/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/deep.rs",
+                vec![placed(
+                    "leaf",
+                    false,
+                    &["src/leaf.rs", "src/leaf/mod.rs"],
+                    &["src/deep/leaf.rs", "src/deep/leaf/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/m.rs",
+                vec![placed(
+                    "n",
+                    false,
+                    &["src/n.rs", "src/n/mod.rs"],
+                    &["src/m/n.rs", "src/m/n/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/bin/alpha.rs",
+                vec![placed(
+                    "shared",
+                    false,
+                    &["src/bin/shared.rs", "src/bin/shared/mod.rs"],
+                    &["src/bin/alpha/shared.rs", "src/bin/alpha/shared/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/bin/beta.rs",
+                vec![placed(
+                    "shared",
+                    false,
+                    &["src/bin/shared.rs"],
+                    &["src/bin/shared.rs"],
+                    true,
+                )],
+            ),
+            file(
+                "src/bin/shared.rs",
+                vec![placed(
+                    "k",
+                    false,
+                    &["src/bin/k.rs", "src/bin/k/mod.rs"],
+                    &["src/bin/shared/k.rs", "src/bin/shared/k/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/r.rs",
+                vec![placed(
+                    "s",
+                    false,
+                    &["src/s.rs", "src/s/mod.rs"],
+                    &["src/r/s.rs", "src/r/s/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/s.rs",
+                vec![placed(
+                    "r",
+                    false,
+                    &["src/r.rs", "src/r/mod.rs"],
+                    &["src/s/r.rs", "src/s/r/mod.rs"],
+                    false,
+                )],
+            ),
+        ];
+        // Each file reached that declares nothing, and, where a declaration's lists differ, the
+        // file its other list would reach, the cycle's and `src/bin/alpha.rs`'s aside:
+        // `src/p/y/z.rs` is `src/p/z.rs`'s.
+        let declared = [
+            "src/bin/x.rs",
+            "src/bin/tool/x.rs",
+            "src/bin/tests.rs",
+            "src/bin/tool/tests.rs",
+            "src/p/y/z.rs",
+            "src/p/z/w.rs",
+            "src/p/w.rs",
+            "src/code/advance.rs",
+            "src/b.rs",
+            "src/a/b/c.rs",
+            "src/a/c.rs",
+            "src/a/b/r.rs",
+            "src/a/b/q/r.rs",
+            "src/deep/leaf.rs",
+            "src/leaf.rs",
+            "src/n.rs",
+            "src/m/n.rs",
+            "src/bin/shared/k.rs",
+            "src/bin/k.rs",
+        ];
+        let leaves = declared.iter().map(|path| file(path, vec![]));
+        FactsView::new(stamp(), declaring.into_iter().chain(leaves).collect())
+    }
+
+    /// A MODULE ROOT IS DECIDED AT READ: a declaration reaches the first code file of its
+    /// `as_child` list when a declaration with no `#[path]` attribute reached its file first,
+    /// walking down from the files no declaration names a depth at a time, each depth in path
+    /// order, and of its `as_root` list otherwise. The module rule's edges and the test-module
+    /// closure reach the same files.
+    #[test]
+    fn a_module_root_is_decided_at_read() {
+        // Each row: the case, a declaring file of the fixture, and the file each of its
+        // declarations reaches, in declaration order.
+        type Case = (&'static str, &'static str, &'static [Option<&'static str>]);
+        let cases: &[Case] = &[
+            (
+                "a file no declaration names is a root: a test-only declaration in it too",
+                "src/bin/tool.rs",
+                &[Some("src/bin/x.rs"), Some("src/bin/tests.rs")],
+            ),
+            (
+                "the library root, its lists equal",
+                "src/lib.rs",
+                &[
+                    Some("src/p/y.rs"),
+                    Some("src/code/mod.rs"),
+                    Some("src/a.rs"),
+                    Some("src/deep.rs"),
+                    Some("src/m.rs"),
+                ],
+            ),
+            (
+                "a file a `#[path]` declaration reaches is placed as a root",
+                "src/p/y.rs",
+                &[Some("src/p/z.rs")],
+            ),
+            (
+                "a file a plain declaration reaches under one a `#[path]` declaration reaches",
+                "src/p/z.rs",
+                &[Some("src/p/z/w.rs")],
+            ),
+            (
+                "a reached `mod.rs` file",
+                "src/code/mod.rs",
+                &[Some("src/code/advance.rs")],
+            ),
+            (
+                "a file a root reaches through a plain declaration",
+                "src/a.rs",
+                &[Some("src/a/b.rs"), Some("src/deep.rs")],
+            ),
+            (
+                "a file a root reaches plain and a deeper file earlier in path order reaches by \
+                 `#[path]` takes the root's",
+                "src/deep.rs",
+                &[Some("src/deep/leaf.rs")],
+            ),
+            (
+                "the second root reaching a file the first already reached",
+                "src/main.rs",
+                &[Some("src/m.rs")],
+            ),
+            (
+                "two roots reaching one file: the first in path order, by `#[path]`, decides",
+                "src/m.rs",
+                &[Some("src/n.rs")],
+            ),
+            (
+                "a binary root reaching a file plain",
+                "src/bin/alpha.rs",
+                &[Some("src/bin/shared.rs")],
+            ),
+            (
+                "a later binary root reaching the same file by `#[path]`",
+                "src/bin/beta.rs",
+                &[Some("src/bin/shared.rs")],
+            ),
+            (
+                "two roots reaching one file: the first in path order, plain, decides",
+                "src/bin/shared.rs",
+                &[Some("src/bin/shared/k.rs")],
+            ),
+            (
+                "a cycle no root reaches starts at its first file in path order, as a root",
+                "src/r.rs",
+                &[Some("src/s.rs")],
+            ),
+            (
+                "the rest of the cycle is reached plain, and no file is at its `as_child` path",
+                "src/s.rs",
+                &[None],
+            ),
+            (
+                "a file only an `as_child` list names, reached plain from a child, is a child",
+                "src/a/b.rs",
+                &[Some("src/a/b/c.rs"), Some("src/a/b/q.rs")],
+            ),
+            (
+                "a file a `#[path]` declaration in a child reaches is placed as a root",
+                "src/a/b/q.rs",
+                &[Some("src/a/b/r.rs")],
+            ),
+        ];
+        let view = module_root_fixture();
+        let r = Resolver::new(&view);
+        for (case, file, want) in cases {
+            let decls = view.modules(file).expect("a declaring file");
+            let got: Vec<Option<&str>> = decls.iter().map(|d| r.module_target(file, d)).collect();
+            assert_eq!(&got, want, "{case}: module_target");
+            let mut links = answer(&view, &r, &Ask::Links(file, true));
+            links.sort();
+            let mut contains: Vec<String> = (want.iter().flatten())
+                .map(|to| format!("{file} -{REL_CONTAINS}/{TIER_EXTRACTED}-> {to}"))
+                .collect();
+            contains.sort();
+            assert_eq!(links, contains, "{case}: the module rule");
+        }
+        let declaring = view.files().filter(|f| f.modules).count();
+        assert_eq!(cases.len(), declaring, "a row for each declaring file");
+        assert_eq!(
+            answer(&view, &r, &Ask::TestFiles),
+            ["src/bin/tests.rs"],
+            "the test-module closure"
+        );
     }
 
     #[test]
