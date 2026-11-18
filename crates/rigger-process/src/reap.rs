@@ -1160,13 +1160,13 @@ std::cfg_select! {
         /// in it, the held child `main` among them: the job end's ONE sanctioned site
         /// (`TerminateJobObject`, the `no-os-kill` gate). The job's members are read first
         /// ([`job_members`]); the end then waits, for at most [`END_BOUND`], until the job counts
-        /// no active process and no member read still runs ([`running`]). The count alone answers
-        /// as soon as the OS marks each process ended, before the process has exited and closed
-        /// its handles. Past the bound, each member read that still runs and each process the job
-        /// still lists is reported as residue. Then the main is reaped and the handle closed. A
-        /// job the OS will not end is reported as a fault, with no wait for it, since nothing was
-        /// sent to it. The kernel names a job's members, so no member is found by a walk, and none
-        /// is signalled one at a time.
+        /// no active process and no member read still runs ([`Member::running`]). The count alone
+        /// answers as soon as the OS marks each process ended, before the process has exited and
+        /// closed its handles. Past the bound, each member read that still runs and each process
+        /// the job still lists is reported as residue. Then the main is reaped and the handle
+        /// closed. A job the OS will not end is reported as a fault, with no wait for it, since
+        /// nothing was sent to it. The kernel names a job's members, so no member is found by a
+        /// walk, and none is signalled one at a time.
         pub fn end_job(
             job: std::os::windows::io::OwnedHandle,
             main: &mut std::process::Child,
@@ -1196,15 +1196,15 @@ std::cfg_select! {
                 ));
                 let _ = main.try_wait();
             } else if poll_until(Instant::now() + END_BOUND, || {
-                job_active(handle) == Some(0) && !held.iter().any(running)
+                job_active(handle) == Some(0) && !held.iter().any(Member::running)
             }) {
                 let _ = main.wait();
             } else {
                 let (listed, _) = job_pids(handle);
                 report.residue = held
                     .iter()
-                    .filter(|member| running(member) && !listed.contains(&member.pid))
-                    .map(|member| member.pid)
+                    .filter(|member| member.running() && !listed.contains(&member.identity.pid))
+                    .map(|member| member.identity.pid)
                     .chain(listed.iter().copied())
                     .map(|pid| Leftover::of(pid, false))
                     .collect();
@@ -1237,16 +1237,71 @@ std::cfg_select! {
             read.then_some(counts.ActiveProcesses)
         }
 
-        /// Each process the job `job` holds ([`job_pids`]), with the start time it reads now; one
-        /// gone before its start time is read is not named. Whether the job's list was read whole.
+        /// A process read as a job's member ([`job_member`]): its identity, and the handle it was
+        /// read through, which keeps its pid its own while the member is held.
+        pub(crate) struct Member {
+            pub(crate) identity: Identity,
+            handle: std::os::windows::io::OwnedHandle,
+        }
+
+        impl Member {
+            /// Whether the process still runs: a wait on its handle for no time times out while it
+            /// runs, and answers once it has exited.
+            pub(crate) fn running(&self) -> bool {
+                use std::os::windows::io::AsRawHandle;
+                use windows_sys::Win32::Foundation::WAIT_TIMEOUT;
+                use windows_sys::Win32::System::Threading::WaitForSingleObject;
+                // SAFETY: the handle is open with synchronize access and stays open across the
+                // call; a wait for no time takes no pointer.
+                let waited = unsafe { WaitForSingleObject(self.handle.as_raw_handle(), 0) };
+                waited == WAIT_TIMEOUT
+            }
+        }
+
+        /// The process `pid` read as a member of the job `job`: opened for waiting on and for
+        /// reading its times, proved in the job through that handle (`IsProcessInJob`), and its
+        /// start time read through the same handle. `None` when it cannot be opened, is not in the
+        /// job (its pid now names a process outside it), or its start time cannot be read.
+        pub(crate) fn job_member(
+            job: windows_sys::Win32::Foundation::HANDLE,
+            pid: u32,
+        ) -> Option<Member> {
+            use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+            use windows_sys::Win32::Foundation::FALSE;
+            use windows_sys::Win32::System::JobObjects::IsProcessInJob;
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+            };
+            // SAFETY: the call takes no pointer and answers a null handle on failure.
+            let opened = unsafe {
+                OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)
+            };
+            if opened.is_null() {
+                return None;
+            }
+            // SAFETY: the handle is the one the call just answered, owned by nothing else.
+            let handle = unsafe { OwnedHandle::from_raw_handle(opened) };
+            let mut inside = FALSE;
+            // SAFETY: both handles are open across the call and `inside` is a writable BOOL.
+            let read = unsafe { IsProcessInJob(handle.as_raw_handle(), job, &mut inside) } != FALSE;
+            if !read || inside == FALSE {
+                return None;
+            }
+            let start = os_process::windows::created(handle.as_raw_handle())?;
+            Some(Member {
+                identity: Identity { pid, start },
+                handle,
+            })
+        }
+
+        /// Each process the job `job` holds ([`job_pids`]), read as a member ([`job_member`]); one
+        /// gone, or outside the job, by the time it is opened is not named. Whether the job's list
+        /// was read whole.
         pub(crate) fn job_members(
             job: windows_sys::Win32::Foundation::HANDLE,
-        ) -> (Vec<Identity>, bool) {
+        ) -> (Vec<Member>, bool) {
             let (pids, whole) = job_pids(job);
-            let members = pids
-                .into_iter()
-                .filter_map(|pid| pid_starttime(pid).map(|start| Identity { pid, start }))
-                .collect();
+            let members = pids.into_iter().filter_map(|pid| job_member(job, pid)).collect();
             (members, whole)
         }
 
