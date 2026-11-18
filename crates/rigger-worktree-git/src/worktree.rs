@@ -6,6 +6,7 @@
 use crate::config::RIGGER_DIR;
 use crate::eventstore::Event;
 use crate::spawn::SpawnEvent;
+use rigger_domain::agent::{in_producer_output, PRODUCER_OUTPUT};
 
 pub use rigger_domain::worktree::{Error, StepError};
 
@@ -2774,21 +2775,64 @@ pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error
 }
 
 /// Why a producer's tree rooted at `dir` is not ready for the conductor, which lands only the
-/// commits made there and never commits the tree itself: one line when the tree holds changes no
-/// commit records, untracked files included ([`path_is_dirty`], the conductor's own dirty-tree
-/// read), empty when it holds none. Read-only, like [`checkpoint_refusals`]; `rigger hook stop
-/// --own-commits` asks it before a producer's session may end, since that work would otherwise
-/// never reach the run branch.
+/// commits made there and never commits the tree itself: the changes no commit records, untracked
+/// files included ([`uncommitted_paths`]), sorted by the conductor's own scope decision
+/// ([`in_producer_output`]) into a line naming those in [`PRODUCER_OUTPUT`], which are to be
+/// committed, then one naming the rest, which a commit would carry outside the stage's output and
+/// the conductor refuses, so are to be taken out of the tree; empty when it holds none.
+/// Read-only, like [`checkpoint_refusals`]. `rigger hook stop --own-commits` asks it before a
+/// producer's session may end, and the conductor asks it again once the session has ended,
+/// failing the attempt on any line, since that work would otherwise never reach the run branch.
 pub fn own_commits_refusals(dir: &str) -> Result<Vec<String>, Error> {
-    Ok(path_is_dirty(dir)?
-        .then(|| {
-            format!(
-                "{dir} holds work no commit records - the conductor lands only the commits made \
-                 there, so this work would never reach the run branch"
-            )
-        })
+    let (mut inside, mut outside): (Vec<String>, Vec<String>) = uncommitted_paths(dir)?
         .into_iter()
-        .collect())
+        .partition(|path| in_producer_output(path));
+    inside.sort();
+    outside.sort();
+    let mut refusals = Vec::new();
+    if !inside.is_empty() {
+        refusals.push(format!(
+            "{dir} holds work in {PRODUCER_OUTPUT} that no commit records: {} - the conductor \
+             lands only the commits made there, so commit this work for it to reach the run branch",
+            inside.join(", ")
+        ));
+    }
+    if !outside.is_empty() {
+        refusals.push(format!(
+            "{dir} holds work outside {PRODUCER_OUTPUT} that no commit records: {} - a commit \
+             touching it is refused as outside the stage's output, so take it out of the tree: \
+             delete what was created there and restore what was changed",
+            outside.join(", ")
+        ));
+    }
+    Ok(refusals)
+}
+
+/// The most lines of `git status` [`tree_status`] carries; the rest are counted.
+pub const TREE_STATUS_LINES: usize = 40;
+
+/// `git status` in `dir` in git's own words, its first [`TREE_STATUS_LINES`] lines with the rest
+/// counted, and its hints off, so it names no command to run; what git said instead when it
+/// fails. Read with optional locks off, so it rewrites nothing, not even the index. A producer's
+/// `Stop` hook and the conductor's failure of a producer's attempt each carry it beside
+/// [`own_commits_refusals`].
+pub fn tree_status(dir: &str) -> String {
+    let args = [
+        "--no-optional-locks",
+        "-c",
+        "advice.statusHints=false",
+        "status",
+    ];
+    let status = git(dir, &args).unwrap_or_else(|e| e.to_string());
+    let lines: Vec<&str> = status.trim_end().lines().collect();
+    if lines.len() <= TREE_STATUS_LINES {
+        return lines.join("\n");
+    }
+    let rest = lines.len() - TREE_STATUS_LINES;
+    format!(
+        "{}\n({rest} more lines)",
+        lines[..TREE_STATUS_LINES].join("\n")
+    )
 }
 
 /// The operation git has left unfinished in the tree rooted at `dir`, or `None`: a merge
@@ -7624,53 +7668,87 @@ mod tests {
         }
     }
 
-    /// A PRODUCER'S TREE IS READY ONLY WITH NO WORK OUTSIDE A COMMIT: a changed tracked file, a
-    /// staged one and an untracked one are each the one refusal, naming the tree; a clean tree,
-    /// one whose work is committed and one holding only a file git ignores are none. The read
-    /// leaves the index's bytes as they were.
+    /// A PRODUCER'S TREE IS READY ONLY WITH NO WORK OUTSIDE A COMMIT, SORTED BY THE STAGE'S
+    /// OUTPUT: work under `specs/` no commit records is one refusal naming its paths and saying to
+    /// commit it; work outside `specs/` - a changed tracked file, a staged or untracked one - is
+    /// another, naming its paths and saying to take it out of the tree, since a commit touching it
+    /// is refused as out of scope. A clean tree, one whose work is committed and one holding only
+    /// a file git ignores are none. The read leaves the index's bytes as they were.
     #[test]
     fn a_producers_tree_is_ready_only_with_no_work_outside_a_commit() {
         fn write(dir: &str, file: &str, text: &str) {
-            std::fs::write(std::path::Path::new(dir).join(file), text).unwrap();
+            let path = std::path::Path::new(dir).join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
         }
-        // Each row: what leaves the producer's tree in its state, and whether it is refused.
-        type Row = (&'static str, fn(&str), bool);
-        let cases: [Row; 6] = [
-            ("clean", |_| {}, false),
+        // Each row: what leaves the producer's tree in its state, then the uncommitted paths
+        // under `specs/` and outside it the refusals name.
+        type Row = (
+            &'static str,
+            fn(&str),
+            &'static [&'static str],
+            &'static [&'static str],
+        );
+        let cases: [Row; 8] = [
+            ("clean", |_| {}, &[], &[]),
             (
                 "committed work",
                 |dir| {
-                    write(dir, "spec.md", "planned\n");
-                    run_git(dir, &["add", "spec.md"]).unwrap();
+                    write(dir, "specs/plan.md", "planned\n");
+                    run_git(dir, &["add", "specs/plan.md"]).unwrap();
                     run_git(dir, &["commit", "-qm", "plan"]).unwrap();
                 },
-                false,
+                &[],
+                &[],
             ),
             (
                 "an ignored file",
                 |dir| write(dir, "scratch.log", "noise\n"),
-                false,
+                &[],
+                &[],
             ),
             (
-                "a changed file",
+                "a staged plan",
+                |dir| {
+                    write(dir, "specs/plan.md", "planned\n");
+                    run_git(dir, &["add", "specs/plan.md"]).unwrap();
+                },
+                &["specs/plan.md"],
+                &[],
+            ),
+            (
+                "an untracked plan",
+                |dir| write(dir, "specs/plan.md", "planned\n"),
+                &["specs/"],
+                &[],
+            ),
+            (
+                "a changed file outside the output",
                 |dir| write(dir, "unit.txt", "edited\n"),
-                true,
+                &[],
+                &["unit.txt"],
             ),
             (
-                "a staged file",
+                "a staged file outside the output",
                 |dir| {
                     write(dir, "spec.md", "planned\n");
                     run_git(dir, &["add", "spec.md"]).unwrap();
                 },
-                true,
+                &[],
+                &["spec.md"],
             ),
             (
-                "an untracked file",
-                |dir| write(dir, "spec.md", "planned\n"),
-                true,
+                "a plan beside leftovers",
+                |dir| {
+                    write(dir, "specs/plan.md", "planned\n");
+                    write(dir, "unit.txt", "edited\n");
+                    write(dir, "notes.txt", "scratch\n");
+                },
+                &["specs/"],
+                &["notes.txt", "unit.txt"],
             ),
         ];
-        for (row, leave, refused) in cases {
+        for (row, leave, inside, outside) in cases {
             let (_repo, repo_path, root) = scratch_repo(true);
             let (dir, wt) = unit_wt(&repo_path, &root, "unit-plan");
             write(&dir, "unit.txt", "committed\n");
@@ -7682,14 +7760,23 @@ mod tests {
             let before = std::fs::read(&index).unwrap();
 
             let refusals = own_commits_refusals(&dir).unwrap();
-            let expected = if refused {
-                vec![format!(
-                    "{dir} holds work no commit records - the conductor lands only the commits \
-                     made there, so this work would never reach the run branch"
-                )]
-            } else {
-                Vec::new()
-            };
+            let mut expected = Vec::new();
+            if !inside.is_empty() {
+                expected.push(format!(
+                    "{dir} holds work in specs/ that no commit records: {} - the conductor lands \
+                     only the commits made there, so commit this work for it to reach the run \
+                     branch",
+                    inside.join(", ")
+                ));
+            }
+            if !outside.is_empty() {
+                expected.push(format!(
+                    "{dir} holds work outside specs/ that no commit records: {} - a commit \
+                     touching it is refused as outside the stage's output, so take it out of the \
+                     tree: delete what was created there and restore what was changed",
+                    outside.join(", ")
+                ));
+            }
             assert_eq!(refusals, expected, "{row}");
             assert_eq!(
                 std::fs::read(&index).unwrap(),

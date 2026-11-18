@@ -59,7 +59,9 @@ pub use rigger_domain::agent::{
     strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, HelperCopy, SpawnHost,
     SpawnOpts, TreeDuty, STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
 };
-use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
+use rigger_domain::agent::{
+    in_producer_output, EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER,
+};
 use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
 use rigger_domain::prompt_surface::{debug_escaped, fill};
 #[cfg(test)]
@@ -11855,11 +11857,11 @@ impl RunCtx<'_> {
         let touched = git_step(w.changed_since_base())?;
         let mut offending: Vec<String> = touched
             .into_iter()
-            .filter(|p| !p.starts_with("specs/"))
+            .filter(|p| !in_producer_output(p))
             .collect();
         for sha in &shas {
             let per_commit = git_step(w.files_touched_by_commit(sha))?;
-            offending.extend(per_commit.into_iter().filter(|p| !p.starts_with("specs/")));
+            offending.extend(per_commit.into_iter().filter(|p| !in_producer_output(p)));
         }
         if !offending.is_empty() {
             offending.sort();

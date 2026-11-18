@@ -243,25 +243,47 @@ fn each_refusal_holds_the_stop_with_gits_words_and_an_accepted_tree_allows_it() 
 }
 
 /// A PRODUCER'S STOP IS HELD WHILE ITS TREE HOLDS WORK OUTSIDE A COMMIT: with `--own-commits`
-/// (a stage the conductor lands only the commits of), a changed file and an untracked one each
-/// hold the session once, the reason naming the tree and carrying `git status` as git prints it;
-/// a clean tree and one whose work is committed each allow the stop. Each check records its
+/// (a stage the conductor lands only the commits of), a changed file and an untracked one outside
+/// the stage's output `specs/`, and an untracked plan in it, each hold the session once, the
+/// reason naming the tree, sorting the paths by the output and carrying `git status` as git
+/// prints it; a clean tree and one whose work is committed each allow the stop. Each check records its
 /// line, then the hold or the allowance, and leaves the index as it was.
 #[test]
 fn a_producers_stop_is_held_while_its_tree_holds_work_outside_a_commit() {
-    // Each row: what leaves the tree so, and the git status words the reason carries (`None` for
-    // a stop allowed).
-    type Row = (&'static str, fn(&Path), Option<&'static str>);
-    let rows: [Row; 4] = [
+    // Each row: what leaves the tree so, then the refusal's words after the tree and the git
+    // status words the reason carries (`None` for a stop allowed).
+    type Row = (
+        &'static str,
+        fn(&Path),
+        Option<(&'static str, &'static str)>,
+    );
+    let rows: [Row; 5] = [
         (
-            "a changed file",
+            "a changed file outside the stage's output",
             |dir| std::fs::write(dir.join("unit.txt"), "edited\n").unwrap(),
-            Some("modified:   unit.txt"),
+            Some((
+                "holds work outside specs/ that no commit records: unit.txt - ",
+                "modified:   unit.txt",
+            )),
         ),
         (
-            "an untracked file",
+            "an untracked file outside the stage's output",
             |dir| std::fs::write(dir.join("plan.md"), "planned\n").unwrap(),
-            Some("Untracked files:"),
+            Some((
+                "holds work outside specs/ that no commit records: plan.md - ",
+                "Untracked files:",
+            )),
+        ),
+        (
+            "an untracked plan in the stage's output",
+            |dir| {
+                std::fs::create_dir(dir.join("specs")).unwrap();
+                std::fs::write(dir.join("specs/plan.md"), "planned\n").unwrap();
+            },
+            Some((
+                "holds work in specs/ that no commit records: specs/ - ",
+                "Untracked files:",
+            )),
         ),
         ("a clean tree", |_| {}, None),
         (
@@ -290,9 +312,9 @@ fn a_producers_stop_is_held_while_its_tree_holds_work_outside_a_commit() {
         let reason = held(case, &out);
 
         let check = format!("stop check: {dir} for its own commits");
-        let refusal = format!("{dir} holds work no commit records");
         match (refused, reason) {
-            (Some(status), Some(reason)) => {
+            (Some((words, status)), Some(reason)) => {
+                let refusal = format!("{dir} {words}");
                 assert!(
                     reason.starts_with("This session cannot end yet."),
                     "{case}: {reason}"

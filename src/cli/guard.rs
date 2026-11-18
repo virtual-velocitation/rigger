@@ -1944,11 +1944,18 @@ mod tests {
                 uncommitted.clone(),
             ),
             (
-                "own commits' refusal",
+                "own commits' two refusals",
                 STOP_HOOK_UNCOMMITTED,
-                &["/wt holds work no commit records"],
+                &[
+                    "/wt holds work in specs/ that no commit records",
+                    "/wt holds work outside specs/ that no commit records",
+                ],
                 ["/wt", "On branch main", ""],
-                filled(&uncommitted, "/wt holds work no commit records"),
+                filled(
+                    &uncommitted,
+                    "/wt holds work in specs/ that no commit records\n/wt holds work outside \
+                     specs/ that no commit records",
+                ),
             ),
         ];
         for (case, template, refusals, [dir, status, branch], expected) in rows {

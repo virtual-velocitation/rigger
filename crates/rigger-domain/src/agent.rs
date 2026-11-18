@@ -226,6 +226,17 @@ pub enum TreeDuty {
     OwnCommits,
 }
 
+/// The one directory a producer's commits may touch: the conductor refuses a producer's commit
+/// touching any path outside it, and lands the rest on the run branch.
+pub const PRODUCER_OUTPUT: &str = "specs/";
+
+/// Whether `path`, relative to the tree's root, lies in [`PRODUCER_OUTPUT`]: the scope decision
+/// the conductor refuses a producer's commits on, and the one a producer's `Stop` hook sorts its
+/// uncommitted work by.
+pub fn in_producer_output(path: &str) -> bool {
+    path.starts_with(PRODUCER_OUTPUT)
+}
+
 impl SpawnOpts {
     /// The options of a spawn carrying `host`, every other field empty, false or 0, for a
     /// caller to spread its own fields over.
