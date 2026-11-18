@@ -1499,6 +1499,9 @@ impl Worktree {
     /// removing the worktree alone would leak a multi-gigabyte cache on the operator's small
     /// partition. Reclamation is best-effort - a review worktree or an un-built unit has no
     /// such sibling and it is a no-op there - and never changes the removal's result.
+    ///
+    /// A tree git marks `locked` ([`refuse_locked_at`]: a lock a person set during the stage) is an
+    /// error naming git's own commands that recover it, and nothing in it is reaped or removed.
     pub fn remove(&self) -> Result<(), Error> {
         // Serialize this WHOLE call against every other in-process admin-directory mutation
         // this process makes for the SAME repository (spec 103 checkin round 4: this call's
@@ -1506,6 +1509,7 @@ impl Worktree {
         // `Worktree::create`'s heal-scan-then-add does; see `repo_admin_lock`'s doc comment).
         let repo_lock = repo_admin_lock(&self.repo);
         let _repo_guard = repo_lock.lock().unwrap();
+        refuse_locked_at(&self.repo, &self.dir)?;
         // Reap any process still rooted inside this worktree BEFORE git removes the dir (spec
         // 23): otherwise a build or tool an agent left running holds a now-deleted cwd and
         // outlives its worktree, leaking memory. Scoped to this EXACT dir, so a process rooted
