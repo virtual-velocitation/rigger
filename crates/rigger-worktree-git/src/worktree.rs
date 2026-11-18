@@ -5023,6 +5023,76 @@ mod tests {
         }
     }
 
+    /// THE GUARD READS WHAT THE COMMIT CARRIES: a checkpoint's `git add -A` stages a new file as
+    /// it stages a tracked one, so a complete marker set in a new file, one inside a new
+    /// directory among them and one status is configured not to list, refuses the checkpoint and
+    /// the session's Stop hook alike, leaving the file unstaged; an ignored file, which no commit
+    /// takes, refuses neither. The escalation's kept tree still keeps the file as it stands.
+    #[test]
+    fn a_checkpoint_refuses_marker_text_in_every_file_its_commit_would_carry() {
+        const SET: &str = "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n";
+        // Each row: the path written, whether status is told to list no untracked file, and
+        // whether the checkpoint is refused.
+        let rows = [
+            ("a new file", "new.txt", false, true),
+            (
+                "a new file in a new directory",
+                "fresh/deep/new.txt",
+                false,
+                true,
+            ),
+            ("a new file status does not list", "new.txt", true, true),
+            ("an ignored file", "ignored.txt", false, false),
+        ];
+        let branch = "rigger/u/untracked-markers";
+        for (row, path, unlisted, refused) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let (wt_path, wt) = temp_wt(&repo_path, branch);
+            let dir = wt_path.to_str().unwrap();
+            std::fs::write(wt_path.join(".gitignore"), "ignored.txt\n").unwrap();
+            wt.commit("ignore ignored.txt").unwrap();
+            if unlisted {
+                run_git(dir, &["config", "status.showUntrackedFiles", "no"]).unwrap();
+            }
+            let file = wt_path.join(path);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(&file, SET).unwrap();
+            let head = run_git(dir, &["rev-parse", "HEAD"]).unwrap();
+
+            let hook = checkpoint_refusals(dir, branch).unwrap();
+            let checkpoint = wt.commit_checkpoint(&format!("checkpoint {row}"));
+
+            assert_eq!(!hook.is_empty(), refused, "{row}: the Stop hook's {hook:?}");
+            if refused {
+                assert!(
+                    matches!(&checkpoint, Err(StepError::Refused(why)) if why.contains("conflict")),
+                    "{row}: {checkpoint:?}"
+                );
+                assert_eq!(
+                    run_git(dir, &["rev-parse", "HEAD"]).unwrap(),
+                    head,
+                    "{row}: no commit"
+                );
+                assert!(
+                    run_git(dir, &["diff", "--cached", "--name-only"])
+                        .unwrap()
+                        .is_empty(),
+                    "{row}: nothing staged"
+                );
+                let kept = wt.keep_tree_aside(&format!("kept {row}")).unwrap().unwrap();
+                assert_eq!(
+                    run_git(dir, &["show", &format!("{}:{path}", kept.commit)]).unwrap(),
+                    SET,
+                    "{row}: the kept tree carries the file as it stands"
+                );
+            } else {
+                assert!(checkpoint.is_ok(), "{row}: {checkpoint:?}");
+            }
+            wt.remove().unwrap();
+        }
+    }
+
     #[test]
     fn commit_checkpoint_commits_through_a_refusing_hook_while_commit_is_refused() {
         // A checkpoint preserves a halted spawn's tree; a content hook (the docs-drift
