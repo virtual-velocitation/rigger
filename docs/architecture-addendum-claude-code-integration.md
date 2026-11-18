@@ -164,10 +164,10 @@ created for that child. Never a pid read from elsewhere, a group or a shell-out.
 
 An ordinary end, once the session's main has exited, ends the same tree through the same
 handle, so on Linux and Windows nothing a session starts outlives it. The end first waits, for
-at most its bound, while a process in the tree is the spawn's `StopFailure` hook, read from
-its command line through the one predicate the hook's command is built with, so a hook still
-writing its record finishes before the end. No other process is waited for: the spawn's MCP
-server names the spawn too, and is ended at once. A watched tree (macOS, or
+at most its bound, while a process in the tree is one of rigger's own writers for the spawn: its
+`StopFailure` hook or the MCP server bound to it, each read from its command line through the
+words its command is built with, so a writer still writing the spawn's record finishes before
+the end. No other process is waited for. A watched tree (macOS, or
 a launch whose containment degraded to a watch) signals nothing once its main has exited: what
 the main left running is reported, never signalled. Each end, a stop's too, names in a progress
 line every process besides the main that it was sent to, each running just before its signal;

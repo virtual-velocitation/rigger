@@ -300,10 +300,18 @@ fn stop_failure_hook_words(spawn_word: &str, class: &str) -> String {
 
 /// Whether `command_line`, a process's command line as the OS reports it, is one of rigger's own
 /// writers for `spawn`: a process that can still be writing the spawn's record once its
-/// session's main has exited, which an ordinary end waits for. That is the stop-failure hook
-/// [`install_spawn_hooks`] installs for `spawn`.
+/// session's main has exited, which an ordinary end waits for. Those are the stop-failure hook
+/// [`install_spawn_hooks`] installs for `spawn` and the tool server bound to it
+/// ([`tool_server_args`]), each known by the words it is built with.
 pub fn is_spawn_writer(command_line: &str, spawn: &str) -> bool {
-    is_stop_failure_hook(command_line, spawn)
+    is_stop_failure_hook(command_line, spawn) || is_tool_server(command_line, spawn)
+}
+
+/// Whether `command_line` is the tool server bound to `spawn`: a line that ends in
+/// [`tool_server_args`]'s words, as the host starts the server with no shell and nothing after
+/// them, so a server for a spawn whose id merely starts with `spawn`'s is not it.
+fn is_tool_server(command_line: &str, spawn: &str) -> bool {
+    command_line.ends_with(&format!(" {}", tool_server_args(spawn).join(" ")))
 }
 
 /// Whether `command_line` is the stop-failure hook [`install_spawn_hooks`] installs for `spawn`,
@@ -520,7 +528,10 @@ pub fn spawn_mcp_config(command: &str, args: &[&str]) -> Result<Vec<u8>, Error> 
 }
 
 /// The arguments a spawn's own tool server runs rigger's binary with, the server the stream-json
-/// host binds to `spawn` ([`spawn_mcp_config`]). The spawn's id is their last word.
+/// host binds to `spawn` ([`spawn_mcp_config`]): the host's launch starts the server with them,
+/// and an ordinary end knows the server by them ([`is_spawn_writer`]), so the two cannot drift.
+/// The spawn's id is their last word, which is what keeps a spawn's server apart from one for a
+/// spawn whose id starts with its own.
 pub fn tool_server_args(spawn: &str) -> [&str; 3] {
     ["mcp", "--spawn", spawn]
 }

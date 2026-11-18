@@ -1007,9 +1007,10 @@ impl Driver<'_> {
 
         // Finish with the tree through the ONE canonical mechanism, on every exit path alike,
         // right here rather than at the function's end: the join just below depends on the
-        // child's stderr pipe having already closed. An end reports what it left. The spawn's
-        // StopFailure hook, still writing its record past the main's exit, finishes its write
-        // first (`ReapedChild::finish`); no other process is waited for.
+        // child's stderr pipe having already closed. An end reports what it left. rigger's own
+        // writers for the spawn, its StopFailure hook and its tool server, each still able to
+        // write the spawn's record past the main's exit, finish their writes first
+        // (`ReapedChild::finish`); no other process is waited for.
         let writer = |line: &str| hooks::is_spawn_writer(line, &opts.id);
         self.record_end(opts, &reaper.finish(Some(&writer)));
         // A process the end left running, or one that left the tree before a watch saw it,

@@ -447,9 +447,9 @@ impl ReapedChild {
     /// its main has exited or still runs, so nothing the session started outlives it. Where the
     /// main has exited and a `writer` is given, the end first waits, for at most
     /// [`crate::reap::END_BOUND`], while a process it would reach is a writer: one whose command
-    /// line ([`os_process::command_line`]) `writer` accepts, as the host's hook still writing the
-    /// spawn's record is, so that write finishes before the end; a main that
-    /// still runs is ended at once with all it started, as a stop ends it. A watched tree whose
+    /// line ([`os_process::command_line`]) `writer` accepts, as a hook or a tool server still
+    /// writing the spawn's record is, so that write finishes before the end; a main that still
+    /// runs is ended at once with all it started, as a stop ends it. A watched tree whose
     /// main has exited signals nothing, and answers what the main left running as never
     /// signalled ([`crate::reap::end_watched`]). Answers what the end signalled and what it left
     /// ([`ReapedChild::end`]).
