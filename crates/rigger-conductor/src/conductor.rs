@@ -2282,7 +2282,7 @@ struct PriorFailure {
     /// that found the freshly adopted worktree genuinely dirty.
     halted_commit: String,
     /// Where the tree of the attempt that spent the unit's retry bound with work outside a
-    /// commit is kept, `commit <sha> on <branch>` ([`RunCtx::kept_at_the_bound`]): work git
+    /// commit is kept, `commit <sha> on <kept ref>` ([`RunCtx::kept_at_the_bound`]): work git
     /// refused a step on ([`RunCtx::charge_refused_work`]) or a plan its planner left
     /// uncommitted. Read by the escalation lesson alone, so no record or prompt carries it.
     kept: String,
@@ -2359,7 +2359,10 @@ impl PriorFailure {
             ));
         }
         if !self.kept.trim().is_empty() {
-            parts.push(format!("the tree it left is kept as {}", self.kept.trim()));
+            parts.push(format!(
+                "the tree it left is kept as {}, off the unit's branch",
+                self.kept.trim()
+            ));
         }
         parts.join("; ")
     }
@@ -5931,8 +5934,8 @@ impl RunCtx<'_> {
         // Git refusing a step on the unit's own work ended the attempt `open` holds: it is
         // charged like a failed gate, the REQUIRED list it owed still owed, and the tree is kept
         // for the next attempt, which a release of the run's hold launches with the refusal in
-        // its prompt. The attempt that spends the bound escalates with its work committed onto
-        // the unit's branch, and its tree goes as any escalated unit's does.
+        // its prompt. The attempt that spends the bound escalates with its work kept on the
+        // unit's kept ref, off its branch, and its tree goes as any escalated unit's does.
         let refused = matches!(&result, Err(e) if refused_unit_work(e));
         let result = match result {
             Err(e) if refused => self.charge_refused_work(st, wt.as_ref(), &dir, &open, &e),
@@ -5973,9 +5976,11 @@ impl RunCtx<'_> {
             // the merged work lives in the base now. An un-integrated unit (Ok(false),
             // an Err, a pause/escalation, or a crash before this line) KEEPS its branch.
             // Deletion happens after the worktree dir is removed, since git refuses to
-            // delete a branch that is still checked out in a worktree.
+            // delete a branch that is still checked out in a worktree. The unit's kept ref
+            // ([`Worktree::keep_tree_aside`]) goes with its branch.
             if matches!(result, Ok(true)) {
                 let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
+                let _ = worktree::delete_kept(&self.deps.repo, &w.branch);
             }
         }
         result
@@ -7822,7 +7827,8 @@ impl RunCtx<'_> {
                             // hook - which nothing would land: the same refusal of its output as
                             // a scope violation, retried in this same tree, where the work still
                             // is. The attempt that spends the bound keeps that work on the
-                            // unit's branch before the escalation removes the tree.
+                            // unit's kept ref, off its branch, before the escalation removes the
+                            // tree.
                             cause = CAUSE_REJECT.to_string();
                             next.review_reason = format!(
                                 "{}\n\ngit status in {} reads:\n{status}",
@@ -8221,8 +8227,8 @@ impl RunCtx<'_> {
     /// naming the attempt, so the run is held for the orchestrator and its release launches the
     /// next attempt, in the tree the caller keeps for it with the work it held at the refusal.
     /// The attempt that spends the bound has no next attempt to continue that tree: its work
-    /// is committed onto the unit's branch first ([`Self::kept_at_the_bound`]), where the
-    /// escalation hands the unit to a person, its lesson naming the commit, and the unit
+    /// is kept first on the unit's kept ref, off its branch ([`Self::kept_at_the_bound`]), where
+    /// the escalation hands the unit to a person, its lesson naming the commit, and the unit
     /// escalates (`Ok(false)`, no hold), the caller removing the tree as it removes any
     /// escalated unit's.
     fn charge_refused_work(
@@ -8258,10 +8264,12 @@ impl RunCtx<'_> {
     /// failed with work its tree holds outside a commit, `what` saying whose (work git refused a
     /// step on, a plan its planner left uncommitted). When that attempt spends the unit's retry
     /// bound, no next attempt continues the tree and the escalation removes it, so its work is
-    /// committed onto the unit's branch first ([`Worktree::keep_tree_on_branch`]), exactly as the
-    /// attempt left it. Returns where, `commit <sha> on <branch>`, for the escalation lesson
-    /// ([`PriorFailure::kept`]); empty when the attempt does not spend the bound or the unit has
-    /// no tree. A commit git cannot make ends the drive on that fault, uncharged, the tree kept.
+    /// kept first on the unit's kept ref ([`Worktree::keep_tree_aside`]), exactly as the attempt
+    /// left it, the unit's branch left at its last guarded tip so nothing git refused enters the
+    /// history a later attempt builds on or lands. Returns where, `commit <sha> on <kept ref>`,
+    /// for the escalation lesson ([`PriorFailure::kept`]); empty when the attempt does not spend
+    /// the bound, the unit has no tree, or the tree holds nothing its branch lacks. A keep git
+    /// cannot make ends the drive on that fault, uncharged, the tree kept.
     fn kept_at_the_bound(
         &self,
         st: &Stage,
@@ -8273,11 +8281,13 @@ impl RunCtx<'_> {
         let (safety::Decision::Escalate, Some(w)) = (next.decision, wt) else {
             return Ok(String::new());
         };
-        let commit = git_step(w.keep_tree_on_branch(&format!(
+        let kept = git_step(w.keep_tree_aside(&format!(
             "wip({}): tree of attempt {}, {what}",
             st.name, next.attempts
         )))?;
-        Ok(format!("commit {commit} on {}", w.branch))
+        Ok(kept
+            .map(|kept| format!("commit {} on {}", kept.commit, kept.reference))
+            .unwrap_or_default())
     }
 
     /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
@@ -8789,9 +8799,11 @@ impl RunCtx<'_> {
             )?;
             self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
             // The winner's work merged into the base: tear down its worktree and branch too,
-            // exactly as the single-lane path deletes an integrated unit's branch.
+            // exactly as the single-lane path deletes an integrated unit's branch, and the
+            // unit's kept ref with them.
             let _ = candidates[i].wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
+            let _ = worktree::delete_kept(&self.deps.repo, &unit_branch(&st.name));
             return Ok(true);
         }
 
@@ -11057,6 +11069,7 @@ impl RunCtx<'_> {
                     let _ =
                         worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch, &scratch);
                     let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+                    let _ = worktree::delete_kept(&self.deps.repo, &branch);
                 } else {
                     log(&format!(
                         "rigger: branch-gc: kept branch {branch:?} - {}",
@@ -11064,6 +11077,19 @@ impl RunCtx<'_> {
                     ));
                 }
             }
+        }
+        // A ref rigger holds aside, kept or orphaned, whose tip HEAD's history holds carries
+        // nothing HEAD lacks, so it is reaped: the quarantine's own rule for a branch it would
+        // move aside. One holding commits HEAD lacks stays for a person.
+        match worktree::reap_held_refs(&self.deps.repo, "HEAD") {
+            Ok(reaped) => {
+                for name in reaped {
+                    log(&format!(
+                        "rigger: branch-gc: removed {name:?} - HEAD's history holds its tip"
+                    ));
+                }
+            }
+            Err(e) => log(&format!("rigger: branch-gc: held refs not read: {}", e.0)),
         }
     }
 
@@ -13708,8 +13734,10 @@ impl RunCtx<'_> {
     /// is the step that clears the `branch_exists(branch)` re-entry gate, so a crash before it
     /// leaves a retry to redo it. Only an occupant with commits HEAD lacks is quarantined. A
     /// quarantine ref already at the occupant's tip means an earlier call crashed partway
-    /// through its quarantine, so the retry finishes that quarantine even if HEAD has since
-    /// gained the tip, and the ref never stands unrecorded.
+    /// through its quarantine, so the retry finishes that quarantine, and the ref never stands
+    /// unrecorded. Branch collection reaps such a ref as the run starts once HEAD has gained
+    /// its tip ([`worktree::reap_held_refs`]), so the occupant then goes as one HEAD holds; a
+    /// ref that reap could not remove is still finished and recorded.
     ///
     /// A STAGE THAT SERVES NO CRITERION SHARES ONE NAME ACROSS RUNS: plan, plan-critique and
     /// check-in carry no criterion id, so [`unit_branch`] maps each to the same bare ref under
@@ -13763,6 +13791,10 @@ impl RunCtx<'_> {
                 // (criterion_id, spec) the QUARANTINED content actually belongs to,
                 // never this call's own st.criterion_id/spec.
                 let (owner_criterion, owner_spec) = owner.unwrap_or_default();
+                // The earlier unit's kept tree ([`Worktree::keep_tree_aside`]) is its own, never
+                // this unit's: it moves to the quarantine namespace first, so this unit's keep
+                // and its integration's reap never touch it.
+                git_step(worktree::set_kept_aside(&self.deps.repo, &branch))?;
                 let tip = git_step(worktree::branch_tip(&self.deps.repo, &branch))?;
                 let quarantine = quarantine_branch_name(&st.name, &tip);
                 let quarantine_begun =
@@ -13826,7 +13858,7 @@ impl RunCtx<'_> {
         let prior_branch = unit_branch(&prior);
         let tip = if git_step(worktree::branch_present(&self.deps.repo, &prior_branch))? {
             git_step(worktree::branch_tip(&self.deps.repo, &prior_branch))?
-        } else if let Some(quarantine) =
+        } else if let Some((quarantine, recorded)) =
             quarantined_branch(&events, &prior, &st.criterion_id, &spec)
         {
             // The candidate's canonical branch was moved aside by a LATER, unrelated
@@ -13835,8 +13867,17 @@ impl RunCtx<'_> {
             // here is a genuine defect (a failed git step: the run halts and is held for
             // a person), never another silent "nothing to adopt" - spec 88's own
             // Operator rule: "a unit's reviewed history is never discarded by the
-            // harness."
-            git_step(worktree::branch_tip(&self.deps.repo, &quarantine))?
+            // harness." A quarantine ref branch collection reaped held nothing HEAD lacks
+            // ([`worktree::reap_held_refs`]), so its recorded tip, which HEAD's history holds,
+            // is adopted.
+            let reaped = !recorded.is_empty()
+                && !git_step(worktree::branch_present(&self.deps.repo, &quarantine))?
+                && git_step(worktree::in_history(&self.deps.repo, &recorded, "HEAD"))?;
+            if reaped {
+                recorded
+            } else {
+                git_step(worktree::branch_tip(&self.deps.repo, &quarantine))?
+            }
         } else {
             // The prior unit's durable branch is gone with no quarantine trail either
             // (manually pruned, or the prior process never actually committed one
@@ -16093,7 +16134,7 @@ fn write_lookup_pointer(b: &mut String) {
 /// that needs a unit's branch derives it here rather than re-deriving the convention a
 /// second time.
 pub fn unit_branch(unit_id: &str) -> String {
-    format!("rigger/u/{}", sanitize_for_path(unit_id))
+    format!("{}{}", worktree::UNIT_BRANCHES, sanitize_for_path(unit_id))
 }
 
 /// The DETERMINISTIC worktree dir for a unit (Gap 12, spec 06): `<scratch-root>/
@@ -16467,11 +16508,7 @@ fn branch_is_foreign(owner: &Option<(String, String)>, criterion_id: &str, spec:
 /// collision against a DIFFERENT foreign tip on a later run lands at a DIFFERENT
 /// quarantine name instead of colliding with an earlier quarantine of the same literal id.
 fn quarantine_branch_name(unit_id: &str, tip: &str) -> String {
-    format!(
-        "rigger/orphaned/{}-{}",
-        sanitize_for_path(unit_id),
-        &tip[..tip.len().min(12)]
-    )
+    worktree::orphaned_ref(&sanitize_for_path(unit_id), tip)
 }
 
 /// Every durable [`STATUS_REVIEW_ROUND_START`] mark [`RunCtx::review_round_start_sha`]
@@ -16804,14 +16841,15 @@ fn recorded_adoption(
 /// [`prior_criterion_unit`] still (correctly) names this bare unit id for, resolves its
 /// real reviewed work here instead of reading the deleted canonical name as "never
 /// existed". Mirrors [`recorded_adoption`]'s own read shape and matching rules exactly
-/// (whole-stream fold, `(id, status, criterion_id, spec)` all required to agree). `None`
-/// when this exact triple was never quarantined.
+/// (whole-stream fold, `(id, status, criterion_id, spec)` all required to agree). Answers the
+/// ref and the tip it was quarantined at (empty when the record names none); `None` when this
+/// exact triple was never quarantined.
 fn quarantined_branch(
     events: &[Event],
     unit: &str,
     criterion_id: &str,
     spec: &str,
-) -> Option<String> {
+) -> Option<(String, String)> {
     events.iter().find_map(|e| {
         if e.type_ != ledger::TYPE_UNIT_STATUS {
             return None;
@@ -16829,10 +16867,10 @@ fn quarantined_branch(
         {
             return None;
         }
-        v.get("quarantined_to")?
-            .get("branch")?
-            .as_str()
-            .map(str::to_string)
+        let to = v.get("quarantined_to")?;
+        let branch = to.get("branch")?.as_str()?.to_string();
+        let tip = to.get("tip").and_then(Value::as_str).unwrap_or_default();
+        Some((branch, tip.to_string()))
     })
 }
 

@@ -53,6 +53,7 @@ const ALLOW_LIST: &[Allowed] = &[
         &[
             "settled: a completed gate battery acted on {} verdict row(s)",
             "recovered a halted spawn's tree as commit {}",
+            "the tree it left is kept as {}, off the unit's branch",
             "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budg",
             "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned N",
             "{DEGENERATE_MARKER}stage {stage:?} {tier} {agent:?} returned",
@@ -89,6 +90,8 @@ const ALLOW_LIST: &[Allowed] = &[
             "plan-critique {gate:?} stopped the run: its {} reject at att",
             "rigger: branch-gc: removing branch {branch:?} - {}",
             "rigger: branch-gc: kept branch {branch:?} - {}",
+            "rigger: branch-gc: removed {name:?} - HEAD's history holds i",
+            "rigger: branch-gc: held refs not read: {}",
             "deferred gate {gid:?} failed at the phase boundary: {}",
             "integrate {}: the run branch moved under every one of {pass}",
             "integrate conflict unresolved after {CONFLICT_RESOLVE_BOUND}",

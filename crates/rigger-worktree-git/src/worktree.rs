@@ -111,6 +111,29 @@ pub enum LandOutcome {
     Blocked(Vec<String>),
 }
 
+/// The namespace a unit's branch stands in: `rigger/u/<unit>`.
+pub const UNIT_BRANCHES: &str = "rigger/u/";
+
+/// The namespace a unit's kept tree stands in ([`Worktree::keep_tree_aside`]): `rigger/kept/<unit>`.
+pub const KEPT_REFS: &str = "rigger/kept/";
+
+/// The namespace rigger moves a ref of a unit's into when that ref must make way and holds
+/// commits HEAD lacks: `rigger/orphaned/<unit>-<12-char tip>` ([`orphaned_ref`]).
+pub const ORPHANED_REFS: &str = "rigger/orphaned/";
+
+/// The file name, in a tree's git directory, of the index [`Worktree::keep_tree_aside`] stages
+/// through.
+const KEPT_INDEX: &str = "rigger-kept-index";
+
+/// A tree kept aside ([`Worktree::keep_tree_aside`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kept {
+    /// The ref that holds it, short form ([`kept_ref`]).
+    pub reference: String,
+    /// The commit the ref holds.
+    pub commit: String,
+}
+
 /// The outcome of [`Worktree::merge_into_worktree`] (spec 88, criterion 1 round 4, TABLE row
 /// 1: "conflict detection"). This is the FRONT HALF of what a single pre-round-4 `integrate`
 /// method used to do in one call - merging the run branch's tip into the unit's own worktree
@@ -728,64 +751,67 @@ impl Worktree {
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    /// Commit the tree as it stands onto the unit's branch, with no hook and no guard, for the
-    /// attempt that spent the unit's retry bound with work outside a commit (work git refused a
-    /// step on, a plan its planner left uncommitted): the escalation removes the tree, and this
-    /// commit is where its work is kept. It takes every
-    /// path `git add -A` would stage, through an index of its own in the tree's git directory
-    /// (the tree's own index is left as it is, a lock on it included), on a commit whose first
-    /// parent is the branch's tip, with HEAD and the merge in progress (`MERGE_HEAD`) as
-    /// further parents when the tip's history lacks them, so every commit the tree reached
-    /// stays reachable from the branch. Returns the branch's tip after: the new commit, or the
-    /// tip unchanged when the tree holds nothing it lacks.
-    pub fn keep_tree_on_branch(&self, message: &str) -> Result<String, Error> {
+    /// Keep the tree as it stands on its kept ref ([`kept_ref`]), off the unit's branch, with no
+    /// hook and no guard, for the attempt that spent the unit's retry bound with work outside a
+    /// commit (work git refused a step on, a plan its planner left uncommitted): the escalation
+    /// removes the tree, and this commit is where its work is kept. It takes every path
+    /// `git add -A` would stage, through an index of its own in the tree's git directory (the
+    /// tree's own index is left as it is, a lock on it included, and a lock a cut-off keep left on
+    /// its own is cleared first), on one commit whose one parent is the tree's HEAD. The unit's
+    /// branch never moves, wherever HEAD stands: content git refused never enters the branch's
+    /// history, and a merge in progress is no parent, so git still meets its conflict when the
+    /// branch is checked out again. A clean tree whose HEAD the branch's tip is not is kept as
+    /// HEAD itself; a clean tree at the tip keeps nothing (`None`). A kept ref already holding
+    /// another commit is set aside first ([`set_kept_aside`]), so no kept tree is lost. Every
+    /// failure names the step, the branch and the ref on its first line, the same each time.
+    pub fn keep_tree_aside(&self, message: &str) -> Result<Option<Kept>, Error> {
+        let reference = kept_ref(&self.branch);
+        self.keep_on(&reference, message).map_err(|e| {
+            step_failed(
+                format!("keeping the tree of {} on {reference}", self.branch),
+                e,
+            )
+        })
+    }
+
+    /// [`Self::keep_tree_aside`] onto `reference`.
+    fn keep_on(&self, reference: &str, message: &str) -> Result<Option<Kept>, Error> {
         let tip = branch_tip(&self.repo, &self.branch)?;
         let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
-        let merging = finish_git_query(start_git(
-            &self.dir,
-            &["rev-parse", "--verify", "-q", "MERGE_HEAD"],
-        ))
-        .map_err(|out| {
-            Error(format!(
-                "rev-parse MERGE_HEAD: {}",
-                String::from_utf8_lossy(&out)
-            ))
-        })?
-        .map(|out| String::from_utf8_lossy(&out).trim().to_string());
-        let mut parents = vec![tip.clone()];
-        for reached in std::iter::once(head).chain(merging) {
-            if !parents.contains(&reached) && !in_history(&self.dir, &reached, &tip)? {
-                parents.push(reached);
-            }
-        }
-        let index = git(&self.dir, &["rev-parse", "--git-path", "rigger-kept-index"])?;
+        let index = git(&self.dir, &["rev-parse", "--git-path", KEPT_INDEX])?;
         let index = std::path::Path::new(&self.dir).join(index.trim());
+        let lock = index.with_file_name(format!("{KEPT_INDEX}.lock"));
+        for stray in [&index, &lock] {
+            remove_if_present(stray)?;
+        }
         let staged = staged_tree(&self.dir, &index);
         let _ = std::fs::remove_file(&index);
         let tree = staged?;
-        if parents.len() == 1
-            && git(&self.dir, &["rev-parse", &format!("{tip}^{{tree}}")])?.trim() == tree
-        {
-            return Ok(tip);
+        let commit = if git(&self.dir, &["rev-parse", "HEAD^{tree}"])?.trim() == tree {
+            if head == tip {
+                return Ok(None);
+            }
+            head
+        } else {
+            git(
+                &self.dir,
+                &["commit-tree", &tree, "-p", &head, "-m", message],
+            )?
+            .trim()
+            .to_string()
+        };
+        let full = format!("refs/heads/{reference}");
+        if ref_commit(&self.repo, &full)?.as_deref() != Some(commit.as_str()) {
+            set_kept_aside(&self.repo, &self.branch)?;
+            git(
+                &self.repo,
+                &["update-ref", "-m", message, &full, &commit, ""],
+            )?;
         }
-        let mut args = vec!["commit-tree", tree.as_str()];
-        for parent in &parents {
-            args.extend(["-p", parent.as_str()]);
-        }
-        args.extend(["-m", message]);
-        let commit = git(&self.dir, &args)?.trim().to_string();
-        git(
-            &self.repo,
-            &[
-                "update-ref",
-                "-m",
-                message,
-                &format!("refs/heads/{}", self.branch),
-                &commit,
-                &tip,
-            ],
-        )?;
-        Ok(commit)
+        Ok(Some(Kept {
+            reference: reference.to_string(),
+            commit,
+        }))
     }
 
     /// The staged paths whose index content carries conflict-marker text the in-progress merge
@@ -1601,16 +1627,114 @@ pub fn ref_resolves(repo: &str, r: &str) -> bool {
     ref_present(repo, r).unwrap_or(false)
 }
 
-/// Whether `r` resolves to a commit in `repo`, read fail-closed: `Ok(false)` only when git
-/// answers that it does not, and an error when git cannot answer (it cannot start, `repo` cannot
-/// be entered or holds no repository, or git ends any other way), so a caller about to clear what
-/// sits at a path never reads a failed read as absence.
+/// Whether `r` resolves to a commit in `repo`, read fail-closed ([`ref_commit`]).
 fn ref_present(repo: &str, r: &str) -> Result<bool, Error> {
+    ref_commit(repo, r).map(|commit| commit.is_some())
+}
+
+/// The commit `r` resolves to in `repo`, read fail-closed: `Ok(None)` only when git answers that
+/// it resolves to none, and an error when git cannot answer (it cannot start, `repo` cannot be
+/// entered or holds no repository, or git ends any other way), so a caller about to clear what
+/// sits at a path never reads a failed read as absence.
+fn ref_commit(repo: &str, r: &str) -> Result<Option<String>, Error> {
     let commit = format!("{r}^{{commit}}");
     let args = ["rev-parse", "--verify", "--quiet", commit.as_str()];
     finish_git_query(start_git(repo, &args))
-        .map(|answer| answer.is_some())
+        .map(|answer| answer.map(|out| String::from_utf8_lossy(&out).trim().to_string()))
         .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
+}
+
+/// The ref the tree of the unit whose branch is `branch` is kept on ([`Worktree::keep_tree_aside`]):
+/// `rigger/kept/<unit>` for `rigger/u/<unit>`. It stands outside the unit branches, so nothing that
+/// reads or lands a unit's branch reads it.
+pub fn kept_ref(branch: &str) -> String {
+    let unit = branch.strip_prefix(UNIT_BRANCHES).unwrap_or(branch);
+    format!("{KEPT_REFS}{unit}")
+}
+
+/// The name a ref of `unit`'s (its sanitized id) whose tip is `tip` stands under once rigger moves
+/// it out of the way: `rigger/orphaned/<unit>-<12-char tip>`. Keyed on the tip, so a ref moved at
+/// one tip never collides with one moved at another.
+pub fn orphaned_ref(unit: &str, tip: &str) -> String {
+    format!("{ORPHANED_REFS}{unit}-{}", &tip[..tip.len().min(12)])
+}
+
+/// Set aside the kept ref of the unit whose branch is `branch` ([`kept_ref`]): its commit moves to
+/// [`orphaned_ref`], which only a person or [`reap_held_refs`] removes, and the kept ref is
+/// deleted. Answers where it now stands, or `None` when there is no kept ref. A repeat after a
+/// cut-off one finishes it.
+pub fn set_kept_aside(repo: &str, branch: &str) -> Result<Option<String>, Error> {
+    let kept = kept_ref(branch);
+    let full = format!("refs/heads/{kept}");
+    let Some(tip) = ref_commit(repo, &full)? else {
+        return Ok(None);
+    };
+    let aside = orphaned_ref(kept.strip_prefix(KEPT_REFS).unwrap_or(&kept), &tip);
+    let aside_full = format!("refs/heads/{aside}");
+    if !ref_present(repo, &aside_full)? {
+        git(repo, &["update-ref", &aside_full, &tip, ""])?;
+    }
+    git(repo, &["update-ref", "-d", &full, &tip])?;
+    Ok(Some(aside))
+}
+
+/// Delete the kept ref of the unit whose branch is `branch` ([`kept_ref`]), when there is one:
+/// called where the unit's branch is reaped once its work has landed.
+pub fn delete_kept(repo: &str, branch: &str) -> Result<(), Error> {
+    let full = format!("refs/heads/{}", kept_ref(branch));
+    if let Some(tip) = ref_commit(repo, &full)? {
+        git(repo, &["update-ref", "-d", &full, &tip])?;
+    }
+    Ok(())
+}
+
+/// Every ref rigger holds aside in `repo`, kept ([`KEPT_REFS`]) and orphaned ([`ORPHANED_REFS`]),
+/// each with its tip, sorted by name.
+pub fn held_refs(repo: &str) -> Result<Vec<(String, String)>, Error> {
+    let kept = format!("refs/heads/{KEPT_REFS}");
+    let orphaned = format!("refs/heads/{ORPHANED_REFS}");
+    let listed = git(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short) %(objectname)",
+            &kept,
+            &orphaned,
+        ],
+    )?;
+    let mut held: Vec<(String, String)> = listed
+        .lines()
+        .filter_map(|line| line.trim().rsplit_once(' '))
+        .map(|(name, tip)| (name.to_string(), tip.to_string()))
+        .collect();
+    held.sort();
+    Ok(held)
+}
+
+/// Delete every ref rigger holds aside ([`held_refs`]) whose tip `head`'s history holds, so it holds
+/// nothing `head` lacks; answers the refs deleted. A ref holding commits `head` lacks stays.
+pub fn reap_held_refs(repo: &str, head: &str) -> Result<Vec<String>, Error> {
+    let mut reaped = Vec::new();
+    for (name, tip) in held_refs(repo)? {
+        if in_history(repo, &tip, head)? {
+            git(
+                repo,
+                &["update-ref", "-d", &format!("refs/heads/{name}"), &tip],
+            )?;
+            reaped.push(name);
+        }
+    }
+    Ok(reaped)
+}
+
+/// Remove the file at `path` when it is there; any other failure is an error naming the path.
+fn remove_if_present(path: &std::path::Path) -> Result<(), Error> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(step_failed(format!("removing {}", path.display()), e))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Whether the repo-relative `path` exists in the tree of the commit `base_ref` names -
@@ -1797,7 +1921,7 @@ pub fn unit_branches(repo: impl AsRef<std::ffi::OsStr>) -> Vec<String> {
         git.args([
             "for-each-ref",
             "--format=%(refname:short)",
-            "refs/heads/rigger/u/",
+            &format!("refs/heads/{UNIT_BRANCHES}"),
         ])
         .output()
     });
@@ -2229,7 +2353,7 @@ pub fn sweep_terminal_logged(
                 // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
                 // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
                 // dead/live-slug split already makes for a branch in this exact shape.
-                let unit = branch.strip_prefix("rigger/u/").unwrap_or(branch);
+                let unit = branch.strip_prefix(UNIT_BRANCHES).unwrap_or(branch);
                 let fence = spawn_fence(events, unit);
                 if !fence.permits_reclaim() {
                     log(&format!(
@@ -3176,7 +3300,7 @@ fn step_failed(step: impl std::fmt::Display, answer: impl std::fmt::Display) -> 
 }
 
 /// The tree `git add -A` stages over HEAD in the tree rooted at `dir`, written through the index
-/// at `index` rather than the tree's own ([`Worktree::keep_tree_on_branch`]).
+/// at `index` rather than the tree's own ([`Worktree::keep_tree_aside`]).
 fn staged_tree(dir: &str, index: &std::path::Path) -> Result<String, Error> {
     let with_index = |args: &[&str]| -> Result<String, Error> {
         let mut command = crate::subprocess::git_in(dir).map_err(|e| git_failed(args, e))?;
@@ -8083,8 +8207,8 @@ mod tests {
     /// when the tree holds nothing its branch lacks.
     fn keep(wt: &Worktree) -> Result<Option<(String, String)>, Error> {
         let unit = wt.branch.strip_prefix("rigger/u/").unwrap();
-        let commit = wt.keep_tree_on_branch(&format!("wip({unit}): kept"))?;
-        Ok(Some((format!("rigger/kept/{unit}"), commit)))
+        let kept = wt.keep_tree_aside(&format!("wip({unit}): kept"))?;
+        Ok(kept.map(|kept| (kept.reference, kept.commit)))
     }
 
     /// [`keep`], which must succeed.
