@@ -301,8 +301,9 @@ pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 /// of, in the producer's output. Each is an exec-form hook, `command` the program `rigger_bin` and
 /// `args` the words after it, which Claude Code spawns with that argument vector and no shell on
 /// every OS (<https://code.claude.com/docs/en/hooks>), so `rigger_bin`, `spawn`, each root, `dir`,
-/// the branch and the output reach rigger as written whatever they hold, and the hook's exit
-/// status is rigger's own.
+/// the branch and the output reach rigger as written, save that the host substitutes its own path
+/// placeholders (such as `${CLAUDE_PROJECT_DIR}`) into each, and the hook's exit status is
+/// rigger's own. The `args` field needs the host at 2.1.139 or later.
 /// `existing` may be empty.
 pub fn install_spawn_hooks(
     existing: &[u8],
