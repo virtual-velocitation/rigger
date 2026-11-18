@@ -142,9 +142,10 @@ pub struct Mention {
     pub enclosing: Option<u32>,
     /// The name as written ("bar", "Foo::bar", "crate::x::bar").
     pub name: String,
-    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by. It is
-    /// always the bare leaf, never holding `::`, `.`, `<` or `>`, and equals `name` for a mention
-    /// written with no qualifier (spec 117, CAPTURES).
+    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by: the
+    /// reference's name as its extractor gives it, without its qualifier, so it equals `name` for
+    /// a mention written with no qualifier. A bundled grammar's never holds `::`, `.`, `<` or `>`
+    /// (spec 117, CAPTURES).
     pub leaf: String,
     pub kind: MentionKind,
     pub line: u32,

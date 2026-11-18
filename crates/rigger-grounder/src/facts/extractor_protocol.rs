@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
-use rigger_domain::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+use rigger_domain::contextgraph::reference_candidate_kinds;
 use rigger_process::subprocess;
 use serde::{Deserialize, Serialize};
 
@@ -93,7 +93,7 @@ pub(super) fn request_line(path: &str, text: &str) -> String {
 
 /// One answer of THE EXTRACTOR PROTOCOL as it parses: the path it is for, and the error the
 /// extractor met or the file's definitions and references in the bundled extraction's own forms,
-/// with whether they cover only part of the file.
+/// with whether they cover only part of the file and the lines of the file's own doc comment.
 #[derive(Deserialize)]
 struct Answer {
     path: String,
@@ -102,20 +102,23 @@ struct Answer {
     refs: Option<Vec<SymRef>>,
     #[serde(default)]
     partial: bool,
+    #[serde(default)]
+    doc: Option<(u32, u32)>,
 }
 
 /// The symbols the answer line `line` gives the request for the file at `path` holding `text`,
 /// or why THE EXTRACTOR PROTOCOL refuses it. Checked in order: the line parses as an answer; it is
-/// for `path`; it holds no error; it holds both lists; each def has a name and a path, a line from
-/// 1 to the text's last - one more than the `\n` the text holds - and an end line from its line to
-/// the last, and none of the out-of-line module fields only the bundled Rust grammar sets; each
-/// ref has a name, a line from 1 to the last and, when it has a kind, one of `const`, `type` and
-/// `use`; and no def path leads back to itself through the parents ([`parent_cycle`]). The why
-/// quotes each text the extractor wrote into it - the answer's path, its error, a ref's kind, the
-/// def path a cycle runs through - so
-/// a line break or terminal escape there is escaped and the line saying the why stays one line.
-/// The protocol carries no doc span (spec 117, DOC FACTS), so the symbols hold none, the file's
-/// or a def's, whatever the answer writes.
+/// for `path`; it holds no error; it holds both lists; the file's doc span, when it has one, is
+/// within the text's lines ([`outside`]) - from 1 to the last, one more than the `\n` the text
+/// holds; each def has a name and a path, its line and end line within them, its doc span, when it
+/// has one, within them, and none of the out-of-line module fields only the bundled Rust grammar
+/// sets; each ref has a name, a qualifier, when it has one, that is not empty, a line from 1 to the
+/// last and, when it has a kind, a tagged mention kind, one whose references
+/// [`reference_candidate_kinds`] resolves onto definitions; and no def path leads back to itself
+/// through the parents ([`parent_cycle`]). The why quotes each text the extractor wrote into it -
+/// the answer's path, its error, a ref's kind, the def path a cycle runs through - so a line break
+/// or terminal escape there is escaped and the line saying the why stays one line. The symbols
+/// hold the doc spans, the file's and each def's, as the answer writes them (spec 117, DOC FACTS).
 pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, String> {
     let answer: Answer =
         serde_json::from_str(line).map_err(|e| format!("the answer does not parse: {e}"))?;
@@ -125,10 +128,13 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
     if let Some(error) = answer.error {
         return Err(format!("the answer is an error: {error:?}"));
     }
-    let (Some(mut defs), Some(refs)) = (answer.defs, answer.refs) else {
+    let (Some(defs), Some(refs)) = (answer.defs, answer.refs) else {
         return Err("the answer holds no error and lacks defs or refs".to_string());
     };
     let last = text.matches('\n').count() as u32 + 1;
+    if let Some(why) = answer.doc.and_then(|doc| outside(doc, last, DOC_BOUNDS)) {
+        return Err(format!("the file's {why}"));
+    }
     for (i, def) in defs.iter().enumerate() {
         if def.name.is_empty() {
             return Err(format!("defs[{i}]: the name is empty"));
@@ -136,17 +142,10 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
         if def.path.is_empty() {
             return Err(format!("defs[{i}]: the path is empty"));
         }
-        if !(1..=last).contains(&def.line) {
-            return Err(format!(
-                "defs[{i}]: line {} is outside 1..={last}",
-                def.line
-            ));
-        }
-        if !(def.line..=last).contains(&def.end_line) {
-            return Err(format!(
-                "defs[{i}]: end_line {} is outside {}..={last}",
-                def.end_line, def.line
-            ));
+        if let Some(why) = outside((def.line, def.end_line), last, ["line", "end_line"])
+            .or_else(|| def.doc.and_then(|doc| outside(doc, last, DOC_BOUNDS)))
+        {
+            return Err(format!("defs[{i}]: {why}"));
         }
         if def.is_out_of_line_module
             || def.path_override.is_some()
@@ -161,14 +160,16 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
         if r.name.is_empty() {
             return Err(format!("refs[{i}]: the name is empty"));
         }
+        if r.qualifier.as_ref().is_some_and(|q| q.name.is_empty()) {
+            return Err(format!("refs[{i}]: the qualifier is empty"));
+        }
         if !(1..=last).contains(&r.line) {
             return Err(format!("refs[{i}]: line {} is outside 1..={last}", r.line));
         }
         if let Some(kind) = &r.ref_kind {
-            if ![REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE].contains(&kind.as_str()) {
+            if reference_candidate_kinds(kind).is_empty() {
                 return Err(format!(
-                    "refs[{i}]: ref_kind {kind:?} is not {REF_KIND_CONST}, {REF_KIND_TYPE} or \
-                     {REF_KIND_USE}"
+                    "refs[{i}]: ref_kind {kind:?} is not a tagged mention kind"
                 ));
             }
         }
@@ -178,17 +179,31 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
             "the defs' parents form a cycle through {through:?}"
         ));
     }
-    // Spec 117 (DOC FACTS): the protocol carries no doc span yet, so a def's span the answer
-    // writes is dropped, and the file has none.
-    for def in &mut defs {
-        def.doc = None;
-    }
     Ok(CodeSymbols {
         defs,
         refs,
         partial: answer.partial,
-        doc: None,
+        doc: answer.doc,
     })
+}
+
+/// What [`outside`] names a doc span's first and last line by.
+const DOC_BOUNDS: [&str; 2] = ["doc start", "doc end"];
+
+/// Why the 1-based, inclusive line span `(start, end)` lies outside a text whose last line is
+/// `last`, the span's first and last line named `start_name` and `end_name`: a start outside 1 to
+/// the last line, or else an end outside the start to the last line. None when the span is within
+/// the text.
+fn outside(
+    (start, end): (u32, u32),
+    last: u32,
+    [start_name, end_name]: [&str; 2],
+) -> Option<String> {
+    if !(1..=last).contains(&start) {
+        return Some(format!("{start_name} {start} is outside 1..={last}"));
+    }
+    (!(start..=last).contains(&end))
+        .then(|| format!("{end_name} {end} is outside {start}..={last}"))
 }
 
 /// The def path a walk of `defs` from def path to parent returns to, when one does:
