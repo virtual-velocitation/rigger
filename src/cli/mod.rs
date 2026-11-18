@@ -9024,6 +9024,101 @@ mod tests {
         );
     }
 
+    /// A SPECULATION LANE IS ITS UNIT'S: the orphan sweep and `rigger validate`'s residue scan
+    /// read a lane's tree (`rigger-wt-<unit>-spec<lane>`) and branch (`rigger/u/<unit>-spec<lane>`)
+    /// as their unit's. A lane of a live unit, such as the tree a run held on a lane leaves in
+    /// place for its release, is neither reclaimed nor named residue; a dirty lane of a unit the
+    /// workflow declares is spared as the unit's own tree is, and named residue as that tree is
+    /// while no run records the unit; a lane of a terminal unit the workflow no longer declares is
+    /// named and reclaimed.
+    #[test]
+    fn the_orphan_sweep_and_the_residue_scan_read_a_speculation_lane_as_its_unit() {
+        /// Where the run stands with the lane's unit.
+        #[derive(Clone, Copy)]
+        enum Unit {
+            /// In flight.
+            Live,
+            /// Not yet recorded.
+            Unrecorded,
+            /// Integrated or escalated.
+            Terminal,
+        }
+        // Each row: where the run stands with the unit, whether the workflow declares it, whether
+        // the sweep keeps the lane's tree, and whether the scan names the tree and branch residue.
+        let cases = [
+            ("a lane of a live unit", Unit::Live, true, true, false),
+            (
+                "a dirty lane of a declared unit no run records",
+                Unit::Unrecorded,
+                true,
+                true,
+                true,
+            ),
+            (
+                "a lane of a terminal unit no longer declared",
+                Unit::Terminal,
+                false,
+                false,
+                true,
+            ),
+        ];
+        for (row, unit, declared, kept, residue) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            init_committed_repo(root, "README.md", "seed\n");
+            let repo = root.to_str().unwrap();
+            let lane = root.join("rigger-wt-held-spec1");
+            Worktree::create(repo, lane.to_str().unwrap(), "rigger/u/held-spec1", "").unwrap();
+            write_file(&lane.join("refused.txt"), b"work git refused\n");
+            let run_units = RunUnits {
+                live_branches: match unit {
+                    Unit::Live => slugs(["rigger/u/held"]),
+                    _ => slugs([]),
+                },
+                dead_slugs: match unit {
+                    Unit::Terminal => slugs(["held"]),
+                    _ => slugs([]),
+                },
+                live_spawn_leaf_names: slugs([]),
+                current_run_scratch_leaf: None,
+            };
+            let declared = if declared {
+                slugs(["rigger/u/held"])
+            } else {
+                slugs([])
+            };
+
+            let report = scan_residue(
+                root,
+                &live_slugs(&run_units.live_branches),
+                &run_units.dead_slugs,
+                &["rigger/u/held-spec1".to_string()],
+                &run_units.live_branches,
+            );
+            let removed =
+                reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared);
+
+            assert_eq!(
+                lane.join("refused.txt").exists(),
+                kept,
+                "{row}: reclaimed {removed}"
+            );
+            assert_eq!(
+                report
+                    .worktrees
+                    .iter()
+                    .any(|(name, _)| name == "rigger-wt-held-spec1"),
+                residue,
+                "{row}: {report:?}"
+            );
+            assert_eq!(
+                report.branches == ["rigger/u/held-spec1"],
+                residue,
+                "{row}: {report:?}"
+            );
+        }
+    }
+
     /// The orphan sweep keeps a tree git marks locked (a person's lock, an add git did not
     /// finish) out of its reclaim: nothing in it is reaped or removed and its registration stays,
     /// and the trees beside it are still reclaimed.

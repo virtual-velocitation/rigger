@@ -8634,6 +8634,97 @@ mod tests {
         );
     }
 
+    /// A SPECULATION LANE IS ITS UNIT'S: a lane's tree (`rigger-wt-<unit>-spec<lane>`, on
+    /// `rigger/u/<unit>-spec<lane>`) answers each of the terminal sweep's questions as its unit's
+    /// own tree does, since the lane works for its unit and its sessions are recorded as the
+    /// unit's. A lane of a live unit is spared, a dirty lane of a unit the workflow declares is
+    /// spared, and a lane whose unit's latest spawn is in flight is fenced, so a run held with a
+    /// lane's tree in place finds the tree at its release; a lane of a unit none of them names is
+    /// swept as any terminal tree is.
+    #[test]
+    fn sweep_terminal_reads_a_speculation_lanes_tree_as_its_units() {
+        let set = |names: &[&str]| -> std::collections::HashSet<String> {
+            names.iter().map(|name| name.to_string()).collect()
+        };
+        // Each row: the run's live unit branches, the workflow's declared ones, whether the unit's
+        // latest spawn is in flight, whether the lane's tree holds uncommitted work, and whether
+        // the sweep keeps the tree.
+        type Row = (
+            &'static str,
+            &'static [&'static str],
+            &'static [&'static str],
+            bool,
+            bool,
+            bool,
+        );
+        let cases: [Row; 4] = [
+            (
+                "a lane of a live unit",
+                &["rigger/u/held"],
+                &[],
+                false,
+                true,
+                true,
+            ),
+            (
+                "a dirty lane of a unit the workflow declares",
+                &[],
+                &["rigger/u/held"],
+                false,
+                true,
+                true,
+            ),
+            (
+                "a lane whose unit's latest spawn is in flight",
+                &[],
+                &[],
+                true,
+                false,
+                true,
+            ),
+            (
+                "a dirty lane of a unit no run or workflow names",
+                &[],
+                &[],
+                false,
+                true,
+                false,
+            ),
+        ];
+        for (row, live, declared, in_flight, dirty, kept) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, _wt) = unit_wt(&repo_path, &root, "held-spec1");
+            if dirty {
+                std::fs::write(std::path::Path::new(&dir).join("refused.txt"), "refused\n")
+                    .unwrap();
+            }
+            let events: Vec<Event> = if in_flight {
+                vec![requested("held")]
+            } else {
+                Vec::new()
+            };
+
+            let mut lines = Vec::new();
+            let removed = sweep_terminal_logged(
+                &repo_path,
+                &root,
+                "rigger-run",
+                &set(live),
+                &set(declared),
+                &events,
+                &mut |line| lines.push(line.to_string()),
+            )
+            .unwrap();
+
+            assert_eq!(
+                exists(&dir),
+                kept,
+                "{row}: removed {removed}, said {lines:?}"
+            );
+            assert_eq!(removed, usize::from(!kept), "{row}");
+        }
+    }
+
     #[test]
     fn sweep_terminal_prints_evidence_for_a_kept_decision_but_not_for_a_removed_no_spawn_one() {
         // Spec 83, criterion 1: "each sweep decision is attributable from the log with its
