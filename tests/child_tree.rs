@@ -1,9 +1,9 @@
 //! Table B2: a tree held by the Linux keeper, the built binary re-run as `rigger-keeper`
 //! (`crates/rigger-process/src/child_tree/linux.rs`). The handle answers the main's pid and its
-//! exact status; an end, a drop and a TERM to the keeper each leave nothing the tree started
-//! running; a release, before the main's exit or after it, leaves what the main left running; the
-//! keeper holds none of the session's streams; and a keeper that is gone or deaf is reported,
-//! never trusted, and a main a gone keeper left is reported, never signalled.
+//! exact status; an end, a finish, a drop and a TERM to the keeper each leave nothing the tree
+//! started running; a release, before the main's exit or after it, leaves what the main left
+//! running; the keeper holds none of the session's streams; and a keeper that is gone or deaf is
+//! reported, never trusted, and a main a gone keeper left is reported, never signalled.
 //! Every process a row starts is read through the FIFO witness (`common::witness`), and the test
 //! signals none of them.
 
@@ -128,16 +128,31 @@ rigger::test_cases! {
         answers_the_mains_status("read -r unused; exit 4", false, Some(4), None);
 }
 
+/// Ends a tree through the handle's end.
+fn by_the_end(mut tree: ReapedChild) -> EndReport {
+    tree.end()
+}
+
+/// Ends a tree through the host's ordinary-end call.
+fn by_the_finish(tree: ReapedChild) -> EndReport {
+    tree.finish()
+}
+
 /// The kept fixture `body`, with `up` of its processes up and then `before` done to it, is ended
-/// by the handle's end, which leaves nothing running and reports nothing: a process that ignores
-/// the end's request to exit is ended without asking once the grace passes.
-fn ends_the_tree(body: &str, up: usize, before: fn(&mut ReapedChild, &mut Witness)) {
+/// by `ending`, which leaves nothing running and reports nothing: a process that ignores the end's
+/// request to exit is ended without asking once the grace passes.
+fn ends_the_tree(
+    body: &str,
+    up: usize,
+    before: fn(&mut ReapedChild, &mut Witness),
+    ending: fn(ReapedChild) -> EndReport,
+) {
     let mut witness = Witness::new();
     let mut tree = kept(&witness, body);
     assert!(witness.wait_up(up), "the fixture's {up} processes are up");
     before(&mut tree, &mut witness);
 
-    let report = tree.end();
+    let report = ending(tree);
 
     assert_eq!(
         (witness.read(), report),
@@ -163,19 +178,33 @@ fn after_the_input_closes(tree: &mut ReapedChild, _witness: &mut Witness) {
 
 rigger::test_cases! {
     a_kept_end_ends_a_running_tree:
-        ends_the_tree("holder; up; held", 2, |_, _| {});
+        ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_end);
     a_kept_end_ends_what_an_exited_main_left:
-        ends_the_tree("holder; up", 2, after_the_main_exits);
+        ends_the_tree("holder; up", 2, after_the_main_exits, by_the_end);
     a_kept_end_ends_what_the_main_starts_as_it_exits_at_the_end_of_its_input:
-        ends_the_tree("up; read -r unused; holder; exit 0", 1, after_the_input_closes);
+        ends_the_tree(
+            "up; read -r unused; holder; exit 0",
+            1,
+            after_the_input_closes,
+            by_the_end,
+        );
     a_kept_end_ends_a_process_started_in_another_directory:
-        ends_the_tree("cd / && holder; up; held", 2, |_, _| {});
+        ends_the_tree("cd / && holder; up; held", 2, |_, _| {}, by_the_end);
     a_kept_end_ends_a_process_in_a_session_of_its_own:
-        ends_the_tree("setsid sh -c 'printf u >&9; read -r unused <&8' & up; held", 2, |_, _| {});
+        ends_the_tree(
+            "setsid sh -c 'printf u >&9; read -r unused <&8' & up; held",
+            2,
+            |_, _| {},
+            by_the_end,
+        );
     a_kept_end_ends_a_process_that_ignores_the_request_to_exit:
-        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {});
+        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {}, by_the_end);
     a_kept_end_ends_a_main_that_ignores_the_request_to_exit:
-        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {});
+        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {}, by_the_end);
+    a_kept_finish_ends_a_running_tree:
+        ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_finish);
+    a_kept_finish_ends_what_an_exited_main_left:
+        ends_the_tree("holder; up", 2, after_the_main_exits, by_the_finish);
 }
 
 #[test]

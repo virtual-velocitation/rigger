@@ -682,8 +682,9 @@ mod tests {
     }
 
     /// A watched tree running `body`, finished once `up` of its processes are up and, where
-    /// `exited`, once its main has exited, leaves the witness reading `left`.
-    fn finishes(body: &str, up: usize, exited: bool, left: Reading) {
+    /// `exited`, once its main has exited, leaves the witness reading `left`, reports `skipped`
+    /// processes it found and never signalled, and leaves nothing it signalled running.
+    fn finishes(body: &str, up: usize, exited: bool, left: Reading, skipped: usize) {
         let mut witness = Witness::new();
         let mut tree = watched(&witness, body);
         assert!(witness.wait_up(up), "the fixture's {up} processes are up");
@@ -696,15 +697,20 @@ mod tests {
 
         let report = tree.finish();
 
-        assert_eq!((witness.read(), report), (left, EndReport::default()));
+        assert_eq!(
+            (witness.read(), report.residue, report.skipped.len()),
+            (left, vec![], skipped)
+        );
         assert_eq!(witness.release(), Reading::Ended);
     }
 
     crate::test_cases! {
-        a_finished_tree_whose_main_exited_leaves_what_it_started_running:
-            finishes("holder; up", 2, true, Reading::Held);
+        // The main outlives the holder's start by a second, four of the watch's walks, so the
+        // watch has seen the holder before the main exits; the end then signals nothing.
+        a_finished_tree_whose_main_exited_reports_what_it_left_and_signals_nothing:
+            finishes("holder; up; sleep 1", 2, true, Reading::Held, 1);
         a_finished_tree_whose_main_runs_is_ended:
-            finishes("holder; up; held", 2, false, Reading::Ended);
+            finishes("holder; up; held", 2, false, Reading::Ended, 0);
     }
 
     /// A hold the OS will not let go, as a Windows job whose limit cannot be cleared is: its

@@ -1309,8 +1309,9 @@ mod forks_at_stop {
     enum Leaves {
         /// Nothing the session started.
         Nothing,
-        /// The process the session started before its result, which an ordinary end leaves
-        /// alone, or one that left a watched tree before the watch saw it.
+        /// The process the session started before its result, which a watched tree's ordinary
+        /// end leaves alone (its main has exited), or one that left a watched tree before the
+        /// watch saw it.
         TheLeftover,
         /// The process the watch saw leave the session's tree: left running, never signalled, and
         /// named in the end's progress line.
@@ -1500,9 +1501,9 @@ mod forks_at_stop {
         a_stop_ends_a_process_started_in_another_directory:
             ends_at(Window::Silence(1), "chdir", Duration::from_secs(1), 2, Leaves::Nothing);
         // An ordinary end at the production grace, which it never waits: the result returns within
-        // the read's 1 s and two 2 s joins, and the process still holding the pipes runs on.
-        a_result_returns_promptly_and_leaves_a_leftover_alone:
-            ends_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::TheLeftover);
+        // the read's 1 s and two 2 s joins, and the end ends the process still holding the pipes.
+        a_result_returns_promptly_and_ends_what_the_session_left:
+            ends_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::Nothing);
         // Watched: the end freezes the tree and asks nothing of it, so no trap of the session's
         // runs.
         a_watched_init_fault_ends_the_session_without_running_its_term_trap:
@@ -1545,6 +1546,8 @@ mod forks_at_stop {
                 2,
                 Leaves::TheEscapee,
             );
+        // A watched tree's main has exited at its result, so the end signals nothing and the
+        // process holding the pipes runs on.
         a_watched_result_returns_promptly_and_leaves_a_leftover_alone:
             ends_watched_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::TheLeftover);
     }
