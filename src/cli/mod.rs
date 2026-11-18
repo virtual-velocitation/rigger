@@ -9158,6 +9158,78 @@ mod tests {
         write_file(&dir.join("work.txt"), b"work\n");
     }
 
+    /// The orphan sweep keeps the scratch siblings of a tree git marks (its build caches, its
+    /// store fence, its review cache and its gate scratch root) as it keeps the tree, the rule
+    /// the terminal sweep keeps them by, and still reclaims the siblings of a tree git does not
+    /// mark.
+    #[test]
+    fn reclaim_orphan_scratch_keeps_the_siblings_of_a_tree_git_marks() {
+        // Each row: the unit's slug, what is done to its tree, and whether its siblings are kept.
+        type Row = (&'static str, fn(&str, &Path), bool);
+        let rows: [Row; 3] = [
+            (
+                "a-locked",
+                |repo, dir| {
+                    let at = dir.to_str().unwrap();
+                    git_ok(
+                        repo,
+                        &["worktree", "lock", "--reason", "a person's lock", at],
+                    );
+                },
+                true,
+            ),
+            (
+                "a-prunable",
+                |_, dir| std::fs::remove_file(dir.join(".git")).unwrap(),
+                true,
+            ),
+            ("done", |_, _| {}, false),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        init_committed_repo(&root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+        let siblings = |slug: &str| {
+            [
+                format!("cargo-target-{slug}"),
+                format!("cargo-target-{slug}-store-fence"),
+                format!("review-target-{slug}"),
+                format!("rigger-gate-{slug}"),
+            ]
+            .map(|name| root.join(name))
+        };
+        for (slug, mark, _) in rows {
+            let dir = root.join(format!("rigger-wt-{slug}"));
+            Worktree::create(repo, dir.to_str().unwrap(), &format!("rigger/u/{slug}"), "").unwrap();
+            for sibling in siblings(slug) {
+                write_file(&sibling.join("kept.txt"), b"build\n");
+            }
+            mark(repo, &dir);
+        }
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs(["a-locked", "a-prunable", "done"]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        reclaim_orphan_scratch(
+            repo,
+            root.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
+        let violations: Vec<String> = rows
+            .iter()
+            .flat_map(|&(slug, _, kept)| {
+                siblings(slug)
+                    .into_iter()
+                    .filter(move |sibling| sibling.join("kept.txt").exists() != kept)
+                    .map(move |sibling| format!("{slug}: {} is kept: {}", sibling.display(), !kept))
+            })
+            .collect();
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
     #[test]
     fn reclaim_orphan_scratch_reaps_a_stray_build_cache_tombstone_unconditionally() {
         // spec 77 criterion 5 (BOUNDED SHARED CACHE), Design: "a failed tombstone delete
