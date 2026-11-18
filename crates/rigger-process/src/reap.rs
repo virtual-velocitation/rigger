@@ -1974,6 +1974,15 @@ mod tests {
             kids[0]
         }
 
+        /// Each process `report` left as residue, and whether it is still frozen.
+        fn residue(report: &EndReport) -> Vec<(u32, bool)> {
+            report
+                .residue
+                .iter()
+                .map(|leftover| (leftover.pid, leftover.stopped))
+                .collect()
+        }
+
         /// Whether `pid` is running and not frozen.
         fn runs(pid: u32) -> bool {
             os_process::state(pid).is_some_and(|state| !frozen_state(state) && state != 'Z')
@@ -2019,18 +2028,19 @@ mod tests {
                 }
                 self.left -= 1;
                 let pid = self.pid;
-                let children = || {
+                let children = || -> HashSet<u32> {
                     os_process::table()
                         .iter()
                         .filter(|entry| entry.parent == pid)
-                        .count()
+                        .map(|entry| entry.pid)
+                        .collect()
                 };
                 let before = children();
                 self.input
                     .write_all(b"\n")
                     .expect("ask the member for a process");
                 assert!(
-                    crate::test_support::wait_until(|| children() > before),
+                    crate::test_support::wait_until(|| !children().is_subset(&before)),
                     "the member starts a process"
                 );
             }
@@ -2212,13 +2222,8 @@ mod tests {
 
             let report = end_watched_with(&mut os, &mut main, &[], Duration::from_secs(1));
 
-            let left: Vec<(u32, bool)> = report
-                .residue
-                .iter()
-                .map(|leftover| (leftover.pid, leftover.stopped))
-                .collect();
             assert_eq!(
-                (left, report.skipped),
+                (residue(&report), report.skipped),
                 (vec![(deepest, true)], vec![]),
                 "{stranded_after:?}: reported still frozen"
             );
@@ -2286,12 +2291,10 @@ mod tests {
 
             let report = end_watched_with(&mut os, &mut main, &[], Duration::from_secs(1));
 
-            let left: Vec<(u32, bool)> = report
-                .residue
-                .iter()
-                .map(|leftover| (leftover.pid, leftover.stopped))
-                .collect();
-            assert_eq!((left, report.skipped), (vec![(deepest, false)], vec![]));
+            assert_eq!(
+                (residue(&report), report.skipped),
+                (vec![(deepest, false)], vec![])
+            );
             assert!(
                 crate::test_support::wait_until(|| runs(deepest)),
                 "the process left running is resumed, not left frozen: {:?}",
@@ -2637,6 +2640,99 @@ mod tests {
                 an_end_signals_a_process_whose_chain_check_failed_once(Ending::Watched);
             the_descendant_end_signals_a_process_whose_chain_check_failed_once:
                 an_end_signals_a_process_whose_chain_check_failed_once(Ending::Descendants);
+        }
+
+        /// The end of the root's descendants, bounded by `bound`, of a tree whose one member
+        /// survives every hard end: the end returns at its bound and reports the member as
+        /// residue, never frozen; the test's release ends it after, and the root, which waits for
+        /// it, exits.
+        #[test]
+        fn the_descendant_end_reports_at_its_bound_a_process_that_survives_it() {
+            let mut witness = Witness::new();
+            let mut root = tree(&witness, "holder; up; wait");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let holder = only_child(root.id());
+            let mut os = Rigged {
+                swallowed: Some(holder),
+                ..Rigged::default()
+            };
+            let bound = Duration::from_secs(1);
+
+            let started = Instant::now();
+            let report = end(Ending::Descendants, &mut os, &mut root, bound);
+            let elapsed = started.elapsed();
+
+            assert_eq!(
+                (residue(&report), report.skipped),
+                (vec![(holder, false)], vec![])
+            );
+            assert!(
+                elapsed >= bound && elapsed < bound + Duration::from_secs(2),
+                "the end returns at its bound: {elapsed:?}"
+            );
+            assert_eq!(
+                witness.read(),
+                Reading::Held,
+                "the process that survived holds the witness"
+            );
+            assert_eq!(witness.release(), Reading::Ended);
+            assert!(crate::test_support::wait_until(|| matches!(
+                root.try_wait(),
+                Ok(Some(_))
+            )));
+        }
+
+        /// The end of the root's descendants, bounded by `bound`, of a tree whose one member
+        /// survives every hard end and starts a process at every read of the table: the end stops
+        /// walking at its bound, long before the member stops forking, ends every process the
+        /// member started, the last among them, and reports the member alone as residue.
+        #[test]
+        fn the_descendant_end_stops_at_its_bound_when_a_member_keeps_forking() {
+            const FORKS: usize = 200;
+            let mut witness = Witness::new();
+            let mut root = tree(
+                &witness,
+                "exec 3<&0; ( up; while read -r unused <&3; do holder; done; held ) & up; wait",
+            );
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let member = only_child(root.id());
+            let input = root.stdin.take().expect("the root's input");
+            let mut os = Rigged {
+                forker: Some(Forker {
+                    pid: member,
+                    input,
+                    left: FORKS,
+                }),
+                swallowed: Some(member),
+                ..Rigged::default()
+            };
+            let bound = Duration::from_secs(1);
+
+            let started = Instant::now();
+            let report = end(Ending::Descendants, &mut os, &mut root, bound);
+            let elapsed = started.elapsed();
+
+            let forks_left = os.forker.as_ref().map_or(0, |forker| forker.left);
+            assert_eq!(
+                (residue(&report), report.skipped, forks_left > 0),
+                (vec![(member, false)], vec![], true),
+                "the end stopped walking with {forks_left} of {FORKS} forks left"
+            );
+            assert!(
+                elapsed >= bound && elapsed < bound + Duration::from_secs(2),
+                "the end returns at its bound: {elapsed:?}"
+            );
+            drop(os);
+            assert_eq!(
+                witness.read(),
+                Reading::Held,
+                "the member alone holds the witness"
+            );
+            assert_eq!(witness.release(), Reading::Ended);
+            assert!(crate::test_support::wait_until(|| matches!(
+                root.try_wait(),
+                Ok(Some(_))
+            )));
         }
     }
 }
