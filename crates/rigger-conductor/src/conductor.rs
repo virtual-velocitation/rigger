@@ -1783,6 +1783,20 @@ impl LostLanes {
         &self.failure.kept
     }
 
+    /// Why a group of `width` lanes with no winner escalated, one line: the gathered failure's
+    /// [`PriorFailure::escalation_reason`] when a lane lost on its work, else that every lane
+    /// crashed or lost to infrastructure, which judged no lane's work.
+    fn escalation_reason(&self, width: u32) -> String {
+        if self.cause.is_some() {
+            self.failure.escalation_reason()
+        } else {
+            format!(
+                "all {width} speculation candidates crashed or lost to infrastructure, which says \
+                 nothing of their work"
+            )
+        }
+    }
+
     /// The first loss's cause and the gathered failure, or none when no lane lost on its gates,
     /// review or a refusal other than to infrastructure.
     fn failure(self) -> Option<(String, PriorFailure)> {
@@ -8971,6 +8985,7 @@ impl RunCtx<'_> {
         // A lane whose merge broke post-merge is part of this one record, which names that
         // lane's worktree sha.
         let break_sha = lost.break_sha();
+        let reason = lost.escalation_reason(width);
         if let Some((cause, failure)) = lost.failure() {
             let mut meta = vec![(META_SPEC_GROUP, group.as_str())];
             if let Some(sha) = &break_sha {
@@ -8991,9 +9006,8 @@ impl RunCtx<'_> {
                 None,
                 &st.name,
                 &format!(
-                    "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work; {}",
+                    "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work; {reason}",
                     st.name,
-                    failure.escalation_reason()
                 ),
                 None,
                 None,
@@ -9002,7 +9016,7 @@ impl RunCtx<'_> {
         self.emit_meta(
             ledger::TYPE_UNIT_ESCALATED,
             json!({"id": st.name}),
-            &[(META_SPEC_GROUP, &group)],
+            &[(META_SPEC_GROUP, &group), (META_ESCALATION_REASON, &reason)],
         )?;
         Ok(false)
     }
