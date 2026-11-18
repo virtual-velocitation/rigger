@@ -8401,10 +8401,10 @@ fn run_stops_a_session_silent_past_its_bound_with_the_supervisor_beating() {
 #[test]
 fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
     use rigger::progress::{SupervisorBeat, SUPERVISOR_BEAT_INTERVAL};
-    const HALT: &str = "(unit \"solo\" failed on infrastructure (infra:spawn) at attempt 0 past \
-                        the failure taxonomy's infra limit, so the step halts and the unit is \
-                        charged no attempt; fix the outage and re-run - the unit resumes at the \
-                        same attempt with a fresh bound)";
+    const HALT: &str = "infra: unit \"solo\" failed on infrastructure (infra:spawn) at attempt 0 \
+                        past the failure taxonomy's infra limit, so the step halts and the unit \
+                        is charged no attempt; fix the outage and re-run - the unit resumes at \
+                        the same attempt with a fresh bound";
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
@@ -8415,10 +8415,9 @@ fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
     let took = started.elapsed();
     assert!(!ok, "the run fails; stderr: {err}\nstdout: {out}");
     assert_eq!(out, "", "the error leaves before any summary of the run");
-    assert_eq!(
-        err.lines().last(),
-        Some(HALT),
-        "the conductor's error is the one the run leaves with"
+    assert!(
+        err.lines().any(|line| line.ends_with(HALT)),
+        "the conductor's error is the one the run leaves with; stderr: {err}"
     );
     assert_eq!(
         common::cli::recorded_progress::<SupervisorBeat>(root),

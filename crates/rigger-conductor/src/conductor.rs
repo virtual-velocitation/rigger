@@ -2737,17 +2737,31 @@ fn degenerate_reviewer(
     ordinal: u32,
 ) -> Error {
     let latest = spawn_retry_id(stage, role, attempt, *review_retry_window(ordinal).end());
-    Error(format!(
-        "{DEGENERATE_MARKER}stage {stage:?} {tier} {agent:?} returned empty/whitespace-only output \
-         on all {} spawns (its original spawn plus {REVIEWER_RESPAWN_BOUND} respawns): a degenerate \
-         reviewer result is an infrastructure failure, not a verdict - the run halts and the unit is \
-         NOT charged a remediation attempt. Recover by re-driving the reviewer and recording a \
-         SUBSTANTIVE result for one of its spawn ids over the empty one with `--supersede` \
-         (results are last-write-wins, and a plain record refuses to replace an ended spawn's \
-         result), e.g. `rigger result {latest:?} --supersede <substantive output>`; then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts \
-         here again.",
-        REVIEWER_RESPAWN_BOUND + 1
+    Error(fault_text(
+        format!(
+            "{DEGENERATE_MARKER}stage {stage:?} {tier} {agent:?} returned empty/whitespace-only \
+             output on all {} spawns (its original spawn plus {REVIEWER_RESPAWN_BOUND} respawns): \
+             a degenerate reviewer result is an infrastructure failure, not a verdict - the run \
+             halts and the unit is NOT charged a remediation attempt.",
+            REVIEWER_RESPAWN_BOUND + 1
+        ),
+        format!(
+            "Recover by re-driving the reviewer and recording a SUBSTANTIVE result for one of its \
+             spawn ids over the empty one with `--supersede` (results are last-write-wins, and a \
+             plain record refuses to replace an ended spawn's result), e.g. `rigger result \
+             {latest:?} --supersede <substantive output>`; then re-run. Re-running WITHOUT a \
+             corrected result replays the recorded empties and halts here again."
+        ),
     ))
+}
+
+/// A conductor fault's text in the shape a hold tells one fault from another by
+/// ([`RunHeld::same_fault`](crate::run::RunHeld::same_fault)): `what` failed on the first line,
+/// which reads alone and reads the same each time the fault recurs, and what `varied` between two
+/// occurrences of it - a spawn id, a spawn's output, an error's own words, a count - on the lines
+/// below, so the same fault met again after a release is the recurrence a person is held for.
+fn fault_text(what: impl std::fmt::Display, varied: impl std::fmt::Display) -> String {
+    format!("{what}\n{varied}")
 }
 
 /// The most of a verdict-less reviewer's output [`output_tail`] carries as evidence.
@@ -2778,17 +2792,22 @@ fn no_verdict_line(stage: &str, tier: &str, agent: &str, id: &str, output: &str)
 /// this round's review once, or the round has no retry id left. It carries
 /// [`MISMATCH_MARKER`], so it halts through the same no-lesson arm as
 /// [`SpawnHalt::VerdictChannelMismatch`] - the run stops, the unit is charged no attempt - and
-/// it names the reviewer, the spawn, the output's tail and the recovery.
+/// it names the reviewer, then the spawn, the recovery and the output's tail.
 fn verdictless_reviewer(stage: &str, tier: &str, agent: &str, id: &str, output: &str) -> Error {
-    Error(format!(
-        "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?}: the reviewer exited with no verdict \
-         line on spawn {id:?} and its review has no re-drive left (a verdict-less result \
-         re-drives the review once). A verdict-less result is an infrastructure fault on the \
-         spawn, not a reject: the run halts and the unit is NOT charged a remediation attempt. A \
-         reviewer ends this way when its session closes while work it started is still running. \
-         Recover by recording the reviewer's verdict for the spawn with `rigger result {id:?} \
-         --supersede <output ending in the verdict line>`, then re-run. Its output ended: {}",
-        output_tail(output)
+    Error(fault_text(
+        format!(
+            "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?}: the reviewer exited with no \
+             verdict line and its review has no re-drive left (a verdict-less result re-drives \
+             the review once). A verdict-less result is an infrastructure fault on the spawn, not \
+             a reject: the run halts and the unit is NOT charged a remediation attempt. A reviewer \
+             ends this way when its session closes while work it started is still running."
+        ),
+        format!(
+            "Its spawn was {id:?}: recover by recording the reviewer's verdict for it with \
+             `rigger result {id:?} --supersede <output ending in the verdict line>`, then re-run. \
+             Its output ended: {}",
+            output_tail(output)
+        ),
     ))
 }
 
@@ -2833,10 +2852,12 @@ const PLAN_LANDING_MARKER: &str = "\u{1}rigger:plan-landing-failed\u{1}";
 /// sites individually - is what guarantees every current AND future internal
 /// failure path carries the marker, with no site left un-wrapped by omission.
 fn plan_landing_failed(unit: &str, e: Error) -> Error {
-    Error(format!(
-        "{PLAN_LANDING_MARKER}unit {unit:?}: landing its plan-stage commits onto the run \
-         branch failed: {}",
-        e.0
+    Error(fault_text(
+        format!(
+            "{PLAN_LANDING_MARKER}unit {unit:?}: landing its plan-stage commits onto the run \
+             branch failed"
+        ),
+        e.0,
     ))
 }
 
@@ -2856,6 +2877,15 @@ fn plan_landing_failed(unit: &str, e: Error) -> Error {
 /// charges the unit no remediation attempt (no `UnitFailed`, no `UnitEscalated`). The drive it
 /// ends holds the run for the orchestrator ([`held_on_a_fault`]).
 const LAND_REFUSED_MARKER: &str = "\u{1}rigger:land-refused\u{1}";
+
+/// The halt [`RunCtx::land_refused`] returns once its lesson is recorded: `unit`'s landing was
+/// refused for the local changes at `paths`, marked with [`LAND_REFUSED_MARKER`].
+fn landing_refused(unit: &str, paths: &[String]) -> Error {
+    Error(format!(
+        "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for local changes at {}",
+        paths.join(", ")
+    ))
+}
 
 /// The sentinel a FAILED GUARD PROBE embeds in its error (spec 121 criterion 19): a gate's
 /// requested shared-cache guard failed its probe, so the runner returned a
@@ -3001,6 +3031,15 @@ fn infra_fault(fault: impl std::fmt::Display) -> Error {
     marked(INFRA_MARKER, fault)
 }
 
+/// The [`infra_fault`] an append of the run's keyed events returns when it wrote `lost` fewer of
+/// them than the `handed` it was handed ([`RunCtx::emit_keyed_together`]).
+fn keyed_events_lost(lost: usize, handed: usize) -> Error {
+    infra_fault(fault_text(
+        format!("an append of this run's keyed events on {STREAM:?} recorded only some of them"),
+        format!("{lost} of the {handed} it was handed were not recorded"),
+    ))
+}
+
 /// The sentinel a sdet-author or review-tier spawn crash embeds in its error: a spawn error that
 /// is no park, no budget refusal and no refused record (and, for the sdet-author, its opts
 /// guard's error too), or a review round whose window ends with a recorded spawn error among its
@@ -3021,6 +3060,16 @@ const SPAWN_CRASH_MARKER: &str = "\u{1}rigger:spawn-crashed\u{1}";
 /// crash may wrap its opts guard's [`infra_fault`].
 fn spawn_crash(message: String) -> Error {
     marked(SPAWN_CRASH_MARKER, without_halt_markers(Error(message)).0)
+}
+
+/// The stage error `who`'s spawn error `e` in stage `stage` reads as, its failure class stripped:
+/// the sdet author's, a review tier's or the conflict resolver's. The stage and `who` are its
+/// first line, the error's own words (an exit status, a signal, a stream's last words) below.
+fn spawn_failed(stage: &str, who: &str, e: &Error) -> String {
+    fault_text(
+        format!("stage {stage:?} {who} failed"),
+        strip_failure_marker(e),
+    )
 }
 
 /// A sdet seam or review result split for the single lane: `Ok(Err(crash))` when it carries the
@@ -3055,14 +3104,18 @@ fn infra_mark_key(unit: &str, status: &str, attempt: u32, ordinal: u32) -> Strin
 }
 
 /// The halt error a unit's stage returns once its infra reruns reach the taxonomy's infra
-/// limit (F3): it carries [`INFRA_MARKER`] for [`run_wave`](RunCtx::run_wave)'s halt arm and
-/// reads `infra: <evidence>` once the marker is stripped.
+/// limit (F3): it carries [`INFRA_MARKER`] for [`run_wave`](RunCtx::run_wave)'s halt arm and,
+/// once the marker is stripped, reads `infra: ` and the unit, the cause and the attempt, the
+/// last outage's `evidence` below.
 fn infra_halt(unit: &str, attempt: u32, cause: &str, evidence: &str) -> Error {
-    Error(format!(
-        "{INFRA_MARKER}infra: {evidence}\n(unit {unit:?} failed on infrastructure ({cause}) at \
-         attempt {attempt} past the failure taxonomy's infra limit, so the step halts and the \
-         unit is charged no attempt; fix the outage and re-run - the unit resumes at the same \
-         attempt with a fresh bound)"
+    Error(fault_text(
+        format!(
+            "{INFRA_MARKER}infra: unit {unit:?} failed on infrastructure ({cause}) at attempt \
+             {attempt} past the failure taxonomy's infra limit, so the step halts and the unit is \
+             charged no attempt; fix the outage and re-run - the unit resumes at the same attempt \
+             with a fresh bound"
+        ),
+        evidence,
     ))
 }
 
@@ -3072,15 +3125,19 @@ fn infra_halt(unit: &str, attempt: u32, cause: &str, evidence: &str) -> Error {
 /// refused tool call from a session that stopped or printed a last line of its own.
 fn handover_halt(unit: &str, attempt: u32, misses: u32, evidence: &str) -> Error {
     let times = if misses == 1 { "time" } else { "times" };
-    Error(format!(
-        "{INFRA_MARKER}infra: {evidence}\n(unit {unit:?}'s author session ended without its \
-         hand-over line ({AUTHOR_HANDOVER_LINE}) {misses} {times} at attempt {attempt}, past the \
-         failure taxonomy's infra limit, so the step halts and the unit is charged no attempt. \
-         Each infra-retry mark records the session's last line and its permission denials: \
-         denials mean a tool call the session needed was refused, so grant it; none mean the \
-         session stopped early or printed a last line of its own, so check the author persona \
-         asks for no final line. Then re-run: the unit resumes at the same attempt with a fresh \
-         bound)"
+    Error(fault_text(
+        format!(
+            "{INFRA_MARKER}infra: unit {unit:?}'s author session ended without its hand-over line \
+             ({AUTHOR_HANDOVER_LINE}) at attempt {attempt}, past the failure taxonomy's infra \
+             limit, so the step halts and the unit is charged no attempt"
+        ),
+        format!(
+            "It ended so {misses} {times}. Each infra-retry mark records the session's last line \
+             and its permission denials: denials mean a tool call the session needed was refused, \
+             so grant it; none mean the session stopped early or printed a last line of its own, \
+             so check the author persona asks for no final line. Then re-run: the unit resumes at \
+             the same attempt with a fresh bound.\n{evidence}"
+        ),
     ))
 }
 
@@ -4583,11 +4640,7 @@ impl RunCtx<'_> {
         }
         let written = self.append_and_fold_batch(&fresh)?.written();
         if written != fresh.len() {
-            return Err(infra_fault(format!(
-                "{} of {} keyed events of this run were not recorded on {STREAM:?}",
-                fresh.len() - written,
-                fresh.len()
-            )));
+            return Err(keyed_events_lost(fresh.len() - written, fresh.len()));
         }
         Ok(())
     }
@@ -6818,13 +6871,7 @@ impl RunCtx<'_> {
         let first_retry = *window.start();
         // A crash names the stage and the seam, its failure class stripped, as a review tier's
         // crash does.
-        let crashed = |e: &Error| {
-            spawn_crash(format!(
-                "stage {:?} sdet author: {}",
-                st.name,
-                strip_failure_marker(e)
-            ))
-        };
+        let crashed = |e: &Error| spawn_crash(spawn_failed(&st.name, "sdet author", e));
         rerun_once_on_refusal(window, |retry, refused| {
             let sdet_id = spawn_retry_id(&st.name, ROLE_SDET_AUTHOR, attempt, retry);
             // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
@@ -6909,11 +6956,7 @@ impl RunCtx<'_> {
         })
         .map_err(|e| {
             if carries_marker(&e, EMIT_REFUSED_MARKER) {
-                Error(format!(
-                    "stage {:?} sdet author: {}",
-                    st.name,
-                    strip_failure_marker(&e)
-                ))
+                Error(spawn_failed(&st.name, "sdet author", &e))
             } else {
                 e
             }
@@ -9442,13 +9485,7 @@ impl RunCtx<'_> {
         let mut verdictless = false;
         let mut refused = RefusedRecord::default();
         // The stage error a spawn error of this reviewer reads as, its failure class stripped.
-        let failed = |e: &Error| {
-            format!(
-                "stage {:?} {tier} {agent_id:?}: {}",
-                st.name,
-                strip_failure_marker(e)
-            )
-        };
+        let failed = |e: &Error| spawn_failed(&st.name, &format!("{tier} {agent_id:?}"), e);
         // The last recorded spawn error of this round, which makes the round an outage.
         let mut errored: Option<String> = None;
         for retry in window {
@@ -12733,11 +12770,9 @@ impl RunCtx<'_> {
         // The merge the caller re-attempts, never this round's outcome, decides what follows.
         match spawned {
             Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
-            Err(e) if is_store_fault(&e) => Err(spawn_crash(format!(
-                "stage {:?} conflict resolver: {}",
-                st.name,
-                strip_failure_marker(&e)
-            ))),
+            Err(e) if is_store_fault(&e) => {
+                Err(spawn_crash(spawn_failed(&st.name, "conflict resolver", &e)))
+            }
             _ => Ok(()),
         }
     }
@@ -13319,11 +13354,7 @@ impl RunCtx<'_> {
             named.join(", ")
         );
         let _ = self.emit_lesson(Some(wt), unit, &summary, None, None);
-        Error(format!(
-            "{LAND_REFUSED_MARKER}unit {unit:?}: landing refused for \
-             local changes at {}",
-            paths.join(", ")
-        ))
+        landing_refused(unit, paths)
     }
 
     /// Whether the named agent runs in an isolated worktree (its `isolation` is
@@ -27529,7 +27560,8 @@ mod tests {
 
     /// The whole degenerate halt of [`per_unit_panel_cfg`]'s adjudicator at attempt 0 and infra
     /// ordinal 0, spelled out so a change to its text is a red row.
-    const DEGENERATE_ADJUDICATOR_HALT: &str = r#"stage "implement" adjudicator "adj" returned empty/whitespace-only output on all 3 spawns (its original spawn plus 2 respawns): a degenerate reviewer result is an infrastructure failure, not a verdict - the run halts and the unit is NOT charged a remediation attempt. Recover by re-driving the reviewer and recording a SUBSTANTIVE result for one of its spawn ids over the empty one with `--supersede` (results are last-write-wins, and a plain record refuses to replace an ended spawn's result), e.g. `rigger result "implement/adjudicator#0~retry2" --supersede <substantive output>`; then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts here again."#;
+    const DEGENERATE_ADJUDICATOR_HALT: &str = r#"stage "implement" adjudicator "adj" returned empty/whitespace-only output on all 3 spawns (its original spawn plus 2 respawns): a degenerate reviewer result is an infrastructure failure, not a verdict - the run halts and the unit is NOT charged a remediation attempt.
+Recover by re-driving the reviewer and recording a SUBSTANTIVE result for one of its spawn ids over the empty one with `--supersede` (results are last-write-wins, and a plain record refuses to replace an ended spawn's result), e.g. `rigger result "implement/adjudicator#0~retry2" --supersede <substantive output>`; then re-run. Re-running WITHOUT a corrected result replays the recorded empties and halts here again."#;
 
     /// op-105-errored-review-window-joins-the-infra-retry, under the production replay driver in
     /// a real repository: drives `run`'s unit one replay pass at a time, recording each parked
@@ -27678,7 +27710,11 @@ mod tests {
                 ],
                 infra_halts: &["implement/infra-halt#0~2"],
                 last_window: 2,
-                halt: Some(r#"infra: stage "implement" adjudicator "adj": "#),
+                halt: Some(
+                    r#"infra: unit "implement" failed on infrastructure (infra:spawn) at attempt 0 past the failure taxonomy's infra limit, so the step halts and the unit is charged no attempt; fix the outage and re-run - the unit resumes at the same attempt with a fresh bound
+stage "implement" adjudicator "adj" failed
+"#,
+                ),
             });
         /// A window whose every spawn returned empty output still halts degenerate, its text
         /// unchanged, with no infra retry.
@@ -34778,12 +34814,12 @@ mod tests {
 
     /// F3: an outage that outlasts the taxonomy's infra limit (the shipped rule reruns twice)
     /// must not loop and must not charge the unit either: the third consecutive crash of
-    /// `outage`'s spawn halts the step LOUDLY with `infra: <evidence>`, recording an
-    /// `infra-halt` mark - no UnitFailed, no escalation, no per-unit lesson, and no gate run or
-    /// `verified` status, since the spawn that crashed runs before the gates. The retry count is
-    /// read from the log since the attempt's latest `infra-halt`, so a relaunch after the outage
-    /// starts a FRESH bound: one more crash there is retried, not halted again, and the rerun's
-    /// gates are the first to run, under the ordinal that recovered.
+    /// `outage`'s spawn halts the step LOUDLY with `infra: ` and the unit, its evidence below,
+    /// recording an `infra-halt` mark - no UnitFailed, no escalation, no per-unit lesson, and no
+    /// gate run or `verified` status, since the spawn that crashed runs before the gates. The
+    /// retry count is read from the log since the attempt's latest `infra-halt`, so a relaunch
+    /// after the outage starts a FRESH bound: one more crash there is retried, not halted again,
+    /// and the rerun's gates are the first to run, under the ordinal that recovered.
     fn assert_an_outage_past_the_infra_limit_halts(outage: InfraOutage) {
         let InfraOutage {
             cfg,
@@ -48661,6 +48697,187 @@ mod tests {
         }
     }
 
+    /// A FAULT MET AGAIN READS THE SAME FIRST LINE: every halt a conductor fault ends the drive
+    /// with names what failed on its first line and what varied between two occurrences of it - a
+    /// spawn id, a spawn's output, an error's own words, a count - on the lines below. So the same
+    /// fault met again after a release holds the run for a person, however its per-occurrence
+    /// text differs, and a different fault of the same class holds it for the orchestrator.
+    #[test]
+    fn a_fault_met_again_after_a_release_reads_the_same_first_line() {
+        let probe = |guard: &str, error: &str| {
+            probe_fault_halt(gate::ProbeFault {
+                guard: guard.into(),
+                error: error.into(),
+            })
+        };
+        let crash =
+            |who: &str, error: &str| spawn_crash(spawn_failed("u", who, &Error(error.into())));
+        let at = |path: &str| vec![path.to_string()];
+        let degenerate = |agent: &str, ordinal: u32| {
+            degenerate_reviewer("u", "adjudicator", agent, "review", 0, ordinal)
+        };
+        let verdictless = |stage: &str, id: &str, output: &str| {
+            verdictless_reviewer(stage, "adjudicator", "adj", id, output)
+        };
+        let guard = "/scratch/cargo-target.lock";
+        let unlockable = "Operation not supported (os error 95)";
+        // Each row: the fault, its first occurrence, the next after a release, and whether the
+        // two are the same fault.
+        let rows: Vec<(&str, Error, Error, bool)> = vec![
+            (
+                "a degenerate reviewer in a later retry window",
+                degenerate("adj", 0),
+                degenerate("adj", 2),
+                true,
+            ),
+            (
+                "another degenerate reviewer",
+                degenerate("adj", 0),
+                degenerate("lens", 0),
+                false,
+            ),
+            (
+                "a verdict-less reviewer on another spawn, ending in other words",
+                verdictless("u", "u/review#0", "waiting on the build"),
+                verdictless("u", "u/review#0~retry3", "still running the tests"),
+                true,
+            ),
+            (
+                "another stage's verdict-less reviewer",
+                verdictless("u", "u/review#0", "waiting on the build"),
+                verdictless("w", "u/review#0", "waiting on the build"),
+                false,
+            ),
+            (
+                "a plan landing failing in other words",
+                plan_landing_failed("u", Error("cherry-pick 1a2b3c: conflict".into())),
+                plan_landing_failed("u", Error("cherry-pick 4d5e6f: index locked".into())),
+                true,
+            ),
+            (
+                "another unit's plan landing",
+                plan_landing_failed("u", Error("cherry-pick 1a2b3c: conflict".into())),
+                plan_landing_failed("w", Error("cherry-pick 1a2b3c: conflict".into())),
+                false,
+            ),
+            (
+                "a landing refused at the same path",
+                landing_refused("u", &at("a.txt")),
+                landing_refused("u", &at("a.txt")),
+                true,
+            ),
+            (
+                "another unit's landing refused",
+                landing_refused("u", &at("a.txt")),
+                landing_refused("w", &at("a.txt")),
+                false,
+            ),
+            (
+                "an outage past the infra limit, its evidence in other words",
+                infra_halt(
+                    "u",
+                    1,
+                    CAUSE_INFRA_SPAWN,
+                    "stage \"u\" implementer: exit status: 137",
+                ),
+                infra_halt(
+                    "u",
+                    1,
+                    CAUSE_INFRA_SPAWN,
+                    "stage \"u\" implementer: signal: 9",
+                ),
+                true,
+            ),
+            (
+                "an outage of another cause",
+                infra_halt(
+                    "u",
+                    1,
+                    CAUSE_INFRA_SPAWN,
+                    "stage \"u\" implementer: exit status: 137",
+                ),
+                infra_halt(
+                    "u",
+                    1,
+                    CAUSE_INFRA_GATE,
+                    "stage \"u\" implementer: exit status: 137",
+                ),
+                false,
+            ),
+            (
+                "missed hand-overs past the infra limit, counted and ending otherwise",
+                handover_halt("u", 1, 2, "last line: done"),
+                handover_halt("u", 1, 3, "last line: finished"),
+                true,
+            ),
+            (
+                "another unit's missed hand-overs",
+                handover_halt("u", 1, 2, "last line: done"),
+                handover_halt("w", 1, 2, "last line: done"),
+                false,
+            ),
+            (
+                "keyed events lost in other counts",
+                keyed_events_lost(1, 3),
+                keyed_events_lost(2, 5),
+                true,
+            ),
+            (
+                "a guard's probe failing with the same OS error",
+                probe(guard, unlockable),
+                probe(guard, unlockable),
+                true,
+            ),
+            (
+                "another guard's probe",
+                probe(guard, unlockable),
+                probe("/scratch/other.lock", unlockable),
+                false,
+            ),
+            (
+                "a spawn crashing with another exit",
+                crash("sdet author", "exit status: 1"),
+                crash("sdet author", "signal: 9 (SIGKILL)"),
+                true,
+            ),
+            (
+                "another spawn's crash",
+                crash("sdet author", "exit status: 1"),
+                crash("conflict resolver", "exit status: 1"),
+                false,
+            ),
+        ];
+        for (fault, first, next, same) in rows {
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = stub_deps(&store, &driver, Vec::new());
+            crate::run_store::ensure_started(&deps.folding(), &deps.criteria).unwrap();
+
+            let first = held_on_a_fault(&deps, first).0;
+            let released = crate::run_store::release_hold(
+                &deps.folding(),
+                crate::run::HOLD_BY_OPERATOR,
+                std::time::SystemTime::now(),
+            );
+            assert_eq!(released.ok(), Some(true), "{fault}: the release");
+            let next = held_on_a_fault(&deps, next).0;
+
+            let again = if same {
+                crate::test_support::recurred_fault_hold(&next)
+            } else {
+                conductor_fault_hold(&next)
+            };
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert_eq!(
+                holds_in(&events),
+                [conductor_fault_hold(&first), again],
+                "{fault}: the same fault {same}, the first lines {:?} and {:?}",
+                first.lines().next(),
+                next.lines().next()
+            );
+        }
+    }
+
     /// A LIFECYCLE GIT FAULT IS THE CONDUCTOR'S: whichever lifecycle step the conductor takes on
     /// a unit's branch or worktree fails - making a unit's worktree, re-asserting it before a
     /// later step, discarding a throwaway one, seeding a throwaway branch, landing on the run
@@ -48916,7 +49133,7 @@ mod tests {
             ),
             (
                 Failure::ReviewCrash,
-                r#"stage "review" lens "lens": simulated mid-spawn crash"#.to_string(),
+                "stage \"review\" lens \"lens\" failed\nsimulated mid-spawn crash".to_string(),
             ),
         ];
         for (failure, fault) in cases {
@@ -50335,7 +50552,8 @@ mod tests {
             )
         };
         let halted = |loser: &str| -> Outcome {
-            let evidence = format!("stage {loser:?} conflict resolver: {RESOLVER_STORE_FAULT}");
+            let evidence =
+                format!("stage {loser:?} conflict resolver failed\n{RESOLVER_STORE_FAULT}");
             (
                 Err(infra_halt(loser, 0, CAUSE_INFRA_SPAWN, &evidence)
                     .0
@@ -53398,8 +53616,8 @@ mod tests {
         };
         assert!(
             halt.contains(&format!(
-                "ended without its hand-over line ({AUTHOR_HANDOVER_LINE}) 3 times"
-            )),
+                "ended without its hand-over line ({AUTHOR_HANDOVER_LINE}) at attempt 0"
+            )) && halt.contains("\nIt ended so 3 times. "),
             "the halt names the hand-over and the count: {halt}"
         );
         assert!(
