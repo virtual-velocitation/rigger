@@ -7090,6 +7090,30 @@ mod tests {
         ]);
     }
 
+    /// The escalation skill names the refs a keep writes by the names the code writes them
+    /// under ([`rigger::worktree::kept_ref`], [`rigger::worktree::orphaned_ref`]) and the unit
+    /// branch it never moves, so a person sent to the kept tree reads the ref that holds it.
+    #[test]
+    fn the_escalation_skill_names_the_refs_a_keep_writes() {
+        let registry = rigger::docs::skill_registry();
+        let rendered = registry
+            .iter()
+            .find(|e| e.name == "rigger-handle-an-escalation")
+            .expect("the escalation skill is in the registry")
+            .render(&docs_context());
+        let branch = format!("{}<unit-id>", rigger::worktree::UNIT_BRANCHES);
+        for name in [
+            rigger::worktree::kept_ref(&branch),
+            rigger::worktree::orphaned_ref("<unit-id>", "<sha>"),
+            branch.clone(),
+        ] {
+            assert!(
+                rendered.contains(&format!("`{name}`")),
+                "the escalation skill names `{name}`"
+            );
+        }
+    }
+
     rigger::test_cases! {
         /// Spec 69, criterion 1 (the accuracy pin, extending the spec-68 sibling
         /// [`per_operation_skills_reference_only_real_subcommands`] to the three watch-discipline
