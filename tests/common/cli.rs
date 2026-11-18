@@ -13,6 +13,7 @@ use rigger::contextgraph::{Edge, Error as GraphError, Graph, Node};
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
 use rigger::eventstore::{Direction, Event, EventStore, ExpectedRevision};
+use rigger::lockfile::HeldLock;
 use rigger::run::{RunHeld, RunReleased, TYPE_RUN_HELD, TYPE_RUN_RELEASED};
 
 pub use super::fixtures::keyed;
@@ -2206,27 +2207,27 @@ pub fn real_result_body(spawn_id: &str) -> String {
     serde_json::to_string(&rigger::spawn::SpawnResult::ok(spawn_id, "done")).unwrap()
 }
 
-/// Open, exclusively lock (non-blocking), and return `.rigger/step.lock` under `root` - standing
-/// in for a `rigger run` holding it for its whole duration. The lock lasts until the returned
-/// file is dropped.
-pub fn hold_step_lock(root: &Path) -> std::fs::File {
-    use fs2::FileExt;
-    let lock_file = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(rigger_file(root, "step.lock"))
-        .unwrap();
-    lock_file
-        .try_lock_exclusive()
-        .expect("the test must be able to take the lock first");
-    lock_file
+/// Take, without waiting, and return `.rigger/step.lock` under `root` - standing in for a
+/// `rigger run` holding it for its whole duration. The lock lasts until the returned guard is
+/// dropped.
+pub fn hold_step_lock(root: &Path) -> HeldLock {
+    take_step_lock(root).expect("the test must be able to take the lock first")
+}
+
+/// The step lock under `root`, taken without waiting through the guard `rigger run` holds it by,
+/// or `None` while another holder has it. The guard unlocks when it drops instead of only closing
+/// its descriptor, so a process another test thread forks, which holds a copy of that descriptor
+/// until it execs, never keeps the lock past the drop.
+fn take_step_lock(root: &Path) -> Option<HeldLock> {
+    HeldLock::try_take(&rigger_file(root, "step.lock")).expect("the step lock opens and locks")
 }
 
 /// A second descriptor on the open file a [`hold_step_lock`] guard holds, as a process another
 /// test thread forks holds one until it execs.
-pub fn forked_copy(lock: &std::fs::File) -> std::fs::File {
-    lock.try_clone().expect("the lock's descriptor duplicates")
+pub fn forked_copy(lock: &HeldLock) -> std::fs::File {
+    lock.file()
+        .try_clone()
+        .expect("the lock's descriptor duplicates")
 }
 
 /// Configures `defaults.workdir` in the `workflow.yml` of the store under `root` - a fresh
@@ -2810,16 +2811,9 @@ pub fn driver_record(root: &Path) -> String {
     std::fs::read_to_string(rigger_file(root, "step.lock")).unwrap_or_default()
 }
 
-/// Whether no process holds the step lock under `root` now.
+/// Whether no process holds the step lock under `root` now: none when there is no lock file.
 pub fn step_lock_free(root: &Path) -> bool {
-    use fs2::FileExt;
-    let Ok(file) = std::fs::OpenOptions::new()
-        .write(true)
-        .open(rigger_file(root, "step.lock"))
-    else {
-        return true;
-    };
-    file.try_lock_exclusive().is_ok()
+    !rigger_file(root, "step.lock").exists() || take_step_lock(root).is_some()
 }
 
 /// `rigger run` in `cwd` under the scratch root `scratch`, with [`HOLDING_WORKER_ARM`]'s fake
