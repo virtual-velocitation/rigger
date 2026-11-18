@@ -153,8 +153,10 @@ pub enum MergeOutcome {
 #[derive(Clone, Copy)]
 enum ScanAt<'a> {
     /// The worktree copy, staged or not, of a tracked file or an untracked one `git add -A`
-    /// would stage; an ignored file is never read.
-    Worktree,
+    /// would stage; an ignored file is never read. `untracked` is what git's status names
+    /// untracked, a file by its path and a directory it lists whole by its path and a `/`: a
+    /// start or end line alone in a file there is content, never a marker line.
+    Worktree { untracked: &'a [String] },
     /// The index: what the next `git commit` takes.
     Index,
     /// The tree of a commit, named by any revision git resolves.
@@ -1592,12 +1594,21 @@ impl Worktree {
 }
 
 /// Parse the output of `git status --porcelain -z` into the list of changed
-/// destination paths. Records are NUL-terminated; a rename/copy record is
-/// followed by an extra NUL-terminated field holding the original path, which we
-/// consume and discard (we want the new path only).
+/// destination paths ([`status_records`]).
 fn parse_status_z(out: &str) -> Vec<String> {
+    status_records(out)
+        .into_iter()
+        .map(|(_, path)| path.to_string())
+        .collect()
+}
+
+/// Each record of the output of `git status --porcelain -z`, as its two-character status (`??`
+/// for an untracked path) and its destination path, in git's order. Records are
+/// NUL-terminated; a rename/copy record is followed by an extra NUL-terminated field holding the
+/// original path, which we consume and discard (we want the new path only).
+fn status_records(out: &str) -> Vec<(&str, &str)> {
     let mut fields = out.split('\0').filter(|f| !f.is_empty());
-    let mut paths = Vec::new();
+    let mut records = Vec::new();
     while let Some(record) = fields.next() {
         // Each record is `XY <path>`: a two-char status, a space, then the path.
         if record.len() < 4 {
@@ -1614,9 +1625,9 @@ fn parse_status_z(out: &str) -> Vec<String> {
         {
             fields.next();
         }
-        paths.push(path.to_string());
+        records.push((status, path));
     }
-    paths
+    records
 }
 
 /// Whether a local branch ref exists in the repo. Used by [`Worktree::create`] to
@@ -3571,7 +3582,10 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
 /// section (`||||||| `) between start and separator is content to it, like any other line. A
 /// start or end line in no complete set (a start with no end after it, the three out of order,
 /// the start and end of a hunk git wrote around a set the file carries, which form no set of
-/// their own once that set sits between them) stands [`Standing::Alone`]. A separator-shaped
+/// their own once that set sits between them) stands [`Standing::Alone`], in a file the index
+/// holds: git writes a conflict hunk only into such a path, so in an untracked file a start or
+/// end line alone (a quoted email, a fixture showing half a conflict) is content, and only a
+/// complete set there is answered. A separator-shaped
 /// line alone (a Setext heading's underline, an RST title's over- and underline) is no conflict,
 /// so the scan answers none. [`ScanAt::Worktree`] reads the worktree copy (staged or
 /// not) of every file a commit's `git add -A` would stage, an untracked one included and an
@@ -3633,7 +3647,7 @@ fn conflict_markers_present(
         "^>>>>>>> ",
     ];
     match at {
-        ScanAt::Worktree => args.push("--untracked"),
+        ScanAt::Worktree { .. } => args.push("--untracked"),
         ScanAt::Index => args.push("--cached"),
         ScanAt::Commit(rev) => args.push(rev),
     }
@@ -3663,7 +3677,7 @@ fn conflict_markers_present(
     // A commit's hits name `<rev>:<path>`; the worktree's and the index's name the path.
     let prefix = match at {
         ScanAt::Commit(rev) => format!("{rev}:"),
-        ScanAt::Worktree | ScanAt::Index => String::new(),
+        ScanAt::Worktree { .. } | ScanAt::Index => String::new(),
     };
     // git grep lists a path's hits together, in the order they sit in it, so the set being
     // read is the run of marker lines since its start: a start opens a new one, cutting off the
@@ -3702,7 +3716,20 @@ fn conflict_markers_present(
         }
     }
     cut_off(&mut lines, open_in, &mut open);
+    if let ScanAt::Worktree { untracked } = at {
+        lines.retain(|(path, standing, _), _| {
+            *standing == Standing::InSet || !names_path(untracked, path)
+        });
+    }
     Ok(lines)
+}
+
+/// Whether `entries`, paths as git's status names them (a directory it lists whole by its path
+/// and a `/`), name `path`: the path itself, or a directory holding it.
+fn names_path(entries: &[String], path: &str) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry == path || (entry.ends_with('/') && path.starts_with(entry.as_str())))
 }
 
 /// Where a conflict-marker line stands in its file ([`conflict_markers_present`]).
@@ -3831,14 +3858,28 @@ pub fn commit_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> 
     if let Some(why) = off_branch_refusal(dir, branch)? {
         return Ok(Some(why));
     }
-    let mut scope = uncommitted_paths(dir)?;
+    let status = status_read(dir, &[], &[])?;
+    let records = status_records(&status.records);
+    let untracked: Vec<String> = records
+        .iter()
+        .filter(|(code, _)| *code == "??")
+        .map(|(_, path)| path.to_string())
+        .collect();
+    let mut scope: Vec<String> = records
+        .into_iter()
+        .map(|(_, path)| path.to_string())
+        .collect();
     scope.extend(unmerged_paths(dir)?);
     scope.sort();
     scope.dedup();
-    if !markers_introduced(dir, ScanAt::Worktree, &scope, &["HEAD"])?.is_empty() {
+    let at = ScanAt::Worktree {
+        untracked: &untracked,
+    };
+    if !markers_introduced(dir, at, &scope, &["HEAD"])?.is_empty() {
         return Ok(Some(format!(
             "refusing to commit in {dir}: conflict-marker text is present in file content the \
-             commit would carry - resolve it before committing"
+             commit would carry - resolve it before committing, or, where the lines are meant to \
+             be there, commit the file yourself so its committed text holds them"
         )));
     }
     Ok(None)
@@ -4124,7 +4165,8 @@ fn literal_pathspec(path: &str) -> String {
 /// [`STATUS_Z`] in `dir` with the `options` after it, which git reads over its own
 /// (`--untracked-files=all` lists each untracked file), limited to the `pathspecs` (git's pathspec
 /// magic, relative to `dir`; none reads the whole tree): the one status read [`path_is_dirty`],
-/// [`uncommitted_paths`] and [`own_commits_refusals`] share. The records are git's standard output
+/// [`uncommitted_paths`], [`commit_refusal`] and [`own_commits_refusals`] share. The records are
+/// git's standard output
 /// alone, and its standard error is kept beside them as the warning, never read as a record: git
 /// warns there when it cannot open a directory in the tree, or when a pathspec names a directory
 /// the tree does not hold.
