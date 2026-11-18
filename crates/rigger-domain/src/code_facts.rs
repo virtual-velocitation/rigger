@@ -142,8 +142,9 @@ pub struct Mention {
     pub enclosing: Option<u32>,
     /// The name as written ("bar", "Foo::bar", "crate::x::bar").
     pub name: String,
-    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by. Every
-    /// extractor names a reference by its identifier alone, so it equals `name` today.
+    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by. It is
+    /// always the bare leaf, never holding `::`, `.`, `<` or `>`, and equals `name` for a mention
+    /// written with no qualifier (spec 117, CAPTURES).
     pub leaf: String,
     pub kind: MentionKind,
     pub line: u32,

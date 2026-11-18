@@ -24,6 +24,7 @@ use rigger_domain::code_facts::{
 };
 use rigger_domain::code_view::{trimmed_lines, Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
+use rigger_domain::contextgraph::query::qualified_name;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
 use rigger_process::whole_line;
@@ -49,7 +50,7 @@ use crate::grounder::workflowdef;
 /// design, a rationale and a workflow fixture, so a change that is not bumped fails there; a
 /// conversion change that moves a language's facts re-pins that language's row of the same golden
 /// with the bump.
-const FACTS_GENERATION: &str = "facts-v3";
+const FACTS_GENERATION: &str = "facts-v4";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
 /// stores it and a later process compares against it.
@@ -611,9 +612,14 @@ fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
         .iter()
         .map(|r| Mention {
             enclosing: r.enclosing.as_deref().and_then(index_of),
-            name: r.name.clone(),
-            // The extractor names a reference by its identifier alone, and a definition's leaf is
-            // its name whole, so the reference's name is the leaf the resolver finds it by.
+            // Spec 117 (CAPTURES): the name as written, its qualifier joined to its leaf by `::`
+            // for a path and `.` for a member access, the leaf alone with no qualifier.
+            name: match &r.qualifier {
+                Some(q) => qualified_name(&q.name, q.path, &r.name),
+                None => r.name.clone(),
+            },
+            // The extractor names a reference by its bare leaf, as a definition's leaf is its name
+            // whole, so the leaf is what the resolver finds the mention by, qualified or not.
             leaf: r.name.clone(),
             kind: match &r.ref_kind {
                 None => MentionKind::Call,
@@ -868,13 +874,17 @@ pub(crate) mod tests {
                 .mentions
                 .iter()
                 .map(|m| {
-                    assert_eq!(m.leaf, m.name, "{path}: a reference is named by its leaf");
+                    assert_eq!(
+                        m.name, m.leaf,
+                        "{path}: the fixture writes no reference with a qualifier, so each is \
+                         named by its leaf"
+                    );
                     let kind = match &m.kind {
                         MentionKind::Call => "call".to_string(),
                         MentionKind::Tagged(kind) => format!("tagged:{kind}"),
                     };
                     (
-                        m.name.clone(),
+                        m.leaf.clone(),
                         kind,
                         m.line,
                         m.test,
@@ -1693,19 +1703,19 @@ pub(crate) mod tests {
             // Rust
             ("rs", "rust-tags-v2", "7ffb605da6fb93dd"),
             // C#
-            ("cs", "csharp-tags-v3", "1219fbe9ccd55d87"),
+            ("cs", "csharp-tags-v4", "a6e816e8572b143e"),
             // TypeScript
-            ("ts", "typescript-tags-v4", "d1fdef8457b78129"),
+            ("ts", "typescript-tags-v5", "c86fc0a2aea47f3e"),
             // TSX
-            ("tsx", "tsx-tags-v4", "01ba0329c337ba1f"),
+            ("tsx", "tsx-tags-v5", "95fbd3050e7da0d0"),
             // JavaScript
-            ("js", "javascript-tags-v4", "0b4c01075a5c5218"),
+            ("js", "javascript-tags-v5", "04c009a62eb98170"),
             // Go
             ("go", "go-tags-v3", "f9d10fb20ec8989c"),
             // Python
             ("py", "python-tags-v1", "4c940d044409c6d8"),
         ];
-        const PINNED_FACTS: (&str, &str) = ("facts-v3", "006133eb2aae6c76");
+        const PINNED_FACTS: (&str, &str) = ("facts-v4", "006133eb2aae6c76");
         fn digest(facts: &impl std::fmt::Debug) -> String {
             format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()))
         }
@@ -1771,6 +1781,10 @@ pub(crate) mod tests {
             (
                 "a mention's caller",
                 any(&|f| f.mentions.iter().any(|m| m.enclosing.is_some())),
+            ),
+            (
+                "a qualified mention",
+                any(&|f| f.mentions.iter().any(|m| m.name != m.leaf)),
             ),
             ("a module declaration", any(&|f| !f.modules.is_empty())),
             (

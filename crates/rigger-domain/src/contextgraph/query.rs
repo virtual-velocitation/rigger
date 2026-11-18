@@ -239,22 +239,42 @@ pub fn path_leaf(path: &str) -> &str {
     split_path(path).1
 }
 
-/// The separator of a path qualifier, `T::new`; a member qualifier's is `.`, `S.field`.
-const PATH_SEPARATOR: &str = "::";
+/// The separator of a path qualifier, `T::new`. Its home, with [`MEMBER_SEPARATOR`]'s: the
+/// extractor's leaf split reads both (spec 117, CAPTURES).
+pub const PATH_SEPARATOR: &str = "::";
+
+/// The separator of a member qualifier, `S.field`.
+pub const MEMBER_SEPARATOR: &str = ".";
 
 /// A path cut at its last `::` or `.` into its qualifier and its leaf: the text before that
 /// separator, none when the path holds neither, and the text after it, the whole path when it
 /// holds neither (`a::b.c` gives `a::b` and `c`, `new` gives none and `new`). The one cut of a
 /// path: [`path_leaf`] reads its leaf, and the resolver a qualified mention's qualifier (spec
-/// 117, RESOLVER AT READ).
+/// 117, RESOLVER AT READ). [`qualified_name`] is its inverse.
 pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
     let (head, tail) = path
         .rsplit_once(PATH_SEPARATOR)
         .map_or((None, path), |(head, tail)| (Some(head), tail));
-    match tail.rsplit_once('.') {
-        Some((_, leaf)) => (Some(&path[..path.len() - leaf.len() - 1]), leaf),
+    match tail.rsplit_once(MEMBER_SEPARATOR) {
+        Some((_, leaf)) => (
+            Some(&path[..path.len() - leaf.len() - MEMBER_SEPARATOR.len()]),
+            leaf,
+        ),
         None => (head, tail),
     }
+}
+
+/// The ONE join of a qualified name, the inverse of [`split_path`]: `qualifier`, then `::` for a
+/// path qualifier or `.` for a member qualifier, then `leaf` (`T`, a path, and `new` give
+/// `T::new`; `S`, a member, and `field` give `S.field`). The facts layer writes a qualified
+/// mention's name with it (spec 117, CAPTURES).
+pub fn qualified_name(qualifier: &str, path: bool, leaf: &str) -> String {
+    let separator = if path {
+        PATH_SEPARATOR
+    } else {
+        MEMBER_SEPARATOR
+    };
+    format!("{qualifier}{separator}{leaf}")
 }
 
 /// Whether [`split_path`] cuts `path` at a `::`, a path qualifier (`T::new`, `a.b::c`), rather

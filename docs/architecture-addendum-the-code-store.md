@@ -273,8 +273,10 @@ Def
 
 Mention
   enclosing   index of the enclosing Def, or the file
-  name        the name as written: the reference's identifier ("bar")
-  leaf        the final identifier of name; equal to name for every extractor today
+  name        the name as written: "Q::bar" under a path qualifier, "Q.bar" under a member
+              access, "bar" with none
+  leaf        the final identifier of name ("bar"), never holding ::, ., < or >; equal to name
+              with no qualifier
   kind        Call | Tagged(<ref kind>)    (Call is the untagged reference)
   line
   test        true when inside a test-only def
@@ -292,7 +294,12 @@ ModuleDecl
 ```
 
 A doc span is the 1-based, inclusive first and last line of a doc comment; the comment's text is
-never stored. A module's two lists depend only on the declaring file, so they are computed at
+never stored. A tags query's reference is named by its bare leaf, qualified by a path (`::`) or a
+member access (`.`) when one is written: by the qualifier a `@qualifier.path` or
+`@qualifier.member` capture gives, else by the one its `@name` writes before the leaf. A `@name`
+written as a chain of identifiers splits at its last separator, its type arguments left out of
+the split (`Ns.IShape` is the leaf `IShape` qualified by the member `Ns`, `List<IShape>` the leaf
+`List`), and one that is no such chain names no mention. A module's two lists depend only on the declaring file, so they are computed at
 extraction, an explicit path attribute placed by the same two rules. Which list applies, and the
 first path in it that is a file in the tree, are cross-file questions, so they are answered at
 read (section 6).

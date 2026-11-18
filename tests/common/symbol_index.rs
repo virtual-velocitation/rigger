@@ -46,6 +46,7 @@ pub fn sym_ref(name: &str, line: u32, enclosing: Option<&str>, is_test: bool) ->
         enclosing: enclosing.map(Into::into),
         is_test,
         ref_kind: None,
+        qualifier: None,
     }
 }
 

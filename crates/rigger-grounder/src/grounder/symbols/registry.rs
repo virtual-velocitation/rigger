@@ -266,9 +266,9 @@ const PYTHON_TAGS: &str = r#"
 "#;
 
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, the `tags` query the
-/// extractor runs over a file in that language and the grammar's node kinds that construct an
-/// object, resolved together so a file maps to exactly one grammar+query pair, with that pair's
-/// one compilation ([`LanguageEntry::tags`]).
+/// extractor runs over a file in that language, the grammar's node kinds that construct an
+/// object and those holding a generic's type arguments, resolved together so a file maps to
+/// exactly one grammar+query pair, with that pair's one compilation ([`LanguageEntry::tags`]).
 pub struct LanguageEntry {
     pub lang: Lang,
     pub language: tree_sitter::Language,
@@ -277,6 +277,10 @@ pub struct LanguageEntry {
     /// reference (spec 117, CAPTURES): [`JS_CONSTRUCTORS`] for TypeScript, TSX and JavaScript,
     /// [`CSHARP_CONSTRUCTORS`] for C#, none for the rest.
     constructors: &'static [&'static str],
+    /// The node kinds a reference's name is split around, left out with all they hold, so
+    /// `List<IShape>` is named `List` (spec 117, CAPTURES): [`TYPE_ARGUMENTS`] for TypeScript,
+    /// TSX and Go, [`CSHARP_TYPE_ARGUMENTS`] for C#, none for the rest.
+    type_arguments: &'static [&'static str],
     compiled: &'static Compiled,
 }
 
@@ -286,19 +290,32 @@ const JS_CONSTRUCTORS: &[&str] = &["new_expression"];
 /// The node kind constructing an object in the C# grammar, `new T()`.
 const CSHARP_CONSTRUCTORS: &[&str] = &["object_creation_expression"];
 
+/// The node kind holding a generic's type arguments in the TypeScript, TSX and Go grammars,
+/// `<IShape>` of `List<IShape>` and `[T]` of `Set[T]`.
+const TYPE_ARGUMENTS: &[&str] = &["type_arguments"];
+
+/// The node kind holding a generic's type arguments in the C# grammar, `<IShape>` of
+/// `List<IShape>`.
+const CSHARP_TYPE_ARGUMENTS: &[&str] = &["type_argument_list"];
+
 /// The process's one compilation of a grammar+query pair, made at its first use.
 type Compiled = OnceLock<Result<CompiledTags, String>>;
 
 impl LanguageEntry {
-    /// The entry's `tags` query compiled against its grammar, with its `constructors`: compiled at
-    /// the first call in the process, and that compilation every later call for the same
-    /// grammar+query pair returns, so the extractor matches each file against an already compiled
-    /// query and an entry looked up for its `lang` alone compiles nothing. An `Err` is a query
-    /// that does not compile.
+    /// The entry's `tags` query compiled against its grammar, with its `constructors` and
+    /// `type_arguments`: compiled at the first call in the process, and that compilation every
+    /// later call for the same grammar+query pair returns, so the extractor matches each file
+    /// against an already compiled query and an entry looked up for its `lang` alone compiles
+    /// nothing. An `Err` is a query that does not compile.
     pub fn tags(&self) -> Result<&'static CompiledTags, String> {
         self.compiled
             .get_or_init(|| {
-                CompiledTags::compile(&self.language, self.tags_query, self.constructors)
+                CompiledTags::compile(
+                    &self.language,
+                    self.tags_query,
+                    self.constructors,
+                    self.type_arguments,
+                )
             })
             .as_ref()
             .map_err(Clone::clone)
@@ -338,10 +355,11 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     static JS: Compiled = OnceLock::new();
     static GO: Compiled = OnceLock::new();
     static PYTHON: Compiled = OnceLock::new();
-    let (lang, language, tags_query, constructors, compiled): (
+    let (lang, language, tags_query, constructors, type_arguments, compiled): (
         Lang,
         tree_sitter::Language,
         &'static str,
+        &'static [&'static str],
         &'static [&'static str],
         &'static Compiled,
     ) = match ext {
@@ -350,6 +368,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             tree_sitter_rust::LANGUAGE.into(),
             RUST_TAGS,
             &[],
+            &[],
             &RUST,
         ),
         "cs" => (
@@ -357,6 +376,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             tree_sitter_c_sharp::LANGUAGE.into(),
             CSHARP_TAGS,
             CSHARP_CONSTRUCTORS,
+            CSHARP_TYPE_ARGUMENTS,
             &CSHARP,
         ),
         "ts" => (
@@ -377,6 +397,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                 ],
             ),
             JS_CONSTRUCTORS,
+            TYPE_ARGUMENTS,
             &TS,
         ),
         "tsx" => (
@@ -397,6 +418,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                 ],
             ),
             JS_CONSTRUCTORS,
+            TYPE_ARGUMENTS,
             &TSX,
         ),
         "js" | "mjs" | "cjs" | "jsx" => (
@@ -414,6 +436,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                 ],
             ),
             JS_CONSTRUCTORS,
+            &[],
             &JS,
         ),
         "go" => (
@@ -421,12 +444,14 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             tree_sitter_go::LANGUAGE.into(),
             composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
             &[],
+            TYPE_ARGUMENTS,
             &GO,
         ),
         "py" => (
             Lang::Python,
             tree_sitter_python::LANGUAGE.into(),
             PYTHON_TAGS,
+            &[],
             &[],
             &PYTHON,
         ),
@@ -437,6 +462,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         language,
         tags_query,
         constructors,
+        type_arguments,
         compiled,
     })
 }
@@ -488,7 +514,7 @@ pub(crate) mod tests {
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::extract::extract;
     use crate::grounder::symbols::model::{
-        Kind, Lang, CSHARP_TAGS_GENERATION, GO_TAGS_GENERATION, JS_TAGS_GENERATION,
+        Kind, Lang, Qualifier, CSHARP_TAGS_GENERATION, GO_TAGS_GENERATION, JS_TAGS_GENERATION,
         PYTHON_TAGS_GENERATION, RUST_TAGS_GENERATION, TSX_TAGS_GENERATION, TS_TAGS_GENERATION,
     };
     use crate::js_ts_definition_sources::{
@@ -998,6 +1024,41 @@ pub(crate) mod tests {
         );
     }
 
+    /// AN ENTRY SPLITS A NAME AROUND ITS GRAMMAR'S TYPE ARGUMENTS (spec 117, CAPTURES): a fixture
+    /// query naming a generic type whole, compiled with the C#, TypeScript, TSX or Go entry's
+    /// grammar and `type_arguments`, names a reference to the generic's own name, its type
+    /// arguments left out: `List<IShape>` (`List[IShape]` in Go) is a reference to `List`.
+    #[test]
+    fn an_entry_splits_a_name_around_its_grammars_type_arguments() {
+        let ts = "(type_annotation (generic_type) @name) @reference.type";
+        let ts_source = "let x: List<IShape>;\n";
+        for (ext, query, source) in [
+            (
+                "cs",
+                "(variable_declaration type: (generic_name) @name) @reference.type",
+                "class C { void M() { List<IShape> x; } }\n",
+            ),
+            ("ts", ts, ts_source),
+            ("tsx", ts, ts_source),
+            (
+                "go",
+                "(var_spec type: (generic_type) @name) @reference.type",
+                "package p\nvar x List[IShape]\n",
+            ),
+        ] {
+            let entry = for_extension(ext).expect("the extension is registered");
+            let tags = CompiledTags::compile(&entry.language, query, &[], entry.type_arguments)
+                .expect("the fixture query compiles");
+            let symbols = extract(source, entry.lang, &tags).expect("the source extracts");
+            let found: Vec<(&str, Option<&Qualifier>)> = symbols
+                .refs
+                .iter()
+                .map(|r| (r.name.as_str(), r.qualifier.as_ref()))
+                .collect();
+            assert_eq!(found, vec![("List", None)], ".{ext}");
+        }
+    }
+
     #[test]
     fn language_override_wins_over_extension() {
         // A `.txt` with an explicit override still resolves (the `--language` override).
@@ -1200,6 +1261,7 @@ class Box {
 }
 class Lid : Box { }
 class Tray { object made = new Box(); }
+class Bin : Ns.Shelf<Box> { }
 ",
         ),
         (
@@ -1214,6 +1276,7 @@ function calc(n: number): number { return n; }
 function zero(): number { return 0; }
 function same(b: Box): Box { return b; }
 const made = new Box();
+const kit = new Ns.Box();
 ",
         ),
         (
@@ -1226,6 +1289,7 @@ function label(s: string) { return s; }
 function blank() { return \"\"; }
 function keep(s: Label): Label { return s; }
 const made = new Label();
+const kit = new Ns.Label();
 ",
         ),
         (
@@ -1239,6 +1303,7 @@ function calc(n) { return n; }
 /** Zero is nothing. */
 function zero() { return 0; }
 const made = new Box();
+const kit = new Ns.Box();
 ",
         ),
         (
@@ -1411,8 +1476,8 @@ def calc(n):
     /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
     /// generation table's generations joined in its order. The fixtures set every part a snapshot
     /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind a registered language records (a const read, a type reference and a use) included, so
-    /// a change to any of them moves a digest.
+    /// kind a registered language records (a const read, a type reference and a use) and a
+    /// reference's qualifier included, so a change to any of them moves a digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
         use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
@@ -1423,13 +1488,13 @@ def calc(n):
             // Rust
             ("rs", "rust-tags-v2", "cf79ba29624d68ed"),
             // C#
-            ("cs", "csharp-tags-v3", "0f7eae63e5337fed"),
+            ("cs", "csharp-tags-v4", "e396669571843f87"),
             // TypeScript
-            ("ts", "typescript-tags-v4", "f6f3255db8983a6b"),
+            ("ts", "typescript-tags-v5", "44b3d1b0bddd54ba"),
             // TSX
-            ("tsx", "tsx-tags-v4", "09c3a95feee0c5f9"),
+            ("tsx", "tsx-tags-v5", "4b777e0b89844c8c"),
             // JavaScript
-            ("js", "javascript-tags-v4", "93e654df71c8f486"),
+            ("js", "javascript-tags-v5", "57bcf3aad620d53b"),
             // Go
             ("go", "go-tags-v3", "40f80b41e4a13f29"),
             // Python
@@ -1486,6 +1551,10 @@ def calc(n):
                 refs.iter().any(|r| r.enclosing.is_some()),
             ),
             ("a test reference", refs.iter().any(|r| r.is_test)),
+            (
+                "a reference's qualifier",
+                refs.iter().any(|r| r.qualifier.is_some()),
+            ),
             ("a const read", tagged(REF_KIND_CONST)),
             ("a type reference", tagged(REF_KIND_TYPE)),
             ("a use", tagged(REF_KIND_USE)),

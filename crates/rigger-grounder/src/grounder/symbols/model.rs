@@ -160,9 +160,9 @@ pub struct Def {
     pub doc: Option<(u32, u32)>,
 }
 
-/// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
-/// reference occurs inside (the caller), named by its path ([`Def::path`], spec 119 criterion 8:
-/// `T::new`, `outer::inner`). `None` for a top-level reference outside every
+/// A reference site: the referenced name's bare leaf, its 1-based line, and the ENCLOSING
+/// definition the reference occurs inside (the caller), named by its path ([`Def::path`], spec 119
+/// criterion 8: `T::new`, `outer::inner`). `None` for a top-level reference outside every
 /// definition - an import or a module-level call; a file-level impl header's trait and type
 /// attribute to the impl block, a definition of its own, and its trait's tagged `type` row to the
 /// self type's definition when the file defines that once (spec 117). Set during extraction by
@@ -195,6 +195,22 @@ pub struct SymRef {
     /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
+    /// Spec 117 (CAPTURES): the qualifier the reference was written with: a tags query's
+    /// `@qualifier.path` or `@qualifier.member` capture, else the text before the leaf of a
+    /// chained `@name` (`Ns` of `Ns.IShape`). `name` above stays the bare leaf. `None` for a
+    /// reference written bare. Serde-defaulted and omitted when `None`, so an unqualified
+    /// reference serializes byte-identically to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualifier: Option<Qualifier>,
+}
+
+/// A reference's qualifier (spec 117, CAPTURES): its text, and whether it is a path (`Shape` of
+/// `Shape::area`) or a member access (`Shape` of `Shape.area`). The facts layer writes the
+/// mention's name from it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Qualifier {
+    pub name: String,
+    pub path: bool,
 }
 
 /// One file's extracted symbols, tagged with the language it was parsed as (the scope key for
@@ -247,25 +263,25 @@ macro_rules! rust_tags_generation {
 
 macro_rules! csharp_tags_generation {
     () => {
-        "csharp-tags-v3"
+        "csharp-tags-v4"
     };
 }
 
 macro_rules! ts_tags_generation {
     () => {
-        "typescript-tags-v4"
+        "typescript-tags-v5"
     };
 }
 
 macro_rules! tsx_tags_generation {
     () => {
-        "tsx-tags-v4"
+        "tsx-tags-v5"
     };
 }
 
 macro_rules! js_tags_generation {
     () => {
-        "javascript-tags-v4"
+        "javascript-tags-v5"
     };
 }
 
@@ -411,6 +427,10 @@ mod tests {
                 enclosing: None,
                 is_test: false,
                 ref_kind: None,
+                qualifier: Some(Qualifier {
+                    name: "Health".into(),
+                    path: true,
+                }),
             }],
             partial: false,
             doc: Some((1, 2)),
