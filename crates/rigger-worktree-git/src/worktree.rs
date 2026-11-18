@@ -2607,9 +2607,9 @@ fn checked_out_elsewhere(branch: &str, at: &str, authorized_root: &str) -> Error
 /// - a list git refuses, or a `dir` the filesystem cannot read or resolve;
 /// - a listed path that cannot be resolved for a reason other than nothing being there, since it
 ///   may be `dir` ([`names_dir`]), when that entry could be the tree of the unit on `branch`
-///   ([`could_be_the_units`]). Any other such entry is passed over, so a worktree on an
-///   unreadable disk elsewhere holds no create, yet `dir` is never cleared on its account: with
-///   no entry naming `dir`, its error is the answer;
+///   ([`could_be_the_units`]), wherever git lists it beside an entry naming `dir`. Any other such
+///   entry is passed over, so a worktree on an unreadable disk elsewhere holds no create, yet
+///   `dir` is never cleared on its account: with no entry naming `dir`, its error is the answer;
 /// - an entry at `dir` git marks `locked` (an add git has not finished, or a lock a person set) or
 ///   `prunable` (a tree git can no longer use, its dir still there): git's own prune and the heal
 ///   ([`worktree_admin_is_corrupt`]) leave a locked entry untouched, and a prunable one at a dir
@@ -2644,15 +2644,13 @@ fn registered_at(
             e.0,
         )
     })?;
+    let mut named = None;
     let mut passed_over = None;
     for entry in listed(&out) {
         match names_dir(entry.path, dir, &want) {
             Ok(false) => {}
             Ok(true) => {
-                return match entry.mark {
-                    Some(mark) => Err(marked_entry(repo, mark, dir)),
-                    None => Ok(true),
-                };
+                named.get_or_insert(entry.mark);
             }
             Err(e) if could_be_the_units(&entry, branch, authorized_root) => return Err(e),
             Err(e) => {
@@ -2660,9 +2658,11 @@ fn registered_at(
             }
         }
     }
-    match passed_over {
-        Some(e) => Err(e),
-        None => unlisted_registration(dir),
+    match (named, passed_over) {
+        (Some(Some(mark)), _) => Err(marked_entry(repo, mark, dir)),
+        (Some(None), _) => Ok(true),
+        (None, Some(e)) => Err(e),
+        (None, None) => unlisted_registration(dir),
     }
 }
 
