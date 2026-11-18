@@ -751,7 +751,7 @@ mod tests {
         let model_for_a_person =
             |row: DispositionRow| host_hold("model_not_found", row.action, true);
         let unseen = || held("model_not_found", HOLD_BY_HOST, "");
-        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 20] = [
+        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 21] = [
             (
                 "a first sighting of a hold class",
                 vec![],
@@ -866,6 +866,16 @@ mod tests {
                 Some(model_for_a_person(FAULT_RECURRED)),
             ),
             (
+                "model_not_found after a released hold a person's category moved off it",
+                vec![
+                    unseen(),
+                    held_for_a_person("authentication_failed"),
+                    released(),
+                ],
+                "model_not_found",
+                Some(model_for_a_person(FAULT_RECURRED)),
+            ),
+            (
                 "model_not_found after a released model_not_found hold in the run before",
                 vec![
                     unseen(),
@@ -924,9 +934,10 @@ mod tests {
     /// run, over a hold a probe ends, or after a released hold of another fault, it appends one
     /// `RunHeld {by: conductor}` for the orchestrator, the fault's lines its detail and the
     /// hold's model carried; after any released hold of the same fault in the current run - its
-    /// cause and its detail's first line alike, byte for byte, whatever its later lines - it is
-    /// held for a person, the orchestrator's fix not having held, however many released holds of
-    /// other faults follow it, so faults F, G, F reach a person on the second F; over an open hold
+    /// cause and its detail's first line alike, byte for byte, whatever its later lines, and
+    /// whichever `RunHeld` of that hold named it - it is held for a person, the orchestrator's fix
+    /// not having held, however many released holds of other faults follow it or later faults
+    /// landed on it, so faults F, G, F reach a person on the second F; over an open hold
     /// that waits on a person, an operator hold, it is held for that person; and on a hold whose
     /// latest `RunHeld` already names the same fault it appends nothing. A released hold the
     /// current run's boundary stands after, and a hold recorded before details kept their lines,
@@ -953,7 +964,7 @@ mod tests {
         let boundary = || RunStarted::default().to_event().unwrap();
         const OTHER: &str = "plan landing failed";
         const ONE_LINE: &str = "worktree: git worktree add failed: the path already exists";
-        let rows: [(&str, Vec<Event>, Option<RunHeld>); 13] = [
+        let rows: [(&str, Vec<Event>, Option<RunHeld>); 14] = [
             ("an unheld run", vec![], orchestrator("")),
             (
                 "a host hold the run retries by itself",
@@ -988,6 +999,11 @@ mod tests {
                 "a released hold naming another fault",
                 vec![named(OTHER), released()],
                 orchestrator(""),
+            ),
+            (
+                "F, G, F: a released hold of the same fault, another fault landed on it",
+                vec![named(DETAIL), named(OTHER), released()],
+                person.clone(),
             ),
             (
                 "F, G, F: a released hold of the same fault, then a released hold of another",
