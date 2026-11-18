@@ -1889,6 +1889,22 @@ mod tests {
         );
     }
 
+    /// [`address`] answers `None` for `pid`, with descriptors and without: nothing is ever
+    /// addressed there, so no signal can be sent to it.
+    fn never_addressed(pid: u32) {
+        for by_descriptor in [true, false] {
+            assert!(
+                address(pid, by_descriptor).is_none(),
+                "pid {pid} is addressed (by_descriptor {by_descriptor})"
+            );
+        }
+    }
+
+    crate::test_cases! {
+        pid_0_is_never_addressed: never_addressed(0);
+        init_is_never_addressed: never_addressed(1);
+    }
+
     // Unix only: on Windows the fixture shell's `$!` is a pid of the shell's own, not the OS's.
     #[cfg(unix)]
     #[test]
