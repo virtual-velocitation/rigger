@@ -28314,8 +28314,8 @@ fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
 
 // --- Spec 66, criterion 5 (round 2): DISCOVERABILITY reaches the REAL pre-launch entry ---
 //
-// `rigger prime` above is the SessionStart hook, but the hook is always invoked with ZERO
-// args (crates/rigger-driver/src/hooks.rs pins the literal `rigger prime` string) - so in production it NEVER
+// `rigger prime` above is the SessionStart hook, but the hook is always invoked with no spec
+// (crates/rigger-driver/src/hooks.rs pins its one argument, `prime`) - so in production it NEVER
 // carries a spec path and the reminder wired there alone never reaches an operator. The
 // surface that DOES hold the parsed spec path at the real pre-launch moment is `run_cli`
 // (`rigger run <spec>`); these tests drive the compiled binary through it, proving the reminder

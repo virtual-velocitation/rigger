@@ -141,7 +141,7 @@ fn flag_json(argv: &[String], flag: &str) -> Value {
 /// here does, merged onto `base` by the same `hooks` installers `rigger setup` runs: the
 /// SessionStart prime hook and the status line.
 fn installed_session_settings(base: &[u8]) -> Value {
-    let primed = hooks::install_session_start(base, "rigger prime").unwrap();
+    let primed = hooks::install_session_start(base, hooks::PRIME_COMMAND).unwrap();
     let with_line = hooks::install_status_line(&primed, "rigger status --line").unwrap();
     serde_json::from_slice(&with_line).unwrap()
 }

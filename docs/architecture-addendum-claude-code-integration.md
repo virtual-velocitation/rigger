@@ -143,6 +143,12 @@ result.
 Per-spawn, through `--settings`, each an exec-form hook: `command` is the rigger binary's path
 and `args` the words after it, so Claude Code spawns rigger with that argument vector and no
 shell on every OS, and a path, spawn id or branch reaches it as written whatever it holds.
+The session hooks the spawn carries beside them, `SessionStart` running `rigger prime` and the
+`PreToolUse` lookup guard running `rigger grep-guard`, are exec-form too, with `command` the
+`rigger` on `PATH`: the same entries `rigger setup` writes into the checkout's
+`.claude/settings.json`, which it rewrites where an older setup left either as one shell-form
+command line, so the host, which runs a handler defined in more than one settings file once,
+runs each once.
 
 - `PreToolUse` on `Edit|MultiEdit|Write|NotebookEdit` runs `rigger guard-write --root <dir>...`,
   rooted at the spawn's `dir` (the session's cwd when `dir` is empty) and its scratch

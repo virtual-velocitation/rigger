@@ -26,17 +26,20 @@ use crate::agent::{AgentFailure, HelperCopy, SpawnHost, TreeDuty};
 #[error("hooks: {0}")]
 pub struct Error(pub String);
 
-/// The command the SessionStart hook runs: prime the session with the instructions in force
-/// and the project's recent decisions.
-pub const PRIME_COMMAND: &str = "rigger prime";
+/// The command the SessionStart hook runs, as the program the host spawns and its arguments:
+/// `rigger prime`, which primes the session with the instructions in force and the project's
+/// recent decisions. The hook is exec form, like every hook rigger installs ([`push_hook_block`]),
+/// so the host finds `rigger` on `PATH` and spawns it with no shell on every OS.
+pub const PRIME_COMMAND: (&str, &[&str]) = ("rigger", &["prime"]);
 
 /// The matcher and command the graph-first lookup hook installs under `PreToolUse` (spec 92,
 /// criterion 4). Fires on the built-in `Grep` tool and on `Bash` (a `grep` may be buried inside
 /// an arbitrary shell command); the real narrowing happens in `rigger grep-guard` itself, so a
 /// Bash call that is not a grep at all is a silent allow, never a false bounce.
 pub const GREP_GUARD_MATCHER: &str = "Grep|Bash";
-/// See [`GREP_GUARD_MATCHER`].
-pub const GREP_GUARD_COMMAND: &str = "rigger grep-guard";
+/// The program and arguments the [`GREP_GUARD_MATCHER`] hook runs, in exec form as
+/// [`PRIME_COMMAND`] is: `rigger grep-guard`.
+pub const GREP_GUARD_COMMAND: (&str, &[&str]) = ("rigger", &["grep-guard"]);
 
 /// The tools the write guard judges, every one of [`EDITING_TOOLS`], as the matcher it installs
 /// under `PreToolUse`.
@@ -181,30 +184,39 @@ pub fn install_session_settings(existing: &[u8], grep_guard: bool) -> Result<Vec
 
 /// Merge the PreToolUse grep-guard into `existing` settings JSON, preserving every other
 /// setting: an inner hook running [`GREP_GUARD_COMMAND`] under any matcher but
-/// [`GREP_GUARD_MATCHER`] is stripped first, its block dropped once it empties, so exactly one
-/// entry under the current matcher remains. `existing` may be empty.
+/// [`GREP_GUARD_MATCHER`], or running it as one shell-form command line ([`runs_as_a_line`])
+/// under any, is stripped first, its block dropped once it empties, so exactly one entry under
+/// the current matcher remains, in exec form. `existing` may be empty.
 pub fn install_grep_guard(existing: &[u8]) -> Result<Vec<u8>, Error> {
+    let (program, args) = GREP_GUARD_COMMAND;
     let mut settings = parse_settings(existing)?;
-    strip_grep_guard(&mut settings, |matcher| matcher != Some(GREP_GUARD_MATCHER));
+    strip_hooks(&mut settings, "PreToolUse", |matcher, hook| {
+        runs_as_a_line(hook, program, args)
+            || (matcher != Some(GREP_GUARD_MATCHER) && runs(hook, program, args))
+    });
     push_hook_block(
         &mut settings,
         "PreToolUse",
         GREP_GUARD_MATCHER,
-        GREP_GUARD_COMMAND,
-        None,
+        program,
+        args,
         None,
     )?;
     encode_settings(&settings)
 }
 
 /// Remove rigger's own PreToolUse grep-guard from `existing` settings JSON: every inner hook
-/// running [`GREP_GUARD_COMMAND`], under any matcher, is stripped, each block it empties dropped,
-/// then the `PreToolUse` array, then the `hooks` object, each once it empties; every other hook
-/// and setting is kept. Settings carrying no guard come back as the very bytes they were, so a
-/// file that never carried it is never rewritten. `existing` may be empty.
+/// running [`GREP_GUARD_COMMAND`] in either form ([`runs_in_either_form`]), under any matcher,
+/// is stripped, each block it empties dropped, then the `PreToolUse` array, then the `hooks`
+/// object, each once it empties; every other hook and setting is kept. Settings carrying no guard
+/// come back as the very bytes they were, so a file that never carried it is never rewritten.
+/// `existing` may be empty.
 pub fn remove_grep_guard(existing: &[u8]) -> Result<Vec<u8>, Error> {
     let mut settings = parse_settings(existing)?;
-    if !strip_grep_guard(&mut settings, |_| true) {
+    let stripped = strip_hooks(&mut settings, "PreToolUse", |_, hook| {
+        runs_in_either_form(hook, GREP_GUARD_COMMAND)
+    });
+    if !stripped {
         return Ok(existing.to_vec());
     }
     if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
@@ -223,41 +235,46 @@ pub fn remove_grep_guard(existing: &[u8]) -> Result<Vec<u8>, Error> {
 }
 
 /// Whether the settings JSON `existing` carries the PreToolUse grep-guard: an inner `PreToolUse`
-/// hook running [`GREP_GUARD_COMMAND`], under any matcher. Unparseable settings carry none.
+/// hook running [`GREP_GUARD_COMMAND`] in either form ([`runs_in_either_form`]), under any
+/// matcher. Unparseable settings carry none.
 pub fn carries_grep_guard(existing: &[u8]) -> bool {
     serde_json::from_slice::<Value>(existing).is_ok_and(|settings| {
         settings
             .pointer("/hooks/PreToolUse")
             .and_then(Value::as_array)
-            .is_some_and(|blocks| has_command(blocks, GREP_GUARD_COMMAND, None))
+            .is_some_and(|blocks| {
+                any_hook(blocks, |hook| runs_in_either_form(hook, GREP_GUARD_COMMAND))
+            })
     })
 }
 
-/// Strip every inner `PreToolUse` hook running [`GREP_GUARD_COMMAND`] from the blocks whose
-/// matcher `strips` accepts, dropping each block it empties; whether it stripped any. Settings
-/// with no `PreToolUse` array carry nothing to strip.
-fn strip_grep_guard(
+/// Strip every inner hook of the `event_key` blocks of `settings`' `hooks` that `strips` accepts,
+/// handed the block's matcher and the hook, dropping each block it empties; whether it stripped
+/// any. Settings with no `event_key` array carry nothing to strip.
+fn strip_hooks(
     settings: &mut Map<String, Value>,
-    strips: impl Fn(Option<&str>) -> bool,
+    event_key: &str,
+    strips: impl Fn(Option<&str>, &Value) -> bool,
 ) -> bool {
     let Some(blocks) = settings
         .get_mut("hooks")
         .and_then(Value::as_object_mut)
-        .and_then(|hooks| hooks.get_mut("PreToolUse"))
+        .and_then(|hooks| hooks.get_mut(event_key))
         .and_then(Value::as_array_mut)
     else {
         return false;
     };
     let mut stripped = false;
     blocks.retain_mut(|block| {
-        if !strips(block.get("matcher").and_then(Value::as_str)) {
-            return true;
-        }
+        let matcher = block
+            .get("matcher")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let Some(inner) = block.get_mut("hooks").and_then(Value::as_array_mut) else {
             return true;
         };
         let before = inner.len();
-        inner.retain(|hook| !runs(hook, GREP_GUARD_COMMAND, None));
+        inner.retain(|hook| !strips(matcher.as_deref(), hook));
         let removed = inner.len() < before;
         stripped |= removed;
         !(removed && inner.is_empty())
@@ -296,18 +313,11 @@ pub fn install_spawn_hooks(
         guard.extend(["--root", root.as_str()]);
     }
     let matcher = write_guard_matcher();
-    let mut merged = merge_hook_block(
-        existing,
-        "PreToolUse",
-        &matcher,
-        rigger_bin,
-        Some(&guard),
-        None,
-    )?;
+    let mut merged = merge_hook_block(existing, "PreToolUse", &matcher, rigger_bin, &guard, None)?;
     for category in AgentFailure::CATEGORIES {
         let class = category.as_str();
         let args = ["hook", "stop-failure", "--spawn", spawn, "--class", class];
-        merged = merge_hook_block(&merged, "StopFailure", class, rigger_bin, Some(&args), None)?;
+        merged = merge_hook_block(&merged, "StopFailure", class, rigger_bin, &args, None)?;
     }
     let asks = match duty {
         TreeDuty::None => None,
@@ -318,7 +328,7 @@ pub fn install_spawn_hooks(
         let mut args = vec!["hook", "stop", "--spawn", spawn, "--dir", dir];
         args.extend(asks);
         let timeout = Some(STOP_HOOK_TIMEOUT_SECS);
-        merged = merge_hook_block(&merged, "Stop", "", rigger_bin, Some(&args), timeout)?;
+        merged = merge_hook_block(&merged, "Stop", "", rigger_bin, &args, timeout)?;
     }
     Ok(merged)
 }
@@ -377,41 +387,48 @@ pub fn helper_mcp_tools(helpers: &[HelperCopy]) -> Result<Vec<String>, Error> {
     Ok(tools)
 }
 
-/// Merge a SessionStart hook that runs `command` into the settings JSON. Idempotent
-/// (installing twice does not duplicate the hook) and preserves all other settings.
-/// `existing` may be empty. A thin wrapper over [`merge_hook_block`] fixed to the
-/// `SessionStart` event with an empty matcher (rigger installs the only entry that will
-/// ever exist there).
-pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, Error> {
-    merge_hook_block(existing, "SessionStart", "", command, None, None)
+/// Merge a SessionStart hook that runs the program and arguments of `command` into the settings
+/// JSON, in exec form ([`push_hook_block`]), with an empty matcher (rigger installs the only
+/// entry that will ever exist there). An inner hook running `command` as one shell-form command
+/// line ([`runs_as_a_line`]) is stripped first, its block dropped once it empties, so a settings
+/// file an older setup wrote carries the hook once. Idempotent (installing twice does not
+/// duplicate the hook) and preserves all other settings. `existing` may be empty.
+pub fn install_session_start(
+    existing: &[u8],
+    (program, args): (&str, &[&str]),
+) -> Result<Vec<u8>, Error> {
+    let mut settings = parse_settings(existing)?;
+    strip_hooks(&mut settings, "SessionStart", |_, hook| {
+        runs_as_a_line(hook, program, args)
+    });
+    push_hook_block(&mut settings, "SessionStart", "", program, args, None)?;
+    encode_settings(&settings)
 }
 
-/// Merge one hook block that runs `command` into `existing` settings JSON, under the
-/// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), filtered by
-/// `matcher` (tool names under `PreToolUse`, a failure class under `StopFailure`, empty for
-/// an event `rigger` never matcher-filters, e.g. `SessionStart`), in exec form with `args` as
-/// the program's argument vector when they are named (a command line the host hands a shell
-/// otherwise), and given `timeout` seconds when one is named (Claude Code's own default
-/// otherwise). Idempotent (installing the same `command` with the same `args` under the same
-/// `event_key` twice does not duplicate the block) and preserves
-/// every other setting, every other event key, and every other block already present under
-/// THIS event key - a general-purpose event (`PreToolUse`) may already carry entries for a
-/// different tool, matcher, or command a person or another tool installed, so this always
-/// APPENDS a new block rather than ever replacing the array wholesale, and touches nothing
-/// under any matcher/command this call did not itself install. `existing` may be empty. The
-/// one mutation authority [`install_session_start`] and [`install_spawn_hooks`] build on, so
-/// no event kind can diverge on what "merge a hook block"
-/// means; [`install_grep_guard`] pushes its block through the same [`push_hook_block`].
+/// Merge one hook block that runs `program` with `args` into `existing` settings JSON, under the
+/// named top-level hook `event_key` (`"PreToolUse"`, `"StopFailure"`, ...), filtered by
+/// `matcher` (tool names under `PreToolUse`, a failure class under `StopFailure`, empty for an
+/// event `rigger` never matcher-filters, e.g. `Stop`), in exec form ([`push_hook_block`]), and
+/// given `timeout` seconds when one is named (Claude Code's own default otherwise). Idempotent
+/// (installing the same `program` with the same `args` under the same `event_key` twice does not
+/// duplicate the block) and preserves every other setting, every other event key, and every
+/// other block already present under THIS event key - a general-purpose event (`PreToolUse`)
+/// may already carry entries for a different tool, matcher, or command a person or another tool
+/// installed, so this always APPENDS a new block rather than ever replacing the array wholesale,
+/// and touches nothing under any matcher/command this call did not itself install. `existing`
+/// may be empty. [`install_spawn_hooks`] builds on it; [`install_session_start`] and
+/// [`install_grep_guard`] push their blocks through the same [`push_hook_block`], so no event
+/// kind can diverge on what "merge a hook block" means.
 fn merge_hook_block(
     existing: &[u8],
     event_key: &str,
     matcher: &str,
-    command: &str,
-    args: Option<&[&str]>,
+    program: &str,
+    args: &[&str],
     timeout: Option<u32>,
 ) -> Result<Vec<u8>, Error> {
     let mut settings = parse_settings(existing)?;
-    push_hook_block(&mut settings, event_key, matcher, command, args, timeout)?;
+    push_hook_block(&mut settings, event_key, matcher, program, args, timeout)?;
     encode_settings(&settings)
 }
 
@@ -428,16 +445,18 @@ fn parse_settings(existing: &[u8]) -> Result<Map<String, Value>, Error> {
     }
 }
 
-/// Append a block running `command` under `matcher` to the `event_key` array of `settings`'
-/// `hooks`, creating either when absent, unless a block of that array already runs `command`
-/// with `args` ([`runs`]); the inner hook carries `args`, which make it an exec-form hook, and
-/// `timeout` seconds, each when named.
+/// Append a block running `program` with `args` under `matcher` to the `event_key` array of
+/// `settings`' `hooks`, creating either when absent, unless a block of that array already runs
+/// them ([`runs`]). The inner hook is exec form, `command` the program and `args` its argument
+/// vector, which Claude Code spawns with no shell on every OS
+/// (<https://code.claude.com/docs/en/hooks>), so each argument reaches the program as written;
+/// it is given `timeout` seconds when one is named.
 fn push_hook_block(
     settings: &mut Map<String, Value>,
     event_key: &str,
     matcher: &str,
-    command: &str,
-    args: Option<&[&str]>,
+    program: &str,
+    args: &[&str],
     timeout: Option<u32>,
 ) -> Result<(), Error> {
     let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
@@ -448,11 +467,8 @@ fn push_hook_block(
     let event_arr = event
         .as_array_mut()
         .ok_or_else(|| Error(format!("\"{event_key}\" is not an array")))?;
-    if !has_command(event_arr, command, args) {
-        let mut hook = json!({"type": "command", "command": command});
-        if let Some(args) = args {
-            hook["args"] = json!(args);
-        }
+    if !any_hook(event_arr, |hook| runs(hook, program, args)) {
+        let mut hook = json!({"type": "command", "command": program, "args": args});
         if let Some(timeout) = timeout {
             hook["timeout"] = json!(timeout);
         }
@@ -469,21 +485,38 @@ fn encode_settings(settings: &Map<String, Value>) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-/// Whether any block of `blocks` holds an inner hook running `command` with `args` ([`runs`]).
-fn has_command(blocks: &[Value], command: &str, args: Option<&[&str]>) -> bool {
+/// Whether any block of `blocks` holds an inner hook `found` accepts.
+fn any_hook(blocks: &[Value], found: impl Fn(&Value) -> bool) -> bool {
     blocks.iter().any(|block| {
         block
             .get("hooks")
             .and_then(Value::as_array)
-            .is_some_and(|inner| inner.iter().any(|hook| runs(hook, command, args)))
+            .is_some_and(|inner| inner.iter().any(&found))
     })
 }
 
-/// Whether the inner hook `hook` runs `command` with `args`: the same `command`, and in exec form
-/// the same `args` or in shell form none.
-fn runs(hook: &Value, command: &str, args: Option<&[&str]>) -> bool {
-    hook.get("command").and_then(Value::as_str) == Some(command)
-        && hook.get("args") == args.map(|args| json!(args)).as_ref()
+/// Whether the inner hook `hook` runs `program` with `args` in exec form: `program` as its
+/// `command` and `args` as its `args`.
+fn runs(hook: &Value, program: &str, args: &[&str]) -> bool {
+    hook.get("command").and_then(Value::as_str) == Some(program)
+        && hook.get("args") == Some(&json!(args))
+}
+
+/// Whether the inner hook `hook` runs `program` with `args` in shell form: no `args`, and as its
+/// `command` the one line of `program` then each argument, each after one space: the form an
+/// older setup left in a settings file, which the session-hook installers rewrite in exec form.
+fn runs_as_a_line(hook: &Value, program: &str, args: &[&str]) -> bool {
+    let line = std::iter::once(program)
+        .chain(args.iter().copied())
+        .collect::<Vec<_>>()
+        .join(" ");
+    hook.get("args").is_none() && hook.get("command").and_then(Value::as_str) == Some(&line)
+}
+
+/// Whether the inner hook `hook` runs the program and arguments of `command` in either form
+/// ([`runs`], [`runs_as_a_line`]).
+fn runs_in_either_form(hook: &Value, (program, args): (&str, &[&str])) -> bool {
+    runs(hook, program, args) || runs_as_a_line(hook, program, args)
 }
 
 /// Merge one stdio MCP server entry into `.mcp.json`'s `mcpServers` object (spec 92,
@@ -622,21 +655,25 @@ mod tests {
         assert_eq!(installed, counted, "installing twice must not duplicate");
     }
 
-    /// Merge a shell-form `PreToolUse` block with no timeout into `existing`.
-    fn pretooluse(existing: &[u8], matcher: &str, command: &str) -> Result<Vec<u8>, Error> {
-        merge_hook_block(existing, "PreToolUse", matcher, command, None, None)
+    /// Merge a `PreToolUse` block running `program` with `args`, with no timeout, into `existing`.
+    fn pretooluse(
+        existing: &[u8],
+        matcher: &str,
+        (program, args): (&str, &[&str]),
+    ) -> Result<Vec<u8>, Error> {
+        merge_hook_block(existing, "PreToolUse", matcher, program, args, None)
     }
 
     crate::test_cases! {
         installs_and_is_idempotent: assert_installs_idempotently(
-            |existing| install_session_start(existing, "rigger prime"),
+            |existing| install_session_start(existing, ("rigger", &["prime"])),
             &["SessionStart", "\"command\": \"rigger\"", "\"prime\""],
             &[("\"prime\"", 1)],
         );
         pretooluse_hook_installs_and_is_idempotent: assert_installs_idempotently(
-            |existing| pretooluse(existing, "Grep|Bash", "rigger grep-guard"),
-            &["PreToolUse", "rigger grep-guard", "\"matcher\": \"Grep|Bash\""],
-            &[("rigger grep-guard", 1)],
+            |existing| pretooluse(existing, "Grep|Bash", ("rigger", &["grep-guard"])),
+            &["PreToolUse", "\"grep-guard\"", "\"matcher\": \"Grep|Bash\""],
+            &[("\"grep-guard\"", 1)],
         );
         spawn_hooks_install_and_are_idempotent: assert_installs_idempotently(
             |existing| {
@@ -1376,10 +1413,13 @@ mod tests {
 
     /// The guard is present when any inner `PreToolUse` hook runs its command, in exec form or as
     /// one shell-form command line, under any matcher; under another event, or in settings that
-    /// do not parse, it is not.
+    /// do not parse, it is not, nor is it in an exec-form hook running `rigger` with other
+    /// arguments or naming the whole line as its program.
     #[test]
     fn the_grep_guard_is_carried_by_any_pretooluse_hook_running_its_command() {
-        let rows: [(Vec<u8>, bool); 9] = [
+        let line_as_program =
+            json!({"type": "command", "command": "rigger grep-guard", "args": []});
+        let rows: [(Vec<u8>, bool); 11] = [
             (Vec::new(), false),
             (b"not json".to_vec(), false),
             (
@@ -1392,6 +1432,16 @@ mod tests {
             ),
             (
                 bytes(&json!({"hooks": {"SessionStart": [hook_block("", "rigger grep-guard")]}})),
+                false,
+            ),
+            (
+                bytes(&json!({"hooks": {"PreToolUse": [exec_block(GREP_GUARD_MATCHER, PRIME)]}})),
+                false,
+            ),
+            (
+                bytes(&json!({"hooks": {"PreToolUse": [
+                    {"matcher": GREP_GUARD_MATCHER, "hooks": [line_as_program]},
+                ]}})),
                 false,
             ),
             (
@@ -1463,24 +1513,24 @@ mod tests {
 
     crate::test_cases! {
         preserves_other_settings: assert_settings(
-            install_session_start(br#"{"model":"opus"}"#, "rigger prime").unwrap(),
+            install_session_start(br#"{"model":"opus"}"#, ("rigger", &["prime"])).unwrap(),
             &[
                 ("/model", Value::from("opus")),
-                ("/hooks/SessionStart/0/hooks/0/command", Value::from("rigger prime")),
+                ("/hooks/SessionStart/0/hooks/0", exec_hook(PRIME)),
             ],
         );
         /// Both installers merge into the SAME settings.json's "hooks" object (SessionStart vs
         /// PreToolUse) - neither must clobber the other's event key.
         pretooluse_hook_composes_with_the_session_start_hook: assert_settings(
             pretooluse(
-                &install_session_start(b"", "rigger prime").unwrap(),
+                &install_session_start(b"", ("rigger", &["prime"])).unwrap(),
                 "Grep|Bash",
-                "rigger grep-guard",
+                ("rigger", &["grep-guard"]),
             )
             .unwrap(),
             &[
-                ("/hooks/SessionStart/0/hooks/0/command", Value::from("rigger prime")),
-                ("/hooks/PreToolUse/0/hooks/0/command", Value::from("rigger grep-guard")),
+                ("/hooks/SessionStart/0/hooks/0", exec_hook(PRIME)),
+                ("/hooks/PreToolUse/0/hooks/0", exec_hook(GUARD)),
             ],
         );
         mcp_server_preserves_other_servers_and_other_top_level_keys: assert_settings(
@@ -1564,7 +1614,7 @@ mod tests {
                 ]
             }
         }"#;
-        let out = pretooluse(existing, "Grep|Bash", "rigger grep-guard").unwrap();
+        let out = pretooluse(existing, "Grep|Bash", ("rigger", &["grep-guard"])).unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["model"], "opus");
         let arr = v["hooks"]["PreToolUse"].as_array().unwrap();
@@ -1576,9 +1626,9 @@ mod tests {
         assert!(arr
             .iter()
             .any(|b| b["hooks"][0]["command"] == "prettier --write"));
-        assert!(arr.iter().any(
-            |b| b["hooks"][0]["command"] == "rigger grep-guard" && b["matcher"] == "Grep|Bash"
-        ));
+        assert!(arr
+            .iter()
+            .any(|b| b["hooks"][0] == exec_hook(GUARD) && b["matcher"] == "Grep|Bash"));
     }
 
     /// The rigger tools the given helpers declare, in declaration order and each once, read from
