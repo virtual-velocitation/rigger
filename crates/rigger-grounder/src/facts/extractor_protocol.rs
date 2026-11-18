@@ -8,7 +8,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
-use rigger_domain::contextgraph::query::{MEMBER_SEPARATOR, PATH_SEPARATOR};
+use rigger_domain::contextgraph::query::{
+    path_leaf, qualified_name, MEMBER_SEPARATOR, PATH_SEPARATOR,
+};
 use rigger_domain::contextgraph::reference_candidate_kinds;
 use rigger_process::subprocess;
 use serde::{Deserialize, Serialize};
@@ -116,14 +118,16 @@ struct Answer {
 /// sets; each ref has a name, a qualifier, when it has one, that is not empty, then, beside a
 /// qualifier, a name holding neither [`PATH_SEPARATOR`] nor [`MEMBER_SEPARATOR`] (the facts layer
 /// writes it after the qualifier, and every read cuts the written name at its last separator, so
-/// a leaf holding one would read back under another qualifier), a line from 1 to the last and,
-/// when it has a kind, a tagged mention kind, one whose references [`reference_candidate_kinds`]
-/// resolves onto definitions; and no def path leads back to itself through the parents
-/// ([`parent_cycle`]). The why quotes each text the extractor wrote into it - the answer's path,
-/// its error, a qualified ref's name, a ref's kind, the def path a cycle runs through - so a line
-/// break or terminal escape there is escaped and the line saying the why stays one line. The
-/// symbols hold the doc spans, the file's and each def's, as the answer writes them (spec 117, DOC
-/// FACTS).
+/// a leaf holding one would read back under another qualifier), then one the cut of its written
+/// name ([`qualified_name`], [`path_leaf`]) gives back whole (`:b` after the path qualifier `Q` is
+/// written `Q:::b` and read back as `b`), a line from 1 to the last and, when it has a kind, a
+/// tagged mention kind, one whose references [`reference_candidate_kinds`] resolves onto
+/// definitions; and no def path leads back to itself through the parents ([`parent_cycle`]). The
+/// why quotes each text the extractor wrote into it - the answer's path, its error, a qualified
+/// ref's name, the name written from it and the leaf read back, a ref's kind, the def path a cycle
+/// runs through - so a line break or terminal escape there is escaped and the line saying the why
+/// stays one line. The symbols hold the doc spans, the file's and each def's, as the answer writes
+/// them (spec 117, DOC FACTS).
 pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, String> {
     let answer: Answer =
         serde_json::from_str(line).map_err(|e| format!("the answer does not parse: {e}"))?;
@@ -173,6 +177,15 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
                 return Err(format!(
                     "refs[{i}]: a qualified ref's name {:?} holds {PATH_SEPARATOR:?} or \
                      {MEMBER_SEPARATOR:?}",
+                    r.name
+                ));
+            }
+            let written = qualified_name(&q.name, q.path, &r.name);
+            let read = path_leaf(&written);
+            if read != r.name {
+                return Err(format!(
+                    "refs[{i}]: a qualified ref's name {:?} reads back from {written:?} as \
+                     {read:?}",
                     r.name
                 ));
             }
