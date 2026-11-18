@@ -745,21 +745,24 @@ pub(crate) mod tests {
         (24, "M.N", Kind::Module),
     ];
 
-    /// The references in the TS lines of the TS and TSX definitions fixtures, each with its
+    /// The call references in the TS lines of the TS and TSX definitions fixtures, each with its
     /// caller, as `(line, name, caller)`, sorted.
-    const TS_LINES_REFERENCES: [(u32, &str, Option<&str>); 11] = [
-        (16, "Arg", None),
-        (16, "Ret", None),
-        (17, "PQ", Some("Shape2.p-q")),
-        (17, "PType", Some("Shape2.prop")),
-        (17, "Ret", Some("Shape2")),
-        (17, "Two", Some("Shape2.2")),
-        (17, "V", Some("Shape2")),
-        (18, "FT", Some("Abs.fld")),
+    const TS_LINES_REFERENCES: [(u32, &str, Option<&str>); 3] = [
         (19, "mk", Some("Color::Blue")),
         (21, "boot", Some("x")),
         (22, "setup", Some("A.B")),
     ];
+
+    /// The tagged references of the TS and TSX definitions fixtures, all in their TS lines, each
+    /// a type reference with its caller, as [`crate::symbol_index::tagged_refs`] renders them.
+    const TS_LINES_TAGGED: &str = "16 type Arg -\n\
+                                   16 type Ret -\n\
+                                   17 type PQ Shape2.p-q\n\
+                                   17 type PType Shape2.prop\n\
+                                   17 type Ret Shape2\n\
+                                   17 type Two Shape2.2\n\
+                                   17 type V Shape2\n\
+                                   18 type FT Abs.fld";
 
     /// Rust's declared non-definitions (spec 116): the named node types of the Rust grammar
     /// that THE RULE classifies no definition. An extern block, `foreign_mod_item`, carries no
@@ -1171,6 +1174,7 @@ class Box {
     int Width() { return Calc(Cap); }
     static int Calc(int n) { return n; }
 }
+class Lid : Box { }
 ",
         ),
         (
@@ -1183,6 +1187,7 @@ class Box {
 function calc(n: number): number { return n; }
 /** Zero is nothing. */
 function zero(): number { return 0; }
+function same(b: Box): Box { return b; }
 ",
         ),
         (
@@ -1193,6 +1198,7 @@ function View() { return <div>{label(LABEL)}</div>; }
 function label(s: string) { return s; }
 /** Blank is no label. */
 function blank() { return \"\"; }
+function keep(s: Label): Label { return s; }
 ",
         ),
         (
@@ -1205,6 +1211,7 @@ class Box {
 function calc(n) { return n; }
 /** Zero is nothing. */
 function zero() { return 0; }
+const made = new Box();
 ",
         ),
         (
@@ -1377,7 +1384,8 @@ def calc(n):
     /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
     /// generation table's generations joined in its order. The fixtures set every part a snapshot
     /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind included, so a change to any of them moves a digest.
+    /// kind a registered language records (a const read, a type reference and a use) included, so
+    /// a change to any of them moves a digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
         use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
@@ -1388,15 +1396,15 @@ def calc(n):
             // Rust
             ("rs", "rust-tags-v2", "cf79ba29624d68ed"),
             // C#
-            ("cs", "csharp-tags-v1", "5bcd02652120b9ae"),
+            ("cs", "csharp-tags-v2", "c7ad641dd604e539"),
             // TypeScript
-            ("ts", "typescript-tags-v2", "f44af3903e7ca65f"),
+            ("ts", "typescript-tags-v3", "ab9e2e816bdf895b"),
             // TSX
-            ("tsx", "tsx-tags-v2", "48a834681c7c9680"),
+            ("tsx", "tsx-tags-v3", "b372b90559326adc"),
             // JavaScript
-            ("js", "javascript-tags-v2", "efc9b1a1a6266e6d"),
+            ("js", "javascript-tags-v3", "456ab8736fefa1e4"),
             // Go
-            ("go", "go-tags-v2", "8ea462de8376d60b"),
+            ("go", "go-tags-v3", "40f80b41e4a13f29"),
             // Python
             ("py", "python-tags-v1", "2ae6674264c03453"),
         ];
@@ -1483,7 +1491,8 @@ def calc(n):
     /// definition, while the named type and function beside them keep theirs; the call inside
     /// `func _()` has the file, no caller, as have the receiver type and the call of
     /// `func (T) _()` and the underlying type of `type _ int`, a named function's call still
-    /// being its own.
+    /// being its own. The receiver type and the underlying type are each a type reference, no
+    /// call (spec 117, CAPTURES).
     #[test]
     fn a_go_definition_named_with_the_blank_identifier_makes_no_def() {
         let fs = crate::symbol_index::extracted("go", crate::name_filter_sources::GO_BLANK_SOURCE);
@@ -1496,12 +1505,16 @@ def calc(n):
             crate::symbol_index::refs_with_callers(&fs),
             vec![
                 (3, "probe", None),
-                (4, "T", None),
                 (4, "reach", None),
-                (5, "int", None),
                 (6, "other", Some("named")),
             ],
-            "every reference inside a dropped definition takes the file as its caller"
+            "every call inside a dropped definition takes the file as its caller"
+        );
+        crate::symbol_index::assert_tagged_refs(
+            "go",
+            crate::name_filter_sources::GO_BLANK_SOURCE,
+            "4 type T -\n5 type int -",
+            "every type reference inside a dropped definition takes the file as its caller",
         );
     }
 
@@ -1556,6 +1569,8 @@ def calc(n):
         /// a call in a function-local const is its function's; an interface method's parameter type
         /// is the interface's, a declaration being no caller, so that of a function or a method
         /// with no body is the file's; and both references of the alias named `_` are the file's.
+        /// Each reference to a type, the alias's name and target included, is a type reference,
+        /// no call (spec 117, CAPTURES).
         every_go_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "go",
@@ -1592,23 +1607,23 @@ def calc(n):
                     (3, "g", Some("a")),
                     (6, "h", Some("m")),
                     (6, "k", Some("m")),
-                    (8, "Base", Some("Shape.Base")),
-                    (8, "Coord", Some("Shape.x")),
-                    (8, "Gen", Some("Shape.Gen")),
-                    (8, "Ptr", Some("Shape.Ptr")),
-                    (8, "Qual", Some("Shape.Qual")),
-                    (8, "Side", Some("Shape.side")),
-                    (8, "int", Some("Shape.Gen")),
-                    (9, "Alias", Some("Alias")),
-                    (9, "Base", Some("Alias")),
-                    (10, "Canvas", Some("Drawer")),
                     (11, "probe", Some("host")),
-                    (12, "Shape", Some("Shape::area")),
-                    (13, "Canvas", None),
-                    (14, "Shape", None),
-                    (15, "Base", None),
-                    (15, "_", None),
                 ],
+                "8 type Base Shape.Base\n\
+                 8 type Coord Shape.x\n\
+                 8 type Gen Shape.Gen\n\
+                 8 type Ptr Shape.Ptr\n\
+                 8 type Qual Shape.Qual\n\
+                 8 type Side Shape.side\n\
+                 8 type int Shape.Gen\n\
+                 9 type Alias Alias\n\
+                 9 type Base Alias\n\
+                 10 type Canvas Drawer\n\
+                 12 type Shape Shape::area\n\
+                 13 type Canvas -\n\
+                 14 type Shape -\n\
+                 15 type Base -\n\
+                 15 type _ -",
             );
         /// C# DEFINITIONS ARE NODES (spec 116 criterion 8): under `CSHARP_TAGS` the fixture yields
         /// every definition it holds at its own kind and leaf: a class, a struct, a record, an
@@ -1629,7 +1644,9 @@ def calc(n):
         /// event's and in a property's value the property's; that in a constructor body is named by
         /// the leaf its class shares; those in a destructor, an operator, a conversion operator and
         /// an indexer are each named by that member's leaf; and that in a local function is the
-        /// local function's, the method keeping its own.
+        /// local function's, the method keeping its own. Each reference to `Probe`, a field's type
+        /// and a `new Probe()` alike, is a type reference and `Go` alone a call (spec 117,
+        /// CAPTURES).
         every_csharp_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "cs",
@@ -1674,21 +1691,19 @@ def calc(n):
                     (19, "explicit operator Ext", Kind::Declaration),
                     (19, "~Ext", Kind::Declaration),
                 ],
-                &[
-                    (7, "Probe", Some("S.T::Cell")),
-                    (7, "Probe", Some("S.T::Cell")),
-                    (7, "Probe", Some("S.T::Cell.made")),
-                    (10, "Probe", Some("S.T::Foo.Moved")),
-                    (11, "Probe", Some("S.T::Foo.Size")),
-                    (12, "Probe", Some("S.T::Foo::Foo")),
-                    (13, "Probe", Some("S.T::Foo::~Foo")),
-                    (14, "Go", Some("S.T::Foo::+")),
-                    (14, "Probe", Some("S.T::Foo::+")),
-                    (15, "Probe", Some("S.T::Foo::implicit operator int")),
-                    (16, "Probe", Some("S.T::Foo::this")),
-                    (17, "Probe", Some("S.T::Foo::Run")),
-                    (17, "Probe", Some("S.T::Foo::Run::Inner")),
-                ],
+                &[(14, "Go", Some("S.T::Foo::+"))],
+                "7 type Probe S.T::Cell\n\
+                 7 type Probe S.T::Cell\n\
+                 7 type Probe S.T::Cell.made\n\
+                 10 type Probe S.T::Foo.Moved\n\
+                 11 type Probe S.T::Foo.Size\n\
+                 12 type Probe S.T::Foo::Foo\n\
+                 13 type Probe S.T::Foo::~Foo\n\
+                 14 type Probe S.T::Foo::+\n\
+                 15 type Probe S.T::Foo::implicit operator int\n\
+                 16 type Probe S.T::Foo::this\n\
+                 17 type Probe S.T::Foo::Run\n\
+                 17 type Probe S.T::Foo::Run::Inner",
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered JS
         /// query: the fixture yields every definition it holds at its own kind and leaf. A
@@ -1716,6 +1731,7 @@ def calc(n):
                 &JS_DEFINITION_TYPES,
                 &JS_LINES_DEFINITIONS,
                 &JS_LINES_REFERENCES,
+                "",
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered TS
         /// query: the JS lines yield what they yield under the JS query, a type assertion value
@@ -1734,7 +1750,7 @@ def calc(n):
         /// signature's types are its interface's, a declaration being no caller, so an ambient
         /// function's are the file's; an index signature's is its interface's; an enum member
         /// value's call is the member's; and a module's and a namespace's body calls are
-        /// theirs.
+        /// theirs. Each type in an annotation is a type reference, no call (spec 117, CAPTURES).
         every_ts_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "ts",
@@ -1742,6 +1758,7 @@ def calc(n):
                 &TS_DEFINITION_TYPES,
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
+                TS_LINES_TAGGED,
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the TSX query `.tsx`
         /// registers: the TSX fixture, the TS one with a JSX element in place of the type
@@ -1754,6 +1771,7 @@ def calc(n):
                 &TS_DEFINITION_TYPES,
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
+                TS_LINES_TAGGED,
             );
         /// PYTHON DEFINITIONS ARE NODES (spec 116 criterion 10), under the registered Python
         /// query: the fixture yields every definition it holds at its own kind and leaf. A def
@@ -1815,6 +1833,7 @@ def calc(n):
                     (18, "f", None),
                     (19, "f", None),
                 ],
+                "",
             );
         /// Every Python definition carries its extent (spec 119, ONE EXTENT): a single-target
         /// module-level assignment (`z = 1`, `w: int`, and one of each other value type the

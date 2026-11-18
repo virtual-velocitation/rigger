@@ -10,7 +10,8 @@ use crate::contextgraph::{
     CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD,
     CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE,
     CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE,
-    CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE,
+    CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL,
+    REF_KIND_TYPE, REF_KIND_USE,
 };
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::code_facts::{Bound, Recorded};
@@ -38,6 +39,23 @@ fn kind_of(syntax_type: &str) -> Kind {
         "constructor" => Kind::Constructor,
         "property" => Kind::Property,
         _ => Kind::Other,
+    }
+}
+
+/// Map a grammar tag's reference SUFFIX (the `<kind>` of a `@reference.<kind>` capture) to the
+/// kind of reference it tags, spelled as the `EdgeInferred` payload spells it (spec 117,
+/// CAPTURES): `class`, `type` and `interface` a type reference, `implementation` an impl,
+/// `constant` a const read, `field` a field and `import` a use. `call`, `send` and every suffix
+/// not named here give `None`, a call, as an unknown definition name folds to `Other` in
+/// [`kind_of`].
+fn ref_kind_of(suffix: &str) -> Option<&'static str> {
+    match suffix {
+        "class" | "type" | "interface" => Some(REF_KIND_TYPE),
+        "implementation" => Some(REF_KIND_IMPL),
+        "constant" => Some(REF_KIND_CONST),
+        "field" => Some(REF_KIND_FIELD),
+        "import" => Some(REF_KIND_USE),
+        _ => None,
     }
 }
 
@@ -275,22 +293,30 @@ pub struct CompiledTags {
 enum Capture {
     /// `@name`: the node naming the tag.
     Name,
-    /// `@definition.<kind>`: a definition of the kind its suffix names.
-    Definition(Kind),
-    /// `@reference.<kind>`: a reference.
-    Reference,
+    /// `@definition.<kind>` or `@reference.<kind>`: the tagged node, and what its suffix makes
+    /// it.
+    Tagged(TagRole),
     /// `@doc`: a doc comment of the match's definition, which gives it its doc span.
     Doc,
 }
 
+/// What a tagged node is, by the suffix of the capture tagging it: a definition of the kind a
+/// `@definition.<kind>` suffix names ([`kind_of`]), or a reference of the kind a
+/// `@reference.<kind>` suffix names ([`ref_kind_of`]), `None` for a call.
+#[derive(Clone, Copy)]
+enum TagRole {
+    Definition(Kind),
+    Reference(Option<&'static str>),
+}
+
 /// One tag a tags query yields: the tagged node's byte range widened to cover its name, the
-/// name's byte range and start row, the kind it defines (`None` for a reference), and the byte
-/// range covering every `@doc` capture of its match ([`covering`]), when it holds any.
+/// name's byte range and start row, what its capture makes it ([`TagRole`]), and the byte range
+/// covering every `@doc` capture of its match ([`covering`]), when it holds any.
 struct Tag {
     range: std::ops::Range<usize>,
     name_range: std::ops::Range<usize>,
     row: usize,
-    definition: Option<Kind>,
+    role: TagRole,
     doc: Option<std::ops::Range<usize>>,
 }
 
@@ -301,9 +327,11 @@ fn covering(a: std::ops::Range<usize>, b: std::ops::Range<usize>) -> std::ops::R
 }
 
 impl CompiledTags {
-    /// `tags_query` compiled against `language`, or an `Err` naming the tags-config step when the
-    /// query is malformed, does not fit the grammar, or captures what the tags reading does not
-    /// read (anything but `@name`, `@doc`, `@definition.*` and `@reference.*`).
+    /// `tags_query` compiled against `language`, each `@definition.<kind>` and
+    /// `@reference.<kind>` capture keeping what its suffix names ([`TagRole`]), or an `Err`
+    /// naming the tags-config step when the query is malformed, does not fit the grammar, or
+    /// captures what the tags reading does not read (anything but `@name`, `@doc`,
+    /// `@definition.*` and `@reference.*`).
     pub fn compile(language: &tree_sitter::Language, tags_query: &str) -> Result<Self, String> {
         let query = tree_sitter::Query::new(language, tags_query)
             .map_err(|e| format!("symbols: tags config: {e}"))?;
@@ -317,8 +345,8 @@ impl CompiledTags {
                     name.strip_prefix("definition."),
                     name.strip_prefix("reference."),
                 ) {
-                    (Some(kind), _) => Ok(Capture::Definition(kind_of(kind))),
-                    (_, Some(_)) => Ok(Capture::Reference),
+                    (Some(kind), _) => Ok(Capture::Tagged(TagRole::Definition(kind_of(kind)))),
+                    (_, Some(kind)) => Ok(Capture::Tagged(TagRole::Reference(ref_kind_of(kind)))),
                     _ => Err(format!(
                         "symbols: tags config: the capture @{name} is not one a tags query \
                          makes: @name, @doc, @definition.* or @reference.*"
@@ -365,8 +393,7 @@ impl CompiledTags {
             for capture in found.captures {
                 match self.captures[capture.index as usize] {
                     Capture::Name => name = Some(capture.node),
-                    Capture::Definition(kind) => tagged = Some((capture.node, Some(kind))),
-                    Capture::Reference => tagged = Some((capture.node, None)),
+                    Capture::Tagged(role) => tagged = Some((capture.node, role)),
                     Capture::Doc => {
                         let line = capture.node.byte_range();
                         doc = Some(match doc.take() {
@@ -376,7 +403,7 @@ impl CompiledTags {
                     }
                 }
             }
-            let (Some(name), Some((node, definition))) = (name, tagged) else {
+            let (Some(name), Some((node, role))) = (name, tagged) else {
                 continue;
             };
             if name.has_error() {
@@ -388,7 +415,7 @@ impl CompiledTags {
                 range: covering(node_range, name_range.clone()),
                 row: name.start_position().row,
                 name_range,
-                definition,
+                role,
                 doc,
             };
             let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
@@ -429,6 +456,9 @@ impl CompiledTags {
 /// [`type_aliases`]), each recorded as a tagged definition is ([`record_def`]). Every definition,
 /// an impl block's included, is built by [`def_of`] from its byte range, which gives its
 /// `end_line`, and takes its id path and parent from [`def_paths`].
+///
+/// A reference tag is a reference of the kind its capture's suffix names ([`ref_kind_of`], spec
+/// 117), its `ref_kind` none for a call.
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
@@ -478,35 +508,38 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         };
         // 1-based line from the tag name's start row.
         let line = tag.row as u32 + 1;
-        if let Some(kind) = tag.definition {
-            // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
-            // definition is filtered by, recorded under and ranked by as a caller is one.
-            let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
-            let at = defs.len();
-            dropped.extend(record_def(
-                lang,
-                &text,
-                node,
-                kind,
-                (tag.range.clone(), def_leaf(node, name), line),
-                &mut defs,
-                &mut def_ranges,
-            ));
-            // Spec 117 (DOC FACTS): the `@doc` capture gives the definition just recorded its
-            // span; a definition the name filter drops was not recorded, so its capture gives
-            // none.
-            if let Some(def) = defs.get_mut(at) {
-                def.doc = tag.doc.map(|doc| text.span(&doc));
+        match tag.role {
+            TagRole::Definition(kind) => {
+                // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
+                // definition is filtered by, recorded under and ranked by as a caller is one.
+                let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
+                let at = defs.len();
+                dropped.extend(record_def(
+                    lang,
+                    &text,
+                    node,
+                    kind,
+                    (tag.range.clone(), def_leaf(node, name), line),
+                    &mut defs,
+                    &mut def_ranges,
+                ));
+                // Spec 117 (DOC FACTS): the `@doc` capture gives the definition just recorded its
+                // span; a definition the name filter drops was not recorded, so its capture gives
+                // none.
+                if let Some(def) = defs.get_mut(at) {
+                    def.doc = tag.doc.map(|doc| text.span(&doc));
+                }
             }
-        } else {
-            ref_positions.push(tag.range.start);
-            refs.push(SymRef {
-                name: name.to_string(),
-                line,
-                enclosing: None,
-                is_test: false,
-                ref_kind: None,
-            });
+            TagRole::Reference(ref_kind) => {
+                ref_positions.push(tag.range.start);
+                refs.push(SymRef {
+                    name: name.to_string(),
+                    line,
+                    enclosing: None,
+                    is_test: false,
+                    ref_kind: ref_kind.map(str::to_string),
+                });
+            }
         }
     }
     // Every impl block is a definition of its own (gap 104), named by its header, with its trait
@@ -2901,7 +2934,8 @@ setup!();
 
     /// A CALLER IS NAMED BY ITS PATH (spec 119 criterion 8): a reference's `enclosing` is its
     /// caller's `Def.path`, never its leaf - a call in `impl T { fn new() }` is `T::new`'s and one
-    /// in a Go receiver method `Recv::name`'s.
+    /// in a Go receiver method `Recv::name`'s, as is that method's receiver type, a type reference
+    /// (spec 117, CAPTURES).
     #[test]
     fn a_reference_s_enclosing_is_its_caller_s_path() {
         crate::symbol_index::assert_callers(
@@ -2912,10 +2946,13 @@ setup!();
         crate::symbol_index::assert_callers(
             "go",
             crate::caller_sources::GO_RECEIVER_CALLER_SOURCE,
-            &[
-                (5, "Recv", Some("Recv::name")),
-                (5, "helper", Some("Recv::name")),
-            ],
+            &[(5, "helper", Some("Recv::name"))],
+        );
+        crate::symbol_index::assert_tagged_refs(
+            "go",
+            crate::caller_sources::GO_RECEIVER_CALLER_SOURCE,
+            "5 type Recv Recv::name",
+            "a Go receiver method's receiver type is that method's, by its path",
         );
     }
 
@@ -4586,14 +4623,15 @@ pub fn f() -> u8 {
     }
 
     /// Spec 117 criterion 6: the tagged reference pass reads Rust alone, so a TypeScript type
-    /// name, a `type_identifier` in its grammar too, stages no row.
+    /// name, a `type_identifier` in its grammar too, stages no row of its own: its one row is the
+    /// type reference the TypeScript query's `@reference.type` capture tags (spec 117, CAPTURES).
     #[test]
     fn the_tagged_reference_pass_reads_rust_alone() {
         crate::symbol_index::assert_tagged_refs(
             "ts",
             "let k: Kestrel = q;\n",
-            "",
-            "another language's type stages nothing",
+            "1 type Kestrel k",
+            "another language's type stages nothing beyond its capture's row",
         );
     }
 

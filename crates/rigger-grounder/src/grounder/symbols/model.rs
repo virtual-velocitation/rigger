@@ -185,11 +185,12 @@ pub struct SymRef {
     /// byte-identical-wire-form reason as `Def::is_test`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
-    /// Spec 117 (REFERENCES): what kind of non-call reference this is - a const read, a type
-    /// reference or an imported leaf of a `use`, the `EdgeInferred` payload's own spelling
-    /// (`contextgraph::REF_KIND_CONST`, `REF_KIND_TYPE`, `REF_KIND_USE`) - extracted for Rust
-    /// only; `None` for a call, every other language's reference included, which folds and counts
-    /// as before the field existed. A calls-only consumer reads [`FileSymbols::calls`].
+    /// Spec 117 (REFERENCES, CAPTURES): what kind of non-call reference this is, in the
+    /// `EdgeInferred` payload's own spelling (`contextgraph::REF_KIND_*`): in every language, the
+    /// kind a tags query's `@reference.<kind>` suffix names (a type, an impl, a const read, a field
+    /// or a use), and in Rust also a const read, a type reference or an imported leaf of a `use`
+    /// read off the tree. `None` for a call, which folds and counts as before the field existed.
+    /// A calls-only consumer reads [`FileSymbols::calls`].
     /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
@@ -245,31 +246,31 @@ macro_rules! rust_tags_generation {
 
 macro_rules! csharp_tags_generation {
     () => {
-        "csharp-tags-v1"
+        "csharp-tags-v2"
     };
 }
 
 macro_rules! ts_tags_generation {
     () => {
-        "typescript-tags-v2"
+        "typescript-tags-v3"
     };
 }
 
 macro_rules! tsx_tags_generation {
     () => {
-        "tsx-tags-v2"
+        "tsx-tags-v3"
     };
 }
 
 macro_rules! js_tags_generation {
     () => {
-        "javascript-tags-v2"
+        "javascript-tags-v3"
     };
 }
 
 macro_rules! go_tags_generation {
     () => {
-        "go-tags-v2"
+        "go-tags-v3"
     };
 }
 

@@ -64,12 +64,10 @@ const RUST_METHOD_CALLER_CALLS: &[(&str, &str)] = &[
 ];
 
 /// The `CALLS` edges of [`common::fixtures::GO_RECEIVER_CALLER_SOURCE`] folded as `g.go`, each `(from, to)`: the
-/// receiver type and the call to `helper`, both from the method's path `Recv::name`.
+/// call to `helper`, from the method's path `Recv::name`. The receiver type is a type reference,
+/// no call, and makes no `CALLS` edge (spec 117, CAPTURES).
 #[cfg(feature = "symbols")]
-const GO_RECEIVER_CALLER_CALLS: &[(&str, &str)] = &[
-    ("g.go::Recv::name", "g.go::Recv"),
-    ("g.go::Recv::name", "g.go::helper"),
-];
+const GO_RECEIVER_CALLER_CALLS: &[(&str, &str)] = &[("g.go::Recv::name", "g.go::helper")];
 
 /// GIVEN a project whose one file calls `helper` from a method: a Rust `new` of `impl T`, or a Go
 /// receiver method `name` of `*Recv`,

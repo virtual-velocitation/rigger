@@ -1543,15 +1543,15 @@ mod tests {
             // Rust
             ("rs", "rust-tags-v2", "7ffb605da6fb93dd"),
             // C#
-            ("cs", "csharp-tags-v1", "4e1cc38ed5920418"),
+            ("cs", "csharp-tags-v2", "5061538299850c9d"),
             // TypeScript
-            ("ts", "typescript-tags-v2", "ee4411140dd5137b"),
+            ("ts", "typescript-tags-v3", "5a7985e0a054c684"),
             // TSX
-            ("tsx", "tsx-tags-v2", "81951e66e6a9db90"),
+            ("tsx", "tsx-tags-v3", "1f323d01dd355695"),
             // JavaScript
-            ("js", "javascript-tags-v2", "609b7f34952c76c9"),
+            ("js", "javascript-tags-v3", "b064975fe77ab41b"),
             // Go
-            ("go", "go-tags-v2", "b8bf19951f3899ab"),
+            ("go", "go-tags-v3", "f9d10fb20ec8989c"),
             // Python
             ("py", "python-tags-v1", "4c940d044409c6d8"),
         ];
