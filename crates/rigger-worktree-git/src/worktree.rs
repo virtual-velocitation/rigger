@@ -3563,7 +3563,7 @@ pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error
 /// commit them; then, beside that line, the rest named in one saying they never land, are refused
 /// in a commit, and may be taken out of the tree. Work outside the output alone is no refusal: it
 /// never lands whatever the session does, so it holds nothing up. Empty when the output holds no
-/// such work. Each side is git's own status read scoped to it ([`status_z_of`]), never one read
+/// such work. Each side is git's own status read scoped to it ([`status_read`]), never one read
 /// split after the fact: git names a directory it tracks nothing in by that directory alone, so
 /// a plan in a nested output (`docs/specs/`) under a parent git tracks nothing in reads, unscoped,
 /// as the parent (`docs/`), which lies outside the output. The outside read names that parent
@@ -3577,7 +3577,9 @@ pub fn own_commits_refusals(dir: &str, output: &str) -> Result<Vec<String>, Erro
     let scope = format!("{}/", output.trim_end_matches('/'));
     let not_scope = format!(":(exclude,literal){scope}");
     let changed = |options: &[&str], pathspecs: &[&str]| -> Result<Vec<String>, Error> {
-        Ok(parse_status_z(&status_z_of(dir, options, pathspecs)?))
+        Ok(parse_status_z(
+            &status_read(dir, options, pathspecs)?.records,
+        ))
     };
     let mut inside = changed(&[], &[&format!(":(literal){scope}")])?;
     if inside.is_empty() {
@@ -3763,7 +3765,7 @@ fn staged_tree(dir: &str, index: &std::path::Path) -> Result<String, Error> {
 }
 
 /// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
-/// single [`status_z`] primitive every dirty-tree check shares (spec 89 round 3,
+/// single [`status_read`] primitive every dirty-tree check shares (spec 89 round 3,
 /// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`), so no call site grows
 /// its own inline `git status` that could diverge on which way to fail when the status read
 /// itself fails. `pub`, not `pub(crate)`, because its callers live in other crates (see
@@ -3774,19 +3776,21 @@ fn staged_tree(dir: &str, index: &std::path::Path) -> Result<String, Error> {
 /// everybody. A caller that guards a tree picks fail CLOSED on purpose - `unwrap_or(true)`,
 /// an unreadable status counts as dirty - because "A HALT NEVER
 /// DISCARDS A TREE" (spec 89, criterion 1) means an unreadable tree must default to "protect
-/// it", never "safe to remove".
+/// it", never "safe to remove". For the same reason a warning git gives beside its records (a
+/// directory in the tree it cannot open) reads as dirty: git could not vouch for the whole tree.
 pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
-    Ok(!status_z(dir)?.is_empty())
+    let read = status_read(dir, &[], &[])?;
+    Ok(!read.records.is_empty() || !read.warning.is_empty())
 }
 
-/// The paths [`status_z`] reports changed in `dir`'s tree, untracked files included, in git's
-/// order ([`parse_status_z`]).
+/// The paths [`status_read`] reports changed in `dir`'s tree, untracked files included, in git's
+/// order ([`parse_status_z`]): git's records alone, never a warning it gave beside them.
 pub fn uncommitted_paths(dir: &str) -> Result<Vec<String>, Error> {
-    Ok(parse_status_z(&status_z(dir)?))
+    Ok(parse_status_z(&status_read(dir, &[], &[])?.records))
 }
 
-/// The arguments of `git status --porcelain -z`, the one status read [`status_z`] and
-/// [`status_z_of`] share: untracked files listed by directory whatever the user's git
+/// The arguments of `git status --porcelain -z`, the one status read ([`status_read`]):
+/// untracked files listed by directory whatever the user's git
 /// configuration says (`status.showUntrackedFiles` may hide them or list each file), and optional
 /// locks off, so the read rewrites nothing, not even the index's stat cache.
 const STATUS_Z: [&str; 5] = [
@@ -3797,16 +3801,21 @@ const STATUS_Z: [&str; 5] = [
     "--untracked-files=normal",
 ];
 
-/// [`STATUS_Z`] in `dir`, the one status read [`path_is_dirty`] and [`uncommitted_paths`] share.
-fn status_z(dir: &str) -> Result<String, Error> {
-    git(dir, &STATUS_Z)
+/// What a [`status_read`] answered: git's status records, its standard output, and the warning
+/// it gave on standard error beside them, empty when it warned nothing.
+struct StatusRead {
+    records: String,
+    warning: String,
 }
 
 /// [`STATUS_Z`] in `dir` with the `options` after it, which git reads over its own
 /// (`--untracked-files=all` lists each untracked file), limited to the `pathspecs` (git's pathspec
-/// magic, relative to `dir`), its standard output alone: git warns on standard error when a
-/// pathspec names a directory the tree does not hold, and that warning is no status record.
-fn status_z_of(dir: &str, options: &[&str], pathspecs: &[&str]) -> Result<String, Error> {
+/// magic, relative to `dir`; none reads the whole tree): the one status read [`path_is_dirty`],
+/// [`uncommitted_paths`] and [`own_commits_refusals`] share. The records are git's standard output
+/// alone, and its standard error is kept beside them as the warning, never read as a record: git
+/// warns there when it cannot open a directory in the tree, or when a pathspec names a directory
+/// the tree does not hold.
+fn status_read(dir: &str, options: &[&str], pathspecs: &[&str]) -> Result<StatusRead, Error> {
     let args: Vec<&str> = STATUS_Z
         .iter()
         .chain(options)
@@ -3814,9 +3823,16 @@ fn status_z_of(dir: &str, options: &[&str], pathspecs: &[&str]) -> Result<String
         .chain(pathspecs)
         .copied()
         .collect();
-    git_output(dir, &args, GitOutput::Stdout)
-        .map(|out| String::from_utf8_lossy(&out).into_owned())
-        .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    let out =
+        waited(start_git(dir, &args)).map_err(|start| git_failed(&args, text(&start).trim()))?;
+    if !out.status.success() {
+        return Err(git_failed(&args, text(&out.stderr).trim()));
+    }
+    Ok(StatusRead {
+        records: text(&out.stdout),
+        warning: text(&out.stderr).trim().to_string(),
+    })
 }
 
 /// Every path `dir`'s tree changed since `commit`: the paths commits made after it touch, then
