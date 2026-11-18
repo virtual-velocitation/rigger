@@ -2964,16 +2964,18 @@ fn marker(line: &str) -> Option<Marker> {
 }
 
 /// Why a commit of the tree rooted at `dir` for the unit's `branch` would be refused because its
-/// HEAD is off `branch` ([`head_off_branch`]: a commit there would never reach the branch that
-/// lands, and the landing would carry the branch without it), in words naming where the HEAD
-/// stands, or `None` when it is on `branch`: the first refusal of [`commit_refusal`], and the
-/// one a merge's finalize commit asks before it runs ([`Worktree::merge_into_worktree`]), whose
-/// marker check reads the index against both parents instead.
+/// HEAD is off `branch` ([`head_off_branch`]), in words naming where the HEAD stands and the
+/// fact that commits made while it is off `branch` are not on the branch and so never land, or
+/// `None` when it is on `branch`. These words are the one home of that fact: the stop hook's
+/// reason carries them through its refusal lines. It is the first refusal of
+/// [`commit_refusal`], and the one a merge's finalize commit asks before it runs
+/// ([`Worktree::merge_into_worktree`]), whose marker check reads the index against both parents
+/// instead.
 fn off_branch_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> {
     Ok(head_off_branch(dir, branch)?.map(|on| {
         format!(
             "refusing to commit in {dir}: HEAD is not on the unit's branch {branch} (git status: \
-             {on}) - a commit here would not reach the branch that lands"
+             {on}) - commits made while HEAD is off {branch} are not on it and will not land"
         )
     }))
 }
@@ -7888,10 +7890,11 @@ mod tests {
     /// A TREE LEFT OFF ITS BRANCH KEEPS ITS WORK AND COMMITS NOTHING UNTIL IT IS BACK: a unit's
     /// worktree whose HEAD was moved off the unit's branch (a detach, a rebase stopped mid-way, a
     /// switch to another branch) with work still uncommitted has every commit refused, the
-    /// refusal naming where its HEAD stands in git's own words (`git status`'s first line), with
-    /// nothing staged and the branch where it was; `create` adopts the tree as it stands with its
-    /// work, never clears it to re-add the branch; and once its HEAD is back on the branch the
-    /// checkpoint commits that work onto the branch.
+    /// refusal naming where its HEAD stands in git's own words (`git status`'s first line) and
+    /// ending on the fact that commits made while HEAD is off the branch are not on it and will
+    /// not land, with nothing staged and the branch where it was; `create` adopts the tree as it
+    /// stands with its work, never clears it to re-add the branch; and once its HEAD is back on
+    /// the branch the checkpoint commits that work onto the branch.
     #[test]
     fn a_tree_left_off_its_branch_keeps_its_work_and_commits_nothing_until_it_is_back() {
         const BRANCH: &str = "rigger/u/unit-off";
@@ -7934,6 +7937,12 @@ mod tests {
                     "HEAD is not on the unit's branch {BRANCH} (git status: {stands}"
                 )),
                 "{leave:?}: the refusal names where HEAD stands in git's words: {why}"
+            );
+            assert!(
+                why.ends_with(&format!(
+                    ") - commits made while HEAD is off {BRANCH} are not on it and will not land"
+                )),
+                "{leave:?}: the refusal states that commits made off the branch never land: {why}"
             );
             for commit in [Worktree::commit as Commit, Worktree::commit_checkpoint] {
                 match commit(&wt, "rigger: unit-off attempt 1") {
