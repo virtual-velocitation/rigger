@@ -5559,24 +5559,76 @@ mod tests {
     /// it stages a tracked one, so a complete marker set in a new file, one inside a new
     /// directory among them, one status is configured not to list and one whose name git would
     /// read as pathspec magic, short or long, refuses the checkpoint and the session's Stop hook
-    /// alike, leaving the file unstaged; an ignored file, which no commit takes, refuses neither.
-    /// The escalation's kept tree still keeps the file as it stands.
+    /// alike, leaving the index as it was, and the hook's line says to resolve it or, where the
+    /// lines are meant to be there, to commit the file; an ignored file, which no commit takes,
+    /// refuses neither. In a file git does not track, only a complete set counts: git writes a
+    /// conflict hunk only into a path its index holds, so a start or end line alone there (a
+    /// quoted email, a fixture showing half a conflict) is the file's content, while a staged new
+    /// file, which the index holds, still counts one. The escalation's kept tree still keeps the
+    /// file as it stands.
     #[test]
     fn a_checkpoint_refuses_marker_text_in_every_file_its_commit_would_carry() {
         const SET: &str = "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n";
-        // Each row: the path written, whether status is told to list no untracked file, and
-        // whether the checkpoint is refused.
+        const START_ALONE: &str = "quoted:\n<<<<<<< ours\na\n";
+        const END_ALONE: &str = "quoted:\na\n>>>>>>> theirs\n";
+        /// How the new file stands before the checkpoint.
+        #[derive(Clone, Copy)]
+        enum New {
+            /// Untracked, as status lists it.
+            Untracked,
+            /// Untracked, with status configured to list no untracked file.
+            Unlisted,
+            /// Staged, never committed.
+            Staged,
+        }
+        // Each row: the path written, how it stands, its text, and whether the checkpoint is
+        // refused.
         #[cfg_attr(not(unix), allow(unused_mut))]
         let mut rows = [
-            ("a new file", "new.txt", false, true),
+            ("a new file", "new.txt", New::Untracked, SET, true),
             (
                 "a new file in a new directory",
                 "fresh/deep/new.txt",
-                false,
+                New::Untracked,
+                SET,
                 true,
             ),
-            ("a new file status does not list", "new.txt", true, true),
-            ("an ignored file", "ignored.txt", false, false),
+            (
+                "a new file status does not list",
+                "new.txt",
+                New::Unlisted,
+                SET,
+                true,
+            ),
+            ("an ignored file", "ignored.txt", New::Untracked, SET, false),
+            (
+                "a start line alone in a new file",
+                "new.txt",
+                New::Untracked,
+                START_ALONE,
+                false,
+            ),
+            (
+                "an end line alone in a new file in a new directory",
+                "fresh/deep/new.txt",
+                New::Untracked,
+                END_ALONE,
+                false,
+            ),
+            (
+                "a start line alone in a new file status does not list",
+                "new.txt",
+                New::Unlisted,
+                START_ALONE,
+                false,
+            ),
+            (
+                "an end line alone in a staged new file",
+                "new.txt",
+                New::Staged,
+                END_ALONE,
+                true,
+            ),
         ]
         .to_vec();
         // A name no Windows file system holds, so these rows stand where such a file can.
@@ -5585,37 +5637,48 @@ mod tests {
             (
                 "a new file named like short pathspec magic",
                 ":notes.md",
-                false,
+                New::Untracked,
+                SET,
                 true,
             ),
             (
                 "a new file named like long pathspec magic",
                 ":(x).md",
-                false,
+                New::Untracked,
+                SET,
                 true,
             ),
         ]);
         let branch = "rigger/u/untracked-markers";
-        for (row, path, unlisted, refused) in rows {
+        for (row, path, new, text, refused) in rows {
             let repo = init_repo();
             let repo_path = repo.path().to_str().unwrap().to_string();
             let (wt_path, wt) = temp_wt(&repo_path, branch);
             let dir = wt_path.to_str().unwrap();
             std::fs::write(wt_path.join(".gitignore"), "ignored.txt\n").unwrap();
             wt.commit("ignore ignored.txt").unwrap();
-            if unlisted {
+            if matches!(new, New::Unlisted) {
                 run_git(dir, &["config", "status.showUntrackedFiles", "no"]).unwrap();
             }
             let file = wt_path.join(path);
             std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-            std::fs::write(&file, SET).unwrap();
+            std::fs::write(&file, text).unwrap();
+            if matches!(new, New::Staged) {
+                run_git(dir, &["add", "--", &format!(":(literal){path}")]).unwrap();
+            }
             let head = run_git(dir, &["rev-parse", "HEAD"]).unwrap();
+            let staged = run_git(dir, &["diff", "--cached", "--name-only"]).unwrap();
 
             let hook = checkpoint_refusals(dir, branch).unwrap();
             let checkpoint = wt.commit_checkpoint(&format!("checkpoint {row}"));
 
             assert_eq!(!hook.is_empty(), refused, "{row}: the Stop hook's {hook:?}");
             if refused {
+                assert!(
+                    hook.iter().any(|line| line.contains("resolve it")
+                        && line.contains("where the lines are meant to be there, commit the file")),
+                    "{row}: the Stop hook's line names both ways out: {hook:?}"
+                );
                 assert!(
                     matches!(&checkpoint, Err(StepError::Refused(why)) if why.contains("conflict")),
                     "{row}: {checkpoint:?}"
@@ -5625,16 +5688,15 @@ mod tests {
                     head,
                     "{row}: no commit"
                 );
-                assert!(
-                    run_git(dir, &["diff", "--cached", "--name-only"])
-                        .unwrap()
-                        .is_empty(),
-                    "{row}: nothing staged"
+                assert_eq!(
+                    run_git(dir, &["diff", "--cached", "--name-only"]).unwrap(),
+                    staged,
+                    "{row}: the index as it was"
                 );
                 let kept = wt.keep_tree_aside(&format!("kept {row}")).unwrap().unwrap();
                 assert_eq!(
                     run_git(dir, &["show", &format!("{}:{path}", kept.commit)]).unwrap(),
-                    SET,
+                    text,
                     "{row}: the kept tree carries the file as it stands"
                 );
             } else {
