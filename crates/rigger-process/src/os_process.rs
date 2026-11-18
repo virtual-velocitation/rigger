@@ -673,6 +673,36 @@ mod tests {
         );
     }
 
+    /// On Windows a process's command line is the line it was created with. For a process Rust
+    /// started, that is its program in quotes and then its arguments, each quoted only where it
+    /// holds a space, so with the quotes taken out it is its program and arguments joined by single
+    /// spaces: this process's, read by the reader through its own pid, and a running child's, read
+    /// through another process's.
+    #[cfg(windows)]
+    #[test]
+    fn a_processes_command_line_is_the_line_it_was_created_with() {
+        let mut ping = crate::subprocess::command("ping");
+        ping.args(["-n", "3", "127.0.0.1"])
+            .stdout(std::process::Stdio::null());
+        let pinging = format!("{} -n 3 127.0.0.1", ping.get_program().to_string_lossy());
+        let mut child = ping.spawn().expect("start ping");
+        let me = std::env::args().collect::<Vec<_>>().join(" ");
+        let rows = [
+            ("this process", std::process::id(), me),
+            ("a running child", child.id(), pinging),
+        ];
+        let read: Vec<(&str, Option<String>)> = rows
+            .iter()
+            .map(|(what, pid, _)| (*what, command_line(*pid).map(|line| line.replace('"', ""))))
+            .collect();
+        child.wait().expect("ping ends on its own");
+        let expected: Vec<(&str, Option<String>)> = rows
+            .iter()
+            .map(|(what, _, line)| (*what, Some(line.clone())))
+            .collect();
+        assert_eq!(read, expected);
+    }
+
     /// On macOS a process's command is the full path of its executable.
     #[cfg(target_os = "macos")]
     #[test]
