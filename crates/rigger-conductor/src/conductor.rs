@@ -50373,12 +50373,20 @@ stage "implement" adjudicator "adj" failed
         };
 
         let (first, holds) = held("first drive");
-        assert!(
-            first.starts_with(&format!(
+        assert_eq!(
+            first,
+            format!(
                 "worktree: a worktree git marks `locked added with --lock` is registered at \
-                 {unit_dir}: "
-            )),
-            "the first fault: {first}"
+                 {unit_dir}: nothing there is cleared or adopted\n\
+                 if git's add there was cut off, `git -C {repo_path} worktree remove --force \
+                 --force {unit_dir}` removes that tree and its registration; when git answers \
+                 that {unit_dir}/.git does not exist, `git -C {repo_path} worktree unlock \
+                 {unit_dir}` and then `git -C {repo_path} worktree prune` remove the registration \
+                 and keep the files, which rigger may then clear as a leftover\n\
+                 if a person locked it, `git -C {repo_path} worktree unlock {unit_dir}` lifts the \
+                 lock and keeps the tree and its work"
+            ),
+            "the first fault names git's own commands that recover the locked tree"
         );
         assert_eq!(
             holds,
