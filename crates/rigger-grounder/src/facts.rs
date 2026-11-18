@@ -317,11 +317,11 @@ impl Extract for FactsExtractor {
 /// trimmed. A doc line gives the text after its marker, trimmed: `///` (not `////`), `//!`, and a
 /// name-value `#[doc = ..]` or `#![doc = ..]` its string literal's body ([`doc_attribute_text`]).
 /// `/**` (not `/***` nor `/**/`) and `/*!` open a doc block ([`doc_block_opened`]), closed by the
-/// first `*/` ([`until_block_closer`]), whatever follows it on its line dropped: the opener's line
-/// and the closer's line give their text inside the block when it is not blank, and each line
-/// between them its text with one leading `*` stripped, a blank one included. Every other line -
-/// another attribute, `#[doc(..)]` included, a plain comment, a blank line - is dropped; the kept
-/// lines join by `\n`.
+/// first `*/` ([`until_block_closer`]), whatever follows the closer on its line dropped. Each line
+/// of the block after the opener's has one leading `*` stripped; the text inside the block on the
+/// opener's line and on the closer's line is kept when it is not blank, and each line between them
+/// is kept even when blank. Every other line outside a block - another attribute, `#[doc(..)]`
+/// included, a plain comment, a blank line - is dropped; the kept lines join by `\n`.
 fn rust_doc_text(raw: &str) -> String {
     let mut text = Vec::new();
     let mut in_block = false;
