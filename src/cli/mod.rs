@@ -5179,13 +5179,11 @@ struct DocsOverlay {
 impl DocsOverlay {
     /// Merge this overlay onto `ctx`, overriding ONLY the fields the overlay declares, so a
     /// repo customizes just the facts it differs on and inherits the shared defaults for
-    /// the rest.
+    /// the rest. Its `specs_location` is not merged here: it reaches `ctx` through
+    /// [`declared_specs_location`], spelled as every command spells it.
     fn apply(&self, ctx: &mut rigger::docs::DocsContext) {
         if let Some(base) = &self.base_ref {
             ctx.base_ref = base.clone();
-        }
-        if let Some(specs) = &self.specs_location {
-            ctx.specs_location = specs.clone();
         }
         if let Some(constraints) = &self.global_constraints {
             ctx.global_constraints = constraints.clone();
@@ -5322,12 +5320,14 @@ fn read_project_skill(
 /// differs, so a `rigger setup` rerun on an up-to-date repo is a true no-op that does not even
 /// move a file's mtime.
 ///
-/// A `specs_location` every later command refuses ([`declared_specs_location`]) fails the
-/// install before any skill renders it.
+/// The skills name the project's specs location as every command spells it
+/// ([`declared_specs_location`]), and one every later command refuses fails the install before
+/// any skill renders it.
 fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
-    declared_specs_location(root)?;
+    let specs_location = declared_specs_location(root)?;
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
+    ctx.specs_location = specs_location;
     // Every entry no project copy has claimed yet; what is left after the loop is the strays.
     let mut unclaimed = project_skill_entries(root)?;
     let mut outcomes = Vec::new();
