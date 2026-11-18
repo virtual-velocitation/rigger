@@ -220,9 +220,9 @@ itself.
          gates and merges already running continue - they need no API
 
   a conductor-fault or model_not_found hold, by whom it is held:
-    fault F, the run last released no hold of F   -> for the orchestrator  (needs_person false)
+    fault F, the run released no hold of F         -> for the orchestrator  (needs_person false)
     rigger release, then F again                   -> for a person         (needs_person true)
-    rigger release, then a different fault G       -> for the orchestrator
+    releases of F and then of G, then F again      -> for a person
     F on an open hold that needs a person          -> for a person
     the same fault: the same cause and the same first line of the detail, byte for byte;
                     for model_not_found, the same cause

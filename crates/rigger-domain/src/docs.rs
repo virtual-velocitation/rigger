@@ -1120,7 +1120,8 @@ fn render_resume_a_run_skill(_ctx: &DocsContext) -> String {
              run. If the same fault holds the run again after your release (the same cause and \
              the same first line of the fault, or `model_not_found` again), your fix did not hold and the hold is now for a \
              person: `rigger status` lists it under what needs you, so stop and tell them exactly \
-             what you tried. A different fault after a release is yours to resolve again.\n",
+             what you tried. That holds however many holds of other faults you released \
+             since; a fault no hold you released named is yours to resolve again.\n",
             "A hold whose fault begins `unit \"<name>\" attempt <n> was refused:` is the one a \
              release itself resolves: that unit's checkpoint commit or the merge of the run branch \
              into its worktree was refused, the refused attempt is charged to the unit, and \

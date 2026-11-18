@@ -159,10 +159,12 @@ size or the API's words, sits on a later line. THE SAME FAULT is `RunHeld::same_
 its compare-and-append over the current run's hold events, the writer appends nothing when the
 open hold's latest `RunHeld` is the same fault; else `FAULT_RECURRED`, needing a person, action
 `the orchestrator's fix did not hold: a person decides, then runs rigger release`, when the
-latest `RunHeld` of the hold the run last released is the same fault; else
+latest `RunHeld` of any hold the run released is the same fault, however many holds of other
+faults it released since; else
 `FAULT_ON_A_PERSONS_HOLD`, needing a person, action `a person holds this run: they read the
 fault, decide, then run rigger release`, when the open hold's latest `RunHeld` needs a person;
-else the `conductor-fault` row. A different fault after a release is the orchestrator's again.
+else the `conductor-fault` row. A fault no hold the run released named is the orchestrator's
+again.
 A step git refused over a unit's own work after its session ended (a checkpoint commit, the
 merge of the run branch into its worktree, or the conflict-marker guard's refusal of the commit)
 charges the attempt it ended, a `UnitFailed` of cause `git-refused` whose evidence is the
@@ -488,8 +490,9 @@ beat gap and the resume carry the run.
   `StopFailure` of an earlier launch never classes a later one; a classed fault at the
   implementer reruns uncharged under the infra limit; a host built with no hold sink appends
   nothing; through `rigger run`, a conductor fault or a REJECTED spawn first holds the run for the
-  orchestrator, the same fault after a release holds it for a person, a different one for the
-  orchestrator, one landing on a hold that needs a person holds for a person, and no probe ends
+  orchestrator, the same fault as any hold the run released holds it for a person, holds of other
+  faults released since included, one no released hold named for the orchestrator, one landing on
+  a hold that needs a person holds for a person, and no probe ends
   any of them; two holds name the same fault exactly when their causes and their details' first
   lines are the same bytes; and a log recorded before ESCALATION folds and reads as recorded.
   This criterion OWNS the table, `RunHeld`, `RunReleased`, the hold fold, the revision
