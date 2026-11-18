@@ -2341,7 +2341,8 @@ impl PriorFailure {
 /// attempt's edits land in whether it reached its gates (§3.2: they measure exactly the
 /// committed artifact) or the emit guard refused a record it printed, so a failed attempt's
 /// `UnitFailed` carries that sha either way and an escalation's teardown keeps the edits on the
-/// unit's branch. A no-op on the worktree-less path (`None`).
+/// unit's branch. A no-op on the worktree-less path (`None`). Never called for a producer, whose
+/// tree lands only the commits its agent makes.
 fn checkpoint_attempt(wt: Option<&Worktree>, unit: &str, attempts: u32) -> Result<(), Error> {
     if let Some(w) = wt {
         git_step(w.commit_checkpoint(&format!("rigger: {unit} attempt {}", attempts + 1)))?;
@@ -7558,11 +7559,14 @@ impl RunCtx<'_> {
                     // attempt printed, not an outage: an uncharged rerun would reprint it. It is
                     // charged like a review reject - CAUSE_REJECT already covers "this unit's
                     // output was refused" - and the refusal rides into the next attempt's
-                    // prompt, so the agent learns why. Its edits are committed as the attempt's
-                    // checkpoint, as a gate failure's are before its gates run, so the UnitFailed
-                    // below carries that sha and an escalation's teardown keeps them.
+                    // prompt, so the agent learns why. An implementer's edits are committed as the
+                    // attempt's checkpoint, as a gate failure's are before its gates run, so the
+                    // UnitFailed below carries that sha and an escalation's teardown keeps them; a
+                    // producer's tree is never checkpointed, as only the commits it makes land.
                     Err(e) if carries_marker(&e, EMIT_REFUSED_MARKER) => {
-                        checkpoint_attempt(wt, &st.name, attempts)?;
+                        if !is_producer(st) {
+                            checkpoint_attempt(wt, &st.name, attempts)?;
+                        }
                         cause = CAUSE_REJECT.to_string();
                         next.review_reason = strip_failure_marker(&e);
                     }
