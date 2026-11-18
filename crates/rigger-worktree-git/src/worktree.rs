@@ -5544,15 +5544,17 @@ mod tests {
 
     /// THE GUARD READS WHAT THE COMMIT CARRIES: a checkpoint's `git add -A` stages a new file as
     /// it stages a tracked one, so a complete marker set in a new file, one inside a new
-    /// directory among them and one status is configured not to list, refuses the checkpoint and
-    /// the session's Stop hook alike, leaving the file unstaged; an ignored file, which no commit
-    /// takes, refuses neither. The escalation's kept tree still keeps the file as it stands.
+    /// directory among them, one status is configured not to list and one whose name git would
+    /// read as pathspec magic, short or long, refuses the checkpoint and the session's Stop hook
+    /// alike, leaving the file unstaged; an ignored file, which no commit takes, refuses neither.
+    /// The escalation's kept tree still keeps the file as it stands.
     #[test]
     fn a_checkpoint_refuses_marker_text_in_every_file_its_commit_would_carry() {
         const SET: &str = "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n";
         // Each row: the path written, whether status is told to list no untracked file, and
         // whether the checkpoint is refused.
-        let rows = [
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut rows = [
             ("a new file", "new.txt", false, true),
             (
                 "a new file in a new directory",
@@ -5562,7 +5564,24 @@ mod tests {
             ),
             ("a new file status does not list", "new.txt", true, true),
             ("an ignored file", "ignored.txt", false, false),
-        ];
+        ]
+        .to_vec();
+        // A name no Windows file system holds, so these rows stand where such a file can.
+        #[cfg(unix)]
+        rows.extend([
+            (
+                "a new file named like short pathspec magic",
+                ":notes.md",
+                false,
+                true,
+            ),
+            (
+                "a new file named like long pathspec magic",
+                ":(x).md",
+                false,
+                true,
+            ),
+        ]);
         let branch = "rigger/u/untracked-markers";
         for (row, path, unlisted, refused) in rows {
             let repo = init_repo();
