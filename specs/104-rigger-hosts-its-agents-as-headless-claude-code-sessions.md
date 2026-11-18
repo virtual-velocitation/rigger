@@ -81,9 +81,9 @@ session's input, waits 30 s, then ends the session's tree through the handle the
 the launch ends `stopped` and the existing liveness-fault result is recorded. The session runs
 in a contained process tree (`crates/rigger-process/src/child_tree.rs`), never found by
 working directory (a sibling spawn shares the worktree, not the process tree): ending it ends
-every process the session started, proved empty on Linux and Windows. Every join on the
-session's pipe readers is bounded by the ordinary drain bound, so a stop returns even when a
-process outside the tree holds the pipe. On start the supervisor closes any `SpawnLaunched`
+every process the session started, proved empty under the Linux keeper and, at the process
+crate, the Windows job. Every join on the session's pipe readers is bounded by the ordinary
+drain bound, so a stop returns even when a process outside the tree holds the pipe. On start the supervisor closes any `SpawnLaunched`
 left open as `interrupted` and reaps processes still rooted in that spawn's worktree before it
 relaunches.
 
