@@ -48926,7 +48926,8 @@ mod tests {
     /// session ended - a hook refusing the attempt's checkpoint commit (the first attempt's, or
     /// the second's after a red gate or after a review that required two items), a merge of the run branch refused over an untracked file
     /// in the worktree, a commit refused over conflict-marker text or over a HEAD the implementer
-    /// moved off the unit's branch, the merge's conclusion refused by a hook - the attempt is
+    /// moved off the unit's branch, the merge's conclusion refused by a hook (on an approve, or on
+    /// a prior window's approve whose merge never landed, resumed) - the attempt is
     /// charged (`UnitFailed`, cause `git-refused`, git's message its refusal, no gate's evidence
     /// and the REQUIRED items the attempt owed), a lesson names the unit and its refusal, the drive ends, and the
     /// run is held for the orchestrator on the unit-work row, the hold's first line naming the
@@ -48965,6 +48966,9 @@ mod tests {
             /// worktree is a real merge, and a prepare-commit-msg hook refuses its conclusion
             /// once, leaving the merge in progress.
             MergeFinalize,
+            /// A prior window approved the unit, its work on the unit's branch, but its merge never
+            /// landed; the resumed merge's conclusion is refused as MergeFinalize's is.
+            ResumedMerge,
             /// The gate fails once, so the second attempt runs inside the drive, and a
             /// prepare-commit-msg hook refuses that attempt's checkpoint commit.
             CheckpointAfterRed,
@@ -49019,6 +49023,12 @@ mod tests {
                 Drive::Retries,
             ),
             (
+                Step::ResumedMerge,
+                "hook: refusing the merge",
+                true,
+                Drive::Retries,
+            ),
+            (
                 Step::CheckpointAfterRed,
                 "hook: refusing the attempt",
                 true,
@@ -49056,6 +49066,19 @@ mod tests {
             } else {
                 "unit-a"
             };
+            if step == Step::ResumedMerge {
+                // The prior window's approved work, kept.txt, on the unit's branch.
+                commit_on_unit_branch(&repo_path, unit, "kept.txt", "work\n");
+                seed_events_in_run(
+                    &store,
+                    &[],
+                    &[
+                        started_on_branch(unit),
+                        unit_event(ledger::TYPE_UNIT_STATUS, unit, ("status", "verified")),
+                        unit_event(ledger::TYPE_UNIT_STATUS, unit, ("status", "reviewed")),
+                    ],
+                );
+            }
             let hook = |name: &str, body: String| {
                 let path = repo.path().join(".git").join("hooks").join(name);
                 std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -49092,7 +49115,7 @@ mod tests {
             let gate = match step {
                 Step::MergeRefused => format!("{} && echo note > note.txt", lands("op.txt", "op")),
                 Step::MergeConflict => lands("f.txt", "theirs"),
-                Step::MergeFinalize => lands("g.txt", "run"),
+                Step::MergeFinalize | Step::ResumedMerge => lands("g.txt", "run"),
                 Step::CheckpointAfterRed => {
                     format!("[ -e '{mark}' ] || {{ touch '{mark}' && exit 1; }}")
                 }
@@ -49113,7 +49136,7 @@ mod tests {
                          then touch '{mark}.hook'; echo 'hook: refusing the attempt' >&2; exit 1; fi"
                     ),
                 ),
-                Step::MergeFinalize => hook(
+                Step::MergeFinalize | Step::ResumedMerge => hook(
                     "prepare-commit-msg",
                     format!(
                         "if [ \"$2\" = merge ] && [ ! -e '{mark}.hook' ]; \
@@ -49378,8 +49401,13 @@ mod tests {
                         "{step:?}: the run is held for the orchestrator to retry the unit"
                     );
                     let launched = driver.spawn_ids();
-                    assert!(
-                        launched.contains(&refused_spawn) && !launched.contains(&retry_spawn),
+                    // A resumed approve's merge launches no implementer before git refuses it.
+                    assert_eq!(
+                        launched
+                            .iter()
+                            .filter(|id| id.contains("/implementer#"))
+                            .last(),
+                        (step != Step::ResumedMerge).then_some(&refused_spawn),
                         "{step:?}: the drive ended on the refused attempt: {launched:?}"
                     );
                     let released = crate::run_store::release_hold(
