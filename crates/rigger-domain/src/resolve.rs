@@ -350,7 +350,7 @@ pub(crate) fn def_leaves(facts: &FileFacts, local: &str) -> Vec<String> {
 /// depth at a time, each depth in path order. The first declaration to reach a file decides its
 /// place: a child, whose declarations read their `as_child` lists, unless that declaration
 /// carries a `#[path]` attribute. When a depth runs out, the first declaring file in path order
-/// no declaration has reached starts the next as a root, so a cycle no root reaches is walked.
+/// the walk has not visited starts the next as a root, so a cycle no root reaches is walked.
 fn reach<'v>(
     view: &'v dyn CodeView,
     code_files: &BTreeSet<&'v str>,
