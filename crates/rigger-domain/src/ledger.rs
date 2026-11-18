@@ -1355,7 +1355,9 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(n, kept)| {
-                    let kept = kept.map(|k| format!(r#","kept":[{k}]"#)).unwrap_or_default();
+                    let kept = kept
+                        .map(|k| format!(r#","kept":[{k}]"#))
+                        .unwrap_or_default();
                     ev(
                         TYPE_UNIT_FAILED,
                         &format!(r#"{{"id":"u","attempts":{}{kept}}}"#, n + 1),

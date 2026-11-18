@@ -3664,6 +3664,13 @@ fn drive(
         .values()
         .map(|u| (u.id.clone(), PriorFailure::logged(u)))
         .collect();
+    // Each unit's recorded keeps from the SAME fold, so the unit's landing removes them.
+    let prior_keeps: HashMap<String, Vec<ledger::Kept>> = prior
+        .units
+        .values()
+        .filter(|u| !u.keeps.is_empty())
+        .map(|u| (u.id.clone(), u.keeps.clone()))
+        .collect();
     let ctx = RunCtx {
         cfg,
         deps,
@@ -3681,6 +3688,7 @@ fn drive(
         prior_attempts,
         prior_resume_bound,
         prior_failure,
+        prior_keeps,
         replayed_keys,
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests,
@@ -4264,6 +4272,10 @@ struct RunCtx<'a> {
     /// `prior_attempts` is. [`logged_prior_failure`](RunCtx::logged_prior_failure) is the
     /// sole reader.
     prior_failure: HashMap<String, PriorFailure>,
+    /// Each unit's kept trees from the prior log ([`ledger::Unit::keeps`]), a run-start snapshot
+    /// of the SAME fold `prior_failure` is. [`recorded_keeps`](RunCtx::recorded_keeps) is the
+    /// sole reader.
+    prior_keeps: HashMap<String, Vec<ledger::Kept>>,
     /// The `(unit, attempt)` keys ([`conflict_regenerate_key`]'s shape) for which the prior
     /// log durably recorded at least one spec 88 criterion 1 round 4 TABLE marker (round 4's
     /// own fix, `resume_phase`'s sole reader): [`Worktree::branch_has_work`]'s `tip == base`
@@ -4435,6 +4447,7 @@ impl<'a> RunCtx<'a> {
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
+            prior_keeps: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
@@ -4817,6 +4830,14 @@ impl RunCtx<'_> {
             Some(failure) if self.prior_attempts.get(unit) == Some(&attempts) => failure.clone(),
             _ => PriorFailure::default(),
         }
+    }
+
+    /// The trees kept for `unit` that the run's log recorded before this process
+    /// ([`ledger::Unit::keeps`]), which its landing removes ([`worktree::reap_keeps`]). A keep
+    /// at the retry bound is made only by an attempt that escalates its unit, so the log holds
+    /// every such keep of a unit this process lands.
+    fn recorded_keeps(&self, unit: &str) -> &[ledger::Kept] {
+        self.prior_keeps.get(unit).map_or(&[], Vec::as_slice)
     }
 
     /// What `unit` is told on entering its lifecycle at attempt `attempts`, the one reader the
@@ -6013,11 +6034,12 @@ impl RunCtx<'_> {
             // the merged work lives in the base now. An un-integrated unit (Ok(false),
             // an Err, a pause/escalation, or a crash before this line) KEEPS its branch.
             // Deletion happens after the worktree dir is removed, since git refuses to
-            // delete a branch that is still checked out in a worktree. The unit's kept ref
-            // ([`Worktree::keep_tree_aside`]) goes with its branch.
+            // delete a branch that is still checked out in a worktree. The unit's recorded keeps
+            // ([`Worktree::keep_tree_aside`]) go with its branch ([`worktree::reap_keeps`]).
             if matches!(result, Ok(true)) {
                 let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
-                let _ = worktree::reap_keeps(&self.deps.repo, &w.branch, &[]);
+                let keeps = self.recorded_keeps(&st.name);
+                let _ = worktree::reap_keeps(&self.deps.repo, &w.branch, keeps);
             }
         }
         result
@@ -8849,10 +8871,11 @@ impl RunCtx<'_> {
             self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
             // The winner's work merged into the base: tear down its worktree and branch too,
             // exactly as the single-lane path deletes an integrated unit's branch, and the
-            // unit's kept ref with them.
+            // unit's recorded keeps with them.
             let _ = candidates[i].wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
-            let _ = worktree::reap_keeps(&self.deps.repo, &unit_branch(&st.name), &[]);
+            let keeps = self.recorded_keeps(&st.name);
+            let _ = worktree::reap_keeps(&self.deps.repo, &unit_branch(&st.name), keeps);
             return Ok(true);
         }
 
@@ -11101,7 +11124,7 @@ impl RunCtx<'_> {
                                 ));
                             }
                             let _ = Worktree::delete_branch(&self.deps.repo, &branch);
-                            let _ = worktree::reap_keeps(&self.deps.repo, &branch, &[]);
+                            let _ = worktree::reap_keeps(&self.deps.repo, &branch, &u.keeps);
                             None
                         }
                         Err(e) => Some(e.0),
@@ -28297,6 +28320,7 @@ stage "implement" adjudicator "adj" failed
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
+            prior_keeps: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
@@ -36873,6 +36897,7 @@ stage "implement" adjudicator "adj" failed
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
+            prior_keeps: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
@@ -51215,7 +51240,10 @@ stage "implement" adjudicator "adj" failed
         escalates("the granted attempt, refused, escalates the unit again");
         let second = git_out(&repo_path, &["rev-parse", "rigger/kept/unit-a"]);
         let first_aside = format!("rigger/orphaned/unit-a-{}", &first[..12]);
-        assert_ne!(first, second, "precondition: the second keep is another tree");
+        assert_ne!(
+            first, second,
+            "precondition: the second keep is another tree"
+        );
         assert_eq!(
             git_out(&repo_path, &["rev-parse", &first_aside]),
             first,
@@ -51223,7 +51251,14 @@ stage "implement" adjudicator "adj" failed
         );
         let other = git_out(
             &repo_path,
-            &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "another lineage"],
+            &[
+                "commit-tree",
+                "HEAD^{tree}",
+                "-p",
+                "HEAD",
+                "-m",
+                "another lineage",
+            ],
         );
         let theirs = format!("rigger/orphaned/unit-a-{}", &other[..12]);
         git_out(
@@ -51247,7 +51282,8 @@ stage "implement" adjudicator "adj" failed
     }
 
     /// BRANCH COLLECTION REAPS THE REFS RIGGER HOLDS ASIDE ONCE THEY HOLD NOTHING HEAD LACKS:
-    /// an integrated unit's kept ref goes with its branch, whatever it holds; a kept or
+    /// an integrated unit's kept ref goes with its branch while it holds the keep the unit's
+    /// record names, whatever that holds; a kept or
     /// orphaned ref whose tip HEAD's history holds is removed and the removal logged; an
     /// orphaned ref holding a commit HEAD lacks stays for a person, unlogged.
     #[test]
@@ -51274,7 +51310,19 @@ stage "implement" adjudicator "adj" failed
             );
         }
 
-        let lines = gc_logged(&repo_path, &[started_on_branch("done"), integrated("done")]);
+        let kept = Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&json!({
+                "id": "done",
+                "attempts": 1,
+                "kept": [{"reference": "rigger/kept/done", "commit": ahead}],
+            }))
+            .unwrap(),
+        );
+        let lines = gc_logged(
+            &repo_path,
+            &[started_on_branch("done"), kept, integrated("done")],
+        );
 
         for gone in [
             "rigger/u/done",

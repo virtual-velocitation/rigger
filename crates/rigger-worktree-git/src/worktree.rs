@@ -1712,26 +1712,65 @@ fn stand_aside(repo: &str, unit: &str, commit: &str) -> Result<String, Error> {
 /// commit now stands aside, or `None` when there is no kept ref. A repeat after a cut-off one
 /// finishes it.
 pub fn set_kept_aside(repo: &str, branch: &str) -> Result<Option<String>, Error> {
-    let kept = kept_ref(branch);
+    set_held_aside(repo, &kept_ref(branch))
+}
+
+/// [`set_kept_aside`] for the kept ref `kept`, short form.
+fn set_held_aside(repo: &str, kept: &str) -> Result<Option<String>, Error> {
     let full = format!("refs/heads/{kept}");
     let Some(tip) = ref_commit(repo, &full)? else {
         return Ok(None);
     };
-    let aside = stand_aside(repo, held_unit(&kept), &tip)?;
+    let aside = stand_aside(repo, held_unit(kept), &tip)?;
     if !checked_out(repo)?.contains(&full) {
         git(repo, &["update-ref", "-d", &full, &tip])?;
     }
     Ok(Some(aside))
 }
 
-/// Delete the kept ref of the unit whose branch is `branch` ([`kept_ref`]), when there is one and
-/// no worktree has it checked out: called where the unit's branch is reaped once its work has
-/// landed.
-pub fn reap_keeps(repo: &str, branch: &str, _keeps: &[Kept]) -> Result<(), Error> {
-    let full = format!("refs/heads/{}", kept_ref(branch));
-    if let Some(tip) = ref_commit(repo, &full)? {
-        if !checked_out(repo)?.contains(&full) {
-            git(repo, &["update-ref", "-d", &full, &tip])?;
+/// THE UNIT'S KEEPS GO WITH ITS LANDING: called where the branch `branch` of a unit whose work
+/// has landed is reaped, `keeps` the trees the unit's record names ([`Kept`]). Each kept ref of
+/// the unit's, its own ([`kept_ref`]) and each one a recorded keep names, is deleted when its
+/// tip is a recorded keep and set aside ([`set_kept_aside`]) when it is not, so a commit a
+/// person made on it, or a keep no record names, is never lost. Each recorded keep standing
+/// aside, under the [`orphaned_ref`] of its commit or the name it landed under while its kept ref
+/// was checked out, is deleted while it still holds that commit. A ref a worktree has checked out
+/// is left as it stands, and no other ref is read: another lineage's ref sharing the unit's
+/// prefix holds no recorded commit, and a record naming a ref outside the held namespaces
+/// names nothing this deletes.
+pub fn reap_keeps(repo: &str, branch: &str, keeps: &[Kept]) -> Result<(), Error> {
+    let checked_out = checked_out(repo)?;
+    let recorded = |tip: &str| keeps.iter().any(|k| k.commit == tip);
+    let mut kept_refs = vec![kept_ref(branch)];
+    for k in keeps {
+        if k.reference.starts_with(KEPT_REFS) && !kept_refs.contains(&k.reference) {
+            kept_refs.push(k.reference.clone());
+        }
+    }
+    for kept in &kept_refs {
+        let full = format!("refs/heads/{kept}");
+        match ref_commit(repo, &full)? {
+            Some(_) if checked_out.contains(&full) => {}
+            Some(tip) if recorded(&tip) => {
+                git(repo, &["update-ref", "-d", &full, &tip])?;
+            }
+            Some(_) => {
+                set_held_aside(repo, kept)?;
+            }
+            None => {}
+        }
+    }
+    for k in keeps {
+        let aside = match k.reference.strip_prefix(KEPT_REFS) {
+            Some(unit) => orphaned_ref(unit, &k.commit),
+            None => k.reference.clone(),
+        };
+        let full = format!("refs/heads/{aside}");
+        if aside.starts_with(ORPHANED_REFS)
+            && !checked_out.contains(&full)
+            && ref_commit(repo, &full)?.as_deref() == Some(k.commit.as_str())
+        {
+            git(repo, &["update-ref", "-d", &full, &k.commit])?;
         }
     }
     Ok(())
@@ -9659,7 +9698,10 @@ mod tests {
         }
         // Each row, given the repo and the unit's tree: the keeps the unit's record names, and
         // the held refs its integration leaves.
-        type Row = (&'static str, fn(&str, &str, &Worktree) -> (Vec<Kept>, Vec<(String, String)>));
+        type Row = (
+            &'static str,
+            fn(&str, &str, &Worktree) -> (Vec<Kept>, Vec<(String, String)>),
+        );
         let cases: [Row; 5] = [
             ("a keep set aside by a later keep", |repo, dir, wt| {
                 write(dir, "one.txt");
@@ -9667,36 +9709,46 @@ mod tests {
                 write(dir, "two.txt");
                 let two = kept(keep_aside(wt).unwrap());
                 assert!(
-                    ref_present(repo, &format!("refs/heads/{}", orphaned_ref("unit-r", &one.commit)))
-                        .unwrap(),
+                    ref_present(
+                        repo,
+                        &format!("refs/heads/{}", orphaned_ref("unit-r", &one.commit))
+                    )
+                    .unwrap(),
                     "precondition: the first keep stands aside"
                 );
                 (vec![one, two], vec![])
             }),
-            ("a keep landed aside while the kept ref was checked out", |repo, dir, wt| {
-                write(dir, "one.txt");
-                let one = kept(keep_aside(wt).unwrap());
-                let spare = tempfile::tempdir().unwrap();
-                let spare = spare.path().join("look");
-                let spare = spare.to_str().unwrap();
-                run_git(repo, &["worktree", "add", "-q", spare, &one.reference]).unwrap();
-                write(dir, "two.txt");
-                let two = kept(keep_aside(wt).unwrap());
-                assert_eq!(
-                    two.reference,
-                    orphaned_ref("unit-r", &two.commit),
-                    "precondition: the second keep lands aside"
-                );
-                run_git(repo, &["worktree", "remove", "--force", spare]).unwrap();
-                (vec![one, two], vec![])
-            }),
+            (
+                "a keep landed aside while the kept ref was checked out",
+                |repo, dir, wt| {
+                    write(dir, "one.txt");
+                    let one = kept(keep_aside(wt).unwrap());
+                    let spare = tempfile::tempdir().unwrap();
+                    let spare = spare.path().join("look");
+                    let spare = spare.to_str().unwrap();
+                    run_git(repo, &["worktree", "add", "-q", spare, &one.reference]).unwrap();
+                    write(dir, "two.txt");
+                    let two = kept(keep_aside(wt).unwrap());
+                    assert_eq!(
+                        two.reference,
+                        orphaned_ref("unit-r", &two.commit),
+                        "precondition: the second keep lands aside"
+                    );
+                    run_git(repo, &["worktree", "remove", "--force", spare]).unwrap();
+                    (vec![one, two], vec![])
+                },
+            ),
             ("a person's commit on the kept ref", |repo, dir, wt| {
                 write(dir, "one.txt");
                 let one = kept(keep_aside(wt).unwrap());
                 let theirs = commit_on(repo, &one.commit, "a person's commit");
                 run_git(
                     repo,
-                    &["update-ref", &format!("refs/heads/{}", one.reference), &theirs],
+                    &[
+                        "update-ref",
+                        &format!("refs/heads/{}", one.reference),
+                        &theirs,
+                    ],
                 )
                 .unwrap();
                 let aside = orphaned_ref("unit-r", &theirs);
@@ -9708,14 +9760,21 @@ mod tests {
                 let aside = orphaned_ref("unit-r", &one.commit);
                 (vec![], vec![(aside, one.commit)])
             }),
-            ("another lineage's ref sharing the prefix", |repo, dir, wt| {
-                let other = commit_on(repo, "HEAD", "another lineage's keep");
-                let theirs = orphaned_ref("unit-r", &other);
-                run_git(repo, &["update-ref", &format!("refs/heads/{theirs}"), &other]).unwrap();
-                write(dir, "one.txt");
-                let one = kept(keep_aside(wt).unwrap());
-                (vec![one], vec![(theirs, other)])
-            }),
+            (
+                "another lineage's ref sharing the prefix",
+                |repo, dir, wt| {
+                    let other = commit_on(repo, "HEAD", "another lineage's keep");
+                    let theirs = orphaned_ref("unit-r", &other);
+                    run_git(
+                        repo,
+                        &["update-ref", &format!("refs/heads/{theirs}"), &other],
+                    )
+                    .unwrap();
+                    write(dir, "one.txt");
+                    let one = kept(keep_aside(wt).unwrap());
+                    (vec![one], vec![(theirs, other)])
+                },
+            ),
         ];
         for (row, set_up) in cases {
             let (_repo, repo_path, root) = scratch_repo(true);
@@ -9744,7 +9803,11 @@ mod tests {
             let (_repo, repo_path, _root) = scratch_repo(true);
             let head = run_git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
             let head = head.trim();
-            run_git(&repo_path, &["update-ref", &format!("refs/heads/{KEPT}"), head]).unwrap();
+            run_git(
+                &repo_path,
+                &["update-ref", &format!("refs/heads/{KEPT}"), head],
+            )
+            .unwrap();
             run_git(&repo_path, &["update-ref", twin, head]).unwrap();
             assert_eq!(
                 held_refs(&repo_path).unwrap(),
