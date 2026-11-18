@@ -3945,7 +3945,7 @@ fn current_run_units(events: &[Event]) -> RunUnits {
                 rigger::worktree::SpawnFence::InFlight { .. }
             );
         if run.is_terminal(&u.id) && !fenced_live {
-            if let Some(slug) = u.branch.strip_prefix("rigger/u/") {
+            if let Some(slug) = u.branch.strip_prefix(rigger::worktree::UNIT_BRANCHES) {
                 if !slug.is_empty() {
                     out.dead_slugs.insert(slug.to_string());
                 }
@@ -3977,7 +3977,10 @@ fn live_slugs(
 ) -> std::collections::HashSet<String> {
     live_branches
         .iter()
-        .filter_map(|b| b.strip_prefix("rigger/u/").map(str::to_string))
+        .filter_map(|b| {
+            b.strip_prefix(rigger::worktree::UNIT_BRANCHES)
+                .map(str::to_string)
+        })
         .collect()
 }
 
