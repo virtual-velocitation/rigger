@@ -873,8 +873,9 @@ mod tests {
     /// in order, on the settings kept. Only a spawn with a duty gets the `Stop` hook, with its
     /// timeout, asking of a checkpointed tree on its branch and of a producer's tree for its own
     /// commits. A POSIX entry names no shell, so Claude Code runs it under `sh -c` as before; a
-    /// PowerShell entry names `powershell`, so Claude Code never hands it to Git Bash, and runs
-    /// the quoted program behind the call operator `&`.
+    /// PowerShell entry names `powershell`, so Claude Code never hands it to Git Bash, runs the
+    /// quoted program behind the call operator `&`, and exits with the program's own status, which
+    /// PowerShell's `-Command` would otherwise turn from the write guard's blocking 2 into 1.
     #[test]
     fn spawn_hooks_are_the_write_guard_one_stop_failure_entry_per_category_and_the_stop_check() {
         // The block `hook_block` builds, its inner hook given `timeout` and the shell `field`
@@ -895,26 +896,30 @@ mod tests {
         // A PowerShell spawn on Windows: a program path with a space and a quote, a tree with
         // non-ASCII, and a branch with every character the POSIX rows guard against and U+2019.
         let ps = r"& 'C:\Program Files\it''s\rigger.exe'";
-        let ps_guard =
-            format!("{ps} guard-write --root 'C:\\wt\\u \u{fc}' --root 'C:\\scratch\\s'");
-        let ps_stop_failure = format!("{ps} hook stop-failure --spawn 'u/implementer#0' --class");
+        let ps_guard = format!(
+            "{ps} guard-write --root 'C:\\wt\\u \u{fc}' --root 'C:\\scratch\\s'; \
+             exit $LASTEXITCODE"
+        );
+        let ps_stop_failure = format!(
+            "{ps} hook stop-failure --spawn 'u/implementer#0' --class {{class}}; exit $LASTEXITCODE"
+        );
         let ps_stop = format!(
             "{ps} hook stop --spawn 'u/implementer#0' --dir 'C:\\wt\\u \u{fc}' \
-             --branch 'rigger/u/a;b&c$d`e|f\u{2019}\u{2019}'"
+             --branch 'rigger/u/a;b&c$d`e|f\u{2019}\u{2019}'; exit $LASTEXITCODE"
         );
         let rows = [
             (
                 (HookShell::Posix, None),
                 ("rigger", "u/implementer#0", vec!["/wt"], "/wt", checkpoint("rigger/u/u")),
                 "'rigger' guard-write --root '/wt'",
-                "'rigger' hook stop-failure --spawn 'u/implementer#0' --class",
+                "'rigger' hook stop-failure --spawn 'u/implementer#0' --class {class}",
                 Some("'rigger' hook stop --spawn 'u/implementer#0' --dir '/wt' --branch 'rigger/u/u'"),
             ),
             (
                 (HookShell::Posix, None),
                 ("rigger", "plan/implementer#0", vec!["/wt plan"], "/wt plan", TreeDuty::OwnCommits),
                 "'rigger' guard-write --root '/wt plan'",
-                "'rigger' hook stop-failure --spawn 'plan/implementer#0' --class",
+                "'rigger' hook stop-failure --spawn 'plan/implementer#0' --class {class}",
                 Some("'rigger' hook stop --spawn 'plan/implementer#0' --dir '/wt plan' --own-commits"),
             ),
             (
@@ -927,7 +932,7 @@ mod tests {
                     TreeDuty::None,
                 ),
                 r"'/opt/it'\''s here/rigger' guard-write --root '/wt tree' --root '/scratch/s'",
-                r"'/opt/it'\''s here/rigger' hook stop-failure --spawn 'u/reviewer#1' --class",
+                r"'/opt/it'\''s here/rigger' hook stop-failure --spawn 'u/reviewer#1' --class {class}",
                 None,
             ),
             (
@@ -946,9 +951,13 @@ mod tests {
             (
                 (HookShell::PowerShell, Some("powershell")),
                 ("rigger", "plan/\"x\"#0", vec!["/wt plan"], "/wt plan", TreeDuty::OwnCommits),
-                "& 'rigger' guard-write --root '/wt plan'",
-                "& 'rigger' hook stop-failure --spawn 'plan/\"x\"#0' --class",
-                Some("& 'rigger' hook stop --spawn 'plan/\"x\"#0' --dir '/wt plan' --own-commits"),
+                "& 'rigger' guard-write --root '/wt plan'; exit $LASTEXITCODE",
+                "& 'rigger' hook stop-failure --spawn 'plan/\"x\"#0' --class {class}; \
+                 exit $LASTEXITCODE",
+                Some(
+                    "& 'rigger' hook stop --spawn 'plan/\"x\"#0' --dir '/wt plan' --own-commits; \
+                     exit $LASTEXITCODE",
+                ),
             ),
         ];
         for ((shell, field), (bin, spawn, roots, dir, duty), guard, stop_failure, stop) in rows {
@@ -956,7 +965,7 @@ mod tests {
                 .iter()
                 .map(|category| {
                     let class = category.as_str();
-                    entry(field, class, &format!("{stop_failure} {class}"), None)
+                    entry(field, class, &stop_failure.replace("{class}", class), None)
                 })
                 .collect();
             let stop = stop.map_or(Value::Null, |command| {
