@@ -7181,39 +7181,18 @@ impl RunCtx<'_> {
             };
             if !full.pass {
                 // The exhaustive suite is red on a resumed approve (a skipped gate fails):
-                // do NOT integrate a failing tree. Record the failure so the unit re-enters
-                // its lifecycle next step rather than wedging forever on a resumed merge it
-                // can never safely land.
-                //
-                // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
-                // sdet-u3c3r5-resumed-reviewed-gate-failure-failed-sha-still-empty-sentinel,
-                // UPHELD): the exhaustive gate run just above is real wall-clock time (a
-                // genuine cargo build/test), the last thing that touches `dir` before this
-                // read, and this arm returns BEFORE ever reaching `integrate_and_emit`'s own
-                // centralized re-assert - so nothing else protects this read. Mirrors the
-                // identical fix already applied to every sibling stamp in this unit.
-                if let Some(w) = wt {
-                    git_step(w.ensure_present())?;
-                }
-                let failed_sha = worktree::head_sha_of(dir);
+                // do NOT integrate a failing tree. It is the unit's failed attempt, charged
+                // through its remediation, so the unit re-enters its lifecycle next step - or
+                // escalates on the attempt that spends its bound - rather than wedging forever
+                // on a resumed merge it can never safely land. spec 69, criterion 3: the
+                // failure is a plain gate failure - name the gate. Its evidence rides along
+                // (gap 61), so the later process that re-enters the unit prompts it from the log.
                 let cause = full.cause();
                 let failure = PriorFailure {
                     gate_evidence: full.evidence,
                     ..Default::default()
                 };
-                self.emit_meta(
-                    ledger::TYPE_UNIT_FAILED,
-                    // spec 69, criterion 3: the resumed exhaustive re-assert failing is a
-                    // plain gate failure - name the gate. Its evidence rides along (gap 61),
-                    // so the later process that re-enters the unit prompts it from the log.
-                    failure.failed_body(
-                        &st.name,
-                        attempts + 1,
-                        self.max_retries_for(&st.name, st),
-                        &cause,
-                    ),
-                    &[(META_WORKTREE_SHA, &failed_sha)],
-                )?;
+                self.charge_failed_attempt(st, wt, dir, attempts, &failure, &cause)?;
                 return Ok(false);
             }
             // The prior window approved the unit: a `reviewed` is emitted ONLY on an explicit
@@ -7232,37 +7211,24 @@ impl RunCtx<'_> {
                 // spec 12, unit 5: the MERGED tree failed the post-merge re-gate on a RESUMED
                 // merge (a batch-mate integrated onto the run branch since this unit was
                 // approved, and the two auto-merged into a broken tree). The merge was rolled
-                // back; record the failure so the unit re-enters its lifecycle next step and
-                // re-implements against the changed world, rather than wedging on a resumed
-                // merge it can never safely land.
-                //
-                // Ensure-on-park, defense in depth (spec 64 criterion 3, round 6,
-                // adv-u3c3r5-two-more-unguarded-empty-sha-siblings, UPHELD): the post-merge
-                // re-gate that produced this `blocked` result runs `GateSelection::PostMerge`
-                // against `self.deps.repo`, never re-touching `dir` - so `integrate_and_emit`'s
-                // own internal re-assert (which ran BEFORE that re-gate) cannot cover this
-                // read. Re-assert immediately before it, same as every sibling site.
-                if let Some(w) = wt {
-                    git_step(w.ensure_present())?;
-                }
-                let failed_sha = worktree::head_sha_of(dir);
+                // back; it is the unit's failed attempt, charged through its remediation, so
+                // the unit re-enters its lifecycle next step and re-implements against the
+                // changed world - or escalates on the attempt that spends its bound - rather
+                // than wedging on a resumed merge it can never safely land. spec 69, criterion
+                // 3: a resumed merge whose post-merge re-gate went red is a merge conflict, not
+                // a plain gate failure. The merge-break evidence rides along (gap 61), so the
+                // later process that re-enters the unit prompts it from the log.
                 let failure = PriorFailure {
                     gate_evidence: evidence,
                     ..Default::default()
                 };
-                self.emit_meta(
-                    ledger::TYPE_UNIT_FAILED,
-                    // spec 69, criterion 3: a resumed merge whose post-merge re-gate
-                    // went red is a merge conflict, not a plain gate failure. The
-                    // merge-break evidence rides along (gap 61), so the later process
-                    // that re-enters the unit prompts it from the log.
-                    failure.failed_body(
-                        &st.name,
-                        attempts + 1,
-                        self.max_retries_for(&st.name, st),
-                        CAUSE_INTEGRATE_CONFLICT,
-                    ),
-                    &[(META_WORKTREE_SHA, &failed_sha)],
+                self.charge_failed_attempt(
+                    st,
+                    wt,
+                    dir,
+                    attempts,
+                    &failure,
+                    CAUSE_INTEGRATE_CONFLICT,
                 )?;
                 return Ok(false);
             }
@@ -8051,12 +8017,12 @@ impl RunCtx<'_> {
     ) -> Result<safety::Remediation, Error> {
         let max_retries = self.max_retries_for(&st.name, st);
         let rem = safety::remediate(attempts, max_retries);
-        // Ensure-on-park, defense in depth (spec 64 criterion 3, round 4,
-        // adv-u3c3r3-reviewed-and-failed-sha-empty-sentinel-inversion, UPHELD): a review
-        // tier's own spawn (most reachably the adjudicator's, on the reject arm) could have
-        // deleted the tree as its side effect AFTER `run_reviewer`'s per-spawn re-assert ran
-        // and BEFORE this read. Re-assert immediately before it, mirroring the `verified`
-        // stamp's fix.
+        // Ensure-on-park, defense in depth (spec 64 criterion 3, rounds 4 and 6): whatever
+        // ran last could have deleted the tree as its side effect after the last re-assert
+        // and BEFORE this read - a review tier's own spawn (most reachably the adjudicator's,
+        // on the reject arm), a resumed approve's exhaustive gate run, or its post-merge
+        // re-gate, which never re-touches `dir`. Re-assert immediately before it, mirroring the
+        // `verified` stamp's fix.
         if let Some(w) = wt {
             git_step(w.ensure_present())?;
         }
