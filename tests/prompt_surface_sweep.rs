@@ -105,6 +105,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "{}: the session ended without handing over (no {AUTHOR_HANDO",
             "rigger: the run landed a definition change; re-pinned run {}",
             "rigger run: the run stopped, and its hold could not be recor",
+            "wip({}): tree of attempt {}, which git refused",
         ],
     ),
     (
@@ -305,6 +306,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "stop-failure recorded for {spawn_id} (class {class}, positio",
             "rigger hook stop: {e}; the stop is allowed",
             "--spawn and --dir are required, with exactly one of --branch",
+            "no work in {PRODUCER_OUTPUT} is left outside a commit",
             "stop allowed: the check could not read: {e}",
             "stop allowed with the refusal standing after {bound} holds: ",
         ],
