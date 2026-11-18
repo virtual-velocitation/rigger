@@ -709,13 +709,16 @@ fn residue_advisories(
     let run_units = read_run_units(loc, selection)?;
     let slugs = live_slugs(&run_units.live_branches);
     let local_branches = rigger::worktree::unit_branches(Path::new(&repo));
-    let report = scan_residue(
+    let mut report = scan_residue(
         &scratch,
         &slugs,
         &run_units.dead_slugs,
         &local_branches,
         &run_units.live_branches,
     );
+    // Every ref rigger holds aside, a kept tree or one set aside, live or not: only a person
+    // or the run-start reaper removes one. A read failure lists none, as the branch read above.
+    report.held = rigger::worktree::held_refs(&repo).unwrap_or_default();
     let mut advisories = format_residue(&report);
     // Leaked-process advisory (spec 23, unit 2): any process still rooted under the SAME
     // resolved scratch root, warning-only like the residue block above. Reuses the `scratch`

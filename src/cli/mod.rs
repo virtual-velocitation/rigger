@@ -3850,8 +3850,9 @@ fn spec_lint_warning_lines(spec_path: &str, text: &str) -> Vec<String> {
 // the run teardown (`reclaim_run_scratch`); this half only reports.
 
 /// The leftover artifacts a `rigger validate` residue scan found under the scratch root
-/// (plus dead `rigger/u/*` branches), each with a size where one is meaningful. Held as
-/// data so the scan is unit-testable apart from its stderr rendering ([`format_residue`]).
+/// (plus dead `rigger/u/*` branches and the refs rigger holds aside), each with a size where
+/// one is meaningful. Held as data so the scan is unit-testable apart from its stderr rendering
+/// ([`format_residue`]).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ResidueReport {
     /// Scratch-root worktrees (`rigger-wt-*`) whose unit is not live: (dir name, bytes).
@@ -3862,6 +3863,9 @@ struct ResidueReport {
     shadow_stores: Vec<(String, u64)>,
     /// Local `rigger/u/*` branches with no live unit.
     branches: Vec<String>,
+    /// Every ref rigger holds aside ([`rigger::worktree::held_refs`]), a kept tree or one set
+    /// aside: (name, tip).
+    held: Vec<(String, String)>,
 }
 
 impl ResidueReport {
@@ -3870,6 +3874,7 @@ impl ResidueReport {
             && self.caches.is_empty()
             && self.shadow_stores.is_empty()
             && self.branches.is_empty()
+            && self.held.is_empty()
     }
 }
 
@@ -4432,6 +4437,10 @@ fn format_residue(report: &ResidueReport) -> Vec<String> {
     }
     for b in &report.branches {
         msg.push_str(&format!("\n  branch with no live unit: {b}"));
+    }
+    for (name, tip) in &report.held {
+        let short = &tip[..tip.len().min(12)];
+        msg.push_str(&format!("\n  ref held aside: {name} at {short}"));
     }
     vec![msg]
 }
@@ -8098,6 +8107,10 @@ mod tests {
             caches: vec![("cargo-target".to_string(), 5_905_580_032)],
             shadow_stores: vec![("probe/.rigger/events.db".to_string(), 6)],
             branches: vec!["rigger/u/unit-99-ghost".to_string()],
+            held: vec![(
+                "rigger/kept/unit-99-ghost".to_string(),
+                "0123456789abcdef0123456789abcdef01234567".to_string(),
+            )],
         };
         let lines = format_residue(&report);
         assert_eq!(lines.len(), 1, "the residue report is one stderr block");
@@ -8109,6 +8122,7 @@ mod tests {
         assert!(block.contains("orphaned build cache: cargo-target (5.5G)"));
         assert!(block.contains("shadow store: probe/.rigger/events.db (6B)"));
         assert!(block.contains("branch with no live unit: rigger/u/unit-99-ghost"));
+        assert!(block.ends_with("\n  ref held aside: rigger/kept/unit-99-ghost at 0123456789ab"));
     }
 
     // ---- spec 77 criterion 6: FOOTPRINT ACCOUNTING -----------------------------------
