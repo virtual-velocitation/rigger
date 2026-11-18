@@ -7551,8 +7551,9 @@ fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
 /// the run gives up on the launch fault well within the stop's grace, and nothing the session
 /// started is still running once `rigger run` has exited: the binary serves the containment the
 /// composition root hands the host. Read through the FIFO witness (`common::witness`), so no
-/// signal of the test's own decides it.
-#[cfg(unix)]
+/// signal of the test's own decides it. Linux only: the process that left the session's tree is
+/// the session's to end only where the keeper adopts it, and only Linux has the keeper.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_run_whose_session_is_stopped_leaves_nothing_the_session_started_running() {
     use common::witness::{Reading, Witness};

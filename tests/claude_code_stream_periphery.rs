@@ -1443,6 +1443,9 @@ mod forks_at_stop {
             ends_at(Window::InitFault, "eof-exit", Duration::from_secs(1), 2, Leaves::Nothing);
         // A grace of 15 s: joins that waited the stop's grace would wait it twice and break the
         // bound, which the ending's own 2 s join bound keeps.
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
         an_init_fault_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
             ends_at(Window::InitFault, "double", Duration::from_secs(15), 2, Leaves::Nothing);
         // THE STOP: input closed, the grace waited, then the end.
@@ -1462,11 +1465,19 @@ mod forks_at_stop {
                 2,
                 Leaves::Nothing,
             );
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
         a_stop_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
             ends_at(Window::Silence(1), "double", Duration::from_secs(15), 2, Leaves::Nothing);
         // The process leaves the tree 3 s after init, before the stop at 5 s.
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
         a_stop_ends_a_process_that_left_the_sessions_tree_while_it_ran:
             ends_at(Window::Silence(5), "double-slow", Duration::from_secs(1), 2, Leaves::Nothing);
+        // Linux only: util-linux `setsid`, which the fixture starts its process with.
+        #[cfg(target_os = "linux")]
         a_stop_ends_a_process_in_a_session_of_its_own:
             ends_at(Window::Silence(1), "setsid", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_a_process_started_in_another_directory:
@@ -1489,6 +1500,8 @@ mod forks_at_stop {
                 2,
                 Leaves::Nothing,
             );
+        // Linux only: util-linux `setsid`, which the fixture starts its process with.
+        #[cfg(target_os = "linux")]
         a_watched_stop_ends_a_process_in_a_session_of_its_own:
             ends_watched_at(
                 Window::Silence(1),
