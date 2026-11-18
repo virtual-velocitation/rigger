@@ -1841,8 +1841,10 @@ impl HoldProbe for Driver<'_> {
                 std::ops::ControlFlow::Continue(())
             });
             // A canary that has exited is let go, and one still running is ended with its tree.
-            // It writes no store, so what an end left goes unrecorded here.
-            canary.finish();
+            // It writes no store, so what an end left is said on stderr ([`canary_end_line`]).
+            if let Some(line) = canary_end_line(&canary.finish()) {
+                rigger_process::whole_line::say(format_args!("{line}"));
+            }
         }
         if passed {
             ProbeOutcome::Passed
@@ -2012,11 +2014,23 @@ fn api_retry_line(v: &Value) -> String {
     format!("waiting: {category} (attempt {attempt}, retrying in {delay_ms}ms)")
 }
 
-/// The progress line an end of a session's tree records ([`crate::child_tree::EndReport`]): each
-/// call the OS refused it, as the report says it; then how many processes it signalled and could
-/// not end, and how many it found outside the tree and never signalled, each named by pid and
-/// program, a still-frozen one marked so. `None` when it left nothing and nothing was refused.
+/// The progress line an end of a session's tree records: what it left ([`end_text`]), on the
+/// stream. `None` when it left nothing and nothing was refused.
 fn end_line(report: &crate::child_tree::EndReport) -> Option<String> {
+    end_text(report).map(|text| format!("stream: {text}"))
+}
+
+/// The line the hold probe says on stderr when its canary's end left anything ([`end_text`]),
+/// since the probe writes no store. `None` when it left nothing and nothing was refused.
+fn canary_end_line(report: &crate::child_tree::EndReport) -> Option<String> {
+    end_text(report).map(|text| format!("rigger: the hold probe's canary: {text}"))
+}
+
+/// What an end of a session's tree left ([`crate::child_tree::EndReport`]): each call the OS
+/// refused it, as the report says it; then how many processes it signalled and could not end, and
+/// how many it found outside the tree and never signalled, each named by pid and program, a
+/// still-frozen one marked so. `None` when it left nothing and nothing was refused.
+fn end_text(report: &crate::child_tree::EndReport) -> Option<String> {
     let named = |left: &[crate::child_tree::Leftover]| {
         left.iter()
             .map(|left| {
@@ -2048,7 +2062,7 @@ fn end_line(report: &crate::child_tree::EndReport) -> Option<String> {
         )
     });
     let said: Vec<String> = report.faults.iter().cloned().chain(left).collect();
-    (!said.is_empty()).then(|| format!("stream: {}", said.join("; ")))
+    (!said.is_empty()).then(|| said.join("; "))
 }
 
 /// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the
