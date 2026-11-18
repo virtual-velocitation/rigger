@@ -49895,7 +49895,7 @@ stage "implement" adjudicator "adj" failed
         #[derive(Debug, Clone, Copy)]
         enum Step {
             /// A missing but locked worktree is registered at the unit's path, which no leftover
-            /// clear or prune removes and `git worktree add` refuses.
+            /// clear or prune removes, so making the unit's worktree there is refused.
             Make,
             /// The lens's own spawn leaves the unit's worktree missing but locked on the unit's
             /// branch, so the re-assert before the next review tier finds the branch checked out
@@ -49930,7 +49930,10 @@ stage "implement" adjudicator "adj" failed
         }
         // Each row: the step git refuses, and the text of the refusal the halt names.
         let cases = [
-            (Step::Make, "missing but locked"),
+            (
+                Step::Make,
+                "a worktree git marks `locked added with --lock` is registered at",
+            ),
             (
                 Step::Reassert,
                 "a worktree git marks `locked` is registered at",
@@ -50306,13 +50309,11 @@ stage "implement" adjudicator "adj" failed
     }
 
     /// A FAULT THE ORCHESTRATOR'S FIX DID NOT END GOES TO A PERSON: through the drive, a lifecycle
-    /// fault (a missing but locked worktree at the unit's path refusing `git worktree add -b`)
+    /// fault (a missing but locked worktree at the unit's path, refusing the unit's worktree)
     /// holds the run for the orchestrator. Released with the cause left in place, the relaunch
-    /// adds the worktree on the branch the refused add left, a fault whose first line names
-    /// another command, so it is a different fault and held for the orchestrator again; released
-    /// again, the next relaunch's fault has the same first line and holds the run for a person.
-    /// Released once the cause is removed, the next relaunch's different fault (the main
-    /// checkout's index locked, refusing the landing) holds it for the orchestrator.
+    /// meets the same fault and holds the run for a person. Released once the cause is removed,
+    /// the next relaunch's different fault (the main checkout's index locked, refusing the
+    /// landing) holds it for the orchestrator.
     #[test]
     #[cfg(unix)]
     fn a_fault_that_holds_again_after_a_release_holds_the_run_for_a_person() {
@@ -50373,8 +50374,10 @@ stage "implement" adjudicator "adj" failed
 
         let (first, holds) = held("first drive");
         assert!(
-            first.starts_with("worktree: git worktree add -b ")
-                && first.contains("missing but locked"),
+            first.starts_with(&format!(
+                "worktree: a worktree git marks `locked added with --lock` is registered at \
+                 {unit_dir}: "
+            )),
             "the first fault: {first}"
         );
         assert_eq!(
@@ -50383,25 +50386,12 @@ stage "implement" adjudicator "adj" failed
             "the first fault holds the run for the orchestrator"
         );
         release();
-        let (second, holds) = held("relaunch, cause in place");
-        let first_line = |fault: &str| fault.lines().next().unwrap_or_default().to_string();
-        assert!(
-            second.contains("missing but locked") && first_line(&second) != first_line(&first),
-            "the relaunch's fault has another first line: {second}"
-        );
-        assert_eq!(
-            holds,
-            [conductor_fault_hold(&first), conductor_fault_hold(&second)],
-            "a fault with another first line after a release holds the run for the orchestrator"
-        );
-        release();
-        let (again, holds) = held("relaunch, cause still in place");
-        assert_eq!(again, second, "the relaunch meets the same fault");
+        let (again, holds) = held("relaunch, cause in place");
+        assert_eq!(again, first, "the relaunch meets the same fault");
         assert_eq!(
             holds,
             [
                 conductor_fault_hold(&first),
-                conductor_fault_hold(&second),
                 crate::test_support::recurred_fault_hold(&again)
             ],
             "the same fault after a release holds the run for a person"
@@ -50424,7 +50414,6 @@ stage "implement" adjudicator "adj" failed
             holds,
             [
                 conductor_fault_hold(&first),
-                conductor_fault_hold(&second),
                 crate::test_support::recurred_fault_hold(&again),
                 conductor_fault_hold(&other)
             ],

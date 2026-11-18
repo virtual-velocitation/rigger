@@ -2600,7 +2600,7 @@ fn checked_out_elsewhere(branch: &str, at: &str, authorized_root: &str) -> Error
 /// list --porcelain` naming `dir`, by the path git lists or by where that path resolves, so
 /// neither spelling of a linked path hides it. What the worktree has checked out is not asked. A
 /// link at `dir` is no worktree, whatever it names ([`clear_worktree_dir`] removes it as a link),
-/// and nothing at `dir` is a no.
+/// and nothing at `dir` is a no unless git lists a worktree there it marks `locked`.
 ///
 /// Read fail-closed, since [`Worktree::create`] clears `dir` on a no, and anything but a plain yes
 /// or no is an error, so nothing at `dir` is cleared or adopted on it:
@@ -2614,6 +2614,10 @@ fn checked_out_elsewhere(branch: &str, at: &str, authorized_root: &str) -> Error
 ///   `prunable` (a tree git can no longer use, its dir still there): git's own prune and the heal
 ///   ([`worktree_admin_is_corrupt`]) leave a locked entry untouched, and a prunable one at a dir
 ///   that is there still holds what is in it;
+/// - an entry git marks `locked` at a `dir` with nothing there, matched by `dir` as given or
+///   resolved ([`git_mark_at`]): a clear removed the tree of an add git did not finish, or a
+///   person deleted a tree they locked, and git refuses an add at `dir` until the entry is
+///   recovered;
 /// - a tree at `dir` whose registration git does not list ([`unlisted_registration`]): git leaves
 ///   out an entry it cannot read, saying nothing.
 fn registered_at(
@@ -2624,7 +2628,13 @@ fn registered_at(
 ) -> Result<bool, Error> {
     match occupant(dir)? {
         Some(found) if !found.file_type().is_symlink() => {}
-        _ => return Ok(false),
+        Some(_) => return Ok(false),
+        None => {
+            return match git_mark_at(repo, dir)? {
+                Some(mark) if mark_word(&mark) == "locked" => Err(marked_entry(repo, &mark, dir)),
+                _ => Ok(false),
+            };
+        }
     }
     let want =
         std::fs::canonicalize(dir).map_err(|e| step_failed(format!("resolving {dir}"), e))?;
@@ -2654,6 +2664,42 @@ fn registered_at(
         Some(e) => Err(e),
         None => unlisted_registration(dir),
     }
+}
+
+/// The mark git gives the worktree it lists at `dir` (its `locked` or `prunable` line, reason
+/// included), when git lists one there that it marks: a tree a person locked, or one whose add or
+/// remove git did not finish ([`marked_entry`] names how each is recovered). The entry is matched
+/// by `dir` as given or resolved ([`spellings`]). A list git refuses is an error.
+pub fn git_mark_at(repo: &str, dir: &str) -> Result<Option<String>, Error> {
+    let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
+        step_failed(
+            format!("reading whether git marks a worktree at {dir}"),
+            e.0,
+        )
+    })?;
+    let spelled = spellings(dir);
+    let mark = listed(&out)
+        .filter(|entry| {
+            spelled
+                .iter()
+                .any(|s| s == std::path::Path::new(entry.path))
+        })
+        .find_map(|entry| entry.mark.map(str::to_string));
+    Ok(mark)
+}
+
+/// The spellings a worktree git lists at `dir` can carry: `dir` as given, and `dir` resolved or,
+/// with nothing at `dir` to resolve, its parent resolved and joined with its name, since git
+/// records the path it resolved when it added the tree.
+fn spellings(dir: &str) -> Vec<std::path::PathBuf> {
+    let given = std::path::Path::new(dir);
+    let resolved = given.canonicalize().ok().or_else(|| {
+        let parent = given.parent()?.canonicalize().ok()?;
+        Some(parent.join(given.file_name()?))
+    });
+    std::iter::once(given.to_path_buf())
+        .chain(resolved)
+        .collect()
 }
 
 /// Whether `entry`, a worktree git lists, could be the tree of the unit on `branch` working under
