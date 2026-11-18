@@ -8376,6 +8376,168 @@ mod tests {
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
+    /// The recovery a hold names for a tree git marks `locked` at `at` in `repo`.
+    fn locked_recovery(repo: &str, at: &str) -> String {
+        let link = std::path::Path::new(at).join(".git");
+        format!(
+            "if git's add there was cut off, `git -C {repo} worktree remove --force --force {at}` \
+             removes that tree and its registration; when git answers that {} does not exist, \
+             `git -C {repo} worktree unlock {at}` and then `git -C {repo} worktree prune` remove \
+             the registration and keep the files, which rigger may then clear as a leftover\n\
+             if a person locked it, `git -C {repo} worktree unlock {at}` lifts the lock and keeps \
+             the tree and its work",
+            link.display()
+        )
+    }
+
+    /// The recovery a hold names for a tree git marks `prunable` at `at` in `repo`.
+    fn prunable_recovery(repo: &str, at: &str) -> String {
+        format!(
+            "`git -C {repo} worktree prune` removes that registration and keeps the files at {at} \
+             (it removes every registration git marks prunable); rigger may then clear what is \
+             left there as a leftover, so copy out anything worth keeping first"
+        )
+    }
+
+    /// A tree whose add git did not finish: git locks the entry before it writes anything else.
+    fn add_cut_off(h: &HeldElsewhere) {
+        let admin = h.repo.path().join(".git").join("worktrees").join("held");
+        std::fs::write(admin.join("locked"), "initializing").unwrap();
+    }
+
+    /// A HOLD ON A TREE GIT MARKS NAMES GIT'S OWN COMMANDS THAT RECOVER IT: a create that finds
+    /// the unit's dir, or another tree on its branch under the work root, marked `locked` (an add
+    /// git did not finish, a lock a person set) or `prunable` (a remove git did not finish) fails
+    /// naming the mark, the path and the commands that recover that path, and once the commands
+    /// the row's case calls for have run, the next create goes through.
+    #[test]
+    fn a_create_held_on_a_tree_git_marks_names_the_commands_that_recover_it() {
+        // Each row: the case, whether the marked tree is the unit's own dir (else the unit's dir
+        // is another path under the root), what marks it, the mark's first word, and the
+        // commands the case calls for.
+        type Row = (
+            &'static str,
+            bool,
+            fn(&HeldElsewhere),
+            &'static str,
+            &'static [&'static [&'static str]],
+        );
+        const REMOVE: &[&str] = &["worktree", "remove", "--force", "--force", "{at}"];
+        const UNLOCK: &[&str] = &["worktree", "unlock", "{at}"];
+        const PRUNE: &[&str] = &["worktree", "prune"];
+        let rows: [Row; 6] = [
+            (
+                "an add cut off at the unit's dir",
+                true,
+                add_cut_off,
+                "locked",
+                &[REMOVE],
+            ),
+            (
+                "an add cut off before it linked the tree at the unit's dir",
+                true,
+                |h| {
+                    add_cut_off(h);
+                    unlink(h);
+                },
+                "locked",
+                &[UNLOCK, PRUNE],
+            ),
+            (
+                "a person's lock at the unit's dir",
+                true,
+                HeldElsewhere::lock,
+                "locked",
+                &[UNLOCK],
+            ),
+            (
+                "a person's lock on the branch's tree under the root",
+                false,
+                HeldElsewhere::lock,
+                "locked",
+                &[UNLOCK],
+            ),
+            (
+                "a remove cut off at the unit's dir",
+                true,
+                unlink,
+                "prunable",
+                &[PRUNE],
+            ),
+            (
+                "a remove cut off on the branch's tree under the root",
+                false,
+                unlink,
+                "prunable",
+                &[PRUNE],
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (row, at_dir, spoil, mark, commands) in rows {
+            let h = held_elsewhere(Held::Under);
+            spoil(&h);
+            let unit_dir = h.root.join(format!("{UNIT_WORKTREE_PREFIX}unit-held"));
+            let dir = if at_dir {
+                h.at().to_string()
+            } else {
+                unit_dir.to_str().unwrap().to_string()
+            };
+            let (repo, at) = (h.repo(), h.at());
+            let held = match Worktree::create(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(wt) => {
+                    violations.push(format!("{row}: the create took the tree at {}", wt.dir));
+                    continue;
+                }
+                Err(e) => e.0,
+            };
+            let (first, rest) = held.split_once('\n').unwrap_or((&held, ""));
+            if !first.starts_with(&format!("a worktree git marks `{mark}"))
+                || !first.ends_with(&format!(
+                    "` is registered at {at}: nothing there is cleared or adopted"
+                ))
+            {
+                violations.push(format!(
+                    "{row}: the first line does not name the mark and where: {first}"
+                ));
+            }
+            let recovery = if mark == "locked" {
+                locked_recovery(repo, at)
+            } else {
+                prunable_recovery(repo, at)
+            };
+            if rest != recovery {
+                violations.push(format!(
+                    "{row}: the recovery reads {rest:?}, not {recovery:?}"
+                ));
+            }
+            for command in commands {
+                let args: Vec<&str> = command
+                    .iter()
+                    .map(|arg| if *arg == "{at}" { at } else { arg })
+                    .collect();
+                let named = format!("`git -C {repo} {}`", args.join(" "));
+                if !held.contains(&named) {
+                    violations.push(format!("{row}: the hold does not name {named}"));
+                }
+                if let Err(e) = run_git(repo, &args) {
+                    violations.push(format!("{row}: {named} failed: {e}"));
+                }
+            }
+            match Worktree::create(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(wt) if worktree_on_branch(&wt.dir, HELD_BRANCH).unwrap_or(false) => {}
+                Ok(wt) => violations.push(format!(
+                    "{row}: the recovered tree at {} is off the branch",
+                    wt.dir
+                )),
+                Err(e) => violations.push(format!(
+                    "{row}: the create after the recovery failed: {}",
+                    e.0
+                )),
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
     #[test]
     fn create_heals_a_leftover_dir_at_the_deterministic_path() {
         // Resume self-heal (Gap 12, spec 06:48): with a DETERMINISTIC dir, a SIGKILL mid
