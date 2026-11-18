@@ -1372,14 +1372,18 @@ pub fn reap_authorized(base: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::cleanup;
     #[cfg(unix)]
     use crate::test_support::release;
+    #[cfg(unix)]
     use crate::test_support::sigterm_ignorer_in;
     use crate::test_support::sleeper_in;
     use crate::test_support::wait_until;
-    use std::process::{Child, Command as StdCommand};
+    #[cfg(unix)]
+    use std::process::Child;
+    use std::process::Command as StdCommand;
 
     /// A throwaway git repo with an empty `.rigger/tmp` created inside it, so
     /// `is_reapable_base` (and therefore `reap_processes_rooted_under`) accepts a dir under
@@ -1420,10 +1424,13 @@ mod tests {
 
     /// Poll `child.try_wait()` until the process has exited or a generous timeout elapses;
     /// returns whether it exited.
+    #[cfg(unix)]
     fn wait_for_exit(child: &mut Child) -> bool {
         wait_until(|| matches!(child.try_wait(), Ok(Some(_))))
     }
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
     #[test]
     fn processes_rooted_under_matches_only_processes_strictly_inside_the_base() {
         // The load-bearing safety boundary (spec 23): the scan must return a process whose
@@ -1488,6 +1495,8 @@ mod tests {
         assert!(processes_rooted_under(&absent).is_empty());
     }
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
     #[test]
     fn processes_rooted_under_matches_a_process_whose_cwd_was_deleted_out_from_under_it() {
         // spec 89 criterion 3, second half: the kernel marks a live process's cwd " (deleted)"
@@ -1646,6 +1655,8 @@ mod tests {
         assert_eq!(is_reapable_base(&link, &repo.tmp), None);
     }
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
     #[test]
     fn reap_kills_a_sigterm_ignoring_child_inside_and_spares_one_outside() {
         // The teardown reap (spec 23, spec 78): a process rooted inside a VALID base is
@@ -1662,6 +1673,8 @@ mod tests {
         );
     }
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
     #[test]
     fn reap_kills_a_process_under_an_authorized_root_that_is_not_a_dot_rigger_tmp_tree() {
         // End-to-end proof of the fix at the public entry point: an authorized_root with NO
@@ -1696,6 +1709,8 @@ mod tests {
         );
     }
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
     #[test]
     fn reap_kills_a_process_whose_base_dir_was_already_removed_before_the_reap_call() {
         // End-to-end proof that spec 89 criterion 3's two fixes compose: a base dir removed
@@ -1745,6 +1760,8 @@ mod tests {
         );
     }
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
     #[test]
     fn reap_is_a_logged_no_op_for_a_base_refused_by_is_reapable_base() {
         // A base that is not strictly under the given authorized_root (here, the repo root
@@ -1773,6 +1790,7 @@ mod tests {
     /// child `spawn` roots there to exit, waits the grace, then ends what is still rooted there.
     /// `spawn` gets the base and a marker path outside it. The child must end with `ended.0` as
     /// its exit code (`None` when a signal ended it) and leave the marker exactly when `ended.1`.
+    #[cfg(unix)]
     fn assert_reap_authorized_ends(spawn: fn(&Path, &Path) -> Child, ended: (Option<i32>, bool)) {
         let root = tempfile::tempdir().unwrap();
         let root_path = root.path().canonicalize().unwrap();
@@ -1807,6 +1825,7 @@ mod tests {
     /// process creates `marker` and exits 0. Answers once the handler is set, which the process
     /// says by creating `marker`'s sibling `trapped`, so a request sent after this returns is
     /// never one that arrived before the handler.
+    #[cfg(unix)]
     fn term_handler_in(dir: &Path, marker: &Path) -> Child {
         let trapped = marker.with_file_name("trapped");
         let child = StdCommand::new("sh")
@@ -1824,10 +1843,14 @@ mod tests {
     crate::test_cases! {
         /// A process that ignores the request to exit is ended without asking: a signal ends it,
         /// and no handler runs.
+        // Unix only: Windows reports no process's working directory.
+        #[cfg(unix)]
         reap_authorized_kills_a_sigterm_ignoring_process_given_an_already_authorized_base:
             assert_reap_authorized_ends(|dir, _| sigterm_ignorer_in(dir), (None, false));
         /// The request to exit comes first: a process that handles it runs its handler and exits
         /// 0 within the grace, before anything ends it without asking.
+        // Unix only: Windows reports no process's working directory.
+        #[cfg(unix)]
         reap_authorized_asks_a_term_handling_process_to_exit_first_given_an_already_authorized_base:
             assert_reap_authorized_ends(term_handler_in, (Some(0), true));
     }
@@ -1847,6 +1870,8 @@ mod tests {
         );
     }
 
+    // Unix only: on Windows the fixture shell's `$!` is a pid of the shell's own, not the OS's.
+    #[cfg(unix)]
     #[test]
     fn ancestor_pids_walks_through_an_intermediate_process() {
         // The test binary itself runs as pid 1 of its own namespace (`.cargo/pidns-runner.sh`),
@@ -2057,6 +2082,8 @@ mod tests {
         assert!(is_signal_eligible(501, 999, &ancestors), "an eligible pid");
     }
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
     #[test]
     fn signal_if_unchanged_signals_when_eligible_and_everything_matches() {
         // Positive control: proves the happy path actually reaches `send_signal`.
