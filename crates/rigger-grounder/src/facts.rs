@@ -2180,9 +2180,9 @@ Unclosed"#,
     }
 
     /// THE DOC TEXT IS STRIPPED, under a declaration: a declared file's language is its
-    /// declaration's name, so the project's extractor under a declaration in force named `rust`
-    /// gives each span Rust's doc rule, and under one named `zig` the lines trimmed, as the
-    /// bundled extractor gives those languages.
+    /// declaration's name, and the project's extractor under a declaration in force, named `rust`
+    /// or `zig`, gives each row's span the rule of the row's language as the bundled extractor
+    /// does - a `rust` span Rust's doc rule, a `zig` span its lines trimmed.
     #[test]
     fn a_declared_language_reads_the_doc_rule_of_its_name() {
         // (the declaration's name, the `extractors:` mapping declaring it)
