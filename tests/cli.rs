@@ -3926,6 +3926,11 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
             let command: Vec<&str> = words[1..].iter().map(String::as_str).collect();
             let (out, err, ok) = run_rigger(&root, &command);
             assert!(ok, "{name}: {class} records; stderr: {err}");
+            assert!(
+                out.trim().is_empty() || serde_json::from_str::<serde_json::Value>(&out).is_ok(),
+                "{name}: {class}: the hook's stdout is empty or JSON, the one form the host reads \
+                 a hook's stdout in: {out:?}"
+            );
             assert_eq!(
                 out.split(", position").next(),
                 Some(format!("stop-failure recorded for {} (class {class}", row.spawn).as_str()),
@@ -4107,6 +4112,13 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             (read("hook-status").as_str(), read("hook-err").as_str()),
             ("0\n", ""),
             "{name}: the hook the session ran succeeds"
+        );
+        let hook_out = read("hook-out");
+        assert!(
+            hook_out.trim().is_empty()
+                || serde_json::from_str::<serde_json::Value>(&hook_out).is_ok(),
+            "{name}: the hook's stdout is empty or JSON, the one form the host reads a hook's \
+             stdout in: {hook_out:?}"
         );
         assert_eq!(
             read("hook-out").split(", position").next(),
