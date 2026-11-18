@@ -855,7 +855,7 @@ mod supervised_lifecycle {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod bounded_read {
     //! [`ReapedChild::read_lines_until`]: a read of the child's stdout that hands each line over
     //! until the child ends it, the reader breaks, a line is no text or the deadline passes,
@@ -877,7 +877,6 @@ mod bounded_read {
         (Duration, Duration),
     );
 
-    #[cfg(unix)]
     #[test]
     fn a_read_ends_at_the_end_of_the_stream_a_break_a_line_that_is_no_text_or_the_deadline() {
         let long = Duration::from_secs(5);
