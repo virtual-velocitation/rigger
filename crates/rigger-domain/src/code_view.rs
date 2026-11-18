@@ -529,6 +529,41 @@ mod tests {
         }
     }
 
+    /// An extractor with no doc rule of its own, so it keeps [`Extract::doc_text`]'s default.
+    struct NoDocRule;
+
+    impl Extract for NoDocRule {
+        fn fingerprint(&self) -> u64 {
+            0
+        }
+
+        fn extract(&self, entry: &Entry, _bytes: &[u8]) -> FileFacts {
+            FileFacts {
+                path: entry.path.clone(),
+                ..FileFacts::default()
+            }
+        }
+    }
+
+    /// An extractor with no doc rule gives a span's raw lines trimmed, whatever the language: split
+    /// on `\n` with a trailing `\r` dropped, a final line ending adding no line, a blank line kept
+    /// and every marker kept.
+    #[test]
+    fn an_extractor_with_no_doc_rule_gives_the_lines_trimmed() {
+        // (the language, the span's raw lines, the doc text)
+        for (lang, raw, text) in [
+            (
+                "rust",
+                "  /// a\r\n\t#[doc(hidden)]  \r\n\r\n/// b\r",
+                "/// a\n#[doc(hidden)]\n\n/// b",
+            ),
+            ("zig", "one\n", "one"),
+            ("", "", ""),
+        ] {
+            assert_eq!(NoDocRule.doc_text(lang, raw), text, "{lang}: {raw:?}");
+        }
+    }
+
     fn def(local: &str, leaf: &str, test: bool) -> Def {
         Def {
             local: local.into(),

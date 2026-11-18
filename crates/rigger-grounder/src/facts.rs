@@ -1974,4 +1974,96 @@ mod tests {
             "the `.rs` files were asked of one session, no other file of any"
         );
     }
+
+    /// THE DOC TEXT IS STRIPPED: `doc_text` turns a Rust span's raw lines, `\r\n` endings and a
+    /// `#[doc(hidden)]` line included, into the comment text alone - each doc line's text after
+    /// its marker, every line with no doc marker dropped, a doc block's opener, closer and one
+    /// leading `*` stripped - and gives a language with no rule its lines trimmed. The project's
+    /// extractor answers as the bundled one, so a declaration named `rust` reads Rust's rule.
+    #[test]
+    fn the_doc_text_is_the_comment_text_alone() {
+        // (the language, the span's raw lines, the doc text)
+        let rows = [
+            (
+                "rust",
+                "/// Reads the file.\r\n#[doc(hidden)]\r\n///\r\n/// Then answers it.\r\n",
+                "Reads the file.\n\nThen answers it.",
+            ),
+            (
+                "rust",
+                "    /// First.\n    // a plain comment\n    //// four slashes\n\n    #[must_use]\n    ///tight\n",
+                "First.\ntight",
+            ),
+            (
+                "rust",
+                "//! The module.\n//!\n//! Its parts.",
+                "The module.\n\nIts parts.",
+            ),
+            (
+                "rust",
+                "/**\r\n * Block first.\r\n *\r\n * Block second.\r\n */\r\n",
+                "Block first.\n\nBlock second.",
+            ),
+            ("rust", "/** One line. */", "One line."),
+            (
+                "rust",
+                "/*! Opens here\n   no star\n ** two stars\n closes here */",
+                "Opens here\nno star\n* two stars\ncloses here",
+            ),
+            (
+                "rust",
+                "/*** not a doc ***/\n/**/\n/** Kept. */ fn f() {}\n/// After.",
+                "Kept.\nAfter.",
+            ),
+            ("rust", "/** Open\n * still open", "Open\nstill open"),
+            (
+                "rust",
+                "#[doc = \"Value doc.\"]\n#![doc = \"Inner doc.\"]\n# [ doc = \"Spaced.\" ]\n#[doc=\"  Tight.  \"]",
+                "Value doc.\nInner doc.\nSpaced.\nTight.",
+            ),
+            (
+                "rust",
+                r##"#[doc = r#"Raw "quoted"."#]
+#[doc = r"Raw plain."]
+#[doc = "Escaped \"as written\"."]
+#[doc = "Unclosed"##,
+                r#"Raw "quoted".
+Raw plain.
+Escaped \"as written\".
+Unclosed"#,
+            ),
+            (
+                "rust",
+                "#[doc = include_str!(\"README.md\")]\n#[doc = raw_text!()]\n#[doc(alias = \"x\")]\n#[docs = \"no\"]\n#[cfg_attr(test, doc = \"conditional\")]\n/// Only this.",
+                "Only this.",
+            ),
+            ("rust", "/// Last.\r", "Last."),
+            ("rust", "#[doc(hidden)]\n// plain\n", ""),
+            ("rust", "", ""),
+            (
+                "go",
+                "  // A Go doc.\r\n\t// Its second line.  \r\n\n",
+                "// A Go doc.\n// Its second line.\n",
+            ),
+            (
+                "zig",
+                "/// Not read as Rust.\n #[doc(hidden)] ",
+                "/// Not read as Rust.\n#[doc(hidden)]",
+            ),
+        ];
+        let project = project_declaring(None);
+        let extractors: [(&str, &dyn Extract); 2] = [
+            ("bundled", &FactsExtractor),
+            ("project", &ProjectExtractor::of(project.path())),
+        ];
+        for (name, extractor) in extractors {
+            for (lang, raw, text) in rows {
+                assert_eq!(
+                    extractor.doc_text(lang, raw),
+                    text,
+                    "{name} {lang}: {raw:?}"
+                );
+            }
+        }
+    }
 }
