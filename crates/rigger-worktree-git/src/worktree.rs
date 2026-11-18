@@ -578,10 +578,13 @@ impl Worktree {
     /// reclaimed siblings, never re-derived from `dir`'s own position. Pass `""` when the
     /// caller has no such root; the reap is then a no-op.
     ///
-    /// A tree git marks `locked` at `dir`, there or gone, or `prunable` with its dir there
-    /// ([`refuse_marked_at`]: a person's lock, an add or remove git did not finish, a lost link),
-    /// is an error naming git's own commands that recover it, and nothing is reaped, removed or
-    /// deleted: the tree, its work, its registration and the branch stay.
+    /// A tree git marks `locked` at `dir`, there or gone ([`refuse_marked_at`]: a person's lock,
+    /// or an add git did not finish), is an error naming git's own commands that recover it, and
+    /// nothing is reaped, removed or deleted: the tree, its work, its registration and the branch
+    /// stay. A tree git marks `prunable` with its dir there (a remove git did not finish after it
+    /// deleted the tree's link) is a throwaway's residue holding nothing kept, so it is reaped and
+    /// taken off disk, and [`prune_gone`] drops its registration while it keeps every other tree git
+    /// marks `prunable` with its dir there.
     pub fn discard(
         repo: &str,
         dir: &str,
@@ -596,13 +599,20 @@ impl Worktree {
         // loses the race; see `repo_admin_lock`'s doc comment).
         let repo_lock = repo_admin_lock(repo);
         let _repo_guard = repo_lock.lock().unwrap();
-        if occupant(dir)?.is_some() {
-            clear_worktree_dir(repo, dir, authorized_root)?;
-        } else {
-            // No dir to clear, but a killed process may still leave a dangling admin entry, which
-            // the prune drops; a locked one it keeps, and the discard with it.
-            refuse_marked_at(repo, dir)?;
-            prune_gone(repo, authorized_root)?;
+        match occupant(dir)? {
+            Some(there) if !there.file_type().is_symlink() && throwaway_unlinked(repo, dir)? => {
+                reap_dir_before_removal(dir, authorized_root);
+                std::fs::remove_dir_all(dir)
+                    .map_err(|e| step_failed(format!("removing throwaway tree {dir}"), e))?;
+                prune_gone(repo, authorized_root)?;
+            }
+            Some(_) => clear_worktree_dir(repo, dir, authorized_root)?,
+            None => {
+                // No dir to clear, but a killed process may still leave a dangling admin entry,
+                // which the prune drops; a locked one it keeps, and the discard with it.
+                refuse_marked_at(repo, dir)?;
+                prune_gone(repo, authorized_root)?;
+            }
         }
         reclaim_cache_sibling(dir, authorized_root);
         Self::delete_branch(repo, branch)
@@ -2789,6 +2799,13 @@ fn listed_at(repo: &str, dir: &str) -> Result<Option<Option<String>>, Error> {
         found = Some(None);
     }
     Ok(found)
+}
+
+/// Whether git marks the worktree it lists at `dir` `prunable` ([`git_mark_at`]), and not
+/// `locked`: the tree lost its link (a remove git did not finish after it deleted the link), so
+/// git no longer tracks it. Only [`Worktree::discard`], whose trees are throwaways, clears one.
+fn throwaway_unlinked(repo: &str, dir: &str) -> Result<bool, Error> {
+    Ok(git_mark_at(repo, dir)?.is_some_and(|mark| mark_word(&mark) == "prunable"))
 }
 
 /// Refuse `dir` when git lists a worktree there whose mark keeps what is at it ([`git_mark_at`]):
