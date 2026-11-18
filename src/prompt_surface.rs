@@ -55,6 +55,37 @@ pub const GUARD_WRITE_NO_ROOT: &str = "guard-write: at least one --root is requi
 pub const GUARD_WRITE_PAYLOAD_UNREADABLE: &str =
     "failed to read the PreToolUse payload from stdin: {error}";
 
+/// FRAMING: `rigger hook stop`'s reason for holding a writing session from stopping, handed to
+/// the session as the reason to continue: in `{refusals}` why the conductor's next step on the
+/// session's tree at `{dir}` would be refused, one line each, then in `{status}` git's own account
+/// of that tree, and last the one sentence of what must be true before the session stops, the
+/// branch the tree is committed onto in `{branch}`. It says how to fix nothing beyond that.
+pub const STOP_HOOK_HELD: &str = "This session cannot end yet. Once it ends, the conductor \
+     commits the tree at {dir} onto the branch {branch}, and that step would be refused:\n\
+     {refusals}\n\n\
+     git status in {dir} reads:\n\
+     {status}\n\n\
+     Before this session stops, HEAD must be on the branch {branch}, no merge, cherry-pick, revert \
+     or rebase may be in progress there, and no file the commit would carry may hold a \
+     complete set of conflict-marker lines (a start, a separator and an end line, in that order); \
+     then end as your task asks.";
+
+/// FRAMING: `rigger hook stop`'s reason for holding a producer's session from stopping, handed to
+/// the session as the reason to continue: in `{refusals}` the line saying the session's tree at
+/// `{dir}` holds work in the stage's output that no commit records, which the conductor never
+/// lands, to commit, and beside it any line naming work outside that output, which never lands,
+/// to leave out of the commit and which may be taken out of the tree; then in `{status}` git's own
+/// account of that tree, and last the one sentence of what must be true before the session stops.
+pub const STOP_HOOK_UNCOMMITTED: &str = "This session cannot end yet. Once it ends, the \
+     conductor lands only the commits this session made in {dir}, and work of the stage's output \
+     there is in no commit:\n\
+     {refusals}\n\n\
+     git status in {dir} reads:\n\
+     {status}\n\n\
+     Before this session stops, commit the work in the stage's output at {dir}; work outside that \
+     output never lands, so leave it out of the commit - it may be taken out of the tree; then end \
+     as your task asks.";
+
 /// FRAMING: the instructions-in-force line after the domain's `INSTRUCTIONS_HEADING`: the
 /// built-ins in force in `{builtin}`, and in `{extra}` the operator file count
 /// ([`PRIME_OPERATOR_FILES`]) when an operator file is in force.
@@ -74,7 +105,8 @@ pub const PRIME_NONE_YET: &str = "(none yet)";
 
 /// This crate's groups by surface, each named by its renderer and in render order: the
 /// discipline docs' grep-guard message, the two guards' deny reasons, `rigger guard-write`'s
-/// exit-2 prefix and refusals, and `rigger prime`'s fixed texts, the slot-filling
+/// exit-2 prefix and refusals, `rigger hook stop`'s reason, and `rigger prime`'s fixed texts, the
+/// slot-filling
 /// [`PRIME_OPERATOR_FILES`] included.
 pub fn prompt_groups() -> &'static [Group] {
     rigger_domain::prompt_groups![
@@ -90,6 +122,7 @@ pub fn prompt_groups() -> &'static [Group] {
             GUARD_WRITE_NO_ROOT,
             GUARD_WRITE_PAYLOAD_UNREADABLE,
         ],
+        "guard::stop_hook_reason" => [STOP_HOOK_HELD, STOP_HOOK_UNCOMMITTED],
         "prime::cmd_prime" => [
             PRIME_IN_FORCE,
             PRIME_OPERATOR_FILES,

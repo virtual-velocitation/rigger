@@ -483,10 +483,11 @@ fn bloat_advisory_for(path: &str, project: &str) -> Option<String> {
 /// this on every `rigger validate` invocation, so a leak would fire on nearly every
 /// non-self-hosting target project; mirrors [`git_commit_distance`]'s already-correct `.output()` pattern immediately below.
 fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool> {
-    let out = subprocess::command("git")
-        .args(["merge-base", "--is-ancestor", ancestor, descendant])
-        .current_dir(root)
-        .output()
+    let out = subprocess::git_in(root)
+        .and_then(|mut git| {
+            git.args(["merge-base", "--is-ancestor", ancestor, descendant])
+                .output()
+        })
         .ok()?;
     match out.status.code() {
         Some(0) => Some(true),
@@ -502,10 +503,11 @@ fn git_is_ancestor(root: &Path, ancestor: &str, descendant: &str) -> Option<bool
 /// of `descendant`: this just counts, it never itself verifies order (spec 74, criterion
 /// 2's commit-distance figure for the behind-the-tree advisory).
 fn git_commit_distance(root: &Path, ancestor: &str, descendant: &str) -> Option<u64> {
-    let out = subprocess::command("git")
-        .args(["rev-list", "--count", &format!("{ancestor}..{descendant}")])
-        .current_dir(root)
-        .output()
+    let out = subprocess::git_in(root)
+        .and_then(|mut git| {
+            git.args(["rev-list", "--count", &format!("{ancestor}..{descendant}")])
+                .output()
+        })
         .ok()?;
     if !out.status.success() {
         return None;
@@ -633,10 +635,11 @@ fn session_hooks_advisory(root: &Path, grep_guard: bool) -> Vec<String> {
 /// --porcelain -- .rigger` rooted at `root` and folds its output through the pure
 /// [`dirty_tracked_paths`] seam.
 fn uncommitted_rigger_advisory(root: &Path) -> Option<String> {
-    let out = subprocess::command("git")
-        .args(["status", "--porcelain", "--", RIGGER_DIR])
-        .current_dir(root)
-        .output()
+    let out = subprocess::git_in(root)
+        .and_then(|mut git| {
+            git.args(["status", "--porcelain", "--", RIGGER_DIR])
+                .output()
+        })
         .ok()?;
     if !out.status.success() {
         return None; // not a git repo / git absent: nothing to flag
@@ -706,13 +709,16 @@ fn residue_advisories(
     let run_units = read_run_units(loc, selection)?;
     let slugs = live_slugs(&run_units.live_branches);
     let local_branches = rigger::worktree::unit_branches(Path::new(&repo));
-    let report = scan_residue(
+    let mut report = scan_residue(
         &scratch,
         &slugs,
         &run_units.dead_slugs,
         &local_branches,
         &run_units.live_branches,
     );
+    // Every ref rigger holds aside, a kept tree or one set aside, live or not: only a person
+    // or the run-start reaper removes one. A read failure lists none, as the branch read above.
+    report.held = rigger::worktree::held_refs(&repo).unwrap_or_default();
     let mut advisories = format_residue(&report);
     // Leaked-process advisory (spec 23, unit 2): any process still rooted under the SAME
     // resolved scratch root, warning-only like the residue block above. Reuses the `scratch`

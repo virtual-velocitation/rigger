@@ -6,8 +6,9 @@
 use crate::config::RIGGER_DIR;
 use crate::eventstore::Event;
 use crate::spawn::SpawnEvent;
+use rigger_domain::agent::in_producer_output;
 
-pub use rigger_domain::worktree::Error;
+pub use rigger_domain::worktree::{Error, StepError};
 
 /// Which `git diff` range [`Worktree::diff_names`] compares `from` against `HEAD` with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,6 +111,29 @@ pub enum LandOutcome {
     Blocked(Vec<String>),
 }
 
+/// The namespace a unit's branch stands in: `rigger/u/<unit>`.
+pub const UNIT_BRANCHES: &str = "rigger/u/";
+
+/// The namespace a unit's kept tree stands in ([`Worktree::keep_tree_aside`]): `rigger/kept/<unit>`.
+pub const KEPT_REFS: &str = "rigger/kept/";
+
+/// The namespace rigger moves a ref of a unit's into when that ref must make way and holds
+/// commits HEAD lacks: `rigger/orphaned/<unit>-<12-char tip>` ([`orphaned_ref`]).
+pub const ORPHANED_REFS: &str = "rigger/orphaned/";
+
+/// The file name, in a tree's git directory, of the index [`Worktree::keep_tree_aside`] stages
+/// through.
+const KEPT_INDEX: &str = "rigger-kept-index";
+
+/// A tree kept aside ([`Worktree::keep_tree_aside`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Kept {
+    /// The ref that holds it, short form ([`kept_ref`]).
+    pub reference: String,
+    /// The commit the ref holds.
+    pub commit: String,
+}
+
 /// The outcome of [`Worktree::merge_into_worktree`] (spec 88, criterion 1 round 4, TABLE row
 /// 1: "conflict detection"). This is the FRONT HALF of what a single pre-round-4 `integrate`
 /// method used to do in one call - merging the run branch's tip into the unit's own worktree
@@ -131,7 +155,7 @@ pub enum MergeOutcome {
     Conflict(Vec<String>),
 }
 
-/// Where [`Worktree::conflict_markers_present`] reads a path's content.
+/// Where [`conflict_markers_present`] reads a path's content.
 #[derive(Clone, Copy)]
 enum ScanAt<'a> {
     /// The worktree copy, staged or not.
@@ -143,8 +167,9 @@ enum ScanAt<'a> {
 }
 
 /// The outcome of [`Worktree::cherry_pick_onto_run_branch`] (spec 88, criterion 4 - PLAN
-/// AMENDMENTS LAND): landing a `produces` stage's own `specs/`-only commits onto the run
-/// branch, so the next plan-critique worktree (branched from the run branch) sees them.
+/// AMENDMENTS LAND): landing a `produces` stage's own commits, each touching its output alone,
+/// onto the run branch, so the next plan-critique worktree (branched from the run branch) sees
+/// them.
 pub enum CherryPickOutcome {
     /// Every named commit applied cleanly, in order: the shas AS THEY LANDED on the run
     /// branch. Usually distinct new commit objects (cherry-pick mints a fresh committer
@@ -178,7 +203,10 @@ impl Worktree {
     /// The worktree DIR is transient (it can live in a temp dir and be recreated);
     /// the BRANCH is the checkpoint. A branch that already exists cannot be
     /// `worktree add -b`'d (git refuses to clobber a ref), so we detect it and check
-    /// it out instead.
+    /// it out instead. A read deciding whether `dir` is cleared - whether the branch exists, where
+    /// it is checked out, whether that worktree is there, whether a tree at `dir` is registered
+    /// ([`registered_at`]) - that cannot be answered is this call's error, and nothing at `dir`, and
+    /// no registration, is cleared on it.
     ///
     /// `authorized_root` is the scratch root the CALLER independently resolved `dir`
     /// under (the same value [`crate::worktree::scratch_root_from_env`] or an
@@ -209,7 +237,13 @@ impl Worktree {
             // one crashed lifecycle can never permanently wedge the run. A healthy metadata dir
             // is a no-op, and a healthy registered worktree is never touched.
             heal_corrupt_worktree_admin(repo);
-            if branch_exists(repo, branch) {
+            // Read fail-closed: both arms below may clear what sits at `dir`, so a read git
+            // cannot answer stops here, never reads as "no branch", and a tree at `dir` is
+            // adopted or cleared only on a plain answer of whether it is registered there
+            // ([`registered_at`]).
+            let present = branch_present(repo, branch)?;
+            let registered = registered_at(repo, dir, branch, authorized_root)?;
+            if present {
                 // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
                 // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
                 // uuid), so a resume - or a step that SUPERSEDES a prior one that died -
@@ -230,7 +264,7 @@ impl Worktree {
                 // [`Self::ensure_present`]'s OWN repeat calls on the SAME instance are a
                 // different shape - N threads that already share one `&Worktree` - and that one
                 // IS serialized, by `reassert_mu`.)
-                if worktree_on_branch(dir, branch) {
+                if registered && worktree_on_branch(dir, branch)? {
                     return Ok(Worktree {
                         dir: dir.to_string(),
                         branch: branch.to_string(),
@@ -239,13 +273,17 @@ impl Worktree {
                         reassert_mu: std::sync::Mutex::new(()),
                     });
                 }
-                // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
-                // is still checked out in a PRIOR process's registration - a killed or
-                // superseded `rigger run` - whose working dir may be at a different/old path
-                // or gone entirely). ADOPT the surviving registration when its dir survives,
-                // and prune-then-recreate when it does not; never fail on it.
-                if let Some(existing) = registered_worktree_for(repo, branch) {
-                    if std::path::Path::new(&existing).is_dir() {
+                // FALLBACK - adopt-or-prune, for a branch still checked out in a PRIOR
+                // process's registration (a killed or superseded `rigger run`) at another path
+                // under the work root, or at a path whose dir was deleted out from under git.
+                // ADOPT the surviving tree, and prune-then-recreate when its dir is gone. A
+                // branch checked out anywhere else - a person's tree on a handed-back unit, the
+                // main checkout, a tree git marks locked or prunable - is not the run's: it is
+                // an error naming where ([`registration_on`]), so the run holds and nothing
+                // there is reaped, cleared or adopted. The read decides the prune and the clear
+                // below, so it is read fail-closed.
+                match registration_on(repo, branch, authorized_root)? {
+                    OnBranch::Under(existing) => {
                         return Ok(Worktree {
                             dir: existing,
                             branch: branch.to_string(),
@@ -254,26 +292,57 @@ impl Worktree {
                             reassert_mu: std::sync::Mutex::new(()),
                         });
                     }
-                    git(repo, &["worktree", "prune"])?;
+                    OnBranch::Gone(_) => {
+                        git(repo, &["worktree", "prune"])?;
+                    }
+                    OnBranch::Nowhere => {}
                 }
-                // DEFEND THE DETERMINISTIC DIR before re-adding. Because the path no longer
-                // carries a per-process uuid, a SIGKILL mid `git worktree add` (dir populated,
-                // registration not finalized) - or any crash that leaves a populated dir at
-                // this fixed path that is NOT a registered worktree on the branch - would make
-                // the `add` below hard-fail (`fatal: <dir> already exists`, exit 128), and
-                // every subsequent resume re-derives the SAME path and re-hits the SAME failure:
-                // a NON-SELF-HEALING PERMANENT WEDGE on the very resume path this unit hardens.
-                // Clear the unregistered leftover (deregister it if git still tracks it, else
-                // remove the bare dir) so the branch's committed checkpoint is checked out
-                // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
-                // cleared, never the durable branch - the branch's work is exactly what we reuse.
-                if std::path::Path::new(dir).exists() {
-                    clear_worktree_dir(repo, dir, authorized_root)?;
+                // ADOPT A TREE LEFT OFF ITS BRANCH. With the branch checked out nowhere, a
+                // worktree still registered at `dir` is the unit's own tree whose HEAD was moved
+                // off the branch (a detach, a rebase stopped mid-way, a switch to another
+                // branch), and it can hold work the branch does not, committed there or not.
+                // Clearing it to re-add the branch would discard that work without a word, so it
+                // is adopted as it stands: every commit in it is refused ([`commit_refusal`])
+                // until its HEAD is back on the branch, and that refusal is what the unit's next
+                // attempt is told.
+                if registered {
+                    return Ok(Worktree {
+                        dir: dir.to_string(),
+                        branch: branch.to_string(),
+                        repo: repo.to_string(),
+                        authorized_root: authorized_root.to_string(),
+                        reassert_mu: std::sync::Mutex::new(()),
+                    });
                 }
+                // CLEAR A LEFTOVER AT THE DETERMINISTIC DIR before re-adding. The path carries
+                // no per-process part, so anything left at it would make the `add` below fail
+                // (`already exists`) on every resume that derives the same path. `registered`
+                // answered a plain no, so no tree git registers is there: what is there is a
+                // plain directory, or a tree whose registration git's prune or the heal removed.
+                // A `git worktree add` cut off leaves its entry locked, and a `git worktree
+                // remove` cut off after it deleted the tree's link leaves it prunable;
+                // [`registered_at`] refuses both, so the run holds naming git's own commands that
+                // recover that path ([`marked_entry`]), and nothing git still registers is
+                // cleared here. Only the dir is cleared, never the branch, whose committed work
+                // is checked out afresh.
+                clear_leftover_at(repo, dir, authorized_root)?;
                 // Reuse the existing branch's committed work: check it out into the fresh
                 // worktree dir, no `-b` (which would refuse, the ref already exists).
                 git(repo, &["worktree", "add", dir, branch])?;
             } else {
+                // With the branch gone, a tree still registered at `dir` is no leftover of it:
+                // it was moved off the branch before the branch was deleted (an adoption deletes
+                // the branch it moves aside), and it can hold work nothing else does, committed
+                // there or not. Nothing there is cleared or adopted, and the error names it.
+                if registered {
+                    return Err(Error(format!(
+                        "a worktree is registered at {dir}, the path of branch {branch}, which \
+                         does not exist: nothing there is cleared or adopted"
+                    )));
+                }
+                // The same wedge with the branch gone too (a branch reclaim deleted both): no
+                // worktree of this branch can sit at `dir`, so whatever does is a leftover.
+                clear_leftover_at(repo, dir, authorized_root)?;
                 git(repo, &["worktree", "add", "-b", branch, dir, "HEAD"])?;
             }
         }
@@ -411,7 +480,7 @@ impl Worktree {
             // A conflicting revert leaves partial changes staged; abort so the run branch is
             // untouched and the failure is not silently half-applied.
             let _ = run_git(repo, &["revert", "--abort"]);
-            return Err(Error(format!("revert {commit}: {out}")));
+            return Err(step_failed(format!("revert {commit}"), out));
         }
         // Rigger's own compensation-revert commit (d-checkin-rigger-own-commits-bypass-
         // hooks): the same class as the merge-into-worktree bookkeeping commits above -
@@ -422,7 +491,7 @@ impl Worktree {
             // The commit's effect was already absent, so there is nothing to revert: leave
             // HEAD where it is (idempotent), never an error.
             Err(out) if out.contains("nothing to commit") => {}
-            Err(out) => return Err(Error(format!("commit revert of {commit}: {out}"))),
+            Err(out) => return Err(step_failed(format!("commit revert of {commit}"), out)),
         }
         Ok(git(repo, &["rev-parse", "HEAD"])?.trim().to_string())
     }
@@ -513,6 +582,10 @@ impl Worktree {
     /// (spec 79 round-2 fix) - it gates the reap-before-removal of both `dir` and its
     /// reclaimed siblings, never re-derived from `dir`'s own position. Pass `""` when the
     /// caller has no such root; the reap is then a no-op.
+    ///
+    /// A tree git marks `locked` at `dir`, there or gone ([`refuse_locked_at`]: a person's lock,
+    /// an add git did not finish), is an error naming git's own commands that recover it, and
+    /// nothing is reaped, removed or deleted: the tree, its registration and the branch stay.
     pub fn discard(
         repo: &str,
         dir: &str,
@@ -527,10 +600,12 @@ impl Worktree {
         // loses the race; see `repo_admin_lock`'s doc comment).
         let repo_lock = repo_admin_lock(repo);
         let _repo_guard = repo_lock.lock().unwrap();
-        if std::path::Path::new(dir).exists() {
+        if occupant(dir)?.is_some() {
             clear_worktree_dir(repo, dir, authorized_root)?;
         } else {
-            // No dir to clear, but a killed process may still leave a dangling admin entry.
+            // No dir to clear, but a killed process may still leave a dangling admin entry, which
+            // the prune drops; a locked one it keeps, and the discard with it.
+            refuse_locked_at(repo, dir)?;
             git(repo, &["worktree", "prune"])?;
         }
         reclaim_cache_sibling(dir, authorized_root);
@@ -574,7 +649,7 @@ impl Worktree {
         // Classify once (the single authority), then apply only the matching checkout.
         match Self::planned_run_branch_setup(repo, branch, base) {
             RunBranchSetup::Reused => {
-                if current_branch(repo).as_deref() != Some(branch) {
+                if current_branch(repo)?.as_deref() != Some(branch) {
                     git(repo, &["checkout", branch])?;
                 }
                 Ok(RunBranchSetup::Reused)
@@ -635,7 +710,7 @@ impl Worktree {
     /// subsequent [`Self::integrate`] merges. Without it a gate could pass on
     /// uncommitted files that never reach the base - a false green.
     ///
-    /// This runs [`Self::conflict_markers_present`]'s refusal (spec 89, criterion 1: A
+    /// This runs [`commit_refusal`]'s refusal (spec 89, criterion 1: A
     /// CHECKPOINT NEVER COMMITS A HALF-MERGE) and the repository's own git hooks - the
     /// hook-RESPECTING half of the pair with [`Self::commit_checkpoint`], for a commit
     /// an agent or a person actually MEANS to make. Every commit rigger itself makes as
@@ -644,7 +719,7 @@ impl Worktree {
     /// [`Self::commit_checkpoint`] instead (spec 92 escalation ruling
     /// d-checkin-rigger-own-commits-bypass-hooks) - a hook enforcing content policy has
     /// no commit of THIS one's shape to police.
-    pub fn commit(&self, message: &str) -> Result<String, Error> {
+    pub fn commit(&self, message: &str) -> Result<String, StepError> {
         self.commit_with(message, false)
     }
 
@@ -662,31 +737,13 @@ impl Worktree {
     /// d-checkin-rigger-own-commits-bypass-hooks). The policy still holds where it belongs:
     /// the agent's own commits run the hooks, and the gates and `rigger validate` check the
     /// drift the hook checks.
-    pub fn commit_checkpoint(&self, message: &str) -> Result<String, Error> {
+    pub fn commit_checkpoint(&self, message: &str) -> Result<String, StepError> {
         self.commit_with(message, true)
     }
 
-    fn commit_with(&self, message: &str, no_verify: bool) -> Result<String, Error> {
-        // The scan's scope (spec 89, criterion 1, round 2 fix
-        // `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`)
-        // MUST be read before `git add -A` below stages anything - staging is exactly what
-        // clears a conflicted path's UNMERGED index flag (see `conflict_markers_present`'s own
-        // doc comment on why the content check exists at all), and `changed_files` itself
-        // (`git status --porcelain`) would otherwise report zero pending changes for a path
-        // this very call is about to stage.
-        let mut scope = self.changed_files()?;
-        scope.extend(self.conflicting_paths()?);
-        scope.sort();
-        scope.dedup();
-        if !self
-            .conflict_markers_present(ScanAt::Worktree, &scope)?
-            .is_empty()
-        {
-            return Err(Error(format!(
-                "refusing to commit in {}: conflict-marker text is present in tracked \
-                 file content - resolve it before committing",
-                self.dir
-            )));
+    fn commit_with(&self, message: &str, no_verify: bool) -> Result<String, StepError> {
+        if let Some(why) = commit_refusal(&self.dir, &self.branch)? {
+            return Err(StepError::Refused(why));
         }
         git(&self.dir, &["add", "-A"])?;
         let args: &[&str] = if no_verify {
@@ -694,114 +751,98 @@ impl Worktree {
         } else {
             &["commit", "-m", message]
         };
-        match run_git(&self.dir, args) {
+        match run_git_with_status(&self.dir, args) {
             Ok(_) => {}
-            Err(out) if out.contains("nothing to commit") => return Ok(String::new()),
-            Err(out) => return Err(Error(format!("commit: {out}"))),
+            Err((_, out)) if out.contains("nothing to commit") => return Ok(String::new()),
+            Err((status, out)) => {
+                return Err(content_failure(status, step_failed("commit", out).0))
+            }
         }
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    /// The literal git conflict-marker lines (`<<<<<<<`, `=======`, `>>>>>>>`, each anchored at
-    /// line-start so ordinary prose mentioning the symbols in passing cannot match) that
-    /// `scope`'s TRACKED files carry at `at`, as `(path, line)` pairs: the marker scan's one
-    /// home. [`ScanAt::Worktree`] reads the worktree copy (staged or not), [`ScanAt::Index`]
-    /// what the next `git commit` takes, and [`ScanAt::Commit`] a commit's tree. Read at the
-    /// worktree, a non-empty answer is [`Self::commit`]'s refusal; read at the index and at
-    /// both parents, it is [`Self::merge_into_worktree`]'s finalize refusal, through
-    /// [`Self::markers_the_merge_introduced`].
-    ///
-    /// At the worktree this is [`Self::commit`]'s ENTIRE guard (spec 89, criterion 1: A
-    /// CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a CONTENT check, not an
-    /// index-state one: `commit`'s own `git add -A` is what clears a conflicted path's
-    /// UNMERGED index flag the instant it is staged, REGARDLESS of whether the staged content
-    /// is a genuine resolution or still the raw marker text (exactly what let the 2026-09-12
-    /// incident's checkpoint treat a conflicted file as "resolved") - so an index-state check
-    /// taken right before that same `add` cannot tell a still-broken path from one a caller
-    /// (an implementer's edit, or [`crate::conductor`]'s `regenerate_conflicted_paths`
-    /// overwriting a registered-regenerable path) has ALREADY fixed on disk but not yet
-    /// staged; both look identically "unmerged" at that instant. Content is the one signal
-    /// that is true regardless of staging order.
-    ///
-    /// `scope` (round 2 fix, spec 89 criterion 1 -
-    /// `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`) is
-    /// the CALLER's own path list (`commit`'s `changed_files` union `conflicting_paths`, both
-    /// read before `git add -A` can clear either signal; the finalize's staged paths) - never
-    /// an unconditional whole-tracked-tree scan: a pre-existing, untouched file ELSEWHERE in
-    /// the repo that merely happens to contain a line matching one of these patterns (a
-    /// Markdown Setext heading's `=======` underline, say) must never block a commit that never
-    /// touches it. An empty `scope` (nothing pending) is a no-op - never even shells out -
-    /// matching the unconditional call's own no-op on a genuinely clean tree. `git grep` exits
-    /// 1 (not an error) when nothing matches, distinct from a real invocation failure.
-    fn conflict_markers_present(
-        &self,
-        at: ScanAt<'_>,
-        scope: &[String],
-    ) -> Result<std::collections::BTreeSet<(String, String)>, Error> {
-        let mut lines = std::collections::BTreeSet::new();
-        if scope.is_empty() {
-            return Ok(lines);
+    /// Keep the tree as it stands on its kept ref ([`kept_ref`]), off the unit's branch, with no
+    /// hook and no guard, for the attempt that spent the unit's retry bound with work outside a
+    /// commit (work git refused a step on, a plan its planner left uncommitted): the escalation
+    /// removes the tree, and this commit is where its work is kept. It takes every path
+    /// `git add -A` would stage, through an index of its own in the tree's git directory (the
+    /// tree's own index is left as it is, a lock on it included, and a lock a cut-off keep left on
+    /// its own is cleared first), on one commit whose one parent is the tree's HEAD. The unit's
+    /// branch never moves, wherever HEAD stands: content git refused never enters the branch's
+    /// history, and a merge in progress is no parent, so git still meets its conflict when the
+    /// branch is checked out again. A clean tree whose HEAD the branch's tip is not is kept as
+    /// HEAD itself; a clean tree at the tip keeps nothing (`None`). A kept ref already holding a
+    /// keep of this tree on this HEAD answers that commit, so a keep repeated after a cut-off
+    /// drive makes no second copy. A kept ref holding another commit is set aside first
+    /// ([`set_kept_aside`]), so no kept tree is lost; while a worktree has it checked out, the
+    /// keep lands under its own [`orphaned_ref`] instead and the checked-out ref is left as it
+    /// stands. Every failure names the step, the branch and the ref on its first line, the same
+    /// each time.
+    pub fn keep_tree_aside(&self, message: &str) -> Result<Option<Kept>, Error> {
+        let reference = kept_ref(&self.branch);
+        self.keep_on(&reference, message).map_err(|e| {
+            step_failed(
+                format!("keeping the tree of {} on {reference}", self.branch),
+                e,
+            )
+        })
+    }
+
+    /// [`Self::keep_tree_aside`] onto `reference`.
+    fn keep_on(&self, reference: &str, message: &str) -> Result<Option<Kept>, Error> {
+        let tip = branch_tip(&self.repo, &self.branch)?;
+        let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
+        let index = git(&self.dir, &["rev-parse", "--git-path", KEPT_INDEX])?;
+        let index = std::path::Path::new(&self.dir).join(index.trim());
+        let lock = index.with_file_name(format!("{KEPT_INDEX}.lock"));
+        for stray in [&index, &lock] {
+            remove_if_present(stray)?;
         }
-        // `-z` ends each path with a NUL, so a path is read whole whatever it spells; the
-        // line-number and column flags are pinned off so no git config adds either to a line.
-        let mut args = vec![
-            "grep",
-            "-I",
-            "-z",
-            "--no-line-number",
-            "--no-column",
-            "-e",
-            "^<<<<<<< ",
-            "-e",
-            "^=======$",
-            "-e",
-            "^>>>>>>> ",
-        ];
-        match at {
-            ScanAt::Worktree => {}
-            ScanAt::Index => args.push("--cached"),
-            ScanAt::Commit(rev) => args.push(rev),
-        }
-        // The pathspec separator joins the SAME argument list, never its own single-argument
-        // call, so the no-os-kill audit's whole-tree argv-separator shape - aimed at a
-        // negative-pid kill target, not a git pathspec - never matches here.
-        args.push("--");
-        let out = crate::subprocess::git_in(&self.dir)
-            .args(&args)
-            .args(scope)
-            .output()
-            .map_err(|e| Error(format!("git grep conflict markers: {e}")))?;
-        match out.status.code() {
-            Some(0) => {}
-            Some(1) => return Ok(lines),
-            _ => {
-                return Err(Error(format!(
-                    "git grep conflict markers: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                )));
+        let staged = staged_tree(&self.dir, &index);
+        let _ = std::fs::remove_file(&index);
+        let tree = staged?;
+        let full = format!("refs/heads/{reference}");
+        let held = ref_commit(&self.repo, &full)?;
+        let commit = if git(&self.dir, &["rev-parse", "HEAD^{tree}"])?.trim() == tree {
+            if head == tip {
+                return Ok(None);
             }
-        }
-        // A commit's hits name `<rev>:<path>`; the worktree's and the index's name the path.
-        let prefix = match at {
-            ScanAt::Commit(rev) => format!("{rev}:"),
-            ScanAt::Worktree | ScanAt::Index => String::new(),
+            head
+        } else {
+            match held.as_deref() {
+                Some(prior) if keeps(&self.repo, prior, &tree, &head)? => prior.to_string(),
+                _ => git(
+                    &self.dir,
+                    &["commit-tree", &tree, "-p", &head, "-m", message],
+                )?
+                .trim()
+                .to_string(),
+            }
         };
-        let stdout = String::from_utf8_lossy(&out.stdout);
-        let mut rest: &str = &stdout;
-        while let Some((name, tail)) = rest.split_once('\0') {
-            let (line, next) = tail.split_once('\n').unwrap_or((tail, ""));
-            let path = name.strip_prefix(prefix.as_str()).unwrap_or(name);
-            lines.insert((path.to_string(), line.to_string()));
-            rest = next;
+        let kept = |reference: String| {
+            Ok(Some(Kept {
+                reference,
+                commit: commit.clone(),
+            }))
+        };
+        if held.as_deref() == Some(commit.as_str()) {
+            return kept(reference.to_string());
         }
-        Ok(lines)
+        if held.is_some() && checked_out(&self.repo)?.contains(&full) {
+            return kept(stand_aside(&self.repo, held_unit(reference), &commit)?);
+        }
+        set_kept_aside(&self.repo, &self.branch)?;
+        git(
+            &self.repo,
+            &["update-ref", "-m", message, &full, &commit, ""],
+        )?;
+        kept(reference.to_string())
     }
 
     /// The staged paths whose index content carries conflict-marker text the in-progress merge
-    /// introduced, sorted (op-105-merge-finalize-refuses-markers): a marker line
-    /// [`Self::conflict_markers_present`] reads in the index at a staged path counts unless
-    /// either parent - `HEAD`, the unit's own side, or `MERGE_HEAD`, the run branch's tip -
-    /// already carries that same line at that path, so a Setext underline a parent holds never
+    /// introduced, sorted (op-105-merge-finalize-refuses-markers), by [`markers_introduced`]'s
+    /// rule with either parent - `HEAD`, the unit's own side, or `MERGE_HEAD`, the run branch's
+    /// tip - as what is already carried: a set a parent holds (a document showing one) never
     /// refuses while a resolution staged with the merge's markers still in it does. The index
     /// is read, not the worktree, because it is what the finalize commit takes.
     fn markers_the_merge_introduced(&self) -> Result<Vec<String>, Error> {
@@ -810,39 +851,35 @@ impl Worktree {
             .filter(|path| !path.is_empty())
             .map(str::to_string)
             .collect();
-        let in_index = self.conflict_markers_present(ScanAt::Index, &staged)?;
-        let mut hit: Vec<String> = in_index.iter().map(|(path, _)| path.clone()).collect();
-        hit.dedup();
-        let mut carried = self.conflict_markers_present(ScanAt::Commit("HEAD"), &hit)?;
-        carried.extend(self.conflict_markers_present(ScanAt::Commit("MERGE_HEAD"), &hit)?);
-        let mut introduced: Vec<String> = in_index
-            .difference(&carried)
-            .map(|(path, _)| path.clone())
-            .collect();
-        introduced.dedup();
-        Ok(introduced)
+        markers_introduced(&self.dir, ScanAt::Index, &staged, &["HEAD", "MERGE_HEAD"])
     }
 
     /// Every path this unit changed relative to the base the worktree branched
-    /// from - the COMMITTED diff (`git diff --name-only <base>..HEAD`) UNIONED with
+    /// from - the COMMITTED diff ([`Self::committed_since_base`]) UNIONED with
     /// any still-uncommitted changes (`git status`).
     ///
     /// [`Self::changed_files`] alone reports only the dirty worktree, which goes
     /// EMPTY once the conductor commits before gating (§3.2); this method spans the
-    /// commit, so a landing's decisions and a unit's lessons still see the unit's
-    /// real artifact set whether or not it was committed first. Paths are sorted and
-    /// de-duplicated.
+    /// commit, so a unit's lessons still see the unit's real artifact set whether or
+    /// not it was committed first. Paths are sorted and de-duplicated.
     pub fn changed_since_base(&self) -> Result<Vec<String>, Error> {
+        let mut paths = self.committed_since_base()?;
+        paths.extend(self.changed_files()?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    /// Every path this branch's commits changed relative to the base the worktree branched
+    /// from (`git diff --name-only <base>...HEAD`), sorted and de-duplicated: what a landing of
+    /// those commits carries, and nothing the tree holds outside a commit.
+    pub fn committed_since_base(&self) -> Result<Vec<String>, Error> {
         // Anchor on the branch's merge-base with the repo HEAD, not the repo HEAD
         // itself: other units may have merged into base since this worktree branched,
         // and a three-dot diff from the merge-base reports only THIS branch's own
         // changes, never the unrelated commits that landed meanwhile.
         let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
-        let mut paths = self.diff_names(&base, DiffMode::MergeBase)?;
-        paths.extend(self.changed_files()?);
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
+        self.diff_names(&base, DiffMode::MergeBase)
     }
 
     /// The diff between `from` and this worktree's current `HEAD`, name-only, sorted and
@@ -934,16 +971,7 @@ impl Worktree {
     /// `git merge` at all (spec 88, criterion 1: "the merge is worktree state, not log
     /// state"). Empty when nothing is unmerged.
     pub fn conflicting_paths(&self) -> Result<Vec<String>, Error> {
-        let out = git(&self.dir, &["diff", "--name-only", "--diff-filter=U"])?;
-        let mut paths: Vec<String> = out
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
-            .collect();
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
+        unmerged_paths(&self.dir)
     }
 
     /// Whether this worktree currently has a merge IN PROGRESS (`MERGE_HEAD` resolves) -
@@ -954,7 +982,7 @@ impl Worktree {
     /// worktree's current state instead - the crash-resume idempotency spec 88, criterion
     /// 1 requires.
     pub fn merge_in_progress(&self) -> bool {
-        run_git(&self.dir, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok()
+        ref_resolves(&self.dir, "MERGE_HEAD")
     }
 
     /// Resolve `path`'s unmerged conflict by accepting the INCOMING (run branch) side, then
@@ -964,9 +992,14 @@ impl Worktree {
     /// one nobody was asked to touch) until the conductor's OWN regeneration pass overwrites
     /// the path for real, in a follow-up commit, after the source conflict is resolved - the
     /// design's "in that order".
-    pub fn accept_incoming(&self, path: &str) -> Result<(), Error> {
-        git(&self.dir, &["checkout", "--theirs", "--", path])?;
-        git(&self.dir, &["add", "--", path])?;
+    pub fn accept_incoming(&self, path: &str) -> Result<(), StepError> {
+        for args in [
+            &["checkout", "--theirs", "--", path][..],
+            &["add", "--", path][..],
+        ] {
+            run_git_with_status(&self.dir, args)
+                .map_err(|(status, out)| content_failure(status, git_failed(args, out).0))?;
+        }
         Ok(())
     }
 
@@ -988,10 +1021,10 @@ impl Worktree {
     /// content, and re-invoking `git merge` would be refused outright by git regardless.
     /// Worktree state - read below via `conflicting_paths` - is the sole authority for what
     /// happens next; this whole commit-and-attempt block is skipped.
-    pub fn merge_into_worktree(&self, message: &str) -> Result<MergeOutcome, Error> {
+    pub fn merge_into_worktree(&self, message: &str) -> Result<MergeOutcome, StepError> {
         // Set only by a fresh attempt's own merge command below - `None` on a crash-resumed
         // re-entry (the block below is skipped entirely) or when no merge was even needed.
-        let mut merge_attempt: Option<String> = None;
+        let mut merge_attempt: Option<(Option<i32>, String)> = None;
         if !self.merge_in_progress() {
             // Rigger's own integration bookkeeping commit (spec 92 escalation ruling
             // d-checkin-rigger-own-commits-bypass-hooks): the same class as the
@@ -1024,17 +1057,24 @@ impl Worktree {
             // surfaced as a genuine `Err` instead of silently falling through to land the
             // unit's branch UNCHANGED.
             merge_attempt =
-                run_git(&self.dir, &["merge", "--no-commit", "--no-ff", &run_tip]).err();
+                run_git_with_status(&self.dir, &["merge", "--no-commit", "--no-ff", &run_tip])
+                    .err();
         }
         let conflicts = self.conflicting_paths()?;
         if !conflicts.is_empty() {
             return Ok(MergeOutcome::Conflict(conflicts));
         }
         if self.merge_in_progress() {
+            // The finalize commits at HEAD, so a HEAD moved off the unit's branch while the
+            // merge stays in progress is refused as every commit there is, before anything reads
+            // HEAD as the unit's side: the merge left in progress and nothing committed.
+            if let Some(why) = off_branch_refusal(&self.dir, &self.branch)? {
+                return Err(StepError::Refused(why));
+            }
             // A staged resolution still carrying marker text the merge introduced is no
             // resolution (op-105-merge-finalize-refuses-markers): the paths go back to the
             // caller's conflict route, the merge left in progress and nothing committed. A
-            // marker-shaped line either parent already carries at that path never refuses.
+            // marker set either parent already carries at that path never refuses.
             let introduced = self.markers_the_merge_introduced()?;
             if !introduced.is_empty() {
                 return Ok(MergeOutcome::Conflict(introduced));
@@ -1044,17 +1084,22 @@ impl Worktree {
             // bypass as the pre-merge commit just above (d-checkin-rigger-own-commits-
             // bypass-hooks) - this is rigger's own merge-conclusion bookkeeping, not a
             // commit an agent or a person means to make.
-            match run_git(&self.dir, &["commit", "--no-edit", "--no-verify"]) {
+            match run_git_with_status(&self.dir, &["commit", "--no-edit", "--no-verify"]) {
                 Ok(_) => {}
-                Err(out) if out.contains("nothing to commit") => {}
-                Err(out) => return Err(Error(format!("commit merge: {out}"))),
+                Err((_, out)) if out.contains("nothing to commit") => {}
+                Err((status, out)) => {
+                    return Err(content_failure(status, step_failed("commit merge", out).0))
+                }
             }
-        } else if let Some(out) = merge_attempt {
+        } else if let Some((status, out)) = merge_attempt {
             // Worktree state has now ruled out a real content conflict (`conflicts` empty
             // above) and an in-progress merge to finalize (`merge_in_progress` just above) -
             // so a fresh attempt's own merge command failing here is a genuine, non-content
             // error (spec 88 criterion 1, operator ruling point (e)), never a silent no-op.
-            return Err(Error(format!("worktree merge --no-commit --no-ff: {out}")));
+            return Err(content_failure(
+                status,
+                step_failed("worktree merge --no-commit --no-ff", out).0,
+            ));
         }
         let commit = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
         Ok(MergeOutcome::Ready(commit))
@@ -1094,7 +1139,10 @@ impl Worktree {
             Err(out) if out.contains("would be overwritten by merge") => {
                 Ok(LandOutcome::Blocked(parse_blocking_paths(&out)))
             }
-            Err(out) => Err(Error(format!("git merge --ff-only {}: {out}", self.branch))),
+            Err(out) => Err(step_failed(
+                format!("git merge --ff-only {}", self.branch),
+                out,
+            )),
         }
     }
 
@@ -1177,11 +1225,14 @@ impl Worktree {
                 })
                 .count()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
-            Err(e) => Err(Error(format!("reading {}: {e}", todo_path.display()))),
+            Err(e) => Err(step_failed(format!("reading {}", todo_path.display()), e)),
         }
     }
 
-    pub fn cherry_pick_onto_run_branch(&self, shas: &[String]) -> Result<CherryPickOutcome, Error> {
+    pub fn cherry_pick_onto_run_branch(
+        &self,
+        shas: &[String],
+    ) -> Result<CherryPickOutcome, StepError> {
         if shas.is_empty() {
             return Ok(CherryPickOutcome::Picked(Vec::new()));
         }
@@ -1233,7 +1284,7 @@ impl Worktree {
             let mut skips_left = Self::sequencer_todo_remaining(&self.repo)?;
             loop {
                 if skips_left == 0 {
-                    return Err(Error(
+                    return Err(StepError::Refused(
                         "CHERRY_PICK_HEAD left in progress by an earlier attempt, and it is \
                          neither a conflict nor a resolvable empty-commit pause: exhausted the \
                          sequencer's own remaining-todo count without resolving"
@@ -1257,7 +1308,7 @@ impl Worktree {
                             )));
                         }
                         if !out.contains("previous cherry-pick is now empty") {
-                            return Err(Error(format!(
+                            return Err(StepError::Refused(format!(
                                 "CHERRY_PICK_HEAD left in progress by an earlier attempt, and \
                                  it is neither a conflict nor a resolvable empty-commit pause: \
                                  {out}"
@@ -1327,7 +1378,7 @@ impl Worktree {
                 if conflicted {
                     Ok(CherryPickOutcome::Conflict(out))
                 } else {
-                    Err(Error(format!("git cherry-pick {}: {out}", shas.join(" "))))
+                    Err(step_failed(format!("git cherry-pick {}", shas.join(" ")), out).into())
                 }
             }
         }
@@ -1351,34 +1402,41 @@ impl Worktree {
     fn patch_id_of(dir: &str, sha: &str) -> Result<String, Error> {
         use std::process::Stdio;
         let mut show = crate::subprocess::git_in(dir)
-            .args(["show", "--no-color", sha])
-            .stdout(Stdio::piped())
-            .spawn()
-            .map_err(|e| Error(format!("git show {sha}: {e}")))?;
+            .and_then(|mut git| {
+                git.args(["show", "--no-color", sha])
+                    .stdout(Stdio::piped())
+                    .spawn()
+            })
+            .map_err(|e| step_failed(format!("git show {sha}"), e))?;
         let show_stdout = show
             .stdout
             .take()
-            .ok_or_else(|| Error(format!("git show {sha}: no stdout pipe")))?;
+            .ok_or_else(|| step_failed(format!("git show {sha}"), "no stdout pipe"))?;
         let patch_id = crate::subprocess::git_in(dir)
-            .args(["patch-id", "--stable"])
-            .stdin(Stdio::from(show_stdout))
-            .output()
-            .map_err(|e| Error(format!("git patch-id {sha}: {e}")))?;
+            .and_then(|mut git| {
+                git.args(["patch-id", "--stable"])
+                    .stdin(Stdio::from(show_stdout))
+                    .output()
+            })
+            .map_err(|e| step_failed(format!("git patch-id {sha}"), e))?;
         // The Child handle that spawned `show` is waited on directly, never signalled -
         // this crate's handle-bound process lifecycle discipline (spec 78): a process
         // this crate starts is ended only through its own spawning handle, never a
         // shell-out or a computed-pid signal.
         let show_status = show
             .wait()
-            .map_err(|e| Error(format!("git show {sha} wait: {e}")))?;
+            .map_err(|e| step_failed(format!("waiting on git show {sha}"), e))?;
         if !show_status.success() {
-            return Err(Error(format!("git show {sha}: exited {show_status}")));
+            return Err(step_failed(
+                format!("git show {sha}"),
+                format!("exited {show_status}"),
+            ));
         }
         if !patch_id.status.success() {
-            return Err(Error(format!(
-                "git patch-id {sha}: {}",
-                String::from_utf8_lossy(&patch_id.stderr)
-            )));
+            return Err(step_failed(
+                format!("git patch-id {sha}"),
+                String::from_utf8_lossy(&patch_id.stderr),
+            ));
         }
         // A content-FREE commit (`git commit --allow-empty`, e.g. this crate's own
         // `init_repo` test seed) has no diff at all, so `git patch-id` legitimately
@@ -1441,6 +1499,9 @@ impl Worktree {
     /// removing the worktree alone would leak a multi-gigabyte cache on the operator's small
     /// partition. Reclamation is best-effort - a review worktree or an un-built unit has no
     /// such sibling and it is a no-op there - and never changes the removal's result.
+    ///
+    /// A tree git marks `locked` ([`refuse_locked_at`]: a lock a person set during the stage) is an
+    /// error naming git's own commands that recover it, and nothing in it is reaped or removed.
     pub fn remove(&self) -> Result<(), Error> {
         // Serialize this WHOLE call against every other in-process admin-directory mutation
         // this process makes for the SAME repository (spec 103 checkin round 4: this call's
@@ -1448,6 +1509,7 @@ impl Worktree {
         // `Worktree::create`'s heal-scan-then-add does; see `repo_admin_lock`'s doc comment).
         let repo_lock = repo_admin_lock(&self.repo);
         let _repo_guard = repo_lock.lock().unwrap();
+        refuse_locked_at(&self.repo, &self.dir)?;
         // Reap any process still rooted inside this worktree BEFORE git removes the dir (spec
         // 23): otherwise a build or tool an agent left running holds a now-deleted cwd and
         // outlives its worktree, leaking memory. Scoped to this EXACT dir, so a process rooted
@@ -1466,8 +1528,9 @@ impl Worktree {
         // itself attests to, independent of where the dir physically sits - so it authorizes
         // the reap without caring about relocation. A dir that fails this check (already
         // removed, or somehow not on the expected branch) skips the reap: best-effort, never
-        // fails the removal below.
-        if worktree_on_branch(&self.dir, &self.branch) {
+        // fails the removal below. A dir or HEAD that cannot be read fails the removal instead,
+        // so nothing is removed on a read that answered nothing.
+        if worktree_on_branch(&self.dir, &self.branch)? {
             if let Ok(base) = std::path::Path::new(&self.dir).canonicalize() {
                 crate::reap::reap_authorized(base);
             }
@@ -1521,7 +1584,14 @@ fn parse_status_z(out: &str) -> Vec<String> {
 /// refuses on when an escalated unit's recorded branch is gone - "refused with the
 /// branch name and the reflog hint."
 pub fn branch_exists(repo: &str, branch: &str) -> bool {
-    ref_resolves(repo, &format!("refs/heads/{branch}"))
+    branch_present(repo, branch).unwrap_or(false)
+}
+
+/// Whether local branch `branch` exists in `repo`, read fail-closed ([`ref_present`]): the
+/// conductor decides adopting, quarantining or deleting a unit's branch on this answer, so a read
+/// git cannot answer is an error, never a no.
+pub fn branch_present(repo: &str, branch: &str) -> Result<bool, Error> {
+    ref_present(repo, &format!("refs/heads/{branch}"))
 }
 
 /// The CURRENT tip commit sha of local branch `branch` in `repo`, or an error when the
@@ -1533,9 +1603,7 @@ pub fn branch_exists(repo: &str, branch: &str) -> bool {
 /// the two agree by construction rather than by re-resolving the (possibly since-moved)
 /// branch name a second time.
 pub fn branch_tip(repo: &str, branch: &str) -> Result<String, Error> {
-    run_git(repo, &["rev-parse", &format!("refs/heads/{branch}")])
-        .map(|s| s.trim().to_string())
-        .map_err(Error)
+    git(repo, &["rev-parse", &format!("refs/heads/{branch}")]).map(|s| s.trim().to_string())
 }
 
 /// The tip of local branch `branch` when its work is LANDED on `run_branch`: the tip is an
@@ -1569,16 +1637,157 @@ pub fn landed_branch_tip(repo: &str, branch: &str, run_branch: &str) -> Option<S
 /// actually resolves (an unresolvable base has no tree to look paths up in - checking
 /// against it would read as "every path absent" and refuse spuriously).
 pub fn ref_resolves(repo: &str, r: &str) -> bool {
-    run_git(
+    ref_present(repo, r).unwrap_or(false)
+}
+
+/// Whether `r` resolves to a commit in `repo`, read fail-closed ([`ref_commit`]).
+fn ref_present(repo: &str, r: &str) -> Result<bool, Error> {
+    ref_commit(repo, r).map(|commit| commit.is_some())
+}
+
+/// The commit `r` resolves to in `repo`, read fail-closed: `Ok(None)` only when git answers that
+/// it resolves to none, and an error when git cannot answer (it cannot start, `repo` cannot be
+/// entered or holds no repository, or git ends any other way), so a caller about to clear what
+/// sits at a path never reads a failed read as absence.
+fn ref_commit(repo: &str, r: &str) -> Result<Option<String>, Error> {
+    let commit = format!("{r}^{{commit}}");
+    let args = ["rev-parse", "--verify", "--quiet", commit.as_str()];
+    finish_git_query(start_git(repo, &args))
+        .map(|answer| answer.map(|out| String::from_utf8_lossy(&out).trim().to_string()))
+        .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
+}
+
+/// The ref the tree of the unit whose branch is `branch` is kept on ([`Worktree::keep_tree_aside`]):
+/// `rigger/kept/<unit>` for `rigger/u/<unit>`. It stands outside the unit branches, so nothing that
+/// reads or lands a unit's branch reads it.
+pub fn kept_ref(branch: &str) -> String {
+    let unit = branch.strip_prefix(UNIT_BRANCHES).unwrap_or(branch);
+    format!("{KEPT_REFS}{unit}")
+}
+
+/// The name a ref of `unit`'s (its sanitized id) whose tip is `tip` stands under once rigger moves
+/// it out of the way: `rigger/orphaned/<unit>-<12-char tip>`. Keyed on the tip, so a ref moved at
+/// one tip never collides with one moved at another.
+pub fn orphaned_ref(unit: &str, tip: &str) -> String {
+    format!("{ORPHANED_REFS}{unit}-{}", &tip[..tip.len().min(12)])
+}
+
+/// The unit a held ref names: `<unit>` of `rigger/kept/<unit>`.
+fn held_unit(reference: &str) -> &str {
+    reference.strip_prefix(KEPT_REFS).unwrap_or(reference)
+}
+
+/// Whether `commit` is a keep of `tree` on `head`: it holds that tree, and `head` is its one
+/// parent.
+fn keeps(repo: &str, commit: &str, tree: &str, head: &str) -> Result<bool, Error> {
+    let parents = git(repo, &["rev-list", "--parents", "-n1", commit])?;
+    if parents.split_whitespace().skip(1).ne([head]) {
+        return Ok(false);
+    }
+    Ok(git(repo, &["rev-parse", &format!("{commit}^{{tree}}")])?.trim() == tree)
+}
+
+/// Every branch a worktree of `repo` has checked out, the repository's own checkout included, by
+/// its full name (`refs/heads/...`): a ref a person stands on, which rigger never moves or
+/// deletes.
+fn checked_out(repo: &str) -> Result<std::collections::HashSet<String>, Error> {
+    let listed = git(repo, &["worktree", "list", "--porcelain"])?;
+    Ok(listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("branch "))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Stand `commit` of `unit`'s under [`orphaned_ref`], unless that ref is there already; answers
+/// its name.
+fn stand_aside(repo: &str, unit: &str, commit: &str) -> Result<String, Error> {
+    let aside = orphaned_ref(unit, commit);
+    let full = format!("refs/heads/{aside}");
+    if !ref_present(repo, &full)? {
+        git(repo, &["update-ref", &full, commit, ""])?;
+    }
+    Ok(aside)
+}
+
+/// Set aside the kept ref of the unit whose branch is `branch` ([`kept_ref`]): its commit moves to
+/// [`orphaned_ref`], which only a person or [`reap_held_refs`] removes, and the kept ref is
+/// deleted, unless a worktree has it checked out, when it is left as it stands. Answers where the
+/// commit now stands aside, or `None` when there is no kept ref. A repeat after a cut-off one
+/// finishes it.
+pub fn set_kept_aside(repo: &str, branch: &str) -> Result<Option<String>, Error> {
+    let kept = kept_ref(branch);
+    let full = format!("refs/heads/{kept}");
+    let Some(tip) = ref_commit(repo, &full)? else {
+        return Ok(None);
+    };
+    let aside = stand_aside(repo, held_unit(&kept), &tip)?;
+    if !checked_out(repo)?.contains(&full) {
+        git(repo, &["update-ref", "-d", &full, &tip])?;
+    }
+    Ok(Some(aside))
+}
+
+/// Delete the kept ref of the unit whose branch is `branch` ([`kept_ref`]), when there is one and
+/// no worktree has it checked out: called where the unit's branch is reaped once its work has
+/// landed.
+pub fn delete_kept(repo: &str, branch: &str) -> Result<(), Error> {
+    let full = format!("refs/heads/{}", kept_ref(branch));
+    if let Some(tip) = ref_commit(repo, &full)? {
+        if !checked_out(repo)?.contains(&full) {
+            git(repo, &["update-ref", "-d", &full, &tip])?;
+        }
+    }
+    Ok(())
+}
+
+/// Every ref rigger holds aside in `repo`, kept ([`KEPT_REFS`]) and orphaned ([`ORPHANED_REFS`]),
+/// each with its tip, sorted by name.
+pub fn held_refs(repo: &str) -> Result<Vec<(String, String)>, Error> {
+    let kept = format!("refs/heads/{KEPT_REFS}");
+    let orphaned = format!("refs/heads/{ORPHANED_REFS}");
+    let listed = git(
         repo,
         &[
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            &format!("{r}^{{commit}}"),
+            "for-each-ref",
+            "--format=%(refname:short) %(objectname)",
+            &kept,
+            &orphaned,
         ],
-    )
-    .is_ok()
+    )?;
+    let mut held: Vec<(String, String)> = listed
+        .lines()
+        .filter_map(|line| line.trim().rsplit_once(' '))
+        .map(|(name, tip)| (name.to_string(), tip.to_string()))
+        .collect();
+    held.sort();
+    Ok(held)
+}
+
+/// Delete every ref rigger holds aside ([`held_refs`]) whose tip `head`'s history holds, so it holds
+/// nothing `head` lacks; answers the refs deleted. A ref holding commits `head` lacks stays, and so
+/// does one a worktree has checked out.
+pub fn reap_held_refs(repo: &str, head: &str) -> Result<Vec<String>, Error> {
+    let checked_out = checked_out(repo)?;
+    let mut reaped = Vec::new();
+    for (name, tip) in held_refs(repo)? {
+        let full = format!("refs/heads/{name}");
+        if !checked_out.contains(&full) && in_history(repo, &tip, head)? {
+            git(repo, &["update-ref", "-d", &full, &tip])?;
+            reaped.push(name);
+        }
+    }
+    Ok(reaped)
+}
+
+/// Remove the file at `path` when it is there; any other failure is an error naming the path.
+fn remove_if_present(path: &std::path::Path) -> Result<(), Error> {
+    match std::fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(step_failed(format!("removing {}", path.display()), e))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Whether the repo-relative `path` exists in the tree of the commit `base_ref` names -
@@ -1631,21 +1840,16 @@ pub fn parse_blocking_paths(out: &str) -> Vec<String> {
 /// already carries byte-identical content at a path a refused landing was blocked by.
 pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
     let out = crate::subprocess::git_in(repo)
-        .args(["show", &format!("{git_ref}:{path}")])
-        .output()
+        .and_then(|mut git| git.args(["show", &format!("{git_ref}:{path}")]).output())
         .ok()?;
     out.status.success().then_some(out.stdout)
 }
 
 /// The failure of the git command whose arguments are `args`, run under `root`, for the cause
-/// `why`: `git <args> in <root>: <why>`, spelled from the argument vector the process ran or could
-/// not start with, so the text names the command that failed.
+/// `why`: `git <args> in <root> failed`, then `why` ([`step_failed`]), spelled from the argument
+/// vector the process ran or could not start with, so the text names the command that failed.
 pub(crate) fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
-    Error(format!(
-        "git {} in {}: {why}",
-        args.join(" "),
-        root.display()
-    ))
+    step_failed(format!("git {} in {}", args.join(" "), root.display()), why)
 }
 
 /// The one `git cat-file --batch` process the code store's tree source reads its blobs from:
@@ -1766,13 +1970,14 @@ impl Drop for BlobBatch {
 /// whose tip already carries the content a refused landing was blocked by, and by `rigger
 /// validate`'s residue scan to flag unit branches no live unit owns.
 pub fn unit_branches(repo: impl AsRef<std::ffi::OsStr>) -> Vec<String> {
-    let out = crate::subprocess::git_in(repo)
-        .args([
+    let out = crate::subprocess::git_in(repo).and_then(|mut git| {
+        git.args([
             "for-each-ref",
             "--format=%(refname:short)",
-            "refs/heads/rigger/u/",
+            &format!("refs/heads/{UNIT_BRANCHES}"),
         ])
-        .output();
+        .output()
+    });
     let mut branches: Vec<String> = match out {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
             .lines()
@@ -1786,14 +1991,25 @@ pub fn unit_branches(repo: impl AsRef<std::ffi::OsStr>) -> Vec<String> {
     branches
 }
 
-/// The name of the branch currently checked out in `repo`, or None on a detached
-/// HEAD. An unborn HEAD (a fresh repo with no commit) still reports its default
-/// branch name, so this only returns None for a genuinely detached HEAD.
-pub fn current_branch(repo: &str) -> Option<String> {
-    run_git(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// The name of the branch checked out in the tree or repository at `dir`, or `None` on a
+/// detached HEAD. An unborn HEAD (a fresh repo with no commit) still names its branch. A HEAD git
+/// cannot read is an error naming `dir`, never a detached HEAD.
+pub fn current_branch(dir: &str) -> Result<Option<String>, Error> {
+    let args = ["symbolic-ref", "-q", "HEAD"];
+    match run_git_with_status(dir, &args) {
+        Ok(head) => {
+            let head = head.trim();
+            Ok(Some(
+                head.strip_prefix("refs/heads/").unwrap_or(head).to_string(),
+            ))
+        }
+        // `symbolic-ref -q` exits 1, saying nothing, exactly when HEAD is detached.
+        Err((Some(1), _)) => Ok(None),
+        Err((_, out)) => Err(step_failed(
+            format!("reading the branch checked out at {dir}"),
+            git_failed(&args, out).0,
+        )),
+    }
 }
 
 // UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_GATE_SCRATCH_PREFIX,
@@ -1889,7 +2105,7 @@ pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
 /// tautology`, both UPHELD): passed straight through to [`reap_dir_before_removal`] for
 /// every sibling, NEVER re-derived from `worktree_dir`'s own position. Every call site
 /// already has this value to hand ([`Worktree::remove`]/[`Worktree::discard`] carry or take
-/// it, [`sweep_terminal`] already resolves it to confirm `d.starts_with(root)`,
+/// it, [`sweep_terminal`] already resolves it to confirm each candidate lies under it,
 /// [`reclaim_worktree_on_branch`]'s caller resolves it the same way `Worktree::create`'s
 /// callers do).
 fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
@@ -2131,94 +2347,104 @@ pub fn sweep_terminal_logged(
     let repo_lock = repo_admin_lock(repo);
     let _repo_guard = repo_lock.lock().unwrap();
     git(repo, &["worktree", "prune"])?;
-    let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
+    let out = git(repo, &["worktree", "list", "--porcelain"])?;
     let mut removed = 0;
-    let mut dir: Option<String> = None;
-    for line in out.lines() {
-        if let Some(d) = line.strip_prefix("worktree ") {
-            dir = Some(d.to_string());
-        } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
-            let Some(d) = dir.take() else { continue };
-            if !d.starts_with(root) || branch == run_branch || live_branches.contains(branch) {
-                continue;
-            }
-            let merged = is_ancestor(repo, branch, run_branch);
-            if merged {
-                // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), the ordering contract
-                // between this sweep and `run_single_stage`'s halted-commit recovery
-                // (src/conductor.rs): that recovery captures a prior incarnation's abandoned
-                // edit as its own `wip` commit the instant a unit's worktree is adopted, but
-                // `rigger run` (`run_cli`) runs THIS sweep strictly BEFORE it ever gets that
-                // chance. A candidate that still carries uncommitted changes - an in-progress
-                // merge or a real content conflict included, since either always leaves the
-                // tree dirty - has not yet had its edit captured, so removing it here would
-                // discard it outright rather than merely defer the capture. This spares the
-                // candidate regardless of the fence below (even `NoSpawn`, which normally
-                // defers entirely to the ancestry signal): a store desynced from the worktree
-                // on disk - a restored snapshot, or this project's very first run, adopting a
-                // worktree that already exists - never gets a chance to record a spawn before
-                // this sweep runs, so the fence alone cannot protect it. An unreadable status
-                // (`run_git` errors) is treated as dirty too - liveness here can only be
-                // under-, never over-determined, exactly like `live_branches_for_sweep`'s own
-                // fail-closed read one call site up. A clean worktree in this same shape
-                // (`sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_
-                // unchanged`) is unaffected: it sweeps exactly as it did before this fix.
-                //
-                // Gated on `declared_units` too (round 2 fix,
-                // `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
-                // ancestor_leftover`): dirtiness ALONE is not proof of a halted spawn worth
-                // protecting - a genuinely dead, unrelated branch (a prior run's leftover
-                // registration, a hand-made fixture) this workflow never declared is just as
-                // dirty-looking and must still be reclaimed exactly as before this criterion; a
-                // branch this run's OWN definition still claims as one of its units is the one
-                // worth deferring for.
-                //
-                // The status read itself goes through [`path_is_dirty`] (round 3 fix,
-                // `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - the same
-                // shared primitive `reclaim_orphan_scratch` (the `rigger` binary) calls too, rather than
-                // each growing its own inline `git status` call that can silently pick a
-                // different failure direction. `unwrap_or(true)`: an unreadable status fails
-                // CLOSED (dirty), never open - see that function's own doc comment for why.
-                let dirty = declared_units.contains(branch) && path_is_dirty(&d).unwrap_or(true);
-                if dirty {
-                    log(&format!(
-                        "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - \
-                         uncommitted changes are pending the halt-recovery commit"
-                    ));
-                    continue;
-                }
-                // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
-                // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
-                // dead/live-slug split already makes for a branch in this exact shape.
-                let unit = branch.strip_prefix("rigger/u/").unwrap_or(branch);
-                let fence = spawn_fence(events, unit);
-                if !fence.permits_reclaim() {
-                    log(&format!(
-                        "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
-                        fence.evidence(unit)
-                    ));
-                    continue;
-                }
-                if !matches!(fence, SpawnFence::NoSpawn) {
-                    log(&format!(
-                        "rigger run: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
-                        fence.evidence(unit)
-                    ));
-                }
-                // Reap any process rooted inside this terminal worktree BEFORE removing it
-                // (spec 79, criterion 1): a crashed run process can leave a build or tool
-                // still running here, and this is the CRASH-recovery path, not the graceful
-                // `Worktree::remove` one - nothing else reaps it. `root` is the SAME resolved
-                // scratch root already used to confirm `d.starts_with(root)` above.
-                crate::reap::reap_processes_rooted_under(
-                    std::path::Path::new(&d),
-                    std::path::Path::new(root),
-                );
-                git(repo, &["worktree", "remove", "--force", &d])?;
-                reclaim_cache_sibling(&d, root);
-                removed += 1;
-            }
+    for entry in listed(&out) {
+        let Some(branch) = entry.branch else { continue };
+        let d = entry.path;
+        // A candidate lies strictly under the work root, compared as resolved paths: a sibling
+        // whose path merely begins with the root's text is not under it.
+        let under =
+            crate::reap::strictly_under(std::path::Path::new(d), std::path::Path::new(root));
+        if under.is_none()
+            || branch == run_branch
+            || live_branches.contains(branch)
+            || !is_ancestor(repo, branch, run_branch)
+        {
+            continue;
         }
+        // A tree git marks (after the prune above, only `locked`: an add git did not finish, or a
+        // lock a person set) is not the sweep's to take: nothing in it is reaped or removed, and
+        // the trees after it are still swept.
+        if let Some(mark) = entry.mark {
+            log(&format!(
+                "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - git marks it `{mark}`"
+            ));
+            continue;
+        }
+        // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), the ordering contract
+        // between this sweep and `run_single_stage`'s halted-commit recovery
+        // (src/conductor.rs): that recovery captures a prior incarnation's abandoned
+        // edit as its own `wip` commit the instant a unit's worktree is adopted, but
+        // `rigger run` (`run_cli`) runs THIS sweep strictly BEFORE it ever gets that
+        // chance. A candidate that still carries uncommitted changes - an in-progress
+        // merge or a real content conflict included, since either always leaves the
+        // tree dirty - has not yet had its edit captured, so removing it here would
+        // discard it outright rather than merely defer the capture. This spares the
+        // candidate regardless of the fence below (even `NoSpawn`, which normally
+        // defers entirely to the ancestry signal): a store desynced from the worktree
+        // on disk - a restored snapshot, or this project's very first run, adopting a
+        // worktree that already exists - never gets a chance to record a spawn before
+        // this sweep runs, so the fence alone cannot protect it. An unreadable status
+        // (`run_git` errors) is treated as dirty too - liveness here can only be
+        // under-, never over-determined, exactly like `live_branches_for_sweep`'s own
+        // fail-closed read one call site up. A clean worktree in this same shape
+        // (`sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_
+        // unchanged`) is unaffected: it sweeps exactly as it did before this fix.
+        //
+        // Gated on `declared_units` too (round 2 fix,
+        // `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
+        // ancestor_leftover`): dirtiness ALONE is not proof of a halted spawn worth
+        // protecting - a genuinely dead, unrelated branch (a prior run's leftover
+        // registration, a hand-made fixture) this workflow never declared is just as
+        // dirty-looking and must still be reclaimed exactly as before this criterion; a
+        // branch this run's OWN definition still claims as one of its units is the one
+        // worth deferring for.
+        //
+        // The status read itself goes through [`path_is_dirty`] (round 3 fix,
+        // `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - the same
+        // shared primitive `reclaim_orphan_scratch` (the `rigger` binary) calls too, rather than
+        // each growing its own inline `git status` call that can silently pick a
+        // different failure direction. `unwrap_or(true)`: an unreadable status fails
+        // CLOSED (dirty), never open - see that function's own doc comment for why.
+        let dirty = declared_units.contains(branch) && path_is_dirty(d).unwrap_or(true);
+        if dirty {
+            log(&format!(
+                "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - \
+                 uncommitted changes are pending the halt-recovery commit"
+            ));
+            continue;
+        }
+        // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
+        // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
+        // dead/live-slug split already makes for a branch in this exact shape.
+        let unit = branch.strip_prefix(UNIT_BRANCHES).unwrap_or(branch);
+        let fence = spawn_fence(events, unit);
+        if !fence.permits_reclaim() {
+            log(&format!(
+                "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
+                fence.evidence(unit)
+            ));
+            continue;
+        }
+        if !matches!(fence, SpawnFence::NoSpawn) {
+            log(&format!(
+                "rigger run: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
+                fence.evidence(unit)
+            ));
+        }
+        // Reap any process rooted inside this terminal worktree BEFORE removing it
+        // (spec 79, criterion 1): a crashed run process can leave a build or tool
+        // still running here, and this is the CRASH-recovery path, not the graceful
+        // `Worktree::remove` one - nothing else reaps it. `root` is the SAME root the
+        // candidate was confirmed strictly under above.
+        crate::reap::reap_processes_rooted_under(
+            std::path::Path::new(d),
+            std::path::Path::new(root),
+        );
+        git(repo, &["worktree", "remove", "--force", d])?;
+        reclaim_cache_sibling(d, root);
+        removed += 1;
     }
     Ok(removed)
 }
@@ -2228,34 +2454,351 @@ pub fn sweep_terminal_logged(
 /// repo-wide `git worktree list`. Because unit and review worktree dirs are now
 /// DETERMINISTIC (derived from the id / stage+attempt, no per-process uuid, Gap 12), a
 /// resume or concurrent process derives the same `dir`, and [`Worktree::create`] uses
-/// this to ADOPT it without the porcelain adopt-or-prune scan. A dir that is absent, is
-/// not a git worktree, or is checked out to a different branch yields false, so the
-/// caller falls back to the porcelain adopt-or-prune path.
-pub fn worktree_on_branch(dir: &str, branch: &str) -> bool {
-    std::path::Path::new(dir).is_dir() && current_branch(dir).as_deref() == Some(branch)
+/// this to ADOPT it without the porcelain adopt-or-prune scan. A dir that is absent, holds
+/// no `.git` (so is no git worktree, whatever repository encloses it), or is checked out to a
+/// different branch yields false, so the caller falls back to the porcelain adopt-or-prune
+/// path. A dir the filesystem cannot read, or a HEAD git cannot read there
+/// ([`current_branch`]), is an error, never a no.
+pub fn worktree_on_branch(dir: &str, branch: &str) -> Result<bool, Error> {
+    if !metadata_at(dir, std::fs::metadata(dir))?.is_some_and(|m| m.is_dir()) {
+        return Ok(false);
+    }
+    let link = std::path::Path::new(dir).join(".git");
+    let link_s = link.to_string_lossy();
+    if metadata_at(&link_s, std::fs::symlink_metadata(&link))?.is_none() {
+        return Ok(false);
+    }
+    Ok(current_branch(dir)?.as_deref() == Some(branch))
 }
 
-/// The dir of the worktree that already has `branch` checked out, if any - parsed
-/// from `git worktree list --porcelain` (a `worktree <dir>` line followed by its
-/// `branch refs/heads/<name>` line). Registrations whose dirs were deleted out from
-/// under git still appear here; the caller decides adopt-vs-prune by checking the dir.
+/// One entry of `git worktree list --porcelain`: the path git lists, the branch checked out there
+/// (none when its HEAD is detached), and the first line marking it `locked` or `prunable`, its
+/// reason included.
+struct Listed<'a> {
+    path: &'a str,
+    branch: Option<&'a str>,
+    mark: Option<&'a str>,
+}
+
+/// The entries of `porcelain`, the output of `git worktree list --porcelain`: blocks separated by
+/// a blank line, each opening with its `worktree <path>` line.
+fn listed(porcelain: &str) -> impl Iterator<Item = Listed<'_>> {
+    porcelain.split("\n\n").filter_map(|entry| {
+        let mut lines = entry.lines();
+        let path = lines.next()?.strip_prefix("worktree ")?;
+        let mut found = Listed {
+            path,
+            branch: None,
+            mark: None,
+        };
+        for line in lines {
+            if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+                found.branch = Some(branch);
+            } else if found.mark.is_none() && ["locked", "prunable"].contains(&mark_word(line)) {
+                found.mark = Some(line);
+            }
+        }
+        Some(found)
+    })
+}
+
+/// The first word of `line`, a line of a `git worktree list --porcelain` entry.
+fn mark_word(line: &str) -> &str {
+    line.split_once(' ').map_or(line, |(word, _)| word)
+}
+
+/// The path of the worktree that has `branch` checked out, wherever it is, or `None`; a list git
+/// cannot give reads as none.
+#[cfg(test)]
+fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
+    let out = git(repo, &["worktree", "list", "--porcelain"]).ok()?;
+    let found = listed(&out)
+        .find(|entry| entry.branch == Some(branch))
+        .map(|entry| entry.path.to_string());
+    found
+}
+
+/// Where a branch is checked out, as [`registration_on`] reads it for a caller working under a
+/// work root.
+enum OnBranch {
+    /// No worktree has the branch checked out.
+    Nowhere,
+    /// A registration has the branch checked out at this path, with nothing there.
+    Gone(String),
+    /// A usable tree strictly under the work root has the branch checked out at this path.
+    Under(String),
+}
+
+/// Where `branch` is checked out, read fail-closed for a caller that takes over or removes the
+/// tree it finds there. That tree is the caller's only when it is a directory strictly under
+/// `authorized_root`, compared as resolved paths ([`crate::reap::strictly_under`]), that git marks
+/// neither `locked` nor `prunable`; a registration with nothing at its path is
+/// [`OnBranch::Gone`], for the caller to prune. Anything else is an error naming where the branch
+/// is checked out, and nothing there is reaped, cleared or adopted:
+/// - a list git refuses, or a registered path the filesystem cannot read;
+/// - an entry git marks `locked` (an add git did not finish, or a lock a person set), its dir
+///   there or not, since git's prune keeps it;
+/// - an entry git marks `prunable` with its dir still there, holding what is in it;
+/// - a tree outside the work root, or no directory: a person's tree on a handed-back unit, the
+///   main checkout. An empty root contains nothing.
+fn registration_on(repo: &str, branch: &str, authorized_root: &str) -> Result<OnBranch, Error> {
+    let out = git(repo, &["worktree", "list", "--porcelain"])
+        .map_err(|e| step_failed(format!("reading where branch {branch} is checked out"), e.0))?;
+    let Some(entry) = listed(&out).find(|entry| entry.branch == Some(branch)) else {
+        return Ok(OnBranch::Nowhere);
+    };
+    let at = entry.path;
+    if let Some(mark) = entry.mark.filter(|mark| mark_word(mark) == "locked") {
+        return Err(marked_entry(repo, mark, at));
+    }
+    let Some(found) = metadata_at(at, std::fs::metadata(at))? else {
+        return Ok(OnBranch::Gone(at.to_string()));
+    };
+    if let Some(mark) = entry.mark {
+        return Err(marked_entry(repo, mark, at));
+    }
+    let root = std::path::Path::new(authorized_root);
+    if found.is_dir() && crate::reap::strictly_under(std::path::Path::new(at), root).is_some() {
+        return Ok(OnBranch::Under(at.to_string()));
+    }
+    Err(checked_out_elsewhere(branch, at, authorized_root))
+}
+
+/// The error for an entry of `repo` git marks `mark` (its `locked` or `prunable` line) registered
+/// at `at`: nothing there is cleared or adopted, and the lines after the first name git's own
+/// commands that recover that path, for whoever the run's hold reaches. A `locked` entry is an add
+/// git did not finish, which git locks before it writes anything else, or a lock a person set; a
+/// `prunable` one with its dir there is a remove git did not finish after it deleted the tree's
+/// link, or a tree whose link was lost.
+fn marked_entry(repo: &str, mark: &str, at: &str) -> Error {
+    let recovery = if mark_word(mark) == "locked" {
+        let link = std::path::Path::new(at).join(".git");
+        format!(
+            "if git's add there was cut off, `git -C {repo} worktree remove --force --force {at}` \
+             removes that tree and its registration; when git answers that {} does not exist, \
+             `git -C {repo} worktree unlock {at}` and then `git -C {repo} worktree prune` remove \
+             the registration and keep the files, which rigger may then clear as a leftover\n\
+             if a person locked it, `git -C {repo} worktree unlock {at}` lifts the lock and keeps \
+             the tree and its work",
+            link.display()
+        )
+    } else {
+        format!(
+            "`git -C {repo} worktree prune` removes that registration and keeps the files at {at} \
+             (it removes every registration git marks prunable); rigger may then clear what is \
+             left there as a leftover, so copy out anything worth keeping first"
+        )
+    };
+    Error(format!(
+        "a worktree git marks `{mark}` is registered at {at}: nothing there is cleared or \
+         adopted\n{recovery}"
+    ))
+}
+
+/// The error for `branch` checked out at `at`, a tree that is not a directory under the work root
+/// `authorized_root`: it names where, and how to free the branch without touching that tree.
+fn checked_out_elsewhere(branch: &str, at: &str, authorized_root: &str) -> Error {
+    Error(format!(
+        "branch {branch} is checked out at {at}, which is not a directory under rigger's work \
+         root {authorized_root}: nothing there is cleared or adopted\n\
+         the run takes the branch once it is checked out nowhere: `git -C {at} switch --detach` \
+         frees it and keeps that tree and its work as they are"
+    ))
+}
+
+/// Whether `repo` has a worktree registered at `dir` that git can use: an entry of `git worktree
+/// list --porcelain` naming `dir`, by the path git lists or by where that path resolves, so
+/// neither spelling of a linked path hides it. What the worktree has checked out is not asked. A
+/// link at `dir` is no worktree, whatever it names ([`clear_worktree_dir`] removes it as a link),
+/// and nothing at `dir` is a no unless git lists a worktree there it marks `locked`.
 ///
-/// `pub` (spec 83 round 3): `conductor.rs::gc_integrated_branches_logged` uses this
-/// as its own presence check before printing "removing" evidence, mirroring `sweep_
-/// terminal_logged`'s identical `git worktree list --porcelain`-driven candidate set -
-/// never a second, parallel notion of "is this worktree still here".
-pub fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
-    let out = run_git(repo, &["worktree", "list", "--porcelain"]).ok()?;
-    let want = format!("branch refs/heads/{branch}");
-    let mut dir: Option<&str> = None;
-    for line in out.lines() {
-        if let Some(d) = line.strip_prefix("worktree ") {
-            dir = Some(d);
-        } else if line.trim() == want {
-            return dir.map(|d| d.to_string());
+/// Read fail-closed, since [`Worktree::create`] clears `dir` on a no, and anything but a plain yes
+/// or no is an error, so nothing at `dir` is cleared or adopted on it:
+/// - a list git refuses, or a `dir` the filesystem cannot read or resolve;
+/// - a listed path that cannot be resolved for a reason other than nothing being there, since it
+///   may be `dir` ([`names_dir`]), when that entry could be the tree of the unit on `branch`
+///   ([`could_be_the_units`]), wherever git lists it beside an entry naming `dir`. Any other such
+///   entry is passed over, so a worktree on an unreadable disk elsewhere holds no create, yet
+///   `dir` is never cleared on its account: with no entry naming `dir`, its error is the answer;
+/// - an entry at `dir` git marks `locked` (an add git has not finished, or a lock a person set) or
+///   `prunable` (a tree git can no longer use, its dir still there): git's own prune and the heal
+///   ([`worktree_admin_is_corrupt`]) leave a locked entry untouched, and a prunable one at a dir
+///   that is there still holds what is in it;
+/// - an entry git marks `locked` at a `dir` with nothing there, matched by `dir` as given or
+///   resolved ([`git_mark_at`]): a clear removed the tree of an add git did not finish, or a
+///   person deleted a tree they locked, and git refuses an add at `dir` until the entry is
+///   recovered;
+/// - a tree at `dir` whose registration git does not list ([`unlisted_registration`]): git leaves
+///   out an entry it cannot read, saying nothing.
+fn registered_at(
+    repo: &str,
+    dir: &str,
+    branch: &str,
+    authorized_root: &str,
+) -> Result<bool, Error> {
+    match occupant(dir)? {
+        Some(found) if !found.file_type().is_symlink() => {}
+        Some(_) => return Ok(false),
+        None => {
+            refuse_locked_at(repo, dir)?;
+            return Ok(false);
         }
     }
-    None
+    let want =
+        std::fs::canonicalize(dir).map_err(|e| step_failed(format!("resolving {dir}"), e))?;
+    let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
+        step_failed(
+            format!("reading whether a worktree is registered at {dir}"),
+            e.0,
+        )
+    })?;
+    let mut named = None;
+    let mut passed_over = None;
+    for entry in listed(&out) {
+        match names_dir(entry.path, dir, &want) {
+            Ok(false) => {}
+            Ok(true) => {
+                named.get_or_insert(entry.mark);
+            }
+            Err(e) if could_be_the_units(&entry, branch, authorized_root) => return Err(e),
+            Err(e) => {
+                passed_over.get_or_insert(e);
+            }
+        }
+    }
+    match (named, passed_over) {
+        (Some(Some(mark)), _) => Err(marked_entry(repo, mark, dir)),
+        (Some(None), _) => Ok(true),
+        (None, Some(e)) => Err(e),
+        (None, None) => unlisted_registration(dir),
+    }
+}
+
+/// The mark git gives the worktree it lists at `dir` (its `locked` or `prunable` line, reason
+/// included), when git lists one there that it marks: a tree a person locked, or one whose add or
+/// remove git did not finish ([`marked_entry`] names how each is recovered). The entry is matched
+/// when a spelling of its path, as git lists it or resolved, is a spelling of `dir`, as given or
+/// resolved ([`spellings`]). A list git refuses is an error.
+pub fn git_mark_at(repo: &str, dir: &str) -> Result<Option<String>, Error> {
+    let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
+        step_failed(
+            format!("reading whether git marks a worktree at {dir}"),
+            e.0,
+        )
+    })?;
+    let spelled = spellings(dir);
+    let mark = listed(&out)
+        .filter(|entry| spellings(entry.path).iter().any(|s| spelled.contains(s)))
+        .find_map(|entry| entry.mark.map(str::to_string));
+    Ok(mark)
+}
+
+/// Refuse `dir` when git lists a worktree there it marks `locked` ([`git_mark_at`]): a person's
+/// lock, or an add git did not finish. The error names how to recover it ([`marked_entry`]).
+fn refuse_locked_at(repo: &str, dir: &str) -> Result<(), Error> {
+    match git_mark_at(repo, dir)? {
+        Some(mark) if mark_word(&mark) == "locked" => Err(marked_entry(repo, &mark, dir)),
+        _ => Ok(()),
+    }
+}
+
+/// The spellings of the place `dir` names: `dir` as given, and `dir` resolved or, with nothing at
+/// `dir` to resolve, its parent resolved and joined with its name, since git records the path it
+/// resolved when it added the tree.
+fn spellings(dir: &str) -> Vec<std::path::PathBuf> {
+    let given = std::path::Path::new(dir);
+    let resolved = given.canonicalize().ok().or_else(|| {
+        let parent = given.parent()?.canonicalize().ok()?;
+        Some(parent.join(given.file_name()?))
+    });
+    std::iter::once(given.to_path_buf())
+        .chain(resolved)
+        .collect()
+}
+
+/// Whether `entry`, a worktree git lists, could be the tree of the unit on `branch` working under
+/// `authorized_root`: it has that branch checked out, or its path lies under the root, as given or
+/// resolved. The comparison is by path components and never resolves the entry's own path, which
+/// is what cannot be resolved. An empty root has nothing under it.
+fn could_be_the_units(entry: &Listed<'_>, branch: &str, authorized_root: &str) -> bool {
+    if entry.branch == Some(branch) {
+        return true;
+    }
+    if authorized_root.is_empty() {
+        return false;
+    }
+    let path = std::path::Path::new(entry.path);
+    let root = std::path::Path::new(authorized_root);
+    path.starts_with(root)
+        || root
+            .canonicalize()
+            .is_ok_and(|resolved| path.starts_with(resolved))
+}
+
+/// Whether `path`, a worktree `git worktree list` names, is `dir`: the same spelling, or the same
+/// place once resolved (`want` is `dir` resolved). A path with nothing at it is not `dir`; one that
+/// cannot be resolved any other way (a permission, a link to itself on the way) may be, and is an
+/// error naming both.
+fn names_dir(path: &str, dir: &str, want: &std::path::Path) -> Result<bool, Error> {
+    if path == dir {
+        return Ok(true);
+    }
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => Ok(resolved == want),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(step_failed(
+            format!("resolving {path}, a worktree git lists, to tell whether it is {dir}"),
+            e,
+        )),
+    }
+}
+
+/// The answer for a `dir` no listed worktree names: an error when `dir` is a tree whose
+/// registration is still there, or cannot be read, though git does not list it; otherwise no.
+/// A tree's `.git` file names its registration (`gitdir: <path>`, relative to `dir` when not
+/// absolute). No `.git` file, no `gitdir` line, or a registration with nothing at it is a
+/// leftover, as is what the heal ([`heal_corrupt_worktree_admin`]) removed the registration of.
+fn unlisted_registration(dir: &str) -> Result<bool, Error> {
+    let gitfile = std::path::Path::new(dir).join(".git");
+    let gitfile_s = gitfile.to_string_lossy();
+    if !metadata_at(&gitfile_s, std::fs::metadata(&gitfile))?.is_some_and(|m| m.is_file()) {
+        return Ok(false);
+    }
+    let named = std::fs::read_to_string(&gitfile)
+        .map_err(|e| step_failed(format!("reading the worktree link {gitfile_s}"), e))?;
+    let Some(admin) = named.trim_end().strip_prefix("gitdir: ") else {
+        return Ok(false);
+    };
+    let admin = std::path::Path::new(dir).join(admin);
+    let admin_s = admin.to_string_lossy();
+    match metadata_at(&admin_s, std::fs::metadata(&admin))? {
+        Some(_) => Err(Error(format!(
+            "{dir} is a worktree whose registration {admin_s} git does not list: nothing there is \
+             cleared or adopted"
+        ))),
+        None => Ok(false),
+    }
+}
+
+/// What sits at `dir`, read from the path's own entry and never by following a link, so a link -
+/// dangling or not - is itself what sits there ([`metadata_at`]).
+fn occupant(dir: &str) -> Result<Option<std::fs::Metadata>, Error> {
+    metadata_at(dir, std::fs::symlink_metadata(dir))
+}
+
+/// What `read`, a metadata read of `path`, answers: `None` when nothing is there, the metadata
+/// when something is, and an error naming `path` when the filesystem cannot answer, never a no.
+/// The read is [`std::fs::symlink_metadata`] for the path's own entry, a link being itself, or
+/// [`std::fs::metadata`] to follow a link to what it names.
+fn metadata_at(
+    path: &str,
+    read: std::io::Result<std::fs::Metadata>,
+) -> Result<Option<std::fs::Metadata>, Error> {
+    match read {
+        Ok(found) => Ok(Some(found)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(step_failed(format!("reading what sits at {path}"), e)),
+    }
 }
 
 /// Remove whatever occupies `dir` so a subsequent `git worktree add <dir>` cannot
@@ -2281,15 +2824,52 @@ pub fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
 /// `repo_admin_lock(repo)` across its own whole call before reaching here. This function
 /// itself must NEVER take that lock: `std::sync::Mutex` is not reentrant, and doing so would
 /// deadlock every one of its callers against itself.
+///
+/// An empty `repo` names no repository to deregister `dir` from, so this fails before it reaps
+/// or removes anything: git's refusal of that path is never read as "nothing is registered here".
+///
+/// A symlink at `dir` is removed as a link and nothing else: what it names - a directory, another
+/// registered worktree, nothing at all - is never reaped, deregistered or removed, since `git
+/// worktree remove --force` given a link removes the worktree the link names. A Unix link is
+/// unlinked like a file; a Windows directory link, which the file call refuses, is removed as a
+/// directory entry, which removes the link alone.
+///
+/// A tree git marks `locked` at `dir` ([`refuse_locked_at`]: a person's lock, an add git did not
+/// finish) is an error naming git's own commands that recover it ([`marked_entry`]), and nothing
+/// there is reaped, deregistered or removed: the lock says the tree is kept.
 fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
-    reap_dir_before_removal(dir, authorized_root);
-    if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
-        && std::path::Path::new(dir).exists()
-    {
-        std::fs::remove_dir_all(dir)
-            .map_err(|e| Error(format!("remove leftover worktree dir {dir}: {e}")))?;
+    if repo.is_empty() {
+        return Err(step_failed(
+            format!("clearing worktree dir {dir}"),
+            crate::subprocess::NO_REPOSITORY,
+        ));
+    }
+    if occupant(dir)?.is_some_and(|m| m.file_type().is_symlink()) {
+        std::fs::remove_file(dir)
+            .or_else(|_| std::fs::remove_dir(dir))
+            .map_err(|e| step_failed(format!("removing the link at {dir}"), e))?;
+    } else {
+        refuse_locked_at(repo, dir)?;
+        reap_dir_before_removal(dir, authorized_root);
+        if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
+            && std::path::Path::new(dir).exists()
+        {
+            std::fs::remove_dir_all(dir)
+                .map_err(|e| step_failed(format!("removing leftover worktree dir {dir}"), e))?;
+        }
     }
     git(repo, &["worktree", "prune"])?;
+    Ok(())
+}
+
+/// Clear a leftover sitting at `dir`, the path a worktree is about to be added at, through
+/// [`clear_worktree_dir`]: a plain directory, a registration git still tracks there, or a link.
+/// Nothing at `dir` ([`occupant`]) is a no-op, and a read the filesystem cannot answer is an
+/// error. CALLER-LOCKED, as [`clear_worktree_dir`] is.
+fn clear_leftover_at(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
+    if occupant(dir)?.is_some() {
+        clear_worktree_dir(repo, dir, authorized_root)?;
+    }
     Ok(())
 }
 
@@ -2465,9 +3045,18 @@ const HEAL_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(60
 ///   healed on an unprovable age.
 ///
 /// A healthy entry always has both markers present and non-empty, so this never flags a
-/// live worktree regardless of age or lock state.
+/// live worktree regardless of age or lock state. A marker is missing only when the filesystem
+/// says nothing is there: a marker read failing any other way (a permission, a link to itself)
+/// proves nothing, and the entry is left alone, as it is when the `locked` marker cannot be
+/// read.
 fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
-    if admin.join("locked").exists() {
+    // A marker's length when it is there, `None` when nothing is, an error when the read fails.
+    let read = |marker: &str| match std::fs::metadata(admin.join(marker)) {
+        Ok(found) => Ok(Some(found.len())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    };
+    if !matches!(read("locked"), Ok(None)) {
         return false;
     }
     let old_enough = std::fs::metadata(admin)
@@ -2480,7 +3069,7 @@ fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
     }
     ["commondir", "gitdir"]
         .iter()
-        .any(|marker| std::fs::metadata(admin.join(marker)).map_or(true, |m| m.len() == 0))
+        .any(|marker| matches!(read(marker), Ok(None | Some(0))))
 }
 
 /// Tear down any scratch worktree still CHECKED OUT on `branch`, then reclaim its sibling
@@ -2495,12 +3084,15 @@ fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
 /// branch, so the branch-GC a resumed `rigger run` performs reclaims it here.
 ///
 /// This composes the EXISTING single-authorities, minting no parallel teardown:
-/// [`registered_worktree_for`] finds the dir, [`clear_worktree_dir`] deregisters it
-/// (tolerating both a still-tracked worktree and a bare leftover dir, and pruning a stale
-/// registration whose dir was deleted out from under git - so even a residue that no
-/// longer occupies disk stops holding the branch), and [`reclaim_cache_sibling`] reclaims
-/// the multi-gigabyte `cargo-target-<slug>` cache, exactly as the two teardowns above do.
-/// A branch with no lingering worktree is a graceful no-op.
+/// [`registration_on`] finds where the branch is checked out and whether that tree is the
+/// run's to take, [`clear_worktree_dir`] deregisters a usable tree under the work root, a
+/// `git worktree prune` drops a registration whose dir was deleted out from under git (so even a
+/// residue that no longer occupies disk stops holding the branch), and [`reclaim_cache_sibling`]
+/// reclaims the multi-gigabyte `cargo-target-<slug>` cache of a tree under the work root,
+/// exactly as the two teardowns above do. A branch with no lingering worktree is a graceful
+/// no-op. A branch checked out anywhere else - a person's tree, the main checkout, a tree git
+/// marks locked or prunable - is [`registration_on`]'s error naming where, and nothing there is
+/// reaped or removed. The answer is the dir this took the branch from, if any.
 ///
 /// The owning STEP process is dead on this path, but that is not the same as "nothing is
 /// rooted in the dir" (spec 79, criterion 1 - the prior wording here claimed exactly that,
@@ -2517,18 +3109,29 @@ pub fn reclaim_worktree_on_branch(
     repo: &str,
     branch: &str,
     authorized_root: &str,
-) -> Result<(), Error> {
+) -> Result<Option<String>, Error> {
     // Serialize this WHOLE call against every other in-process admin-directory mutation
     // this process makes for the SAME repository (spec 103 checkin round 4: this call's own
     // `clear_worktree_dir` below writes into `.git/worktrees` exactly like `Worktree::
     // create`'s heal-scan-then-add does; see `repo_admin_lock`'s doc comment).
     let repo_lock = repo_admin_lock(repo);
     let _repo_guard = repo_lock.lock().unwrap();
-    if let Some(dir) = registered_worktree_for(repo, branch) {
-        clear_worktree_dir(repo, &dir, authorized_root)?;
-        reclaim_cache_sibling(&dir, authorized_root);
+    match registration_on(repo, branch, authorized_root)? {
+        OnBranch::Nowhere => Ok(None),
+        OnBranch::Gone(dir) => {
+            git(repo, &["worktree", "prune"])?;
+            let root = std::path::Path::new(authorized_root);
+            if crate::reap::strictly_under(std::path::Path::new(&dir), root).is_some() {
+                reclaim_cache_sibling(&dir, authorized_root);
+            }
+            Ok(Some(dir))
+        }
+        OnBranch::Under(dir) => {
+            clear_worktree_dir(repo, &dir, authorized_root)?;
+            reclaim_cache_sibling(&dir, authorized_root);
+            Ok(Some(dir))
+        }
     }
-    Ok(())
 }
 
 /// The current HEAD sha of the git checkout at `dir`, or `""` when `dir` is empty
@@ -2577,7 +3180,7 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
         Ok(written) => written,
         // A checkout that writes no index has no entry to re-hash.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(Error(format!("read {}: {e}", index.display()))),
+        Err(e) => return Err(step_failed(format!("reading {}", index.display()), e)),
     };
     // Nor has one of an empty tree, whose index lists no file: it needs no wait.
     if git(dir, &["ls-files", "-z"])?.is_empty() {
@@ -2594,12 +3197,435 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
     git(dir, &["update-index", "-q", "--refresh"]).map(drop)
 }
 
+/// The git conflict-marker lines that `scope`'s TRACKED files carry at `at`, as `(path, line)`
+/// pairs: the marker scan's one home. Only a COMPLETE, ORDERED set counts - a start line
+/// (`<<<<<<< `), then a separator (`=======`), then an end line (`>>>>>>> `), each a whole line
+/// with any trailing `\r` of a CRLF file dropped ([`marker`]); a diff3 base section
+/// (`||||||| `) between start and separator is content to it, like any other line. A
+/// separator-shaped line alone (a Setext heading's underline, an RST title's over- and
+/// underline), a start with no end after it and the three out of order are no conflict, so the
+/// scan answers none of their lines. [`ScanAt::Worktree`] reads the worktree copy (staged or
+/// not), [`ScanAt::Index`] what the next `git commit` takes, and [`ScanAt::Commit`] a commit's
+/// tree. Each line is answered with the number of complete sets it stands in at that path, which
+/// [`markers_introduced`] compares with what a commit already carries: read at the worktree
+/// against `HEAD`, it is [`commit_refusal`]'s; read at the index against both parents, it is
+/// [`Worktree::merge_into_worktree`]'s finalize refusal, through
+/// [`Worktree::markers_the_merge_introduced`].
+///
+/// At the worktree this is [`commit_refusal`]'s half-merge guard (spec 89, criterion 1: A
+/// CHECKPOINT NEVER COMMITS A HALF-MERGE) - deliberately a CONTENT check, not an
+/// index-state one: the commit's own `git add -A` is what clears a conflicted path's
+/// UNMERGED index flag the instant it is staged, REGARDLESS of whether the staged content
+/// is a genuine resolution or still the raw marker text (exactly what let the 2026-09-12
+/// incident's checkpoint treat a conflicted file as "resolved") - so an index-state check
+/// taken right before that same `add` cannot tell a still-broken path from one a caller
+/// (an implementer's edit, or [`crate::conductor`]'s `regenerate_conflicted_paths`
+/// overwriting a registered-regenerable path) has ALREADY fixed on disk but not yet
+/// staged; both look identically "unmerged" at that instant. Content is the one signal
+/// that is true regardless of staging order.
+///
+/// `scope` (round 2 fix, spec 89 criterion 1 -
+/// `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`) is
+/// the CALLER's own path list ([`commit_refusal`]'s uncommitted union unmerged paths, both
+/// read before the commit's `git add -A` can clear either signal; the finalize's staged
+/// paths) - never an unconditional whole-tracked-tree scan: a pre-existing, untouched file ELSEWHERE in
+/// the repo that merely happens to contain a complete marker set (a document showing one, say)
+/// must never block a commit that never touches it. An empty `scope` (nothing pending) is a no-op - never even shells out -
+/// matching the unconditional call's own no-op on a genuinely clean tree. `git grep` exits
+/// 1 (not an error) when nothing matches, distinct from a real invocation failure.
+fn conflict_markers_present(
+    dir: &str,
+    at: ScanAt<'_>,
+    scope: &[String],
+) -> Result<MarkerLines, Error> {
+    let mut lines = MarkerLines::new();
+    if scope.is_empty() {
+        return Ok(lines);
+    }
+    // `-z` ends each path with a NUL, so a path is read whole whatever it spells; the
+    // line-number, column and colour flags are pinned off so no git config adds any of them to a
+    // line, and the pattern syntax is pinned to basic so no git config reads the patterns as
+    // another. The separator's pattern leaves the line's end open, so a CRLF line reaches
+    // [`marker`], which reads the whole line.
+    let mut args = vec![
+        "grep",
+        "-I",
+        "-z",
+        "--no-line-number",
+        "--no-column",
+        "--no-color",
+        "--basic-regexp",
+        "-e",
+        "^<<<<<<< ",
+        "-e",
+        "^=======",
+        "-e",
+        "^>>>>>>> ",
+    ];
+    match at {
+        ScanAt::Worktree => {}
+        ScanAt::Index => args.push("--cached"),
+        ScanAt::Commit(rev) => args.push(rev),
+    }
+    // The pathspec separator joins the SAME argument list, never its own single-argument
+    // call, so the no-os-kill audit's whole-tree argv-separator shape - aimed at a
+    // negative-pid kill target, not a git pathspec - never matches here.
+    args.push("--");
+    let out = crate::subprocess::git_in(dir)
+        .and_then(|mut git| git.args(&args).args(scope).output())
+        .map_err(|e| step_failed("git grep conflict markers", e))?;
+    match out.status.code() {
+        Some(0) => {}
+        Some(1) => return Ok(lines),
+        _ => {
+            return Err(step_failed(
+                "git grep conflict markers",
+                String::from_utf8_lossy(&out.stderr),
+            ));
+        }
+    }
+    // A commit's hits name `<rev>:<path>`; the worktree's and the index's name the path.
+    let prefix = match at {
+        ScanAt::Commit(rev) => format!("{rev}:"),
+        ScanAt::Worktree | ScanAt::Index => String::new(),
+    };
+    // git grep lists a path's hits together, in the order they sit in it, so the set being
+    // read is the run of marker lines since its start: a start opens a new one, a line that
+    // does not continue it is passed over, and an end after its separator completes it.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut rest: &str = &stdout;
+    let mut open: Vec<&str> = Vec::new();
+    let mut open_in = "";
+    while let Some((name, tail)) = rest.split_once('\0') {
+        let (line, next) = tail.split_once('\n').unwrap_or((tail, ""));
+        rest = next;
+        let path = name.strip_prefix(prefix.as_str()).unwrap_or(name);
+        if path != open_in {
+            open.clear();
+            open_in = path;
+        }
+        let Some(this) = marker(line) else {
+            continue;
+        };
+        match (open.last().and_then(|last| marker(last)), this) {
+            (_, Marker::Start) => open = vec![line],
+            (Some(Marker::Start), Marker::Separator) => open.push(line),
+            (Some(Marker::Separator), Marker::End) => {
+                open.push(line);
+                for line in open.drain(..) {
+                    *lines
+                        .entry((path.to_string(), line.to_string()))
+                        .or_default() += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(lines)
+}
+
+/// Each conflict-marker line [`conflict_markers_present`] reads in a complete set, by path and
+/// line text, with the number of complete sets it stands in at that path.
+type MarkerLines = std::collections::BTreeMap<(String, String), usize>;
+
+/// The paths in `scope` where the content read `at` holds a conflict-marker line in more complete
+/// sets ([`conflict_markers_present`]) than any one commit of `carriers` holds it in at that path,
+/// sorted. A set a commit already carries (a fixture, a document showing one) is that file's
+/// content, never a conflict; a conflict beside it is a set more than the commit carries, even
+/// one whose lines repeat the carried set's. The one rule of [`commit_refusal`] (`HEAD` carries)
+/// and of the merge finalize ([`Worktree::markers_the_merge_introduced`], either parent carries).
+fn markers_introduced(
+    dir: &str,
+    at: ScanAt<'_>,
+    scope: &[String],
+    carriers: &[&str],
+) -> Result<Vec<String>, Error> {
+    let found = conflict_markers_present(dir, at, scope)?;
+    let mut hit: Vec<String> = found.keys().map(|(path, _)| path.clone()).collect();
+    hit.dedup();
+    let mut carried = MarkerLines::new();
+    for rev in carriers {
+        for (line, sets) in conflict_markers_present(dir, ScanAt::Commit(rev), &hit)? {
+            let most = carried.entry(line).or_default();
+            *most = (*most).max(sets);
+        }
+    }
+    let mut introduced: Vec<String> = found
+        .into_iter()
+        .filter(|(line, sets)| *sets > carried.get(line).copied().unwrap_or_default())
+        .map(|((path, _), _)| path)
+        .collect();
+    introduced.dedup();
+    Ok(introduced)
+}
+
+/// The three lines of a git conflict-marker set, in the order [`conflict_markers_present`]
+/// requires them.
+#[derive(Clone, Copy)]
+enum Marker {
+    /// `<<<<<<< ` and the side it names.
+    Start,
+    /// `=======`, the whole line.
+    Separator,
+    /// `>>>>>>> ` and the side it names.
+    End,
+}
+
+/// Which conflict-marker line `line` is, read with any trailing `\r` of a CRLF file dropped, or
+/// `None` for any other line.
+fn marker(line: &str) -> Option<Marker> {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    if line.starts_with("<<<<<<< ") {
+        Some(Marker::Start)
+    } else if line == "=======" {
+        Some(Marker::Separator)
+    } else if line.starts_with(">>>>>>> ") {
+        Some(Marker::End)
+    } else {
+        None
+    }
+}
+
+/// Why a commit of the tree rooted at `dir` for the unit's `branch` would be refused because its
+/// HEAD is off `branch` ([`head_off_branch`]), in words naming where the HEAD stands and the
+/// fact that commits made while it is off `branch` are not on the branch and so never land, or
+/// `None` when it is on `branch`. These words are the one home of that fact: the stop hook's
+/// reason carries them through its refusal lines. It is the first refusal of
+/// [`commit_refusal`], and the one a merge's finalize commit asks before it runs
+/// ([`Worktree::merge_into_worktree`]), whose marker check reads the index against both parents
+/// instead.
+fn off_branch_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> {
+    Ok(head_off_branch(dir, branch)?.map(|on| {
+        format!(
+            "refusing to commit in {dir}: HEAD is not on the unit's branch {branch} (git status: \
+             {on}) - commits made while HEAD is off {branch} are not on it and will not land"
+        )
+    }))
+}
+
+/// Why a commit of the tree rooted at `dir` for the unit's `branch` would be refused before it
+/// runs, in words naming the cause, or `None` when nothing would refuse it: the HEAD is off
+/// `branch` ([`off_branch_refusal`]), or conflict-marker text `HEAD` does not already carry sits
+/// in a changed or unmerged path ([`markers_introduced`], spec 89 criterion 1: A CHECKPOINT NEVER
+/// COMMITS A HALF-MERGE). Read-only: it changes nothing in the tree. [`Worktree::commit`] and
+/// [`Worktree::commit_checkpoint`] refuse on it, and a writing session's Stop hook asks it before
+/// the session may end.
+///
+/// The marker scan's scope (spec 89, criterion 1, round 2 fix
+/// `adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive`) is read
+/// before the commit's `git add -A` stages anything - staging is exactly what clears a
+/// conflicted path's UNMERGED index flag (see [`conflict_markers_present`]'s doc comment
+/// on why the content check exists at all), and the changed paths themselves (`git status
+/// --porcelain`) would otherwise report nothing pending for a path the commit is about to stage.
+pub fn commit_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> {
+    if let Some(why) = off_branch_refusal(dir, branch)? {
+        return Ok(Some(why));
+    }
+    let mut scope = uncommitted_paths(dir)?;
+    scope.extend(unmerged_paths(dir)?);
+    scope.sort();
+    scope.dedup();
+    if !markers_introduced(dir, ScanAt::Worktree, &scope, &["HEAD"])?.is_empty() {
+        return Ok(Some(format!(
+            "refusing to commit in {dir}: conflict-marker text is present in tracked file \
+             content - resolve it before committing"
+        )));
+    }
+    Ok(None)
+}
+
+/// Why the conductor's next content steps on the tree rooted at `dir`, for the unit's `branch`,
+/// would be refused, one line naming each cause, empty when none would: an operation git has
+/// left unfinished there ([`unfinished_operation`]), which refuses every later merge into the
+/// tree until it is concluded, then the commit's own refusal ([`commit_refusal`]). Read-only: it
+/// changes nothing in the tree and runs nothing but git's reads. `rigger hook stop` asks it
+/// before a writing session may end, so the session that left the tree so is the one told.
+pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error> {
+    let mut refusals = Vec::new();
+    if let Some(operation) = unfinished_operation(dir)? {
+        refusals.push(format!(
+            "{operation} is in progress in {dir} - git refuses the next merge into this tree \
+             until it is concluded"
+        ));
+    }
+    refusals.extend(commit_refusal(dir, branch)?);
+    Ok(refusals)
+}
+
+/// Why a producer's tree rooted at `dir` is not ready for the conductor, which lands only the
+/// commits made there and never commits the tree itself: the changes no commit records, untracked
+/// files included ([`uncommitted_paths`]), in the stage's `output` - the one scope the plan
+/// landing carries ([`in_producer_output`]) - named in a line saying to commit them; then, beside
+/// that line, the rest named in one saying they never land, are refused in a commit, and may be
+/// taken out of the tree. Work outside the output alone is no refusal: it never lands whatever
+/// the session does, so it holds nothing up. Empty when the output holds no such work. Read-only,
+/// like [`checkpoint_refusals`]. `rigger hook stop --own-commits <output>` asks it before a
+/// producer's session may end, and the conductor asks it again once the session has ended,
+/// failing the attempt on any line, since that work would otherwise never reach the run branch.
+pub fn own_commits_refusals(dir: &str, output: &str) -> Result<Vec<String>, Error> {
+    let (mut inside, mut outside): (Vec<String>, Vec<String>) = uncommitted_paths(dir)?
+        .into_iter()
+        .partition(|path| in_producer_output(path, output));
+    inside.sort();
+    outside.sort();
+    if inside.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut refusals = vec![format!(
+        "{dir} holds work in {output} that no commit records: {} - the conductor lands \
+         only the commits made there, so commit this work for it to reach the run branch",
+        inside.join(", ")
+    )];
+    if !outside.is_empty() {
+        refusals.push(format!(
+            "{dir} also holds work outside {output} that no commit records: {} - it \
+             never lands, and a commit touching it is refused as outside the stage's output, so \
+             leave it out of the commit; it may be taken out of the tree",
+            outside.join(", ")
+        ));
+    }
+    Ok(refusals)
+}
+
+/// The most lines of `git status` [`tree_status`] carries; the rest are counted.
+pub const TREE_STATUS_LINES: usize = 40;
+
+/// `git status` in `dir` in git's own words, its first [`TREE_STATUS_LINES`] lines with the rest
+/// counted ([`long_status`]); what git said instead when it fails. A producer's `Stop` hook and
+/// the conductor's failure of a producer's attempt each carry it beside [`own_commits_refusals`].
+pub fn tree_status(dir: &str) -> String {
+    let status = long_status(dir).unwrap_or_else(|e| e.to_string());
+    let lines: Vec<&str> = status.trim_end().lines().collect();
+    if lines.len() <= TREE_STATUS_LINES {
+        return lines.join("\n");
+    }
+    let rest = lines.len() - TREE_STATUS_LINES;
+    format!(
+        "{}\n({rest} more lines)",
+        lines[..TREE_STATUS_LINES].join("\n")
+    )
+}
+
+/// The operation git has left unfinished in the tree rooted at `dir`, or `None`: a merge
+/// (`MERGE_HEAD` resolves, [`Worktree::merge_in_progress`]'s read), a cherry-pick
+/// (`CHERRY_PICK_HEAD`), a revert (`REVERT_HEAD`), or a rebase (git's `rebase-merge` or
+/// `rebase-apply` state directory exists). Read fail-closed: a read git cannot answer is an
+/// error, never a no.
+pub fn unfinished_operation(dir: &str) -> Result<Option<&'static str>, Error> {
+    for (head, operation) in [
+        ("MERGE_HEAD", "a merge"),
+        ("CHERRY_PICK_HEAD", "a cherry-pick"),
+        ("REVERT_HEAD", "a revert"),
+    ] {
+        if ref_present(dir, head)? {
+            return Ok(Some(operation));
+        }
+    }
+    for state in ["rebase-merge", "rebase-apply"] {
+        let args = ["rev-parse", "--git-path", state];
+        let at = finish_git_query(start_git(dir, &args))
+            .ok()
+            .flatten()
+            .ok_or_else(|| git_failed(&args, "git did not name the path"))?;
+        let at = std::path::Path::new(dir).join(String::from_utf8_lossy(&at).trim());
+        if at
+            .try_exists()
+            .map_err(|e| step_failed(format!("reading {}", at.display()), e))?
+        {
+            return Ok(Some("a rebase"));
+        }
+    }
+    Ok(None)
+}
+
+/// Where the HEAD of the tree rooted at `dir` stands when it is not on `branch`, in git's own
+/// words (the first line of [`long_status`]: `HEAD detached at ...`, `interactive rebase in
+/// progress; onto ...`, `On branch ...`), or `None` when it is on `branch`. A HEAD git cannot
+/// read is an error, never an answer ([`current_branch`]).
+pub fn head_off_branch(dir: &str, branch: &str) -> Result<Option<String>, Error> {
+    if current_branch(dir)?.as_deref() == Some(branch) {
+        return Ok(None);
+    }
+    let status = long_status(dir)?;
+    Ok(Some(
+        status.lines().next().unwrap_or_default().trim().to_string(),
+    ))
+}
+
+/// `git status` in `dir` in its long form, the one whose first line says where the HEAD stands,
+/// with its hints and colour off and its untracked files listed by directory, so no setting of
+/// the user's git configuration changes its words or names a command to run. Read with optional
+/// locks off, so it rewrites nothing, not even the index.
+fn long_status(dir: &str) -> Result<String, Error> {
+    git(
+        dir,
+        &[
+            "--no-optional-locks",
+            "-c",
+            "advice.statusHints=false",
+            "-c",
+            "color.status=false",
+            "status",
+            "--long",
+            "--untracked-files=normal",
+        ],
+    )
+}
+
+/// The unmerged paths of the tree rooted at `dir`, sorted, each once:
+/// [`Worktree::conflicting_paths`]'s read. Read from the index's entries (`git ls-files -u`,
+/// one record per conflicted stage, `<mode> <object> <stage>` and a tab before the path), which
+/// rewrites nothing, where a porcelain diff may refresh the index's stat cache.
+fn unmerged_paths(dir: &str) -> Result<Vec<String>, Error> {
+    let out = git(dir, &["ls-files", "-u", "-z"])?;
+    let mut paths: Vec<String> = out
+        .split('\0')
+        .filter_map(|record| record.split_once('\t'))
+        .map(|(_, path)| path.to_string())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
-    run_git(dir, args).map_err(|out| Error(format!("git {}: {out}", args.join(" "))))
+    run_git(dir, args).map_err(|out| git_failed(args, out))
+}
+
+/// The error of a `git <args>` run that failed: `git <args> failed`, then what git said
+/// ([`step_failed`]).
+fn git_failed(args: &[&str], out: impl std::fmt::Display) -> Error {
+    step_failed(format!("git {}", args.join(" ")), out)
+}
+
+/// The error of a `step` that failed: `<step> failed` on the first line, which reads the same each
+/// time the step fails, and what git or the filesystem `answer`ed that time on the lines below
+/// ([`fault_text`](rigger_domain::run::fault_text)), so the same step failing again is the same
+/// fault to a hold, however the answer's words differ.
+fn step_failed(step: impl std::fmt::Display, answer: impl std::fmt::Display) -> Error {
+    Error(rigger_domain::run::fault_text(
+        format!("{step} failed"),
+        answer,
+    ))
+}
+
+/// The tree `git add -A` stages over HEAD in the tree rooted at `dir`, written through the index
+/// at `index` rather than the tree's own ([`Worktree::keep_tree_aside`]).
+fn staged_tree(dir: &str, index: &std::path::Path) -> Result<String, Error> {
+    let with_index = |args: &[&str]| -> Result<String, Error> {
+        let mut command = crate::subprocess::git_in(dir).map_err(|e| git_failed(args, e))?;
+        command.env("GIT_INDEX_FILE", index);
+        finish_git(start_command(command, args), GitOutput::Stdout)
+            .map(|out| String::from_utf8_lossy(&out).trim().to_string())
+            .map_err(|out| git_failed(args, String::from_utf8_lossy(&out).trim()))
+    };
+    with_index(&["read-tree", "HEAD"])?;
+    with_index(&["add", "-A"])?;
+    with_index(&["write-tree"])
 }
 
 /// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
-/// single `git status --porcelain -z` primitive every dirty-tree check shares (spec 89 round 3,
+/// single [`status_z`] primitive every dirty-tree check shares (spec 89 round 3,
 /// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`), so no call site grows
 /// its own inline `git status` that could diverge on which way to fail when the status read
 /// itself fails. `pub`, not `pub(crate)`, because its callers live in other crates (see
@@ -2612,13 +3638,30 @@ pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
 /// DISCARDS A TREE" (spec 89, criterion 1) means an unreadable tree must default to "protect
 /// it", never "safe to remove".
 pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
-    Ok(!git(dir, &["status", "--porcelain", "-z"])?.is_empty())
+    Ok(!status_z(dir)?.is_empty())
 }
 
-/// The paths `git status --porcelain -z` reports changed in `dir`'s tree, untracked files
-/// included, in git's order ([`parse_status_z`]).
+/// The paths [`status_z`] reports changed in `dir`'s tree, untracked files included, in git's
+/// order ([`parse_status_z`]).
 pub fn uncommitted_paths(dir: &str) -> Result<Vec<String>, Error> {
-    Ok(parse_status_z(&git(dir, &["status", "--porcelain", "-z"])?))
+    Ok(parse_status_z(&status_z(dir)?))
+}
+
+/// `git status --porcelain -z` in `dir`, the one status read [`path_is_dirty`] and
+/// [`uncommitted_paths`] share: untracked files listed by directory whatever the user's git
+/// configuration says (`status.showUntrackedFiles` may hide them or list each file), and optional
+/// locks off, so the read rewrites nothing, not even the index's stat cache.
+fn status_z(dir: &str) -> Result<String, Error> {
+    git(
+        dir,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=normal",
+        ],
+    )
 }
 
 /// Every path `dir`'s tree changed since `commit`: the paths commits made after it touch, then
@@ -2639,7 +3682,19 @@ pub fn paths_changed_since(dir: &str, commit: &str) -> Result<Vec<String>, Error
 /// Whether commit `ancestor` is in `descendant`'s history (either names any rev) in the
 /// repository at `dir`; `false` when it is not, or when git cannot tell.
 pub fn is_ancestor(dir: &str, ancestor: &str, descendant: &str) -> bool {
-    run_git(dir, &["merge-base", "--is-ancestor", ancestor, descendant]).is_ok()
+    in_history(dir, ancestor, descendant).unwrap_or(false)
+}
+
+/// Whether commit `ancestor` is in `descendant`'s history in the repository at `dir`, read
+/// fail-closed: `Ok(false)` only when git answers that it is not, and an error when git cannot
+/// answer (a rev it cannot resolve, no repository at `dir`, git ending any other way), so a
+/// caller that deletes a branch whose history the descendant holds never reads a failed read as
+/// an answer.
+pub fn in_history(dir: &str, ancestor: &str, descendant: &str) -> Result<bool, Error> {
+    let args = ["merge-base", "--is-ancestor", ancestor, descendant];
+    finish_git_query(start_git(dir, &args))
+        .map(|answer| answer.is_some())
+        .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
 }
 
 /// Which of a git run's streams its answer holds.
@@ -2666,7 +3721,7 @@ pub fn start_git(
     dir: impl AsRef<std::ffi::OsStr>,
     args: &[&str],
 ) -> std::io::Result<std::process::Child> {
-    start_command(crate::subprocess::git_in(dir), args)
+    start_command(crate::subprocess::git_in(dir)?, args)
 }
 
 /// `git`, a git command, run with `args`, no input and its output streams piped, so several can
@@ -2687,7 +3742,16 @@ pub fn finish_git(
     started: std::io::Result<std::process::Child>,
     output: GitOutput,
 ) -> Result<Vec<u8>, Vec<u8>> {
-    let out = waited(started)?;
+    finish_git_with_status(started, output).map_err(|(_, answer)| answer)
+}
+
+/// [`finish_git`]'s answer, a failure also holding git's exit status: `None` when git could not
+/// start or a signal ended it.
+fn finish_git_with_status(
+    started: std::io::Result<std::process::Child>,
+    output: GitOutput,
+) -> Result<Vec<u8>, (Option<i32>, Vec<u8>)> {
+    let out = waited(started).map_err(|start| (None, start))?;
     let answer = match (output, out.status.success()) {
         (GitOutput::Stdout, true) => out.stdout,
         (GitOutput::Stdout, false) => out.stderr,
@@ -2696,7 +3760,7 @@ pub fn finish_git(
     if out.status.success() {
         Ok(answer)
     } else {
-        Err(answer)
+        Err((out.status.code(), answer))
     }
 }
 
@@ -2726,10 +3790,30 @@ fn waited(started: std::io::Result<std::process::Child>) -> Result<std::process:
 
 /// `git <args>` in `dir`, answering standard output and standard error together as text.
 pub fn run_git(dir: &str, args: &[&str]) -> Result<String, String> {
+    run_git_with_status(dir, args).map_err(|(_, out)| out)
+}
+
+/// [`run_git`]'s answer, a failure also holding git's exit status ([`finish_git_with_status`]).
+fn run_git_with_status(dir: &str, args: &[&str]) -> Result<String, (Option<i32>, String)> {
     let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
-    git_output(dir, args, GitOutput::StdoutAndStderr)
+    finish_git_with_status(start_git(dir, args), GitOutput::StdoutAndStderr)
         .map(text)
-        .map_err(text)
+        .map_err(|(status, out)| (status, text(out)))
+}
+
+/// A content step's failure ([`StepError`]): `message`, the step's words for the git run that
+/// failed with exit `status` ([`run_git_with_status`]). Git ran and refused the step when it
+/// exited 1 to 127 - a hook's refusal, a merge refused over local changes or untracked files; it
+/// did not answer when it could not start or a signal ended it (no status) or when it died
+/// (128 and above, git's own fatal exit: a lock, a corrupt object, a missing identity). A refusal
+/// git reports by dying, a merge or a commit over unmerged paths, never reaches here: the commit
+/// stages every path before it runs, and the merge reads unmerged paths before it reports a
+/// failure, taking them down the conflict route.
+fn content_failure(status: Option<i32>, message: String) -> StepError {
+    match status {
+        Some(1..=127) => StepError::Refused(message),
+        _ => StepError::Unanswered(Error(message)),
+    }
 }
 
 /// Resolve the run's scratch root - where transient worktrees live. Precedence:
@@ -2971,7 +4055,7 @@ mod blob_batch_tests {
 
     /// The batch process over the repository holding `root`, run as the plain git there.
     fn started(root: &Path) -> Result<Option<BlobBatch>, Error> {
-        BlobBatch::start(root, crate::subprocess::git_in(root))
+        BlobBatch::start(root, crate::subprocess::git_in(root).unwrap())
     }
 
     /// What `batch` answers for `id`: the bytes, none, or the error's text.
@@ -3028,6 +4112,7 @@ mod blob_batch_tests {
         git_ok_with_identity(root, &["commit", "-q", "-m", "one"]);
         let tree = git_out(root, &["rev-parse", "HEAD^{tree}"]);
         let tree_bytes = crate::subprocess::git_in(root)
+            .unwrap()
             .args(["cat-file", "tree", &tree])
             .output()
             .unwrap()
@@ -3173,6 +4258,108 @@ mod tests {
     use crate::test_support::run_log;
 
     #[test]
+    fn a_content_step_is_a_refusal_only_when_git_ran_and_exited_below_128() {
+        // (git's exit status, whether the failure is a refusal)
+        let rows: [(Option<i32>, bool); 7] = [
+            (Some(1), true),    // a hook's refusal, a content conflict, an error git returns
+            (Some(2), true),    // a merge refused over local changes or untracked files
+            (Some(127), true),  // the top of the range git returns errors in
+            (Some(128), false), // git died: a lock, a corrupt object, a missing identity
+            (Some(129), false), // a shell's signal status
+            (Some(-1), false),  // no status git gives
+            (None, false),      // git could not start, or a signal ended it
+        ];
+        for (status, refused) in rows {
+            match content_failure(status, "the step's words".into()) {
+                StepError::Refused(m) => {
+                    assert!(refused, "{status:?} must be git not answering");
+                    assert_eq!(m, "the step's words");
+                }
+                StepError::Unanswered(Error(m)) => {
+                    assert!(!refused, "{status:?} must be a refusal");
+                    assert_eq!(m, "the step's words");
+                }
+            }
+        }
+    }
+
+    /// A STEP FAILING AGAIN READS THE SAME FIRST LINE: a failed git or filesystem step's error
+    /// names the step on its first line and what git or the OS answered that time on the lines
+    /// below. So the same step failing again, however git's or the OS's words differ, is the same
+    /// fault to a hold ([`crate::run::RunHeld::same_fault`]), and another step's failure is
+    /// another fault.
+    #[test]
+    fn a_step_failing_again_reads_the_same_first_line() {
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let gone = elsewhere.path().join("gone");
+        let gone = gone.to_str().unwrap();
+        let merge = |branch: &str| git(p, &["merge", "--ff-only", branch]).unwrap_err();
+        let unread = |path: &str, kind: std::io::ErrorKind, words: &str| {
+            metadata_at(path, Err(std::io::Error::new(kind, words))).unwrap_err()
+        };
+        // `side` names no branch, then one the checked-out branch cannot fast-forward to.
+        let unknown = merge("side");
+        for args in [
+            &["checkout", "-q", "-b", "side"][..],
+            &["commit", "--allow-empty", "-q", "-m", "side"],
+            &["checkout", "-q", "-"],
+            &["commit", "--allow-empty", "-q", "-m", "ahead"],
+        ] {
+            run_git(p, args).unwrap();
+        }
+        let diverged = merge("side");
+        let denied = std::io::ErrorKind::PermissionDenied;
+        let other = std::io::ErrorKind::Other;
+        // Each row: the step, its first failure, its next, and whether the two are the same step.
+        let rows: Vec<(&str, Error, Error, bool)> = vec![
+            ("a merge refused in other words", unknown, diverged, true),
+            (
+                "a merge of another branch",
+                merge("side"),
+                merge("other"),
+                false,
+            ),
+            (
+                "a branch tip read in a repository and in a directory that is gone",
+                branch_tip(p, "gone").unwrap_err(),
+                branch_tip(gone, "gone").unwrap_err(),
+                true,
+            ),
+            (
+                "another branch's tip",
+                branch_tip(p, "gone").unwrap_err(),
+                branch_tip(p, "lost").unwrap_err(),
+                false,
+            ),
+            (
+                "a path the filesystem answers in other words",
+                unread("/w/x", denied, "denied"),
+                unread("/w/x", other, "the device is gone"),
+                true,
+            ),
+            (
+                "another path",
+                unread("/w/x", denied, "denied"),
+                unread("/w/y", denied, "denied"),
+                false,
+            ),
+        ];
+        let first_line = |e: &Error| e.0.lines().next().unwrap_or_default().to_string();
+        let mismatched: Vec<String> = rows
+            .into_iter()
+            .filter(|(_, first, next, same)| {
+                first.0 == next.0 || (first_line(first) == first_line(next)) != *same
+            })
+            .map(|(step, first, next, same)| {
+                format!("{step}: the same step {same}, the errors {first:?} and {next:?}")
+            })
+            .collect();
+        assert!(mismatched.is_empty(), "{mismatched:#?}");
+    }
+
+    #[test]
     fn git_output_answers_the_streams_its_mode_names() {
         // `--version` prints to stdout; an unknown `git var` fails with usage on stderr.
         let rows: [(&str, &[&str], GitOutput, bool, &str); 4] = [
@@ -3278,6 +4465,7 @@ mod tests {
         let inside = temp_git_project_with_commit();
         let root = inside.path();
         let started = crate::subprocess::git_in(root)
+            .unwrap()
             .args(BLOB_BATCH)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -3289,7 +4477,7 @@ mod tests {
             (
                 Err(could_not_start()),
                 Err(format!(
-                    "git cat-file --batch in {}: {}",
+                    "git cat-file --batch in {} failed\n{}",
                     root.display(),
                     could_not_start()
                 )),
@@ -3335,16 +4523,16 @@ mod tests {
     }
 
     trait IntegrateForTest {
-        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error>;
+        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, StepError>;
     }
 
     impl IntegrateForTest for Worktree {
-        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, Error> {
+        fn integrate(&self, message: &str) -> Result<IntegrateOutcome, StepError> {
             match self.merge_into_worktree(message)? {
                 MergeOutcome::Conflict(paths) => Ok(IntegrateOutcome::Conflict(paths)),
                 MergeOutcome::Ready(commit) => {
                     if !commit.is_empty() && self.land()? == LandOutcome::TipMoved {
-                        return Err(Error("run tip moved under the test".into()));
+                        return Err(Error("run tip moved under the test".into()).into());
                     }
                     Ok(IntegrateOutcome::Merged(commit))
                 }
@@ -3741,6 +4929,100 @@ mod tests {
         );
     }
 
+    /// ONLY A COMPLETE, ORDERED SET OF CONFLICT MARKERS IS CONFLICT-MARKER TEXT: a commit is
+    /// refused over a start line, then a separator, then an end line - a diff3 base section
+    /// between start and separator, and CRLF line ends, included - and never over a separator-
+    /// shaped line alone (a Setext heading's underline, an RST title's over- and underline), a
+    /// start with no end after it, or the three lines out of order. A set the file's committed
+    /// text already shows (a fixture, a document about conflicts) is its content, never a
+    /// conflict, so an edit elsewhere in that file is not refused; a set beside it is, and so is
+    /// one whose lines repeat the shown set's, which is one set more than HEAD carries.
+    #[test]
+    fn a_commit_is_refused_only_over_a_complete_ordered_set_of_conflict_markers() {
+        // A committed file's text that shows a marker set.
+        const SHOWN: &str = "Markers look like:\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n";
+        let shown_edited = format!("{SHOWN}edited\n");
+        let shown_and_a_conflict = format!("{SHOWN}<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\n");
+        let shown_and_its_twin = format!("{SHOWN}<<<<<<< ours\nz\n=======\nw\n>>>>>>> theirs\n");
+        // Each row: the file's committed text, its text in the commit, and whether the commit is
+        // refused.
+        let rows = [
+            (
+                "a Setext heading",
+                "seed\n",
+                "Title\n=======\nbody\n",
+                false,
+            ),
+            (
+                "an RST title, over- and underlined",
+                "seed\n",
+                "=======\nTitle\n=======\nbody\n",
+                false,
+            ),
+            (
+                "a conflict",
+                "seed\n",
+                "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n",
+                true,
+            ),
+            (
+                "a diff3 conflict",
+                "seed\n",
+                "<<<<<<< ours\na\n||||||| base\no\n=======\nb\n>>>>>>> theirs\n",
+                true,
+            ),
+            (
+                "a conflict with CRLF line ends",
+                "seed\n",
+                "<<<<<<< ours\r\na\r\n=======\r\nb\r\n>>>>>>> theirs\r\n",
+                true,
+            ),
+            (
+                "a start marker with no end",
+                "seed\n",
+                "<<<<<<< ours\na\n=======\nb\n",
+                false,
+            ),
+            (
+                "the markers out of order",
+                "seed\n",
+                ">>>>>>> theirs\nb\n=======\na\n<<<<<<< ours\n",
+                false,
+            ),
+            (
+                "another line of a file whose committed text shows a set",
+                SHOWN,
+                shown_edited.as_str(),
+                false,
+            ),
+            (
+                "a conflict beside the set the committed text shows",
+                SHOWN,
+                shown_and_a_conflict.as_str(),
+                true,
+            ),
+            (
+                "a conflict whose lines repeat the set the committed text shows",
+                SHOWN,
+                shown_and_its_twin.as_str(),
+                true,
+            ),
+        ];
+        for (row, seed, text, refused) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/markers");
+            let dir = wt_path.to_str().unwrap();
+            std::fs::write(wt_path.join("notes.txt"), seed).unwrap();
+            git(dir, &["add", "notes.txt"]).unwrap();
+            git(dir, &["commit", "-q", "-m", "seed notes"]).unwrap();
+            std::fs::write(wt_path.join("notes.txt"), text).unwrap();
+            let refusal = commit_refusal(dir, "rigger/u/markers").unwrap();
+            assert_eq!(refusal.is_some(), refused, "{row}: {refusal:?}");
+            wt.remove().unwrap();
+        }
+    }
+
     #[test]
     fn commit_checkpoint_commits_through_a_refusing_hook_while_commit_is_refused() {
         // A checkpoint preserves a halted spawn's tree; a content hook (the docs-drift
@@ -4107,9 +5389,9 @@ mod tests {
         // (adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive):
         // the guard is scoped to THIS commit's own touched/unmerged paths, never an
         // unconditional whole-tracked-tree scan. A pre-existing, ALREADY-committed file this
-        // commit never touches - here a benign Markdown Setext heading underline, seven `=`
-        // characters, which happens to match the same `^=======$` pattern a real conflict
-        // marker line does - must never block an unrelated commit anywhere else in the repo.
+        // commit never touches - here a document showing a complete conflict-marker set, the
+        // same lines a real conflict leaves - must never block an unrelated commit anywhere
+        // else in the repo.
         // `commit_refuses_when_tracked_content_carries_conflict_marker_text` above pins the
         // opposite case (the guard MUST still catch marker text in a file THIS commit does
         // touch); this test is its negative-space twin.
@@ -4127,11 +5409,12 @@ mod tests {
         // Seed the lookalike file via raw git, bypassing `Worktree::commit` entirely, so it
         // lands as ALREADY-committed history this test's own commit call below never touches -
         // exactly like any other pre-existing file elsewhere in a real repo.
-        std::fs::write(wt_path.join("notes.md"), "Title\n=======\nbody text\n").unwrap();
+        const SHOWN: &str = "Markers look like:\n<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n";
+        std::fs::write(wt_path.join("notes.md"), SHOWN).unwrap();
         git(wt_path.to_str().unwrap(), &["add", "notes.md"]).unwrap();
         git(
             wt_path.to_str().unwrap(),
-            &["commit", "-m", "seed a benign Setext heading"],
+            &["commit", "-m", "seed a document showing a marker set"],
         )
         .unwrap();
 
@@ -4143,7 +5426,7 @@ mod tests {
         assert!(!sha.is_empty(), "the commit must actually land");
         assert_eq!(
             std::fs::read_to_string(wt_path.join("notes.md")).unwrap(),
-            "Title\n=======\nbody text\n",
+            SHOWN,
             "the untouched lookalike file is unchanged"
         );
     }
@@ -4186,45 +5469,90 @@ mod tests {
     }
 
     /// A merge's finalize commit takes no conflict-marker text the merge introduced
-    /// (op-105-merge-finalize-refuses-markers): a resolution staged with markers still in it,
-    /// or staged with them and cleared only in the worktree (the commit takes the index), is a
-    /// `Conflict` naming the path, the merge left in progress and the unit branch unmoved; a
-    /// resolution keeping the Setext underline both parents carry at that path finalizes clean.
+    /// (op-105-merge-finalize-refuses-markers) and lands nowhere but the unit's branch: a
+    /// resolution staged with markers still in it, or staged with them and cleared only in the
+    /// worktree (the commit takes the index), is a `Conflict` naming the path; a HEAD moved off
+    /// the unit's branch while the merge stays in progress is refused in [`commit_refusal`]'s
+    /// own words; either way the merge is left in progress and nothing is committed. A
+    /// resolution keeping the complete marker set both parents carry at that path (a document
+    /// showing one) finalizes clean.
     #[test]
     fn a_merge_finalize_refuses_marker_text_the_merge_introduced_and_no_line_a_parent_carries() {
-        const RESOLVED: &str = "Title\n=======\nA and B\n";
+        // What every version of the file starts with: a marker set it shows, and a Setext title.
+        const SHOWN: &str =
+            "Markers look like:\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n\nTitle\n=======\n";
+        // What the finalize answers.
+        enum Finalize {
+            Conflict,
+            Commits,
+            Refused,
+        }
+        // What is done to the unit's tree once the resolution is staged.
+        fn stays(_: &str) {}
+        fn onto_another_branch(dir: &str) {
+            run_git(dir, &["branch", "elsewhere"]).unwrap();
+            run_git(dir, &["symbolic-ref", "HEAD", "refs/heads/elsewhere"]).unwrap();
+        }
+        fn detached_in_place(dir: &str) {
+            run_git(dir, &["update-ref", "--no-deref", "HEAD", "HEAD"]).unwrap();
+        }
+        let resolved = format!("{SHOWN}A and B\n");
         // (row, what the resolver stages - `None` is the file as the merge left it - what it
-        // then leaves in the worktree unstaged, the conflict the finalize answers)
-        let rows = [
+        // then leaves in the worktree unstaged, what is then done to the tree, the finalize's
+        // answer)
+        type Row<'a> = (
+            &'static str,
+            Option<&'a str>,
+            Option<&'a str>,
+            fn(&str),
+            Finalize,
+        );
+        let rows: [Row; 5] = [
             (
                 "a resolution still carrying the markers",
                 None,
                 None,
-                Some(&["notes.md"]),
+                stays,
+                Finalize::Conflict,
             ),
             (
                 "markers staged and cleared only in the worktree",
                 None,
-                Some(RESOLVED),
-                Some(&["notes.md"]),
+                Some(resolved.as_str()),
+                stays,
+                Finalize::Conflict,
             ),
             (
-                "a resolution keeping the underline both parents carry",
-                Some(RESOLVED),
+                "a resolution keeping the marker set both parents carry",
+                Some(resolved.as_str()),
                 None,
+                stays,
+                Finalize::Commits,
+            ),
+            (
+                "HEAD pointed at another branch, MERGE_HEAD in place",
+                Some(resolved.as_str()),
                 None,
+                onto_another_branch,
+                Finalize::Refused,
+            ),
+            (
+                "HEAD detached in place, MERGE_HEAD in place",
+                Some(resolved.as_str()),
+                None,
+                detached_in_place,
+                Finalize::Refused,
             ),
         ];
-        for (row, staged, unstaged, conflict) in rows {
+        for (row, staged, unstaged, then, want) in rows {
             let repo = init_repo();
             let repo_path = repo.path().to_str().unwrap().to_string();
-            std::fs::write(repo.path().join("notes.md"), "Title\n=======\nbase\n").unwrap();
+            std::fs::write(repo.path().join("notes.md"), format!("{SHOWN}base\n")).unwrap();
             run_git(&repo_path, &["add", "notes.md"]).unwrap();
             run_git(&repo_path, &["commit", "-q", "-m", "seed notes"]).unwrap();
-            // Each side commits its edit directly: `Worktree::commit`'s own marker scan reads
-            // the Setext underline in a touched file as marker text.
+            // Each side commits its edit with git itself, as a person's commit on the branch.
             let edit = |dir: &std::path::Path, body: &str| {
-                std::fs::write(dir.join("notes.md"), format!("Title\n=======\n{body}\n")).unwrap();
+                std::fs::write(dir.join("notes.md"), format!("{SHOWN}{body}\n")).unwrap();
                 git(dir.to_str().unwrap(), &["commit", "-q", "-am", body]).unwrap();
             };
             let (wa, a) = temp_wt(&repo_path, "rigger/u/a");
@@ -4245,31 +5573,45 @@ mod tests {
             if let Some(content) = unstaged {
                 std::fs::write(wb.join("notes.md"), content).unwrap();
             }
+            then(wb_dir);
             let tip = || branch_tip(&repo_path, "rigger/u/b").unwrap();
-            let tip_before = tip();
+            let head = || git(wb_dir, &["rev-parse", "HEAD"]).unwrap();
+            let (tip_before, head_before) = (tip(), head());
+            let refusal = commit_refusal(wb_dir, "rigger/u/b").unwrap();
 
-            let outcome = b.merge_into_worktree("rigger: integrate b").unwrap();
+            let outcome = b.merge_into_worktree("rigger: integrate b");
             let tip_after = tip();
-            match (outcome, conflict) {
-                (MergeOutcome::Conflict(paths), Some(expected)) => {
-                    assert_eq!(paths, expected, "{row}: the conflict names the path");
+            match (outcome, want) {
+                (Ok(MergeOutcome::Conflict(paths)), Finalize::Conflict) => {
+                    assert_eq!(paths, ["notes.md"], "{row}: the conflict names the path");
                     assert_eq!(tip_after, tip_before, "{row}: no marker commit lands");
                     assert!(b.merge_in_progress(), "{row}: the merge stays in progress");
                 }
-                (MergeOutcome::Ready(commit), None) => {
+                (Ok(MergeOutcome::Ready(commit)), Finalize::Commits) => {
                     assert_eq!(commit, tip_after, "{row}: the merge commits");
                     assert_eq!(
                         git(&repo_path, &["show", "rigger/u/b:notes.md"]).unwrap(),
-                        RESOLVED,
+                        resolved,
                         "{row}: the unit branch holds the resolution"
                     );
                 }
-                (MergeOutcome::Conflict(paths), None) => {
-                    panic!("{row}: expected a clean finalize, got a conflict in {paths:?}")
+                (Err(StepError::Refused(why)), Finalize::Refused) => {
+                    assert_eq!(
+                        Some(why),
+                        refusal,
+                        "{row}: refused in the commit's own words"
+                    );
+                    assert_eq!(tip_after, tip_before, "{row}: the unit branch is unmoved");
+                    assert_eq!(head(), head_before, "{row}: nothing is committed at HEAD");
+                    assert!(b.merge_in_progress(), "{row}: the merge stays in progress");
                 }
-                (MergeOutcome::Ready(commit), Some(_)) => {
-                    panic!("{row}: expected a conflict, the merge committed {commit}")
+                (Ok(MergeOutcome::Conflict(paths)), _) => {
+                    panic!("{row}: the finalize answered a conflict in {paths:?}")
                 }
+                (Ok(MergeOutcome::Ready(commit)), _) => {
+                    panic!("{row}: the finalize committed {commit}")
+                }
+                (Err(e), _) => panic!("{row}: the finalize failed: {e:?}"),
             }
         }
     }
@@ -4322,8 +5664,10 @@ mod tests {
             "test setup: mkfifo must succeed"
         );
 
+        // Git ran and refused the merge (exit 2): the unit's own tree is in the way.
         let err = match b.integrate("rigger: integrate b") {
-            Err(e) => e,
+            Err(StepError::Refused(e)) => e,
+            Err(other) => panic!("git refusing the merge over the tree is a refusal: {other:?}"),
             Ok(IntegrateOutcome::Merged(c)) => panic!(
                 "a non-content git failure must surface as an Err, never a silent Merged({c:?})"
             ),
@@ -4332,9 +5676,8 @@ mod tests {
             ),
         };
         assert!(
-            err.0.contains("clash.rs") || err.0.to_lowercase().contains("untracked"),
-            "the real git failure must propagate, not a fabricated message: {}",
-            err.0
+            err.contains("clash.rs") || err.to_lowercase().contains("untracked"),
+            "the real git failure must propagate, not a fabricated message: {err}"
         );
         // The stray FIFO is exactly what git itself refused to touch - proof this is the real
         // git refusal, not some other failure.
@@ -4434,14 +5777,16 @@ mod tests {
             }
         }
 
+        // Git answers an object store it cannot write with an error it returns (exit 1), not
+        // one it dies on: a refusal, which reaches the conductor as the stage's failure.
         let err = match result {
-            Err(e) => e,
+            Err(StepError::Refused(e)) => e,
+            Err(other) => panic!("a commit git returns an error on is a refusal: {other:?}"),
             Ok(_) => panic!("a genuine commit failure must surface as an Err, not a silent no-op"),
         };
         assert!(
-            err.0.contains("insufficient permission"),
-            "the real failure must propagate verbatim: {}",
-            err.0
+            err.contains("insufficient permission"),
+            "the real failure must propagate verbatim: {err}"
         );
         assert!(
             b.merge_in_progress(),
@@ -4691,7 +6036,7 @@ mod tests {
         assert!(
             second.is_ok(),
             "a resumed already-landed cherry-pick must resolve, never hard-error: {:?}",
-            second.err().map(|e| e.0)
+            second.err().map(|e| e.to_string())
         );
         match second.unwrap() {
             CherryPickOutcome::Picked(landed) => assert!(
@@ -4786,7 +6131,7 @@ mod tests {
             resumed.is_ok(),
             "a leftover in-progress marker must be self-healed, never surfaced as a hard \
              error: {:?}",
-            resumed.err().map(|e| e.0)
+            resumed.err().map(|e| e.to_string())
         );
         match resumed.unwrap() {
             CherryPickOutcome::Conflict(detail) => {
@@ -4915,7 +6260,7 @@ mod tests {
             resumed.is_ok(),
             "a leftover in-progress marker with no sequencer/todo file must be \
              self-healed, never surfaced as a hard error: {:?}",
-            resumed.err().map(|e| e.0)
+            resumed.err().map(|e| e.to_string())
         );
         match resumed.unwrap() {
             CherryPickOutcome::Conflict(detail) => {
@@ -5032,7 +6377,7 @@ mod tests {
             resumed.is_ok(),
             "a shrunk-to-one still_pending leftover marker with no sequencer/todo \
              file must be self-healed, never surfaced as a hard error: {:?}",
-            resumed.err().map(|e| e.0)
+            resumed.err().map(|e| e.to_string())
         );
         match resumed.unwrap() {
             CherryPickOutcome::Conflict(detail) => {
@@ -5261,7 +6606,7 @@ mod tests {
         assert!(
             resumed.is_ok(),
             "a leftover conflict marker must resolve, never hard-error: {:?}",
-            resumed.err().map(|e| e.0)
+            resumed.err().map(|e| e.to_string())
         );
         match resumed.unwrap() {
             CherryPickOutcome::Conflict(_) => {}
@@ -5309,7 +6654,7 @@ mod tests {
             Ok(CherryPickOutcome::Conflict(detail)) => {
                 panic!("a nonexistent sha is not a conflict; got Conflict({detail})")
             }
-            Err(e) => e.0,
+            Err(e) => e.to_string(),
         };
         assert!(
             err.contains("bad object"),
@@ -5470,6 +6815,39 @@ mod tests {
             count_after_r1.trim(),
             "the idempotent revert adds no spurious empty commit"
         );
+    }
+
+    /// What a unit's tree carries since its base is read two ways: its commits alone, what a
+    /// landing of its commits carries, and those commits with the work no commit records beside
+    /// them, what the unit changed. A committed file and an untracked one beside it each read so.
+    #[test]
+    fn a_trees_commits_since_base_leave_out_the_work_no_commit_records() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/since", "").unwrap();
+        std::fs::write(wt_path.join("committed.txt"), "work\n").unwrap();
+        wt.commit("rigger: committed").unwrap();
+        std::fs::write(wt_path.join("leftover.txt"), "scratch\n").unwrap();
+
+        type Read = fn(&Worktree) -> Result<Vec<String>, Error>;
+        let rows: [(&str, Read, &[&str]); 2] = [
+            (
+                "its commits alone",
+                Worktree::committed_since_base,
+                &["committed.txt"],
+            ),
+            (
+                "its commits and the work beside them",
+                Worktree::changed_since_base,
+                &["committed.txt", "leftover.txt"],
+            ),
+        ];
+        for (read, since, expected) in rows {
+            assert_eq!(since(&wt).unwrap(), expected, "{read}");
+        }
+        wt.remove().unwrap();
     }
 
     #[test]
@@ -5948,6 +7326,79 @@ mod tests {
         assert!(
             std::path::Path::new(&live_dir).join("wip.txt").exists(),
             "the in-flight worktree is untouched"
+        );
+    }
+
+    /// The sweep takes only worktrees inside its root, compared path component by path
+    /// component: a terminal worktree in a sibling dir whose name merely begins with the root's
+    /// name is outside it and stays.
+    #[test]
+    fn sweep_terminal_leaves_a_worktree_beside_its_root_whose_path_merely_begins_with_it() {
+        let (_repo, repo_path, _) = scratch_repo(true);
+        let place = tempfile::tempdir().unwrap();
+        let root = place.path().canonicalize().unwrap().join("root");
+        std::fs::create_dir(&root).unwrap();
+        let root = root.to_str().unwrap();
+        let (beside_dir, _) = unit_wt(&repo_path, &format!("{root}-beside"), "beside");
+
+        assert_eq!(
+            sweep(&repo_path, root, &[]),
+            0,
+            "a worktree outside the root is not the sweep's to take"
+        );
+        assert!(exists(&beside_dir), "the worktree beside the root stays");
+    }
+
+    /// The sweep takes no tree git marks locked, an add git did not finish or a lock a person
+    /// set: it is kept as it stands, registration and work included, with a line naming it and
+    /// its mark, and the sweep goes on to take the terminal trees after it.
+    #[test]
+    fn sweep_terminal_keeps_a_tree_git_marks_locked_and_sweeps_the_rest() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (locked_dir, _) = unit_wt(&repo_path, &root, "a-locked");
+        std::fs::write(std::path::Path::new(&locked_dir).join("work.txt"), "work\n").unwrap();
+        run_git(
+            &repo_path,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "a person's lock",
+                &locked_dir,
+            ],
+        )
+        .unwrap();
+        let (done_dir, _) = unit_wt(&repo_path, &root, "done");
+
+        let (removed, lines) = sweep_logged(&repo_path, &root, &[]);
+
+        assert_eq!(
+            removed, 1,
+            "exactly the terminal tree git does not mark is swept"
+        );
+        assert!(
+            !exists(&done_dir),
+            "the terminal tree after the locked one is swept"
+        );
+        assert_eq!(
+            std::fs::read_to_string(std::path::Path::new(&locked_dir).join("work.txt")).ok(),
+            Some("work\n".to_string()),
+            "the locked tree and its work stay"
+        );
+        assert!(
+            run_git(&repo_path, &["worktree", "list", "--porcelain"])
+                .unwrap()
+                .lines()
+                .any(|line| line == format!("worktree {locked_dir}")),
+            "the locked tree stays registered"
+        );
+        assert_eq!(
+            lines,
+            [format!(
+                "rigger run: worktree sweep: kept {locked_dir:?} (branch \"rigger/u/a-locked\") - \
+                 git marks it `locked a person's lock`"
+            )],
+            "the kept tree is named with its mark"
         );
     }
 
@@ -6715,9 +8166,10 @@ mod tests {
         );
     }
 
-    /// `reclaim_worktree_on_branch` deregisters whatever held `branch`, leaving it deletable.
-    fn assert_reclaim_frees_the_branch(repo_path: &str, branch: &str) {
-        reclaim_worktree_on_branch(repo_path, branch, "").unwrap();
+    /// `reclaim_worktree_on_branch` under the work root `root` deregisters whatever held
+    /// `branch`, leaving it deletable.
+    fn assert_reclaim_frees_the_branch(repo_path: &str, branch: &str, root: &str) {
+        reclaim_worktree_on_branch(repo_path, branch, root).unwrap();
         assert_eq!(
             registered_worktree_for(repo_path, branch),
             None,
@@ -6741,12 +8193,12 @@ mod tests {
         // worktree holds the branch, so a reclaim that skipped the teardown would strand it.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let (_parent, wt_dir, branch) = committed_unit_wt(&repo_path, "lingered");
+        let (parent, wt_dir, branch) = committed_unit_wt(&repo_path, "lingered");
         let cache = unit_cache_sibling(&wt_dir).expect("a unit worktree owns a cache sibling");
         populate(&cache, &["built.rlib"]);
         assert_branch_held_by(&repo_path, &branch, &wt_dir);
 
-        assert_reclaim_frees_the_branch(&repo_path, &branch);
+        assert_reclaim_frees_the_branch(&repo_path, &branch, parent.path().to_str().unwrap());
         assert!(
             !exists(&wt_dir),
             "the lingering worktree dir is torn down off disk"
@@ -6792,7 +8244,9 @@ mod tests {
         assert_teardown_reaps_what_is_rooted_inside(
             &wt_path,
             None,
-            || reclaim_worktree_on_branch(&repo_path, branch, &parent_str).unwrap(),
+            || {
+                reclaim_worktree_on_branch(&repo_path, branch, &parent_str).unwrap();
+            },
             "reclaim_worktree_on_branch",
         );
         assert!(
@@ -6890,13 +8344,13 @@ mod tests {
         // the dir off disk, without pruning, would leave the branch permanently un-deletable.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let (_parent, wt_dir, branch) = committed_unit_wt(&repo_path, "vanished");
+        let (parent, wt_dir, branch) = committed_unit_wt(&repo_path, "vanished");
 
         // The dir vanishes WITHOUT deregistration; the registration dangles on.
         std::fs::remove_dir_all(&wt_dir).unwrap();
         assert_branch_held_by(&repo_path, &branch, &wt_dir);
 
-        assert_reclaim_frees_the_branch(&repo_path, &branch);
+        assert_reclaim_frees_the_branch(&repo_path, &branch, parent.path().to_str().unwrap());
     }
 
     #[test]
@@ -6942,23 +8396,26 @@ mod tests {
     fn create_adopts_a_branch_still_checked_out_in_a_prior_processes_worktree() {
         // Driver-process disposability (Gap 12): a killed `rigger run` leaves its
         // worktree REGISTERED with the branch checked out. A later process derives a
-        // DIFFERENT dir for the same branch; git refuses a second checkout, so
-        // `create` must ADOPT the surviving registration (returning ITS dir with the
-        // committed work present) instead of failing - and when the registered dir
+        // DIFFERENT dir for the same branch under the same work root; git refuses a second
+        // checkout, so `create` must ADOPT the surviving registration (returning ITS dir
+        // with the committed work present) instead of failing - and when the registered dir
         // was deleted out from under git, it must prune and re-create.
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let branch = "rigger/u/unit-adopt";
+        let root = tempfile::tempdir().unwrap();
+        let root_path = root.path().canonicalize().unwrap();
+        let root_s = root_path.to_str().unwrap();
 
         // Process 1: create, commit, and do NOT remove - the process "died".
-        let dir1 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch, "").unwrap();
+        let dir1 = root_path.join("rigger-wt-first");
+        let wt1 = Worktree::create(&repo_path, dir1.to_str().unwrap(), branch, root_s).unwrap();
         std::fs::write(dir1.join("inflight.txt"), "wave-1 work\n").unwrap();
         wt1.commit("rigger: in-flight work").unwrap();
 
         // Process 2: same branch, different dir. Must ADOPT dir1, not fail.
-        let dir2 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch, "").unwrap();
+        let dir2 = root_path.join("rigger-wt-second");
+        let wt2 = Worktree::create(&repo_path, dir2.to_str().unwrap(), branch, root_s).unwrap();
         assert_eq!(
             wt2.dir,
             dir1.to_str().unwrap(),
@@ -6973,8 +8430,8 @@ mod tests {
         // cleaner). create must prune the stale registration and re-create at the
         // requested dir, with the branch's committed work checked out.
         std::fs::remove_dir_all(&dir1).unwrap();
-        let dir3 = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
-        let wt3 = Worktree::create(&repo_path, dir3.to_str().unwrap(), branch, "").unwrap();
+        let dir3 = root_path.join("rigger-wt-third");
+        let wt3 = Worktree::create(&repo_path, dir3.to_str().unwrap(), branch, root_s).unwrap();
         assert_eq!(
             wt3.dir,
             dir3.to_str().unwrap(),
@@ -6987,11 +8444,516 @@ mod tests {
         wt3.remove().unwrap();
     }
 
+    /// Where [`held_elsewhere`] checks its branch out: a tree under rigger's work root, a tree
+    /// outside it, or the repository's main checkout.
+    #[derive(Clone, Copy)]
+    enum Held {
+        Under,
+        Outside,
+        Main,
+    }
+
+    /// The branch [`held_elsewhere`] checks out.
+    const HELD_BRANCH: &str = "rigger/u/unit-held";
+
+    /// A repository whose [`HELD_BRANCH`] is checked out at `at`, a tree holding work in
+    /// `work.txt`, and rigger's work root `root`, resolved.
+    struct HeldElsewhere {
+        repo: tempfile::TempDir,
+        root: std::path::PathBuf,
+        at: std::path::PathBuf,
+        _places: [tempfile::TempDir; 2],
+    }
+
+    impl HeldElsewhere {
+        fn repo(&self) -> &str {
+            self.repo.path().to_str().unwrap()
+        }
+
+        fn root(&self) -> &str {
+            self.root.to_str().unwrap()
+        }
+
+        fn at(&self) -> &str {
+            self.at.to_str().unwrap()
+        }
+
+        /// The work at `at`, or `None` once nothing is there.
+        fn work(&self) -> Option<String> {
+            std::fs::read_to_string(self.at.join("work.txt")).ok()
+        }
+
+        /// Whether git still lists a worktree at `at`.
+        fn listed(&self) -> bool {
+            let listed =
+                run_git(self.repo(), &["worktree", "list", "--porcelain"]).unwrap_or_default();
+            listed
+                .lines()
+                .any(|line| line == format!("worktree {}", self.at()))
+        }
+
+        /// Lock the tree at `at`, as a person does.
+        fn lock(&self) {
+            run_git(
+                self.repo(),
+                &["worktree", "lock", "--reason", "a person's lock", self.at()],
+            )
+            .unwrap();
+        }
+    }
+
+    /// [`HELD_BRANCH`] checked out where `held` says, its tree holding work.
+    fn held_elsewhere(held: Held) -> HeldElsewhere {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let places = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        let root = places[0].path().canonicalize().unwrap();
+        let at = match held {
+            Held::Under => root.join("held"),
+            Held::Outside => places[1].path().canonicalize().unwrap().join("held"),
+            Held::Main => repo.path().canonicalize().unwrap(),
+        };
+        let at_s = at.to_str().unwrap();
+        match held {
+            Held::Main => run_git(&repo_path, &["checkout", "-q", "-b", HELD_BRANCH]),
+            Held::Under | Held::Outside => run_git(
+                &repo_path,
+                &["worktree", "add", "-q", "-b", HELD_BRANCH, at_s],
+            ),
+        }
+        .unwrap();
+        std::fs::write(at.join("work.txt"), "work\n").unwrap();
+        HeldElsewhere {
+            repo,
+            root,
+            at,
+            _places: places,
+        }
+    }
+
+    /// A row of a table over [`held_elsewhere`]: its name, where the branch is checked out, and
+    /// what is done to that tree before the call under test.
+    type HeldRow = (&'static str, Held, fn(&HeldElsewhere));
+
+    /// A tree git marks `prunable` with its dir still there: its link to the repository is gone.
+    fn unlink(h: &HeldElsewhere) {
+        std::fs::remove_file(h.at.join(".git")).unwrap();
+    }
+
+    /// A create takes over the tree its branch is already checked out in only when that tree is
+    /// a usable directory under its work root. A branch checked out outside the root (a person's
+    /// tree, the main checkout) or in a tree git marks locked or prunable is an error naming where,
+    /// and the tree, its work and its registration stay.
+    #[test]
+    fn create_takes_a_branch_checked_out_elsewhere_only_from_a_usable_tree_under_its_work_root() {
+        let rows: [HeldRow; 5] = [
+            ("a tree outside the work root", Held::Outside, |_| {}),
+            ("the main checkout", Held::Main, |_| {}),
+            ("a locked tree", Held::Under, HeldElsewhere::lock),
+            ("a locked tree whose dir is gone", Held::Under, |h| {
+                h.lock();
+                std::fs::remove_dir_all(&h.at).unwrap();
+            }),
+            ("a prunable tree whose dir is there", Held::Under, unlink),
+        ];
+        let mut violations = Vec::new();
+        for (row, held, spoil) in rows {
+            let h = held_elsewhere(held);
+            spoil(&h);
+            let present = h.at.exists();
+            let dir = h.root.join(format!("{UNIT_WORKTREE_PREFIX}unit-held"));
+            match Worktree::create(h.repo(), dir.to_str().unwrap(), HELD_BRANCH, h.root()) {
+                Ok(wt) => violations.push(format!("{row}: the create took the tree at {}", wt.dir)),
+                Err(e) if !e.0.contains(h.at()) => {
+                    violations.push(format!("{row}: the error does not say where: {}", e.0))
+                }
+                Err(_) => {}
+            }
+            if present && h.work().as_deref() != Some("work\n") {
+                violations.push(format!("{row}: the work at {} is gone", h.at()));
+            }
+            if !h.listed() {
+                violations.push(format!("{row}: the registration at {} is gone", h.at()));
+            }
+            if dir.exists() {
+                violations.push(format!("{row}: a worktree was made at {}", dir.display()));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// A reclaim takes down the tree its branch is checked out in only when that tree is
+    /// rigger's to take. A tree outside the work root (a person's tree, the main checkout) or one
+    /// git marks locked or prunable is an error naming where, and the tree, its work, its
+    /// registration and the branch stay.
+    #[test]
+    fn reclaim_worktree_on_branch_takes_nothing_from_a_tree_where_rigger_may_not_take_it() {
+        let rows: [HeldRow; 4] = [
+            ("a tree outside the work root", Held::Outside, |_| {}),
+            ("the main checkout", Held::Main, |_| {}),
+            ("a locked tree", Held::Under, HeldElsewhere::lock),
+            ("a prunable tree whose dir is there", Held::Under, unlink),
+        ];
+        let mut violations = Vec::new();
+        for (row, held, spoil) in rows {
+            let h = held_elsewhere(held);
+            spoil(&h);
+            match reclaim_worktree_on_branch(h.repo(), HELD_BRANCH, h.root()) {
+                Ok(_) => violations.push(format!("{row}: the reclaim took the tree")),
+                Err(e) if !e.0.contains(h.at()) => {
+                    violations.push(format!("{row}: the error does not say where: {}", e.0))
+                }
+                Err(_) => {}
+            }
+            if h.work().as_deref() != Some("work\n") {
+                violations.push(format!("{row}: the work at {} is gone", h.at()));
+            }
+            if !h.listed() {
+                violations.push(format!("{row}: the registration at {} is gone", h.at()));
+            }
+            if !branch_exists(h.repo(), HELD_BRANCH) {
+                violations.push(format!("{row}: the branch is gone"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// The recovery a hold names for a tree git marks `locked` at `at` in `repo`.
+    fn locked_recovery(repo: &str, at: &str) -> String {
+        let link = std::path::Path::new(at).join(".git");
+        format!(
+            "if git's add there was cut off, `git -C {repo} worktree remove --force --force {at}` \
+             removes that tree and its registration; when git answers that {} does not exist, \
+             `git -C {repo} worktree unlock {at}` and then `git -C {repo} worktree prune` remove \
+             the registration and keep the files, which rigger may then clear as a leftover\n\
+             if a person locked it, `git -C {repo} worktree unlock {at}` lifts the lock and keeps \
+             the tree and its work",
+            link.display()
+        )
+    }
+
+    /// The recovery a hold names for a tree git marks `prunable` at `at` in `repo`.
+    fn prunable_recovery(repo: &str, at: &str) -> String {
+        format!(
+            "`git -C {repo} worktree prune` removes that registration and keeps the files at {at} \
+             (it removes every registration git marks prunable); rigger may then clear what is \
+             left there as a leftover, so copy out anything worth keeping first"
+        )
+    }
+
+    /// A tree whose add git did not finish: git locks the entry before it writes anything else.
+    fn add_cut_off(h: &HeldElsewhere) {
+        let admin = h.repo.path().join(".git").join("worktrees").join("held");
+        std::fs::write(admin.join("locked"), "initializing").unwrap();
+    }
+
+    /// A HOLD ON A TREE GIT MARKS NAMES GIT'S OWN COMMANDS THAT RECOVER IT: a create that finds
+    /// the unit's dir, or another tree on its branch under the work root, marked `locked` (an add
+    /// git did not finish, a lock a person set) or `prunable` (a remove git did not finish) fails
+    /// naming the mark, the path and the commands that recover that path, and once the commands
+    /// the row's case calls for have run, the next create goes through.
+    #[test]
+    fn a_create_held_on_a_tree_git_marks_names_the_commands_that_recover_it() {
+        // Each row: the case, whether the marked tree is the unit's own dir (else the unit's dir
+        // is another path under the root), what marks it, the mark's first word, and the
+        // commands the case calls for.
+        type Row = (
+            &'static str,
+            bool,
+            fn(&HeldElsewhere),
+            &'static str,
+            &'static [&'static [&'static str]],
+        );
+        const REMOVE: &[&str] = &["worktree", "remove", "--force", "--force", "{at}"];
+        const UNLOCK: &[&str] = &["worktree", "unlock", "{at}"];
+        const PRUNE: &[&str] = &["worktree", "prune"];
+        let rows: [Row; 6] = [
+            (
+                "an add cut off at the unit's dir",
+                true,
+                add_cut_off,
+                "locked",
+                &[REMOVE],
+            ),
+            (
+                "an add cut off before it linked the tree at the unit's dir",
+                true,
+                |h| {
+                    add_cut_off(h);
+                    unlink(h);
+                },
+                "locked",
+                &[UNLOCK, PRUNE],
+            ),
+            (
+                "a person's lock at the unit's dir",
+                true,
+                HeldElsewhere::lock,
+                "locked",
+                &[UNLOCK],
+            ),
+            (
+                "a person's lock on the branch's tree under the root",
+                false,
+                HeldElsewhere::lock,
+                "locked",
+                &[UNLOCK],
+            ),
+            (
+                "a remove cut off at the unit's dir",
+                true,
+                unlink,
+                "prunable",
+                &[PRUNE],
+            ),
+            (
+                "a remove cut off on the branch's tree under the root",
+                false,
+                unlink,
+                "prunable",
+                &[PRUNE],
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (row, at_dir, spoil, mark, commands) in rows {
+            let h = held_elsewhere(Held::Under);
+            spoil(&h);
+            let unit_dir = h.root.join(format!("{UNIT_WORKTREE_PREFIX}unit-held"));
+            let dir = if at_dir {
+                h.at().to_string()
+            } else {
+                unit_dir.to_str().unwrap().to_string()
+            };
+            let (repo, at) = (h.repo(), h.at());
+            let held = match Worktree::create(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(wt) => {
+                    violations.push(format!("{row}: the create took the tree at {}", wt.dir));
+                    continue;
+                }
+                Err(e) => e.0,
+            };
+            let (first, rest) = held.split_once('\n').unwrap_or((&held, ""));
+            if !first.starts_with(&format!("a worktree git marks `{mark}"))
+                || !first.ends_with(&format!(
+                    "` is registered at {at}: nothing there is cleared or adopted"
+                ))
+            {
+                violations.push(format!(
+                    "{row}: the first line does not name the mark and where: {first}"
+                ));
+            }
+            let recovery = if mark == "locked" {
+                locked_recovery(repo, at)
+            } else {
+                prunable_recovery(repo, at)
+            };
+            if rest != recovery {
+                violations.push(format!(
+                    "{row}: the recovery reads {rest:?}, not {recovery:?}"
+                ));
+            }
+            for command in commands {
+                let args: Vec<&str> = command
+                    .iter()
+                    .map(|arg| if *arg == "{at}" { at } else { arg })
+                    .collect();
+                let named = format!("`git -C {repo} {}`", args.join(" "));
+                if !held.contains(&named) {
+                    violations.push(format!("{row}: the hold does not name {named}"));
+                }
+                if let Err(e) = run_git(repo, &args) {
+                    violations.push(format!("{row}: {named} failed: {e}"));
+                }
+            }
+            match Worktree::create(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(wt) if worktree_on_branch(&wt.dir, HELD_BRANCH).unwrap_or(false) => {}
+                Ok(wt) => violations.push(format!(
+                    "{row}: the recovered tree at {} is off the branch",
+                    wt.dir
+                )),
+                Err(e) => violations.push(format!(
+                    "{row}: the create after the recovery failed: {}",
+                    e.0
+                )),
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// A DISCARD KEEPS A TREE GIT MARKS LOCKED: a throwaway's tree a person locked, or whose add
+    /// git did not finish, its tree there or gone and its path spelled as git lists it or as it
+    /// resolves through a link git lists, is an error naming the mark, the path as the discard was
+    /// given it and the commands that recover it, and nothing there is reaped or removed: the tree
+    /// and its work when there, its registration and its branch stay.
+    #[test]
+    fn a_discard_keeps_a_tree_git_marks_locked() {
+        // Each row: the case, and what is done to the tree, answering the path the discard is at.
+        type Row = (&'static str, fn(&HeldElsewhere) -> String);
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut rows: Vec<Row> = vec![
+            ("a person's lock", |h| {
+                h.lock();
+                h.at().to_string()
+            }),
+            ("an add cut off", |h| {
+                add_cut_off(h);
+                h.at().to_string()
+            }),
+            ("a person's lock, its tree deleted", |h| {
+                h.lock();
+                std::fs::remove_dir_all(&h.at).unwrap();
+                h.at().to_string()
+            }),
+            ("an add cut off, its tree cleared", |h| {
+                add_cut_off_then_cleared(h);
+                h.at().to_string()
+            }),
+        ];
+        #[cfg(unix)]
+        rows.push((
+            "a person's lock, the tree moved behind a link git lists",
+            |h| {
+                h.lock();
+                let moved = h.root.join("held-moved");
+                std::fs::rename(&h.at, &moved).unwrap();
+                std::os::unix::fs::symlink(&moved, &h.at).unwrap();
+                moved.to_str().unwrap().to_string()
+            },
+        ));
+        let mut violations = Vec::new();
+        for (row, spoil) in rows {
+            let h = held_elsewhere(Held::Under);
+            let dir = spoil(&h);
+            let present = std::path::Path::new(&dir).exists();
+            let (repo, at) = (h.repo(), h.at());
+            match Worktree::discard(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(()) => violations.push(format!("{row}: the discard went through")),
+                Err(e) => {
+                    let (first, rest) = e.0.split_once('\n').unwrap_or((&e.0, ""));
+                    if !first.starts_with("a worktree git marks `locked")
+                        || !first.ends_with(&format!(
+                            "` is registered at {dir}: nothing there is cleared or adopted"
+                        ))
+                    {
+                        violations.push(format!(
+                            "{row}: the first line does not name the mark and where: {first}"
+                        ));
+                    }
+                    let recovery = locked_recovery(repo, &dir);
+                    if rest != recovery {
+                        violations.push(format!(
+                            "{row}: the recovery reads {rest:?}, not {recovery:?}"
+                        ));
+                    }
+                }
+            }
+            let work = std::fs::read_to_string(std::path::Path::new(&dir).join("work.txt"));
+            if present && work.ok().as_deref() != Some("work\n") {
+                violations.push(format!("{row}: the work at {dir} is gone"));
+            }
+            if !h.listed() {
+                violations.push(format!("{row}: the registration at {at} is gone"));
+            }
+            if !branch_exists(repo, HELD_BRANCH) {
+                violations.push(format!("{row}: the branch is gone"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// An add git did not finish at `at`, cut off before it checked out a branch there, whose tree
+    /// a clear then removed (a throwaway's discard, the orphan sweep): git keeps the entry locked
+    /// and naming no branch.
+    fn add_cut_off_then_cleared(h: &HeldElsewhere) {
+        run_git(h.at(), &["switch", "-q", "--detach"]).unwrap();
+        add_cut_off(h);
+        std::fs::remove_dir_all(&h.at).unwrap();
+    }
+
+    /// A HOLD ON A LOCKED ENTRY WITH NOTHING AT THE UNIT'S DIR NAMES GIT'S OWN COMMANDS THAT
+    /// RECOVER IT: a create at a dir whose tree was cleared while git still lists it locked, the
+    /// branch there or not and the dir spelled as git lists it or through a link, fails naming the
+    /// mark, the path and the commands that recover it, and once the remove it names has run, the
+    /// next create goes through.
+    #[test]
+    fn a_create_at_a_cleared_dir_git_marks_locked_names_the_commands_that_recover_it() {
+        // Each row: the case, whether the branch is kept, and how the unit's dir is spelled.
+        type Row = (&'static str, bool, fn(&HeldElsewhere) -> String);
+        #[allow(unused_mut)]
+        let mut rows: Vec<Row> = vec![
+            ("the branch kept, the dir as git lists it", true, |h| {
+                h.at().to_string()
+            }),
+            ("the branch gone, the dir as git lists it", false, |h| {
+                h.at().to_string()
+            }),
+        ];
+        #[cfg(unix)]
+        rows.push((
+            "the branch kept, the dir through a link to the root",
+            true,
+            |h| {
+                let link = h._places[1].path().join("root-link");
+                std::os::unix::fs::symlink(&h.root, &link).unwrap();
+                link.join("held").to_str().unwrap().to_string()
+            },
+        ));
+        let mut violations = Vec::new();
+        for (row, keep_branch, spell) in rows {
+            let h = held_elsewhere(Held::Under);
+            add_cut_off_then_cleared(&h);
+            if !keep_branch {
+                run_git(h.repo(), &["branch", "-q", "-D", HELD_BRANCH]).unwrap();
+            }
+            let dir = spell(&h);
+            let repo = h.repo();
+            let held = match Worktree::create(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(wt) => {
+                    violations.push(format!("{row}: the create made a tree at {}", wt.dir));
+                    continue;
+                }
+                Err(e) => e.0,
+            };
+            let (first, rest) = held.split_once('\n').unwrap_or((&held, ""));
+            let named = format!(
+                "a worktree git marks `locked initializing` is registered at {dir}: nothing there \
+                 is cleared or adopted"
+            );
+            if first != named {
+                violations.push(format!(
+                    "{row}: the first line reads {first:?}, not {named:?}"
+                ));
+            }
+            let recovery = locked_recovery(repo, &dir);
+            if rest != recovery {
+                violations.push(format!(
+                    "{row}: the recovery reads {rest:?}, not {recovery:?}"
+                ));
+            }
+            let remove = ["worktree", "remove", "--force", "--force", dir.as_str()];
+            if let Err(e) = run_git(repo, &remove) {
+                violations.push(format!("{row}: the remove failed: {e}"));
+            }
+            match Worktree::create(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(wt) if worktree_on_branch(&wt.dir, HELD_BRANCH).unwrap_or(false) => {}
+                Ok(wt) => violations.push(format!(
+                    "{row}: the recovered tree at {} is off the branch",
+                    wt.dir
+                )),
+                Err(e) => violations.push(format!(
+                    "{row}: the create after the recovery failed: {}",
+                    e.0
+                )),
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
     #[test]
     fn create_heals_a_leftover_dir_at_the_deterministic_path() {
-        // Resume self-heal (Gap 12, spec 06:48): with a DETERMINISTIC dir, a SIGKILL mid
-        // `git worktree add` can leave a POPULATED dir at the fixed path that is NOT a
-        // registered worktree, while the unit's durable BRANCH survives as a checkpoint.
+        // Resume self-heal (Gap 12, spec 06:48): with a DETERMINISTIC dir, a POPULATED dir can
+        // sit at the fixed path that is NOT a registered worktree (a plain directory, or a tree
+        // whose registration git's prune removed), while the unit's durable BRANCH survives.
         // The old per-process-uuid design made this collision IMPOSSIBLE; determinism must
         // not trade self-healing for a permanent wedge. `create` must REMOVE the
         // unregistered leftover and check the branch out afresh - never hard-fail
@@ -7024,11 +8986,11 @@ mod tests {
         );
 
         // Plant a POPULATED leftover at the deterministic path that is NOT a registered
-        // worktree - exactly the residue a SIGKILL mid `worktree add` leaves behind.
+        // worktree.
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(std::path::Path::new(&dir).join("leftover.txt"), "torn\n").unwrap();
         assert!(
-            !worktree_on_branch(&dir, branch),
+            !worktree_on_branch(&dir, branch).unwrap(),
             "precondition: the leftover is not this branch's registered worktree (fast path can't adopt)"
         );
         assert!(
@@ -7052,6 +9014,1541 @@ mod tests {
             "the unregistered leftover residue is removed, not merged into the fresh checkout"
         );
         wt2.remove().unwrap();
+    }
+
+    /// A unit whose branch is gone (a branch reclaim deleted it along with its worktree) and
+    /// whose deterministic path holds a plain leftover directory - a store directory nested in
+    /// it - is created afresh off HEAD: the leftover is cleared, never a `git worktree add -b`
+    /// refused with "already exists" on every relaunch that re-derives the same path.
+    #[test]
+    fn create_clears_a_leftover_dir_when_the_units_branch_is_gone() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let root = scratch_root(&repo_path, "", None);
+        let branch = "rigger/u/unit-gone";
+        let dir = format!("{root}/rigger-wt-unit-gone");
+        let store = std::path::Path::new(&dir).join(".rigger").join("store");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("events.db"), "torn\n").unwrap();
+        assert!(
+            !branch_exists(&repo_path, branch),
+            "precondition: the unit's branch is gone"
+        );
+
+        let wt = Worktree::create(&repo_path, &dir, branch, "").expect(
+            "create must clear a leftover dir when the unit's branch is gone, not fail \
+             `git worktree add -b` on it",
+        );
+        assert!(
+            worktree_on_branch(&dir, branch).unwrap(),
+            "the unit's worktree is checked out on its branch at its deterministic path"
+        );
+        assert!(
+            !store.exists(),
+            "the leftover's nested store directory is cleared, never carried into the checkout"
+        );
+        wt.remove().unwrap();
+    }
+
+    /// A TREE LEFT OFF ITS BRANCH KEEPS ITS WORK AND COMMITS NOTHING UNTIL IT IS BACK: a unit's
+    /// worktree whose HEAD was moved off the unit's branch (a detach, a rebase stopped mid-way, a
+    /// switch to another branch) with work still uncommitted has every commit refused, the
+    /// refusal naming where its HEAD stands in git's own words (`git status`'s first line) and
+    /// ending on the fact that commits made while HEAD is off the branch are not on it and will
+    /// not land, with nothing staged and the branch where it was; `create` adopts the tree as it
+    /// stands with its work, never clears it to re-add the branch; and once its HEAD is back on
+    /// the branch the checkpoint commits that work onto the branch.
+    #[test]
+    fn a_tree_left_off_its_branch_keeps_its_work_and_commits_nothing_until_it_is_back() {
+        const BRANCH: &str = "rigger/u/unit-off";
+        // Each row: how the HEAD leaves the branch, the start of git's words for where it then
+        // stands, and how it comes back.
+        let cases: [(&[&str], &str, &[&str]); 3] = [
+            (
+                &["checkout", "-q", "--detach"],
+                "HEAD detached at ",
+                &["switch", "-q", BRANCH],
+            ),
+            (
+                &["rebase", "-x", "false", "HEAD~1"],
+                "interactive rebase in progress; onto ",
+                &["rebase", "--abort"],
+            ),
+            (
+                &["switch", "-q", "-c", "elsewhere"],
+                "On branch elsewhere",
+                &["switch", "-q", BRANCH],
+            ),
+        ];
+        type Commit = fn(&Worktree, &str) -> Result<String, StepError>;
+        for (leave, stands, back) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-off");
+            let at = |file: &str| std::path::Path::new(&dir).join(file);
+            std::fs::write(at("f.txt"), "committed\n").unwrap();
+            wt.commit("unit work").unwrap();
+            let tip = run_git(&repo_path, &["rev-parse", BRANCH]).unwrap();
+            // A stopped rebase ends its command with a failure, which is the point.
+            let _ = run_git_with_status(&dir, leave);
+            std::fs::write(at("late.txt"), "late\n").unwrap();
+
+            let why = commit_refusal(&dir, BRANCH)
+                .unwrap()
+                .unwrap_or_else(|| panic!("{leave:?}: a commit off the branch is refused"));
+            assert!(
+                why.contains(&format!(
+                    "HEAD is not on the unit's branch {BRANCH} (git status: {stands}"
+                )),
+                "{leave:?}: the refusal names where HEAD stands in git's words: {why}"
+            );
+            assert!(
+                why.ends_with(&format!(
+                    ") - commits made while HEAD is off {BRANCH} are not on it and will not land"
+                )),
+                "{leave:?}: the refusal states that commits made off the branch never land: {why}"
+            );
+            for commit in [Worktree::commit as Commit, Worktree::commit_checkpoint] {
+                match commit(&wt, "rigger: unit-off attempt 1") {
+                    Err(StepError::Refused(e)) => assert_eq!(e, why, "{leave:?}"),
+                    other => panic!("{leave:?}: a commit off the branch is refused: {other:?}"),
+                }
+            }
+            assert_eq!(
+                run_git(&dir, &["status", "--porcelain"]).unwrap(),
+                "?? late.txt\n",
+                "{leave:?}: the refused commit staged nothing"
+            );
+            assert_eq!(
+                run_git(&repo_path, &["rev-parse", BRANCH]).unwrap(),
+                tip,
+                "{leave:?}: the branch did not move"
+            );
+
+            let adopted = Worktree::create(&repo_path, &dir, BRANCH, "").unwrap();
+            assert_eq!(
+                adopted.dir, dir,
+                "{leave:?}: the tree is adopted where it is"
+            );
+            assert!(
+                at("late.txt").exists(),
+                "{leave:?}: the adopted tree keeps its work"
+            );
+            assert!(
+                head_off_branch(&dir, BRANCH).unwrap().is_some(),
+                "{leave:?}: the tree is adopted as it stands, its HEAD where it was left"
+            );
+
+            run_git(&dir, back).unwrap();
+            assert_eq!(commit_refusal(&dir, BRANCH).unwrap(), None, "{leave:?}");
+            adopted
+                .commit_checkpoint("rigger: unit-off attempt 2")
+                .unwrap();
+            assert_eq!(
+                run_git(&repo_path, &["show", &format!("{BRANCH}:late.txt")]).unwrap(),
+                "late\n",
+                "{leave:?}: back on the branch, the checkpoint carries the work onto it"
+            );
+            adopted.remove().unwrap();
+        }
+    }
+
+    /// Keep the tree of `wt` aside, answering the kept ref and the commit it holds, or `None`
+    /// when the tree holds nothing its branch lacks.
+    fn keep(wt: &Worktree) -> Result<Option<(String, String)>, Error> {
+        let unit = wt.branch.strip_prefix("rigger/u/").unwrap();
+        let kept = wt.keep_tree_aside(&format!("wip({unit}): kept"))?;
+        Ok(kept.map(|kept| (kept.reference, kept.commit)))
+    }
+
+    /// [`keep`], which must succeed.
+    fn keep_aside(wt: &Worktree) -> Option<(String, String)> {
+        keep(wt).unwrap()
+    }
+
+    /// The parents of `commit` in `repo`, first to last.
+    fn parents_of(repo: &str, commit: &str) -> Vec<String> {
+        let line = run_git(repo, &["rev-list", "--parents", "-n1", commit]).unwrap();
+        line.split_whitespace()
+            .skip(1)
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// A TREE GIT REFUSED IS KEPT ASIDE AS IT STANDS: the keep commits every path `git add -A`
+    /// would stage onto the unit's kept ref (`rigger/kept/<unit>`), on one commit whose one
+    /// parent is the tree's HEAD, and never moves the unit's branch, whatever stopped the
+    /// checkpoint and wherever HEAD stands: a hook that refuses every commit, a detached HEAD or
+    /// another branch with a commit of its own, a rebase or a merge stopped on its conflict, a
+    /// lock on the tree's index or on the keep's own. A merge in progress is no parent, so the
+    /// kept commit never records it as finished. A clean tree whose HEAD holds commits the
+    /// branch lacks is kept as HEAD itself, and a clean tree at the branch's tip keeps nothing.
+    /// The tree's own index keeps its bytes, and the keep's own index and its lock are gone after.
+    #[test]
+    fn a_tree_git_refused_is_kept_aside_as_it_stands() {
+        const BRANCH: &str = "rigger/u/unit-keep";
+        const KEPT: &str = "rigger/kept/unit-keep";
+        fn write(dir: &str, file: &str, text: &str) {
+            let path = std::path::Path::new(dir).join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        fn git_dir(dir: &str) -> std::path::PathBuf {
+            let at = run_git(dir, &["rev-parse", "--absolute-git-dir"]).unwrap();
+            std::path::PathBuf::from(at.trim())
+        }
+        fn commit_own(dir: &str, file: &str) {
+            write(dir, file, &format!("{file}\n"));
+            run_git(dir, &["add", file]).unwrap();
+            run_git(dir, &["commit", "-qm", file]).unwrap();
+        }
+        fn run_side(repo: &str) {
+            write(repo, "unit.txt", "run\n");
+            run_git(repo, &["add", "unit.txt"]).unwrap();
+            run_git(repo, &["commit", "-qm", "run side"]).unwrap();
+        }
+        /// How the kept commit stands to the tree's HEAD.
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        enum Kept {
+            /// A new commit whose one parent is HEAD.
+            ChildOfHead,
+            /// HEAD itself.
+            Head,
+            /// Nothing is kept.
+            Nothing,
+        }
+        // Each row: what leaves the unit's tree in its state (given the tree and the repo), then
+        // each path the kept commit holds with text its content carries, and how it stands to
+        // HEAD.
+        type Row = (
+            &'static str,
+            fn(&str, &str),
+            &'static [(&'static str, &'static str)],
+            Kept,
+        );
+        let cases: [Row; 10] = [
+            (
+                "a hook that refuses every commit",
+                |dir, repo| {
+                    for hook in ["pre-commit", "prepare-commit-msg", "commit-msg"] {
+                        let path = std::path::Path::new(repo).join(".git/hooks").join(hook);
+                        std::fs::write(&path, "#!/bin/sh\nexit 1\n").unwrap();
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mut mode = std::fs::metadata(&path).unwrap().permissions();
+                            mode.set_mode(0o755);
+                            std::fs::set_permissions(&path, mode).unwrap();
+                        }
+                    }
+                    assert!(
+                        run_git_with_status(dir, &["commit", "-q", "--allow-empty", "-m", "x"])
+                            .is_err(),
+                        "the hook refuses a commit in the tree"
+                    );
+                    write(dir, "unit.txt", "refused\n");
+                },
+                &[("unit.txt", "refused\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "an untracked file in a subdirectory",
+                |dir, _| write(dir, "deep/er/new.txt", "new\n"),
+                &[("deep/er/new.txt", "new\n"), ("unit.txt", "committed\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "a detached HEAD with a commit of its own",
+                |dir, _| {
+                    run_git(dir, &["checkout", "-q", "--detach"]).unwrap();
+                    commit_own(dir, "detached.txt");
+                    write(dir, "late.txt", "late\n");
+                },
+                &[("detached.txt", "detached.txt\n"), ("late.txt", "late\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "another branch with a commit of its own",
+                |dir, _| {
+                    run_git(dir, &["checkout", "-q", "-b", "elsewhere"]).unwrap();
+                    commit_own(dir, "other.txt");
+                    write(dir, "late.txt", "late\n");
+                },
+                &[("other.txt", "other.txt\n"), ("late.txt", "late\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "a rebase stopped on its conflict, a pick not yet replayed",
+                |dir, repo| {
+                    commit_own(dir, "second.txt");
+                    run_side(repo);
+                    assert!(
+                        run_git_with_status(dir, &["rebase", "-q", "rigger-run"]).is_err(),
+                        "the rebase stops on its conflict"
+                    );
+                },
+                &[("unit.txt", "<<<<<<< "), ("unit.txt", "run\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "a merge left with its conflict",
+                |dir, repo| {
+                    run_side(repo);
+                    assert!(
+                        run_git_with_status(dir, &["merge", "-q", "rigger-run"]).is_err(),
+                        "the merge stops on its conflict"
+                    );
+                },
+                &[("unit.txt", "<<<<<<< "), ("unit.txt", "run\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "a lock on the tree's index",
+                |dir, _| {
+                    write(dir, "locked.txt", "locked\n");
+                    std::fs::write(git_dir(dir).join("index.lock"), "").unwrap();
+                },
+                &[("locked.txt", "locked\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "a lock a cut-off keep left on its own index",
+                |dir, _| {
+                    write(dir, "stray.txt", "stray\n");
+                    std::fs::write(git_dir(dir).join("rigger-kept-index.lock"), "").unwrap();
+                },
+                &[("stray.txt", "stray\n")],
+                Kept::ChildOfHead,
+            ),
+            (
+                "a clean detached HEAD with a commit of its own",
+                |dir, _| {
+                    run_git(dir, &["checkout", "-q", "--detach"]).unwrap();
+                    commit_own(dir, "clean.txt");
+                },
+                &[("clean.txt", "clean.txt\n")],
+                Kept::Head,
+            ),
+            ("nothing the branch lacks", |_, _| {}, &[], Kept::Nothing),
+        ];
+        for (row, leave, holds, kept_as) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-keep");
+            write(&dir, "unit.txt", "committed\n");
+            wt.commit("unit work").unwrap();
+            leave(&dir, &repo_path);
+            let tip = run_git(&repo_path, &["rev-parse", BRANCH]).unwrap();
+            let head = run_git(&dir, &["rev-parse", "HEAD"]).unwrap();
+            let index = git_dir(&dir).join("index");
+            let before = std::fs::read(&index).unwrap();
+
+            let kept = keep_aside(&wt);
+            assert_eq!(
+                run_git(&repo_path, &["rev-parse", BRANCH]).unwrap(),
+                tip,
+                "{row}: the unit's branch does not move"
+            );
+            match (kept_as, kept) {
+                (Kept::Nothing, kept) => {
+                    assert_eq!(kept, None, "{row}: nothing is kept");
+                    assert!(!ref_resolves(&repo_path, KEPT), "{row}: no kept ref");
+                }
+                (_, None) => panic!("{row}: the tree is kept"),
+                (kept_as, Some((reference, commit))) => {
+                    assert_eq!(reference, KEPT, "{row}: the kept ref");
+                    assert_eq!(
+                        run_git(&repo_path, &["rev-parse", KEPT]).unwrap().trim(),
+                        commit,
+                        "{row}: the kept ref holds the kept commit"
+                    );
+                    if kept_as == Kept::Head {
+                        assert_eq!(commit, head.trim(), "{row}: HEAD itself is kept");
+                    } else {
+                        assert_eq!(
+                            parents_of(&repo_path, &commit),
+                            [head.trim().to_string()],
+                            "{row}: the kept commit's one parent is HEAD"
+                        );
+                    }
+                    for (path, text) in holds {
+                        let content =
+                            run_git(&repo_path, &["show", &format!("{KEPT}:{path}")]).unwrap();
+                        assert!(
+                            content.contains(text),
+                            "{row}: the kept commit holds {path} with {text:?}: {content:?}"
+                        );
+                    }
+                }
+            }
+            assert_eq!(
+                std::fs::read(&index).unwrap(),
+                before,
+                "{row}: the tree's own index keeps its bytes"
+            );
+            for own in ["rigger-kept-index", "rigger-kept-index.lock"] {
+                assert!(
+                    !git_dir(&dir).join(own).exists(),
+                    "{row}: the keep's {own} is gone"
+                );
+            }
+            let _ = std::fs::remove_file(git_dir(&dir).join("index.lock"));
+            wt.remove().unwrap();
+        }
+    }
+
+    /// A SECOND KEEP SETS THE FIRST ASIDE, AND A KEEP GIT CANNOT FINISH NAMES ITS STEP: a unit's
+    /// tree kept again while its kept ref holds an earlier commit moves that commit to
+    /// `rigger/orphaned/<unit>-<its 12-char sha>` before the kept ref takes the new one, so no
+    /// kept tree is lost; and a keep whose ref git cannot write fails on a first line naming the
+    /// step, the branch and the ref, with no sha, the same line each time it fails.
+    #[test]
+    fn a_second_keep_sets_the_first_aside_and_a_failed_keep_names_its_step() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-again");
+        let path = std::path::Path::new(&dir);
+        std::fs::write(path.join("one.txt"), "one\n").unwrap();
+        let (_, first) = keep_aside(&wt).expect("the first tree is kept");
+        std::fs::write(path.join("two.txt"), "two\n").unwrap();
+        let (kept, second) = keep_aside(&wt).expect("the second tree is kept");
+        assert_eq!(
+            run_git(&repo_path, &["rev-parse", &kept]).unwrap().trim(),
+            second,
+            "the kept ref holds the second keep"
+        );
+        let aside = format!("rigger/orphaned/unit-again-{}", &first[..12]);
+        assert_eq!(
+            run_git(&repo_path, &["rev-parse", &aside]).unwrap().trim(),
+            first,
+            "the first keep stands at {aside}"
+        );
+        wt.remove().unwrap();
+
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-stuck");
+        run_git(&repo_path, &["branch", "rigger/kept/unit-stuck/blocker"]).unwrap();
+        let failures: Vec<String> = ["a.txt", "b.txt"]
+            .into_iter()
+            .map(|file| {
+                std::fs::write(std::path::Path::new(&dir).join(file), "x\n").unwrap();
+                keep(&wt).unwrap_err().0
+            })
+            .collect();
+        let first_lines: Vec<&str> = failures.iter().map(|f| f.lines().next().unwrap()).collect();
+        assert_eq!(
+            first_lines,
+            ["keeping the tree of rigger/u/unit-stuck on rigger/kept/unit-stuck failed"; 2],
+            "the failed keep names its step the same way each time: {failures:?}"
+        );
+        wt.remove().unwrap();
+    }
+
+    /// A REPEATED KEEP OF THE SAME TREE KEEPS THE SAME COMMIT: a keep made again over the tree an
+    /// earlier keep already holds, on the same HEAD (a drive cut off between the keep and its
+    /// charge, then relaunched), answers the commit the kept ref holds, whenever that commit was
+    /// made, and sets nothing aside, so no copy stands where no reaper reaches it.
+    #[test]
+    fn a_repeated_keep_of_the_same_tree_keeps_the_same_commit() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-twice");
+        std::fs::write(std::path::Path::new(&dir).join("work.txt"), "work\n").unwrap();
+        let (kept, first) = keep_aside(&wt).expect("the tree is kept");
+        let tree = run_git(&repo_path, &["rev-parse", &format!("{first}^{{tree}}")]).unwrap();
+        let parent = run_git(&repo_path, &["rev-parse", &format!("{first}^")]).unwrap();
+        let earlier = std::process::Command::new("git")
+            .current_dir(&repo_path)
+            .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+            .args([
+                "commit-tree",
+                tree.trim(),
+                "-p",
+                parent.trim(),
+                "-m",
+                "kept",
+            ])
+            .output()
+            .unwrap();
+        let earlier = String::from_utf8(earlier.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_ne!(
+            earlier, first,
+            "premise: the planted keep is another commit"
+        );
+        run_git(
+            &repo_path,
+            &["update-ref", &format!("refs/heads/{kept}"), &earlier],
+        )
+        .unwrap();
+
+        assert_eq!(
+            keep_aside(&wt),
+            Some((kept.clone(), earlier.clone())),
+            "the repeated keep answers the commit the kept ref holds"
+        );
+        assert_eq!(
+            held_refs(&repo_path).unwrap(),
+            [(kept, earlier)],
+            "nothing is set aside"
+        );
+        wt.remove().unwrap();
+    }
+
+    /// A HELD REF CHECKED OUT IS NEVER MOVED OR DELETED: while a worktree has a kept ref checked
+    /// out (a person inspecting a kept tree, in a tree of their own or the repository's own
+    /// checkout), a new keep lands aside under its own name, setting it aside copies it, and
+    /// neither the unit's integration nor branch collection removes it, so the person's
+    /// checkout keeps the branch it stands on.
+    #[test]
+    fn a_held_ref_checked_out_is_never_moved_or_deleted() {
+        const KEPT: &str = "rigger/kept/unit-look";
+        const BRANCH: &str = "rigger/u/unit-look";
+        // Each row: where the person checks the kept ref out (given the repo and a spare dir),
+        // answering that checkout's dir.
+        type Row = (&'static str, fn(&str, &str) -> String);
+        let cases: [Row; 2] = [
+            ("a tree of the person's own", |repo, spare| {
+                run_git(repo, &["worktree", "add", "-q", spare, KEPT]).unwrap();
+                spare.to_string()
+            }),
+            ("the repository's own checkout", |repo, _| {
+                run_git(repo, &["checkout", "-q", KEPT]).unwrap();
+                repo.to_string()
+            }),
+        ];
+        for (row, check_out) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-look");
+            std::fs::write(std::path::Path::new(&dir).join("one.txt"), "one\n").unwrap();
+            let (_, looked_at) = keep_aside(&wt).expect("the tree is kept");
+            let spare = tempfile::tempdir().unwrap();
+            let spare = spare.path().join("look");
+            let at = check_out(&repo_path, spare.to_str().unwrap());
+            let stands = |what: &str| {
+                assert_eq!(
+                    run_git(&at, &["symbolic-ref", "HEAD"]).unwrap().trim(),
+                    format!("refs/heads/{KEPT}"),
+                    "{row}, {what}: the checkout stands on the kept ref"
+                );
+                assert_eq!(
+                    run_git(&repo_path, &["rev-parse", KEPT]).unwrap().trim(),
+                    looked_at,
+                    "{row}, {what}: the kept ref holds the commit checked out"
+                );
+            };
+
+            std::fs::write(std::path::Path::new(&dir).join("two.txt"), "two\n").unwrap();
+            let (landed, again) = keep_aside(&wt).expect("the second tree is kept");
+            stands("after a second keep");
+            assert_eq!(
+                landed,
+                orphaned_ref("unit-look", &again),
+                "{row}: the second keep lands aside under its own name"
+            );
+            assert_eq!(
+                run_git(&repo_path, &["rev-parse", &landed]).unwrap().trim(),
+                again,
+                "{row}: the second keep's ref holds it"
+            );
+            let aside = set_kept_aside(&repo_path, BRANCH).unwrap();
+            stands("after setting it aside");
+            assert_eq!(
+                aside,
+                Some(orphaned_ref("unit-look", &looked_at)),
+                "{row}: setting it aside copies it"
+            );
+            delete_kept(&repo_path, BRANCH).unwrap();
+            stands("after the unit's integration");
+            reap_held_refs(&repo_path, KEPT).unwrap();
+            stands("after branch collection");
+            wt.remove().unwrap();
+        }
+    }
+
+    /// A MERGE KEPT ASIDE IS STILL A CONFLICT: a tree kept while its merge of the run branch stood
+    /// conflicted leaves the unit's branch without that merge, so the tree recreated from the
+    /// branch meets the same conflict when it merges again, and both marker checks still refuse
+    /// it: the commit guard while the conflict stands, the merge finalize once the marker text is
+    /// staged as a resolution.
+    #[test]
+    fn a_merge_kept_aside_is_still_a_conflict_when_its_tree_is_recreated() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-merge");
+        std::fs::write(std::path::Path::new(&dir).join("unit.txt"), "unit\n").unwrap();
+        wt.commit("unit work").unwrap();
+        std::fs::write(std::path::Path::new(&repo_path).join("unit.txt"), "run\n").unwrap();
+        run_git(&repo_path, &["add", "unit.txt"]).unwrap();
+        run_git(&repo_path, &["commit", "-qm", "run side"]).unwrap();
+        let conflict = |wt: &Worktree, what: &str| match wt.merge_into_worktree("checkpoint") {
+            Ok(MergeOutcome::Conflict(paths)) => assert_eq!(paths, ["unit.txt"], "{what}"),
+            Ok(MergeOutcome::Ready(commit)) => panic!("{what}: the merge is ready at {commit:?}"),
+            Err(e) => panic!("{what}: {e:?}"),
+        };
+        conflict(&wt, "the first merge conflicts");
+        keep_aside(&wt).expect("the conflicted tree is kept");
+        wt.remove().unwrap();
+
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-merge");
+        conflict(
+            &wt,
+            "the tree recreated from the branch meets the same conflict",
+        );
+        assert!(
+            matches!(
+                wt.commit_checkpoint("checkpoint"),
+                Err(StepError::Refused(_))
+            ),
+            "the commit guard refuses the conflicted tree"
+        );
+        run_git(&dir, &["add", "unit.txt"]).unwrap();
+        conflict(
+            &wt,
+            "the finalize refuses marker text staged as a resolution",
+        );
+        wt.remove().unwrap();
+    }
+
+    /// A tree the create-misread table plants: the tree's dir and its registration (admin)
+    /// directory.
+    struct Plant {
+        dir: std::path::PathBuf,
+        admin: std::path::PathBuf,
+    }
+
+    /// Take every access to `path` away (mode 000), returning it for [`full_access`].
+    #[cfg(unix)]
+    fn unreadable(path: &std::path::Path) -> Option<std::path::PathBuf> {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        Some(path.to_path_buf())
+    }
+
+    /// Give `path` back its owner's full access, after a row took it away.
+    fn full_access(path: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+    }
+
+    /// CREATE NEVER CLEARS OR ADOPTS A TREE IT CANNOT READ AS UNREGISTERED: a tree holding
+    /// uncommitted work at the unit's dir whose registration git marks unusable, or that git or the
+    /// filesystem cannot read, makes `create` fail, and the tree, its work and its registration
+    /// stay as they were. Every row's violations are gathered, so a red run names
+    /// each row that fails.
+    #[test]
+    fn create_leaves_a_tree_it_cannot_read_as_unregistered_as_it_stands() {
+        const BRANCH: &str = "rigger/u/unit-misread";
+        // Each row: what the tree's state is, whether the unit's branch exists, whether the
+        // tree is added on that branch (else detached at HEAD), and what puts the tree in its
+        // state, returning any path it made unreadable.
+        type Row = (
+            &'static str,
+            bool,
+            bool,
+            fn(&Plant) -> Option<std::path::PathBuf>,
+        );
+        let rows: &[Row] = &[
+            #[cfg(unix)]
+            (
+                "a registration marker the heal cannot read (a link to itself)",
+                true,
+                false,
+                |p| {
+                    let commondir = p.admin.join("commondir");
+                    std::fs::remove_file(&commondir).unwrap();
+                    std::os::unix::fs::symlink("commondir", &commondir).unwrap();
+                    backdate(&p.admin, 120);
+                    None
+                },
+            ),
+            // git leaves an entry it cannot read out of its list, saying nothing.
+            #[cfg(unix)]
+            (
+                "a registration no one can read, old enough to heal",
+                true,
+                false,
+                |p| {
+                    backdate(&p.admin, 120);
+                    unreadable(&p.admin)
+                },
+            ),
+            #[cfg(unix)]
+            (
+                "a registrations directory no one can read",
+                true,
+                false,
+                |p| unreadable(p.admin.parent().unwrap()),
+            ),
+            (
+                "a registration git marks prunable, the tree still there",
+                true,
+                false,
+                |p| {
+                    std::fs::remove_file(p.dir.join(".git")).unwrap();
+                    None
+                },
+            ),
+            #[cfg(unix)]
+            (
+                "a registration whose path cannot be resolved (a link to itself on the way)",
+                true,
+                false,
+                |p| {
+                    let place = p.dir.parent().unwrap();
+                    std::os::unix::fs::symlink("loop", place.join("loop")).unwrap();
+                    let respelled = place.join("loop").join("..").join("wt").join(".git");
+                    std::fs::write(p.admin.join("gitdir"), format!("{}\n", respelled.display()))
+                        .unwrap();
+                    std::fs::remove_file(p.dir.join(".git")).unwrap();
+                    None
+                },
+            ),
+            // git locks the entry before it writes anything else, so an add cut off keeps the
+            // lock, with HEAD a placeholder until the checkout.
+            (
+                "an add git has not finished, detached at its placeholder HEAD",
+                true,
+                false,
+                |p| {
+                    std::fs::write(p.admin.join("locked"), "initializing").unwrap();
+                    std::fs::write(p.admin.join("HEAD"), format!("{}\n", "0".repeat(40))).unwrap();
+                    None
+                },
+            ),
+            (
+                "an add git has not finished, on the unit's branch",
+                true,
+                true,
+                |p| {
+                    std::fs::write(p.admin.join("locked"), "initializing").unwrap();
+                    None
+                },
+            ),
+            // With the branch gone, a tree registered at the path is no leftover of it.
+            (
+                "a registered tree, its unit's branch gone",
+                false,
+                false,
+                |_| None,
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (state, branch_present, on_branch, put) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap();
+            let place = tempfile::tempdir().unwrap();
+            let dir = place.path().join("wt");
+            let dir_s = dir.to_str().unwrap();
+            if *branch_present {
+                run_git(repo_path, &["branch", BRANCH]).unwrap();
+            }
+            let at: &[&str] = if *on_branch {
+                &[BRANCH]
+            } else {
+                &["--detach", "HEAD"]
+            };
+            run_git(
+                repo_path,
+                &[&["worktree", "add", "-q", dir_s][..], at].concat(),
+            )
+            .unwrap();
+            std::fs::write(dir.join("work.txt"), "work\n").unwrap();
+            let plant = Plant {
+                dir: dir.clone(),
+                admin: repo.path().join(".git").join("worktrees").join("wt"),
+            };
+            let denied = put(&plant);
+            let created = Worktree::create(repo_path, dir_s, BRANCH, "");
+            if let Some(path) = denied {
+                full_access(&path);
+            }
+            if created.is_ok() {
+                violations.push(format!("{state}: create returned a worktree"));
+            }
+            if std::fs::read_to_string(dir.join("work.txt"))
+                .ok()
+                .as_deref()
+                != Some("work\n")
+            {
+                violations.push(format!("{state}: the tree's uncommitted work is gone"));
+            }
+            if !plant.admin.is_dir() {
+                violations.push(format!("{state}: the tree's registration is gone"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// Where a worktree git lists at a path no one can resolve sits, beside a unit's create.
+    #[derive(Clone, Copy, Debug)]
+    enum Unresolvable {
+        /// Outside the work root on another branch, the unit's own tree registered at its path.
+        Unrelated,
+        /// Outside the work root on another branch, a leftover holding work at the unit's path.
+        UnrelatedBesideALeftover,
+        /// Outside the work root on the unit's branch, a leftover holding work at the unit's path.
+        OnTheUnitsBranch,
+        /// Under the work root on another branch, the unit's own tree registered at its path.
+        UnderTheRoot,
+        /// Under the work root on another branch, the unit's own tree registered at its path and
+        /// listed by git ahead of it.
+        UnderTheRootListedAfter,
+    }
+
+    /// A WORKTREE NO ONE CAN RESOLVE HOLDS A CREATE ONLY WHEN IT COULD BE THE UNIT'S: one naming
+    /// the unit's branch, or listed under the work root, makes `create` fail naming it; any other
+    /// is passed over, so the unit's own registered tree is adopted beside it, but a leftover at
+    /// the unit's path is never cleared on it. Which of the two git lists first decides nothing.
+    /// The unit's work and every registration stay.
+    #[test]
+    #[cfg(unix)]
+    fn create_is_held_by_a_worktree_no_one_can_resolve_only_when_it_could_be_the_units() {
+        const BRANCH: &str = "rigger/u/unit-unresolved";
+        let rows = [
+            (Unresolvable::Unrelated, true),
+            (Unresolvable::UnrelatedBesideALeftover, false),
+            (Unresolvable::OnTheUnitsBranch, false),
+            (Unresolvable::UnderTheRoot, false),
+            (Unresolvable::UnderTheRootListedAfter, false),
+        ];
+        let mut violations = Vec::new();
+        for (row, adopts) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap();
+            let place = tempfile::tempdir().unwrap();
+            let place = place.path().canonicalize().unwrap();
+            let root = place.join("r");
+            std::fs::create_dir_all(&root).unwrap();
+            let root_s = root.to_str().unwrap();
+            let dir = root.join(format!("{UNIT_WORKTREE_PREFIX}unit-unresolved"));
+            let dir_s = dir.to_str().unwrap();
+            // git lists linked worktrees sorted by path: each sealed tree's path sorts before the
+            // unit's, so git lists it first, but the last row's, which sorts after it.
+            let (sealed, its_branch) = match row {
+                Unresolvable::Unrelated | Unresolvable::UnrelatedBesideALeftover => {
+                    (place.join("a"), "other")
+                }
+                Unresolvable::OnTheUnitsBranch => (place.join("a"), BRANCH),
+                Unresolvable::UnderTheRoot => (root.join("a"), "other"),
+                Unresolvable::UnderTheRootListedAfter => (root.join("z"), "other"),
+            };
+            match row {
+                Unresolvable::Unrelated
+                | Unresolvable::UnderTheRoot
+                | Unresolvable::UnderTheRootListedAfter => {
+                    Worktree::create(repo_path, dir_s, BRANCH, root_s).unwrap();
+                }
+                Unresolvable::UnrelatedBesideALeftover => {
+                    run_git(repo_path, &["branch", "-q", BRANCH]).unwrap();
+                    std::fs::create_dir_all(&dir).unwrap();
+                }
+                Unresolvable::OnTheUnitsBranch => std::fs::create_dir_all(&dir).unwrap(),
+            }
+            std::fs::write(dir.join("work.txt"), "work\n").unwrap();
+            let at = sealed.join("wt");
+            run_git(
+                repo_path,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    its_branch,
+                    at.to_str().unwrap(),
+                ],
+            )
+            .unwrap();
+            let admin = repo.path().join(".git").join("worktrees").join("wt");
+            let denied = unreadable(&sealed);
+
+            let created = Worktree::create(repo_path, dir_s, BRANCH, root_s);
+            if let Some(path) = denied {
+                full_access(&path);
+            }
+
+            match (&created, adopts) {
+                (Ok(wt), true) if wt.dir == dir_s => {}
+                (Ok(wt), _) => {
+                    violations.push(format!("{row:?}: create returned the tree at {}", wt.dir))
+                }
+                (Err(e), true) => violations.push(format!("{row:?}: create failed: {}", e.0)),
+                (Err(e), false) if !e.0.contains(at.to_str().unwrap()) => violations.push(format!(
+                    "{row:?}: the error does not name {}: {}",
+                    at.display(),
+                    e.0
+                )),
+                (Err(_), false) => {}
+            }
+            if std::fs::read_to_string(dir.join("work.txt"))
+                .ok()
+                .as_deref()
+                != Some("work\n")
+            {
+                violations.push(format!("{row:?}: the work at the unit's path is gone"));
+            }
+            if !admin.is_dir() {
+                violations.push(format!("{row:?}: the sealed tree's registration is gone"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// A TREE IS READY FOR THE CHECKPOINT ONLY WITH NOTHING LEFT UNFINISHED AND NOTHING THE COMMIT
+    /// REFUSES: an unfinished merge, cherry-pick (an empty one git stopped on included), revert or
+    /// rebase is a refusal, as is conflict-marker text the commit would carry; a clean tree, and
+    /// one with uncommitted work the checkpoint sweeps, is none. Each refusal names the tree, and
+    /// the read leaves the index's bytes as they were, even over a tracked file whose stat git
+    /// would refresh in the index.
+    #[test]
+    fn a_tree_is_ready_for_the_checkpoint_only_with_nothing_unfinished_and_nothing_refused() {
+        const BRANCH: &str = "rigger/u/unit-stop";
+        // A git step that may end in the failure that stops its operation, which is the point.
+        fn step(dir: &str, args: &[&str]) {
+            let _ = run_git_with_status(dir, args);
+        }
+        fn write(dir: &str, file: &str, text: &str) {
+            std::fs::write(std::path::Path::new(dir).join(file), text).unwrap();
+        }
+        // Each row: what leaves the unit's tree in its state, and the start of every refusal
+        // expected, in order.
+        type Row = (&'static str, fn(&str), &'static [&'static str]);
+        let cases: [Row; 8] = [
+            ("clean", |_| {}, &[]),
+            (
+                "a tracked file touched, its text unchanged",
+                |dir| backdate(&std::path::Path::new(dir).join("unit.txt"), 3600),
+                &[],
+            ),
+            (
+                "uncommitted work",
+                |dir| {
+                    write(dir, "unit.txt", "edited\n");
+                    write(dir, "new.txt", "new\n");
+                },
+                &[],
+            ),
+            (
+                "conflict markers",
+                |dir| {
+                    write(
+                        dir,
+                        "unit.txt",
+                        "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n",
+                    )
+                },
+                &["refusing to commit in "],
+            ),
+            (
+                "merge",
+                |dir| step(dir, &["merge", "-q", "--no-ff", "--no-commit", "side"]),
+                &["a merge is in progress in "],
+            ),
+            (
+                "empty cherry-pick",
+                |dir| step(dir, &["cherry-pick", "empty"]),
+                &["a cherry-pick is in progress in "],
+            ),
+            (
+                "revert",
+                |dir| {
+                    write(dir, "unit.txt", "second\n");
+                    step(dir, &["commit", "-qam", "second"]);
+                    step(dir, &["revert", "--no-edit", "HEAD~1"]);
+                },
+                &["a revert is in progress in "],
+            ),
+            (
+                "rebase",
+                |dir| step(dir, &["rebase", "-x", "false", "HEAD~1"]),
+                &["a rebase is in progress in ", "refusing to commit in "],
+            ),
+        ];
+        for (row, leave, expected) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            for args in [
+                &["checkout", "-q", "-b", "side"][..],
+                &["commit", "-q", "--allow-empty", "-m", "side"],
+                &["checkout", "-q", "-b", "empty"],
+                &["commit", "-q", "--allow-empty", "-m", "empty"],
+                &["checkout", "-q", "rigger-run"],
+            ] {
+                run_git(&repo_path, args).unwrap();
+            }
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-stop");
+            write(&dir, "unit.txt", "committed\n");
+            wt.commit("unit work").unwrap();
+            leave(&dir);
+            let index = git(&dir, &["rev-parse", "--git-path", "index"]).unwrap();
+            let index = std::path::Path::new(&dir).join(index.trim());
+            let before = std::fs::read(&index).unwrap();
+
+            let refusals = checkpoint_refusals(&dir, BRANCH).unwrap();
+            assert_eq!(refusals.len(), expected.len(), "{row}: {refusals:?}");
+            for (refusal, start) in refusals.iter().zip(expected) {
+                assert!(refusal.starts_with(start), "{row}: {refusal}");
+                assert!(
+                    refusal.contains(&dir),
+                    "{row}: the refusal names the tree: {refusal}"
+                );
+            }
+            assert_eq!(
+                std::fs::read(&index).unwrap(),
+                before,
+                "{row}: the read leaves the index as it was"
+            );
+        }
+    }
+
+    /// A PRODUCER'S TREE IS READY ONLY WITH NO WORK OF ITS OUTPUT OUTSIDE A COMMIT, by the scope
+    /// the plan landing takes: work under `specs/` no commit records is one refusal naming its
+    /// paths and saying to commit it; work outside `specs/` - a changed tracked file, a staged or
+    /// untracked one - never lands, so alone it is no refusal, and beside work in `specs/` a
+    /// second line names its paths and says it never lands, stays out of the commit and may be
+    /// taken out of the tree. A clean tree, one whose work is committed and one holding only a
+    /// file git ignores are none. The read leaves the index's bytes as they were.
+    #[test]
+    fn a_producers_tree_is_ready_only_with_no_output_work_outside_a_commit() {
+        fn write(dir: &str, file: &str, text: &str) {
+            let path = std::path::Path::new(dir).join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        // Each row: what leaves the producer's tree in its state, then the uncommitted paths
+        // under `specs/` and outside it the refusals name.
+        type Row = (
+            &'static str,
+            fn(&str),
+            &'static [&'static str],
+            &'static [&'static str],
+        );
+        let cases: [Row; 8] = [
+            ("clean", |_| {}, &[], &[]),
+            (
+                "committed work",
+                |dir| {
+                    write(dir, "specs/plan.md", "planned\n");
+                    run_git(dir, &["add", "specs/plan.md"]).unwrap();
+                    run_git(dir, &["commit", "-qm", "plan"]).unwrap();
+                },
+                &[],
+                &[],
+            ),
+            (
+                "an ignored file",
+                |dir| write(dir, "scratch.log", "noise\n"),
+                &[],
+                &[],
+            ),
+            (
+                "a staged plan",
+                |dir| {
+                    write(dir, "specs/plan.md", "planned\n");
+                    run_git(dir, &["add", "specs/plan.md"]).unwrap();
+                },
+                &["specs/plan.md"],
+                &[],
+            ),
+            (
+                "an untracked plan",
+                |dir| write(dir, "specs/plan.md", "planned\n"),
+                &["specs/"],
+                &[],
+            ),
+            (
+                "a changed file outside the output",
+                |dir| write(dir, "unit.txt", "edited\n"),
+                &[],
+                &["unit.txt"],
+            ),
+            (
+                "a staged file outside the output",
+                |dir| {
+                    write(dir, "spec.md", "planned\n");
+                    run_git(dir, &["add", "spec.md"]).unwrap();
+                },
+                &[],
+                &["spec.md"],
+            ),
+            (
+                "a plan beside leftovers",
+                |dir| {
+                    write(dir, "specs/plan.md", "planned\n");
+                    write(dir, "unit.txt", "edited\n");
+                    write(dir, "notes.txt", "scratch\n");
+                },
+                &["specs/"],
+                &["notes.txt", "unit.txt"],
+            ),
+        ];
+        for (row, leave, inside, outside) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-plan");
+            write(&dir, "unit.txt", "committed\n");
+            write(&dir, ".gitignore", "*.log\n");
+            wt.commit("unit work").unwrap();
+            leave(&dir);
+            let index = git(&dir, &["rev-parse", "--git-path", "index"]).unwrap();
+            let index = std::path::Path::new(&dir).join(index.trim());
+            let before = std::fs::read(&index).unwrap();
+
+            let refusals = own_commits_refusals(&dir, "specs/").unwrap();
+            let mut expected = Vec::new();
+            if !inside.is_empty() {
+                expected.push(format!(
+                    "{dir} holds work in specs/ that no commit records: {} - the conductor lands \
+                     only the commits made there, so commit this work for it to reach the run \
+                     branch",
+                    inside.join(", ")
+                ));
+                if !outside.is_empty() {
+                    expected.push(format!(
+                        "{dir} also holds work outside specs/ that no commit records: {} - it \
+                         never lands, and a commit touching it is refused as outside the stage's \
+                         output, so leave it out of the commit; it may be taken out of the tree",
+                        outside.join(", ")
+                    ));
+                }
+            }
+            assert_eq!(refusals, expected, "{row}");
+            assert_eq!(
+                std::fs::read(&index).unwrap(),
+                before,
+                "{row}: the read leaves the index as it was"
+            );
+        }
+    }
+
+    /// The status a producer's hold or failure carries is git's own, its hints off, and at most
+    /// [`TREE_STATUS_LINES`] lines with the rest counted.
+    #[test]
+    fn a_trees_status_is_gits_own_in_at_most_its_lines() {
+        for (case, files, cut) in [("a short status", 3, false), ("a long status", 60, true)] {
+            let repo = init_repo();
+            let dir = repo.path().to_str().unwrap();
+            for n in 0..files {
+                std::fs::write(repo.path().join(format!("f{n:02}.txt")), "x").unwrap();
+            }
+            let status = tree_status(dir);
+            let lines: Vec<&str> = status.lines().collect();
+            assert!(lines[0].starts_with("On branch "), "{case}: {status}");
+            assert!(
+                !status.contains("(use \""),
+                "{case}: no hint names a command: {status}"
+            );
+            if cut {
+                assert_eq!(lines.len(), TREE_STATUS_LINES + 1, "{case}: {status}");
+                let last = lines[TREE_STATUS_LINES];
+                assert!(
+                    last.starts_with('(') && last.ends_with(" more lines)"),
+                    "{case}: {status}"
+                );
+            } else {
+                for n in 0..files {
+                    assert!(status.contains(&format!("f{n:02}.txt")), "{case}: {status}");
+                }
+            }
+        }
+    }
+
+    /// THE CHECKS READ A TREE THE SAME WHATEVER ITS USER'S GIT CONFIGURATION SAYS: under each
+    /// setting below, an untracked file is uncommitted work naming its directory and makes the
+    /// tree dirty, a conflict is refused in a commit, and a detached HEAD is named in git's own
+    /// first line of a long status, which carries no colour codes.
+    #[test]
+    fn the_checks_read_a_tree_the_same_under_any_git_configuration() {
+        const BRANCH: &str = "rigger/u/unit-config";
+        const ESCAPE: char = '\u{1b}';
+        let settings = [
+            ("status.showUntrackedFiles", "no"),
+            ("status.showUntrackedFiles", "all"),
+            ("status.short", "true"),
+            ("color.ui", "always"),
+            ("color.status", "always"),
+            ("color.grep", "always"),
+            ("grep.lineNumber", "true"),
+            ("grep.column", "true"),
+            ("grep.patternType", "perl"),
+        ];
+        let mut violations = Vec::new();
+        for (key, value) in settings {
+            let row = format!("{key}={value}");
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-config");
+            std::fs::write(std::path::Path::new(&dir).join("unit.txt"), "committed\n").unwrap();
+            wt.commit("unit work").unwrap();
+            run_git(&repo_path, &["config", key, value]).unwrap();
+
+            std::fs::create_dir_all(std::path::Path::new(&dir).join("specs")).unwrap();
+            std::fs::write(
+                std::path::Path::new(&dir).join("specs/plan.md"),
+                "planned\n",
+            )
+            .unwrap();
+            let uncommitted = uncommitted_paths(&dir).unwrap();
+            if uncommitted != ["specs/"] {
+                violations.push(format!("{row}: the uncommitted paths read {uncommitted:?}"));
+            }
+            if !path_is_dirty(&dir).unwrap() {
+                violations.push(format!(
+                    "{row}: a tree holding an untracked file reads clean"
+                ));
+            }
+
+            std::fs::write(
+                std::path::Path::new(&dir).join("unit.txt"),
+                "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n",
+            )
+            .unwrap();
+            if commit_refusal(&dir, BRANCH).unwrap().is_none() {
+                violations.push(format!("{row}: a commit of a conflict is not refused"));
+            }
+
+            run_git(&dir, &["checkout", "-q", "--detach"]).unwrap();
+            match head_off_branch(&dir, BRANCH).unwrap() {
+                Some(on) if on.starts_with("HEAD detached at ") => {}
+                on => violations.push(format!("{row}: a detached HEAD is read as {on:?}")),
+            }
+            let status = tree_status(&dir);
+            if !status.starts_with("HEAD detached at ") || status.contains(ESCAPE) {
+                violations.push(format!("{row}: the tree's status reads {status:?}"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// A READ DECIDING THE CLEAR THAT GOES UNANSWERED CLEARS NOTHING: when git cannot say whether
+    /// the unit's branch exists (no repository path, a path that is not there, a configuration git
+    /// refuses), or which worktrees are registered (a registration list git refuses), or the
+    /// filesystem cannot say whether the branch's registered worktree is there, `create`
+    /// fails with that read's error and leaves what sits at the unit's path as it was - a plain
+    /// directory, or a registered worktree of the branch, each holding an uncommitted file - and
+    /// every registration as it was.
+    #[test]
+    #[cfg(unix)]
+    fn create_clears_nothing_when_a_read_deciding_the_clear_goes_unanswered() {
+        use std::os::unix::fs::PermissionsExt;
+        #[derive(Debug, Clone, Copy)]
+        enum Unanswered {
+            NoRepositoryPath,
+            PathNotThere,
+            RefusedConfiguration,
+            /// The branch read answers that the branch exists, and the read of where it is
+            /// registered fails: another worktree's admin entry holds a `locked` directory, which
+            /// `git worktree list` refuses.
+            Registration,
+            /// The branch is checked out in a worktree elsewhere whose parent directory denies
+            /// every access, so whether that worktree is there cannot be read.
+            RegisteredDir,
+        }
+        // Each row: which read goes unanswered and why, and whether the unit's path holds a
+        // registered worktree of the branch (else a plain directory).
+        let cases = [
+            (Unanswered::NoRepositoryPath, false),
+            (Unanswered::NoRepositoryPath, true),
+            (Unanswered::PathNotThere, false),
+            (Unanswered::PathNotThere, true),
+            (Unanswered::RefusedConfiguration, false),
+            (Unanswered::RefusedConfiguration, true),
+            (Unanswered::Registration, false),
+            (Unanswered::RegisteredDir, false),
+        ];
+        for (why, registered) in cases {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let root = scratch_root(&repo_path, "", None);
+            let branch = "rigger/u/unit-unanswered";
+            let dir = format!("{root}/rigger-wt-unit-unanswered");
+            if registered {
+                Worktree::create(&repo_path, &dir, branch, "").unwrap();
+            } else {
+                std::fs::create_dir_all(&dir).unwrap();
+            }
+            let work = std::path::Path::new(&dir).join("work.txt");
+            std::fs::write(&work, "uncommitted\n").unwrap();
+            let config = repo.path().join(".git").join("config");
+            let kept_config = std::fs::read(&config).unwrap();
+            let elsewhere = tempfile::tempdir().unwrap();
+            let sealed = elsewhere.path().join("sealed");
+            let mut named = branch.to_string();
+            let asked = match why {
+                Unanswered::NoRepositoryPath => String::new(),
+                Unanswered::PathNotThere => format!("{repo_path}/not-there"),
+                Unanswered::RefusedConfiguration => {
+                    std::fs::write(&config, [kept_config.as_slice(), b"[broken\n"].concat())
+                        .unwrap();
+                    repo_path.clone()
+                }
+                Unanswered::Registration => {
+                    run_git(&repo_path, &["branch", branch]).unwrap();
+                    let other = format!("{root}/rigger-wt-other");
+                    run_git(
+                        &repo_path,
+                        &["worktree", "add", "-q", "-b", "other", &other],
+                    )
+                    .unwrap();
+                    let admin = repo.path().join(".git/worktrees/rigger-wt-other");
+                    std::fs::create_dir(admin.join("locked")).unwrap();
+                    // The first read the refused list leaves unanswered is whether a worktree
+                    // is registered at the unit's path.
+                    named = dir.clone();
+                    repo_path.clone()
+                }
+                Unanswered::RegisteredDir => {
+                    let held = sealed.join("held");
+                    let held = held.to_str().unwrap();
+                    run_git(&repo_path, &["worktree", "add", "-q", "-b", branch, held]).unwrap();
+                    named = held.to_string();
+                    std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o000))
+                        .unwrap();
+                    repo_path.clone()
+                }
+            };
+            let registrations = || {
+                std::fs::read_dir(repo.path().join(".git").join("worktrees"))
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .map(|entry| entry.file_name())
+                            .collect::<std::collections::BTreeSet<_>>()
+                    })
+                    .unwrap_or_default()
+            };
+            let registered_before = registrations();
+
+            let made = Worktree::create(&asked, &dir, branch, &root);
+            std::fs::write(&config, &kept_config).unwrap();
+            if sealed.exists() {
+                std::fs::set_permissions(&sealed, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+
+            let Err(err) = made else {
+                panic!("{why:?}, registered {registered}: create must fail on an unanswered read");
+            };
+            assert!(
+                err.0.contains(&named),
+                "{why:?}, registered {registered}: the error names what could not be read: {}",
+                err.0
+            );
+            assert_eq!(
+                registrations(),
+                registered_before,
+                "{why:?}, registered {registered}: every registration survives"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&work).ok().as_deref(),
+                Some("uncommitted\n"),
+                "{why:?}, registered {registered}: the file at the unit's path survives"
+            );
+            if registered {
+                assert!(
+                    worktree_on_branch(&dir, branch).unwrap(),
+                    "{why:?}: the registered worktree is still checked out on its branch"
+                );
+            }
+        }
+    }
+
+    /// AN ANCESTRY READ ANSWERS OR FAILS: [`in_history`] answers yes for a commit the descendant
+    /// holds, no for one it does not, and an error - never a no - when git cannot answer, whether a
+    /// rev does not resolve or no repository sits at the path.
+    #[test]
+    fn an_ancestry_read_answers_yes_no_or_fails() {
+        #[derive(Debug, Clone, Copy)]
+        enum Ask {
+            Held,
+            NotHeld,
+            UnknownRev,
+            NoRepository,
+        }
+        // Each row: what is asked, and the answer (`None` for an error).
+        let cases = [
+            (Ask::Held, Some(true)),
+            (Ask::NotHeld, Some(false)),
+            (Ask::UnknownRev, None),
+            (Ask::NoRepository, None),
+        ];
+        for (ask, want) in cases {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let base = head_sha_of(&repo_path);
+            run_git(&repo_path, &["commit", "--allow-empty", "-q", "-m", "next"]).unwrap();
+            let tip = head_sha_of(&repo_path);
+            let (dir, ancestor, descendant) = match ask {
+                Ask::Held => (repo_path.clone(), base, tip),
+                Ask::NotHeld => (repo_path.clone(), tip, base),
+                Ask::UnknownRev => (repo_path.clone(), "0".repeat(40), tip),
+                Ask::NoRepository => (format!("{repo_path}/not-there"), base, tip),
+            };
+            let answer = in_history(&dir, &ancestor, &descendant);
+            assert_eq!(answer.as_ref().ok().copied(), want, "{ask:?}: {answer:?}");
+        }
+    }
+
+    /// A LINK AT A WORKTREE'S PATH IS REMOVED AS A LINK: making or discarding a worktree at a path
+    /// a symlink occupies decides by the path's own metadata, never by following the link. A
+    /// dangling link is cleared like any leftover; a link to a directory or to another registered
+    /// worktree is removed as a link, and its target, the file the target holds and the target's
+    /// registration all survive.
+    #[test]
+    #[cfg(unix)]
+    fn a_link_at_a_worktree_path_is_removed_as_a_link() {
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Link {
+            Dangling,
+            ToDirectory,
+            ToWorktree,
+        }
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Step {
+            CreateOnNewBranch,
+            CreateOnBranch,
+            Discard,
+        }
+        let links = [Link::Dangling, Link::ToDirectory, Link::ToWorktree];
+        let steps = [Step::CreateOnNewBranch, Step::CreateOnBranch, Step::Discard];
+        for (link, step) in links.into_iter().flat_map(|l| steps.map(|s| (l, s))) {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let root = scratch_root(&repo_path, "", None);
+            std::fs::create_dir_all(&root).unwrap();
+            let branch = "rigger/u/unit-linked";
+            let dir = format!("{root}/rigger-wt-unit-linked");
+            let elsewhere = tempfile::tempdir().unwrap();
+            let target = elsewhere.path().join("target");
+            match link {
+                Link::Dangling => {}
+                Link::ToDirectory => std::fs::create_dir(&target).unwrap(),
+                Link::ToWorktree => {
+                    let at = target.to_str().unwrap();
+                    run_git(&repo_path, &["worktree", "add", "-q", "-b", "other", at]).unwrap();
+                }
+            }
+            let kept = target.join("kept.txt");
+            if link != Link::Dangling {
+                std::fs::write(&kept, "kept\n").unwrap();
+            }
+            if step != Step::CreateOnNewBranch {
+                run_git(&repo_path, &["branch", branch]).unwrap();
+            }
+            std::os::unix::fs::symlink(&target, &dir).unwrap();
+
+            let done = match step {
+                Step::Discard => Worktree::discard(&repo_path, &dir, branch, &root),
+                _ => Worktree::create(&repo_path, &dir, branch, &root).map(|_| ()),
+            };
+
+            assert!(done.is_ok(), "{link:?}, {step:?}: {done:?}");
+            let at_path = std::fs::symlink_metadata(&dir);
+            if step == Step::Discard {
+                assert!(at_path.is_err(), "{link:?}: the link is gone");
+            } else {
+                assert!(
+                    at_path.is_ok_and(|m| m.is_dir()),
+                    "{link:?}, {step:?}: a directory, not the link, stands at the path"
+                );
+                assert!(
+                    worktree_on_branch(&dir, branch).unwrap(),
+                    "{link:?}, {step:?}: the worktree at the path is on its branch"
+                );
+            }
+            if link != Link::Dangling {
+                assert_eq!(
+                    std::fs::read_to_string(&kept).ok().as_deref(),
+                    Some("kept\n"),
+                    "{link:?}, {step:?}: the file the link's target holds survives"
+                );
+            }
+            if link == Link::ToWorktree {
+                assert_eq!(
+                    registered_worktree_for(&repo_path, "other").as_deref(),
+                    target.to_str(),
+                    "{link:?}, {step:?}: the target's registration survives"
+                );
+            }
+        }
+    }
+
+    /// A DISCARD WITH NO REPOSITORY CLEARS NOTHING: an empty repository path names no
+    /// repository to deregister a worktree from, so `discard` fails and leaves what sits at its
+    /// path as it was - a plain directory, or a registered worktree of the branch, each holding
+    /// an uncommitted file - never removing it on git's refusal alone.
+    #[test]
+    fn discard_with_no_repository_path_clears_nothing() {
+        // Each row: whether the path holds a registered worktree of the branch (else a plain
+        // directory).
+        for registered in [false, true] {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let root = scratch_root(&repo_path, "", None);
+            let branch = "rigger/review/unit-unrepo";
+            let dir = format!("{root}/rigger-review-unit-unrepo");
+            if registered {
+                Worktree::create(&repo_path, &dir, branch, "").unwrap();
+            } else {
+                std::fs::create_dir_all(&dir).unwrap();
+            }
+            let work = std::path::Path::new(&dir).join("work.txt");
+            std::fs::write(&work, "uncommitted\n").unwrap();
+
+            let discarded = Worktree::discard("", &dir, branch, &root);
+
+            assert!(
+                discarded.is_err(),
+                "registered {registered}: a discard with no repository fails"
+            );
+            assert_eq!(
+                std::fs::read_to_string(&work).ok().as_deref(),
+                Some("uncommitted\n"),
+                "registered {registered}: the file at the path survives"
+            );
+            if registered {
+                assert!(
+                    registered_worktree_for(&repo_path, branch).is_some(),
+                    "the worktree's registration survives"
+                );
+            }
+        }
+    }
+
+    /// THE LEFTOVER CLEAR REAPS FIRST: on either arm of `create` that clears a leftover at the
+    /// unit's path - its branch kept, or gone with its worktree - a process still rooted in the
+    /// leftover is reaped under the scratch root the caller resolved (it ignores SIGTERM, so
+    /// only the SIGKILL escalation ends it) while one rooted at the repository survives, and
+    /// the worktree is then made on its branch.
+    #[test]
+    fn create_reaps_a_process_rooted_in_a_leftover_before_clearing_it() {
+        // Each row: whether the unit's branch is kept (else gone with its worktree).
+        for kept in [true, false] {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let root = scratch_root(&repo_path, "", None);
+            let branch = "rigger/u/unit-reaped";
+            let dir = format!("{root}/rigger-wt-unit-reaped");
+            if kept {
+                run_git(&repo_path, &["branch", branch]).unwrap();
+            }
+            std::fs::create_dir_all(&dir).unwrap();
+            let mut made = None;
+
+            assert_teardown_reaps_what_is_rooted_inside(
+                std::path::Path::new(&dir),
+                Some(repo.path()),
+                || made = Some(Worktree::create(&repo_path, &dir, branch, &root)),
+                "Worktree::create",
+            );
+
+            let wt = made
+                .unwrap()
+                .unwrap_or_else(|e| panic!("branch kept {kept}: create fails: {}", e.0));
+            assert!(
+                worktree_on_branch(&dir, branch).unwrap(),
+                "branch kept {kept}: the worktree is made on its branch at the cleared path"
+            );
+            wt.remove().unwrap();
+        }
     }
 
     #[test]
@@ -7177,25 +10674,25 @@ mod tests {
 
         // Absent dir: no worktree to adopt.
         assert!(
-            !worktree_on_branch(&dir, branch),
+            !worktree_on_branch(&dir, branch).unwrap(),
             "an absent dir is not a worktree on the branch"
         );
 
-        // A bare, populated NON-worktree dir under the repo: its HEAD walks UP to the parent
-        // repo's branch (rigger-run), not `branch`, so the fast path must NOT adopt it - this
-        // is exactly the leftover the fallback must defend against.
+        // A bare, populated NON-worktree dir: it holds no `.git`, so it is no worktree whatever
+        // repository encloses it, and the fast path must NOT adopt it - this is exactly the
+        // leftover the fallback must defend against.
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(std::path::Path::new(&dir).join("x.txt"), "y\n").unwrap();
         assert!(
-            !worktree_on_branch(&dir, branch),
-            "a bare leftover dir (HEAD resolves to the parent repo) is not this branch's worktree"
+            !worktree_on_branch(&dir, branch).unwrap(),
+            "a bare leftover dir (no `.git`) is not this branch's worktree"
         );
         std::fs::remove_dir_all(&dir).unwrap();
 
         // The real worktree on the branch: matched by path lookup.
         let wt = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         assert!(
-            worktree_on_branch(&dir, branch),
+            worktree_on_branch(&dir, branch).unwrap(),
             "the dir that IS this branch's worktree matches by its own HEAD"
         );
 
@@ -7203,9 +10700,25 @@ mod tests {
         let other_dir = format!("{root}/rigger-wt-other");
         let other = Worktree::create(&repo_path, &other_dir, "rigger/u/other", "").unwrap();
         assert!(
-            !worktree_on_branch(&other_dir, branch),
+            !worktree_on_branch(&other_dir, branch).unwrap(),
             "a worktree on another branch does not match this branch's path lookup"
         );
+
+        // A tree whose registration is gone: git cannot read its HEAD, so the lookup fails
+        // rather than answer that it is not this branch's worktree.
+        let gone_dir = format!("{root}/rigger-wt-gone");
+        run_git(
+            &repo_path,
+            &["worktree", "add", "-q", "--detach", &gone_dir],
+        )
+        .unwrap();
+        let admin = std::path::Path::new(&repo_path).join(".git/worktrees/rigger-wt-gone");
+        std::fs::remove_dir_all(admin).unwrap();
+        assert!(
+            worktree_on_branch(&gone_dir, branch).is_err(),
+            "a tree whose HEAD git cannot read fails the lookup"
+        );
+        std::fs::remove_dir_all(&gone_dir).unwrap();
         wt.remove().unwrap();
         other.remove().unwrap();
     }
@@ -7302,18 +10815,84 @@ mod tests {
         );
     }
 
+    /// THE BRANCH A HEAD IS ON IS READ OR FAILS: [`current_branch`] names the branch a tree's
+    /// HEAD is on (an unborn one included), answers none for a detached HEAD, and is an error -
+    /// never a detached HEAD - when git cannot read the HEAD.
+    #[test]
+    fn the_branch_a_head_is_on_is_read_or_fails() {
+        #[derive(Debug, PartialEq)]
+        enum Read {
+            Branch(String),
+            Detached,
+            Failed,
+        }
+        // Each row: the HEAD's state, what puts a fresh repository's tree in it (returning the
+        // path read), and the read wanted.
+        type Row = (&'static str, fn(&str) -> String, Read);
+        let rows: &[Row] = &[
+            (
+                "on a branch",
+                |repo| {
+                    run_git(repo, &["checkout", "-q", "-b", "topic"]).unwrap();
+                    repo.to_string()
+                },
+                Read::Branch("topic".into()),
+            ),
+            (
+                "on a branch with no commit yet",
+                |repo| {
+                    run_git(repo, &["checkout", "-q", "--orphan", "unborn"]).unwrap();
+                    repo.to_string()
+                },
+                Read::Branch("unborn".into()),
+            ),
+            (
+                "detached",
+                |repo| {
+                    run_git(repo, &["checkout", "-q", "--detach"]).unwrap();
+                    repo.to_string()
+                },
+                Read::Detached,
+            ),
+            (
+                "a tree whose registration is gone",
+                |repo| {
+                    let dir = format!("{repo}/wt");
+                    run_git(repo, &["worktree", "add", "-q", "--detach", &dir]).unwrap();
+                    let admin = std::path::Path::new(repo).join(".git/worktrees/wt");
+                    std::fs::remove_dir_all(admin).unwrap();
+                    dir
+                },
+                Read::Failed,
+            ),
+            ("no repository path", |_| String::new(), Read::Failed),
+        ];
+        for (state, put, want) in rows {
+            let repo = init_repo();
+            let at = put(repo.path().to_str().unwrap());
+            let read = match current_branch(&at) {
+                Ok(Some(branch)) => Read::Branch(branch),
+                Ok(None) => Read::Detached,
+                Err(_) => Read::Failed,
+            };
+            assert_eq!(read, *want, "{state}");
+        }
+    }
+
     #[test]
     fn ensure_run_branch_creates_off_base_and_checks_it_out() {
         // Absent run branch + a base that resolves: create the run branch off the base,
         // check it out, and report CreatedFromBase.
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
-        let default = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        let default = current_branch(&p)
+            .unwrap()
+            .expect("init_repo leaves a named branch checked out");
 
         let setup = Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
         assert_eq!(setup, RunBranchSetup::CreatedFromBase);
         assert_eq!(
-            current_branch(&p).as_deref(),
+            current_branch(&p).unwrap().as_deref(),
             Some("rigger-run"),
             "ensure_run_branch must check out the run branch it creates"
         );
@@ -7334,7 +10913,9 @@ mod tests {
         // re-anchor to a new base (which would orphan the integrated units).
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
-        let default = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        let default = current_branch(&p)
+            .unwrap()
+            .expect("init_repo leaves a named branch checked out");
         Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
 
         // A prior step integrates a unit onto the run branch.
@@ -7355,7 +10936,7 @@ mod tests {
         let setup = Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
         assert_eq!(setup, RunBranchSetup::Reused);
         assert_eq!(
-            current_branch(&p).as_deref(),
+            current_branch(&p).unwrap().as_deref(),
             Some("rigger-run"),
             "a re-ensure checks the existing run branch back out"
         );
@@ -7393,7 +10974,7 @@ mod tests {
             "an unresolvable base must still create the run branch (off HEAD), not no-op"
         );
         assert_eq!(
-            current_branch(&p).as_deref(),
+            current_branch(&p).unwrap().as_deref(),
             Some("rigger-run"),
             "the HEAD-anchored run branch must be checked out so units branch off it"
         );
@@ -7412,7 +10993,9 @@ mod tests {
         // history disjoint from the base that a PR refuses to apply.
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
-        let base = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        let base = current_branch(&p)
+            .unwrap()
+            .expect("init_repo leaves a named branch checked out");
         let base_tip = run_git(&p, &["rev-parse", &base])
             .unwrap()
             .trim()
@@ -7798,7 +11381,7 @@ mod tests {
             "the worktree must exist after the concurrent re-assert: {dir}"
         );
         assert!(
-            worktree_on_branch(&dir, "rigger/u/racer"),
+            worktree_on_branch(&dir, "rigger/u/racer").unwrap(),
             "the restored worktree must be checked out on its own branch, not left in a \
              half-recreated state"
         );

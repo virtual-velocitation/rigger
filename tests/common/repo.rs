@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 pub use super::fixtures::table_lines;
-use super::fixtures::{recorded_argv, recorded_task};
+use super::fixtures::{exec_hook, recorded_argv, recorded_task};
 
 /// The repository root (the package's manifest directory).
 pub fn repo_root() -> PathBuf {
@@ -232,8 +232,22 @@ pub fn shell_words(command: &str) -> Vec<String> {
     recorded_argv(&recorded)
 }
 
-/// Each hook `settings` carries under `event`, in order: its matcher and the [`shell_words`] of
-/// its one command.
+/// The argv the command `hook` runs starts, whichever form the host reads it in: an exec-form
+/// hook's `command` and then each of its `args`, which the host spawns with no shell; a shell-form
+/// hook's [`shell_words`].
+fn run_words(hook: &serde_json::Value) -> Vec<String> {
+    let command = hook["command"].as_str().unwrap();
+    match hook["args"].as_array() {
+        Some(args) => std::iter::once(command)
+            .chain(args.iter().map(|arg| arg.as_str().unwrap()))
+            .map(str::to_string)
+            .collect(),
+        None => shell_words(command),
+    }
+}
+
+/// Each hook `settings` carries under `event`, in order: its matcher and the words of its one
+/// command ([`run_words`]).
 pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec<String>)> {
     settings["hooks"][event]
         .as_array()
@@ -242,7 +256,7 @@ pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec
         .map(|entry| {
             (
                 entry["matcher"].as_str().unwrap().to_string(),
-                shell_words(entry["hooks"][0]["command"].as_str().unwrap()),
+                run_words(&entry["hooks"][0]),
             )
         })
         .collect()
@@ -255,16 +269,31 @@ pub fn grep_guard_hook() -> (String, Vec<String>) {
     ("Grep|Bash".to_string(), words.to_vec())
 }
 
-/// A launch's `settings` carry its per-spawn hooks: under `PreToolUse` the write guard running
+/// The inner hook running `argv` in exec form ([`exec_hook`]), given `timeout` seconds where one is
+/// named.
+fn timed_exec_hook(argv: &[String], timeout: Option<u32>) -> serde_json::Value {
+    let mut hook = exec_hook(&argv.iter().map(String::as_str).collect::<Vec<_>>());
+    if let Some(timeout) = timeout {
+        hook["timeout"] = timeout.into();
+    }
+    hook
+}
+
+/// A launch's `settings` carry its per-spawn hooks, each in exec form ([`exec_hook`]), as is the
+/// session's grep guard: under `PreToolUse` the write guard running
 /// `bin` with `roots` in order, then the session's grep guard exactly when `grep_guard` (the
-/// workflow's `defaults.grep_guard`) declares it, and under `StopFailure` one entry per category
-/// running `bin` for `spawn`, in category order.
+/// workflow's `defaults.grep_guard`) declares it; under `StopFailure` one entry per category
+/// running `bin` for `spawn`, in category order; and under `Stop` the one `hook stop` asking of
+/// the tree at the `dir` of `stop` for `spawn` by the duty words `stop` names after it
+/// (`--branch <branch>` or `--own-commits <output>`), with its timeout, exactly when the conductor
+/// takes something from the launch's tree (`stop` names one), and no `Stop` entry otherwise.
 pub fn assert_carries_spawn_hooks(
     settings: &serde_json::Value,
     bin: &str,
     spawn: &str,
     roots: &[String],
     grep_guard: bool,
+    stop: Option<(&str, &[&str])>,
 ) {
     let words = |text: &[&str]| -> Vec<String> { text.iter().map(|w| w.to_string()).collect() };
     let mut guard = words(&[bin, "guard-write"]);
@@ -280,6 +309,18 @@ pub fn assert_carries_spawn_hooks(
         pre_tool_use,
         "the write guard, then the session's grep guard when declared ({grep_guard}): {settings}"
     );
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["hooks"][0],
+        timed_exec_hook(&pre_tool_use[0].1, None),
+        "the write guard in exec form: {settings}"
+    );
+    if grep_guard {
+        assert_eq!(
+            settings["hooks"]["PreToolUse"][1]["hooks"][0],
+            exec_hook(&["rigger", "grep-guard"]),
+            "the session's grep guard in exec form: {settings}"
+        );
+    }
     let stop_failures: Vec<(String, Vec<String>)> = rigger::conductor::AgentFailure::CATEGORIES
         .iter()
         .map(|category| {
@@ -301,6 +342,42 @@ pub fn assert_carries_spawn_hooks(
         stop_failures,
         "one entry per category: {settings}"
     );
+    let inner: Vec<&serde_json::Value> = settings["hooks"]["StopFailure"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|entry| &entry["hooks"][0])
+        .collect();
+    let exec: Vec<serde_json::Value> = stop_failures
+        .iter()
+        .map(|(_, argv)| timed_exec_hook(argv, None))
+        .collect();
+    assert_eq!(
+        inner,
+        exec.iter().collect::<Vec<_>>(),
+        "each stop-failure hook in exec form: {settings}"
+    );
+    match stop {
+        Some((dir, duty)) => {
+            let mut command = words(&[bin, "hook", "stop", "--spawn", spawn, "--dir", dir]);
+            command.extend(words(duty));
+            let exec = timed_exec_hook(&command, Some(rigger::hooks::STOP_HOOK_TIMEOUT_SECS));
+            assert_eq!(
+                hook_words(settings, "Stop"),
+                [(String::new(), command)],
+                "{spawn}: the stop check on its tree: {settings}"
+            );
+            assert_eq!(
+                settings["hooks"]["Stop"][0]["hooks"][0], exec,
+                "{spawn}: the stop check in exec form, with its timeout: {settings}"
+            );
+        }
+        None => assert!(
+            settings["hooks"]["Stop"].is_null(),
+            "{spawn}: a launch whose tree the conductor takes nothing from has no stop check: \
+             {settings}"
+        ),
+    }
 }
 
 /// The rigger tools the embedded helpers declare, once each in helper then declaration order,
@@ -425,9 +502,25 @@ pub fn table_declares_key(manifest: &str, header: &str, key: &str) -> bool {
 /// Every production `.rs` file under `root`'s `src/` and each `crates/*/src/`, as
 /// `(repo-relative path, text)`.
 pub fn production_sources(root: &Path) -> Vec<(String, String)> {
-    rs_files_under(root, &["src", "crates"])
-        .into_iter()
-        .filter(|rel| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src"))
+    with_text(
+        root,
+        rs_files_under(root, &["src", "crates"])
+            .into_iter()
+            .filter(|rel| rel.starts_with("src/") || rel.split('/').nth(2) == Some("src")),
+    )
+}
+
+/// Every `.rs` file strictly under each of `root`'s `dirs` ([`rs_files_under`]), as
+/// `(repo-relative path, text)`.
+pub fn rs_sources_under(root: &Path, dirs: &[&str]) -> Vec<(String, String)> {
+    with_text(root, rs_files_under(root, dirs))
+}
+
+/// Each repo-relative path in `rels` with the text of its file under `root`. A file that cannot
+/// be read as text fails the caller, naming it: an audit never vouches for a source it could not
+/// read.
+fn with_text(root: &Path, rels: impl IntoIterator<Item = String>) -> Vec<(String, String)> {
+    rels.into_iter()
         .map(|rel| {
             let text = super::fixtures::read_text(&root.join(&rel));
             (rel, text)
@@ -436,11 +529,20 @@ pub fn production_sources(root: &Path) -> Vec<(String, String)> {
 }
 
 /// Every `.rs` file strictly under each of `root`'s `dirs`, in `dirs` order and sorted within
-/// each, as a repo-relative `/`-separated path.
+/// each, as a repo-relative `/`-separated path ([`files_under`]).
 pub fn rs_files_under(root: &Path, dirs: &[&str]) -> Vec<String> {
+    files_under(root, dirs)
+        .into_iter()
+        .filter(|rel| Path::new(rel).extension().is_some_and(|ext| ext == "rs"))
+        .collect()
+}
+
+/// Every file strictly under each of `root`'s `dirs`, of any extension, in `dirs` order and
+/// sorted within each, as a repo-relative `/`-separated path.
+pub fn files_under(root: &Path, dirs: &[&str]) -> Vec<String> {
     let mut files = Vec::new();
     for dir in dirs {
-        collect_rs_files(&root.join(dir), &mut files);
+        collect_files(&root.join(dir), &mut files);
     }
     files
         .iter()

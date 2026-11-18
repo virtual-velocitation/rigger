@@ -506,9 +506,15 @@ impl ContentIdentity {
     }
 }
 
+/// A store error names what failed on its first line. The revisions a conflict or a refused
+/// stale append carries differ each time the same fault recurs, so they read on the line below:
+/// a hold tells one fault from another by the first line.
 #[derive(Debug, Error)]
 pub enum Error {
-    #[error("event store: concurrency conflict on stream {stream:?}: expected {expected:?}, actual revision {actual}")]
+    #[error(
+        "event store: concurrency conflict on stream {stream:?}\nexpected {expected:?}, actual \
+         revision {actual}"
+    )]
     Conflict {
         stream: String,
         expected: ExpectedRevision,
@@ -524,10 +530,10 @@ pub enum Error {
     /// silently compounding and turns what would otherwise be a bare
     /// `UNIQUE(stream, revision)` failure into a named, actionable one.
     #[error(
-        "event store: append to stream {stream:?} refused: revision {attempted} would sort at \
-         or below revision {recorded} already recorded for this stream - the writer is stale, \
-         most likely one running from before a compaction reissued a revision hole; reinstall \
-         or restart it"
+        "event store: append to stream {stream:?} refused: the writer is stale, most likely one \
+         running from before a compaction reissued a revision hole; reinstall or restart it\n\
+         revision {attempted} would sort at or below revision {recorded} already recorded for \
+         this stream"
     )]
     OutOfOrder {
         stream: String,

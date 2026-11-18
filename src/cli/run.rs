@@ -1057,8 +1057,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // The host values every spawn of this run carries, resolved once, after the run-branch
-    // checkout, so the helper copies are the tree's the run drives and its definition pin folds.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
+    // checkout, so the helper copies are the tree's the run drives and its definition pin folds,
+    // and a producer's output is the specs location the project declares.
+    let spawn_host = super::spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
     // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out
@@ -1195,12 +1196,15 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     let channel = socket
         .as_ref()
         .map(|s| s as &dyn rigger::gate_channel::GateChannel);
-    // A driver that parked a launch on an operator hold drives again once the hold is gone, since
-    // a release while it still runs relaunches nothing; it ends only while the hold stands. Each
-    // drive holds a verdict key of its own, as a relaunched driver would.
+    // A driver that parked a launch on a manual hold drives again once the hold is gone, since a
+    // release while it still runs relaunches nothing; it ends only while the hold stands. A drive
+    // that failed under such a hold, the conductor's own fault hold included, leaves its record
+    // for `rigger release` the same way, and so does a drive whose spawn the API refused, which
+    // the decorator parked on the hold it put on the run: that driver fails, naming the fault.
+    // Each drive holds a verdict key of its own, as a relaunched driver would.
     let rs = loop {
         let verdict_key = rigger::verdict_mac::VerdictKey::generate()?;
-        let rs = beating(
+        let driven = beating(
             &store,
             &progress,
             rigger::progress::SUPERVISOR_BEAT_INTERVAL,
@@ -1209,18 +1213,37 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
                     conductor::run_serving(&cfg, &deps, verdict_key, channel)
                 })
             },
-        )?;
-        if !held.take_parked_on_an_operator_hold() {
+        );
+        let rs = match driven {
+            Ok(rs) => rs,
+            Err(e) => {
+                // Only a hold read leaves a failed driver's record for `rigger release`.
+                if let Ok(Some(hold)) =
+                    runscope::read::read_manual_hold(&folding, conductor::STREAM)
+                {
+                    step_record.leave_for_release();
+                    stderr_line(&ended_held(command, &run, Some(&hold), "ended"));
+                }
+                return Err(e.into());
+            }
+        };
+        let refused = held.take_rejected_spawn();
+        if !held.take_parked() {
             break rs;
         }
-        if !an_operator_hold_stands(&folding) {
-            continue;
-        }
+        // A hold read that fails is read as standing: a run not proved free of one launches
+        // nothing.
+        let hold = match runscope::read::read_manual_hold(&folding, conductor::STREAM) {
+            Ok(None) => continue,
+            read => read.ok().flatten(),
+        };
         step_record.leave_for_release();
-        stderr_line(&format!(
-            "{command}: run {run} is held by the operator, so this driver parked its next launch \
-             and ended; `rigger release` relaunches it"
-        ));
+        if let Some(fault) = refused {
+            stderr_line(&ended_held(command, &run, hold.as_ref(), "ended"));
+            return Err(fault.into());
+        }
+        let parked = "parked its next launch and ended";
+        stderr_line(&ended_held(command, &run, hold.as_ref(), parked));
         break rs;
     };
     // A done run releases its open hold, an operator hold included (spec 105); any other exit
@@ -1345,11 +1368,15 @@ fn reclaim_orphans_at_start(
     }
 }
 
-/// Whether an operator hold stands on the current run in `store`: true when the read fails, since
-/// a run not proved free of one launches nothing.
-fn an_operator_hold_stands(store: &dyn EventStore) -> bool {
-    runscope::read::read_current_hold(store, conductor::STREAM)
-        .map_or(true, |hold| hold.is_some_and(|hold| hold.operator))
+/// The line `command`'s driver says as it ends with `run` held, leaving its record for `rigger
+/// release`: whom `hold` is held for and the hold as they are told it ([`ledger::Hold::told`]:
+/// its cause, its detail's first line and its action), then how the driver `ended`. A hold that
+/// could not be read is named held alone.
+fn ended_held(command: &str, run: &str, hold: Option<&ledger::Hold>, ended: &str) -> String {
+    let held = hold.map_or_else(String::new, |hold| {
+        format!(" for {} ({})", hold.held_for(), hold.told())
+    });
+    format!("{command}: run {run} is held{held}, so this driver {ended}; `rigger release` relaunches it")
 }
 
 /// Begin (or adopt) and definition-PIN the run `rigger run` drives (spec 13, unit 1).
@@ -1452,7 +1479,13 @@ fn refuse_an_adoption_it_cannot_make(
     command: &str,
 ) -> Res {
     if !at.repo.is_empty() {
-        let on = rigger::worktree::current_branch(at.repo);
+        let on = rigger::worktree::current_branch(at.repo).map_err(|e| {
+            format!(
+                "{command}: --adopt {wanted}: read the branch the checkout is on, so it refuses \
+                 and changed nothing: {}",
+                e.0
+            )
+        })?;
         if on.as_deref() != Some(RUN_BRANCH) {
             let on = on.map_or_else(
                 || "a detached HEAD".to_string(),

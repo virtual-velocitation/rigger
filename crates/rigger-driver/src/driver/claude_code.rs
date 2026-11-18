@@ -427,7 +427,8 @@ impl Driver<'_> {
     /// [`progress::next_launch_after`]). When that latest launch ended `interrupted`, whichever
     /// site closed it, it is a relaunch ([`LaunchSession::relaunch`]) in `opts.dir`, a fork of
     /// the session that launch's close names under a minted id, charged no attempt, sent the
-    /// [`Driver::interruption_note`] in front of what [`LaunchSession::task`] sends, the
+    /// [`Driver::interruption_note`], then the [`SpawnOpts::relaunch_task`] unless what
+    /// [`LaunchSession::task`] sends already holds it, then that task, the
     /// [`SpawnOpts::resume_task`] when that launch carried it: its record, its open record unless
     /// it was lost, and the records its chain of sessions leads back through decide. Any other
     /// spawn runs as [`Driver::launch`] would launch it, [`LaunchSession::of`] its `opts`.
@@ -450,10 +451,18 @@ impl Driver<'_> {
         let note = self.interruption_note(interrupted)?;
         let launched = records.first().unwrap_or(interrupted);
         let session = LaunchSession::relaunch(launched, interrupted, &chain, opts);
-        let task = match session.task(prompt, opts) {
-            "" => note,
-            carried => format!("{note}\n\n{carried}"),
-        };
+        let carried = session.task(prompt, opts);
+        let told = opts.relaunch_task.trim();
+        let told = (!told.is_empty() && !carried.contains(told)).then_some(told);
+        let task = [
+            Some(note.as_str()),
+            told,
+            Some(carried).filter(|t| !t.is_empty()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n\n");
         Ok(FirstLaunch {
             session,
             task,
@@ -1129,7 +1138,8 @@ impl Driver<'_> {
     /// The holds follow the close and come before the `Error` returns: an ending of a class whose
     /// row holds or waits sights that class ([`Driver::sight_ending`]), then a `fault` close counts
     /// the failed closes ([`Driver::sight_unstable`]), which an `interrupted` close never enters. A
-    /// class whose row faults holds nothing on its own, so it takes its spawn site's existing path.
+    /// class whose row faults or rejects holds nothing on its own, so it takes its spawn site's
+    /// existing path, the held run's decorator holding the run on a rejected one.
     fn fault(
         &self,
         opts: &SpawnOpts,
@@ -1296,7 +1306,9 @@ impl Driver<'_> {
             .last_position(run::STREAM, run::TYPE_RUN_RELEASED)
             .and_then(|released| {
                 let events = progress::read_run(self.progress_store, &opts.run_id)?;
-                Ok(progress::failed_closes_since(&events, released))
+                Ok(progress::failed_closes_since(&events, released, |class| {
+                    AgentFailure::from_category(class).is_rejected()
+                }))
             });
         match count {
             Ok(count) if count >= progress::API_UNSTABLE_CLOSES => {
@@ -2215,6 +2227,8 @@ pub fn build_args(
             rigger_bin,
             &opts.id,
             write_roots,
+            &opts.dir,
+            &opts.tree_duty,
         ),
         "settings",
     )?;
@@ -2236,8 +2250,8 @@ mod tests {
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
     use crate::test_support::{
-        captured, fixture_script, no_emit, operator_helpers_agents_json, spawn_result_rows,
-        PROMPT_CAPTURE_DIR,
+        captured, exec_hook, fixture_script, no_emit, operator_helpers_agents_json,
+        spawn_result_rows, PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
     use std::time::Duration;
@@ -2299,8 +2313,9 @@ mod tests {
             "the spawn's own settings survive the merge"
         );
         assert_eq!(
-            settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-            hooks::PRIME_COMMAND
+            settings["hooks"]["SessionStart"][0]["hooks"][0],
+            exec_hook(&["rigger", "prime"]),
+            "the prime hook in exec form: {settings}"
         );
     }
 
@@ -2634,13 +2649,20 @@ mod tests {
         );
     }
 
-    /// A launch's settings carry its own hooks ahead of the session's, on its own settings.
+    /// A launch's settings carry its own hooks ahead of the session's, on its own settings, every
+    /// one in exec form: the spawn's `rigger_bin` spawned with its argv and no shell, and the
+    /// session's `rigger` found on `PATH`.
     #[test]
     fn build_args_settings_carry_the_spawn_hooks_ahead_of_the_session_ones() {
-        let write_guard = "'/custom/rigger' guard-write --root '/wt' --root '/scratch/s'";
+        // The spawn's inner hook running `/custom/rigger` with `args` in exec form.
+        let exec = |args: &[&str]| exec_hook(&[["/custom/rigger"].as_slice(), args].concat());
+        let write_guard = exec(&["guard-write", "--root", "/wt", "--root", "/scratch/s"]);
         for (grep_guard, pre_tool_use) in [
-            (false, vec![write_guard]),
-            (true, vec![write_guard, hooks::GREP_GUARD_COMMAND]),
+            (false, vec![write_guard.clone()]),
+            (
+                true,
+                vec![write_guard.clone(), exec_hook(&["rigger", "grep-guard"])],
+            ),
         ] {
             let mut o = opts("u/implementer#0");
             o.settings_json = "{\"model\":\"opus\"}".to_string();
@@ -2657,33 +2679,30 @@ mod tests {
             let i = args.iter().position(|x| x == "--settings").unwrap();
             let settings: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
             assert_eq!(settings["model"], "opus", "grep_guard {grep_guard}");
-            let commands = |event: &str| -> Vec<&str> {
+            let inner = |event: &str| -> Vec<serde_json::Value> {
                 settings["hooks"][event]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|entry| entry["hooks"][0]["command"].as_str().unwrap())
+                    .map(|entry| entry["hooks"][0].clone())
                     .collect()
             };
+            assert_eq!(inner("PreToolUse"), pre_tool_use, "grep_guard {grep_guard}");
             assert_eq!(
-                commands("PreToolUse"),
-                pre_tool_use,
+                inner("SessionStart"),
+                [exec_hook(&["rigger", "prime"])],
                 "grep_guard {grep_guard}"
             );
-            assert_eq!(
-                commands("SessionStart"),
-                [hooks::PRIME_COMMAND],
-                "grep_guard {grep_guard}"
-            );
-            let stop_failures = commands("StopFailure");
+            let stop_failures = inner("StopFailure");
             assert_eq!(
                 stop_failures.len(),
                 AgentFailure::CATEGORIES.len(),
                 "grep_guard {grep_guard}"
             );
+            let class = ["--spawn", "u/implementer#0", "--class", "rate_limit"];
             assert_eq!(
                 stop_failures[0],
-                "'/custom/rigger' hook stop-failure --spawn 'u/implementer#0' --class rate_limit",
+                exec(&[["hook", "stop-failure"].as_slice(), &class].concat()),
                 "grep_guard {grep_guard}"
             );
         }

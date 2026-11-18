@@ -10,9 +10,7 @@
 //! or spawned by a helper it is handed to, is not seen.
 
 use crate::common;
-use common::repo::collect_rs_files;
 
-use std::fs;
 use std::path::Path;
 
 use crate::source_audit;
@@ -115,23 +113,10 @@ fn scan_file(rel: &str, content: &str) -> Vec<Finding> {
 
 /// Every dash spawned without an owning guard under `root`'s `src/`, `crates/` and `tests/`.
 fn scan_tree(root: &Path) -> Vec<Finding> {
-    let mut files = Vec::new();
-    for top in ["src", "crates", "tests"] {
-        collect_rs_files(&root.join(top), &mut files);
-    }
-    let mut findings = Vec::new();
-    for path in &files {
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
-        findings.extend(scan_file(&rel, &content));
-    }
-    findings
+    common::repo::rs_sources_under(root, &["src", "crates", "tests"])
+        .iter()
+        .flat_map(|(rel, content)| scan_file(rel, content))
+        .collect()
 }
 
 #[test]
