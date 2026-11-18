@@ -1420,9 +1420,10 @@ mod forks_at_stop {
             );
         }
         if let (Window::Result, Leaves::Nothing) = (window, leaves) {
+            let holder = format!(" ({})", shell_name());
             let named = fx.activities().into_iter().any(|line| {
                 line.contains("the end of the session ended 1 process besides its main: ")
-                    && line.ends_with(" (sh -c printf u >&9; read -r unused <&8)")
+                    && line.ends_with(&holder)
             });
             assert!(
                 named,
@@ -1435,6 +1436,15 @@ mod forks_at_stop {
             Reading::Ended,
             "{mode}: the test's release ends every process the fixture started"
         );
+    }
+
+    /// The name an end gives a holder, a fresh `sh` the fixture starts: the file name of the
+    /// image `sh` on this test's `PATH` runs, never the holder's arguments.
+    fn shell_name() -> String {
+        let search = rigger::subprocess::SearchPath::ambient();
+        let sh = rigger::subprocess::find_executable(&search, "sh").expect("sh is on PATH");
+        let image = std::fs::canonicalize(sh).unwrap();
+        image.file_name().unwrap().to_string_lossy().into_owned()
     }
 
     /// [`ends_held_at`] with the tree kept, as the composition root holds it.

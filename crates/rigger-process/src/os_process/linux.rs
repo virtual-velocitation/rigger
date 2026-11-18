@@ -104,14 +104,26 @@ pub(super) fn cwd(pid: u32) -> Option<PathBuf> {
         .map(|cwd| super::strip_deleted_suffix(&cwd))
 }
 
-/// The command line ([`command_line`]), falling back to `/proc/<pid>/comm` (the short name) and
-/// finally an empty string.
+/// The command line ([`command_line`]), falling back to the short name ([`short_name`]).
 pub(super) fn command(pid: u32) -> String {
-    command_line(pid).unwrap_or_else(|| {
-        std::fs::read_to_string(proc_of(pid).join("comm"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_default()
-    })
+    command_line(pid).unwrap_or_else(|| short_name(pid))
+}
+
+/// `/proc/<pid>/comm`, the process's short name; empty when it cannot be read.
+fn short_name(pid: u32) -> String {
+    std::fs::read_to_string(proc_of(pid).join("comm"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// The file name of the image `/proc/<pid>/exe` links to, without the `" (deleted)"` marker
+/// the kernel adds once that file is replaced ([`super::strip_deleted_suffix`]); the short name
+/// ([`short_name`]) when the link cannot be read, as a zombie's or another user's cannot.
+pub(super) fn executable_name(pid: u32) -> String {
+    std::fs::read_link(proc_of(pid).join("exe"))
+        .ok()
+        .and_then(|image| super::file_name_text(&super::strip_deleted_suffix(&image)))
+        .unwrap_or_else(|| short_name(pid))
 }
 
 /// `/proc/<pid>/cmdline` (the NUL-separated arguments) joined by spaces; `None` when it cannot be

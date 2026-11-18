@@ -736,22 +736,21 @@ mod tests {
                not end: 41 (sleep), 42 (node, stopped)"],
         );
         an_ordinary_end_that_ended_processes_names_each_by_pid_and_program: assert_end_lines(
-            &[(41, "sleep 300", false), (42, "node server.js", false)],
+            &[(41, "sleep", false), (42, "node", false)],
             &[],
             &[],
             &[],
-            &["stream: the end of the session ended 2 processes besides its main: 41 (sleep 300), \
-               42 (node server.js)"],
+            &["stream: the end of the session ended 2 processes besides its main: 41 (sleep), 42 \
+               (node)"],
         );
         an_ordinary_end_that_ended_one_process_and_left_one_says_each_in_a_line_of_its_own:
             assert_end_lines(
-                &[(41, "sleep 300", false)],
+                &[(41, "sleep", false)],
                 &[],
                 &[(77, "daemon", false)],
                 &[],
                 &[
-                    "stream: the end of the session ended 1 process besides its main: 41 (sleep \
-                     300)",
+                    "stream: the end of the session ended 1 process besides its main: 41 (sleep)",
                     "stream: the end of the session left processes running; 1 outside the \
                      session's tree, never signalled: 77 (daemon)",
                 ],

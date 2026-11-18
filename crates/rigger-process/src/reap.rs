@@ -743,18 +743,19 @@ const FREEZES: bool = cfg!(unix);
 pub struct Leftover {
     /// The process's pid when the end saw it.
     pub pid: u32,
-    /// Its command ([`crate::os_process::command`]), naming it in a progress line.
+    /// Its executable's file name ([`crate::os_process::executable_name`]), naming it in a
+    /// progress line: never its arguments, which can hold a secret.
     pub program: String,
     /// Whether it is still frozen: the end froze it, could not end it, and could not resume it.
     pub stopped: bool,
 }
 
 impl Leftover {
-    /// `pid` as a leftover, named by its command as it reads now.
+    /// `pid` as a leftover, named by its executable as it reads now.
     pub(crate) fn of(pid: u32, stopped: bool) -> Leftover {
         Leftover {
             pid,
-            program: os_process::command(pid),
+            program: os_process::executable_name(pid),
             stopped,
         }
     }
