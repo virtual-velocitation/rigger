@@ -403,6 +403,38 @@ mod tests {
         let _ = main.wait();
     }
 
+    /// An end returns only once each process its job held has exited, so none the job listed
+    /// before the end still runs after it: the background ping holds the output and the main's
+    /// own ping keeps the main running.
+    #[test]
+    fn a_job_end_returns_once_each_process_it_held_has_exited() {
+        let job = Job::new().expect("a job");
+        let (mut main, lines) = in_job(
+            &job,
+            "start /b ping -n 60 127.0.0.1 & echo up& ping -n 60 127.0.0.1 >NUL",
+        );
+        assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
+        let held: Vec<reap::Identity> = reap::job_pids(job.0.as_raw_handle())
+            .into_iter()
+            .filter_map(|pid| {
+                crate::os_process::start_time(pid).map(|start| reap::Identity { pid, start })
+            })
+            .collect();
+
+        let report = reap::end_job(job.0, &mut main);
+
+        let running: Vec<u32> = held
+            .iter()
+            .filter(|member| reap::running(member))
+            .map(|member| member.pid)
+            .collect();
+        assert!(
+            held.len() >= 2,
+            "the job lists the main and the background ping: {held:?}"
+        );
+        assert_eq!((running, report), (vec![], EndReport::default()));
+    }
+
     /// A jobbed command whose caller's own creation flags replace [`CREATE_SUSPENDED`] starts its
     /// main running before the job holds it, and its start is refused for it. The main runs a
     /// ping long enough that its thread is there to resume.

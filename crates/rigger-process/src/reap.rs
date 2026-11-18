@@ -815,7 +815,7 @@ impl Tree {
 
 /// Whether `target` is still running: its pid still names it and it has not exited. A process
 /// that has exited and is not yet reaped has closed every descriptor it held.
-fn running(target: &Identity) -> bool {
+pub(crate) fn running(target: &Identity) -> bool {
     still_started(target.pid, target.start) && os_process::state(target.pid) != Some('Z')
 }
 
@@ -1158,7 +1158,7 @@ std::cfg_select! {
         /// The pid of each process the job `job` holds, its nested jobs' among them; empty when
         /// the list cannot be read. A list too short for the job is grown to the count the call
         /// reports and read again, a few times at most.
-        fn job_pids(job: windows_sys::Win32::Foundation::HANDLE) -> Vec<u32> {
+        pub(crate) fn job_pids(job: windows_sys::Win32::Foundation::HANDLE) -> Vec<u32> {
             use windows_sys::Win32::Foundation::FALSE;
             use windows_sys::Win32::System::JobObjects::{
                 JobObjectBasicProcessIdList, QueryInformationJobObject,
