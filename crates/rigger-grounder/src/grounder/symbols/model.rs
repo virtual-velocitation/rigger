@@ -152,6 +152,12 @@ pub struct Def {
     /// out-of-line fields; omitted from the wire form when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosing_inline_module_path: Option<String>,
+    /// Spec 117 (DOC FACTS): the definition's doc span, the 1-based inclusive lines from its first
+    /// doc line to its last - the lines a `@doc` capture in its query match covers, else, in
+    /// Rust, its outer doc lines' ([`crate::grounder::symbols::extract::extract`] sets it); `None`
+    /// when it has none. Serde-defaulted and omitted when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<(u32, u32)>,
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
@@ -209,6 +215,12 @@ pub struct FileSymbols {
     /// before this field existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// Spec 117 (DOC FACTS): the file's doc span, the 1-based inclusive lines from the first to
+    /// the last of the inner doc lines a Rust file opens with
+    /// ([`crate::grounder::symbols::extract::extract`] sets it); `None` for a file opening with
+    /// none and for every other language. Serde-defaulted and omitted when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<(u32, u32)>,
 }
 
 impl FileSymbols {
@@ -227,7 +239,7 @@ impl FileSymbols {
 
 macro_rules! rust_tags_generation {
     () => {
-        "rust-tags-v1"
+        "rust-tags-v2"
     };
 }
 
@@ -239,25 +251,25 @@ macro_rules! csharp_tags_generation {
 
 macro_rules! ts_tags_generation {
     () => {
-        "typescript-tags-v1"
+        "typescript-tags-v2"
     };
 }
 
 macro_rules! tsx_tags_generation {
     () => {
-        "tsx-tags-v1"
+        "tsx-tags-v2"
     };
 }
 
 macro_rules! js_tags_generation {
     () => {
-        "javascript-tags-v1"
+        "javascript-tags-v2"
     };
 }
 
 macro_rules! go_tags_generation {
     () => {
-        "go-tags-v1"
+        "go-tags-v2"
     };
 }
 

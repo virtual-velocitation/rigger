@@ -1138,7 +1138,9 @@ pub(crate) mod tests {
         (
             "rs",
             "\
+//! The ledger's quotas.
 use crate::store::Ledger;
+/// The most a ledger holds.
 pub const QUOTA_CAP: u32 = 3;
 pub struct Kestrel { size: u32 }
 trait Grow { fn grow(&self) -> u32; }
@@ -1179,6 +1181,8 @@ class Box {
     width(): number { return calc(LIMIT); }
 }
 function calc(n: number): number { return n; }
+/** Zero is nothing. */
+function zero(): number { return 0; }
 ",
         ),
         (
@@ -1187,6 +1191,8 @@ function calc(n: number): number { return n; }
 const LABEL = \"x\";
 function View() { return <div>{label(LABEL)}</div>; }
 function label(s: string) { return s; }
+/** Blank is no label. */
+function blank() { return \"\"; }
 ",
         ),
         (
@@ -1197,6 +1203,8 @@ class Box {
     width() { return calc(LIMIT); }
 }
 function calc(n) { return n; }
+/** Zero is nothing. */
+function zero() { return 0; }
 ",
         ),
         (
@@ -1207,6 +1215,10 @@ const Limit = 3
 type T struct{}
 func (T) Width() int { return calc(Limit) }
 func calc(n int) int { return n }
+
+// Zero is nothing.
+// It reads nothing.
+func Zero() int { return 0 }
 ",
         ),
         (
@@ -1374,17 +1386,17 @@ def calc(n):
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v1", "0777ca084d4dc969"),
+            ("rs", "rust-tags-v2", "cf79ba29624d68ed"),
             // C#
             ("cs", "csharp-tags-v1", "5bcd02652120b9ae"),
             // TypeScript
-            ("ts", "typescript-tags-v1", "2ad5303d109e8cbf"),
+            ("ts", "typescript-tags-v2", "f44af3903e7ca65f"),
             // TSX
-            ("tsx", "tsx-tags-v1", "7e4aa9879a4d7d4a"),
+            ("tsx", "tsx-tags-v2", "48a834681c7c9680"),
             // JavaScript
-            ("js", "javascript-tags-v1", "4fce42e8958b53ad"),
+            ("js", "javascript-tags-v2", "efc9b1a1a6266e6d"),
             // Go
-            ("go", "go-tags-v1", "f0b4015aed1ac9fb"),
+            ("go", "go-tags-v2", "8ea462de8376d60b"),
             // Python
             ("py", "python-tags-v1", "2ae6674264c03453"),
         ];
@@ -1443,6 +1455,14 @@ def calc(n):
             ("a type reference", tagged(REF_KIND_TYPE)),
             ("a use", tagged(REF_KIND_USE)),
             ("a partial file", extracted.iter().any(|(_, fs)| fs.partial)),
+            (
+                "a definition's doc span",
+                defs.iter().any(|d| d.doc.is_some()),
+            ),
+            (
+                "a file's doc span",
+                extracted.iter().any(|(_, fs)| fs.doc.is_some()),
+            ),
         ] {
             assert!(covered, "the golden fixtures set {part}");
         }

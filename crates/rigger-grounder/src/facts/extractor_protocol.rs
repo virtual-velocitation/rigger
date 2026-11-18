@@ -114,6 +114,8 @@ struct Answer {
 /// quotes each text the extractor wrote into it - the answer's path, its error, a ref's kind, the
 /// def path a cycle runs through - so
 /// a line break or terminal escape there is escaped and the line saying the why stays one line.
+/// The protocol carries no doc span (spec 117, DOC FACTS), so the symbols hold none, the file's
+/// or a def's, whatever the answer writes.
 pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, String> {
     let answer: Answer =
         serde_json::from_str(line).map_err(|e| format!("the answer does not parse: {e}"))?;
@@ -123,7 +125,7 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
     if let Some(error) = answer.error {
         return Err(format!("the answer is an error: {error:?}"));
     }
-    let (Some(defs), Some(refs)) = (answer.defs, answer.refs) else {
+    let (Some(mut defs), Some(refs)) = (answer.defs, answer.refs) else {
         return Err("the answer holds no error and lacks defs or refs".to_string());
     };
     let last = text.matches('\n').count() as u32 + 1;
@@ -176,10 +178,16 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
             "the defs' parents form a cycle through {through:?}"
         ));
     }
+    // Spec 117 (DOC FACTS): the protocol carries no doc span yet, so a def's span the answer
+    // writes is dropped, and the file has none.
+    for def in &mut defs {
+        def.doc = None;
+    }
     Ok(CodeSymbols {
         defs,
         refs,
         partial: answer.partial,
+        doc: None,
     })
 }
 

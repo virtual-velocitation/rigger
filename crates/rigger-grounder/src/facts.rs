@@ -495,12 +495,14 @@ fn doc_attribute_text(text: &str) -> Option<(&str, &str)> {
 }
 
 /// The symbols an extraction gives one code file, the bundled grammars' and a declared
-/// extractor's alike: its definitions, its references and whether they cover only part of it.
+/// extractor's alike: its definitions, its references, whether they cover only part of it and
+/// the file's doc span (spec 117, DOC FACTS).
 #[derive(Debug, PartialEq, Eq)]
 struct CodeSymbols {
     defs: Vec<model::Def>,
     refs: Vec<SymRef>,
     partial: bool,
+    doc: Option<(u32, u32)>,
 }
 
 /// A code file as an extraction reads it: the language it is read as and its symbols, none when
@@ -547,13 +549,7 @@ fn file_facts(
             facts.half = Half::Code;
             facts.lang = file.lang;
             if let Some(Ok(symbols)) = file.symbols {
-                code_facts(
-                    path,
-                    &symbols.defs,
-                    &symbols.refs,
-                    symbols.partial,
-                    &mut facts,
-                );
+                code_facts(path, &symbols, &mut facts);
             }
         }
         None => facts.half = Half::Design,
@@ -578,22 +574,24 @@ fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
                     defs: symbols.defs,
                     refs: symbols.refs,
                     partial: symbols.partial,
+                    doc: symbols.doc,
                 })
             }),
     })
 }
 
-/// Fills the definitions, mentions, module declarations and parse-error marker of `facts` from
-/// the definitions `defs`, the references `refs` and the `partial` flag an extraction gave the
-/// file at `path`.
-fn code_facts(
-    path: &str,
-    defs: &[model::Def],
-    refs: &[SymRef],
-    partial: bool,
-    facts: &mut FileFacts,
-) {
-    facts.partial = partial;
+/// Fills the definitions, mentions, module declarations, parse-error marker and doc span of
+/// `facts` from the `symbols` an extraction gave the file at `path`, each definition keeping its
+/// own doc span.
+fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
+    let CodeSymbols {
+        defs,
+        refs,
+        partial,
+        doc,
+    } = symbols;
+    facts.partial = *partial;
+    facts.doc = *doc;
     let by_path = def_indices_by_path(defs);
     let index_of = |def_path: &str| by_path.get(def_path).copied();
     facts.defs = defs
@@ -606,7 +604,7 @@ fn code_facts(
             end_line: d.end_line,
             parent: d.parent.as_deref().and_then(index_of),
             test: d.is_test,
-            doc: None,
+            doc: d.doc,
         })
         .collect();
     facts.mentions = refs
@@ -1473,17 +1471,17 @@ mod tests {
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v1", "bd83e25bdc6d2797"),
+            ("rs", "rust-tags-v2", "7ffb605da6fb93dd"),
             // C#
             ("cs", "csharp-tags-v1", "4e1cc38ed5920418"),
             // TypeScript
-            ("ts", "typescript-tags-v1", "3ad97b84c7f3bdde"),
+            ("ts", "typescript-tags-v2", "ee4411140dd5137b"),
             // TSX
-            ("tsx", "tsx-tags-v1", "f070070173508769"),
+            ("tsx", "tsx-tags-v2", "81951e66e6a9db90"),
             // JavaScript
-            ("js", "javascript-tags-v1", "e6c505f276d7c688"),
+            ("js", "javascript-tags-v2", "609b7f34952c76c9"),
             // Go
-            ("go", "go-tags-v1", "c4f9869c6f7288cf"),
+            ("go", "go-tags-v2", "b8bf19951f3899ab"),
             // Python
             ("py", "python-tags-v1", "4c940d044409c6d8"),
         ];
@@ -1555,6 +1553,11 @@ mod tests {
                 any(&|f| f.mentions.iter().any(|m| m.enclosing.is_some())),
             ),
             ("a module declaration", any(&|f| !f.modules.is_empty())),
+            (
+                "a definition's doc span",
+                any(&|f| f.defs.iter().any(|d| d.doc.is_some())),
+            ),
+            ("a file's doc span", any(&|f| f.doc.is_some())),
             ("a design concept", any(&|f| !f.doc_concepts.is_empty())),
             ("a design link", any(&|f| !f.doc_links.is_empty())),
             ("a workflow node", any(&|f| !f.wf_nodes.is_empty())),

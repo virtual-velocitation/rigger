@@ -162,8 +162,8 @@ fn lowered_kind(lang: Lang, tagged: Kind, node: Option<tree_sitter::Node>, sourc
 }
 
 /// One file's source text with the byte offset each of its lines begins at, computed once per
-/// [`extract`] so [`def_of`] maps a definition's last byte to its line by one binary search
-/// rather than rescanning the text per definition.
+/// [`extract`] so a byte maps to its line by one binary search ([`Source::line`]) rather than a
+/// rescan of the text per definition.
 struct Source<'s> {
     text: &'s str,
     line_starts: Vec<usize>,
@@ -176,6 +176,24 @@ impl<'s> Source<'s> {
             line_starts: line_start_offsets(text),
         }
     }
+
+    /// The 1-based line holding the byte at `at`.
+    fn line(&self, at: usize) -> u32 {
+        line_of_byte(&self.line_starts, at) + 1
+    }
+
+    /// The 1-based line of the last byte of `range`, a non-empty range: [`def_of`]'s end line, and
+    /// a doc span's last line ([`Source::span`]), so a comment node holding its line's `\n` ends on
+    /// its own line, never the next.
+    fn last_line(&self, range: &std::ops::Range<usize>) -> u32 {
+        self.line(range.end - 1)
+    }
+
+    /// The doc span of the doc lines over `range`, a non-empty range: the 1-based lines of its
+    /// first byte and of its last.
+    fn span(&self, range: &std::ops::Range<usize>) -> (u32, u32) {
+        (self.line(range.start), self.last_line(range))
+    }
 }
 
 /// THE ONE CONSTRUCTOR of a `Def` (spec 119, ONE EXTENT): every tagged, read-off and impl
@@ -183,7 +201,9 @@ impl<'s> Source<'s> {
 /// it (a tagged definition's name row, a read-off's as its reader gives it) and `end_line` the
 /// 1-based line of `range`'s last byte, `range` the definition's whole byte range, never below
 /// `line`; a zero-length `range` gives `line`. Its `path` is its `name` here and it has no
-/// `parent`. It is built ahead of the passes over the whole file that resolve the rest: `path`
+/// `parent` and no doc span, which [`extract`] gives it from its tag's `@doc` capture, else, in
+/// Rust, its outer doc lines ([`outer_doc`]). It is built ahead of the passes over the whole file
+/// that resolve the rest: `path`
 /// and `parent` need every definition's range ([`def_paths`] decides containment over the whole
 /// set), as `is_test` does (`test_regions`),
 /// and the out-of-line module facts are read from the parsed tree once every definition is known
@@ -198,7 +218,7 @@ fn def_of(
     let end_line = if range.is_empty() {
         line
     } else {
-        (line_of_byte(&source.line_starts, range.end - 1) + 1).max(line)
+        source.last_line(&range).max(line)
     };
     Def {
         kind,
@@ -211,6 +231,7 @@ fn def_of(
         is_out_of_line_module: false,
         path_override: None,
         enclosing_inline_module_path: None,
+        doc: None,
     }
 }
 
@@ -258,17 +279,25 @@ enum Capture {
     Definition(Kind),
     /// `@reference.<kind>`: a reference.
     Reference,
-    /// `@doc`: a doc comment, which upstream queries capture and the reading passes over.
+    /// `@doc`: a doc comment of the match's definition, which gives it its doc span.
     Doc,
 }
 
 /// One tag a tags query yields: the tagged node's byte range widened to cover its name, the
-/// name's byte range and start row, and the kind it defines (`None` for a reference).
+/// name's byte range and start row, the kind it defines (`None` for a reference), and the byte
+/// range covering every `@doc` capture of its match ([`covering`]), when it holds any.
 struct Tag {
     range: std::ops::Range<usize>,
     name_range: std::ops::Range<usize>,
     row: usize,
     definition: Option<Kind>,
+    doc: Option<std::ops::Range<usize>>,
+}
+
+/// The byte range from the earlier start of `a` and `b` to the later end: the one widening of a
+/// tagged node over its name ([`Tag::range`]) and of a doc span over each doc line it holds.
+fn covering(a: std::ops::Range<usize>, b: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    a.start.min(b.start)..a.end.max(b.end)
 }
 
 impl CompiledTags {
@@ -309,8 +338,9 @@ impl CompiledTags {
     /// definition or reference makes a tag, unless its name node holds a parse error; of the
     /// matches naming the same node, the one of the earliest pattern makes its tag; and a tag
     /// is yielded once a later-matched name starts past its name's end, the rest in name order
-    /// when the matches run out. Within a match the last name capture names it and the last
-    /// definition or reference capture is the tagged node.
+    /// when the matches run out. Within a match the last name capture names it, the last
+    /// definition or reference capture is the tagged node, and its `@doc` captures, read as the
+    /// matcher yields them, cover its doc ([`Tag::doc`]), for every language.
     fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, source.as_bytes());
@@ -331,12 +361,19 @@ impl CompiledTags {
             };
             let mut name = None;
             let mut tagged = None;
+            let mut doc = None;
             for capture in found.captures {
                 match self.captures[capture.index as usize] {
                     Capture::Name => name = Some(capture.node),
                     Capture::Definition(kind) => tagged = Some((capture.node, Some(kind))),
                     Capture::Reference => tagged = Some((capture.node, None)),
-                    Capture::Doc => {}
+                    Capture::Doc => {
+                        let line = capture.node.byte_range();
+                        doc = Some(match doc.take() {
+                            Some(span) => covering(span, line),
+                            None => line,
+                        });
+                    }
                 }
             }
             let (Some(name), Some((node, definition))) = (name, tagged) else {
@@ -348,10 +385,11 @@ impl CompiledTags {
             let name_range = name.byte_range();
             let node_range = node.byte_range();
             let tag = Tag {
-                range: node_range.start.min(name_range.start)..node_range.end.max(name_range.end),
+                range: covering(node_range, name_range.clone()),
                 row: name.start_position().row,
                 name_range,
                 definition,
+                doc,
             };
             let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
             match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
@@ -398,6 +436,10 @@ impl CompiledTags {
 /// impl header's trait row taking the self type's path when exactly one non-test definition of
 /// the file has the self type's leaf, else the impl block's.
 ///
+/// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, in every
+/// language; in Rust, a definition with no capture takes its outer doc lines' ([`outer_doc`]) and
+/// the file takes its opening inner doc lines' ([`inner_doc`]). Every other file has none.
+///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags reading yields are valid UTF-8 boundaries in practice) is skipped rather than
 /// panicking, so a pathological file degrades to partial symbols, never a crash.
@@ -440,6 +482,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
             // definition is filtered by, recorded under and ranked by as a caller is one.
             let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
+            let at = defs.len();
             dropped.extend(record_def(
                 lang,
                 &text,
@@ -449,6 +492,12 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                 &mut defs,
                 &mut def_ranges,
             ));
+            // Spec 117 (DOC FACTS): the `@doc` capture gives the definition just recorded its
+            // span; a definition the name filter drops was not recorded, so its capture gives
+            // none.
+            if let Some(def) = defs.get_mut(at) {
+                def.doc = tag.doc.map(|doc| text.span(&doc));
+            }
         } else {
             ref_positions.push(tag.range.start);
             refs.push(SymRef {
@@ -554,6 +603,19 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             ));
         }
     }
+    // Spec 117 (DOC FACTS): in Rust, a definition no `@doc` capture gave a span, an impl block's
+    // and a read-off's included, takes the one its outer doc lines give it ([`outer_doc`]), and
+    // the file takes the one its opening inner doc lines give it ([`inner_doc`]).
+    let doc = if lang == Lang::Rust {
+        for (d, (range, _, _)) in defs.iter_mut().zip(&def_ranges) {
+            d.doc = d
+                .doc
+                .or_else(|| outer_doc(root, range, source.as_bytes()).map(|doc| text.span(&doc)));
+        }
+        inner_doc(root, source.as_bytes()).map(|doc| text.span(&doc))
+    } else {
+        None
+    };
     // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH; CONTAINS IS STRUCTURE): each definition's id path
     // and parent, decided over every definition's range at once, so a container recorded after
     // what it holds still prefixes and parents it.
@@ -659,6 +721,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         defs,
         refs,
         partial,
+        doc,
     })
 }
 
@@ -793,14 +856,11 @@ fn outermost_node<'t>(
 /// `use`, a statement): self-attributed test either through the node's OWN leading
 /// inner attribute ([`leading_inner_test_attribute`]) or through an outer attribute stack sitting
 /// as its sibling immediately before it. A tuple field's `pub` is a sibling too, between its
-/// attributes and its type, so the walk first steps over a `visibility_modifier`.
+/// attributes and its type, so the walk first steps over a `visibility_modifier`
+/// ([`stack_above`]).
 fn node_preceded_by_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
-    let above = match node.prev_sibling() {
-        Some(visibility) if visibility.kind() == "visibility_modifier" => visibility.prev_sibling(),
-        above => above,
-    };
     leading_inner_test_attribute(node, source)
-        || attribute_stack_names_test(source, above, |n| n.prev_sibling())
+        || attribute_stack_names_test(source, stack_above(node), |n| n.prev_sibling())
 }
 
 /// One impl block read off the parsed tree: its header name (`impl Trait for Type`, or
@@ -1950,37 +2010,119 @@ fn opens_with_inner_test_attribute(first: Option<tree_sitter::Node>, source: &[u
     .is_some()
 }
 
-/// The one walk shared by [`preceded_by_test_attribute`] (backward over `prev_sibling`),
+/// Whether `node` is a Rust comment: a `//` line or a `/* */` block, doc or plain.
+fn is_comment(node: tree_sitter::Node) -> bool {
+    matches!(node.kind(), "line_comment" | "block_comment")
+}
+
+/// The ATTRIBUTE STACK read from `first` along `advance`: each node of the contiguous run of
+/// comments ([`is_comment`]) and attribute items (`attribute_item`, `inner_attribute_item`) it
+/// starts, ending before the first node that is neither - the boundary of the stack. The one
+/// walk shared by [`scan_attribute_stack`], read backward over `prev_sibling` and forward over
+/// `next_named_sibling`, and by both doc spans, [`outer_doc`] and [`inner_doc`].
+fn attribute_stack<'a>(
+    first: Option<tree_sitter::Node<'a>>,
+    advance: impl Fn(tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>>,
+) -> impl Iterator<Item = tree_sitter::Node<'a>> {
+    std::iter::successors(first, move |&node| advance(node)).take_while(|&node| {
+        is_comment(node) || matches!(node.kind(), "attribute_item" | "inner_attribute_item")
+    })
+}
+
+/// The node the outer attribute stack above `node` starts at, its nearest: `node`'s previous
+/// sibling, or the one before that when it is a `visibility_modifier` - a tuple field's `pub`,
+/// which the grammar gives as a sibling between the field's attributes and its type. The one
+/// step onto the stack [`node_preceded_by_test_attribute`] and [`outer_doc`] take.
+fn stack_above(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    match node.prev_sibling() {
+        Some(visibility) if visibility.kind() == "visibility_modifier" => visibility.prev_sibling(),
+        above => above,
+    }
+}
+
+/// An item's doc lines, read above it: a comment whose `outer` doc marker field is set (`///`,
+/// `/** */`) and an outer attribute item ([`is_doc_line`]).
+const OUTER_DOC: (&str, &str) = ("outer", "attribute_item");
+
+/// A file's doc lines, read at its opening: a comment whose `inner` doc marker field is set
+/// (`//!`, `/*! */`) and an inner attribute item ([`is_doc_line`]).
+const INNER_DOC: (&str, &str) = ("inner", "inner_attribute_item");
+
+/// Whether `node`, a node of an attribute stack, is a Rust doc line of `(marker, attribute)`,
+/// [`OUTER_DOC`] or [`INNER_DOC`]: a comment whose `marker` doc marker field is set, so `////`,
+/// `/**/` and `/***/` are plain, or an attribute item of the `attribute` kind naming `doc` with a
+/// value, `#[doc = ".."]`, so `#[doc(hidden)]` is none.
+fn is_doc_line(node: tree_sitter::Node, source: &[u8], (marker, attribute): (&str, &str)) -> bool {
+    if is_comment(node) {
+        node.child_by_field_name(marker).is_some()
+    } else {
+        node.kind() == attribute
+            && named_attribute(node, source).is_some_and(|(attribute, name)| {
+                name == "doc" && attribute.child_by_field_name("value").is_some()
+            })
+    }
+}
+
+/// The byte range covering the doc lines of `side` in `stack` ([`is_doc_line`]), from the first
+/// to the last, every other node between them inside it; `None` when it holds none.
+fn doc_lines<'a>(
+    stack: impl Iterator<Item = tree_sitter::Node<'a>>,
+    source: &[u8],
+    side: (&str, &str),
+) -> Option<std::ops::Range<usize>> {
+    stack
+        .filter(|&node| is_doc_line(node, source, side))
+        .map(|node| node.byte_range())
+        .reduce(covering)
+}
+
+/// Spec 117 (DOC FACTS): the byte range of the Rust definition over `range`'s outer doc lines -
+/// `///` lines, `/** */` blocks and `#[doc = ".."]` attributes ([`OUTER_DOC`]) - in the attribute
+/// stack above its outermost node ([`outermost_node`], [`stack_above`]); `None` when the stack
+/// holds none.
+fn outer_doc(
+    root: tree_sitter::Node,
+    range: &std::ops::Range<usize>,
+    source: &[u8],
+) -> Option<std::ops::Range<usize>> {
+    let node = outermost_node(root, range)?;
+    doc_lines(
+        attribute_stack(stack_above(node), |n| n.prev_sibling()),
+        source,
+        OUTER_DOC,
+    )
+}
+
+/// Spec 117 (DOC FACTS): the byte range of the inner doc lines a Rust file opens with - `//!`
+/// lines, `/*! */` blocks and `#![doc = ".."]` attributes ([`INNER_DOC`]) - in the attribute
+/// stack read forward from the root's first named child; `None` when the stack holds none.
+fn inner_doc(root: tree_sitter::Node, source: &[u8]) -> Option<std::ops::Range<usize>> {
+    doc_lines(
+        attribute_stack(root.named_child(0), |n| n.next_named_sibling()),
+        source,
+        INNER_DOC,
+    )
+}
+
+/// The attribute walk of [`preceded_by_test_attribute`] (backward over `prev_sibling`),
 /// [`opens_with_inner_test_attribute`] (forward over `next_named_sibling`, from a body's or the
-/// file root's first named child), [`is_proc_macro_fn`] and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
-/// across a contiguous run of comment (`line_comment`, `block_comment`) and attribute
-/// (`attribute_item`, `inner_attribute_item`) nodes, stopping at the first node that is neither -
-/// the boundary of the stack. `visit` is asked of every attribute node encountered along the way
-/// (not merely the nearest one), and the LAST `Some` it returns wins - so a comment or an unrelated
-/// attribute sitting between two stacked attributes never severs the scan, and (for
-/// [`attribute_stack_names_test`]'s boolean-shaped `visit`) a match two attributes further along is
-/// never hidden by a nearer one that does not match.
+/// file root's first named child), [`is_proc_macro_fn`] and (round 7)
+/// [`out_of_line_path_override`]: `visit` is asked of every attribute item of the
+/// [`attribute_stack`] read from `first` along `advance` (not merely the nearest one), and the
+/// LAST `Some` it returns wins - so a comment or an unrelated attribute sitting between two
+/// stacked attributes never severs the scan, and (for [`attribute_stack_names_test`]'s
+/// boolean-shaped `visit`) a match two attributes further along is never hidden by a nearer one
+/// that does not match.
 fn scan_attribute_stack<'a, T>(
     source: &[u8],
     first: Option<tree_sitter::Node<'a>>,
     advance: impl Fn(tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>>,
     mut visit: impl FnMut(tree_sitter::Node<'a>, &[u8]) -> Option<T>,
 ) -> Option<T> {
-    let mut found = None;
-    let mut cur = first;
-    while let Some(node) = cur {
-        match node.kind() {
-            "line_comment" | "block_comment" => {}
-            "attribute_item" | "inner_attribute_item" => {
-                if let Some(v) = visit(node, source) {
-                    found = Some(v);
-                }
-            }
-            _ => break,
-        }
-        cur = advance(node);
-    }
-    found
+    attribute_stack(first, advance)
+        .filter(|&node| !is_comment(node))
+        .filter_map(|node| visit(node, source))
+        .last()
 }
 
 /// [`scan_attribute_stack`] applied to the "does any attribute in the stack gate on `test`"
