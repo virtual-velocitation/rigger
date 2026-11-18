@@ -5092,12 +5092,12 @@ mod tests {
     /// an RST title's over- and underline). Marker text the file's committed text already shows (a
     /// fixture, a document about conflicts) is its content, never a conflict, so an edit
     /// elsewhere in that file is not refused, even where the worktree copy has CRLF line ends
-    /// and the committed text LF (a `core.autocrlf` checkout); a set beside it is, and so is one whose lines repeat
-    /// the shown set's, which is one set more than HEAD carries, and so is a conflict hunk git
-    /// wrote around the shown set, holding it on one side or cutting through it, whose own start
-    /// and end lines stand in no set HEAD carries.
+    /// and the committed text LF (a `core.autocrlf` checkout); a set beside it is, and so is one
+    /// whose lines repeat the shown set's, which is one set more than HEAD carries, and so is a
+    /// conflict hunk git wrote around the shown set, holding it on one side or cutting through
+    /// it, whose own start and end lines stand in no set HEAD carries.
     #[test]
-    fn a_commit_is_refused_only_over_a_complete_ordered_set_of_conflict_markers() {
+    fn a_commit_is_refused_over_a_complete_marker_set_or_a_start_or_end_line_in_none() {
         // A committed file's text that shows a marker set.
         const SHOWN: &str = "Markers look like:\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n";
         let shown_edited = format!("{SHOWN}edited\n");
