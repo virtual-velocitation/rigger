@@ -2361,42 +2361,39 @@ fn live_branches_for_sweep(
     }
 }
 
-/// Why git's registry keeps the unit worktree `dir` out of the orphan sweep: git lists a worktree
-/// there it marks `locked` or `prunable` ([`rigger::worktree::git_mark_at`]), or the list cannot
-/// be read, so nothing there is reaped or removed on a guess. `None` lets the sweep reclaim `dir`.
-/// An empty `repo` names no registry to read, so `dir` is reclaimed as any leftover dir is.
-fn kept_by_git(repo: &str, dir: &std::path::Path) -> Option<String> {
-    if repo.is_empty() {
-        return None;
-    }
-    match rigger::worktree::git_mark_at(repo, &dir.to_string_lossy()) {
-        Ok(None) => None,
-        Ok(Some(mark)) => Some(format!("git marks it `{mark}`")),
-        Err(e) => Some(e.0),
-    }
-}
-
 /// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
 /// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
 /// scratch entry git may still track. A killed run can leave a `rigger-wt-<slug>` worktree
-/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; `git
-/// worktree remove --force` deregisters it (and tolerates a dirty tree). A bare leftover dir
-/// git never tracked makes that command fail, so it falls through to the plain removal, and any
-/// dangling admin entry a partial removal leaves is pruned by [`rigger::worktree::sweep_terminal`]
-/// at the next run start. Best-effort - a failed reclaim never aborts the sweep.
-/// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
-fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
-    rigger::reap::reap_processes_rooted_under(dir, authorized_root);
-    let deregistered = subprocess::git_in(repo)
-        .and_then(|mut git| {
-            git.args(["worktree", "remove", "--force"])
-                .arg(dir)
-                .output()
-        })
-        .is_ok_and(|o| o.status.success());
-    if !deregistered {
-        let _ = std::fs::remove_dir_all(dir);
-    }
+/// still REGISTERED, so a plain `remove_dir_all` would strand a dangling admin entry; the removal
+/// goes through [`rigger::worktree::remove_worktree_at`], which reaps `dir` first and whose `git
+/// worktree remove --force` deregisters it (and tolerates a dirty tree).
+///
+/// A refusal from git is never answered by removing `dir` another way: git's list is read again,
+/// and `dir` goes off disk only when git lists no worktree there and `dir` names no registration
+/// (git's "not a working tree", a bare leftover dir). Every other refusal keeps `dir` and is the
+/// error: a tree git marks `locked`, or `prunable` with its dir there; a tree git lists unmarked
+/// yet refuses to remove; a tree whose registration git does not list; a list git cannot give,
+/// including git failing to spawn; and an empty `repo`, which names no repository (a run always
+/// passes its own). `Ok` means `dir` is gone. `authorized_root` is the resolved scratch root `dir`
+/// was enumerated from (spec 78 round 2).
+fn reap_then_remove_worktree(
+    repo: &str,
+    dir: &std::path::Path,
+    authorized_root: &std::path::Path,
+) -> Result<(), String> {
+    rigger::worktree::remove_worktree_at(
+        repo,
+        &dir.to_string_lossy(),
+        &authorized_root.to_string_lossy(),
+    )
+    .map_err(|e| e.0)
+}
+
+/// The one line the orphan sweep says of an entry it kept: `path`, and `why` it stays.
+fn say_orphan_kept(path: &std::path::Path, why: &str) {
+    rigger::whole_line::say(format_args!(
+        "rigger run: orphan sweep: kept {path:?} - {why}"
+    ));
 }
 
 /// Run `run_id`'s progress reports out of `project`'s namespace of the progress store
@@ -4021,9 +4018,11 @@ fn live_slugs(
 /// once no spawn is live, never by this run-start backstop, so it can never delete a target a
 /// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
 ///
-/// A unit worktree git marks `locked` or `prunable` (a person's lock, an add or remove git did not
-/// finish) is kept and named on stderr, as [`rigger::worktree::sweep_terminal`] keeps it: nothing
-/// in it is reaped or removed ([`kept_by_git`]).
+/// A unit worktree git marks `locked`, or `prunable` with its dir there (a person's lock, an add
+/// or remove git did not finish, a lost link), and the scratch beside it that serves it (its build
+/// caches, store fence and gate scratch root), are kept and named on stderr by the one rule
+/// [`rigger::worktree::sweep_terminal`] keeps them by ([`rigger::worktree::kept_by_git`]): nothing
+/// in or beside the tree is reaped or removed.
 ///
 /// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
 /// `rigger/u/<slug>` stages - config, never the event log, the SAME set `run_cli` also hands
@@ -4087,18 +4086,18 @@ fn reclaim_orphan_scratch(
             // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
             // explicitly - makes that divergence structurally impossible to reintroduce.
             let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
-            let dirty = declared_slugs.contains(slug)
+            let dirty = rigger::worktree::owner_names(slug)
+                .any(|owner| declared_slugs.contains(owner))
                 && path.join(".git").exists()
                 && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
-                match kept_by_git(repo, &path) {
-                    None => {
-                        reap_then_remove_worktree(repo, &path, root_path);
-                        removed += 1;
-                    }
-                    Some(why) => rigger::whole_line::say(format_args!(
-                        "rigger run: orphan sweep: kept {path:?} - {why}"
-                    )),
+                let kept = match rigger::worktree::kept_by_git(repo, &path.to_string_lossy()) {
+                    None => reap_then_remove_worktree(repo, &path, root_path).err(),
+                    why => why,
+                };
+                match kept {
+                    None => removed += 1,
+                    Some(why) => say_orphan_kept(&path, &why),
                 }
             }
         } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
@@ -4108,10 +4107,18 @@ fn reclaim_orphan_scratch(
             // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
             // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
             // `-<slug>` tail) never matches and is spared.
+            //
+            // A sibling of a tree git marks is kept as the tree is, by the one rule both sweeps
+            // keep by ([`rigger::worktree::kept_by_git`]).
             let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
             if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
-                reap_then_remove_dir(&path, root_path);
-                removed += 1;
+                match rigger::worktree::kept_by_git(repo, &path.to_string_lossy()) {
+                    None => {
+                        reap_then_remove_dir(&path, root_path);
+                        removed += 1;
+                    }
+                    Some(why) => say_orphan_kept(&path, &why),
+                }
             }
         } else if is_build_cache_tombstone(&name) {
             // A stray shared-build-cache tombstone (spec 77 criterion 5): the enumerable
@@ -4191,7 +4198,7 @@ fn scan_residue(
         report.shadow_stores.push((rel, size));
     }
     for b in local_unit_branches {
-        if !live_branches.contains(b) {
+        if !rigger::worktree::owner_names(b).any(|owner| live_branches.contains(owner)) {
             report.branches.push(b.clone());
         }
     }
@@ -4211,7 +4218,9 @@ fn scan_residue(
 /// deterministic `rigger-wt-foo-deadbeef` worktree that would otherwise decompose as
 /// live-`foo` + uuid-`deadbeef` and be spared. `dead_slugs` (the current run's terminal
 /// units) resolves it - an exact dead slug is its OWN (dead) unit's worktree, never a live
-/// unit's per-process tail (adv-u6res-uuid8-tail-false-match), so it stays residue.
+/// unit's per-process tail (adv-u6res-uuid8-tail-false-match), so it stays residue. A speculation
+/// lane's tree belongs to a live unit as the unit's own tree does
+/// ([`rigger::worktree::owner_names`]).
 fn worktree_belongs_to_live(
     name: &str,
     live_slugs: &std::collections::HashSet<String>,
@@ -4223,12 +4232,14 @@ fn worktree_belongs_to_live(
     if dead_slugs.contains(rest) {
         return false;
     }
-    live_slugs.iter().any(|slug| {
-        rest == slug.as_str()
-            || rest
-                .strip_prefix(slug.as_str())
-                .and_then(|s| s.strip_prefix('-'))
-                .is_some_and(is_uuid8)
+    rigger::worktree::owner_names(rest).any(|owner| {
+        live_slugs.iter().any(|slug| {
+            owner == slug.as_str()
+                || owner
+                    .strip_prefix(slug.as_str())
+                    .and_then(|s| s.strip_prefix('-'))
+                    .is_some_and(is_uuid8)
+        })
     })
 }
 
@@ -8837,10 +8848,13 @@ mod tests {
             live_spawn_leaf_names: slugs([]),
             current_run_scratch_leaf: None,
         };
-        // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
-        // which is all the synthetic (non-registered) worktree dirs here need.
+        // The worktree dirs here are registered with no repository, so git refuses each as not a
+        // working tree, the one refusal the sweep answers by removing the dir.
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_committed_repo(repo_dir.path(), "README.md", "seed\n");
+        let repo = repo_dir.path().to_str().unwrap();
         let removed = reclaim_orphan_scratch(
-            "",
+            repo,
             scratch.to_str().unwrap(),
             &run_units,
             &std::collections::HashSet::new(),
@@ -8905,7 +8919,7 @@ mod tests {
         // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
         assert_eq!(
             reclaim_orphan_scratch(
-                "",
+                repo,
                 scratch.to_str().unwrap(),
                 &run_units,
                 &std::collections::HashSet::new(),
@@ -9015,6 +9029,101 @@ mod tests {
         );
     }
 
+    /// A SPECULATION LANE IS ITS UNIT'S: the orphan sweep and `rigger validate`'s residue scan
+    /// read a lane's tree (`rigger-wt-<unit>-spec<lane>`) and branch (`rigger/u/<unit>-spec<lane>`)
+    /// as their unit's. A lane of a live unit, such as the tree a run held on a lane leaves in
+    /// place for its release, is neither reclaimed nor named residue; a dirty lane of a unit the
+    /// workflow declares is spared as the unit's own tree is, and named residue as that tree is
+    /// while no run records the unit; a lane of a terminal unit the workflow no longer declares is
+    /// named and reclaimed.
+    #[test]
+    fn the_orphan_sweep_and_the_residue_scan_read_a_speculation_lane_as_its_unit() {
+        /// Where the run stands with the lane's unit.
+        #[derive(Clone, Copy)]
+        enum Unit {
+            /// In flight.
+            Live,
+            /// Not yet recorded.
+            Unrecorded,
+            /// Integrated or escalated.
+            Terminal,
+        }
+        // Each row: where the run stands with the unit, whether the workflow declares it, whether
+        // the sweep keeps the lane's tree, and whether the scan names the tree and branch residue.
+        let cases = [
+            ("a lane of a live unit", Unit::Live, true, true, false),
+            (
+                "a dirty lane of a declared unit no run records",
+                Unit::Unrecorded,
+                true,
+                true,
+                true,
+            ),
+            (
+                "a lane of a terminal unit no longer declared",
+                Unit::Terminal,
+                false,
+                false,
+                true,
+            ),
+        ];
+        for (row, unit, declared, kept, residue) in cases {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            init_committed_repo(root, "README.md", "seed\n");
+            let repo = root.to_str().unwrap();
+            let lane = root.join("rigger-wt-held-spec1");
+            Worktree::create(repo, lane.to_str().unwrap(), "rigger/u/held-spec1", "").unwrap();
+            write_file(&lane.join("refused.txt"), b"work git refused\n");
+            let run_units = RunUnits {
+                live_branches: match unit {
+                    Unit::Live => slugs(["rigger/u/held"]),
+                    _ => slugs([]),
+                },
+                dead_slugs: match unit {
+                    Unit::Terminal => slugs(["held"]),
+                    _ => slugs([]),
+                },
+                live_spawn_leaf_names: slugs([]),
+                current_run_scratch_leaf: None,
+            };
+            let declared = if declared {
+                slugs(["rigger/u/held"])
+            } else {
+                slugs([])
+            };
+
+            let report = scan_residue(
+                root,
+                &live_slugs(&run_units.live_branches),
+                &run_units.dead_slugs,
+                &["rigger/u/held-spec1".to_string()],
+                &run_units.live_branches,
+            );
+            let removed =
+                reclaim_orphan_scratch(repo, root.to_str().unwrap(), &run_units, &declared);
+
+            assert_eq!(
+                lane.join("refused.txt").exists(),
+                kept,
+                "{row}: reclaimed {removed}"
+            );
+            assert_eq!(
+                report
+                    .worktrees
+                    .iter()
+                    .any(|(name, _)| name == "rigger-wt-held-spec1"),
+                residue,
+                "{row}: {report:?}"
+            );
+            assert_eq!(
+                report.branches == ["rigger/u/held-spec1"],
+                residue,
+                "{row}: {report:?}"
+            );
+        }
+    }
+
     /// The orphan sweep keeps a tree git marks locked (a person's lock, an add git did not
     /// finish) out of its reclaim: nothing in it is reaped or removed and its registration stays,
     /// and the trees beside it are still reclaimed.
@@ -9072,6 +9181,188 @@ mod tests {
             "the tree git marks locked keeps its registration: {listed}"
         );
         assert!(!done.exists(), "the tree beside it is reclaimed");
+    }
+
+    /// The orphan sweep's removal never answers a refusal from git by removing the dir another
+    /// way: a tree git tracks goes through git, a dir git never tracked goes off disk, and a tree
+    /// git marks locked or prunable, a tree another repository registers, and a tree git lists
+    /// but refuses to remove, keep their work and their registration.
+    #[test]
+    fn reap_then_remove_worktree_removes_off_disk_only_a_dir_git_registers_nothing_at() {
+        // Each row: the case, what is done to the dir (answering the repository whose list names
+        // the tree while it is kept), and whether its work is kept.
+        type Row = (&'static str, fn(&str, &Path) -> PathBuf, bool);
+        let rows: [Row; 6] = [
+            (
+                "a dir git never tracked",
+                |repo, dir| {
+                    write_file(&dir.join("work.txt"), b"work\n");
+                    PathBuf::from(repo)
+                },
+                false,
+            ),
+            (
+                "a tree git tracks",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    PathBuf::from(repo)
+                },
+                false,
+            ),
+            (
+                "a tree git marks prunable, its dir still there",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    std::fs::remove_file(dir.join(".git")).unwrap();
+                    PathBuf::from(repo)
+                },
+                true,
+            ),
+            (
+                "a tree git marks locked",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    let at = dir.to_str().unwrap();
+                    git_ok(
+                        repo,
+                        &["worktree", "lock", "--reason", "a person's lock", at],
+                    );
+                    PathBuf::from(repo)
+                },
+                true,
+            ),
+            (
+                "a tree another repository registers",
+                |repo, dir| {
+                    let other = Path::new(repo).join("other-repo");
+                    std::fs::create_dir_all(&other).unwrap();
+                    init_committed_repo(&other, "README.md", "seed\n");
+                    add_tree(other.to_str().unwrap(), dir);
+                    other
+                },
+                true,
+            ),
+            (
+                "a tree git lists but refuses",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    let other = Path::new(repo).join("rigger-wt-other");
+                    let at = other.to_str().unwrap();
+                    Worktree::create(repo, at, "rigger/u/other", "").unwrap();
+                    let admin = run_git(&other, &["rev-parse", "--absolute-git-dir"]);
+                    let admin = String::from_utf8_lossy(&admin.stdout);
+                    write_file(
+                        &dir.join(".git"),
+                        format!("gitdir: {}\n", admin.trim_end()).as_bytes(),
+                    );
+                    PathBuf::from(repo)
+                },
+                true,
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (row, plant, kept) in rows {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = tmp.path().canonicalize().unwrap();
+            init_committed_repo(&root, "README.md", "seed\n");
+            let repo = root.to_str().unwrap();
+            let dir = root.join("rigger-wt-unit");
+            let registers = plant(repo, &dir);
+            let removed = reap_then_remove_worktree(repo, &dir, &root);
+            if removed.is_ok() == kept {
+                violations.push(format!("{row}: the removal answers {removed:?}"));
+            }
+            if dir.join("work.txt").exists() != kept {
+                violations.push(format!("{row}: its work is kept: {}", !kept));
+            }
+            let listed = run_git(&registers, &["worktree", "list", "--porcelain"]);
+            let listed = String::from_utf8_lossy(&listed.stdout)
+                .lines()
+                .any(|line| line == format!("worktree {}", dir.display()));
+            if listed != kept {
+                violations.push(format!("{row}: its registration is kept: {listed}"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// Add a tree on the unit branch `rigger/u/unit` of `repo` at `dir`, holding work in
+    /// `work.txt`.
+    fn add_tree(repo: &str, dir: &Path) {
+        Worktree::create(repo, dir.to_str().unwrap(), "rigger/u/unit", "").unwrap();
+        write_file(&dir.join("work.txt"), b"work\n");
+    }
+
+    /// The orphan sweep keeps the scratch siblings of a tree git marks (its build caches, its
+    /// store fence, its review cache and its gate scratch root) as it keeps the tree, the rule
+    /// the terminal sweep keeps them by, and still reclaims the siblings of a tree git does not
+    /// mark.
+    #[test]
+    fn reclaim_orphan_scratch_keeps_the_siblings_of_a_tree_git_marks() {
+        // Each row: the unit's slug, what is done to its tree, and whether its siblings are kept.
+        type Row = (&'static str, fn(&str, &Path), bool);
+        let rows: [Row; 3] = [
+            (
+                "a-locked",
+                |repo, dir| {
+                    let at = dir.to_str().unwrap();
+                    git_ok(
+                        repo,
+                        &["worktree", "lock", "--reason", "a person's lock", at],
+                    );
+                },
+                true,
+            ),
+            (
+                "a-prunable",
+                |_, dir| std::fs::remove_file(dir.join(".git")).unwrap(),
+                true,
+            ),
+            ("done", |_, _| {}, false),
+        ];
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        init_committed_repo(&root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+        let siblings = |slug: &str| {
+            [
+                format!("cargo-target-{slug}"),
+                format!("cargo-target-{slug}-store-fence"),
+                format!("review-target-{slug}"),
+                format!("rigger-gate-{slug}"),
+            ]
+            .map(|name| root.join(name))
+        };
+        for (slug, mark, _) in rows {
+            let dir = root.join(format!("rigger-wt-{slug}"));
+            Worktree::create(repo, dir.to_str().unwrap(), &format!("rigger/u/{slug}"), "").unwrap();
+            for sibling in siblings(slug) {
+                write_file(&sibling.join("kept.txt"), b"build\n");
+            }
+            mark(repo, &dir);
+        }
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs(["a-locked", "a-prunable", "done"]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        reclaim_orphan_scratch(
+            repo,
+            root.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
+        let violations: Vec<String> = rows
+            .iter()
+            .flat_map(|&(slug, _, kept)| {
+                siblings(slug)
+                    .into_iter()
+                    .filter(move |sibling| sibling.join("kept.txt").exists() != kept)
+                    .map(move |sibling| format!("{slug}: {} is kept: {}", sibling.display(), !kept))
+            })
+            .collect();
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
     #[test]

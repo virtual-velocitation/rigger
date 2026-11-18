@@ -119,7 +119,7 @@ fn spawn_launched_survives_a_cold_start_a_second_store_instance_reads_the_first_
 
     let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
-        bin: fixture_bin(),
+        host: fixture_bin().into(),
         rigger_bin: "rigger".to_string(),
         progress_store: &progress_store,
         run_store: &run_store,
@@ -272,7 +272,7 @@ fn launch_resolves_an_empty_rigger_bin_to_the_literal_rigger_on_path() {
     // this branch.
     let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
-        bin: fixture_bin(),
+        host: fixture_bin().into(),
         rigger_bin: String::new(),
         progress_store: &progress_store,
         run_store: &run_store,
@@ -347,7 +347,7 @@ fn launch_resolves_an_empty_bin_to_the_literal_claude_found_on_path() {
 
     let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
-        bin: String::new(),
+        host: rigger::claude_auth::SessionHost::default(),
         rigger_bin: "rigger".to_string(),
         progress_store: &progress_store,
         run_store: &run_store,
@@ -392,7 +392,7 @@ fn a_failed_task_write_reaps_the_child_and_names_its_error() {
     // that might close stdin fast - there is no flake window here.
     let (progress_store, run_store) = no_stream_extras();
     let driver = Driver {
-        bin: fixture_script("claude-code-never-reads-stdin-agent.sh"),
+        host: fixture_script("claude-code-never-reads-stdin-agent.sh").into(),
         rigger_bin: "rigger".to_string(),
         progress_store: &progress_store,
         run_store: &run_store,
