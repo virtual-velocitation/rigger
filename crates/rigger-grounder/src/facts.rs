@@ -2,8 +2,9 @@
 //! its [`FileFacts`]. They re-shape what the per-language symbol extractors, the design-document
 //! extractor and the workflow-definition extractor already find, and what an extractor the
 //! project's workflow declares answers over THE EXTRACTOR PROTOCOL (spec 125), whose client is
-//! [`extractor_protocol`]; this module is no extractor of its own, and holds no language
-//! knowledge. Every name is kept as written and
+//! [`extractor_protocol`]; this module is no extractor of its own, and its one language knowledge
+//! is the doc rule [`FactsExtractor`]'s [`Extract::doc_text`] strips a Rust doc span's lines to
+//! their comment text by. Every name is kept as written and
 //! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
@@ -21,7 +22,7 @@ use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
     WfRelation,
 };
-use rigger_domain::code_view::{Entry, Extract, Head, OpenCodeView, TreeSource};
+use rigger_domain::code_view::{trimmed_lines, Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
@@ -33,7 +34,7 @@ use crate::config::{check_extractors, ExtractorDecl, RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
 use crate::grounder::design::extract::{extract_concepts, extract_links};
 use crate::grounder::symbols::extract::{kind_str, lang_str};
-use crate::grounder::symbols::model::{self, SymRef, GRAMMAR_TAGS_VERSION};
+use crate::grounder::symbols::model::{self, Lang, SymRef, GRAMMAR_TAGS_VERSION};
 use crate::grounder::symbols::paths::{is_dev_only, module_candidates};
 use crate::grounder::symbols::{content_hash, extracted, registry};
 use crate::grounder::workflowdef;
@@ -258,6 +259,13 @@ impl Extract for ProjectExtractor {
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
         file_facts(entry, bytes, |path, text| self.code(path, text))
     }
+
+    /// [`FactsExtractor`]'s: a declared file's language is its declaration's name, so a
+    /// declaration named as a bundled language (`rust`) reads that language's doc rule and any
+    /// other name the lines trimmed.
+    fn doc_text(&self, lang: &str, raw: &str) -> String {
+        FactsExtractor.doc_text(lang, raw)
+    }
 }
 
 /// The code store of a project with no git, read from the directory at its root.
@@ -293,6 +301,95 @@ impl Extract for FactsExtractor {
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
         file_facts(entry, bytes, bundled_code)
     }
+
+    /// The doc rule of the language `lang` names: Rust's ([`rust_doc_text`]), and the lines
+    /// trimmed ([`trimmed_lines`]) for a language with no rule.
+    fn doc_text(&self, lang: &str, raw: &str) -> String {
+        if lang == lang_str(Lang::Rust) {
+            rust_doc_text(raw)
+        } else {
+            trimmed_lines(raw)
+        }
+    }
+}
+
+/// The comment text of a Rust doc span's `raw` lines, split as [`str::lines`] splits them and each
+/// trimmed. A doc line gives the text after its marker, trimmed: `///` (not `////`), `//!`, and a
+/// name-value `#[doc = ..]` or `#![doc = ..]` its string literal's body ([`doc_attribute_text`]).
+/// `/**` (not `/***` nor `/**/`) and `/*!` open a doc block ([`doc_block_opened`]), closed by the
+/// first `*/` ([`until_block_closer`]), whatever follows it on its line dropped: the opener's line
+/// and the closer's line give their text inside the block when it is not blank, and each line
+/// between them its text with one leading `*` stripped, a blank one included. Every other line -
+/// another attribute, `#[doc(..)]` included, a plain comment, a blank line - is dropped; the kept
+/// lines join by `\n`.
+fn rust_doc_text(raw: &str) -> String {
+    let mut text = Vec::new();
+    let mut in_block = false;
+    for line in raw.lines().map(str::trim) {
+        if in_block {
+            let (inner, closed) = until_block_closer(line);
+            let inner = inner.strip_prefix('*').unwrap_or(inner).trim();
+            if !closed || !inner.is_empty() {
+                text.push(inner);
+            }
+            in_block = !closed;
+        } else if let Some(rest) = line
+            .strip_prefix("///")
+            .filter(|rest| !rest.starts_with('/'))
+            .or_else(|| line.strip_prefix("//!"))
+        {
+            text.push(rest.trim());
+        } else if let Some(rest) = doc_block_opened(line) {
+            let (inner, closed) = until_block_closer(rest);
+            let inner = inner.trim();
+            if !inner.is_empty() {
+                text.push(inner);
+            }
+            in_block = !closed;
+        } else if let Some(body) = doc_attribute_text(line) {
+            text.push(body.trim());
+        }
+    }
+    text.join("\n")
+}
+
+/// The rest of `line` after the Rust doc block opener it starts with: `/**`, but not `/***` nor
+/// the empty plain comment `/**/`, or `/*!`; none when it starts with no doc block opener.
+fn doc_block_opened(line: &str) -> Option<&str> {
+    line.strip_prefix("/**")
+        .filter(|rest| !rest.starts_with(['*', '/']))
+        .or_else(|| line.strip_prefix("/*!"))
+}
+
+/// `text` up to the first `*/`, which closes a block comment, and whether `text` holds one.
+fn until_block_closer(text: &str) -> (&str, bool) {
+    match text.find("*/") {
+        Some(end) => (&text[..end], true),
+        None => (text, false),
+    }
+}
+
+/// The body of the string literal of the Rust name-value doc attribute `line` starts with -
+/// `#[doc = ".."]`, `#![doc = r#".."#]`, spaces allowed between its tokens - as written, from its
+/// opening quote to the line's last quote, its escapes not decoded; none for another attribute,
+/// `#[doc(..)]` included, and for a value that is no string literal (`include_str!(..)`).
+fn doc_attribute_text(line: &str) -> Option<&str> {
+    let attribute = line.strip_prefix('#')?.trim_start();
+    let value = attribute
+        .strip_prefix('!')
+        .unwrap_or(attribute)
+        .trim_start()
+        .strip_prefix('[')?
+        .trim_start()
+        .strip_prefix("doc")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim_start();
+    let body = value
+        .strip_prefix('r')
+        .map_or(value, |raw| raw.trim_start_matches('#'))
+        .strip_prefix('"')?;
+    Some(body.rfind('"').map_or(body, |end| &body[..end]))
 }
 
 /// The symbols an extraction gives one code file, the bundled grammars' and a declared

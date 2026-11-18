@@ -281,13 +281,26 @@ pub trait TreeSource {
         -> Result<(), String>;
 }
 
-/// Reads one file's facts from its path and bytes.
+/// Reads one file's facts from its path and bytes, and the text of a doc span those facts hold.
 pub trait Extract: Send + Sync {
     /// Changes whenever any extraction output can change; a snapshot of another fingerprint is
     /// not trusted.
     fn fingerprint(&self) -> u64;
     /// The facts of the file `entry` names, read from `bytes`; `path` and `blob` come from `entry`.
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;
+    /// The text of a doc span's `raw` lines in a file read as `lang`, which the facts never
+    /// store: by default the lines trimmed ([`trimmed_lines`]); an extractor that knows a
+    /// language's doc comments gives their text alone.
+    fn doc_text(&self, _lang: &str, raw: &str) -> String {
+        trimmed_lines(raw)
+    }
+}
+
+/// `raw` split into lines as [`str::lines`] splits it, on `\n` with a trailing `\r` dropped and a
+/// final line ending adding no line, each line trimmed and joined by `\n`: the doc text of a
+/// language with no doc rule ([`Extract::doc_text`]).
+pub fn trimmed_lines(raw: &str) -> String {
+    raw.lines().map(str::trim).collect::<Vec<_>>().join("\n")
 }
 
 /// Computes a view's groupings.
