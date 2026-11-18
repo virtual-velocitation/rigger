@@ -3779,7 +3779,12 @@ fn status_z(dir: &str) -> Result<String, Error> {
 /// its standard output alone: git warns on standard error when a pathspec names a directory the
 /// tree does not hold, and that warning is no status record.
 fn status_z_of(dir: &str, pathspecs: &[&str]) -> Result<String, Error> {
-    let args: Vec<&str> = STATUS_Z.iter().chain(&["--"]).chain(pathspecs).copied().collect();
+    let args: Vec<&str> = STATUS_Z
+        .iter()
+        .chain(&["--"])
+        .chain(pathspecs)
+        .copied()
+        .collect();
     git_output(dir, &args, GitOutput::Stdout)
         .map(|out| String::from_utf8_lossy(&out).into_owned())
         .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
@@ -5185,7 +5190,11 @@ mod tests {
             }
             wt.remove().unwrap();
         }
-        assert_eq!(wrong, [], "rows refused when they should not be, or the reverse");
+        assert_eq!(
+            wrong,
+            [],
+            "rows refused when they should not be, or the reverse"
+        );
     }
 
     /// THE GUARD READS WHAT THE COMMIT CARRIES: a checkpoint's `git add -A` stages a new file as
@@ -10522,7 +10531,8 @@ mod tests {
         let cases: [Row; 11] = [
             ("clean", "specs/", |_| {}, &[], &[]),
             (
-                "committed work", "specs/",
+                "committed work",
+                "specs/",
                 |dir| {
                     write(dir, "specs/plan.md", "planned\n");
                     run_git(dir, &["add", "specs/plan.md"]).unwrap();
@@ -10532,13 +10542,15 @@ mod tests {
                 &[],
             ),
             (
-                "an ignored file", "specs/",
+                "an ignored file",
+                "specs/",
                 |dir| write(dir, "scratch.log", "noise\n"),
                 &[],
                 &[],
             ),
             (
-                "a staged plan", "specs/",
+                "a staged plan",
+                "specs/",
                 |dir| {
                     write(dir, "specs/plan.md", "planned\n");
                     run_git(dir, &["add", "specs/plan.md"]).unwrap();
@@ -10547,19 +10559,22 @@ mod tests {
                 &[],
             ),
             (
-                "an untracked plan", "specs/",
+                "an untracked plan",
+                "specs/",
                 |dir| write(dir, "specs/plan.md", "planned\n"),
                 &["specs/"],
                 &[],
             ),
             (
-                "a changed file outside the output", "specs/",
+                "a changed file outside the output",
+                "specs/",
                 |dir| write(dir, "unit.txt", "edited\n"),
                 &[],
                 &["unit.txt"],
             ),
             (
-                "a staged file outside the output", "specs/",
+                "a staged file outside the output",
+                "specs/",
                 |dir| {
                     write(dir, "spec.md", "planned\n");
                     run_git(dir, &["add", "spec.md"]).unwrap();
@@ -10568,7 +10583,8 @@ mod tests {
                 &["spec.md"],
             ),
             (
-                "a plan beside leftovers", "specs/",
+                "a plan beside leftovers",
+                "specs/",
                 |dir| {
                     write(dir, "specs/plan.md", "planned\n");
                     write(dir, "unit.txt", "edited\n");
