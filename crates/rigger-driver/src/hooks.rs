@@ -193,6 +193,7 @@ pub fn install_grep_guard(existing: &[u8]) -> Result<Vec<u8>, Error> {
         GREP_GUARD_MATCHER,
         GREP_GUARD_COMMAND,
         None,
+        None,
     )?;
     encode_settings(&settings)
 }
@@ -278,9 +279,9 @@ pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 /// of once its session ends (its `duty`), under `Stop` the `hook stop` asking whether the tree is
 /// one that step takes, with [`STOP_HOOK_TIMEOUT_SECS`]: `--branch <branch>` for a tree the
 /// conductor commits onto that branch, `--own-commits` for one it lands only the commits of. Each
-/// runs `rigger_bin`, and the shell a hook command runs under reads `rigger_bin`, `spawn`, each
-/// root, `dir` and the branch as one word whatever they hold ([`shell_quote`]). `existing` may be
-/// empty.
+/// runs `rigger_bin` under `shell`, which reads `rigger_bin`, `spawn`, each root, `dir` and the
+/// branch as one word whatever they hold ([`HookShell::word`]), and each entry names `shell` where
+/// Claude Code would not pick it alone ([`HookShell::field`]). `existing` may be empty.
 pub fn install_spawn_hooks(
     existing: &[u8],
     rigger_bin: &str,
@@ -288,35 +289,101 @@ pub fn install_spawn_hooks(
     roots: &[String],
     dir: &str,
     duty: &TreeDuty,
+    shell: HookShell,
 ) -> Result<Vec<u8>, Error> {
-    let bin = shell_quote(rigger_bin);
-    let spawn = shell_quote(spawn);
+    let bin = shell.program(rigger_bin);
+    let spawn = shell.word(spawn);
+    let field = shell.field();
     let mut guard = format!("{bin} guard-write");
     for root in roots {
-        guard.push_str(&format!(" --root {}", shell_quote(root)));
+        guard.push_str(&format!(" --root {}", shell.word(root)));
     }
-    let mut merged = install_pretooluse_hook(existing, &write_guard_matcher(), &guard)?;
+    let matcher = write_guard_matcher();
+    let mut merged = merge_hook_block(existing, "PreToolUse", &matcher, &guard, None, field)?;
     for category in AgentFailure::CATEGORIES {
         let class = category.as_str();
         let command = format!("{bin} hook stop-failure --spawn {spawn} --class {class}");
-        merged = merge_hook_block(&merged, "StopFailure", class, &command, None)?;
+        merged = merge_hook_block(&merged, "StopFailure", class, &command, None, field)?;
     }
     let asks = match duty {
         TreeDuty::None => None,
-        TreeDuty::Checkpoint { branch } => Some(format!("--branch {}", shell_quote(branch))),
+        TreeDuty::Checkpoint { branch } => Some(format!("--branch {}", shell.word(branch))),
         TreeDuty::OwnCommits => Some("--own-commits".to_string()),
     };
     if let Some(asks) = asks {
-        let dir = shell_quote(dir);
+        let dir = shell.word(dir);
         let command = format!("{bin} hook stop --spawn {spawn} --dir {dir} {asks}");
-        merged = merge_hook_block(&merged, "Stop", "", &command, Some(STOP_HOOK_TIMEOUT_SECS))?;
+        let timeout = Some(STOP_HOOK_TIMEOUT_SECS);
+        merged = merge_hook_block(&merged, "Stop", "", &command, timeout, field)?;
     }
     Ok(merged)
 }
 
-/// `arg` as one POSIX shell word: each `'` it holds closes the quote, is escaped and reopens it.
-fn shell_quote(arg: &str) -> String {
-    single_quoted(arg, r"'\''")
+/// The shell Claude Code runs a hook's `command` under, which decides how the command spells
+/// each word. Claude Code hands a command to `sh -c` on macOS and Linux, and on Windows to Git
+/// Bash, or to PowerShell where Git Bash is not installed, unless the hook's `shell` field names
+/// one (<https://code.claude.com/docs/en/hooks>).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookShell {
+    /// POSIX `sh`, Claude Code's own pick on macOS and Linux.
+    Posix,
+    /// PowerShell, which the hook names, so whether Git Bash is installed changes nothing.
+    PowerShell,
+}
+
+/// The characters PowerShell reads as a single quote: `'`, U+2018, U+2019, U+201A and U+201B
+/// (PowerShell's `CharExtensions.IsSingleQuote`).
+const POWERSHELL_SINGLE_QUOTES: [char; 5] = ['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}'];
+
+impl HookShell {
+    /// The shell the hooks rigger installs on this OS run under: PowerShell on Windows, POSIX
+    /// `sh` everywhere else.
+    pub const HOST: HookShell = if cfg!(windows) {
+        HookShell::PowerShell
+    } else {
+        HookShell::Posix
+    };
+
+    /// `arg` as one word this shell reads back as exactly `arg`: between single quotes, inside
+    /// which neither shell expands anything, each single quote `arg` holds spelled as the shell
+    /// reads one there. POSIX `sh` reads none, so each `'` closes the quote, is escaped and
+    /// reopens it; PowerShell reads a single-quote character doubled as one, as its own
+    /// `CodeGeneration.EscapeSingleQuotedStringContent` writes it, for each of
+    /// [`POWERSHELL_SINGLE_QUOTES`].
+    fn word(self, arg: &str) -> String {
+        match self {
+            HookShell::Posix => single_quoted(arg, r"'\''"),
+            HookShell::PowerShell => {
+                let mut quoted = String::from("'");
+                for c in arg.chars() {
+                    if POWERSHELL_SINGLE_QUOTES.contains(&c) {
+                        quoted.push(c);
+                    }
+                    quoted.push(c);
+                }
+                quoted.push('\'');
+                quoted
+            }
+        }
+    }
+
+    /// The start of a command running the program at `path`: its [`word`](Self::word), behind
+    /// PowerShell's call operator `&`, without which PowerShell reads a quoted path as a string.
+    fn program(self, path: &str) -> String {
+        match self {
+            HookShell::Posix => self.word(path),
+            HookShell::PowerShell => format!("& {}", self.word(path)),
+        }
+    }
+
+    /// The `shell` field a hook names this shell by: none for POSIX `sh`, which Claude Code picks
+    /// wherever rigger runs it, `powershell` for PowerShell.
+    fn field(self) -> Option<&'static str> {
+        match self {
+            HookShell::Posix => None,
+            HookShell::PowerShell => Some("powershell"),
+        }
+    }
 }
 
 /// Whether the settings JSON `existing` already carries every session setting
@@ -379,22 +446,23 @@ pub fn helper_mcp_tools(helpers: &[HelperCopy]) -> Result<Vec<String>, Error> {
 /// `SessionStart` event with an empty matcher (rigger installs the only entry that will
 /// ever exist there).
 pub fn install_session_start(existing: &[u8], command: &str) -> Result<Vec<u8>, Error> {
-    merge_hook_block(existing, "SessionStart", "", command, None)
+    merge_hook_block(existing, "SessionStart", "", command, None, None)
 }
 
 /// Merge one hook block that runs `command` into `existing` settings JSON, under the
 /// named top-level hook `event_key` (`"SessionStart"`, `"PreToolUse"`, ...), filtered by
 /// `matcher` (tool names under `PreToolUse`, a failure class under `StopFailure`, empty for
 /// an event `rigger` never matcher-filters, e.g. `SessionStart`), given `timeout` seconds when
-/// one is named (Claude Code's own default otherwise). Idempotent (installing the
+/// one is named (Claude Code's own default otherwise) and run under the `shell` it names
+/// ([`HookShell::field`]; Claude Code's own pick otherwise). Idempotent (installing the
 /// same `command` under the same `event_key` twice does not duplicate the block) and preserves
 /// every other setting, every other event key, and every other block already present under
 /// THIS event key - a general-purpose event (`PreToolUse`) may already carry entries for a
 /// different tool, matcher, or command a person or another tool installed, so this always
 /// APPENDS a new block rather than ever replacing the array wholesale, and touches nothing
 /// under any matcher/command this call did not itself install. `existing` may be empty. The
-/// one mutation authority [`install_session_start`], [`install_pretooluse_hook`] and
-/// [`install_spawn_hooks`] build on, so no event kind can diverge on what "merge a hook block"
+/// one mutation authority [`install_session_start`] and [`install_spawn_hooks`] build on, so
+/// no event kind can diverge on what "merge a hook block"
 /// means; [`install_grep_guard`] pushes its block through the same [`push_hook_block`].
 fn merge_hook_block(
     existing: &[u8],
@@ -402,9 +470,10 @@ fn merge_hook_block(
     matcher: &str,
     command: &str,
     timeout: Option<u32>,
+    shell: Option<&str>,
 ) -> Result<Vec<u8>, Error> {
     let mut settings = parse_settings(existing)?;
-    push_hook_block(&mut settings, event_key, matcher, command, timeout)?;
+    push_hook_block(&mut settings, event_key, matcher, command, timeout, shell)?;
     encode_settings(&settings)
 }
 
@@ -423,13 +492,14 @@ fn parse_settings(existing: &[u8]) -> Result<Map<String, Value>, Error> {
 
 /// Append a block running `command` under `matcher` to the `event_key` array of `settings`'
 /// `hooks`, creating either when absent, unless a block of that array already runs `command`;
-/// the inner hook carries `timeout` seconds when one is named.
+/// the inner hook carries `timeout` seconds and the `shell` when either is named.
 fn push_hook_block(
     settings: &mut Map<String, Value>,
     event_key: &str,
     matcher: &str,
     command: &str,
     timeout: Option<u32>,
+    shell: Option<&str>,
 ) -> Result<(), Error> {
     let hooks = settings.entry("hooks").or_insert_with(|| json!({}));
     let hooks_obj = hooks
@@ -443,6 +513,9 @@ fn push_hook_block(
         let mut hook = json!({"type": "command", "command": command});
         if let Some(timeout) = timeout {
             hook["timeout"] = json!(timeout);
+        }
+        if let Some(shell) = shell {
+            hook["shell"] = json!(shell);
         }
         event_arr.push(json!({"matcher": matcher, "hooks": [hook]}));
     }
@@ -470,20 +543,6 @@ fn has_command(blocks: &[Value], command: &str) -> bool {
 /// Whether the inner hook `hook` runs `command`.
 fn runs(hook: &Value, command: &str) -> bool {
     hook.get("command").and_then(Value::as_str) == Some(command)
-}
-
-/// Merge a PreToolUse hook that runs `command` (matched against tool calls by `matcher`,
-/// e.g. the write guard's editing tools) into the settings JSON. A thin wrapper over
-/// [`merge_hook_block`] fixed to the `PreToolUse` event - see
-/// there for the shared idempotence and other-settings-preserving guarantees `PreToolUse`'s
-/// general-purpose nature (a machine may already carry entries for a different tool,
-/// matcher, or command under this same event) relies on. `existing` may be empty.
-pub fn install_pretooluse_hook(
-    existing: &[u8],
-    matcher: &str,
-    command: &str,
-) -> Result<Vec<u8>, Error> {
-    merge_hook_block(existing, "PreToolUse", matcher, command, None)
 }
 
 /// Merge one stdio MCP server entry into `.mcp.json`'s `mcpServers` object (spec 92,
@@ -616,6 +675,11 @@ mod tests {
         assert_eq!(installed, counted, "installing twice must not duplicate");
     }
 
+    /// Merge a `PreToolUse` block with no timeout and no shell field into `existing`.
+    fn pretooluse(existing: &[u8], matcher: &str, command: &str) -> Result<Vec<u8>, Error> {
+        merge_hook_block(existing, "PreToolUse", matcher, command, None, None)
+    }
+
     crate::test_cases! {
         installs_and_is_idempotent: assert_installs_idempotently(
             |existing| install_session_start(existing, "rigger prime"),
@@ -623,14 +687,15 @@ mod tests {
             &[("rigger prime", 1)],
         );
         pretooluse_hook_installs_and_is_idempotent: assert_installs_idempotently(
-            |existing| install_pretooluse_hook(existing, "Grep|Bash", "rigger grep-guard"),
+            |existing| pretooluse(existing, "Grep|Bash", "rigger grep-guard"),
             &["PreToolUse", "rigger grep-guard", "\"matcher\": \"Grep|Bash\""],
             &[("rigger grep-guard", 1)],
         );
         spawn_hooks_install_and_are_idempotent: assert_installs_idempotently(
             |existing| {
                 let duty = TreeDuty::Checkpoint { branch: "rigger/u/u".to_string() };
-                install_spawn_hooks(existing, "rigger", "u/i#0", &["/wt".to_string()], "/wt", &duty)
+                let roots = ["/wt".to_string()];
+                install_spawn_hooks(existing, "rigger", "u/i#0", &roots, "/wt", &duty, HookShell::Posix)
             },
             &["PreToolUse", "StopFailure", "'rigger' guard-write --root '/wt'", "\"Stop\""],
             &[
@@ -666,86 +731,247 @@ mod tests {
         assert!(install_no_advisor(b"[]").is_err(), "not an object");
     }
 
-    /// An argument of a hook command stays one word whatever it holds.
+    /// One argument of a hook command as each shell's word: between single quotes, inside which
+    /// neither shell expands `"`, `\`, `$`, a backtick, `;`, `&`, `|` or non-ASCII, with each single
+    /// quote it holds spelled as that shell reads one there. POSIX `sh` closes the quote, escapes
+    /// the `'` and reopens it; PowerShell doubles every character it reads as a single quote, which
+    /// are `'` and U+2018, U+2019, U+201A and U+201B (its own
+    /// `CodeGeneration.EscapeSingleQuotedStringContent` over `CharExtensions.IsSingleQuote`).
     #[test]
-    fn shell_quote_keeps_an_argument_one_word() {
+    fn a_hook_word_is_single_quoted_by_its_shells_rule() {
         let rows = [
-            ("rigger", "'rigger'"),
-            ("/a b/rigger", "'/a b/rigger'"),
-            ("it's", r"'it'\''s'"),
-            ("a'b'c", r"'a'\''b'\''c'"),
-            ("u/implementer#0", "'u/implementer#0'"),
-            ("$HOME;`ls`", "'$HOME;`ls`'"),
-            ("", "''"),
+            ("rigger", "'rigger'", "'rigger'"),
+            ("/a b/rigger", "'/a b/rigger'", "'/a b/rigger'"),
+            ("it's", r"'it'\''s'", "'it''s'"),
+            ("a'b'c", r"'a'\''b'\''c'", "'a''b''c'"),
+            (r#"say "hi""#, r#"'say "hi"'"#, r#"'say "hi"'"#),
+            (
+                r"C:\Program Files\r.exe",
+                r"'C:\Program Files\r.exe'",
+                r"'C:\Program Files\r.exe'",
+            ),
+            (
+                "/wt/\u{fc}ber/\u{65e5}",
+                "'/wt/\u{fc}ber/\u{65e5}'",
+                "'/wt/\u{fc}ber/\u{65e5}'",
+            ),
+            (
+                "\u{2018}a\u{2019} \u{201A}b\u{201B}",
+                "'\u{2018}a\u{2019} \u{201A}b\u{201B}'",
+                "'\u{2018}\u{2018}a\u{2019}\u{2019} \u{201A}\u{201A}b\u{201B}\u{201B}'",
+            ),
+            (
+                "rigger/u/a;b&c$d`e|f",
+                "'rigger/u/a;b&c$d`e|f'",
+                "'rigger/u/a;b&c$d`e|f'",
+            ),
+            ("u/implementer#0", "'u/implementer#0'", "'u/implementer#0'"),
+            ("", "''", "''"),
         ];
         assert_eq!(
-            rows.map(|(arg, _)| shell_quote(arg)),
-            rows.map(|(_, quoted)| quoted)
+            rows.map(|(arg, _, _)| (HookShell::Posix.word(arg), HookShell::PowerShell.word(arg))),
+            rows.map(|(_, posix, powershell)| (posix.to_string(), powershell.to_string()))
         );
     }
 
-    /// A spawn's hooks over a bare and a hostile `rigger_bin`, one and two roots, and each tree
-    /// duty: the whole `PreToolUse`, `StopFailure` and `Stop` arrays, every category in order, on
-    /// the settings kept. Only a spawn with a duty gets the `Stop` hook, with its timeout, asking
-    /// of a checkpointed tree on its branch and of a producer's tree for its own commits.
+    /// Every POSIX hook command a spawn carries, run by a real `sh -c`, runs its program with
+    /// exactly the argv it was built from, whatever the program's path, the spawn, the roots, the
+    /// tree and the branch hold: spaces, single and double quotes, backslashes, non-ASCII, and
+    /// `;`, `&`, `$`, a backtick and `|`. The program is a script printing its argv.
+    #[cfg(unix)]
     #[test]
-    fn spawn_hooks_are_the_write_guard_one_stop_failure_entry_per_category_and_the_stop_check() {
-        let stop = |command: &str| {
-            json!([{
-                "matcher": "",
-                "hooks": [{
-                    "type": "command",
-                    "command": command,
-                    "timeout": STOP_HOOK_TIMEOUT_SECS,
-                }],
-            }])
-        };
+    fn a_posix_hook_command_runs_its_program_with_the_argv_it_was_built_from() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = tempfile::tempdir().unwrap();
+        let bin_dir = scratch.path().join("bin it's \"q\" \\ \u{fc};&$`|");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let bin = bin_dir.join("rigger");
+        std::fs::write(&bin, "#!/bin/sh\nprintf '%s\\0' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = bin.to_str().unwrap();
+        let branch = "rigger/u/a;b&c$d`e|f";
         let rows = [
             (
-                "rigger",
                 "u/implementer#0",
-                vec!["/wt"],
-                (
-                    "/wt",
-                    TreeDuty::Checkpoint {
-                        branch: "rigger/u/u".to_string(),
-                    },
-                ),
-                "'rigger' guard-write --root '/wt'",
-                "'rigger' hook stop-failure --spawn 'u/implementer#0' --class",
-                stop("'rigger' hook stop --spawn 'u/implementer#0' --dir '/wt' --branch 'rigger/u/u'"),
+                vec!["/wt it's"],
+                "/wt it's",
+                TreeDuty::Checkpoint {
+                    branch: branch.to_string(),
+                },
+                vec!["--branch", branch],
             ),
             (
-                "rigger",
-                "plan/implementer#0",
-                vec!["/wt plan"],
-                ("/wt plan", TreeDuty::OwnCommits),
-                "'rigger' guard-write --root '/wt plan'",
-                "'rigger' hook stop-failure --spawn 'plan/implementer#0' --class",
-                stop("'rigger' hook stop --spawn 'plan/implementer#0' --dir '/wt plan' --own-commits"),
-            ),
-            (
-                "/opt/it's here/rigger",
-                "u/reviewer#1",
-                vec!["/wt tree", "/scratch/s"],
-                ("/wt tree", TreeDuty::None),
-                r"'/opt/it'\''s here/rigger' guard-write --root '/wt tree' --root '/scratch/s'",
-                r"'/opt/it'\''s here/rigger' hook stop-failure --spawn 'u/reviewer#1' --class",
-                Value::Null,
+                "plan/\u{fc} \"x\"#0",
+                vec![r"C:\wt\a b", "/scratch/\u{65e5} \u{2019}$HOME"],
+                r"C:\wt\a b",
+                TreeDuty::OwnCommits,
+                vec!["--own-commits"],
             ),
         ];
-        for (bin, spawn, roots, (dir, duty), guard, stop_failure, stop) in rows {
-            let roots: Vec<String> = roots.into_iter().map(str::to_string).collect();
-            let stop_failures: Vec<Value> = crate::agent::AgentFailure::CATEGORIES
+        for (spawn, roots, dir, duty, asks) in rows {
+            let settings: Value = serde_json::from_slice(
+                &install_spawn_hooks(
+                    b"",
+                    bin,
+                    spawn,
+                    &owned(&roots),
+                    dir,
+                    &duty,
+                    HookShell::Posix,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let guard = ["guard-write"]
+                .into_iter()
+                .chain(roots.iter().flat_map(|root| ["--root", *root]));
+            let mut ran = vec![(
+                &settings["hooks"]["PreToolUse"][0],
+                owned(&guard.collect::<Vec<_>>()),
+            )];
+            for (i, category) in AgentFailure::CATEGORIES.iter().enumerate() {
+                let argv = [
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    spawn,
+                    "--class",
+                    category.as_str(),
+                ];
+                ran.push((&settings["hooks"]["StopFailure"][i], owned(&argv)));
+            }
+            let stop = ["hook", "stop", "--spawn", spawn, "--dir", dir]
+                .into_iter()
+                .chain(asks);
+            ran.push((
+                &settings["hooks"]["Stop"][0],
+                owned(&stop.collect::<Vec<_>>()),
+            ));
+            for (block, argv) in ran {
+                let command = block["hooks"][0]["command"].as_str().unwrap();
+                let out = rigger_process::subprocess::shell_command(command, scratch.path())
+                    .output()
+                    .unwrap();
+                assert!(out.status.success(), "{command}: {out:?}");
+                let printed = String::from_utf8(out.stdout).unwrap();
+                assert_eq!(
+                    printed.split_terminator('\0').collect::<Vec<_>>(),
+                    argv,
+                    "{command}"
+                );
+            }
+        }
+    }
+
+    /// `words` as owned strings.
+    fn owned(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    /// A spawn's hooks in each shell over a bare and a hostile `rigger_bin`, one and two roots,
+    /// and each tree duty: the whole `PreToolUse`, `StopFailure` and `Stop` arrays, every category
+    /// in order, on the settings kept. Only a spawn with a duty gets the `Stop` hook, with its
+    /// timeout, asking of a checkpointed tree on its branch and of a producer's tree for its own
+    /// commits. A POSIX entry names no shell, so Claude Code runs it under `sh -c` as before; a
+    /// PowerShell entry names `powershell`, so Claude Code never hands it to Git Bash, and runs
+    /// the quoted program behind the call operator `&`.
+    #[test]
+    fn spawn_hooks_are_the_write_guard_one_stop_failure_entry_per_category_and_the_stop_check() {
+        // The block `hook_block` builds, its inner hook given `timeout` and the shell `field`
+        // names, each where one is named.
+        let entry = |field: Option<&str>, matcher: &str, command: &str, timeout: Option<u32>| {
+            let mut block = hook_block(matcher, command);
+            if let Some(timeout) = timeout {
+                block["hooks"][0]["timeout"] = json!(timeout);
+            }
+            if let Some(field) = field {
+                block["hooks"][0]["shell"] = json!(field);
+            }
+            block
+        };
+        let checkpoint = |branch: &str| TreeDuty::Checkpoint {
+            branch: branch.to_string(),
+        };
+        // A PowerShell spawn on Windows: a program path with a space and a quote, a tree with
+        // non-ASCII, and a branch with every character the POSIX rows guard against and U+2019.
+        let ps = r"& 'C:\Program Files\it''s\rigger.exe'";
+        let ps_guard =
+            format!("{ps} guard-write --root 'C:\\wt\\u \u{fc}' --root 'C:\\scratch\\s'");
+        let ps_stop_failure = format!("{ps} hook stop-failure --spawn 'u/implementer#0' --class");
+        let ps_stop = format!(
+            "{ps} hook stop --spawn 'u/implementer#0' --dir 'C:\\wt\\u \u{fc}' \
+             --branch 'rigger/u/a;b&c$d`e|f\u{2019}\u{2019}'"
+        );
+        let rows = [
+            (
+                (HookShell::Posix, None),
+                ("rigger", "u/implementer#0", vec!["/wt"], "/wt", checkpoint("rigger/u/u")),
+                "'rigger' guard-write --root '/wt'",
+                "'rigger' hook stop-failure --spawn 'u/implementer#0' --class",
+                Some("'rigger' hook stop --spawn 'u/implementer#0' --dir '/wt' --branch 'rigger/u/u'"),
+            ),
+            (
+                (HookShell::Posix, None),
+                ("rigger", "plan/implementer#0", vec!["/wt plan"], "/wt plan", TreeDuty::OwnCommits),
+                "'rigger' guard-write --root '/wt plan'",
+                "'rigger' hook stop-failure --spawn 'plan/implementer#0' --class",
+                Some("'rigger' hook stop --spawn 'plan/implementer#0' --dir '/wt plan' --own-commits"),
+            ),
+            (
+                (HookShell::Posix, None),
+                (
+                    "/opt/it's here/rigger",
+                    "u/reviewer#1",
+                    vec!["/wt tree", "/scratch/s"],
+                    "/wt tree",
+                    TreeDuty::None,
+                ),
+                r"'/opt/it'\''s here/rigger' guard-write --root '/wt tree' --root '/scratch/s'",
+                r"'/opt/it'\''s here/rigger' hook stop-failure --spawn 'u/reviewer#1' --class",
+                None,
+            ),
+            (
+                (HookShell::PowerShell, Some("powershell")),
+                (
+                    r"C:\Program Files\it's\rigger.exe",
+                    "u/implementer#0",
+                    vec!["C:\\wt\\u \u{fc}", r"C:\scratch\s"],
+                    "C:\\wt\\u \u{fc}",
+                    checkpoint("rigger/u/a;b&c$d`e|f\u{2019}"),
+                ),
+                ps_guard.as_str(),
+                ps_stop_failure.as_str(),
+                Some(ps_stop.as_str()),
+            ),
+            (
+                (HookShell::PowerShell, Some("powershell")),
+                ("rigger", "plan/\"x\"#0", vec!["/wt plan"], "/wt plan", TreeDuty::OwnCommits),
+                "& 'rigger' guard-write --root '/wt plan'",
+                "& 'rigger' hook stop-failure --spawn 'plan/\"x\"#0' --class",
+                Some("& 'rigger' hook stop --spawn 'plan/\"x\"#0' --dir '/wt plan' --own-commits"),
+            ),
+        ];
+        for ((shell, field), (bin, spawn, roots, dir, duty), guard, stop_failure, stop) in rows {
+            let stop_failures: Vec<Value> = AgentFailure::CATEGORIES
                 .iter()
                 .map(|category| {
                     let class = category.as_str();
-                    hook_block(class, &format!("{stop_failure} {class}"))
+                    entry(field, class, &format!("{stop_failure} {class}"), None)
                 })
                 .collect();
-            let settings =
-                install_spawn_hooks(br#"{"model":"opus"}"#, bin, spawn, &roots, dir, &duty)
-                    .unwrap();
+            let stop = stop.map_or(Value::Null, |command| {
+                json!([entry(field, "", command, Some(STOP_HOOK_TIMEOUT_SECS))])
+            });
+            let settings = install_spawn_hooks(
+                br#"{"model":"opus"}"#,
+                bin,
+                spawn,
+                &owned(&roots),
+                dir,
+                &duty,
+                shell,
+            )
+            .unwrap();
             assert_eq!(
                 serde_json::from_slice::<Value>(&settings).unwrap()["hooks"]["Stop"],
                 stop,
@@ -757,7 +983,12 @@ mod tests {
                     ("/model", Value::from("opus")),
                     (
                         "/hooks/PreToolUse",
-                        json!([hook_block("Edit|MultiEdit|Write|NotebookEdit", guard)]),
+                        json!([entry(
+                            field,
+                            "Edit|MultiEdit|Write|NotebookEdit",
+                            guard,
+                            None
+                        )]),
                     ),
                     ("/hooks/StopFailure", Value::Array(stop_failures)),
                 ],
@@ -1257,8 +1488,9 @@ mod tests {
     /// Spawn settings that are not a JSON object refuse the merge.
     #[test]
     fn spawn_hooks_refuse_settings_that_are_not_an_object() {
+        let none = TreeDuty::None;
         let refused =
-            install_spawn_hooks(b"[]", "rigger", "u/implementer#0", &[], "", &TreeDuty::None)
+            install_spawn_hooks(b"[]", "rigger", "u/i#0", &[], "", &none, HookShell::HOST)
                 .unwrap_err();
         assert_eq!(
             refused.to_string(),
@@ -1285,7 +1517,7 @@ mod tests {
         /// Both installers merge into the SAME settings.json's "hooks" object (SessionStart vs
         /// PreToolUse) - neither must clobber the other's event key.
         pretooluse_hook_composes_with_the_session_start_hook: assert_settings(
-            install_pretooluse_hook(
+            pretooluse(
                 &install_session_start(b"", "rigger prime").unwrap(),
                 "Grep|Bash",
                 "rigger grep-guard",
@@ -1377,7 +1609,7 @@ mod tests {
                 ]
             }
         }"#;
-        let out = install_pretooluse_hook(existing, "Grep|Bash", "rigger grep-guard").unwrap();
+        let out = pretooluse(existing, "Grep|Bash", "rigger grep-guard").unwrap();
         let v: Value = serde_json::from_slice(&out).unwrap();
         assert_eq!(v["model"], "opus");
         let arr = v["hooks"]["PreToolUse"].as_array().unwrap();

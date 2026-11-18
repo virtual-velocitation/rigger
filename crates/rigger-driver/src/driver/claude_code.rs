@@ -2220,6 +2220,7 @@ pub fn build_args(
             write_roots,
             &opts.dir,
             &opts.tree_duty,
+            hooks::HookShell::HOST,
         ),
         "settings",
     )?;

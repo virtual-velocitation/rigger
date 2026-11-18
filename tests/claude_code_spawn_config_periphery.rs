@@ -147,11 +147,13 @@ fn installed_session_settings(base: &[u8]) -> Value {
 }
 
 /// What a spawn launched in `dir` carries as `--settings`: its per-spawn hooks merged onto `base`
-/// by the same `hooks` installer, under [`installed_session_settings`].
+/// by the same `hooks` installer in this host's shell, under [`installed_session_settings`].
 fn installed_spawn_settings(base: &[u8], dir: &Path) -> Value {
     let roots = [dir.to_str().expect("a utf-8 path").to_string()];
     let none = rigger::conductor::TreeDuty::None;
-    let hooked = hooks::install_spawn_hooks(base, RIGGER_BIN, SPAWN_ID, &roots, "", &none).unwrap();
+    let shell = hooks::HookShell::HOST;
+    let hooked =
+        hooks::install_spawn_hooks(base, RIGGER_BIN, SPAWN_ID, &roots, "", &none, shell).unwrap();
     installed_session_settings(&hooked)
 }
 
