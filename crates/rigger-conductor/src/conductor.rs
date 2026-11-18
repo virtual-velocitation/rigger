@@ -54979,6 +54979,99 @@ mod tests {
         );
     }
 
+    /// A PRODUCER'S REFUSED RECORD COMMITS NOTHING OF ITS TREE: the conductor lands only the
+    /// commits a producer makes, so a refusal of a record its first spawn printed - that spawn
+    /// leaving a leftover outside the stage's output - is charged as a reject with the refusal
+    /// and no checkpoint commit of the tree; the retry commits its plan, the plan lands and the
+    /// leftover reaches no commit.
+    #[test]
+    fn a_producers_refused_record_commits_nothing_of_its_tree_and_the_retry_lands_the_plan() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let (first, retry) = (
+            spawn_id("plan", ROLE_IMPLEMENTER, 0),
+            spawn_id("plan", ROLE_IMPLEMENTER, 1),
+        );
+        let git = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let driver = refusing_at(
+            Stub {
+                write_files_by_spawn_id: HashMap::from([
+                    (first.clone(), vec!["notes.txt".to_string()]),
+                    (retry.clone(), vec!["specs/90-foo.md".to_string()]),
+                ]),
+                git_by_spawn_id: HashMap::from([(
+                    retry.clone(),
+                    vec![
+                        git(&["add", "specs/90-foo.md"]),
+                        git(&["commit", "-q", "-m", "plan"]),
+                    ],
+                )]),
+                ..Stub::new()
+            },
+            &[first],
+            &refused_decision(),
+        );
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        let events = run_log(&st);
+        let failed = payloads_of_type(&events, ledger::TYPE_UNIT_FAILED);
+        assert_eq!(
+            failed
+                .iter()
+                .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
+                .collect::<Vec<_>>(),
+            [(Some(1), Some("reject"))],
+            "the refusal is charged one attempt, as a reject: {failed:?}"
+        );
+        assert!(
+            failed[0]["review_reason"]
+                .as_str()
+                .unwrap_or_default()
+                .contains(REFUSAL),
+            "the charged failure carries the refusal: {failed:?}"
+        );
+        let subjects = trimmed_stdout(&run_git(&repo_path, &["log", "--all", "--format=%s"]));
+        assert!(
+            !subjects.contains("rigger: plan attempt"),
+            "no checkpoint commit is made of a producer's tree: {subjects}"
+        );
+        assert_eq!(
+            trimmed_stdout(&run_git(
+                &repo_path,
+                &["log", "--all", "--format=%H", "--", "notes.txt"]
+            )),
+            "",
+            "the leftover outside the stage's output reaches no commit"
+        );
+        assert_eq!(
+            rs.units["plan"].status,
+            ledger::Status::Integrated,
+            "the retry's plan lands: {failed:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-foo.md")).unwrap(),
+            "work\n",
+            "the retry's plan commit reached the run branch"
+        );
+    }
+
     /// A speculation candidate's sdet author refused on its run and on its re-run loses the
     /// candidate, as a crashed candidate does - a losing candidate has no continuation to carry
     /// a reason into - and the next candidate races on and wins.
