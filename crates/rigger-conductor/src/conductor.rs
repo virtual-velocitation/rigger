@@ -18235,6 +18235,128 @@ mod tests {
         );
     }
 
+    /// A HALTED SPAWN'S TREE GIT REFUSES TO CAPTURE CHARGES NOTHING: when the wip commit of a
+    /// halted spawn's tree is refused (conflict-marker text the spawn left in a file), no commit
+    /// is made and no attempt is charged; the relaunch continues the SAME attempt in that tree,
+    /// its implementer's prompt naming git's refusal on the refusal's own line - neither the
+    /// halted capture's line nor the retry header - and that attempt's own checkpoint commits the
+    /// work once the implementer fixed what git refused.
+    #[test]
+    fn a_halted_spawns_tree_git_refuses_to_capture_charges_nothing_and_its_attempt_goes_on() {
+        const UNIT: &str = "u-halt-refused";
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        // The file is on the unit's branch before the spawn halts, so git's marker guard,
+        // which reads the tracked files a commit would change, sees what the spawn left in it.
+        let scratch = dirty_unit_worktree(&repo_path, UNIT, "halted-work.txt", "base\n");
+        let dir = unit_worktree_dir(&scratch, UNIT);
+        run_git(&dir, &["add", "-A"]);
+        run_git(&dir, &["commit", "-q", "-m", "base"]);
+        std::fs::write(
+            Path::new(&dir).join("halted-work.txt"),
+            "<<<<<<< ours\nmine\n=======\ntheirs\n>>>>>>> theirs\n",
+        )
+        .unwrap();
+        let store = Store::open(":memory:").unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
+        park_implementer(&store, UNIT, 0);
+        let implementer = spawn_id(UNIT, ROLE_IMPLEMENTER, 0);
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            UNIT.into(),
+            Stage {
+                name: UNIT.into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+        // The implementer fixes what git refused: it rewrites the file the markers were in.
+        let driver = Stub {
+            write_files_by_spawn_id: HashMap::from([(
+                implementer.clone(),
+                vec!["halted-work.txt".to_string()],
+            )]),
+            ..Stub::new()
+        };
+        let runner = ExecRunner;
+        let deps = Deps {
+            gates: &runner,
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+
+        let ran = run_isolated(&cfg, &deps);
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let charged = [
+            contextgraph::TYPE_LESSON_LEARNED,
+            ledger::TYPE_UNIT_FAILED,
+            ledger::TYPE_UNIT_ESCALATED,
+        ];
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| charged.contains(&e.type_.as_str()))
+                .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                .collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "the refused capture charges nothing and records no lesson"
+        );
+        let rs = ran.unwrap();
+        assert_eq!(
+            rs.units[UNIT].status,
+            ledger::Status::Verified,
+            "the attempt goes on in the tree and verifies"
+        );
+        let implementers: Vec<String> = driver
+            .spawn_ids
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|id| id.contains(ROLE_IMPLEMENTER))
+            .cloned()
+            .collect();
+        assert_eq!(
+            implementers,
+            [implementer.clone()],
+            "the implementer runs once, on the same attempt"
+        );
+        let prompts = driver.prompts_by_agent.lock().unwrap();
+        let prompt = &prompts["worker"][0];
+        let lead = |template: &str| template.split('{').next().unwrap().to_string();
+        assert!(
+            prompt.contains(&lead(crate::prompt_surface::PRIOR_REFUSED))
+                && prompt.contains("conflict-marker text is present"),
+            "the prompt names git's refusal of the tree: {prompt}"
+        );
+        for line in [
+            lead(crate::prompt_surface::PRIOR_HALTED),
+            crate::prompt_surface::PRIOR_RETRY_HEADER.to_string(),
+        ] {
+            assert!(
+                !prompt.contains(&line),
+                "no capture and no failed check to name ({line:?}): {prompt}"
+            );
+        }
+        let branch = unit_branch(UNIT);
+        let log = run_git(&repo_path, &["log", "--pretty=%s", &branch]);
+        let log = String::from_utf8_lossy(&log.stdout).to_string();
+        assert!(
+            !log.contains("tree of halted spawn"),
+            "the refused capture made no commit: {log}"
+        );
+        let show = run_git(&repo_path, &["show", &format!("{branch}:halted-work.txt")]);
+        assert_eq!(
+            String::from_utf8_lossy(&show.stdout),
+            "work\n",
+            "the attempt's own checkpoint commits the fixed work"
+        );
+    }
+
     /// Leave unit `unit`'s worktree in `repo` DIRTY with `file` = `content`, as an abandoned
     /// edit would; returns the run's scratch root.
     fn dirty_unit_worktree(repo: &str, unit: &str, file: &str, content: &str) -> String {
