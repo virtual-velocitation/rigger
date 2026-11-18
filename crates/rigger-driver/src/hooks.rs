@@ -285,10 +285,28 @@ pub fn install_spawn_hooks(
     let mut merged = install_pretooluse_hook(existing, &write_guard_matcher(), &guard)?;
     for category in AgentFailure::CATEGORIES {
         let class = category.as_str();
-        let command = format!("{bin} hook stop-failure --spawn {spawn} --class {class}");
+        let command = format!("{bin} {}", stop_failure_hook_words(&spawn, class));
         merged = merge_hook_block(&merged, "StopFailure", class, &command)?;
     }
     Ok(merged)
+}
+
+/// The stop-failure hook's command after its binary, for the spawn written as `spawn_word` and
+/// the class `class`: the command [`install_spawn_hooks`] installs and the writer an ordinary end
+/// waits for ([`is_stop_failure_hook`]) are both built here, so the two cannot drift.
+fn stop_failure_hook_words(spawn_word: &str, class: &str) -> String {
+    format!("hook stop-failure --spawn {spawn_word} --class {class}")
+}
+
+/// Whether `command_line`, a process's command line as the OS reports it, is the stop-failure
+/// hook [`install_spawn_hooks`] installs for `spawn`, of any class: the one process that can still
+/// be writing the spawn's record once its session's main has exited. It reads the command as
+/// built, which a shell running the hook carries as its argument, and as that shell hands it on,
+/// each word unquoted. The spawn's MCP server, which names the spawn too, is no writer.
+pub fn is_stop_failure_hook(command_line: &str, spawn: &str) -> bool {
+    [shell_quote(spawn), spawn.to_string()]
+        .iter()
+        .any(|word| command_line.contains(&stop_failure_hook_words(word, "")))
 }
 
 /// `arg` as one POSIX shell word: each `'` it holds closes the quote, is escaped and reopens it.
@@ -691,6 +709,53 @@ mod tests {
                     ),
                     ("/hooks/StopFailure", Value::Array(stop_failures)),
                 ],
+            );
+        }
+    }
+
+    /// Each stop-failure command a spawn's hooks install, for a bare and a hostile binary and
+    /// spawn, is the hook for its spawn as the OS reports a process running it: as the shell that
+    /// runs the command carries it, and as that shell hands it on with each word unquoted. The
+    /// spawn's MCP server, a hook for a spawn that merely starts with the spawn, a hook for another
+    /// spawn and the write guard are not.
+    #[test]
+    fn the_writer_an_end_waits_for_is_the_stop_failure_hook_installed_for_its_spawn() {
+        for (bin, spawn) in [
+            ("rigger", "u/implementer#0"),
+            ("/opt/it's here/rigger", "u/a b'c#1"),
+        ] {
+            let settings: Value =
+                serde_json::from_slice(&install_spawn_hooks(b"", bin, spawn, &[]).unwrap())
+                    .unwrap();
+            let commands: Vec<&str> = settings["hooks"]["StopFailure"]
+                .as_array()
+                .expect("the StopFailure array")
+                .iter()
+                .filter_map(|block| block["hooks"][0]["command"].as_str())
+                .collect();
+            assert_eq!(commands.len(), crate::agent::AgentFailure::CATEGORIES.len());
+            for command in commands {
+                let unquoted = command
+                    .replace(r"'\''", "\0")
+                    .replace('\'', "")
+                    .replace('\0', "'");
+                for line in [format!("/bin/sh -c {command}"), unquoted] {
+                    assert!(
+                        is_stop_failure_hook(&line, spawn),
+                        "{line:?} is the hook for {spawn:?}"
+                    );
+                }
+            }
+        }
+        for line in [
+            "rigger mcp --spawn u/implementer#0",
+            "rigger hook stop-failure --spawn u/implementer#01 --class rate_limit",
+            "rigger hook stop-failure --spawn u/reviewer#1 --class rate_limit",
+            "rigger guard-write --root /wt",
+        ] {
+            assert!(
+                !is_stop_failure_hook(line, "u/implementer#0"),
+                "{line:?} is no hook for u/implementer#0"
             );
         }
     }

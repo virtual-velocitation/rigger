@@ -443,19 +443,20 @@ impl ReapedChild {
 
     /// Finishes with a tree its host is done reading by ending it ([`ReapedChild::end`]), whether
     /// its main has exited or still runs, so nothing the session started outlives it. Where the
-    /// main has exited and `writing` names the session's spawn, the end first waits, for at most
-    /// [`crate::reap::END_BOUND`], while a process it would reach names that spawn on its command
-    /// line, so a hook still writing the spawn's record finishes before the end; a main that
+    /// main has exited and a `writer` is given, the end first waits, for at most
+    /// [`crate::reap::END_BOUND`], while a process it would reach is a writer: one whose command
+    /// line ([`os_process::command_line`]) `writer` accepts, as the host's hook still writing the
+    /// spawn's record is, so that write finishes before the end; a main that
     /// still runs is ended at once with all it started, as a stop ends it. A watched tree whose
     /// main has exited signals nothing, and answers what the main left running as never
     /// signalled ([`crate::reap::end_watched`]). Answers what the end left, and in
     /// [`EndReport::ended`] each process it found running besides the main, named before the end,
     /// that is gone after it and that the end neither left as residue nor skipped.
-    pub fn finish(mut self, writing: Option<&str>) -> EndReport {
-        if let Some(spawn) = writing {
+    pub fn finish(mut self, writer: Option<&dyn Fn(&str) -> bool>) -> EndReport {
+        if let Some(writer) = writer {
             if matches!(self.try_wait(), Ok(Some(_))) {
                 reap::poll_until(std::time::Instant::now() + reap::END_BOUND, || {
-                    !names_the_spawn(&self.hold.members(&mut self.child), spawn)
+                    !runs_a_writer(&self.hold.members(&mut self.child), writer)
                 });
             }
         }
@@ -483,17 +484,17 @@ impl ReapedChild {
 
     /// Waits for the main process to exit and answers its status and all of its output, as
     /// [`Child::wait_with_output`] does: its input is closed first, and each output pipe is read
-    /// to its end on a thread of its own. Once the main exits the tree is finished for the spawn
-    /// `writing` ([`ReapedChild::finish`]) before the pipes are read to their end, so a process
+    /// to its end on a thread of its own. Once the main exits the tree is finished, for no writer
+    /// ([`ReapedChild::finish`]), before the pipes are read to their end, so a process
     /// the main left holding an output pipe is ended rather than waited for; one the finish never
     /// signalled, or could not end, holds this read until it exits, as it holds
     /// `Child::wait_with_output`'s. Answers the output and what the finish ended and left. A wait
     /// that fails ends the tree.
-    pub fn wait_with_output(mut self, writing: Option<&str>) -> io::Result<(Output, EndReport)> {
+    pub fn wait_with_output(mut self) -> io::Result<(Output, EndReport)> {
         let stdout = self.take_stdout().map(read_to_end);
         let stderr = self.take_stderr().map(read_to_end);
         let status = self.wait()?;
-        let report = self.finish(writing);
+        let report = self.finish(None);
         let output = Output {
             status,
             stdout: joined(stdout)?,
@@ -503,13 +504,13 @@ impl ReapedChild {
     }
 }
 
-/// Whether a process among `members` names the spawn `spawn` on its command line
-/// ([`os_process::command_line`]), as a hook still writing that spawn's record does. A command
-/// line that cannot be read names nothing.
-fn names_the_spawn(members: &[Identity], spawn: &str) -> bool {
+/// Whether a process among `members` is a writer: one whose command line
+/// ([`os_process::command_line`]) `writer` accepts. A command line that cannot be read is no
+/// writer's.
+fn runs_a_writer(members: &[Identity], writer: &dyn Fn(&str) -> bool) -> bool {
     members
         .iter()
-        .any(|member| os_process::command_line(member.pid).is_some_and(|line| line.contains(spawn)))
+        .any(|member| os_process::command_line(member.pid).is_some_and(|line| writer(&line)))
 }
 
 /// Reads `pipe` to its end on a thread of its own.
@@ -690,7 +691,7 @@ mod tests {
         assert_eq!(witness.release(), Reading::Ended);
     }
 
-    /// A watched tree running `body`, finished for the spawn `writing` once `up` of its
+    /// A watched tree running `body`, finished for the `writer` given once `up` of its
     /// processes are up and, where `exited`, once its main has exited, leaves the witness reading
     /// `left`, reports `ended` processes it ended besides the main and `skipped` it found and
     /// never signalled, leaves nothing it signalled running, and never waits out the writers'
@@ -699,7 +700,7 @@ mod tests {
         body: &str,
         up: usize,
         exited: bool,
-        writing: Option<&str>,
+        writer: Option<&dyn Fn(&str) -> bool>,
         left: Reading,
         ended: usize,
         skipped: usize,
@@ -716,7 +717,7 @@ mod tests {
 
         let started = std::time::Instant::now();
 
-        let report = tree.finish(writing);
+        let report = tree.finish(writer);
 
         let elapsed = started.elapsed();
         assert!(
@@ -743,12 +744,12 @@ mod tests {
         a_finished_tree_whose_main_runs_is_ended:
             finishes("holder; up; held", 2, false, None, Reading::Ended, 1, 0);
         // A watched end signals nothing once the main has exited, so it waits for no writer.
-        a_finished_tree_whose_main_exited_waits_for_no_process_naming_its_spawn:
+        a_finished_tree_whose_main_exited_waits_for_no_writer:
             finishes(
                 "sh -c \"$witness_up; $witness_held\" u-late-writer & up; sleep 1",
                 2,
                 true,
-                Some("u-late-writer"),
+                Some(&|line: &str| line.contains("u-late-writer")),
                 Reading::Held,
                 0,
                 1,

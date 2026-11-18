@@ -518,8 +518,9 @@ mod tests {
         assert!(ends(&lines), "nothing the tree started holds its output");
     }
 
-    // The writer names the spawn on its command line and writes its line two seconds after the
-    // main has exited, once its ping ends: the line is read only if the finish waited for it.
+    // The writer is the process whose command line names `u-late-writer`, and it writes its line
+    // two seconds after the main has exited, once its ping ends: the line is read only if the
+    // finish waited for it.
     #[test]
     fn a_jobbed_finish_waits_for_a_writer_its_exited_main_left() {
         let (mut tree, lines) = jobbed(
@@ -535,7 +536,7 @@ mod tests {
             "the main exits on its own"
         );
 
-        let report = tree.finish(Some("u-late-writer"));
+        let report = tree.finish(Some(&|line: &str| line.contains("u-late-writer")));
 
         assert_eq!(report, EndReport::default());
         assert!(read_until(&lines, "written"), "the writer wrote its line");
@@ -555,9 +556,7 @@ mod tests {
         assert_eq!(tree.degraded(), None, "the tree is held in a job");
         let started = Instant::now();
 
-        let (output, report) = tree
-            .wait_with_output(Some("u-late-writer"))
-            .expect("wait for the output");
+        let (output, report) = tree.wait_with_output().expect("wait for the output");
 
         let elapsed = started.elapsed();
         assert!(elapsed < BOUND, "the wait took {elapsed:?}");

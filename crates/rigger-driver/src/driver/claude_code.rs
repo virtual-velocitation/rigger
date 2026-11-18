@@ -1007,10 +1007,11 @@ impl Driver<'_> {
 
         // Finish with the tree through the ONE canonical mechanism, on every exit path alike,
         // right here rather than at the function's end: the join just below depends on the
-        // child's stderr pipe having already closed. An end reports what it left. A process
-        // still writing this spawn's record past the main's exit, a StopFailure hook, finishes
-        // its write first (`ReapedChild::finish`).
-        self.record_end(opts, &reaper.finish(Some(&opts.id)));
+        // child's stderr pipe having already closed. An end reports what it left. The spawn's
+        // StopFailure hook, still writing its record past the main's exit, finishes its write
+        // first (`ReapedChild::finish`); no other process is waited for.
+        let writer = |line: &str| hooks::is_stop_failure_hook(line, &opts.id);
+        self.record_end(opts, &reaper.finish(Some(&writer)));
         // A process the end left running, or one that left the tree before a watch saw it,
         // can hold a copy of either pipe's write end open regardless, so both joins below are
         // bounded ([`Driver::join_within`]) rather than a bare `join()` that could wait on such a

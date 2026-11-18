@@ -109,7 +109,8 @@ impl Driver {
                 let _ = stdin.write_all(framed.as_bytes());
             })
         });
-        let waited = child.wait_with_output(Some(&opts.id));
+        // This host installs no hook, so the end waits for no writer.
+        let waited = child.wait_with_output();
         if let Some(writer) = writer {
             let _ = writer.join();
         }

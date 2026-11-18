@@ -218,7 +218,7 @@ const ALLOW_LIST: &[Allowed] = &[
     (
         "crates/rigger-driver/src/hooks.rs",
         OperatorMessage,
-        &["{bin} hook stop-failure --spawn {spawn} --class {class}"],
+        &["hook stop-failure --spawn {spawn_word} --class {class}"],
     ),
     (
         "src/cli/critique.rs",

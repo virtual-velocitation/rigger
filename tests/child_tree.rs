@@ -1,8 +1,8 @@
 //! Table B2: a tree held by the Linux keeper, the built binary re-run as `rigger-keeper`
 //! (`crates/rigger-process/src/child_tree/linux.rs`). The handle answers the main's pid and its
 //! exact status; an end, a finish, a drop and a TERM to the keeper each leave nothing the tree
-//! started running; a finish after the main's exit first waits, to a bound, for a process naming
-//! the session's spawn; a wait for the main's output ends, once the main exits, what it left
+//! started running; a finish after the main's exit first waits, to a bound, for the session's
+//! stop-failure hook; a wait for the main's output ends, once the main exits, what it left
 //! holding that output; a daemon one session started ends with it under the keeper, so a sibling
 //! session waiting on its answer sees the answers end and its next request fail, and runs on, while
 //! a watched session's exited main leaves it running; the keeper holds none of the session's
@@ -215,9 +215,14 @@ rigger::test_cases! {
         ends_the_tree("holder; up", 2, after_the_main_exits, by_the_finish, 1);
 }
 
-/// The spawn the writer rows finish their tree for. A writer names it on its command line as its
-/// shell's `$0`, as a hook names its spawn in its arguments.
+/// The spawn the writer rows finish their tree for. A writer carries the stop-failure hook's words
+/// for it as its shell's arguments, as the hook does.
 const SPAWN: &str = "u-late-writer";
+
+/// Whether `line` is the stop-failure hook of [`SPAWN`], the one writer a finish for it waits for.
+fn the_hook(line: &str) -> bool {
+    rigger::hooks::is_stop_failure_hook(line, SPAWN)
+}
 
 /// The kept fixture `body`, with `up` of its processes up and, where `exited`, its main exited,
 /// finished for [`SPAWN`]: once the finish answers, `ups` of the fixture's processes have written
@@ -239,7 +244,7 @@ fn finishes_for_the_spawn(
     }
     let started = Instant::now();
 
-    let report = tree.finish(Some(SPAWN));
+    let report = tree.finish(Some(&the_hook));
 
     let elapsed = started.elapsed();
     assert_eq!(
@@ -263,7 +268,7 @@ rigger::test_cases! {
     // if the finish waited for it, and the finish has nothing left to end.
     a_kept_finish_waits_for_a_writer_its_exited_main_left:
         finishes_for_the_spawn(
-            "sh -c 'sleep 1; printf u >&9' u-late-writer & up",
+            "sh -c 'sleep 1; printf u >&9' hook stop-failure --spawn u-late-writer --class x & up",
             1,
             true,
             2,
@@ -272,7 +277,8 @@ rigger::test_cases! {
         );
     a_kept_finish_ends_a_writer_still_running_at_its_bound:
         finishes_for_the_spawn(
-            "sh -c \"$witness_up; $witness_held\" u-late-writer & up",
+            "sh -c \"$witness_up; $witness_held\" hook stop-failure --spawn u-late-writer --class x \
+             & up",
             2,
             true,
             2,
@@ -281,16 +287,27 @@ rigger::test_cases! {
         );
     a_kept_finish_waits_for_no_writer_while_its_main_runs:
         finishes_for_the_spawn(
-            "sh -c \"$witness_up; $witness_held\" u-late-writer & up; held",
+            "sh -c \"$witness_up; $witness_held\" hook stop-failure --spawn u-late-writer --class x \
+             & up; held",
             2,
             false,
             2,
             Duration::ZERO..END_BOUND,
             1,
         );
-    a_kept_finish_waits_for_no_process_naming_another_spawn:
+    a_kept_finish_waits_for_no_hook_of_another_spawn:
         finishes_for_the_spawn(
-            "sh -c \"$witness_up; $witness_held\" u-other & up",
+            "sh -c \"$witness_up; $witness_held\" hook stop-failure --spawn u-other --class x & up",
+            2,
+            true,
+            2,
+            Duration::ZERO..END_BOUND,
+            1,
+        );
+    // The spawn's own MCP server names the spawn too, and is no writer.
+    a_kept_finish_waits_for_no_mcp_server_of_its_spawn:
+        finishes_for_the_spawn(
+            "sh -c \"$witness_up; $witness_held\" rigger mcp --spawn u-late-writer & up",
             2,
             true,
             2,
@@ -308,7 +325,7 @@ fn a_kept_wait_for_the_output_ends_what_the_main_left_holding_it() {
     assert!(witness.wait_up(2), "the holder and the main are up");
     let (answer, answered) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = answer.send(tree.wait_with_output(Some(SPAWN)));
+        let _ = answer.send(tree.wait_with_output());
     });
 
     let waited = answered.recv_timeout(END_BOUND);
@@ -376,7 +393,7 @@ fn a_sibling_using_a_daemon_the_session_started(
     );
     a.wait().expect("wait on A's main");
 
-    let report = a.finish(Some(SPAWN));
+    let report = a.finish(Some(&the_hook));
 
     assert_eq!(
         (
