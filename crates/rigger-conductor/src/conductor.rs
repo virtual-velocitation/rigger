@@ -50863,7 +50863,9 @@ stage "implement" adjudicator "adj" failed
     /// spends the unit's retry bound keeps its tree and then fails to record its charge on a
     /// store fault, which holds the run uncharged. Released and relaunched with the hook still
     /// refusing, the attempt runs again from the unit's branch, which the keep never moved, so
-    /// git's refusal is met again: the work git refused never reaches the run branch.
+    /// git's refusal is met again and charged once, the unit escalating, and the repeated keep
+    /// keeps the commit it already holds: the work git refused never reaches the run branch, and
+    /// no second copy of the kept tree stands aside.
     #[test]
     #[cfg(unix)]
     fn a_fault_between_the_keep_and_the_charge_lands_nothing_git_refused() {
@@ -50894,6 +50896,7 @@ stage "implement" adjudicator "adj" failed
             run_isolated(&cfg, &faulty).is_err(),
             "the store fault recording the bound's charge ends the drive"
         );
+        let kept = git_out(&repo_path, &["rev-parse", "rigger/kept/unit-a"]);
         assert!(
             release_the_hold(&deps),
             "the store fault's hold is released"
@@ -50901,12 +50904,34 @@ stage "implement" adjudicator "adj" failed
 
         let relaunched = run_isolated(&cfg, &deps);
 
+        let state = match relaunched {
+            Ok(state) => state,
+            Err(e) => panic!(
+                "the relaunch escalates the unit, the drive going on: {}",
+                e.0
+            ),
+        };
+        assert_eq!(state.units["unit-a"].status, ledger::Status::Escalated);
         let events = run_log(&store);
+        assert_eq!(
+            payloads_of_type(&events, ledger::TYPE_UNIT_FAILED)
+                .iter()
+                .map(|f| (f["attempts"].clone(), f["cause"].clone()))
+                .collect::<Vec<_>>(),
+            (1..=3)
+                .map(|n| (json!(n), json!(CAUSE_GIT_REFUSED)))
+                .collect::<Vec<_>>(),
+            "each refused attempt is charged once"
+        );
         assert_eq!(
             payloads_of_type(&events, ledger::TYPE_UNIT_INTEGRATED),
             Vec::<Value>::new(),
-            "the unit never lands: {:?}",
-            relaunched.err()
+            "the unit never lands"
+        );
+        assert_eq!(
+            crate::worktree::held_refs(&repo_path).unwrap(),
+            [("rigger/kept/unit-a".to_string(), kept)],
+            "the repeated keep keeps the commit it already holds, and nothing stands aside"
         );
         assert!(
             !repo.path().join("kept.txt").exists(),
@@ -50981,15 +51006,78 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
-    /// A QUARANTINE REF REAPED IS ADOPTED AT THE TIP ITS RECORD NAMES: branch collection reaps
-    /// a quarantine ref once HEAD's history holds its tip, so a later unit serving that
-    /// criterion adopts the tip the quarantine record names, which HEAD holds, and the run
-    /// goes on rather than holding on the ref's absence.
+    /// A KEPT REF WITH NO BRANCH BESIDE IT IS SET ASIDE BEFORE A UNIT OF ITS NAME STARTS: a unit
+    /// whose branch was removed by hand leaves its kept ref with no lineage to continue it, so a
+    /// later unit of the same name, which starts off HEAD, sets that kept ref aside under the
+    /// quarantine namespace first; its integration then reaps only its own, and the commit the
+    /// earlier unit's lesson names still stands.
     #[test]
-    fn a_reaped_quarantine_is_adopted_at_the_tip_its_record_names() {
+    fn a_kept_ref_with_no_branch_is_set_aside_before_a_unit_of_its_name_starts() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let earlier = git_out(
+            &repo_path,
+            &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "kept"],
+        );
+        git_out(
+            &repo_path,
+            &["update-ref", "refs/heads/rigger/kept/unit-a", &earlier],
+        );
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+
+        let state = match run_isolated(&cfg, &deps) {
+            Ok(state) => state,
+            Err(e) => panic!("the unit runs to integration: {}", e.0),
+        };
+
+        assert_eq!(state.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(
+            crate::worktree::held_refs(&repo_path).unwrap(),
+            [(
+                format!("rigger/orphaned/unit-a-{}", &earlier[..12]),
+                earlier
+            )],
+            "the earlier kept ref stands aside, and no kept ref is left"
+        );
+    }
+
+    /// A QUARANTINE REF REAPED LEAVES NOTHING TO ADOPT: branch collection reaps a quarantine ref
+    /// once HEAD's history holds its tip, so every commit the quarantine record names is HEAD's
+    /// already. A later unit serving that criterion adopts nothing and starts off HEAD, as the
+    /// quarantine's own NOTHING TO MOVE rule starts a unit, rather than holding on the ref's
+    /// absence or building on the stale tip: its tree holds what HEAD gained since that tip.
+    #[test]
+    fn a_reaped_quarantine_leaves_nothing_to_adopt() {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let head = git_out(&repo_path, &["rev-parse", "HEAD"]);
+        std::fs::write(repo.path().join("later.txt"), "later\n").unwrap();
+        git_out(&repo_path, &["add", "later.txt"]);
+        git_out(
+            &repo_path,
+            &["commit", "-qm", "HEAD moves past the quarantined tip"],
+        );
         let store = Store::open(":memory:").unwrap();
         let quarantined = Event::new(
             ledger::TYPE_UNIT_STATUS,
@@ -51012,7 +51100,9 @@ stage "implement" adjudicator "adj" failed
         );
         let mut cfg = Config::default();
         cfg.agents.insert("worker".into(), agent("worker"));
-        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow
+            .gates
+            .insert("g".into(), gate_def("test -f later.txt"));
         cfg.workflow.stages.insert(
             "unit-a".into(),
             Stage {
@@ -51035,19 +51125,22 @@ stage "implement" adjudicator "adj" failed
 
         let state = match run_isolated(&cfg, &deps) {
             Ok(state) => state,
-            Err(e) => panic!("the reaped quarantine is adopted, never held on: {}", e.0),
+            Err(e) => panic!("the reaped quarantine is never held on: {}", e.0),
         };
         let events = run_log(&store);
-        let adopted = payloads_of_type(&events, ledger::TYPE_UNIT_STATUS)
-            .into_iter()
-            .find(|v| v["id"] == "unit-a" && v["status"] == STATUS_ADOPTION_RECORDED)
-            .expect("the adoption is recorded");
         assert_eq!(
-            adopted["adopted_from"],
-            json!({"unit": "unit-old", "tip": head, "spec": ""}),
-            "adopted at the tip the quarantine record names"
+            payloads_of_type(&events, ledger::TYPE_UNIT_STATUS)
+                .into_iter()
+                .filter(|v| v["status"] == STATUS_ADOPTION_RECORDED)
+                .collect::<Vec<_>>(),
+            Vec::<Value>::new(),
+            "nothing is adopted"
         );
-        assert_eq!(state.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(
+            state.units["unit-a"].status,
+            ledger::Status::Integrated,
+            "the unit starts off HEAD, its gate finding what HEAD gained"
+        );
     }
 
     #[test]

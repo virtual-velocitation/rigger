@@ -8491,6 +8491,130 @@ mod tests {
         wt.remove().unwrap();
     }
 
+    /// A REPEATED KEEP OF THE SAME TREE KEEPS THE SAME COMMIT: a keep made again over the tree an
+    /// earlier keep already holds, on the same HEAD (a drive cut off between the keep and its
+    /// charge, then relaunched), answers the commit the kept ref holds, whenever that commit was
+    /// made, and sets nothing aside, so no copy stands where no reaper reaches it.
+    #[test]
+    fn a_repeated_keep_of_the_same_tree_keeps_the_same_commit() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (dir, wt) = unit_wt(&repo_path, &root, "unit-twice");
+        std::fs::write(std::path::Path::new(&dir).join("work.txt"), "work\n").unwrap();
+        let (kept, first) = keep_aside(&wt).expect("the tree is kept");
+        let tree = run_git(&repo_path, &["rev-parse", &format!("{first}^{{tree}}")]).unwrap();
+        let parent = run_git(&repo_path, &["rev-parse", &format!("{first}^")]).unwrap();
+        let earlier = std::process::Command::new("git")
+            .current_dir(&repo_path)
+            .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00Z")
+            .env("GIT_COMMITTER_DATE", "2001-01-01T00:00:00Z")
+            .args([
+                "commit-tree",
+                tree.trim(),
+                "-p",
+                parent.trim(),
+                "-m",
+                "kept",
+            ])
+            .output()
+            .unwrap();
+        let earlier = String::from_utf8(earlier.stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+        assert_ne!(
+            earlier, first,
+            "premise: the planted keep is another commit"
+        );
+        run_git(
+            &repo_path,
+            &["update-ref", &format!("refs/heads/{kept}"), &earlier],
+        )
+        .unwrap();
+
+        assert_eq!(
+            keep_aside(&wt),
+            Some((kept.clone(), earlier.clone())),
+            "the repeated keep answers the commit the kept ref holds"
+        );
+        assert_eq!(
+            held_refs(&repo_path).unwrap(),
+            [(kept, earlier)],
+            "nothing is set aside"
+        );
+        wt.remove().unwrap();
+    }
+
+    /// A HELD REF CHECKED OUT IS NEVER MOVED OR DELETED: while a worktree has a kept ref checked
+    /// out (a person inspecting a kept tree, in a tree of their own or the repository's own
+    /// checkout), a new keep lands aside under its own name, setting it aside copies it, and
+    /// neither the unit's integration nor branch collection removes it, so the person's
+    /// checkout keeps the branch it stands on.
+    #[test]
+    fn a_held_ref_checked_out_is_never_moved_or_deleted() {
+        const KEPT: &str = "rigger/kept/unit-look";
+        const BRANCH: &str = "rigger/u/unit-look";
+        // Each row: where the person checks the kept ref out (given the repo and a spare dir),
+        // answering that checkout's dir.
+        type Row = (&'static str, fn(&str, &str) -> String);
+        let cases: [Row; 2] = [
+            ("a tree of the person's own", |repo, spare| {
+                run_git(repo, &["worktree", "add", "-q", spare, KEPT]).unwrap();
+                spare.to_string()
+            }),
+            ("the repository's own checkout", |repo, _| {
+                run_git(repo, &["checkout", "-q", KEPT]).unwrap();
+                repo.to_string()
+            }),
+        ];
+        for (row, check_out) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-look");
+            std::fs::write(std::path::Path::new(&dir).join("one.txt"), "one\n").unwrap();
+            let (_, looked_at) = keep_aside(&wt).expect("the tree is kept");
+            let spare = tempfile::tempdir().unwrap();
+            let spare = spare.path().join("look");
+            let at = check_out(&repo_path, spare.to_str().unwrap());
+            let stands = |what: &str| {
+                assert_eq!(
+                    run_git(&at, &["symbolic-ref", "HEAD"]).unwrap().trim(),
+                    format!("refs/heads/{KEPT}"),
+                    "{row}, {what}: the checkout stands on the kept ref"
+                );
+                assert_eq!(
+                    run_git(&repo_path, &["rev-parse", KEPT]).unwrap().trim(),
+                    looked_at,
+                    "{row}, {what}: the kept ref holds the commit checked out"
+                );
+            };
+
+            std::fs::write(std::path::Path::new(&dir).join("two.txt"), "two\n").unwrap();
+            let (landed, again) = keep_aside(&wt).expect("the second tree is kept");
+            stands("after a second keep");
+            assert_eq!(
+                landed,
+                orphaned_ref("unit-look", &again),
+                "{row}: the second keep lands aside under its own name"
+            );
+            assert_eq!(
+                run_git(&repo_path, &["rev-parse", &landed]).unwrap().trim(),
+                again,
+                "{row}: the second keep's ref holds it"
+            );
+            let aside = set_kept_aside(&repo_path, BRANCH).unwrap();
+            stands("after setting it aside");
+            assert_eq!(
+                aside,
+                Some(orphaned_ref("unit-look", &looked_at)),
+                "{row}: setting it aside copies it"
+            );
+            delete_kept(&repo_path, BRANCH).unwrap();
+            stands("after the unit's integration");
+            reap_held_refs(&repo_path, KEPT).unwrap();
+            stands("after branch collection");
+            wt.remove().unwrap();
+        }
+    }
+
     /// A MERGE KEPT ASIDE IS STILL A CONFLICT: a tree kept while its merge of the run branch stood
     /// conflicted leaves the unit's branch without that merge, so the tree recreated from the
     /// branch meets the same conflict when it merges again, and both marker checks still refuse
