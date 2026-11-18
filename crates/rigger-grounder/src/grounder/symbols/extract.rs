@@ -310,7 +310,8 @@ enum Capture {
 
 /// What a tagged node is, by the suffix of the capture tagging it: a definition of the kind a
 /// `@definition.<kind>` suffix names ([`kind_of`]), or a reference of the kind a
-/// `@reference.<kind>` suffix names ([`ref_kind_of`]), `None` for a call.
+/// `@reference.<kind>` suffix names ([`ref_kind_of`]), `None` for a call, a `@reference.class`
+/// capture on a constructor node kind included ([`Capture::Class`]).
 #[derive(Clone, Copy)]
 enum TagRole {
     Definition(Kind),
