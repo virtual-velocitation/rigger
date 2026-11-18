@@ -48699,9 +48699,10 @@ stage "implement" adjudicator "adj" failed
 
     /// A FAULT MET AGAIN READS THE SAME FIRST LINE: every halt a conductor fault ends the drive
     /// with names what failed on its first line and what varied between two occurrences of it - a
-    /// spawn id, a spawn's output, an error's own words, a count - on the lines below. So the same
-    /// fault met again after a release holds the run for a person, however its per-occurrence
-    /// text differs, and a different fault of the same class holds it for the orchestrator.
+    /// spawn id, a spawn's output, an error's own words, a count, a revision - on the lines below.
+    /// So the same fault met again after a release holds the run for a person, however its
+    /// per-occurrence text differs, and a different fault of the same class holds it for the
+    /// orchestrator.
     #[test]
     fn a_fault_met_again_after_a_release_reads_the_same_first_line() {
         let probe = |guard: &str, error: &str| {
@@ -48718,6 +48719,20 @@ stage "implement" adjudicator "adj" failed
         };
         let verdictless = |stage: &str, id: &str, output: &str| {
             verdictless_reviewer(stage, "adjudicator", "adj", id, output)
+        };
+        let conflict = |stream: &str, expected: i64, actual: i64| {
+            infra_fault(crate::eventstore::Error::Conflict {
+                stream: stream.into(),
+                expected: crate::eventstore::ExpectedRevision::Exact(expected),
+                actual,
+            })
+        };
+        let stale = |stream: &str, attempted: i64, recorded: i64| {
+            infra_fault(crate::eventstore::Error::OutOfOrder {
+                stream: stream.into(),
+                attempted,
+                recorded,
+            })
         };
         let guard = "/scratch/cargo-target.lock";
         let unlockable = "Operation not supported (os error 95)";
@@ -48821,6 +48836,30 @@ stage "implement" adjudicator "adj" failed
                 keyed_events_lost(1, 3),
                 keyed_events_lost(2, 5),
                 true,
+            ),
+            (
+                "a store conflict on the same stream at other revisions",
+                conflict("run", 3, 5),
+                conflict("run", 8, 9),
+                true,
+            ),
+            (
+                "a store conflict on another stream",
+                conflict("run", 3, 5),
+                conflict("unit", 3, 5),
+                false,
+            ),
+            (
+                "a stale writer refused on the same stream at other revisions",
+                stale("run", 4, 6),
+                stale("run", 9, 11),
+                true,
+            ),
+            (
+                "a stale writer refused on another stream",
+                stale("run", 4, 6),
+                stale("unit", 4, 6),
+                false,
             ),
             (
                 "a guard's probe failing with the same OS error",
