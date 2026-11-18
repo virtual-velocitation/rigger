@@ -7071,32 +7071,34 @@ impl RunCtx<'_> {
         // unit's durable branch, before anything else touches the tree, so it is
         // never silently discarded and never silently blended into a LATER,
         // unrelated attempt's own checkpoint commit as if it were that attempt's
-        // work. `Worktree::commit` is the single shared authority that refuses
-        // (a halt through `git_step`, no attempt charged) a tree that instead
-        // carries an in-progress merge/cherry-pick or literal conflict-marker text -
-        // never staged as if resolved (the other half of this criterion). A no-op
-        // ("nothing to commit") on the overwhelmingly common clean tree, exactly like
+        // work. The checkpoint's own guard (`commit_refusal`) refuses the capture when the
+        // HEAD is off the unit's branch or conflict-marker text sits in a changed tracked
+        // file, so such a tree is never staged as if resolved (the other half of this
+        // criterion). A halt is infrastructure, never the unit's failure, so that refusal
+        // charges no attempt: the tree stays as it is and the same attempt goes on in it,
+        // its implementer's prompt naming git's refusal. A capture git cannot answer (a
+        // lock, a corrupt object) is a held fault through `git_step`, also uncharged. A
+        // no-op ("nothing to commit") on the overwhelmingly common clean tree, exactly like
         // the ordinary per-attempt checkpoint's own unconditional call below.
         //
         // Skipped entirely while a merge is ALREADY in progress here (round 2 fix, spec 89
         // criterion 1 - arch-u89c1-halted-commit-guard-preempts-resumed-conflict-idempotency /
         // adv-u89c1-conflict-idempotency-preemption-empirically-confirmed): `merge_in_progress`
-        // is true ONLY when a PRIOR `integrate_and_emit` call already ran `merge_into_worktree`
-        // on this exact worktree and left it mid-merge (a genuine, still-unresolved content
-        // conflict, or the narrow crash window right before its own finalize commit) - never an
-        // ordinary implementer's abandoned edit, which never starts a git merge at all. That
-        // state belongs entirely to `merge_into_worktree`'s OWN crash-resume idempotency (spec
-        // 88, criterion 1): it reads the worktree's already-recorded conflict list back
-        // (`conflicting_paths`) rather than re-attempting the merge command, reachable ONLY
-        // through the `ResumePhase::Reviewed` branch just below (the sole phase that means
-        // "already approved - only the merge could still be running": an adjudicator's
-        // `reviewed`, or a stage carrying no review whose log records an integrate attempt at
-        // its current attempt). Calling
-        // `commit` unconditionally here first - BEFORE that branch ever runs - trips its
-        // conflict-marker refusal on the merge's own still-unresolved marker text (correct
-        // for an abandoned edit, but a false alarm for a legitimate in-progress merge) and
-        // turns a resumable state into a hard, no-attempt-charged error instead of ever
-        // reaching the idempotent path built to handle exactly this.
+        // is true only when a PRIOR `integrate_and_emit` call already ran `merge_into_worktree`
+        // on this exact worktree and left it mid-merge - never an ordinary implementer's
+        // abandoned edit, which never starts a git merge at all. Two phases reach that tree.
+        // The `ResumePhase::Reviewed` branch just below (the sole phase that means "already
+        // approved - only the merge could still be running": an adjudicator's `reviewed`, or a
+        // stage carrying no review whose log records an integrate attempt at its current
+        // attempt) resumes the merge through `merge_into_worktree`'s OWN crash-resume
+        // idempotency (spec 88, criterion 1), which reads the worktree's already-recorded
+        // conflict list back (`conflicting_paths`) rather than re-attempting the merge command.
+        // The Fresh phase reaches it after git refused the merge's finalize and that attempt
+        // was charged (`charge_refused_work`): the next attempt's implementer works in the
+        // mid-merge tree, and its own checkpoint concludes the merge. Capturing here first
+        // would trip the conflict-marker refusal on the merge's own still-unresolved marker
+        // text (correct for an abandoned edit, but a false alarm for a legitimate in-progress
+        // merge) before either path ever ran.
         //
         // The run's log is read ONCE here, at stage entry: the halted-spawn guard below and
         // the unit's infra reruns (F3) both fold it.
@@ -7129,6 +7131,10 @@ impl RunCtx<'_> {
             attempts,
             implementer_retry(infra.ordinal),
         );
+        // Git's refusal of the halted spawn's tree, when it refused to capture it: no attempt
+        // is charged for a halt, so the same attempt goes on in that tree, its prompt naming
+        // the refusal.
+        let mut capture_refused = String::new();
         let halted_commit = match wt {
             // THE HALTED-SPAWN CHECKPOINT (spec 103), decided: capturing a dirty tree as
             // this recovery commit is reserved for a GENUINE halt - the named spawn was
@@ -7145,10 +7151,17 @@ impl RunCtx<'_> {
                         &named_halt_spawn,
                     )? =>
             {
-                git_step(w.commit_checkpoint(&format!(
+                match w.commit_checkpoint(&format!(
                     "wip({}): tree of halted spawn {}",
                     st.name, named_halt_spawn
-                )))?
+                )) {
+                    Ok(commit) => commit,
+                    Err(worktree::StepError::Refused(why)) => {
+                        capture_refused = why;
+                        String::new()
+                    }
+                    Err(fault) => git_step(Err::<String, _>(fault))?,
+                }
             }
             _ => String::new(),
         };
@@ -7259,6 +7272,9 @@ impl RunCtx<'_> {
         let mut prior = self.re_entry_failure(&st.name, attempts);
         if !halted_commit.is_empty() {
             prior.halted_commit = halted_commit;
+        }
+        if !capture_refused.is_empty() {
+            prior.refusal = capture_refused;
         }
         // Resume-continuity, Implemented phase: the unit was implemented in a prior
         // window and its branch carries the committed code, but it was not yet
