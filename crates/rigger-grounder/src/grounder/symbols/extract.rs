@@ -2051,14 +2051,18 @@ const INNER_DOC: (&str, &str) = ("inner", "inner_attribute_item");
 /// Whether `node`, a node of an attribute stack, is a Rust doc line of `(marker, attribute)`,
 /// [`OUTER_DOC`] or [`INNER_DOC`]: a comment whose `marker` doc marker field is set, so `////`,
 /// `/**/` and `/***/` are plain, or an attribute item of the `attribute` kind naming `doc` with a
-/// value, `#[doc = ".."]`, so `#[doc(hidden)]` is none.
+/// string literal value, plain or raw, `#[doc = ".."]`, so `#[doc(hidden)]` and
+/// `#[doc = include_str!(..)]` are none.
 fn is_doc_line(node: tree_sitter::Node, source: &[u8], (marker, attribute): (&str, &str)) -> bool {
     if is_comment(node) {
         node.child_by_field_name(marker).is_some()
     } else {
         node.kind() == attribute
             && named_attribute(node, source).is_some_and(|(attribute, name)| {
-                name == "doc" && attribute.child_by_field_name("value").is_some()
+                name == "doc"
+                    && attribute.child_by_field_name("value").is_some_and(|value| {
+                        matches!(value.kind(), "string_literal" | "raw_string_literal")
+                    })
             })
     }
 }
@@ -2077,9 +2081,9 @@ fn doc_lines<'a>(
 }
 
 /// Spec 117 (DOC FACTS): the byte range of the Rust definition over `range`'s outer doc lines -
-/// `///` lines, `/** */` blocks and `#[doc = ".."]` attributes ([`OUTER_DOC`]) - in the attribute
-/// stack above its outermost node ([`outermost_node`], [`stack_above`]); `None` when the stack
-/// holds none.
+/// `///` lines, `/** */` blocks and `#[doc = ".."]` attributes with a string literal value
+/// ([`OUTER_DOC`]) - in the attribute stack above its outermost node ([`outermost_node`],
+/// [`stack_above`]); `None` when the stack holds none.
 fn outer_doc(
     root: tree_sitter::Node,
     range: &std::ops::Range<usize>,
@@ -2094,8 +2098,9 @@ fn outer_doc(
 }
 
 /// Spec 117 (DOC FACTS): the byte range of the inner doc lines a Rust file opens with - `//!`
-/// lines, `/*! */` blocks and `#![doc = ".."]` attributes ([`INNER_DOC`]) - in the attribute
-/// stack read forward from the root's first named child; `None` when the stack holds none.
+/// lines, `/*! */` blocks and `#![doc = ".."]` attributes with a string literal value
+/// ([`INNER_DOC`]) - in the attribute stack read forward from the root's first named child;
+/// `None` when the stack holds none.
 fn inner_doc(root: tree_sitter::Node, source: &[u8]) -> Option<std::ops::Range<usize>> {
     doc_lines(
         attribute_stack(root.named_child(0), |n| n.next_named_sibling()),
