@@ -7183,6 +7183,59 @@ mod tests {
         assert!(exists(&beside_dir), "the worktree beside the root stays");
     }
 
+    /// The sweep takes no tree git marks locked, an add git did not finish or a lock a person
+    /// set: it is kept as it stands, registration and work included, with a line naming it and
+    /// its mark, and the sweep goes on to take the terminal trees after it.
+    #[test]
+    fn sweep_terminal_keeps_a_tree_git_marks_locked_and_sweeps_the_rest() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (locked_dir, _) = unit_wt(&repo_path, &root, "a-locked");
+        std::fs::write(std::path::Path::new(&locked_dir).join("work.txt"), "work\n").unwrap();
+        run_git(
+            &repo_path,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "a person's lock",
+                &locked_dir,
+            ],
+        )
+        .unwrap();
+        let (done_dir, _) = unit_wt(&repo_path, &root, "done");
+
+        let (removed, lines) = sweep_logged(&repo_path, &root, &[]);
+
+        assert_eq!(
+            removed, 1,
+            "exactly the terminal tree git does not mark is swept"
+        );
+        assert!(
+            !exists(&done_dir),
+            "the terminal tree after the locked one is swept"
+        );
+        assert_eq!(
+            std::fs::read_to_string(std::path::Path::new(&locked_dir).join("work.txt")).ok(),
+            Some("work\n".to_string()),
+            "the locked tree and its work stay"
+        );
+        assert!(
+            run_git(&repo_path, &["worktree", "list", "--porcelain"])
+                .unwrap()
+                .lines()
+                .any(|line| line == format!("worktree {locked_dir}")),
+            "the locked tree stays registered"
+        );
+        assert_eq!(
+            lines,
+            [format!(
+                "rigger run: worktree sweep: kept {locked_dir:?} (branch \"rigger/u/a-locked\") - \
+                 git marks it `locked a person's lock`"
+            )],
+            "the kept tree is named with its mark"
+        );
+    }
+
     #[test]
     fn sweep_terminal_spares_a_live_units_worktree_even_at_the_empty_diff_run_tip() {
         // Spec 64 criterion 4: the merged-only ancestry rule alone is NOT sufficient. A
