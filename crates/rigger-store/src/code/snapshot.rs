@@ -1160,6 +1160,10 @@ mod tests {
         }
     }
 
+    /// A code file with a one-line file doc span, a definition with no doc span beside one whose
+    /// span covers three lines, and two module declarations: `inner`, whose `as_root` and
+    /// `as_child` lists differ, and `renamed`, with `path_attr` and lists of different lengths,
+    /// one of them empty.
     fn code_file() -> FileFacts {
         FileFacts {
             path: "src/ünï.rs".into(),
@@ -1168,24 +1172,27 @@ mod tests {
             half: Half::Code,
             scope: Scope::Product,
             partial: true,
+            doc: Some((1, 1)),
             defs: vec![
                 Def {
                     local: "Outer".into(),
                     leaf: "Outer".into(),
                     kind: "struct".into(),
-                    line: 1,
-                    end_line: 9,
+                    line: 2,
+                    end_line: 11,
                     parent: None,
                     test: false,
+                    doc: None,
                 },
                 Def {
                     local: "Outer::run".into(),
                     leaf: "run".into(),
                     kind: "fn".into(),
-                    line: 3,
-                    end_line: 5,
+                    line: 6,
+                    end_line: 8,
                     parent: Some(0),
                     test: true,
+                    doc: Some((3, 5)),
                 },
             ],
             mentions: vec![
@@ -1194,7 +1201,7 @@ mod tests {
                     name: "crate::x::run".into(),
                     leaf: "run".into(),
                     kind: MentionKind::Call,
-                    line: 4,
+                    line: 7,
                     test: true,
                 },
                 Mention {
@@ -1202,16 +1209,28 @@ mod tests {
                     name: "Outer".into(),
                     leaf: "Outer".into(),
                     kind: MentionKind::Tagged("type".into()),
-                    line: 11,
+                    line: 13,
                     test: false,
                 },
             ],
-            modules: vec![ModuleDecl {
-                name: "inner".into(),
-                def: 1,
-                test: true,
-                candidates: vec!["src/inner.rs".into(), "src/inner/mod.rs".into()],
-            }],
+            modules: vec![
+                ModuleDecl {
+                    name: "inner".into(),
+                    def: 1,
+                    test: true,
+                    as_root: vec!["src/inner.rs".into(), "src/inner/mod.rs".into()],
+                    as_child: vec!["src/ünï/inner.rs".into(), "src/ünï/inner/mod.rs".into()],
+                    path_attr: false,
+                },
+                ModuleDecl {
+                    name: "renamed".into(),
+                    def: 0,
+                    test: false,
+                    as_root: vec!["src/p/y.rs".into()],
+                    as_child: Vec::new(),
+                    path_attr: true,
+                },
+            ],
             ..Default::default()
         }
     }
@@ -1287,7 +1306,7 @@ mod tests {
 
     /// A code file of `path` and `scope` holding `defs` (local = leaf, a function each), the
     /// calls `calls` (leaf, enclosing def, line) and the module declarations `modules` (name,
-    /// declaring def, test, candidates).
+    /// declaring def, test, and the one path its `as_root` and `as_child` lists both hold).
     fn proving_file(
         path: &str,
         scope: Scope,
@@ -1311,6 +1330,7 @@ mod tests {
                     end_line: i as u32 + 1,
                     parent: None,
                     test: false,
+                    doc: None,
                 })
                 .collect(),
             mentions: (calls.iter())
@@ -1324,11 +1344,13 @@ mod tests {
                 })
                 .collect(),
             modules: (modules.iter())
-                .map(|&(name, def, test, candidate)| ModuleDecl {
+                .map(|&(name, def, test, path)| ModuleDecl {
                     name: name.into(),
                     def,
                     test,
-                    candidates: vec![candidate.into()],
+                    as_root: vec![path.into()],
+                    as_child: vec![path.into()],
+                    path_attr: false,
                 })
                 .collect(),
             ..empty_file(path)
@@ -1395,6 +1417,57 @@ mod tests {
             );
         }
         assert_eq!(snap.def_leaves(), view.def_leaves(), "definition leaves");
+    }
+
+    /// DOC SPANS AND MODULE LISTS SURVIVE A SNAPSHOT: a code file whose facts carry a file doc
+    /// span, a definition's doc span beside an absent one, and module declarations whose
+    /// `as_root` and `as_child` lists differ, one with `path_attr`, and a design file with no
+    /// doc span, encoded at format version 5, read back with each span, list and flag as written.
+    #[test]
+    fn doc_spans_and_module_lists_survive_a_snapshot() {
+        let view = FactsView::new(stamp(None, 1), vec![code_file(), design_file()]);
+        let bytes = encode(&view, &Groupings::default()).expect("encodes");
+        assert_eq!(
+            bytes[4..6],
+            5u16.to_le_bytes(),
+            "the header's format version"
+        );
+        let snap = Snapshot::decode(bytes).expect("decodes");
+        let code = snap.file("src/ünï.rs").expect("the code file");
+        let design = snap.file("docs/a.md").expect("the design file");
+        assert_eq!(
+            (code.doc, design.doc),
+            (Some((1, 1)), None),
+            "file doc spans"
+        );
+        let def_docs: Vec<Option<(u32, u32)>> = code.defs.iter().map(|d| d.doc).collect();
+        assert_eq!(def_docs, [None, Some((3, 5))], "definition doc spans");
+        fn strs(list: &[String]) -> Vec<&str> {
+            list.iter().map(String::as_str).collect()
+        }
+        let modules: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (code.modules.iter())
+            .map(|m| {
+                (
+                    m.name.as_str(),
+                    m.path_attr,
+                    strs(&m.as_root),
+                    strs(&m.as_child),
+                )
+            })
+            .collect();
+        assert_eq!(
+            modules,
+            [
+                (
+                    "inner",
+                    false,
+                    vec!["src/inner.rs", "src/inner/mod.rs"],
+                    vec!["src/ünï/inner.rs", "src/ünï/inner/mod.rs"],
+                ),
+                ("renamed", true, vec!["src/p/y.rs"], vec![]),
+            ],
+            "module declarations: name, path_attr, as_root, as_child"
+        );
     }
 
     /// Each row: a stamp, the files and the groupings a view holds. Every section must read back
