@@ -1162,14 +1162,28 @@ std::cfg_select! {
         /// ([`job_members`]); the end then waits, for at most [`END_BOUND`], until the job counts
         /// no active process and no member read still runs ([`Member::running`]). The count alone
         /// answers as soon as the OS marks each process ended, before the process has exited and
-        /// closed its handles. Past the bound, each member read that still runs and each process
-        /// the job still lists is reported as residue. Then the main is reaped and the handle
-        /// closed. A job the OS will not end is reported as a fault, with no wait for it, since
-        /// nothing was sent to it. The kernel names a job's members, so no member is found by a
-        /// walk, and none is signalled one at a time.
+        /// closed its handles: on a windows-latest runner it read 0 at its first read, 0.14 ms
+        /// after the end, while a member still ran and held the output (CI run 44258832257, from
+        /// diagnostic commit 137580dc7, since dropped). Past the bound, the job is closed, which
+        /// ends what it still holds (`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`), and the processes that
+        /// still ran are waited on for [`FLOOR`]: each the close ended is named in a fault, and
+        /// each still running is reported as residue. Then the main is reaped. A job the OS will
+        /// not end is reported as a fault, with no wait for it, since nothing was sent to it. The
+        /// kernel names a job's members, so no member is found by a walk, and none is signalled
+        /// one at a time.
         pub fn end_job(
             job: std::os::windows::io::OwnedHandle,
             main: &mut std::process::Child,
+        ) -> EndReport {
+            end_job_with(job, main, END_BOUND)
+        }
+
+        /// [`end_job`], waiting at most `bound` for the job's processes to exit before the job is
+        /// closed.
+        pub(crate) fn end_job_with(
+            job: std::os::windows::io::OwnedHandle,
+            main: &mut std::process::Child,
+            bound: Duration,
         ) -> EndReport {
             use std::os::windows::io::AsRawHandle;
             use windows_sys::Win32::Foundation::FALSE;
@@ -1195,27 +1209,51 @@ std::cfg_select! {
                     main.id()
                 ));
                 let _ = main.try_wait();
-            } else if poll_until(Instant::now() + END_BOUND, || {
+            } else if poll_until(Instant::now() + bound, || {
                 job_active(handle) == Some(0) && !held.iter().any(Member::running)
             }) {
                 let _ = main.wait();
             } else {
-                let (listed, _) = job_pids(handle);
-                report.residue = held
+                let mut late: Vec<Member> =
+                    held.into_iter().filter(|member| member.running()).collect();
+                let (listed, _) = job_members(handle);
+                for member in listed {
+                    if !late.iter().any(|known| known.identity == member.identity) {
+                        late.push(member);
+                    }
+                }
+                drop(job);
+                poll_until(Instant::now() + FLOOR, || !late.iter().any(Member::running));
+                let (left, ended): (Vec<&Member>, Vec<&Member>) =
+                    late.iter().partition(|member| member.running());
+                if !ended.is_empty() {
+                    let pids: Vec<String> = ended
+                        .iter()
+                        .map(|member| member.identity.pid.to_string())
+                        .collect();
+                    report.faults.push(format!(
+                        "the job of session {} still held {} past the end's bound; closing the \
+                         job ended them",
+                        main.id(),
+                        pids.join(", ")
+                    ));
+                }
+                report.residue = left
                     .iter()
-                    .filter(|member| member.running() && !listed.contains(&member.identity.pid))
-                    .map(|member| member.identity.pid)
-                    .chain(listed.iter().copied())
-                    .map(|pid| Leftover::of(pid, false))
+                    .map(|member| Leftover::of(member.identity.pid, false))
                     .collect();
                 let _ = main.try_wait();
+                return report;
             }
             drop(job);
             report
         }
 
         /// How many processes the job `job` counts as active, or `None` when it cannot be read. A
-        /// process stops counting once the OS marks it ended, which can be before it has exited.
+        /// process stops counting once the OS marks it ended, which can be before it has exited:
+        /// on a windows-latest runner the count read 0 at its first read, 0.14 ms after the end,
+        /// while a member still ran and held the output (CI run 44258832257, from diagnostic
+        /// commit 137580dc7, since dropped).
         fn job_active(job: windows_sys::Win32::Foundation::HANDLE) -> Option<u32> {
             use windows_sys::Win32::Foundation::FALSE;
             use windows_sys::Win32::System::JobObjects::{
