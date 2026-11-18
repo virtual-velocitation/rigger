@@ -1027,6 +1027,12 @@ impl Worktree {
             return Ok(MergeOutcome::Conflict(conflicts));
         }
         if self.merge_in_progress() {
+            // The finalize commits at HEAD, so a HEAD moved off the unit's branch while the
+            // merge stays in progress is refused as every commit there is, before anything reads
+            // HEAD as the unit's side: the merge left in progress and nothing committed.
+            if let Some(why) = off_branch_refusal(&self.dir, &self.branch)? {
+                return Err(StepError::Refused(why));
+            }
             // A staged resolution still carrying marker text the merge introduced is no
             // resolution (op-105-merge-finalize-refuses-markers): the paths go back to the
             // caller's conflict route, the merge left in progress and nothing committed. A
@@ -2957,10 +2963,24 @@ fn marker(line: &str) -> Option<Marker> {
     }
 }
 
+/// Why a commit of the tree rooted at `dir` for the unit's `branch` would be refused because its
+/// HEAD is off `branch` ([`head_off_branch`]: a commit there would never reach the branch that
+/// lands, and the landing would carry the branch without it), in words naming where the HEAD
+/// stands, or `None` when it is on `branch`: the first refusal of [`commit_refusal`], and the
+/// one a merge's finalize commit asks before it runs ([`Worktree::merge_into_worktree`]), whose
+/// marker check reads the index against both parents instead.
+fn off_branch_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> {
+    Ok(head_off_branch(dir, branch)?.map(|on| {
+        format!(
+            "refusing to commit in {dir}: HEAD is not on the unit's branch {branch} (git status: \
+             {on}) - a commit here would not reach the branch that lands"
+        )
+    }))
+}
+
 /// Why a commit of the tree rooted at `dir` for the unit's `branch` would be refused before it
 /// runs, in words naming the cause, or `None` when nothing would refuse it: the HEAD is off
-/// `branch` ([`head_off_branch`]: a commit there would never reach the branch that lands, and
-/// the landing would carry the branch without it), or conflict-marker text sits in a changed or
+/// `branch` ([`off_branch_refusal`]), or conflict-marker text sits in a changed or
 /// unmerged path ([`conflict_markers_present`], spec 89 criterion 1: A CHECKPOINT NEVER COMMITS
 /// A HALF-MERGE). Read-only: it changes nothing in the tree. [`Worktree::commit`] and
 /// [`Worktree::commit_checkpoint`] refuse on it, and a writing session's Stop hook asks it before
@@ -2973,11 +2993,8 @@ fn marker(line: &str) -> Option<Marker> {
 /// on why the content check exists at all), and the changed paths themselves (`git status
 /// --porcelain`) would otherwise report nothing pending for a path the commit is about to stage.
 pub fn commit_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> {
-    if let Some(on) = head_off_branch(dir, branch)? {
-        return Ok(Some(format!(
-            "refusing to commit in {dir}: HEAD is not on the unit's branch {branch} (git status: \
-             {on}) - a commit here would not reach the branch that lands"
-        )));
+    if let Some(why) = off_branch_refusal(dir, branch)? {
+        return Ok(Some(why));
     }
     let mut scope = uncommitted_paths(dir)?;
     scope.extend(unmerged_paths(dir)?);
@@ -4870,9 +4887,11 @@ mod tests {
     }
 
     /// A merge's finalize commit takes no conflict-marker text the merge introduced
-    /// (op-105-merge-finalize-refuses-markers): a resolution staged with markers still in it,
-    /// or staged with them and cleared only in the worktree (the commit takes the index), is a
-    /// `Conflict` naming the path, the merge left in progress and the unit branch unmoved; a
+    /// (op-105-merge-finalize-refuses-markers) and lands nowhere but the unit's branch: a
+    /// resolution staged with markers still in it, or staged with them and cleared only in the
+    /// worktree (the commit takes the index), is a `Conflict` naming the path; a HEAD moved off
+    /// the unit's branch while the merge stays in progress is refused in [`commit_refusal`]'s
+    /// own words; either way the merge is left in progress and nothing is committed. A
     /// resolution keeping the complete marker set both parents carry at that path (a document
     /// showing one) finalizes clean.
     #[test]
@@ -4880,30 +4899,70 @@ mod tests {
         // What every version of the file starts with: a marker set it shows, and a Setext title.
         const SHOWN: &str =
             "Markers look like:\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n\nTitle\n=======\n";
+        // What the finalize answers.
+        enum Finalize {
+            Conflict,
+            Commits,
+            Refused,
+        }
+        // What is done to the unit's tree once the resolution is staged.
+        fn stays(_: &str) {}
+        fn onto_another_branch(dir: &str) {
+            run_git(dir, &["branch", "elsewhere"]).unwrap();
+            run_git(dir, &["symbolic-ref", "HEAD", "refs/heads/elsewhere"]).unwrap();
+        }
+        fn detached_in_place(dir: &str) {
+            run_git(dir, &["update-ref", "--no-deref", "HEAD", "HEAD"]).unwrap();
+        }
         let resolved = format!("{SHOWN}A and B\n");
         // (row, what the resolver stages - `None` is the file as the merge left it - what it
-        // then leaves in the worktree unstaged, the conflict the finalize answers)
-        let rows = [
+        // then leaves in the worktree unstaged, what is then done to the tree, the finalize's
+        // answer)
+        type Row<'a> = (
+            &'static str,
+            Option<&'a str>,
+            Option<&'a str>,
+            fn(&str),
+            Finalize,
+        );
+        let rows: [Row; 5] = [
             (
                 "a resolution still carrying the markers",
                 None,
                 None,
-                Some(&["notes.md"]),
+                stays,
+                Finalize::Conflict,
             ),
             (
                 "markers staged and cleared only in the worktree",
                 None,
                 Some(resolved.as_str()),
-                Some(&["notes.md"]),
+                stays,
+                Finalize::Conflict,
             ),
             (
                 "a resolution keeping the marker set both parents carry",
                 Some(resolved.as_str()),
                 None,
+                stays,
+                Finalize::Commits,
+            ),
+            (
+                "HEAD pointed at another branch, MERGE_HEAD in place",
+                Some(resolved.as_str()),
                 None,
+                onto_another_branch,
+                Finalize::Refused,
+            ),
+            (
+                "HEAD detached in place, MERGE_HEAD in place",
+                Some(resolved.as_str()),
+                None,
+                detached_in_place,
+                Finalize::Refused,
             ),
         ];
-        for (row, staged, unstaged, conflict) in rows {
+        for (row, staged, unstaged, then, want) in rows {
             let repo = init_repo();
             let repo_path = repo.path().to_str().unwrap().to_string();
             std::fs::write(repo.path().join("notes.md"), format!("{SHOWN}base\n")).unwrap();
@@ -4933,18 +4992,21 @@ mod tests {
             if let Some(content) = unstaged {
                 std::fs::write(wb.join("notes.md"), content).unwrap();
             }
+            then(wb_dir);
             let tip = || branch_tip(&repo_path, "rigger/u/b").unwrap();
-            let tip_before = tip();
+            let head = || git(wb_dir, &["rev-parse", "HEAD"]).unwrap();
+            let (tip_before, head_before) = (tip(), head());
+            let refusal = commit_refusal(wb_dir, "rigger/u/b").unwrap();
 
-            let outcome = b.merge_into_worktree("rigger: integrate b").unwrap();
+            let outcome = b.merge_into_worktree("rigger: integrate b");
             let tip_after = tip();
-            match (outcome, conflict) {
-                (MergeOutcome::Conflict(paths), Some(expected)) => {
-                    assert_eq!(paths, expected, "{row}: the conflict names the path");
+            match (outcome, want) {
+                (Ok(MergeOutcome::Conflict(paths)), Finalize::Conflict) => {
+                    assert_eq!(paths, ["notes.md"], "{row}: the conflict names the path");
                     assert_eq!(tip_after, tip_before, "{row}: no marker commit lands");
                     assert!(b.merge_in_progress(), "{row}: the merge stays in progress");
                 }
-                (MergeOutcome::Ready(commit), None) => {
+                (Ok(MergeOutcome::Ready(commit)), Finalize::Commits) => {
                     assert_eq!(commit, tip_after, "{row}: the merge commits");
                     assert_eq!(
                         git(&repo_path, &["show", "rigger/u/b:notes.md"]).unwrap(),
@@ -4952,12 +5014,23 @@ mod tests {
                         "{row}: the unit branch holds the resolution"
                     );
                 }
-                (MergeOutcome::Conflict(paths), None) => {
-                    panic!("{row}: expected a clean finalize, got a conflict in {paths:?}")
+                (Err(StepError::Refused(why)), Finalize::Refused) => {
+                    assert_eq!(
+                        Some(why),
+                        refusal,
+                        "{row}: refused in the commit's own words"
+                    );
+                    assert_eq!(tip_after, tip_before, "{row}: the unit branch is unmoved");
+                    assert_eq!(head(), head_before, "{row}: nothing is committed at HEAD");
+                    assert!(b.merge_in_progress(), "{row}: the merge stays in progress");
                 }
-                (MergeOutcome::Ready(commit), Some(_)) => {
-                    panic!("{row}: expected a conflict, the merge committed {commit}")
+                (Ok(MergeOutcome::Conflict(paths)), _) => {
+                    panic!("{row}: the finalize answered a conflict in {paths:?}")
                 }
+                (Ok(MergeOutcome::Ready(commit)), _) => {
+                    panic!("{row}: the finalize committed {commit}")
+                }
+                (Err(e), _) => panic!("{row}: the finalize failed: {e:?}"),
             }
         }
     }
