@@ -33,7 +33,7 @@ std::cfg_select! {
         use macos as native;
     }
     target_os = "windows" => {
-        mod windows;
+        pub(crate) mod windows;
         use windows as native;
     }
     _ => {

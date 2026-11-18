@@ -70,14 +70,16 @@
 //! OUTSIDE `base_dir` is still refused, whether or not it exists.
 //!
 //! SIGNAL API (spec 78): every signal rigger issues to a process it does not hold a
-//! [`std::process::Child`] handle to goes through [`send_signal`]. On Linux it goes through a
-//! process descriptor opened on the target before the signal's checks ([`address`]), so it
-//! reaches the process the checks passed or none. Elsewhere, and on a Linux host where
-//! descriptors are unavailable ([`no_process_descriptors`]), its unix arm is
+//! [`std::process::Child`] handle to goes through [`send_signal`]. On Linux and Windows it goes
+//! through a process descriptor opened on the target before the signal's checks ([`address`]): a
+//! pidfd on Linux, a process handle on Windows, through which the identity check also reads the
+//! process's start time. So it reaches the process the checks passed or none. Elsewhere, and on a
+//! Linux host where descriptors are unavailable ([`no_process_descriptors`]), its unix arm is
 //! `rustix::process::kill_process` - never a shell-out to `kill(1)`, never `libc::kill`, never
-//! a process-group (negative pid) target - its Windows arm opens the one pid for termination
-//! and ends it, and its arm for any other OS sends nothing. On Windows a job object this process
-//! created is ended through `end_job` alone, the one site of the job end.
+//! a process-group (negative pid) target - its Windows arm, for a held child addressed by its pid,
+//! opens the one pid for termination and ends it, and its arm for any other OS sends nothing. On
+//! Windows a job object this process created is ended through `end_job` alone, the one site of
+//! the job end.
 //! `rustix::process::Pid::from_raw` accepts negative raw values (it rejects only zero), so
 //! [`send_signal`] and [`is_signal_eligible`] each carry their OWN explicit `pid > 1` guard
 //! rather than leaning on the type to refuse one. `default-features = false` + `std` +
@@ -94,11 +96,12 @@
 //! chain [`crate::os_process::parent`] reads, [`ancestor_pids`]) - so a coincidence or a
 //! recycled pid can never reach upward into the process tree running rigger itself.
 //!
-//! On Linux the re-read comes after a process descriptor is opened on the pid ([`address`]), and
-//! the signal goes through that descriptor, so a pid recycled between the re-read and the signal
-//! is not signalled either: the descriptor names the process that held the pid when it was opened,
-//! and a re-read that matches proves that is the process the scan found. Where descriptors are
-//! unavailable that last gap stays open, and a driver says so once
+//! On Linux and Windows the re-read comes after a process descriptor is opened on the pid
+//! ([`address`]), and the signal goes through that descriptor, so a pid recycled between the
+//! re-read and the signal is not signalled either: the descriptor names the process that held the
+//! pid when it was opened, and a re-read that matches proves that is the process the scan found.
+//! On Windows the re-read itself goes through the handle, which keeps the pid its process's own.
+//! Where descriptors are unavailable that last gap stays open, and a driver says so once
 //! ([`no_process_descriptors`]).
 
 use crate::os_process;
@@ -329,20 +332,21 @@ fn is_signal_eligible(pid: u32, self_pid: u32, self_ancestors: &HashSet<u32>) ->
     pid > 1 && pid != self_pid && !self_ancestors.contains(&pid)
 }
 
-/// Whether `target` is still safe to signal RIGHT NOW, independent of any cwd/base match:
-/// [`is_signal_eligible`] AND its start time, re-read this instant, still matches what the
-/// scan recorded. This is the pid-identity half of the TOCTOU guard (spec 78) - a pid that
-/// exited and was recycled onto an unrelated process in the gap since the scan reads a
-/// DIFFERENT start time and is refused - shared by both the cwd-scanned signal path
-/// ([`signal_if_unchanged`]) and the pid-tree-walked one ([`Tree::send`]), so there is exactly
-/// ONE TOCTOU recheck regardless of which kind of snapshot found the candidate.
+/// Whether `target`, addressed as `to`, is still safe to signal RIGHT NOW, independent of any
+/// cwd/base match: [`is_signal_eligible`] AND the start time of the process `to` addresses,
+/// re-read this instant ([`started`]), still matches what the scan recorded. This is the
+/// pid-identity half of the TOCTOU guard (spec 78) - a pid that exited and was recycled onto an
+/// unrelated process in the gap since the scan reads a DIFFERENT start time and is refused -
+/// shared by both the cwd-scanned signal path ([`signal_if_unchanged`]) and the pid-tree-walked
+/// one ([`Tree::send`]), so there is exactly ONE TOCTOU recheck regardless of which kind of
+/// snapshot found the candidate.
 fn toctou_still_same_process(
     target: &Identity,
+    to: &Addressee,
     self_pid: u32,
     self_ancestors: &HashSet<u32>,
 ) -> bool {
-    is_signal_eligible(target.pid, self_pid, self_ancestors)
-        && still_started(target.pid, target.start)
+    is_signal_eligible(target.pid, self_pid, self_ancestors) && started(to) == Some(target.start)
 }
 
 /// Address `target` through `os` ([`EndOs::address`]), then re-read its cwd
@@ -366,7 +370,7 @@ fn signal_if_unchanged(
     if !os_process::cwd_lies_in(target.pid, base) {
         return;
     }
-    if toctou_still_same_process(target, self_pid, self_ancestors) {
+    if toctou_still_same_process(target, &to, self_pid, self_ancestors) {
         os.send(signal, &to);
     }
 }
@@ -466,6 +470,21 @@ std::cfg_select! {
             }
         }
     }
+    target_os = "windows" => {
+        /// A process handle, opened for termination and for reading the process's times: while it
+        /// is open the OS gives the pid of the process it was opened on to no other process, so
+        /// what is read and sent through it reaches that process or none.
+        type Descriptor = std::os::windows::io::OwnedHandle;
+
+        /// End the process `descriptor` was opened on, with exit code 1: a signal here is only
+        /// ever an end, and `call`, the pid already checked, maps one ([`os_call`]).
+        fn send_through(descriptor: &Descriptor, _call: OsCall) {
+            use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::System::Threading::TerminateProcess;
+            // SAFETY: the handle is open with termination access and stays open across the call.
+            let _ = unsafe { TerminateProcess(descriptor.as_raw_handle(), 1) };
+        }
+    }
     _ => {
         /// No process descriptor: this OS signals a process by its pid alone.
         type Descriptor = std::convert::Infallible;
@@ -477,8 +496,8 @@ std::cfg_select! {
     }
 }
 
-/// Where a signal goes: the pid it names and, on Linux, the process descriptor opened on that pid
-/// before the signal's checks, which the signal is sent through.
+/// Where a signal goes: the pid it names and, on Linux and Windows, the process descriptor opened
+/// on that pid before the signal's checks, which the signal is sent through.
 struct Addressee {
     pid: u32,
     descriptor: Option<Descriptor>,
@@ -497,10 +516,11 @@ impl Addressee {
 
 /// `pid` addressed for a signal, ahead of every check the signal passes: where this host opens
 /// process descriptors (`by_descriptor`, [`descriptors_here`]), through one opened on the process
-/// that holds `pid` now, so the signal sent after the checks reaches that process or none; by the
-/// pid alone otherwise. `None` when the descriptor does not open, since the process is gone: it is
-/// sent nothing. `None` for pid 0 and init (pid 1) on every OS, whatever the checks after would
-/// answer, so neither is ever addressed.
+/// that holds `pid` now (a pidfd on Linux, a process handle on Windows), so the signal sent after
+/// the checks reaches that process or none; by the pid alone otherwise. `None` when the
+/// descriptor does not open, since the process is gone: it is sent nothing. `None` for pid 0 and
+/// init (pid 1) on every OS, whatever the checks after would answer, so neither is ever
+/// addressed.
 fn address(pid: u32, by_descriptor: bool) -> Option<Addressee> {
     if pid <= 1 {
         return None;
@@ -517,6 +537,28 @@ fn address(pid: u32, by_descriptor: bool) -> Option<Addressee> {
                 descriptor: Some(opened.ok()?),
             })
         }
+        target_os = "windows" => {
+            use std::os::windows::io::{FromRawHandle, OwnedHandle};
+            use windows_sys::Win32::Foundation::FALSE;
+            use windows_sys::Win32::System::Threading::{
+                OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+            };
+            if !by_descriptor {
+                return Some(Addressee::by_pid(pid));
+            }
+            // SAFETY: the call takes no pointer and answers a null handle on failure.
+            let opened = unsafe {
+                OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)
+            };
+            if opened.is_null() {
+                return None;
+            }
+            Some(Addressee {
+                pid,
+                // SAFETY: the handle is the one the call just answered, owned by nothing else.
+                descriptor: Some(unsafe { OwnedHandle::from_raw_handle(opened) }),
+            })
+        }
         _ => {
             let _ = by_descriptor;
             Some(Addressee::by_pid(pid))
@@ -524,9 +566,28 @@ fn address(pid: u32, by_descriptor: bool) -> Option<Addressee> {
     }
 }
 
+/// The start time of the process `to` addresses ([`pid_starttime`]): read through its descriptor
+/// where one is held and the OS reads a process's times through it (a Windows process handle),
+/// and by its pid otherwise.
+fn started(to: &Addressee) -> Option<u64> {
+    std::cfg_select! {
+        target_os = "windows" => {
+            use std::os::windows::io::AsRawHandle;
+            match &to.descriptor {
+                Some(handle) => os_process::windows::created(handle.as_raw_handle()),
+                None => pid_starttime(to.pid),
+            }
+        }
+        _ => {
+            pid_starttime(to.pid)
+        }
+    }
+}
+
 /// Why this process cannot address a process through a process descriptor here, where its OS has
 /// them: on Linux, the error that opening one on this process answers ([`unavailable_because`]).
-/// `None` where one opens, and on every other OS, which addresses a process by its pid alone.
+/// `None` where one opens; on Windows, where a process handle opens on any process this process
+/// may end; and on every other OS, which addresses a process by its pid alone.
 pub fn no_process_descriptors() -> Option<String> {
     std::cfg_select! {
         target_os = "linux" => {
@@ -770,7 +831,7 @@ impl Tree {
             return false;
         };
         let holds = chain_reaches(target.pid, self.root, |pid| os.parent(pid))
-            && toctou_still_same_process(target, self.self_pid, &self.self_ancestors);
+            && toctou_still_same_process(target, &to, self.self_pid, &self.self_ancestors);
         if holds {
             os.send(signal, &to);
         }
@@ -1929,7 +1990,10 @@ mod tests {
                 pid: held[1].id(),
                 descriptor: address(held[0].id(), true).and_then(|to| to.descriptor),
             };
-            assert!(to.descriptor.is_some(), "a handle opens on a running process");
+            assert!(
+                to.descriptor.is_some(),
+                "a handle opens on a running process"
+            );
 
             let read = starts.map(|start| started(&to) == Some(start));
             send_signal(Signal::Hard, &to);

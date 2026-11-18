@@ -111,7 +111,15 @@ pub(super) fn parent(pid: u32) -> Option<u32> {
 /// The creation time `GetProcessTimes` reports, in 100-nanosecond intervals since 1601.
 pub(super) fn start_time(pid: u32) -> Option<u64> {
     let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
-    let (mut created, mut exited, mut kernel, mut user) = (
+    created(process.0)
+}
+
+/// The creation time of the process `process` holds ([`start_time`]), read through that handle,
+/// which this process opened with at least `PROCESS_QUERY_LIMITED_INFORMATION` and keeps open
+/// across the call: a handle keeps its process's pid that process's own while it is open, so the
+/// time read is the time of the process the handle was opened on.
+pub(crate) fn created(process: HANDLE) -> Option<u64> {
+    let (mut creation, mut exited, mut kernel, mut user) = (
         FILETIME::default(),
         FILETIME::default(),
         FILETIME::default(),
@@ -120,9 +128,9 @@ pub(super) fn start_time(pid: u32) -> Option<u64> {
     // SAFETY: the handle is open with the access the call needs, and each out-pointer is a
     // writable `FILETIME`.
     let read =
-        unsafe { GetProcessTimes(process.0, &mut created, &mut exited, &mut kernel, &mut user) }
+        unsafe { GetProcessTimes(process, &mut creation, &mut exited, &mut kernel, &mut user) }
             != FALSE;
-    read.then(|| u64::from(created.dwHighDateTime) << 32 | u64::from(created.dwLowDateTime))
+    read.then(|| u64::from(creation.dwHighDateTime) << 32 | u64::from(creation.dwLowDateTime))
 }
 
 /// No documented call reads another process's working directory.
