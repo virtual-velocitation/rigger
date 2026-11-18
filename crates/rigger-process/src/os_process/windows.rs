@@ -1,8 +1,10 @@
 //! The process interface's Windows adapter: the Win32 calls that report on another process - the
 //! ToolHelp process snapshot (pids and parents), the process times (start time), the full image
 //! name (command), IP Helper's owner-pid TCP listener table ([`listening_pid`]) and the Restart
-//! Manager ([`holders`]). Each function answers the fact its namesake in [`super`] documents; a
-//! call that fails - the process exited, or this process may not open it - answers absent.
+//! Manager ([`holders`]) - and the one undocumented call it makes, which reads the command line a
+//! process was created with ([`command_line`]). Each function answers the fact its namesake in
+//! [`super`] documents; a call that fails - the process exited, or this process may not open it -
+//! answers absent.
 //! Windows documents no call that reads another process's working directory or open files, so
 //! [`cwd`] answers `None` and [`open_files`] empty; of a process's run state it reports only that
 //! the process has exited ([`state`]); and with no fork [`is_unexeced_fork_of`] answers false.
@@ -11,9 +13,12 @@ use std::path::{Path, PathBuf};
 use std::ptr::null;
 
 use windows_sys::core::PCWSTR;
+use windows_sys::Wdk::System::Threading::{
+    NtQueryInformationProcess, ProcessCommandLineInformation,
+};
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS, FALSE, FILETIME,
-    HANDLE, INVALID_HANDLE_VALUE, NO_ERROR, WAIT_OBJECT_0,
+    HANDLE, INVALID_HANDLE_VALUE, NO_ERROR, UNICODE_STRING, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
@@ -161,6 +166,52 @@ pub(super) fn command(pid: u32) -> String {
     }
     name.truncate(length as usize);
     String::from_utf16_lossy(&name)
+}
+
+/// The command line `pid` was created with, read by `NtQueryInformationProcess` with
+/// `ProcessCommandLineInformation`, the call Task Manager reads it by and the one Windows offers:
+/// no documented call reads another process's command line. The call answers a `UNICODE_STRING`
+/// naming the line, followed by the line itself, into a buffer given room for the longest line a
+/// `UNICODE_STRING` can name, so one read answers it. `None` when the process cannot be opened,
+/// the call fails (a Windows that drops the class among its causes), the structure names bytes
+/// outside the buffer ([`super::command_line_span`]), or the line is empty.
+pub(super) fn command_line(pid: u32) -> Option<String> {
+    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    let header = size_of::<UNICODE_STRING>();
+    // Words of eight bytes, so the buffer is aligned for the structure at its start.
+    let mut buffer = vec![0u64; (header + usize::from(u16::MAX) + 1).div_ceil(8)];
+    let size = buffer.len() * size_of::<u64>();
+    // SAFETY: `buffer` is `size` writable bytes, aligned for the structure the class names; the
+    // call writes at most that many, and no returned length is asked for.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process.0,
+            ProcessCommandLineInformation,
+            buffer.as_mut_ptr().cast(),
+            size as u32,
+            std::ptr::null_mut(),
+        )
+    };
+    if status < 0 {
+        return None;
+    }
+    // SAFETY: `buffer` holds at least the structure and is aligned for it.
+    let line = unsafe { buffer.as_ptr().cast::<UNICODE_STRING>().read() };
+    // SAFETY: `buffer` is `size` initialized bytes, read here as bytes.
+    let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr().cast::<u8>(), size) };
+    let span = super::command_line_span(
+        buffer.as_ptr() as usize,
+        size,
+        header,
+        line.Buffer as usize,
+        usize::from(line.Length),
+    )?;
+    let units: Vec<u16> = bytes[span]
+        .chunks_exact(2)
+        .map(|unit| u16::from_ne_bytes([unit[0], unit[1]]))
+        .collect();
+    let text = String::from_utf16_lossy(&units);
+    (!text.is_empty()).then_some(text)
 }
 
 /// `Z` once `pid` has exited while a handle still holds it: a process handle is signalled when

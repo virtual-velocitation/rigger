@@ -69,6 +69,10 @@ std::cfg_select! {
                 String::new()
             }
 
+            pub(super) fn command_line(_pid: u32) -> Option<String> {
+                None
+            }
+
             pub(super) fn state(_pid: u32) -> Option<char> {
                 None
             }
@@ -196,11 +200,12 @@ pub fn command(pid: u32) -> String {
     native::command(pid)
 }
 
-/// Process `pid`'s command line: the arguments it was started with, joined by single spaces.
-/// `None` when `pid` is gone or its arguments cannot be read, so unlike [`command`] it never
-/// answers a process's name in place of its arguments.
-pub fn command_line(_pid: u32) -> Option<String> {
-    None
+/// Process `pid`'s command line: on Linux the arguments it was started with, joined by single
+/// spaces, and on Windows the command line it was created with. `None` when `pid` is gone or its
+/// arguments cannot be read, so unlike [`command`] it never answers a process's name in place of
+/// its arguments; and `None` on macOS, whose adapter reads no command line (its doc says why).
+pub fn command_line(pid: u32) -> Option<String> {
+    native::command_line(pid)
 }
 
 /// Process `pid`'s run state as one letter: `R` running, `S` sleeping, `T` stopped, `Z` a zombie
@@ -365,13 +370,17 @@ fn whole_rows(claimed: u32, words: usize, row_words: usize) -> usize {
 /// structure, as whole UTF-16 units: a structure the call filled otherwise is never read past.
 #[cfg(any(target_os = "windows", test))]
 fn command_line_span(
-    _start: usize,
-    _size: usize,
-    _header: usize,
-    _text: usize,
-    _length: usize,
+    start: usize,
+    size: usize,
+    header: usize,
+    text: usize,
+    length: usize,
 ) -> Option<std::ops::Range<usize>> {
-    None
+    let offset = text.checked_sub(start)?;
+    let end = offset.checked_add(length)?;
+    let inside = offset >= header && end <= size;
+    let whole_units = offset.is_multiple_of(2) && length.is_multiple_of(2);
+    (inside && whole_units).then_some(offset..end)
 }
 
 /// The port a socket record holds in network byte order in the low 16 bits of a wider field

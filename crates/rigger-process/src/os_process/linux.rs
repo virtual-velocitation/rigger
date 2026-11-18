@@ -104,24 +104,27 @@ pub(super) fn cwd(pid: u32) -> Option<PathBuf> {
         .map(|cwd| super::strip_deleted_suffix(&cwd))
 }
 
-/// `/proc/<pid>/cmdline` (the NUL-separated arguments) joined by spaces, falling back to
-/// `/proc/<pid>/comm` (the short name) and finally an empty string.
+/// The command line ([`command_line`]), falling back to `/proc/<pid>/comm` (the short name) and
+/// finally an empty string.
 pub(super) fn command(pid: u32) -> String {
-    let dir = proc_of(pid);
-    if let Ok(bytes) = std::fs::read(dir.join("cmdline")) {
-        let joined = bytes
-            .split(|b| *b == 0)
-            .filter(|part| !part.is_empty())
-            .map(|part| String::from_utf8_lossy(part).into_owned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !joined.is_empty() {
-            return joined;
-        }
-    }
-    std::fs::read_to_string(dir.join("comm"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    command_line(pid).unwrap_or_else(|| {
+        std::fs::read_to_string(proc_of(pid).join("comm"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    })
+}
+
+/// `/proc/<pid>/cmdline` (the NUL-separated arguments) joined by spaces; `None` when it cannot be
+/// read or names no argument, as a zombie's names none.
+pub(super) fn command_line(pid: u32) -> Option<String> {
+    let bytes = std::fs::read(proc_of(pid).join("cmdline")).ok()?;
+    let joined = bytes
+        .split(|b| *b == 0)
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!joined.is_empty()).then_some(joined)
 }
 
 /// The first letter of `/proc/<pid>/stat`'s state field: `R` running, `S` sleeping, `D`
