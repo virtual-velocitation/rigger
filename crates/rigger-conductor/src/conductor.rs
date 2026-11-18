@@ -18474,7 +18474,7 @@ mod tests {
             .collect();
         assert_eq!(
             implementers,
-            [implementer.clone()],
+            std::slice::from_ref(&implementer),
             "the implementer runs once, on the same attempt"
         );
         let prompts = driver.prompts_by_agent.lock().unwrap();
@@ -50250,10 +50250,7 @@ stage "implement" adjudicator "adj" failed
                     let launched = driver.spawn_ids();
                     // A resumed approve's merge launches no implementer before git refuses it.
                     assert_eq!(
-                        launched
-                            .iter()
-                            .filter(|id| id.contains("/implementer#"))
-                            .last(),
+                        launched.iter().rfind(|id| id.contains("/implementer#")),
                         (step != Step::ResumedMerge).then_some(&refused_spawn),
                         "{step:?}: the drive ended on the refused attempt: {launched:?}"
                     );
@@ -50299,7 +50296,7 @@ stage "implement" adjudicator "adj" failed
                             before.contains(named)
                                 && before.contains(refused_line)
                                 && !p.contains(gate_line)
-                                && p.contains(header) == !owed.is_empty()
+                                && p.contains(header) != owed.is_empty()
                                 && owed
                                     .iter()
                                     .all(|f| checks.contains(&format!("- f.txt: {f}")))
