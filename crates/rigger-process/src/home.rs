@@ -53,6 +53,17 @@ pub fn xdg_or_home(
     )
 }
 
+/// `path` with a leading `/` read as the root of this OS's file system (the `C:` drive's root on
+/// Windows), so a test row's absolute path is absolute on every OS.
+#[cfg(test)]
+pub(crate) fn rooted(path: &str) -> PathBuf {
+    PathBuf::from(if cfg!(windows) && path.starts_with('/') {
+        format!("C:{path}")
+    } else {
+        path.to_owned()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,16 +83,6 @@ mod tests {
         an_empty_value_is_unset: reads(Some(""), None);
         a_blank_value_is_itself: reads(Some(" "), Some(" "));
         a_path_is_itself: reads(Some("/home/operator"), Some("/home/operator"));
-    }
-
-    /// `path` with a leading `/` read as the root of this OS's file system (the `C:` drive's root
-    /// on Windows), so a row's absolute path is absolute on every OS.
-    fn rooted(path: &str) -> PathBuf {
-        PathBuf::from(if cfg!(windows) && path.starts_with('/') {
-            format!("C:{path}")
-        } else {
-            path.to_owned()
-        })
     }
 
     /// [`xdg_or_home`] of `xdg` and `home` under the default `.local/state` answers `expected`.
