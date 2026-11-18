@@ -624,7 +624,7 @@ so it runs once per advance and is stored in the snapshot:
   - **definition leaves:** the keys of `IDX_LEAF`, which a lookup's name index reads.
 
   Their generation (`SETTLED_GENERATION`) is folded into the fingerprint like the grouping
-  generation, and a golden test pins it beside a digest of the rows over two fixtures. A view
+  generation, and a golden test pins it beside a digest of the rows over three fixtures. A view
   that holds no settled rows (an in-memory view) has the resolver compute them, and the two
   are tested to answer alike.
 - A grain other than the default is computed at read, on each open that asks for it, and is
@@ -832,7 +832,7 @@ call), and REFERENCES from F. A call the qualified-mention rule gives no edge yi
 | | | else | no edge; counted as unresolved |
 | | | for `k` = `field`, the same-file step skipped and a constant, static or variant left to the qualified-mention rule: exactly one `field` or `property` definition in the project, in F or not | INFERRED |
 | | | else | no edge; counted as unresolved |
-| module | ModuleDecl in F | the first path of its `as_child` list that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
+| module | ModuleDecl in F | F is a child when the first declaration reaching it carries no path attribute, the walk starting at the files no declaration's list names and going down a depth at a time, each depth in path order, a declaring file no declaration has reached when a depth runs out starting the next as a root: the first path that is a file in the view of its `as_child` list when F is a child, else of its `as_root` list | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
 | proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | written `Q::leaf` or `Q.leaf`, the qualified-mention rule over every candidate, product and test: exactly one kept, that definition when it is product, none when it is test; none for several kept, or for a call that rule gives no edge; otherwise exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |
@@ -1056,8 +1056,9 @@ items in product files. An entity counts as a test entity when any of these hold
    The rule stays, unchanged, with the per-language extractor registry. It is applied once, at
    extraction, and stored as `FileFacts.scope`; or
 3. its file is in the out-of-line test-module closure: files reached only through test-only
-   module declarations. This is computed per view open from the MODULES section, using the same
-   `module_target` function the module rule uses, so the two cannot disagree.
+   module declarations. This is computed per view open from the MODULES section, over the same
+   walk that places each declaring file and the same `module_target` function the module rule
+   uses, so the two cannot disagree.
 
 A fixture is a test entity like any other: a definition these rules mark test is held, proved
 through and filtered the same way, with no fixture kind of its own.

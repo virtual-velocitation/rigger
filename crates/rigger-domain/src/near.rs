@@ -548,7 +548,7 @@ impl<'v> State<'v> {
                 };
                 let resolver = self.graph.resolver();
                 for decl in declared.iter() {
-                    if let Some(target) = resolver.module_target(decl) {
+                    if let Some(target) = resolver.module_target(f.path, decl) {
                         let held = modules.entry(target.to_string()).or_default();
                         if held.last() != Some(&(place as u32)) {
                             held.push(place as u32);

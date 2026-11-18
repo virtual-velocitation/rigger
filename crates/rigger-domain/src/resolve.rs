@@ -11,7 +11,7 @@
 //! | up-hop | the edges landing on a definition, or on a placeholder whose candidates hold it |
 //! | tagged reference | candidates of the tag's kinds in the file's language: one same-file is `extracted`, else one in the view is `inferred`, else no edge; a `field` reference no qualifier narrows reads its field and property candidates alone and skips the same-file step: one in the view, in its file or not, is `inferred`, else no edge, so it reaches a constant, a static or a variant only through a qualifier that keeps it |
 //! | held reference | a tagged reference whose node already references the target, or the placeholder of its leaf from that node, keyed by the leaf or by a call's qualified name, writes no edge |
-//! | module | the first path of its `as_child` list that is a code file in the view ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
+//! | module | the first path that is a code file in the view of its `as_child` list when the first declaration reaching the declaring file carries no `#[path]` attribute, walking down from the files no declaration names a depth at a time in path order, else of its `as_root` list ([`module_target`]): a `CONTAINS` edge to it from the declaring definition |
 //! | structure | each id's one `CONTAINS`, from the parent of the definition that settles it, else from its file |
 //! | proof | a test call its qualifier narrows, among every call-target candidate, test ones too: the one it keeps when that one is product, and none when it is test, it keeps several, or its qualifier makes it no link; any other test call: the one same-file call-target candidate when it is product and none when it is test, else one same-file product call-target candidate, else one in the view |
 //! | duplicate id, kind precedence | one entity per id, its kind, line and `CONTAINS` parent by [`definition_precedence`] |
@@ -45,10 +45,10 @@ use crate::contextgraph::{
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
 /// the test-module closure and the proof rule. Bump it whenever either can settle other rows for
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
-/// one is computed anew. A golden test pins it beside a digest of the rows two fixtures settle,
-/// so a change that moves those rows fails there until the generation is bumped and the pair
-/// re-pinned.
-pub const SETTLED_GENERATION: u64 = 4;
+/// one is computed anew. A golden test pins it beside a digest of the rows three fixtures
+/// settle, so a change that moves those rows fails there until the generation is bumped and the
+/// pair re-pinned.
+pub const SETTLED_GENERATION: u64 = 5;
 
 /// The node kinds a design concept or a workflow node may name.
 pub(crate) const INTENT_KINDS: [&str; 7] = [
@@ -74,10 +74,16 @@ const INTENT_RELS: [&str; 9] = [
     REL_REVIEWS_LIGHT,
 ];
 
-/// The file a module declaration reaches: the first path of its `as_child` list that is a code
-/// file. The module rule and the test-module closure both read it, so they cannot disagree.
-pub fn module_target(decl: &ModuleDecl, is_code_file: impl Fn(&str) -> bool) -> Option<&str> {
-    decl.as_child
+/// The file a module declaration reaches: the first path that is a code file of its `as_child`
+/// list when its declaring file is a `child` ([`reach`]), else of its `as_root` list. The module
+/// rule and the test-module closure both read it, so they cannot disagree.
+pub fn module_target(
+    decl: &ModuleDecl,
+    child: bool,
+    is_code_file: impl Fn(&str) -> bool,
+) -> Option<&str> {
+    let paths = if child { &decl.as_child } else { &decl.as_root };
+    paths
         .iter()
         .map(String::as_str)
         .find(|path| is_code_file(path))
@@ -337,41 +343,86 @@ pub(crate) fn def_leaves(facts: &FileFacts, local: &str) -> Vec<String> {
     leaves
 }
 
-/// The test files of `view`, whose code files are `code_files`, `declaring` those that declare a
-/// module held elsewhere: the Test-scope files (`scoped`), then the test-module closure: every
-/// file a test-only module declaration, or any declaration in a test file, reaches, unless a
-/// product declaration reaches it. The product files are a fixed point from the roots, the code
-/// files no declaration reaches outside Test scope, through every declaration not marked test
-/// that a product file makes; a Test-scope file is never product.
-fn test_closure<'v>(
+/// Where the module declarations of `view`, whose code files are `code_files`, `declaring` those
+/// that declare a module held elsewhere, place their files: the files each reaches as a child,
+/// and every declaration that reaches a code file, as (declaring file, test mark, target). The
+/// walk starts at the roots, the declaring files no declaration's list names, and goes down a
+/// depth at a time, each depth in path order. The first declaration to reach a file decides its
+/// place: a child, whose declarations read their `as_child` lists, unless that declaration
+/// carries a `#[path]` attribute. When a depth runs out, the first declaring file in path order
+/// no declaration has reached starts the next as a root, so a cycle no root reaches is walked.
+fn reach<'v>(
     view: &'v dyn CodeView,
     code_files: &BTreeSet<&'v str>,
     declaring: &[&'v str],
-    mut test_files: BTreeSet<&'v str>,
-) -> BTreeSet<&'v str> {
-    let mut declared: Vec<(&'v str, bool, &'v str)> = Vec::new();
-    for &path in declaring {
-        let Some(modules) = view.modules(path) else {
-            continue;
-        };
-        for decl in modules.iter() {
-            if let Some(target) = module_target(decl, |p| code_files.contains(p))
-                .and_then(|target| code_files.get(target))
-            {
-                declared.push((path, decl.test, target));
+) -> (FxHashSet<&'v str>, Vec<(&'v str, bool, &'v str)>) {
+    let modules: BTreeMap<&'v str, Cow<'v, [ModuleDecl]>> = (declaring.iter())
+        .filter_map(|&path| Some((path, view.modules(path)?)))
+        .collect();
+    let named: FxHashSet<&str> = (modules.values().flat_map(|decls| decls.iter()))
+        .flat_map(|decl| decl.as_root.iter().chain(&decl.as_child))
+        .map(String::as_str)
+        .collect();
+    let mut depth: BTreeSet<&'v str> = (modules.keys().copied())
+        .filter(|path| !named.contains(path))
+        .collect();
+    let mut known = depth.clone();
+    let (mut children, mut declared) = (FxHashSet::default(), Vec::new());
+    loop {
+        if depth.is_empty() {
+            let Some(&root) = modules.keys().find(|path| !known.contains(*path)) else {
+                break;
+            };
+            known.insert(root);
+            depth.insert(root);
+        }
+        let mut next = BTreeSet::new();
+        for from in std::mem::take(&mut depth) {
+            let child = children.contains(from);
+            for decl in modules[from].iter() {
+                let Some(&to) = module_target(decl, child, |p| code_files.contains(p))
+                    .and_then(|to| code_files.get(to))
+                else {
+                    continue;
+                };
+                declared.push((from, decl.test, to));
+                if known.insert(to) {
+                    if !decl.path_attr {
+                        children.insert(to);
+                    }
+                    if modules.contains_key(to) {
+                        next.insert(to);
+                    }
+                }
             }
         }
+        depth = next;
     }
+    (children, declared)
+}
+
+/// The test files of a view whose code files are `code_files` and whose module declarations
+/// reach the files `declared` names ([`reach`]): the Test-scope files it is passed
+/// (`test_files`), then the test-module closure: every file a test-only module declaration, or
+/// any declaration in a test file, reaches, unless a product declaration reaches it. The product
+/// files are a fixed point from the roots, the code files no declaration reaches outside Test
+/// scope, through every declaration not marked test that a product file makes; a Test-scope
+/// file is never product.
+fn test_closure<'v>(
+    code_files: &BTreeSet<&'v str>,
+    declared: &[(&'v str, bool, &'v str)],
+    mut test_files: BTreeSet<&'v str>,
+) -> BTreeSet<&'v str> {
     let reached: BTreeSet<&str> = declared.iter().map(|&(_, _, to)| to).collect();
     let mut product: BTreeSet<&str> = code_files
         .iter()
         .copied()
         .filter(|path| !reached.contains(path) && !test_files.contains(path))
         .collect();
-    grow(&declared, &mut product, |from, test, to, product| {
+    grow(declared, &mut product, |from, test, to, product| {
         !test && product.contains(from) && !test_files.contains(to)
     });
-    grow(&declared, &mut test_files, |from, test, to, test_files| {
+    grow(declared, &mut test_files, |from, test, to, test_files| {
         (test || test_files.contains(from)) && !product.contains(to)
     });
     test_files
@@ -384,6 +435,8 @@ pub struct Resolver<'v> {
     settled: Option<&'v dyn Settled>,
     /// Every code-half file of the view.
     code_files: BTreeSet<&'v str>,
+    /// Every file a module declaration reaches as a child ([`reach`]).
+    children: FxHashSet<&'v str>,
     /// Every test file: Test-scope by path, or in the test-module closure.
     test_files: FxHashSet<&'v str>,
     /// The candidates of each leaf asked for, settled once per resolver.
@@ -396,8 +449,9 @@ pub struct Resolver<'v> {
 }
 
 impl<'v> Resolver<'v> {
-    /// The resolver of `view`. Its test files are the ones the view settled, else
-    /// [`test_closure`]'s.
+    /// The resolver of `view`. Where its module declarations place their files is walked once
+    /// ([`reach`]); its test files are the ones the view settled, else [`test_closure`]'s over
+    /// that walk.
     pub fn new(view: &'v dyn CodeView) -> Self {
         let settled = view.settled();
         let mut code_files = BTreeSet::new();
@@ -415,9 +469,10 @@ impl<'v> Resolver<'v> {
                 scoped.insert(f.path);
             }
         }
+        let (children, declared) = reach(view, &code_files, &declaring);
         let test_files = match settled {
             Some(settled) => settled.test_files().into_iter().collect(),
-            None => test_closure(view, &code_files, &declaring, scoped)
+            None => test_closure(&code_files, &declared, scoped)
                 .into_iter()
                 .collect(),
         };
@@ -425,6 +480,7 @@ impl<'v> Resolver<'v> {
             view,
             settled,
             code_files,
+            children,
             test_files,
             candidates: RefCell::default(),
             parents: RefCell::default(),
@@ -467,9 +523,10 @@ impl<'v> Resolver<'v> {
         self.code_files.contains(path)
     }
 
-    /// The file `decl` reaches in this view.
-    pub fn module_target<'d>(&self, decl: &'d ModuleDecl) -> Option<&'d str> {
-        module_target(decl, |p| self.is_code_file(p))
+    /// The file `decl`, a declaration of the file at `file`, reaches in this view: through its
+    /// `as_child` list when `file` is a child ([`reach`]), else through its `as_root` list.
+    pub fn module_target<'d>(&self, file: &str, decl: &'d ModuleDecl) -> Option<&'d str> {
+        module_target(decl, self.children.contains(file), |p| self.is_code_file(p))
     }
 
     /// Every entity id the leaf `leaf` names in the view's code, in id order. An id a product
@@ -948,7 +1005,7 @@ impl<'v> Resolver<'v> {
             None => file.to_string(),
         };
         for decl in &facts.modules {
-            let Some(target) = self.module_target(decl) else {
+            let Some(target) = self.module_target(file, decl) else {
                 continue;
             };
             // A declaration reaching a test file is test code wherever it is written.
