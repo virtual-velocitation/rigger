@@ -502,12 +502,15 @@ impl EndReport {
     }
 }
 
-/// The two OS facilities an end uses, so a test can add a stranger to the table it walks or keep
-/// one signal from landing. The checks every signal passes first read the live OS and are never
-/// part of this.
+/// The three OS facilities an end uses, so a test can add a stranger to the table it walks, fail
+/// a parent read the chain check makes, or keep one signal from landing. A test can break a chain
+/// this way, never make one. The start-time check every signal passes reads the live OS and is
+/// never part of this.
 trait EndOs {
     /// The process table ([`crate::os_process::table`]).
     fn table(&mut self) -> Vec<os_process::Entry>;
+    /// The parent of `pid` ([`crate::os_process::parent`]), as a signal's chain check reads it.
+    fn parent(&mut self, pid: u32) -> Option<u32>;
     /// Send `signal` to `pid` ([`send_signal`]).
     fn send(&mut self, signal: Signal, pid: u32);
 }
@@ -520,21 +523,20 @@ impl EndOs for LiveOs {
         os_process::table()
     }
 
+    fn parent(&mut self, pid: u32) -> Option<u32> {
+        os_process::parent(pid)
+    }
+
     fn send(&mut self, signal: Signal, pid: u32) {
         send_signal(signal, pid);
     }
 }
 
-/// Whether `pid`'s live parent chain ([`crate::os_process::parent`]) reaches `root`.
-fn chain_reaches(pid: u32, root: u32) -> bool {
-    chain_reaches_with(pid, root, os_process::parent)
-}
-
-/// [`chain_reaches`] over the parent reader `parent`: whether a parent of `pid`, or a parent of
-/// one of those, is `root`, read at most [`CHAIN_STEPS`] links up. The walk stops at pid 1 or 0
-/// and at a parent it cannot read, answering that the chain does not reach; a `root` of 1 or 0 is
-/// never reached, and nor is `pid` itself, since no process is its own descendant.
-fn chain_reaches_with(pid: u32, root: u32, parent: impl Fn(u32) -> Option<u32>) -> bool {
+/// Whether `pid`'s parent chain, read through `parent`, reaches `root`: whether a parent of `pid`,
+/// or a parent of one of those, is `root`, read at most [`CHAIN_STEPS`] links up. The walk stops
+/// at pid 1 or 0 and at a parent it cannot read, answering that the chain does not reach; a `root`
+/// of 1 or 0 is never reached, and nor is `pid` itself, since no process is its own descendant.
+fn chain_reaches(pid: u32, root: u32, mut parent: impl FnMut(u32) -> Option<u32>) -> bool {
     if root <= 1 {
         return false;
     }
@@ -569,11 +571,11 @@ impl Tree {
     }
 
     /// Send `signal` to `target` through `os`, only if, read right now, `target`'s parent chain
-    /// still reaches the root ([`chain_reaches`]) and its pid still names the process the walk
-    /// found ([`toctou_still_same_process`]). Answers whether it was sent: a process that fails
-    /// either check is never signalled.
+    /// in `os` still reaches the root ([`chain_reaches`]) and its pid still names the process the
+    /// walk found ([`toctou_still_same_process`]). Answers whether it was sent: a process that
+    /// fails either check is never signalled.
     fn send(&self, os: &mut impl EndOs, signal: Signal, target: &Identity) -> bool {
-        let holds = chain_reaches(target.pid, self.root)
+        let holds = chain_reaches(target.pid, self.root, |pid| os.parent(pid))
             && toctou_still_same_process(target, self.self_pid, &self.self_ancestors);
         if holds {
             os.send(signal, target.pid);
@@ -1833,7 +1835,7 @@ mod tests {
             };
             for &(root, expected) in answers {
                 assert_eq!(
-                    chain_reaches_with(pid, root, parent),
+                    chain_reaches(pid, root, parent),
                     expected,
                     "does {pid}'s chain over {links:?} reach {root}?"
                 );
@@ -1894,14 +1896,16 @@ mod tests {
 
         /// The live OS as an end sees it, with `stranger` (a pid and the tree member it poses
         /// under) and `ghost` (a process gone before the end, and the member it poses under) added
-        /// to the table, `vanishing` left out of every read of the table but the first, every hard
-        /// end of `swallowed` dropped, and `forker` started on one more process ahead of each read
-        /// of the table. Every signal the end sends is recorded, dropped or not.
+        /// to the table, `vanishing` left out of every read of the table but the first, the parent
+        /// of `unreadable_once` unreadable at its first read, every hard end of `swallowed`
+        /// dropped, and `forker` started on one more process ahead of each read of the table.
+        /// Every signal the end sends is recorded, dropped or not.
         #[derive(Default)]
         struct Rigged {
             stranger: Option<(u32, u32)>,
             ghost: Option<(Identity, u32)>,
             vanishing: Option<u32>,
+            unreadable_once: Option<u32>,
             swallowed: Option<u32>,
             forker: Option<Forker>,
             reads: usize,
@@ -1966,6 +1970,14 @@ mod tests {
                     table.retain(|entry| Some(entry.pid) != self.vanishing);
                 }
                 table
+            }
+
+            fn parent(&mut self, pid: u32) -> Option<u32> {
+                if self.unreadable_once == Some(pid) {
+                    self.unreadable_once = None;
+                    return None;
+                }
+                os_process::parent(pid)
             }
 
             fn send(&mut self, signal: Signal, pid: u32) {
@@ -2331,6 +2343,21 @@ mod tests {
             Descendants,
         }
 
+        /// `ending` of the tree under `root` through `os`, bounded by `bound`.
+        fn end(ending: Ending, os: &mut Rigged, root: &mut Child, bound: Duration) -> EndReport {
+            let root_pid = root.id();
+            match ending {
+                Ending::Watched => end_watched_with(os, root, &[], bound),
+                Ending::Descendants => end_descendants_with(
+                    os,
+                    root_pid,
+                    false,
+                    || !descendants_in(&os_process::table(), root_pid).is_empty(),
+                    bound,
+                ),
+            }
+        }
+
         /// `ending` over a tree whose table also lists, under its root, a process that exited and
         /// was reaped before the end: the end neither signals it nor reports it, since nothing of
         /// it is left running, and still ends the tree.
@@ -2352,16 +2379,7 @@ mod tests {
                 ..Rigged::default()
             };
 
-            let report = match ending {
-                Ending::Watched => end_watched_with(&mut os, &mut root, &[], END_BOUND),
-                Ending::Descendants => end_descendants_with(
-                    &mut os,
-                    root_pid,
-                    false,
-                    || !descendants_in(&os_process::table(), root_pid).is_empty(),
-                    END_BOUND,
-                ),
-            };
+            let report = end(ending, &mut os, &mut root, END_BOUND);
 
             let root_exited =
                 crate::test_support::wait_until(|| matches!(root.try_wait(), Ok(Some(_))));
@@ -2382,6 +2400,43 @@ mod tests {
                 an_end_never_reports_a_process_gone_before_its_signal(Ending::Watched);
             the_descendant_end_never_reports_a_process_gone_before_its_signal:
                 an_end_never_reports_a_process_gone_before_its_signal(Ending::Descendants);
+        }
+
+        /// `ending` over a tree whose one descendant fails its chain check once, its parent
+        /// unreadable at that read and readable at the next, as when its parent exits and is
+        /// reaped mid-check: a later check passes, so the end signals it, ends it, and reports
+        /// nothing.
+        fn an_end_signals_a_process_whose_chain_check_failed_once(ending: Ending) {
+            let mut witness = Witness::new();
+            let mut root = tree(&witness, "holder; up; wait");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let holder = only_child(root.id());
+            let mut os = Rigged {
+                unreadable_once: Some(holder),
+                ..Rigged::default()
+            };
+
+            let report = end(ending, &mut os, &mut root, END_BOUND);
+
+            let root_exited =
+                crate::test_support::wait_until(|| matches!(root.try_wait(), Ok(Some(_))));
+            assert_eq!(
+                (report, root_exited, witness.read()),
+                (EndReport::default(), true, Reading::Ended),
+                "{ending:?}: the process is ended and nothing is reported"
+            );
+            assert!(
+                os.sent.contains(&(Signal::Hard, holder)),
+                "{ending:?}: the process is ended hard once its check passes: {:?}",
+                os.sent
+            );
+        }
+
+        crate::test_cases! {
+            the_watched_end_signals_a_process_whose_chain_check_failed_once:
+                an_end_signals_a_process_whose_chain_check_failed_once(Ending::Watched);
+            the_descendant_end_signals_a_process_whose_chain_check_failed_once:
+                an_end_signals_a_process_whose_chain_check_failed_once(Ending::Descendants);
         }
     }
 }
