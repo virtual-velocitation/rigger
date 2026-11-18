@@ -1792,8 +1792,9 @@ enum LaneError {
     /// A driver's park ([`is_parked`]): the lane is collected and the group unwinds once every
     /// lane has been asked.
     Parked,
-    /// A fault of the run's infrastructure ([`INFRA_MARKER`]), a store read failing before the
-    /// lane's launch ([`is_store_fault`]) or git not answering a step ([`GIT_STEP_MARKER`]): the
+    /// A fault of the run's infrastructure ([`INFRA_MARKER`]), a store read failing before a
+    /// launch of the lane's, its sdet author's crash among them ([`is_store_fault`]), or git not
+    /// answering a step ([`GIT_STEP_MARKER`]): the
     /// drive ends on it, after the lane's cleanup, and the run is held for the orchestrator with
     /// no attempt charged.
     Fault,
@@ -3103,11 +3104,13 @@ fn keyed_events_lost(lost: usize, handed: usize) -> Error {
 /// [`infra_crash`] as an outage of the unit's stage and reruns the stage uncharged under the F3
 /// infra retry ([`CAUSE_INFRA_SPAWN`]), as it does an implementer crash. A conflict-resolver round
 /// a store fault ended before its launch returns it too, and the single lane's integrate doors
-/// ([`RunCtx::integrate_under_infra_retry`]) rerun the merge under the same retry. Every other
-/// caller (a standalone review stage, a speculation candidate, the plan-critique gate) has no
-/// infra retry, so the crash reaches the wave or the run as a halt over [`HALT_MARKERS`]: an
-/// outage of the spawn, never the unit's work, so no lesson names the unit, and the marker is
-/// stripped from the operator's message.
+/// ([`RunCtx::integrate_under_infra_retry`]) rerun the merge under the same retry. A speculation
+/// candidate's sdet-author crash loses the lane ([`LaneError::Failed`]), as a crashed author's
+/// does, unless a store fault ended it before its launch, whose mark the crash keeps
+/// ([`spawn_crash_of`]), so the drive ends on it, held ([`LaneError::Fault`]). Every other caller
+/// (a standalone review stage, the plan-critique gate) has no infra retry, so the crash reaches
+/// the wave or the run as a halt over [`HALT_MARKERS`]: an outage of the spawn, never the unit's
+/// work, so no lesson names the unit, and the marker is stripped from the operator's message.
 const SPAWN_CRASH_MARKER: &str = "\u{1}rigger:spawn-crashed\u{1}";
 
 /// The error a sdet-author or review-tier spawn crash returns: `message` marked with
@@ -3128,14 +3131,27 @@ fn spawn_failed(stage: &str, who: &str, e: &Error) -> String {
     )
 }
 
+/// The [`spawn_crash`] `who`'s spawn error `e` in stage `stage` returns ([`spawn_failed`]): the
+/// sdet author's or the conflict resolver's. One a store fault ended before its launch
+/// ([`is_store_fault`]) keeps that mark ahead of the crash's, so a caller with no infra retry,
+/// a speculation lane, holds the run on it as the fault no lane made it is.
+fn spawn_crash_of(stage: &str, who: &str, e: &Error) -> Error {
+    let crash = spawn_crash(spawn_failed(stage, who, e));
+    if is_store_fault(e) {
+        store_fault(crash)
+    } else {
+        crash
+    }
+}
+
 /// A sdet seam or review result split for the single lane: `Ok(Err(crash))` when it carries the
-/// [`SPAWN_CRASH_MARKER`], `crash` its message with the marker stripped so the F3 evidence names
-/// it, and every other result as it was.
+/// [`SPAWN_CRASH_MARKER`], `crash` its message with that marker and a store fault's
+/// ([`spawn_crash_of`]) stripped so the F3 evidence names it, and every other result as it was.
 fn infra_crash<T>(r: Result<T, Error>) -> Result<Result<T, String>, Error> {
     match r {
-        Err(e) if carries_marker(&e, SPAWN_CRASH_MARKER) => {
-            Ok(Err(e.0.replace(SPAWN_CRASH_MARKER, "")))
-        }
+        Err(e) if carries_marker(&e, SPAWN_CRASH_MARKER) => Ok(Err(strip_failure_marker(&Error(
+            e.0.replace(SPAWN_CRASH_MARKER, ""),
+        )))),
         r => r.map(Ok),
     }
 }
@@ -6932,7 +6948,7 @@ impl RunCtx<'_> {
         let first_retry = *window.start();
         // A crash names the stage and the seam, its failure class stripped, as a review tier's
         // crash does.
-        let crashed = |e: &Error| spawn_crash(spawn_failed(&st.name, "sdet author", e));
+        let crashed = |e: &Error| spawn_crash_of(&st.name, "sdet author", e);
         rerun_once_on_refusal(window, |retry, refused| {
             let sdet_id = spawn_retry_id(&st.name, ROLE_SDET_AUTHOR, attempt, retry);
             // Budget breaker at spawn granularity: reserve the sdet spawn against the run budget
@@ -8597,16 +8613,20 @@ impl RunCtx<'_> {
                         let _ = wt.remove();
                     }
                     // A store read failing before the implementer's launch carries no halt
-                    // marker, so it reaches the wave as the infra halt it is.
-                    return Err(if is_store_fault(&e) {
-                        infra_fault(spawn_failed(
-                            &st.name,
-                            &format!("speculation lane {lane}'s implementer"),
-                            &e,
-                        ))
-                    } else {
-                        e
-                    });
+                    // marker, so it reaches the wave as the infra halt it is. One before the sdet
+                    // author's launch is that seam's crash, which names the seam and halts as it
+                    // stands.
+                    return Err(
+                        if is_store_fault(&e) && !carries_marker(&e, SPAWN_CRASH_MARKER) {
+                            infra_fault(spawn_failed(
+                                &st.name,
+                                &format!("speculation lane {lane}'s implementer"),
+                                &e,
+                            ))
+                        } else {
+                            e
+                        },
+                    );
                 }
                 // A candidate git REFUSED, or one that CRASHED (usage limit, non-zero exit, an
                 // sdet crash, or an sdet record refused past its re-run): it is simply absent
@@ -8827,9 +8847,10 @@ impl RunCtx<'_> {
         }
         // Record why the group lost as the unit's failure, one past its
         // last lane, so an operator's grant re-drives every lane told it, as a single lane
-        // re-entering after its own failure is told. Keyed by the entry's lane base, so a
-        // relaunch replaying this entry records it once. A group whose every lane crashed
-        // records none: a crash is no feedback for the author.
+        // re-entering after its own failure is told, and teach it as the escalation's lesson. Keyed
+        // by the entry's lane base, so a relaunch replaying this entry records it once. A group
+        // whose every lane crashed or lost to infrastructure records and teaches neither: an
+        // outage is no feedback for the author.
         // A lane whose merge broke post-merge is part of this one record, which names that
         // lane's worktree sha.
         let break_sha = lost.break_sha();
@@ -8849,17 +8870,17 @@ impl RunCtx<'_> {
                 ),
                 &meta,
             )?;
+            let _ = self.emit_lesson(
+                None,
+                &st.name,
+                &format!(
+                    "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work",
+                    st.name
+                ),
+                None,
+                None,
+            );
         }
-        let _ = self.emit_lesson(
-            None,
-            &st.name,
-            &format!(
-                "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work",
-                st.name
-            ),
-            None,
-            None,
-        );
         self.emit_meta(
             ledger::TYPE_UNIT_ESCALATED,
             json!({"id": st.name}),
@@ -12933,9 +12954,7 @@ impl RunCtx<'_> {
         // The merge the caller re-attempts, never this round's outcome, decides what follows.
         match spawned {
             Err(e) if is_parked_or_refused(&e, EMIT_REFUSED_MARKER) => Err(e),
-            Err(e) if is_store_fault(&e) => {
-                Err(spawn_crash(spawn_failed(&st.name, "conflict resolver", &e)))
-            }
+            Err(e) if is_store_fault(&e) => Err(spawn_crash_of(&st.name, "conflict resolver", &e)),
             _ => Ok(()),
         }
     }
@@ -31919,6 +31938,15 @@ stage "implement" adjudicator "adj" failed
                 LaneError::Fault,
             ),
             (
+                "an sdet crash a store read failing before its launch ended",
+                spawn_crash_of(
+                    "s",
+                    "sdet author",
+                    &store_fault(Error("the read failed".into())),
+                ),
+                LaneError::Fault,
+            ),
+            (
                 "a plain error",
                 Error("the author exited 1".into()),
                 LaneError::Failed,
@@ -49602,8 +49630,7 @@ stage "implement" adjudicator "adj" failed
                 error: error.into(),
             })
         };
-        let crash =
-            |who: &str, error: &str| spawn_crash(spawn_failed("u", who, &Error(error.into())));
+        let crash = |who: &str, error: &str| spawn_crash_of("u", who, &Error(error.into()));
         let at = |path: &str| vec![path.to_string()];
         let degenerate = |agent: &str, ordinal: u32| {
             degenerate_reviewer("u", "adjudicator", agent, "review", 0, ordinal)
