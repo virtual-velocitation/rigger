@@ -3932,9 +3932,9 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
                  a hook's stdout in: {out:?}"
             );
             assert_eq!(
-                out.split(", position").next(),
+                err.split(", position").next(),
                 Some(format!("stop-failure recorded for {} (class {class}", row.spawn).as_str()),
-                "{name}: the hook records its class for the spawn"
+                "{name}: the hook says on stderr it records its class for the spawn"
             );
         }
     }
@@ -4109,8 +4109,8 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             "{name}: the session's working directory"
         );
         assert_eq!(
-            (read("hook-status").as_str(), read("hook-err").as_str()),
-            ("0\n", ""),
+            read("hook-status"),
+            "0\n",
             "{name}: the hook the session ran succeeds"
         );
         let hook_out = read("hook-out");
@@ -4120,16 +4120,24 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             "{name}: the hook's stdout is empty or JSON, the one form the host reads a hook's \
              stdout in: {hook_out:?}"
         );
+        let hook_err = read("hook-err");
         assert_eq!(
-            read("hook-out").split(", position").next(),
-            Some(
-                format!(
-                    "stop-failure recorded for {} (class max_output_tokens",
-                    row.spawn
-                )
-                .as_str()
+            (
+                hook_err.lines().count(),
+                hook_err.split(", position").next()
             ),
-            "{name}: the hook the session ran records its class for the spawn"
+            (
+                1,
+                Some(
+                    format!(
+                        "stop-failure recorded for {} (class max_output_tokens",
+                        row.spawn
+                    )
+                    .as_str()
+                )
+            ),
+            "{name}: the hook the session ran says on stderr, and nothing else, that it records \
+             its class for the spawn"
         );
         assert_eq!(
             common::cli::recorded_progress::<rigger::progress::StopFailure>(&root),
