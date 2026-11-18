@@ -14732,6 +14732,32 @@ fn validate_says_when_the_refs_held_aside_cannot_be_read() {
     );
 }
 
+/// Outside any git repository no ref can be held aside, so `rigger validate` reads none there and
+/// says nothing of a read that could not be made.
+#[test]
+fn validate_outside_any_repository_reads_no_held_refs() {
+    let proj = tempfile::tempdir().expect("a directory outside any git repository");
+    let root = proj.path();
+    let scratch = root.join("scratchroot");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let envs = [
+        (
+            "GIT_CEILING_DIRECTORIES",
+            root.parent().unwrap().to_str().unwrap(),
+        ),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+    ];
+    let (_out, err, ok) = run_rigger_envs(root, &["init"], &envs);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let (_out, err, ok) = run_rigger_envs(root, &["validate"], &envs);
+    assert!(ok, "validate succeeds outside a repository; stderr:\n{err}");
+    assert!(
+        !err.contains("the refs rigger holds aside could not be read"),
+        "no held-ref read is made outside a repository; stderr:\n{err}"
+    );
+}
+
 /// Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE) done-when: "the reaper and
 /// `validate` account for the new root." Every scratch-residue `validate` test in this file
 /// (the one just above included) deliberately overrides `RIGGER_TMPDIR` or a configured
