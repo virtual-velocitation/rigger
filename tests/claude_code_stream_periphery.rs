@@ -1553,6 +1553,110 @@ mod forks_at_stop {
     }
 }
 
+// ---- A WRITE IN FLIGHT AT AN ORDINARY END: a StopFailure hook still writing its record when the
+// session's main exits (`claude-code-late-stop-failure-hook-agent.sh`), read back through the
+// progress store the host classifies by ----
+
+#[cfg(unix)]
+mod late_writer {
+    use super::*;
+    use crate::common::witness::{Reading, Witness};
+    use rigger::eventstore::Revision;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    /// The spawn the late hook writes for.
+    const LATE_HOOK_SPAWN: &str = "u-late-hook/implementer#0";
+
+    /// A progress store that imports, ahead of each stream read, every record the stand-in hook
+    /// (`late-hook-rigger.sh`) has renamed into `dir` since the last read, as the `StopFailure` the
+    /// real hook appends: the store the hook writes is the store the host reads.
+    struct ImportsHookRecords<'a> {
+        inner: &'a dyn EventStore,
+        dir: PathBuf,
+        imported: Mutex<HashSet<PathBuf>>,
+    }
+
+    impl EventStore for ImportsHookRecords<'_> {
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: Revision,
+            direction: Direction,
+        ) -> Result<Vec<Event>, rigger::eventstore::Error> {
+            let mut imported = self.imported.lock().unwrap();
+            for entry in std::fs::read_dir(&self.dir).unwrap() {
+                let path = entry.unwrap().path();
+                let whole = path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("record."));
+                if whole && imported.insert(path.clone()) {
+                    let record = std::fs::read_to_string(&path).unwrap();
+                    let mut fields = record.lines().map(str::to_string);
+                    let failure = rigger::progress::StopFailure {
+                        spawn: fields.next().unwrap(),
+                        class: fields.next().unwrap(),
+                    };
+                    rigger::progress_store::record_stop_failure(
+                        self.inner,
+                        &opts("").run_id,
+                        &failure,
+                    )
+                    .unwrap();
+                }
+            }
+            drop(imported);
+            self.inner.read_stream(stream, from, direction)
+        }
+        crate::delegate_event_store_reads!(append);
+        crate::delegate_event_store_reads!(rest);
+        crate::delegate_event_store_reads!(group);
+    }
+
+    /// The session's main exits while the StopFailure hook it started is still writing: the hook
+    /// finishes its write before the session's end, so the launch closes a fault of the class it
+    /// recorded, and the end leaves nothing the session started running.
+    #[test]
+    fn a_stop_failure_hook_still_writing_when_the_main_exits_classes_the_launch() {
+        let mut witness = Witness::new();
+        let records = tempfile::tempdir().unwrap();
+        let fx = Fixture::new();
+        let store = ImportsHookRecords {
+            inner: &fx.progress_store,
+            dir: records.path().to_path_buf(),
+            imported: Mutex::default(),
+        };
+        let mut env = witness.env();
+        let dir = records.path().to_string_lossy().into_owned();
+        env.push(("RIGGER_TEST_RECORDS".to_string(), dir));
+        let o = SpawnOpts {
+            env,
+            ..opts(LATE_HOOK_SPAWN)
+        };
+
+        let err = Driver {
+            rigger_bin: fixture_script("late-hook-rigger.sh"),
+            progress_store: &store,
+            ..fx.driver_running("claude-code-late-stop-failure-hook-agent.sh")
+        }
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect_err("a session ending with no result must not succeed");
+        let reading = witness.read();
+
+        assert!(
+            rigger::conductor::strip_failure_marker(&err).contains("class rate_limit"),
+            "the hook's record classes the launch: {}",
+            err.0
+        );
+        assert_closed_as_a_fault(&fx, AgentFailure::RateLimit);
+        assert_eq!(
+            (witness.up(), reading),
+            (1, Reading::Ended),
+            "the hook started, and nothing the session started is still running"
+        );
+    }
+}
+
 // ---- THE STOP's bound: `max_wall_clock` 0 is unbounded, never a 5 s stop ----
 
 #[test]

@@ -134,10 +134,11 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 /// The read, subscribe and boundary-lookup methods of an `EventStore` decorator that intercepts only
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
 /// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
-/// for a decorator that also intercepts `latest_in_group`; `(append)` expands the append alone,
-/// forwarded the same way, for a decorator that intercepts reads instead; `(typed)` expands the
-/// typed stream read alone, for a decorator that intercepts the boundary lookup ahead of it; and
-/// `(record)` expands the record-id read alone.
+/// for a decorator that also intercepts `latest_in_group`, and `(group)` that lookup alone; `(rest)`
+/// expands every one of `(stream)`'s but the stream read, for a decorator that intercepts
+/// `read_stream`; `(append)` expands the append alone, forwarded the same way, for a decorator that
+/// intercepts reads instead; `(typed)` expands the typed stream read alone, for a decorator that
+/// intercepts the boundary lookup ahead of it; and `(record)` expands the record-id read alone.
 #[macro_export]
 macro_rules! delegate_event_store_reads {
     (append) => {
@@ -152,6 +153,9 @@ macro_rules! delegate_event_store_reads {
     };
     () => {
         $crate::delegate_event_store_reads!(stream);
+        $crate::delegate_event_store_reads!(group);
+    };
+    (group) => {
         fn latest_in_group(
             &self,
             stream: &str,
@@ -189,6 +193,9 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Vec<rigger::eventstore::Event>, rigger::eventstore::Error> {
             self.inner.read_stream(stream, from, dir)
         }
+        $crate::delegate_event_store_reads!(rest);
+    };
+    (rest) => {
         fn read_all(
             &self,
             from: rigger::eventstore::Position,
