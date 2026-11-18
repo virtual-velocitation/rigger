@@ -14695,6 +14695,43 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     );
 }
 
+/// `rigger validate` lists every ref rigger holds aside, so a read of them that fails is said on
+/// one advisory line naming git's error, never an empty list read as none held. A corrupt
+/// `packed-refs` makes git die on every ref read.
+#[test]
+fn validate_says_when_the_refs_held_aside_cannot_be_read() {
+    let dir = committed_scaffold_project();
+    let root = dir.path();
+    seed_store(root);
+    let scratch = root.join("scratchroot");
+    std::fs::create_dir_all(&scratch).unwrap();
+    git_ok(root, &["branch", "rigger/kept/unit-99-ghost"]);
+    git_ok(root, &["pack-refs", "--all"]);
+    let packed = root.join(".git").join("packed-refs");
+    let mut refs = std::fs::read_to_string(&packed).unwrap();
+    refs.push_str("garbage line\n");
+    std::fs::write(&packed, refs).unwrap();
+
+    let (_out, err, _ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[("RIGGER_TMPDIR", scratch.to_str().unwrap())],
+    );
+    let said: Vec<&str> = err
+        .lines()
+        .filter(|line| line.contains("the refs rigger holds aside could not be read"))
+        .collect();
+    assert_eq!(
+        said.len(),
+        1,
+        "validate says once that the held refs could not be read; stderr:\n{err}"
+    );
+    assert!(
+        said[0].contains("unexpected line in .git/packed-refs"),
+        "the line names git's error; stderr:\n{err}"
+    );
+}
+
 /// Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE) done-when: "the reaper and
 /// `validate` account for the new root." Every scratch-residue `validate` test in this file
 /// (the one just above included) deliberately overrides `RIGGER_TMPDIR` or a configured
