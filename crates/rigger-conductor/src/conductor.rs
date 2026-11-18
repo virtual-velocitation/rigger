@@ -2279,9 +2279,10 @@ struct PriorFailure {
     /// 89, criterion 1: A HALT NEVER DISCARDS A TREE). Empty except on the one re-entry
     /// that found the freshly adopted worktree genuinely dirty.
     halted_commit: String,
-    /// Where the tree of an attempt git refused at the unit's retry bound is kept, `commit
-    /// <sha> on <branch>` ([`RunCtx::charge_refused_work`]): read by the escalation lesson
-    /// alone, so no record or prompt carries it.
+    /// Where the tree of the attempt that spent the unit's retry bound with work outside a
+    /// commit is kept, `commit <sha> on <branch>` ([`RunCtx::kept_at_the_bound`]): work git
+    /// refused a step on ([`RunCtx::charge_refused_work`]) or a plan its planner left
+    /// uncommitted. Read by the escalation lesson alone, so no record or prompt carries it.
     kept: String,
 }
 
@@ -7818,13 +7819,20 @@ impl RunCtx<'_> {
                             // commit - past its `Stop` hook's bound, or on a host that runs no
                             // hook - which nothing would land: the same refusal of its output as
                             // a scope violation, retried in this same tree, where the work still
-                            // is.
+                            // is. The attempt that spends the bound keeps that work on the
+                            // unit's branch before the escalation removes the tree.
                             cause = CAUSE_REJECT.to_string();
                             next.review_reason = format!(
                                 "{}\n\ngit status in {} reads:\n{status}",
                                 refusals.join("\n"),
                                 wt.map(|w| w.dir.as_str()).unwrap_or_default()
                             );
+                            next.kept = self.kept_at_the_bound(
+                                st,
+                                wt,
+                                attempts,
+                                "whose plan was left outside a commit",
+                            )?;
                         }
                         PlanCommitOutcome::Conflict(detail) => {
                             // CONSTRAINTS WALK (spec 88 c4): a plan amendment that
@@ -8211,11 +8219,10 @@ impl RunCtx<'_> {
     /// naming the attempt, so the run is held for the orchestrator and its release launches the
     /// next attempt, in the tree the caller keeps for it with the work it held at the refusal.
     /// The attempt that spends the bound has no next attempt to continue that tree: its work
-    /// is committed onto the unit's branch first ([`Worktree::keep_tree_on_branch`]), where the
+    /// is committed onto the unit's branch first ([`Self::kept_at_the_bound`]), where the
     /// escalation hands the unit to a person, its lesson naming the commit, and the unit
     /// escalates (`Ok(false)`, no hold), the caller removing the tree as it removes any
-    /// escalated unit's. A commit git cannot make ends the drive on that fault, uncharged, the
-    /// tree kept.
+    /// escalated unit's.
     fn charge_refused_work(
         &self,
         st: &Stage,
@@ -8225,19 +8232,12 @@ impl RunCtx<'_> {
         e: &Error,
     ) -> Result<bool, Error> {
         let refusal = refusal_text(e);
-        let mut failure = PriorFailure {
+        let failure = PriorFailure {
             refusal: refusal.clone(),
             required: open.required.clone(),
+            kept: self.kept_at_the_bound(st, wt, open.attempts, "which git refused")?,
             ..Default::default()
         };
-        let next = self.remediation(st, open.attempts);
-        if let (safety::Decision::Escalate, Some(w)) = (next.decision, wt) {
-            let commit = git_step(w.keep_tree_on_branch(&format!(
-                "wip({}): tree of attempt {}, which git refused",
-                st.name, next.attempts
-            )))?;
-            failure.kept = format!("commit {commit} on {}", w.branch);
-        }
         let rem =
             self.charge_failed_attempt(st, wt, dir, open.attempts, &failure, CAUSE_GIT_REFUSED)?;
         if rem.decision == safety::Decision::Escalate {
@@ -8250,6 +8250,32 @@ impl RunCtx<'_> {
                 st.name, rem.attempts
             ),
         ))
+    }
+
+    /// THE ESCALATING ATTEMPT'S TREE: unit `st`'s attempt, `attempts` attempts already failed,
+    /// failed with work its tree holds outside a commit, `what` saying whose (work git refused a
+    /// step on, a plan its planner left uncommitted). When that attempt spends the unit's retry
+    /// bound, no next attempt continues the tree and the escalation removes it, so its work is
+    /// committed onto the unit's branch first ([`Worktree::keep_tree_on_branch`]), exactly as the
+    /// attempt left it. Returns where, `commit <sha> on <branch>`, for the escalation lesson
+    /// ([`PriorFailure::kept`]); empty when the attempt does not spend the bound or the unit has
+    /// no tree. A commit git cannot make ends the drive on that fault, uncharged, the tree kept.
+    fn kept_at_the_bound(
+        &self,
+        st: &Stage,
+        wt: Option<&Worktree>,
+        attempts: u32,
+        what: &str,
+    ) -> Result<String, Error> {
+        let next = self.remediation(st, attempts);
+        let (safety::Decision::Escalate, Some(w)) = (next.decision, wt) else {
+            return Ok(String::new());
+        };
+        let commit = git_step(w.keep_tree_on_branch(&format!(
+            "wip({}): tree of attempt {}, {what}",
+            st.name, next.attempts
+        )))?;
+        Ok(format!("commit {commit} on {}", w.branch))
     }
 
     /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):

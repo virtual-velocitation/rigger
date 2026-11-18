@@ -729,8 +729,9 @@ impl Worktree {
     }
 
     /// Commit the tree as it stands onto the unit's branch, with no hook and no guard, for the
-    /// attempt that spent the unit's retry bound on git refusing a step on its work: the
-    /// escalation removes the tree, and this commit is where its work is kept. It takes every
+    /// attempt that spent the unit's retry bound with work outside a commit (work git refused a
+    /// step on, a plan its planner left uncommitted): the escalation removes the tree, and this
+    /// commit is where its work is kept. It takes every
     /// path `git add -A` would stage, through an index of its own in the tree's git directory
     /// (the tree's own index is left as it is, a lock on it included), on a commit whose first
     /// parent is the branch's tip, with HEAD and the merge in progress (`MERGE_HEAD`) as
