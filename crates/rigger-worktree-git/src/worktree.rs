@@ -3566,22 +3566,36 @@ pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error
 /// such work. Each side is git's own status read scoped to it ([`status_z_of`]), never one read
 /// split after the fact: git names a directory it tracks nothing in by that directory alone, so
 /// a plan in a nested output (`docs/specs/`) under a parent git tracks nothing in reads, unscoped,
-/// as the parent (`docs/`), which lies outside the output. Read-only, like
+/// as the parent (`docs/`), which lies outside the output. The outside read names that parent
+/// too, the output left out, so a parent holding the output is read again file by file and each
+/// file named by its first directory beside the output ([`beside_scope`]): a line telling the
+/// session to take the parent out of the tree would take its plan out with it. Read-only, like
 /// [`checkpoint_refusals`]. `rigger hook stop --own-commits <output>` asks it before a producer's
 /// session may end, and the conductor asks it again once the session has ended, failing the
 /// attempt on any line, since that work would otherwise never reach the run branch.
 pub fn own_commits_refusals(dir: &str, output: &str) -> Result<Vec<String>, Error> {
     let scope = format!("{}/", output.trim_end_matches('/'));
-    let changed = |pathspec: String| -> Result<Vec<String>, Error> {
-        let mut paths = parse_status_z(&status_z_of(dir, &[&pathspec])?);
-        paths.sort();
-        Ok(paths)
+    let not_scope = format!(":(exclude,literal){scope}");
+    let changed = |options: &[&str], pathspecs: &[&str]| -> Result<Vec<String>, Error> {
+        Ok(parse_status_z(&status_z_of(dir, options, pathspecs)?))
     };
-    let inside = changed(format!(":(literal){scope}"))?;
+    let mut inside = changed(&[], &[&format!(":(literal){scope}")])?;
     if inside.is_empty() {
         return Ok(Vec::new());
     }
-    let outside = changed(format!(":(exclude,literal){scope}"))?;
+    inside.sort();
+    let mut outside = Vec::new();
+    for path in changed(&[], &[&not_scope])? {
+        if path.ends_with('/') && scope.starts_with(&path) {
+            let parent = format!(":(literal){path}");
+            let files = changed(&["--untracked-files=all"], &[&parent, &not_scope])?;
+            outside.extend(files.iter().map(|file| beside_scope(file, &scope)));
+        } else {
+            outside.push(path);
+        }
+    }
+    outside.sort();
+    outside.dedup();
     let mut refusals = vec![format!(
         "{dir} holds work in {output} that no commit records: {} - the conductor lands \
          only the commits made there, so commit this work for it to reach the run branch",
@@ -3596,6 +3610,19 @@ pub fn own_commits_refusals(dir: &str, output: &str) -> Result<Vec<String>, Erro
         ));
     }
     Ok(refusals)
+}
+
+/// `path` cut back to its first directory that does not hold `scope`, both relative to the
+/// tree's root and the scope ending in `/`: `docs/notes/a.md` beside `docs/specs/` is
+/// `docs/notes/`, and a file in a directory holding the scope is itself (`docs/scratch.md`). It
+/// names work beside the scope by directory, as git's status does, without naming a directory
+/// the scope lies in.
+fn beside_scope(path: &str, scope: &str) -> String {
+    path.match_indices('/')
+        .map(|(at, _)| &path[..=at])
+        .find(|dir| !scope.starts_with(dir))
+        .unwrap_or(path)
+        .to_string()
 }
 
 /// The most lines of `git status` [`tree_status`] carries; the rest are counted.
@@ -3775,12 +3802,14 @@ fn status_z(dir: &str) -> Result<String, Error> {
     git(dir, &STATUS_Z)
 }
 
-/// [`STATUS_Z`] in `dir` limited to the `pathspecs` (git's pathspec magic, relative to `dir`),
-/// its standard output alone: git warns on standard error when a pathspec names a directory the
-/// tree does not hold, and that warning is no status record.
-fn status_z_of(dir: &str, pathspecs: &[&str]) -> Result<String, Error> {
+/// [`STATUS_Z`] in `dir` with the `options` after it, which git reads over its own
+/// (`--untracked-files=all` lists each untracked file), limited to the `pathspecs` (git's pathspec
+/// magic, relative to `dir`), its standard output alone: git warns on standard error when a
+/// pathspec names a directory the tree does not hold, and that warning is no status record.
+fn status_z_of(dir: &str, options: &[&str], pathspecs: &[&str]) -> Result<String, Error> {
     let args: Vec<&str> = STATUS_Z
         .iter()
+        .chain(options)
         .chain(&["--"])
         .chain(pathspecs)
         .copied()
