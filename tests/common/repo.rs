@@ -269,7 +269,19 @@ pub fn grep_guard_hook() -> (String, Vec<String>) {
     ("Grep|Bash".to_string(), words.to_vec())
 }
 
-/// A launch's `settings` carry its per-spawn hooks: under `PreToolUse` the write guard running
+/// The inner hook running `argv` in exec form: the program `argv[0]`, which the host spawns with
+/// the rest of `argv` as its argument vector and no shell, given `timeout` seconds where one is
+/// named.
+fn exec_hook(argv: &[String], timeout: Option<u32>) -> serde_json::Value {
+    let mut hook = serde_json::json!({"type": "command", "command": argv[0], "args": argv[1..]});
+    if let Some(timeout) = timeout {
+        hook["timeout"] = timeout.into();
+    }
+    hook
+}
+
+/// A launch's `settings` carry its per-spawn hooks, each in exec form ([`exec_hook`]): under
+/// `PreToolUse` the write guard running
 /// `bin` with `roots` in order, then the session's grep guard exactly when `grep_guard` (the
 /// workflow's `defaults.grep_guard`) declares it; under `StopFailure` one entry per category
 /// running `bin` for `spawn`, in category order; and under `Stop` the one `hook stop` asking of
@@ -298,6 +310,11 @@ pub fn assert_carries_spawn_hooks(
         pre_tool_use,
         "the write guard, then the session's grep guard when declared ({grep_guard}): {settings}"
     );
+    assert_eq!(
+        settings["hooks"]["PreToolUse"][0]["hooks"][0],
+        exec_hook(&pre_tool_use[0].1, None),
+        "the write guard in exec form: {settings}"
+    );
     let stop_failures: Vec<(String, Vec<String>)> = rigger::conductor::AgentFailure::CATEGORIES
         .iter()
         .map(|category| {
@@ -319,19 +336,34 @@ pub fn assert_carries_spawn_hooks(
         stop_failures,
         "one entry per category: {settings}"
     );
+    let inner: Vec<&serde_json::Value> = settings["hooks"]["StopFailure"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|entry| &entry["hooks"][0])
+        .collect();
+    let exec: Vec<serde_json::Value> = stop_failures
+        .iter()
+        .map(|(_, argv)| exec_hook(argv, None))
+        .collect();
+    assert_eq!(
+        inner,
+        exec.iter().collect::<Vec<_>>(),
+        "each stop-failure hook in exec form: {settings}"
+    );
     match stop {
         Some((dir, duty)) => {
             let mut command = words(&[bin, "hook", "stop", "--spawn", spawn, "--dir", dir]);
             command.extend(words(duty));
+            let exec = exec_hook(&command, Some(rigger::hooks::STOP_HOOK_TIMEOUT_SECS));
             assert_eq!(
                 hook_words(settings, "Stop"),
                 [(String::new(), command)],
                 "{spawn}: the stop check on its tree: {settings}"
             );
             assert_eq!(
-                settings["hooks"]["Stop"][0]["hooks"][0]["timeout"],
-                rigger::hooks::STOP_HOOK_TIMEOUT_SECS,
-                "{spawn}: the stop check's timeout"
+                settings["hooks"]["Stop"][0]["hooks"][0], exec,
+                "{spawn}: the stop check in exec form, with its timeout: {settings}"
             );
         }
         None => assert!(

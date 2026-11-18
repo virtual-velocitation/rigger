@@ -2251,7 +2251,7 @@ mod tests {
     use crate::eventstore::{Direction, EventStore, SilentStore};
     use crate::test_support::implementer_opts as opts;
     use crate::test_support::{
-        captured, fixture_script, no_emit, operator_helpers_agents_json, spawn_result_rows,
+        captured, fixture_script, hook, no_emit, operator_helpers_agents_json, spawn_result_rows,
         PROMPT_CAPTURE_DIR,
     };
     use std::io::Read;
@@ -2649,13 +2649,24 @@ mod tests {
         );
     }
 
-    /// A launch's settings carry its own hooks ahead of the session's, on its own settings.
+    /// A launch's settings carry its own hooks ahead of the session's, on its own settings: the
+    /// spawn's in exec form, `rigger_bin` spawned with its argv and no shell, and the session's
+    /// as the commands they are.
     #[test]
     fn build_args_settings_carry_the_spawn_hooks_ahead_of_the_session_ones() {
-        let write_guard = "'/custom/rigger' guard-write --root '/wt' --root '/scratch/s'";
+        // The spawn's inner hook running `/custom/rigger` with `args` in exec form.
+        let exec = |args: &[&str]| {
+            let mut exec = hook("/custom/rigger");
+            exec["args"] = serde_json::json!(args);
+            exec
+        };
+        let write_guard = exec(&["guard-write", "--root", "/wt", "--root", "/scratch/s"]);
         for (grep_guard, pre_tool_use) in [
-            (false, vec![write_guard]),
-            (true, vec![write_guard, hooks::GREP_GUARD_COMMAND]),
+            (false, vec![write_guard.clone()]),
+            (
+                true,
+                vec![write_guard.clone(), hook(hooks::GREP_GUARD_COMMAND)],
+            ),
         ] {
             let mut o = opts("u/implementer#0");
             o.settings_json = "{\"model\":\"opus\"}".to_string();
@@ -2672,33 +2683,30 @@ mod tests {
             let i = args.iter().position(|x| x == "--settings").unwrap();
             let settings: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
             assert_eq!(settings["model"], "opus", "grep_guard {grep_guard}");
-            let commands = |event: &str| -> Vec<&str> {
+            let inner = |event: &str| -> Vec<serde_json::Value> {
                 settings["hooks"][event]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .map(|entry| entry["hooks"][0]["command"].as_str().unwrap())
+                    .map(|entry| entry["hooks"][0].clone())
                     .collect()
             };
+            assert_eq!(inner("PreToolUse"), pre_tool_use, "grep_guard {grep_guard}");
             assert_eq!(
-                commands("PreToolUse"),
-                pre_tool_use,
+                inner("SessionStart"),
+                [hook(hooks::PRIME_COMMAND)],
                 "grep_guard {grep_guard}"
             );
-            assert_eq!(
-                commands("SessionStart"),
-                [hooks::PRIME_COMMAND],
-                "grep_guard {grep_guard}"
-            );
-            let stop_failures = commands("StopFailure");
+            let stop_failures = inner("StopFailure");
             assert_eq!(
                 stop_failures.len(),
                 AgentFailure::CATEGORIES.len(),
                 "grep_guard {grep_guard}"
             );
+            let class = ["--spawn", "u/implementer#0", "--class", "rate_limit"];
             assert_eq!(
                 stop_failures[0],
-                "'/custom/rigger' hook stop-failure --spawn 'u/implementer#0' --class rate_limit",
+                exec(&[["hook", "stop-failure"].as_slice(), &class].concat()),
                 "grep_guard {grep_guard}"
             );
         }
