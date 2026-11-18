@@ -2596,4 +2596,51 @@ mod tests {
             );
         }
     }
+
+    /// The run-start sweeps, in the order `run_cli` runs them, keep a unit tree git marks
+    /// `prunable` while its dir is still there (its link lost, or a remove git did not finish):
+    /// its files and its registration survive, while a merged tree beside it is still swept.
+    #[test]
+    fn the_run_start_sweeps_keep_a_tree_git_marks_prunable_with_its_dir_there() {
+        use crate::test_support::{git_ok, git_out, init_repo, write_file};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        init_repo(&root);
+        git_ok(&root, &["checkout", "-q", "-b", RUN_BRANCH]);
+        let repo = root.to_str().unwrap();
+        let tree = |slug: &str| {
+            let dir = root.join(format!("rigger-wt-{slug}"));
+            rigger::worktree::Worktree::create(
+                repo,
+                dir.to_str().unwrap(),
+                &format!("rigger/u/{slug}"),
+                "",
+            )
+            .unwrap();
+            write_file(&dir.join("work.txt"), b"work\n");
+            dir
+        };
+        let merged = tree("merged");
+        let prunable = tree("lost-link");
+        std::fs::remove_file(prunable.join(".git")).unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let workflow = config::Workflow::default();
+        sweep_terminal_at_start(repo, repo, &workflow, &store);
+        reclaim_orphans_at_start(repo, repo, &workflow, &store);
+        let listed = git_out(&root, &["worktree", "list", "--porcelain"]);
+        let registered = |dir: &std::path::Path| {
+            listed
+                .lines()
+                .any(|line| line == format!("worktree {}", dir.display()))
+        };
+        assert_eq!(
+            (
+                merged.exists(),
+                prunable.join("work.txt").exists(),
+                registered(&prunable)
+            ),
+            (false, true, true),
+            "the merged tree is swept; the prunable tree's work and registration survive:\n{listed}"
+        );
+    }
 }
