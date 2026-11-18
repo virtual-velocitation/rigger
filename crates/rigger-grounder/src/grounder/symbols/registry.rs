@@ -463,7 +463,10 @@ pub(crate) mod tests {
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::extract::extract;
-    use crate::grounder::symbols::model::{Kind, Lang};
+    use crate::grounder::symbols::model::{
+        Kind, Lang, CSHARP_TAGS_GENERATION, GO_TAGS_GENERATION, JS_TAGS_GENERATION,
+        PYTHON_TAGS_GENERATION, RUST_TAGS_GENERATION, TSX_TAGS_GENERATION, TS_TAGS_GENERATION,
+    };
     use crate::js_ts_definition_sources::{
         JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
     };
@@ -1128,8 +1131,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// The golden fixtures: an (extension, source) for each registered grammar and query and a
-    /// malformed Rust file. The extraction golden and the facts golden both digest them.
+    /// The golden fixtures: an (extension, source) for each registry entry and a malformed Rust
+    /// file, each keyed by its entry's extension in [`TAGS_GENERATIONS`]. The extraction golden
+    /// and the facts golden both digest them, one row per entry ([`generation_rows`]).
     pub(crate) const GOLDEN_SOURCES: [(&str, &str); 8] = [
         (
             "rs",
@@ -1218,18 +1222,178 @@ def calc(n):
         ),
     ];
 
-    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
-    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
-    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
-    /// extraction records fails here until the tag is bumped and the pair re-pinned, and a snapshot
-    /// of the code store written before the change is not trusted. The fixtures set every part a
-    /// snapshot stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind included, so a change to any of them moves the digest.
+    /// The generation table: each registry entry's tags generation, keyed by the extension its
+    /// golden fixtures carry, in `for_extension`'s order. `GRAMMAR_TAGS_VERSION` is these
+    /// generations joined by `,` in this order, and each golden pins one row per entry.
+    const TAGS_GENERATIONS: [(&str, &str); 7] = [
+        ("rs", RUST_TAGS_GENERATION),
+        ("cs", CSHARP_TAGS_GENERATION),
+        ("ts", TS_TAGS_GENERATION),
+        ("tsx", TSX_TAGS_GENERATION),
+        ("js", JS_TAGS_GENERATION),
+        ("go", GO_TAGS_GENERATION),
+        ("py", PYTHON_TAGS_GENERATION),
+    ];
+
+    /// A golden's language rows: one per [`TAGS_GENERATIONS`] entry, in its order, holding the
+    /// entry's extension, its tags generation and `digest` over the fixtures keyed by that
+    /// extension, in their order, so a language's row moves with its own fixtures alone. Refuses
+    /// a fixture keyed by an extension no entry has and an entry no fixture is keyed by, naming
+    /// both lists, so no fixture falls outside a row and no row is pinned over nothing.
+    pub(crate) fn generation_rows<T>(
+        fixtures: &[(&str, T)],
+        digest: impl Fn(&[&T]) -> String,
+    ) -> Result<Vec<(&'static str, &'static str, String)>, String> {
+        let unkeyed: Vec<&str> = fixtures
+            .iter()
+            .map(|(ext, _)| *ext)
+            .filter(|ext| TAGS_GENERATIONS.iter().all(|(entry, _)| entry != ext))
+            .collect();
+        let uncovered: Vec<&str> = TAGS_GENERATIONS
+            .iter()
+            .map(|(entry, _)| *entry)
+            .filter(|entry| fixtures.iter().all(|(ext, _)| ext != entry))
+            .collect();
+        if !unkeyed.is_empty() || !uncovered.is_empty() {
+            return Err(format!(
+                "fixtures keyed by no entry: {unkeyed:?}; entries no fixture is keyed by: \
+                 {uncovered:?}"
+            ));
+        }
+        Ok(TAGS_GENERATIONS
+            .iter()
+            .map(|(entry, generation)| {
+                let keyed: Vec<&T> = fixtures
+                    .iter()
+                    .filter(|(ext, _)| ext == entry)
+                    .map(|(_, fixture)| fixture)
+                    .collect();
+                (*entry, *generation, digest(&keyed))
+            })
+            .collect())
+    }
+
+    /// The rows a golden pins, in the form [`generation_rows`] answers them.
+    pub(crate) fn pinned_rows(
+        rows: &[(&'static str, &'static str, &str)],
+    ) -> Result<Vec<(&'static str, &'static str, String)>, String> {
+        Ok(rows
+            .iter()
+            .map(|(ext, generation, hash)| (*ext, *generation, hash.to_string()))
+            .collect())
+    }
+
+    /// THE ROWS ARE THE TABLE'S: [`generation_rows`] answers one row per generation-table entry,
+    /// in the table's order whatever the fixtures' order, digesting an entry's fixtures in their
+    /// order, and refuses a fixture keyed by no entry, an entry no fixture is keyed by, and both.
+    #[test]
+    fn golden_rows_follow_the_generation_table() {
+        let every = [
+            ("py", "p"),
+            ("rs", "r1"),
+            ("go", "g"),
+            ("cs", "c"),
+            ("rs", "r2"),
+            ("ts", "t"),
+            ("tsx", "x"),
+            ("js", "j"),
+        ];
+        let no_go: Vec<(&str, &str)> = every.into_iter().filter(|(e, _)| *e != "go").collect();
+        let stray: Vec<(&str, &str)> = every.into_iter().chain([("zig", "z")]).collect();
+        let both: Vec<(&str, &str)> = no_go.iter().copied().chain([("zig", "z")]).collect();
+        for (fixtures, expected) in [
+            (
+                &every[..],
+                pinned_rows(&[
+                    ("rs", RUST_TAGS_GENERATION, "r1|r2"),
+                    ("cs", CSHARP_TAGS_GENERATION, "c"),
+                    ("ts", TS_TAGS_GENERATION, "t"),
+                    ("tsx", TSX_TAGS_GENERATION, "x"),
+                    ("js", JS_TAGS_GENERATION, "j"),
+                    ("go", GO_TAGS_GENERATION, "g"),
+                    ("py", PYTHON_TAGS_GENERATION, "p"),
+                ]),
+            ),
+            (
+                &stray[..],
+                Err(
+                    "fixtures keyed by no entry: [\"zig\"]; entries no fixture is keyed by: []"
+                        .to_string(),
+                ),
+            ),
+            (
+                &no_go[..],
+                Err(
+                    "fixtures keyed by no entry: []; entries no fixture is keyed by: [\"go\"]"
+                        .to_string(),
+                ),
+            ),
+            (
+                &both[..],
+                Err(
+                    "fixtures keyed by no entry: [\"zig\"]; entries no fixture is keyed by: \
+                     [\"go\"]"
+                        .to_string(),
+                ),
+            ),
+            (
+                &[][..],
+                Err(
+                    "fixtures keyed by no entry: []; entries no fixture is keyed by: [\"rs\", \
+                     \"cs\", \"ts\", \"tsx\", \"js\", \"go\", \"py\"]"
+                        .to_string(),
+                ),
+            ),
+        ] {
+            assert_eq!(
+                generation_rows(fixtures, |keyed| keyed
+                    .iter()
+                    .map(|fixture| **fixture)
+                    .collect::<Vec<&str>>()
+                    .join("|")),
+                expected,
+                "the rows of {fixtures:?}"
+            );
+        }
+    }
+
+    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP, and EACH LANGUAGE PINS ITS OWN ROWS (spec 117): the
+    /// golden fixtures, a source for each registry entry and a malformed Rust file, extract to
+    /// one serialized form per entry whose digest is pinned beside that entry's tags generation,
+    /// so a change to what one language's extraction records fails that language's row alone
+    /// until its generation is bumped and the row re-pinned, and a snapshot of the code store
+    /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
+    /// generation table's generations joined in its order. The fixtures set every part a snapshot
+    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
+    /// kind included, so a change to any of them moves a digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
         use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
         use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
-        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
+        // One row per line with a comment line between rows, so units re-pinning different
+        // languages' rows merge clean.
+        const PINNED: [(&str, &str, &str); 7] = [
+            // Rust
+            ("rs", "rust-tags-v1", "0777ca084d4dc969"),
+            // C#
+            ("cs", "csharp-tags-v1", "5bcd02652120b9ae"),
+            // TypeScript
+            ("ts", "typescript-tags-v1", "2ad5303d109e8cbf"),
+            // TSX
+            ("tsx", "tsx-tags-v1", "7e4aa9879a4d7d4a"),
+            // JavaScript
+            ("js", "javascript-tags-v1", "4fce42e8958b53ad"),
+            // Go
+            ("go", "go-tags-v1", "f0b4015aed1ac9fb"),
+            // Python
+            ("py", "python-tags-v1", "2ae6674264c03453"),
+        ];
+        assert_eq!(
+            GRAMMAR_TAGS_VERSION,
+            TAGS_GENERATIONS.map(|(_, generation)| generation).join(","),
+            "`GRAMMAR_TAGS_VERSION`'s `concat!` expands each entry's generation macro, joined by \
+             `,` in the generation table's order"
+        );
         let extracted: Vec<(&str, FileSymbols)> = GOLDEN_SOURCES
             .iter()
             .map(|(ext, src)| (*ext, crate::symbol_index::extracted(ext, src)))
@@ -1282,15 +1446,15 @@ def calc(n):
         ] {
             assert!(covered, "the golden fixtures set {part}");
         }
-        let digest =
-            crate::grounder::symbols::content_hash(&serde_json::to_string(&extracted).unwrap());
         assert_eq!(
-            (GRAMMAR_TAGS_VERSION, digest.as_str()),
-            PINNED,
-            "this build's extraction generation and golden digest (left) differ from the pinned \
-             pair: a change to what extraction records ships with a bump, so bump \
-             `GRAMMAR_TAGS_VERSION` and re-pin this pair to the new tag and this build's digest \
-             together"
+            generation_rows(&extracted, |keyed| crate::grounder::symbols::content_hash(
+                &serde_json::to_string(keyed).unwrap()
+            )),
+            pinned_rows(&PINNED),
+            "each entry's tags generation and the digest of its golden fixtures' extraction (left) \
+             differ from the pinned rows: a change to what one language's extraction records \
+             ships with a bump, so bump that language's generation macro in model.rs and re-pin \
+             its row here and in the facts golden to this build's values together"
         );
     }
 
