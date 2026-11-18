@@ -772,6 +772,23 @@ mod tests {
         }
     }
 
+    /// A spawn's stop-failure hook is a writer of the spawn in both forms Git Bash shows it in on
+    /// Windows: the `bash.exe` line the host's node builds, whose one double-quoted `-c` argument
+    /// holds the command with its single-quoted words, and the `rigger.exe` line msys builds as
+    /// that shell hands the command on, each word unquoted.
+    #[test]
+    fn a_stop_failure_hook_as_git_bash_shows_it_on_windows_is_a_writer_of_its_spawn() {
+        for line in [
+            r#""C:\Program Files\Git\bin\bash.exe" -c "'C:\Users\op\.cargo\bin\rigger.exe' hook stop-failure --spawn 'u7-launch/implementer#2' --class rate_limit""#,
+            r"C:\Users\op\.cargo\bin\rigger.exe hook stop-failure --spawn u7-launch/implementer#2 --class rate_limit",
+        ] {
+            assert!(
+                is_spawn_writer(line, "u7-launch/implementer#2"),
+                "{line:?} is the hook for u7-launch/implementer#2"
+            );
+        }
+    }
+
     /// `settings` as the bytes of a compact settings file.
     fn bytes(settings: &Value) -> Vec<u8> {
         serde_json::to_vec(settings).unwrap()
