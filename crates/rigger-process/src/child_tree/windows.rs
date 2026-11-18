@@ -336,6 +336,24 @@ mod tests {
         unsafe { OwnedHandle::from_raw_handle(handle) }
     }
 
+    /// Closing a job's only handle ends every process in it, a child of a child of its main among
+    /// them: the inner shell starts the background ping and exits, so the ping's parent is gone
+    /// before the close.
+    #[test]
+    fn closing_a_job_ends_a_child_of_a_child_of_its_main() {
+        let job = Job::new().expect("a job");
+        let (mut main, lines) = in_job(
+            &job,
+            "cmd /c start /b ping -n 60 127.0.0.1 & echo up& ping -n 60 127.0.0.1 >NUL",
+        );
+        assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
+
+        drop(job);
+
+        assert!(ends(&lines), "nothing the main started holds its output");
+        let _ = main.wait();
+    }
+
     /// A release through a handle the OS will not clear the job's limit through answers the
     /// refusal and that closing the handle ends what still runs in the job; the job's own handle
     /// still holds the main until it closes.
