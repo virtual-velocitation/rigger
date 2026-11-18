@@ -1374,6 +1374,8 @@ mod tests {
     use super::*;
     use crate::test_support::assert_teardown_reaps_what_is_rooted_inside;
     use crate::test_support::cleanup;
+    #[cfg(unix)]
+    use crate::test_support::release;
     use crate::test_support::sigterm_ignorer_in;
     use crate::test_support::sleeper_in;
     use crate::test_support::wait_until;
@@ -1851,24 +1853,13 @@ mod tests {
         // so `ancestor_pids` on a DIRECT child would trivially stop at that pid (already
         // refused unconditionally elsewhere, so never separately recorded - see
         // `is_signal_eligible`). Spawn a GRANDCHILD instead (a shell that backgrounds a
-        // `sleep` and prints its pid) so the walk must pass THROUGH a real intermediate
-        // pid (the shell) to prove it is a multi-hop walk, not a single parent read.
-        let mut shell = StdCommand::new("sh")
-            .arg("-c")
-            .arg("sleep 300 & echo $!; wait")
-            .current_dir(Path::new("/"))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn shell with a backgrounded grandchild");
-        let stdout = shell.stdout.take().expect("piped stdout");
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
-            .expect("read the grandchild's pid line");
-        let grandchild_pid: u32 = line.trim().parse().expect("parse the grandchild pid");
+        // child and prints its pid) so the walk must pass THROUGH a real intermediate pid (the
+        // shell) to prove it is a multi-hop walk, not a single parent read.
+        let (shell, grandchild_pid) = shell_with_a_child();
 
         let ancestors = ancestor_pids(grandchild_pid);
         let shell_pid = shell.id();
-        cleanup(&mut shell);
+        release(shell);
 
         assert!(
             ancestors.contains(&shell_pid),
@@ -2018,29 +2009,40 @@ mod tests {
         assert_eq!(pids_and_starts(&descendants_in(&table, 10)), expected);
     }
 
+    /// A shell in `/` with one background child that reads the shell's stdin, which this test
+    /// holds, and that child's pid, read once the shell has said it. [`release`] closes the
+    /// stdin, so the child reads its end and exits and the shell's `wait` returns: nothing the
+    /// fixture started outlives the test on an OS whose test run ends no process left behind.
+    #[cfg(unix)]
+    fn shell_with_a_child() -> (Child, u32) {
+        let mut shell = StdCommand::new("sh")
+            .arg("-c")
+            .arg("exec 3<&0; cat <&3 >/dev/null & echo $!; wait")
+            .current_dir(Path::new("/"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn shell with a backgrounded child");
+        let stdout = shell.stdout.take().expect("piped stdout");
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
+            .expect("read the child's pid line");
+        let child = line.trim().parse().expect("parse the child's pid");
+        (shell, child)
+    }
+
     /// The walk over the live table finds a grandchild through the shell that started it, with
     /// the start time the grandchild reads.
     #[cfg(unix)]
     #[test]
     fn the_descendant_walk_finds_a_live_grandchild_through_its_parent() {
-        let mut shell = StdCommand::new("sh")
-            .arg("-c")
-            .arg("sleep 300 & echo $!; wait")
-            .current_dir(Path::new("/"))
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn shell with a backgrounded grandchild");
-        let stdout = shell.stdout.take().expect("piped stdout");
-        let mut line = String::new();
-        std::io::BufRead::read_line(&mut std::io::BufReader::new(stdout), &mut line)
-            .expect("read the grandchild's pid line");
-        let grandchild: u32 = line.trim().parse().expect("parse the grandchild pid");
+        let (shell, grandchild) = shell_with_a_child();
         let found: Vec<(u32, Option<u64>)> = descendants_of(shell.id())
             .iter()
             .map(|entry| (entry.pid, Some(entry.start)))
             .collect();
         let expected = vec![(grandchild, pid_starttime(grandchild))];
-        cleanup(&mut shell);
+        release(shell);
         assert_eq!(found, expected);
     }
 
