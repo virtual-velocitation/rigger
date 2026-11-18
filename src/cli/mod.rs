@@ -11052,7 +11052,8 @@ mod tests {
     /// command resolves carries the overlay's `specs_location`, spelled relative to the root with
     /// `/` between its parts and one closing `/`, and `specs/` when the project declares none; a
     /// location naming no directory inside the project fails the resolution, naming the overlay,
-    /// and fails `rigger setup`'s skill install the same way.
+    /// and fails `rigger setup`'s skill install the same way. An installed skill names the
+    /// location as the spawn host carries it.
     #[test]
     fn a_producers_output_is_the_specs_location_the_project_declares() {
         // Each row: the case, the overlay (none for no file), and the output the host carries or
@@ -11127,10 +11128,19 @@ mod tests {
             );
             assert_eq!(
                 install_skills(root).map(|_| ()).map_err(|e| e.to_string()),
-                expected.map(|_| ()),
+                expected.clone().map(|_| ()),
                 "{case}: rigger setup installs no skill naming a location every later command \
                  refuses"
             );
+            if let Ok(output) = &expected {
+                let installed =
+                    std::fs::read_to_string(skill_install_path(root, "using-rigger")).unwrap();
+                assert!(
+                    installed.contains(&format!("This repo keeps its specs in {output}.")),
+                    "{case}: the installed using-rigger names the location as every command \
+                     spells it"
+                );
+            }
         }
     }
 
