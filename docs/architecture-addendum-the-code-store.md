@@ -306,7 +306,7 @@ definition a thousand mentions resolve to.
 | A file | the id scheme it has today |
 | A design document | the id scheme it has today |
 | A workflow node | the id scheme it has today |
-| A call placeholder `<file>::%<leaf>` | made by the resolver for a mention that resolves to no single definition; never stored |
+| A call placeholder `<file>::%<leaf>`, or `<file>::%<Q>::<leaf>` / `<file>::%<Q>.<leaf>` for a qualified call whose qualifier keeps several candidates | made by the resolver for a mention that resolves to no single definition; never stored |
 
 ### 4.4 The stamp
 
@@ -323,8 +323,9 @@ Stamp                                (a Tip plus what only advance knows)
               rows settled at advance can change (the symbol extractors' tag version, the facts
               generation, the digest of the extractors the project's workflow declares, when it
               declares any, the grouping generation and the settled generation; golden tests pin
-              them to digests of the facts, the groupings and the settled rows over fixtures, so
-              an unbumped change fails)
+              the generations and the tag version beside digests of the facts, the groupings and
+              the settled rows over fixtures, so a change that moves one of those digests fails
+              until a version pinned beside it is bumped and the digest re-pinned)
   seq         the snapshot's sequence number
 ```
 
@@ -613,7 +614,7 @@ so it runs once per advance and is stored in the snapshot:
   - **definition leaves:** the keys of `IDX_LEAF`, which a lookup's name index reads.
 
   Their generation (`SETTLED_GENERATION`) is folded into the fingerprint like the grouping
-  generation, and a golden test pins it beside a digest of the rows over a fixture. A view
+  generation, and a golden test pins it beside a digest of the rows over two fixtures. A view
   that holds no settled rows (an in-memory view) has the resolver compute them, and the two
   are tested to answer alike.
 - A grain other than the default is computed at read, on each open that asks for it, and is
@@ -794,10 +795,10 @@ Which definitions a mention may resolve to depends on whether the mention is tes
   produces the edges of the call and reference rules, resolved against all candidates, product
   and test. That gives test-to-test and test-to-product CALLS and REFERENCES edges, all marked
   `test`. A test call the call rule sends to a placeholder lands on the definition its proof
-  credits, so an unqualified test call's edge and the proof it adds name one definition. A test
-  call the qualified-mention rule gives no edge makes none, though the proof rule, which reads the
-  leaf alone, may still credit a definition with it (spec 117, RESOLVER AT READ). Under `exclude`
-  it produces no edge.
+  credits, so a test call's edge and the proof it adds name one definition, or the proof none. The
+  proof rule narrows a qualified call as the qualified-mention rule does, so a test call that rule
+  gives no edge, or sends to the placeholder of several, proves no definition (spec 117, RESOLVER
+  AT READ). Under `exclude` it produces no edge.
 
 A call in file F yields two edges to the one target the call rule below resolves: CALLS from its
 enclosing definition, or from F when the call sits outside every definition (a module-level
@@ -806,23 +807,23 @@ call), and REFERENCES from F. A call the qualified-mention rule gives no edge yi
 | Rule | Input | Resolution | Output (today's shapes) |
 |---|---|---|---|
 | qualified mention | Mention `Call` or `Tagged(k)` in file F written `Q::leaf` or `Q.leaf` | the candidates the call or tagged-reference rule below reads whose parent is a definition whose leaf is `Q` or an `impl`-kind definition enclosing an `impl` mention of `Q` (a product one for a product mention), else, when none is, those whose parent is a trait an `impl` mention such an implementation encloses names: exactly one, in any file | EXTRACTED edge to that definition |
-| | | several | a call: INFERRED edge to the definition the proof rule credits a test mention to, else to the placeholder `F::%<leaf>`; a tagged reference: no edge |
+| | | several | a call: INFERRED edge to the placeholder keyed by the qualified name as written, `F::%Q::leaf` or `F::%Q.leaf`, never one of the several in its own file, and no proof; a tagged reference: no edge |
 | | | none, under a member qualifier `Q.leaf` | the call or tagged-reference rule below |
 | | | none, under a path qualifier `Q::leaf` where `Q` is the leaf of a product `type` or `trait` definition in F's language | the call or tagged-reference rule below |
 | | | none, under any other path qualifier | no edge and no placeholder; not counted as unresolved (spec 117, RESOLVER AT READ) |
 | call / untagged reference | Mention `Call` in file F | exactly one same-file candidate | EXTRACTED edge to that definition |
 | | | otherwise, a test mention the proof rule credits to a definition | INFERRED edge to that definition |
 | | | otherwise | edge to the placeholder `F::%<leaf>`: INFERRED if any candidate exists anywhere, AMBIGUOUS if none |
-| down-hop | a placeholder | one candidate | a hop to it |
+| down-hop | a placeholder: the candidates of its leaf, the text after the last `::` or `.` of the name it is keyed by, and for a qualified name those the qualified-mention rule keeps | one candidate | a hop to it |
 | | | several candidates | a frontier |
-| up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf | callers |
+| up-hop (callers of D) | definition D | direct resolutions to D, plus placeholder edges whose leaf is D's leaf, one keyed by a qualified name only when its down-hop holds D | callers |
 | tagged reference | Mention `Tagged(k)` | definitions of the leaf whose kind `reference_candidate_kinds(k)` names, a non-target kind included (a `field` reference's are a field, a property, a constant, a static or a variant): for any `k` but `field`, exactly one same-file | EXTRACTED |
 | | | else exactly one in the project | INFERRED |
 | | | else | no edge; counted as unresolved |
 | | | for `k` = `field`, the same-file step skipped and a constant, static or variant left to the qualified-mention rule: exactly one `field` or `property` definition in the project, in F or not | INFERRED |
 | | | else | no edge; counted as unresolved |
 | module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
-| proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
+| proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | written `Q::leaf` or `Q.leaf`, the qualified-mention rule over every candidate, product and test: exactly one kept, that definition when it is product, none when it is test; none for several kept, or for a call that rule gives no edge; otherwise exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |
 | test-ness | an entity | section 8.1 | `test` attribute; drives the filter |
@@ -1087,8 +1088,9 @@ hidden test.
   - a show counts the hidden tests its query names and those proving the node it locates;
   - a neighbourhood counts the hidden tests proving a node it shows and, for a definition its
     callers walk steps from, the callers of the test calls that land on a placeholder bound to
-    its leaf. A walk never steps from a hidden test, so a test reaching a shown node only through
-    another hidden test is not counted.
+    its leaf, one keyed by a qualified name only when its down-hop holds that definition. A walk
+    never steps from a hidden test, so a test reaching a shown node only through another hidden
+    test is not counted.
 - **The filter is a parameter of the view:**
   - the dash takes `tests=exclude|include|only` on `/api/graph`, and the explorer's "Show tests"
     toggle sets it; each reply that draws nodes names the drawn ones that are test code
@@ -1338,12 +1340,17 @@ A reader takes a view's test files and proof calls as the store settled them at 
 (`Settled`), not by resolving the whole view, so the overlay re-settles them
 (`resolve::resettle`) on its first read of them. A changed file can move the rows of a file
 that did not change: a module declaration (`#[cfg(test)] mod x;`) flips the test-ness of the
-files it reaches, and a definition gained or lost moves the product targets of every call to
-its leaf, which proves or unproves a test's call to it. Re-settling resolves both the base and
-the merged view, takes the merged view's test files, and redoes the proof calls of each file
-that differs or flipped and of each test file that calls a leaf whose targets moved; every
-other proof call is the base's, since only a definition in a file that differs or flipped can
-move a leaf's targets.
+files it reaches; a definition gained, lost or flipped moves the targets of every call to its
+leaf, which proves or unproves a test's call to it; and a definition or an `impl` mention named
+`Q`, gained or lost, moves what the qualifier `Q` keeps, as does a trait gained, lost or
+flipped that an implementation of `Q` names, which moves the proof of a test's call written
+`Q::leaf` or `Q.leaf`. Re-settling resolves both the base and the merged view, takes the merged
+view's test files, and redoes the proof calls of each file that differs or flipped, of each
+file whose test code calls a leaf whose targets, product or test, moved, and of each file whose
+test code makes a call whose qualifier is the leaf of a definition or of an `impl` mention in
+either version of a file that differs or flipped, or a name an implementation's header holds
+beside such a definition's leaf. Every other proof call is the base's, since only a file that
+differs or flipped holds a definition or an `impl` mention that moved.
 Groupings still describe the stamp: a new entity shows no community until the next advance, and
 the label says so.
 

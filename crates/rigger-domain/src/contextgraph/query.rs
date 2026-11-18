@@ -221,10 +221,12 @@ pub fn split_id(id: &str) -> (&str, Option<&str>) {
 }
 
 /// The leaf an id alone names (spec 119): [`split_id`]'s rest half less exactly one leading
-/// [`PLACEHOLDER_SIGIL`] (`<file>::%x` gives `x`, `<file>::%%x` gives `%x`), `None` for an id
-/// holding no `::` and for a rest half not beginning with the sigil (`<file>::x`, a definition's
-/// or a bare node's id): the one decision of what is a placeholder. Read only where an id is all
-/// a reader holds; a reader holding a node reads [`node_leaf`].
+/// [`PLACEHOLDER_SIGIL`] (`<file>::%x` gives `x`, `<file>::%%x` gives `%x`), the qualified name as
+/// written for a placeholder keyed by one (spec 117: `<file>::%T.x` gives `T.x`, whose leaf is
+/// [`path_leaf`]'s `x`), `None` for an id holding no `::` and for a rest half not beginning with
+/// the sigil (`<file>::x`, a definition's or a bare node's id): the one decision of what is a
+/// placeholder. Read only where an id is all a reader holds; a reader holding a node reads
+/// [`node_leaf`].
 pub fn leaf_of(id: &str) -> Option<&str> {
     split_id(id).1?.strip_prefix(PLACEHOLDER_SIGIL)
 }
@@ -280,12 +282,13 @@ fn joined_id(file: &str, rest: &[&str]) -> String {
     id
 }
 
-/// The id of the placeholder a reference to `leaf` from `file` lands on when the file holds no
-/// one candidate for it (spec 119): `<file>::%<leaf>` ([`entity_id`]), the leaf behind one
-/// [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `leaf` back whatever it begins with.
-pub fn placeholder_id(file: &str, leaf: &str) -> String {
+/// The id of the placeholder a reference to `name` from `file` lands on when the file holds no
+/// one candidate for it (spec 119), `name` a leaf or, for a call whose qualifier keeps several
+/// candidates, the qualified name as written (spec 117): `<file>::%<name>` ([`entity_id`]), the
+/// name behind one [`PLACEHOLDER_SIGIL`], so [`leaf_of`] gives `name` back whatever it begins with.
+pub fn placeholder_id(file: &str, name: &str) -> String {
     let mut sigil = [0; 4];
-    joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), leaf])
+    joined_id(file, &[PLACEHOLDER_SIGIL.encode_utf8(&mut sigil), name])
 }
 
 /// The `name` attr a node carries when it is non-empty: an empty `name` reads as absent, the one
@@ -300,10 +303,42 @@ pub fn node_name(node: &Node) -> Option<&str> {
 
 /// A node's leaf (spec 119): its non-empty `name` attr whatever it holds ([`node_name`]: `new` for
 /// `a.rs::T::new`, `A.B`, `a::b`, a C# `operator %`'s `%`, so a named node is never read as a
-/// placeholder), else [`leaf_of`] its id. The store's pinned twin is the adapter's
-/// `node_leaf_sql()`, NULL exactly where this reads the id.
+/// placeholder), else the [`path_leaf`] of [`leaf_of`] its id, the text after the last `::` or
+/// `.` of the name a placeholder is keyed by (spec 117: `<file>::%T.x` and `<file>::%x` both give
+/// `x`). The store's pinned twin is the adapter's `node_leaf_sql()`, NULL exactly where this
+/// reads the id.
 pub fn node_leaf(node: &Node) -> Option<&str> {
-    node_name(node).or_else(|| leaf_of(&node.id))
+    node_name(node).or_else(|| leaf_of(&node.id).map(path_leaf))
+}
+
+/// The attribute a placeholder keyed by a qualified name carries (spec 117, RESOLVER AT READ):
+/// the ids of the candidates its down-hop keeps, a JSON array, so a reader holding the graph
+/// alone keeps what the walk keeps.
+pub const CANDIDATES_ATTR: &str = "candidates";
+
+/// `cands` less those `kept` does not hold, when it is given: of the call-target definitions of
+/// a leaf, those a placeholder reaches.
+pub fn kept_of<C: AsRef<str> + Clone>(cands: &[C], kept: Option<&[String]>) -> Vec<C> {
+    let reached = cands
+        .iter()
+        .filter(|c| kept.is_none_or(|k| k.iter().any(|id| id == c.as_ref())));
+    reached.cloned().collect()
+}
+
+/// The call-target definitions a bare placeholder `node` resolves over, of `defs_by_suffix`
+/// ([`defs_by_entity_suffix`]): those of its leaf ([`node_leaf`]), less those its
+/// [`CANDIDATES_ATTR`] does not name when it carries one that parses ([`kept_of`]); none when it
+/// names no leaf.
+pub fn placeholder_candidates<'g>(
+    node: &Node,
+    defs_by_suffix: &BTreeMap<&str, Vec<&'g str>>,
+) -> Vec<&'g str> {
+    let kept: Option<Vec<String>> = node
+        .attrs
+        .get(CANDIDATES_ATTR)
+        .and_then(|ids| serde_json::from_str(ids).ok());
+    let cands = node_leaf(node).and_then(|leaf| defs_by_suffix.get(leaf));
+    kept_of(cands.map_or(&[], Vec::as_slice), kept.as_deref())
 }
 
 /// Index every code-entity DEFINITION a call resolves onto (a non-empty `name` attr,
@@ -771,7 +806,8 @@ pub fn clustered_overview(graph: &Graph, lens: &Lens) -> ClusterOverview {
 /// and a code entity folds by [`node_file`] - its OWN FILE - rather than [`cluster_key`]'s directory
 /// fold. A REAL definition (a non-empty `name` attr, [`node_name`], a data member's included) takes
 /// [`node_file`] of its own id directly; a BARE placeholder resolves FIRST by its leaf
-/// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone.
+/// ([`node_leaf`]) over [`Buckets::defs_by_suffix`], the call targets alone, those its down-hop
+/// keeps for one keyed by a qualified name ([`placeholder_candidates`]).
 pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<String> {
     match buckets.lens {
         Lens::Code { .. } => {
@@ -793,20 +829,18 @@ pub(crate) fn whole_graph_lens_key(buckets: &Buckets, node: &Node) -> Option<Str
             }
             // A real definition (a non-empty `name` attr), a data member or a declaration as much
             // as a fn, folds under its OWN file. A BARE placeholder (no `name`, or an
-            // empty one) resolves by its leaf ([`node_leaf`]) over `buckets.defs_by_suffix`, the
-            // call targets, FIRST - the same honest resolution `reproject_files` performs - since
-            // its raw id names the REFERENCING file, not its true definition file: EXACTLY ONE
-            // candidate resolves to that definition's file; ZERO or MORE THAN ONE cannot be
-            // honestly attributed to any one file, so the fold excludes it entirely (never
-            // mis-attributed to the referencing file its own id encodes).
+            // empty one) resolves by its leaf over `buckets.defs_by_suffix`, the call targets,
+            // those its down-hop keeps for one keyed by a qualified name
+            // ([`placeholder_candidates`]), FIRST - the same honest resolution `reproject_files`
+            // performs - since its raw id names the REFERENCING file, not its true definition
+            // file: EXACTLY ONE candidate resolves to that definition's file; ZERO or MORE THAN
+            // ONE cannot be honestly attributed to any one file, so the fold excludes it entirely
+            // (never mis-attributed to the referencing file its own id encodes).
             if node_name(node).is_some() {
                 return node_file(&node.kind, &node.id).map(str::to_string);
             }
-            match node_leaf(node)
-                .and_then(|leaf| buckets.defs_by_suffix.get(leaf))
-                .map(Vec::as_slice)
-            {
-                Some([only]) => node_file(KIND_CODE_ENTITY, only).map(str::to_string),
+            match placeholder_candidates(node, &buckets.defs_by_suffix).as_slice() {
+                [only] => node_file(KIND_CODE_ENTITY, only).map(str::to_string),
                 _ => None,
             }
         }
@@ -2916,8 +2950,17 @@ mod leaf_tests {
                 node_leaf(&def_node("f.ts::%", "%")),
                 node_leaf(&unnamed),
                 node_leaf(&plain("x", KIND_CODE_ENTITY)),
+                node_leaf(&plain("b.rs::%T.new", KIND_CODE_ENTITY)),
+                node_leaf(&plain("b.rs::%T::new", KIND_CODE_ENTITY)),
             ],
-            [Some("new"), Some("%"), Some("new"), None]
+            [
+                Some("new"),
+                Some("%"),
+                Some("new"),
+                None,
+                Some("new"),
+                Some("new")
+            ]
         );
     }
 
@@ -2936,6 +2979,81 @@ mod leaf_tests {
         let mut g = nested_and_placeholder();
         g.nodes.push(empty_named_node("c.rs::%new"));
         assert_eq!(files_lens_keys(&g), vec![Some("a.rs".to_string()); 3]);
+    }
+}
+
+/// Spec 117, SEVERAL NARROWED CANDIDATES NEVER PREFER THEIR FILE, at the files lens: a
+/// placeholder keyed by a qualified name binds by its leaf.
+#[cfg(test)]
+mod qualified_placeholder_tests {
+    use super::lens_views::files_lens_keys;
+    use super::*;
+    use crate::test_support::{def_node, node_with_optional_attrs};
+
+    /// One row: what the row shows, each definition with its file, the down-hop carried, the
+    /// placeholder's key.
+    type Row<'a> = (
+        &'a str,
+        &'a [(&'a str, &'a str)],
+        Option<&'a str>,
+        Option<&'a str>,
+    );
+
+    /// Each row: the definitions of the leaf `new` the graph holds, the `candidates` attribute
+    /// the placeholder `b.rs::%T.new` carries, and the file the files lens folds it under. It
+    /// keeps the definitions of its leaf its attribute names, the resolver's down-hop, and every
+    /// one when it carries none or one that does not parse: exactly one kept gives its file.
+    #[test]
+    fn the_files_lens_folds_a_qualified_placeholder_by_its_leaf_over_its_down_hop() {
+        let both = [("a.rs::T::new", "a.rs"), ("c.rs::U::new", "c.rs")];
+        let cases: [Row; 6] = [
+            (
+                "a down-hop of both definitions",
+                &both,
+                Some(r#"["a.rs::T::new","c.rs::U::new"]"#),
+                None,
+            ),
+            (
+                "a down-hop of one shown definition and one the graph does not hold",
+                &both,
+                Some(r#"["c.rs::U::new","tests/t.rs::T::new"]"#),
+                Some("c.rs"),
+            ),
+            (
+                "a down-hop of none the graph holds",
+                &both,
+                Some(r#"["tests/t.rs::T::new"]"#),
+                None,
+            ),
+            ("no down-hop carried, two definitions", &both, None, None),
+            (
+                "no down-hop carried, one definition",
+                &both[1..],
+                None,
+                Some("c.rs"),
+            ),
+            (
+                "a down-hop that does not parse, one definition",
+                &both[1..],
+                Some("c.rs::U::new"),
+                Some("c.rs"),
+            ),
+        ];
+        for (case, defs, carried, want) in cases {
+            let mut nodes = vec![node_with_optional_attrs(
+                "b.rs::%T.new",
+                KIND_CODE_ENTITY,
+                &[("candidates", carried)],
+            )];
+            nodes.extend(defs.iter().map(|(d, _)| def_node(d, "new")));
+            let g = Graph {
+                nodes,
+                edges: Vec::new(),
+            };
+            let mut want = vec![want.map(str::to_string)];
+            want.extend(defs.iter().map(|(_, file)| Some(file.to_string())));
+            assert_eq!(files_lens_keys(&g), want, "{case}");
+        }
     }
 }
 
