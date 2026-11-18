@@ -25,9 +25,13 @@ pub fn try_exclusive_lock(path: &Path) -> Result<(), Option<i32>> {
 }
 
 /// An exclusive try-lock on the open `guard`: `Ok` when no process holds the guard, else the
-/// refusal's OS error code. The lock, when taken, is released as the open closes.
+/// refusal's OS error code. The lock, when taken, is released at once by an explicit unlock, as
+/// `rigger reset --build-cache` releases its own, rather than by the open closing, so a copy of
+/// the descriptor in a process another test thread forks, held until that process execs, never
+/// keeps the guard past the probe.
 pub fn exclusive_probe(guard: &std::fs::File) -> Result<(), Option<i32>> {
-    fs2::FileExt::try_lock_exclusive(guard).map_err(|e| e.raw_os_error())
+    fs2::FileExt::try_lock_exclusive(guard).map_err(|e| e.raw_os_error())?;
+    fs2::FileExt::unlock(guard).map_err(|e| e.raw_os_error())
 }
 
 /// What [`try_exclusive_lock`] answers while another open holds the guard: the OS's contended
