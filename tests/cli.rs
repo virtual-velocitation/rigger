@@ -4595,7 +4595,12 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
         let starts: &[&str] = if case.says.is_empty() {
             &["stop check: ", allowed]
         } else {
-            &["stop check: ", "stop held (1 of 3): ", "stop check: ", allowed]
+            &[
+                "stop check: ",
+                "stop held (1 of 3): ",
+                "stop check: ",
+                allowed,
+            ]
         };
         assert_eq!(lines.len(), starts.len(), "{name}: {lines:#?}");
         for (line, start) in lines.iter().zip(starts) {
