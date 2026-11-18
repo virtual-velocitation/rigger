@@ -857,6 +857,76 @@ mod tests {
         }
     }
 
+    /// Spec 117 (CAPTURES): each `@reference.<suffix>` capture of one fixture query keeps its
+    /// suffix in the mention it yields: `class`, `type` and `interface` a `type` mention,
+    /// `implementation` an `impl`, `constant` a `const`, `field` a `field` and `import` a `use`,
+    /// while `call`, `send` and a suffix the design does not list yield a call.
+    #[test]
+    fn every_capture_keeps_its_suffix() {
+        let tagged = |kind: &str| MentionKind::Tagged(kind.to_string());
+        // (the capture's suffix, the kind of the mention it yields)
+        let table = [
+            ("class", tagged("type")),
+            ("type", tagged("type")),
+            ("interface", tagged("type")),
+            ("implementation", tagged("impl")),
+            ("constant", tagged("const")),
+            ("field", tagged("field")),
+            ("import", tagged("use")),
+            ("call", MentionKind::Call),
+            ("send", MentionKind::Call),
+            ("unlisted", MentionKind::Call),
+        ];
+        // One call per row, `of_<suffix>()` on its own line, and one query pattern per row
+        // capturing that call alone under the row's suffix.
+        let leaf = |suffix: &str| format!("of_{suffix}");
+        let source: String = table
+            .iter()
+            .map(|(suffix, _)| format!("{}()\n", leaf(suffix)))
+            .collect();
+        let query: String = table
+            .iter()
+            .map(|(suffix, _)| {
+                format!(
+                    "((call function: (identifier) @name) @reference.{suffix} \
+                     (#eq? @name \"{}\"))\n",
+                    leaf(suffix)
+                )
+            })
+            .collect();
+        let fixture = crate::grounder::symbols::extract::CompiledTags::compile(
+            &tree_sitter_python::LANGUAGE.into(),
+            &query,
+        )
+        .expect("the fixture query compiles");
+        let symbols = crate::grounder::symbols::extract::extract(&source, Lang::Python, &fixture)
+            .expect("the fixture source extracts");
+        let mut facts = FileFacts::default();
+        code_facts(
+            "tool/run.py",
+            &CodeSymbols {
+                defs: symbols.defs,
+                refs: symbols.refs,
+                partial: symbols.partial,
+                doc: symbols.doc,
+            },
+            &mut facts,
+        );
+        let expected: Vec<Mention> = table
+            .into_iter()
+            .zip(1..)
+            .map(|((suffix, kind), line)| Mention {
+                enclosing: None,
+                name: leaf(suffix),
+                leaf: leaf(suffix),
+                kind,
+                line,
+                test: false,
+            })
+            .collect();
+        assert_eq!(facts.mentions, expected);
+    }
+
     #[test]
     fn a_path_two_definitions_share_names_the_precedence_winner() {
         // (source, the kind and line of the definition the mention's enclosing path names)
