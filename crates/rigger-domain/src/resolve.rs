@@ -2365,20 +2365,23 @@ pub(crate) mod tests {
     }
 
     /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the test files and proof calls of
-    /// [`fixture`], and of [`qualified_proof_fixture`], whose qualified test calls take each
-    /// outcome of the narrowed match in [`Resolver::proof`], are pinned by digest beside the
-    /// generation the store's fingerprint folds in, so a change that moves the rows these two
-    /// fixtures settle fails here until `SETTLED_GENERATION` is bumped and the pair re-pinned.
+    /// [`fixture`], of [`qualified_proof_fixture`], whose qualified test calls take each outcome
+    /// of the narrowed match in [`Resolver::proof`], and of [`module_root_fixture`], whose
+    /// test-only declaration reaches a file through the list its declaring file's place picks,
+    /// are pinned by digest beside the generation the store's fingerprint folds in, so a change
+    /// that moves the rows these three fixtures settle fails here until `SETTLED_GENERATION` is
+    /// bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (4, "66ea4c83fbdb81c6");
+        const PINNED: (u64, &str) = (5, "a9202848617a9138");
         let (test_files, proofs) = settled_rows(&fixture());
         assert!(
             !proofs.is_empty() && test_files.iter().any(|p| !p.starts_with("tests/")),
             "the fixture holds proofs and a test file by the closure alone"
         );
         let qualified = settled_rows(&qualified_proof_fixture());
-        let rows = format!("{test_files:#?}{proofs:#?}{qualified:#?}");
+        let rooted = settled_rows(&module_root_fixture());
+        let rows = format!("{test_files:#?}{proofs:#?}{qualified:#?}{rooted:#?}");
         let digest = crate::community::fnv1a_hex(&rows);
         assert_eq!(
             (SETTLED_GENERATION, digest.as_str()),
@@ -4362,7 +4365,8 @@ pub(crate) mod tests {
 
     #[test]
     fn module_target_is_shared_by_the_module_rule_and_the_closure() {
-        // Each row: the case, the declaration's candidates, the code files, the target.
+        // Each row: the case, the declaration's candidates in both its lists, the code files, the
+        // target.
         type Case = (
             &'static str,
             &'static [&'static str],
@@ -4387,7 +4391,7 @@ pub(crate) mod tests {
         for (name, candidates, code_files, want) in cases {
             let d = decl("m", 0, false, candidates);
             assert_eq!(
-                module_target(&d, |p| code_files.contains(&p)),
+                module_target(&d, true, |p| code_files.contains(&p)),
                 *want,
                 "{name}"
             );
@@ -4408,6 +4412,313 @@ pub(crate) mod tests {
                 &["src/a/a_tests.rs"],
             ),
         ]);
+    }
+
+    /// A module declaration placed `as_root` as a crate root or a `mod.rs` file declares it and
+    /// `as_child` as any other file does, `path_attr` when it carries a `#[path]` attribute.
+    fn placed(
+        name: &str,
+        test: bool,
+        as_root: &[&str],
+        as_child: &[&str],
+        path_attr: bool,
+    ) -> ModuleDecl {
+        ModuleDecl {
+            as_child: as_child.iter().map(|c| c.to_string()).collect(),
+            path_attr,
+            ..decl(name, 0, test, as_root)
+        }
+    }
+
+    /// A tree whose declarations place a module apart as a root and as a child, with a code file
+    /// at the first path of each list: crate roots and the `#[path]` declarations under them,
+    /// files reached through a plain declaration, a `mod.rs` file, one file two roots reach and
+    /// one a root and a deeper file reach, a test-only declaration, and a cycle no root reaches.
+    pub(crate) fn module_root_fixture() -> FactsView {
+        let file = |path: &str, modules: Vec<ModuleDecl>| FileFacts {
+            modules,
+            ..code(path, "rust", Scope::Product, vec![], vec![])
+        };
+        let both = |name: &str, paths: &[&str]| decl(name, 0, false, paths);
+        let declaring = vec![
+            file(
+                "src/bin/tool.rs",
+                vec![
+                    placed(
+                        "x",
+                        false,
+                        &["src/bin/x.rs", "src/bin/x/mod.rs"],
+                        &["src/bin/tool/x.rs", "src/bin/tool/x/mod.rs"],
+                        false,
+                    ),
+                    placed(
+                        "tests",
+                        true,
+                        &["src/bin/tests.rs", "src/bin/tests/mod.rs"],
+                        &["src/bin/tool/tests.rs", "src/bin/tool/tests/mod.rs"],
+                        false,
+                    ),
+                ],
+            ),
+            file(
+                "src/lib.rs",
+                vec![
+                    placed("y", false, &["src/p/y.rs"], &["src/p/y.rs"], true),
+                    both("code", &["src/code.rs", "src/code/mod.rs"]),
+                    both("a", &["src/a.rs", "src/a/mod.rs"]),
+                    both("deep", &["src/deep.rs", "src/deep/mod.rs"]),
+                    placed("m", false, &["src/m.rs"], &["src/m.rs"], true),
+                ],
+            ),
+            file(
+                "src/main.rs",
+                vec![both("m", &["src/m.rs", "src/m/mod.rs"])],
+            ),
+            file(
+                "src/p/y.rs",
+                vec![placed(
+                    "z",
+                    false,
+                    &["src/p/z.rs", "src/p/z/mod.rs"],
+                    &["src/p/y/z.rs", "src/p/y/z/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/p/z.rs",
+                vec![placed(
+                    "w",
+                    false,
+                    &["src/p/w.rs", "src/p/w/mod.rs"],
+                    &["src/p/z/w.rs", "src/p/z/w/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/code/mod.rs",
+                vec![both(
+                    "advance",
+                    &["src/code/advance.rs", "src/code/advance/mod.rs"],
+                )],
+            ),
+            file(
+                "src/a.rs",
+                vec![
+                    placed(
+                        "b",
+                        false,
+                        &["src/b.rs", "src/b/mod.rs"],
+                        &["src/a/b.rs", "src/a/b/mod.rs"],
+                        false,
+                    ),
+                    placed("alias", false, &["src/deep.rs"], &["src/deep.rs"], true),
+                ],
+            ),
+            file(
+                "src/deep.rs",
+                vec![placed(
+                    "leaf",
+                    false,
+                    &["src/leaf.rs", "src/leaf/mod.rs"],
+                    &["src/deep/leaf.rs", "src/deep/leaf/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/m.rs",
+                vec![placed(
+                    "n",
+                    false,
+                    &["src/n.rs", "src/n/mod.rs"],
+                    &["src/m/n.rs", "src/m/n/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/bin/alpha.rs",
+                vec![placed(
+                    "shared",
+                    false,
+                    &["src/bin/shared.rs", "src/bin/shared/mod.rs"],
+                    &["src/bin/alpha/shared.rs", "src/bin/alpha/shared/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/bin/beta.rs",
+                vec![placed(
+                    "shared",
+                    false,
+                    &["src/bin/shared.rs"],
+                    &["src/bin/shared.rs"],
+                    true,
+                )],
+            ),
+            file(
+                "src/bin/shared.rs",
+                vec![placed(
+                    "k",
+                    false,
+                    &["src/bin/k.rs", "src/bin/k/mod.rs"],
+                    &["src/bin/shared/k.rs", "src/bin/shared/k/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/r.rs",
+                vec![placed(
+                    "s",
+                    false,
+                    &["src/s.rs", "src/s/mod.rs"],
+                    &["src/r/s.rs", "src/r/s/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
+                "src/s.rs",
+                vec![placed(
+                    "r",
+                    false,
+                    &["src/r.rs", "src/r/mod.rs"],
+                    &["src/s/r.rs", "src/s/r/mod.rs"],
+                    false,
+                )],
+            ),
+        ];
+        // Each file reached that declares nothing, and beside it, where a declaration's lists
+        // differ, the file its other list would reach: `src/p/y/z.rs` is `src/p/z.rs`'s.
+        let declared = [
+            "src/bin/x.rs",
+            "src/bin/tool/x.rs",
+            "src/bin/tests.rs",
+            "src/bin/tool/tests.rs",
+            "src/p/y/z.rs",
+            "src/p/z/w.rs",
+            "src/p/w.rs",
+            "src/code/advance.rs",
+            "src/a/b.rs",
+            "src/b.rs",
+            "src/deep/leaf.rs",
+            "src/leaf.rs",
+            "src/n.rs",
+            "src/m/n.rs",
+            "src/bin/shared/k.rs",
+            "src/bin/k.rs",
+        ];
+        let leaves = declared.iter().map(|path| file(path, vec![]));
+        FactsView::new(stamp(), declaring.into_iter().chain(leaves).collect())
+    }
+
+    /// A MODULE ROOT IS DECIDED AT READ: a declaration reaches the first code file of its
+    /// `as_child` list when a declaration with no `#[path]` attribute reached its file first,
+    /// walking down from the files no declaration names a depth at a time, each depth in path
+    /// order, and of its `as_root` list otherwise. The module rule's edges and the test-module
+    /// closure reach the same files.
+    #[test]
+    fn a_module_root_is_decided_at_read() {
+        // Each row: the case, a declaring file of the fixture, and the file each of its
+        // declarations reaches, in declaration order.
+        type Case = (&'static str, &'static str, &'static [Option<&'static str>]);
+        let cases: &[Case] = &[
+            (
+                "a file no declaration names is a root: a test-only declaration in it too",
+                "src/bin/tool.rs",
+                &[Some("src/bin/x.rs"), Some("src/bin/tests.rs")],
+            ),
+            (
+                "the library root, its lists equal",
+                "src/lib.rs",
+                &[
+                    Some("src/p/y.rs"),
+                    Some("src/code/mod.rs"),
+                    Some("src/a.rs"),
+                    Some("src/deep.rs"),
+                    Some("src/m.rs"),
+                ],
+            ),
+            (
+                "a file a `#[path]` declaration reaches is placed as a root",
+                "src/p/y.rs",
+                &[Some("src/p/z.rs")],
+            ),
+            (
+                "a file a plain declaration reaches under one a `#[path]` declaration reaches",
+                "src/p/z.rs",
+                &[Some("src/p/z/w.rs")],
+            ),
+            (
+                "a reached `mod.rs` file",
+                "src/code/mod.rs",
+                &[Some("src/code/advance.rs")],
+            ),
+            (
+                "a file a root reaches through a plain declaration",
+                "src/a.rs",
+                &[Some("src/a/b.rs"), Some("src/deep.rs")],
+            ),
+            (
+                "a file a root reaches plain and a deeper file earlier in path order reaches by \
+                 `#[path]` takes the root's",
+                "src/deep.rs",
+                &[Some("src/deep/leaf.rs")],
+            ),
+            (
+                "the second root reaching a file the first already reached",
+                "src/main.rs",
+                &[Some("src/m.rs")],
+            ),
+            (
+                "two roots reaching one file: the first in path order, by `#[path]`, decides",
+                "src/m.rs",
+                &[Some("src/n.rs")],
+            ),
+            (
+                "a binary root reaching a file plain",
+                "src/bin/alpha.rs",
+                &[Some("src/bin/shared.rs")],
+            ),
+            (
+                "a later binary root reaching the same file by `#[path]`",
+                "src/bin/beta.rs",
+                &[Some("src/bin/shared.rs")],
+            ),
+            (
+                "two roots reaching one file: the first in path order, plain, decides",
+                "src/bin/shared.rs",
+                &[Some("src/bin/shared/k.rs")],
+            ),
+            (
+                "a cycle no root reaches starts at its first file in path order, as a root",
+                "src/r.rs",
+                &[Some("src/s.rs")],
+            ),
+            (
+                "the rest of the cycle is reached plain, and no file is at its `as_child` path",
+                "src/s.rs",
+                &[None],
+            ),
+        ];
+        let view = module_root_fixture();
+        let r = Resolver::new(&view);
+        for (case, file, want) in cases {
+            let decls = view.modules(file).expect("a declaring file");
+            let got: Vec<Option<&str>> = decls.iter().map(|d| r.module_target(file, d)).collect();
+            assert_eq!(&got, want, "{case}: module_target");
+            let mut links = answer(&view, &r, &Ask::Links(file, true));
+            links.sort();
+            let mut contains: Vec<String> = (want.iter().flatten())
+                .map(|to| format!("{file} -{REL_CONTAINS}/{TIER_EXTRACTED}-> {to}"))
+                .collect();
+            contains.sort();
+            assert_eq!(links, contains, "{case}: the module rule");
+        }
+        let declaring = view.files().filter(|f| f.modules).count();
+        assert_eq!(cases.len(), declaring, "a row for each declaring file");
+        assert_eq!(
+            answer(&view, &r, &Ask::TestFiles),
+            ["src/bin/tests.rs"],
+            "the test-module closure"
+        );
     }
 
     #[test]

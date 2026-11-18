@@ -2193,4 +2193,108 @@ mod tests {
             assert_eq!(got.tests_hidden, drawn.tests_hidden, "near {at}");
         }
     }
+
+    /// A MODULE ROOT IS DECIDED AT READ in both code halves (spec 117): over the resolver's
+    /// module-root fixture, the edges into a file, from the whole graph and from a neighbourhood
+    /// folding the files declaring it, are the `CONTAINS` edges of the declarations reaching it
+    /// through the list their declaring file's place picks ([`Resolver::module_target`]); a file
+    /// only a declaration's other list names has none.
+    #[test]
+    fn a_module_is_folded_from_the_files_whose_place_reaches_it() {
+        use crate::contextgraph::{REL_CONTAINS, TIER_EXTRACTED};
+        use crate::resolve::tests::module_root_fixture;
+        use crate::test_support::edge;
+        let view = module_root_fixture();
+        let contains = |from: &str, to: &str| edge(from, to, REL_CONTAINS, TIER_EXTRACTED);
+        // (what the answer shows, the filter, the file and the edges into it)
+        let cases: [(&str, Tests, &str, Vec<Edge>); 12] = [
+            (
+                "a root's declaration reaches its `as_root` file",
+                Tests::Exclude,
+                "src/bin/x.rs",
+                vec![contains("src/bin/tool.rs", "src/bin/x.rs")],
+            ),
+            (
+                "a root's declaration reaches no file at its `as_child` path",
+                Tests::Exclude,
+                "src/bin/tool/x.rs",
+                vec![],
+            ),
+            (
+                "a root's test-only declaration reaches its `as_root` file, tests shown",
+                Tests::Include,
+                "src/bin/tests.rs",
+                vec![contains("src/bin/tool.rs", "src/bin/tests.rs")],
+            ),
+            (
+                "a file a `#[path]` declaration reaches declares as a root",
+                Tests::Exclude,
+                "src/p/z.rs",
+                vec![contains("src/p/y.rs", "src/p/z.rs")],
+            ),
+            (
+                "a file a plain declaration reaches declares as a child",
+                Tests::Exclude,
+                "src/p/z/w.rs",
+                vec![contains("src/p/z.rs", "src/p/z/w.rs")],
+            ),
+            (
+                "a child's declaration reaches no file at its `as_root` path",
+                Tests::Exclude,
+                "src/p/w.rs",
+                vec![],
+            ),
+            (
+                "a reached `mod.rs` file declares as a child",
+                Tests::Exclude,
+                "src/code/advance.rs",
+                vec![contains("src/code/mod.rs", "src/code/advance.rs")],
+            ),
+            (
+                "a file two roots reach plain and by `#[path]` is folded from both",
+                Tests::Exclude,
+                "src/m.rs",
+                vec![
+                    contains("src/lib.rs", "src/m.rs"),
+                    contains("src/main.rs", "src/m.rs"),
+                ],
+            ),
+            (
+                "a file the first root in path order reaches by `#[path]` declares as a root",
+                Tests::Exclude,
+                "src/n.rs",
+                vec![contains("src/m.rs", "src/n.rs")],
+            ),
+            (
+                "a file the first root in path order reaches plain declares as a child",
+                Tests::Exclude,
+                "src/bin/shared/k.rs",
+                vec![contains("src/bin/shared.rs", "src/bin/shared/k.rs")],
+            ),
+            (
+                "a file a deeper `#[path]` declaration reaches after a root's plain one declares \
+                 as a child",
+                Tests::Exclude,
+                "src/deep/leaf.rs",
+                vec![contains("src/deep.rs", "src/deep/leaf.rs")],
+            ),
+            (
+                "a cycle no root reaches starts at its first file in path order, as a root",
+                Tests::Exclude,
+                "src/s.rs",
+                vec![contains("src/r.rs", "src/s.rs")],
+            ),
+        ];
+        for (shows, tests, file, want) in &cases {
+            let filter = ViewFilter { tests: *tests };
+            let (whole, near) = (Whole::new(&view, filter), Near::new(&view, filter));
+            for (half, graph) in [("whole", &whole as &dyn CodeHalf), ("near", &near)] {
+                same!(
+                    graph.incoming(file).unwrap(),
+                    want,
+                    "{half} {file}: {shows}"
+                );
+            }
+        }
+    }
 }
