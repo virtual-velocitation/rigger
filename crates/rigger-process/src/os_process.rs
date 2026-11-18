@@ -718,7 +718,12 @@ mod tests {
     /// child is a shell that reads its commands from its input and runs none of the words, so it
     /// stays up while that input is open and exits once it closes: Unix's `sh -s`, holding them
     /// as its positional parameters, and Windows's `cmd /d /k`, after a `rem`.
-    #[cfg(any(target_os = "linux", target_os = "android", windows))]
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        windows
+    ))]
     #[test]
     fn a_processes_arguments_are_the_ones_it_was_created_with_each_one_whole() {
         let (shell, before) = if cfg!(windows) {
@@ -769,6 +774,65 @@ mod tests {
         let expected: Vec<(&str, Option<Vec<String>>)> = rows
             .iter()
             .map(|(what, _, created)| (*what, Some(created.clone())))
+            .collect();
+        assert_eq!(read, expected);
+    }
+
+    /// A macOS `KERN_PROCARGS2` answer is the argument count, the executable's path and the NULs
+    /// padding it, then that many arguments, each ended by a NUL, and the environment, which
+    /// reads as no argument: an argument holding a space stays whole and an empty one stays one,
+    /// where the path is padded or not and where the environment is left out as zeros. An answer
+    /// shorter than its count's word, a count that is not positive, a path or an argument that
+    /// runs to the answer's end without its NUL, and an answer whose count names more arguments
+    /// than it holds read as none.
+    #[test]
+    fn a_procargs_answer_reads_as_the_arguments_it_counts() {
+        // The arguments a row's answer reads as, or none.
+        type Reads<'a> = Option<&'a [&'a str]>;
+        let answer = |count: i32, strings: &[u8]| [&count.to_ne_bytes()[..], strings].concat();
+        let rows: [(&str, Vec<u8>, Reads<'_>); 9] = [
+            (
+                "a padded path, then a spaced spawn id and the environment",
+                answer(3, b"/bin/sh\0\0\0\0sh\0-s\0u 7/implementer#2\0PATH=/bin\0"),
+                Some(&["sh", "-s", "u 7/implementer#2"]),
+            ),
+            (
+                "an empty last argument",
+                answer(3, b"/bin/sh\0\0sh\0-s\0\0HOME=/\0"),
+                Some(&["sh", "-s", ""]),
+            ),
+            (
+                "a path with no padding",
+                answer(1, b"/x\0x\0"),
+                Some(&["x"]),
+            ),
+            (
+                "an environment left out as zeros",
+                answer(2, b"/p\0\0a\0b\0\0\0\0"),
+                Some(&["a", "b"]),
+            ),
+            ("an answer shorter than its count", vec![1, 0], None),
+            ("a count of none", answer(0, b"/p\0a\0"), None),
+            ("a negative count", answer(-1, b"/p\0a\0"), None),
+            ("a path without its NUL", answer(1, b"/bin/sh"), None),
+            (
+                "a count of more arguments than the answer holds",
+                answer(3, b"/bin/sh\0sh\0-s"),
+                None,
+            ),
+        ];
+        let read: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, answer, _)| (*what, procargs_arguments(answer)))
+            .collect();
+        let expected: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, _, words)| {
+                (
+                    *what,
+                    words.map(|words| words.iter().map(|word| word.to_string()).collect()),
+                )
+            })
             .collect();
         assert_eq!(read, expected);
     }
