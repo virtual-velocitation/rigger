@@ -9085,23 +9085,36 @@ mod tests {
 
     /// The orphan sweep's removal never answers a refusal from git by removing the dir another
     /// way: a tree git tracks goes through git, a dir git never tracked goes off disk, and a tree
-    /// git marks locked or prunable, refused by git, keeps its work and its registration.
+    /// git marks locked or prunable, a tree another repository registers, and a tree git lists
+    /// but refuses to remove, keep their work and their registration.
     #[test]
     fn reap_then_remove_worktree_removes_off_disk_only_a_dir_git_registers_nothing_at() {
-        // Each row: the case, what is done to the dir, and whether its work is kept.
-        type Row = (&'static str, fn(&str, &Path), bool);
-        let rows: [Row; 4] = [
+        // Each row: the case, what is done to the dir (answering the repository whose list names
+        // the tree while it is kept), and whether its work is kept.
+        type Row = (&'static str, fn(&str, &Path) -> PathBuf, bool);
+        let rows: [Row; 6] = [
             (
                 "a dir git never tracked",
-                |_, dir| write_file(&dir.join("work.txt"), b"work\n"),
+                |repo, dir| {
+                    write_file(&dir.join("work.txt"), b"work\n");
+                    PathBuf::from(repo)
+                },
                 false,
             ),
-            ("a tree git tracks", |repo, dir| add_tree(repo, dir), false),
+            (
+                "a tree git tracks",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    PathBuf::from(repo)
+                },
+                false,
+            ),
             (
                 "a tree git marks prunable, its dir still there",
                 |repo, dir| {
                     add_tree(repo, dir);
                     std::fs::remove_file(dir.join(".git")).unwrap();
+                    PathBuf::from(repo)
                 },
                 true,
             ),
@@ -9114,6 +9127,35 @@ mod tests {
                         repo,
                         &["worktree", "lock", "--reason", "a person's lock", at],
                     );
+                    PathBuf::from(repo)
+                },
+                true,
+            ),
+            (
+                "a tree another repository registers",
+                |repo, dir| {
+                    let other = Path::new(repo).join("other-repo");
+                    std::fs::create_dir_all(&other).unwrap();
+                    init_committed_repo(&other, "README.md", "seed\n");
+                    add_tree(other.to_str().unwrap(), dir);
+                    other
+                },
+                true,
+            ),
+            (
+                "a tree git lists but refuses",
+                |repo, dir| {
+                    add_tree(repo, dir);
+                    let other = Path::new(repo).join("rigger-wt-other");
+                    let at = other.to_str().unwrap();
+                    Worktree::create(repo, at, "rigger/u/other", "").unwrap();
+                    let admin = run_git(&other, &["rev-parse", "--absolute-git-dir"]);
+                    let admin = String::from_utf8_lossy(&admin.stdout);
+                    write_file(
+                        &dir.join(".git"),
+                        format!("gitdir: {}\n", admin.trim_end()).as_bytes(),
+                    );
+                    PathBuf::from(repo)
                 },
                 true,
             ),
@@ -9125,7 +9167,7 @@ mod tests {
             init_committed_repo(&root, "README.md", "seed\n");
             let repo = root.to_str().unwrap();
             let dir = root.join("rigger-wt-unit");
-            plant(repo, &dir);
+            let registers = plant(repo, &dir);
             let removed = reap_then_remove_worktree(repo, &dir, &root);
             if removed.is_ok() == kept {
                 violations.push(format!("{row}: the removal answers {removed:?}"));
@@ -9133,7 +9175,7 @@ mod tests {
             if dir.join("work.txt").exists() != kept {
                 violations.push(format!("{row}: its work is kept: {}", !kept));
             }
-            let listed = run_git(&root, &["worktree", "list", "--porcelain"]);
+            let listed = run_git(&registers, &["worktree", "list", "--porcelain"]);
             let listed = String::from_utf8_lossy(&listed.stdout)
                 .lines()
                 .any(|line| line == format!("worktree {}", dir.display()));
