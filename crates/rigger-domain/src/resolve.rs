@@ -45,8 +45,9 @@ use crate::contextgraph::{
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
 /// the test-module closure and the proof rule. Bump it whenever either can settle other rows for
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
-/// one is computed anew. A golden test pins it beside a digest of the rows over two fixtures, so
-/// a change that is not bumped fails there.
+/// one is computed anew. A golden test pins it beside a digest of the rows two fixtures settle,
+/// so a change that moves those rows fails there until the generation is bumped and the pair
+/// re-pinned.
 pub const SETTLED_GENERATION: u64 = 4;
 
 /// The node kinds a design concept or a workflow node may name.
@@ -1887,12 +1888,13 @@ pub(crate) mod tests {
         }
     }
 
-    /// A tree of qualified test calls, one for each way the proof rule ([`Resolver::proof`])
-    /// narrows one: its qualifier keeps one product method (`Cursor::new`, `Store::new`), one
-    /// test method (`Bell::ring`), or several (`Lamp::glow`, called from a test module beside
-    /// one of them); it keeps none but names a type (`Gauge::read`), so the unqualified rule
-    /// takes the call; or it keeps none and names nothing (`AtomicU64::new`, called from a test
-    /// module beside a `new`, `Reader::new`, `Valve::shut`), so the call proves none.
+    /// A tree of qualified test calls, one for each outcome of the narrowed match in the proof
+    /// rule ([`Resolver::proof`]): its qualifier keeps one product method (`Cursor::new`,
+    /// `Store::new`), one test method (`Bell::ring`), or several (`Lamp::glow`, called from a
+    /// test module beside one of them); it keeps none but names a type (`Gauge::read`), so the
+    /// unqualified rule takes the call; or it keeps none and names nothing (`AtomicU64::new`,
+    /// called from a test module beside a `new`, `Reader::new`, `Valve::shut`), so the call
+    /// proves none.
     fn qualified_proof_fixture() -> FactsView {
         let fn_def = |name: &str| vec![def(name, "function", 1, None, true)];
         FactsView::new(
@@ -2358,10 +2360,10 @@ pub(crate) mod tests {
     }
 
     /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the test files and proof calls of
-    /// [`fixture`], and of [`qualified_proof_fixture`], whose qualified test calls take each way
-    /// the proof rule narrows one, are pinned by digest beside the generation the store's
-    /// fingerprint folds in, so a change to the test-module closure or the proof rule fails here
-    /// until `SETTLED_GENERATION` is bumped and the pair re-pinned.
+    /// [`fixture`], and of [`qualified_proof_fixture`], whose qualified test calls take each
+    /// outcome of the narrowed match in [`Resolver::proof`], are pinned by digest beside the
+    /// generation the store's fingerprint folds in, so a change that moves the rows these two
+    /// fixtures settle fails here until `SETTLED_GENERATION` is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
         const PINNED: (u64, &str) = (4, "66ea4c83fbdb81c6");

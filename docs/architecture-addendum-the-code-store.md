@@ -324,7 +324,7 @@ Stamp                                (a Tip plus what only advance knows)
               generation, the digest of the extractors the project's workflow declares, when it
               declares any, the grouping generation and the settled generation; golden tests pin
               them to digests of the facts, the groupings and the settled rows over fixtures, so
-              an unbumped change fails)
+              a change that moves a digest fails until its pair is bumped and re-pinned)
   seq         the snapshot's sequence number
 ```
 
