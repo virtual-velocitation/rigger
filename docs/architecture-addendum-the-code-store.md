@@ -309,6 +309,10 @@ cross-file questions, so they are answered at read (section 6).
 A mention stores the name as written, its kind, its line and the def that encloses it. It
 stores no target, no tier and no placeholder. The resolver works those out at read time.
 
+Each call is its own mention, since a proof's evidence lists the line of every call. Tagged
+references that share an enclosing def, name, leaf, tag and test mark are one mention, at the
+first of their lines: a function that reads one constant three times holds one `const` mention.
+
 When a file is added or removed, no other file's facts change, even if that file holds the only
 definition a thousand mentions resolve to.
 

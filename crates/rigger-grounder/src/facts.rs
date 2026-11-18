@@ -14,7 +14,7 @@
 
 mod extractor_protocol;
 
-use std::collections::{btree_map, BTreeMap, HashMap};
+use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -50,7 +50,7 @@ use crate::grounder::workflowdef;
 /// design, a rationale and a workflow fixture, so a change that is not bumped fails there; a
 /// conversion change that moves a language's facts re-pins that language's row of the same golden
 /// with the bump.
-const FACTS_GENERATION: &str = "facts-v4";
+const FACTS_GENERATION: &str = "facts-v5";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
 /// stores it and a later process compares against it.
@@ -583,7 +583,8 @@ fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
 
 /// Fills the definitions, mentions, module declarations, parse-error marker and doc span of
 /// `facts` from the `symbols` an extraction gave the file at `path`, each definition keeping its
-/// own doc span.
+/// own doc span and each reference becoming a mention, a tagged one kept once per site kind
+/// ([`one_tagged_mention_per_site_kind`]).
 fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
     let CodeSymbols {
         defs,
@@ -608,27 +609,24 @@ fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
             doc: d.doc,
         })
         .collect();
-    facts.mentions = refs
-        .iter()
-        .map(|r| Mention {
-            enclosing: r.enclosing.as_deref().and_then(index_of),
-            // Spec 117 (CAPTURES): the name as written, its qualifier joined to its leaf by `::`
-            // for a path and `.` for a member access, the leaf alone with no qualifier.
-            name: match &r.qualifier {
-                Some(q) => qualified_name(&q.name, q.path, &r.name),
-                None => r.name.clone(),
-            },
-            // The extractor names a reference by its bare leaf, as a definition's leaf is its name
-            // whole, so the leaf is what the resolver finds the mention by, qualified or not.
-            leaf: r.name.clone(),
-            kind: match &r.ref_kind {
-                None => MentionKind::Call,
-                Some(kind) => MentionKind::Tagged(kind.clone()),
-            },
-            line: r.line,
-            test: r.is_test,
-        })
-        .collect();
+    facts.mentions = one_tagged_mention_per_site_kind(refs.iter().map(|r| Mention {
+        enclosing: r.enclosing.as_deref().and_then(index_of),
+        // Spec 117 (CAPTURES): the name as written, its qualifier joined to its leaf by `::`
+        // for a path and `.` for a member access, the leaf alone with no qualifier.
+        name: match &r.qualifier {
+            Some(q) => qualified_name(&q.name, q.path, &r.name),
+            None => r.name.clone(),
+        },
+        // The extractor names a reference by its bare leaf, as a definition's leaf is its name
+        // whole, so the leaf is what the resolver finds the mention by, qualified or not.
+        leaf: r.name.clone(),
+        kind: match &r.ref_kind {
+            None => MentionKind::Call,
+            Some(kind) => MentionKind::Tagged(kind.clone()),
+        },
+        line: r.line,
+        test: r.is_test,
+    }));
     facts.modules = defs
         .iter()
         .filter(|d| d.is_out_of_line_module)
@@ -646,6 +644,41 @@ fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
             }
         })
         .collect();
+}
+
+/// The `mentions` of one file in their order, every call kept, one per site, since a proof's
+/// evidence lists each call's line, and one tagged mention kept per enclosing definition, name,
+/// leaf, tag and test flag (spec 117, ONE TAGGED MENTION PER SITE KIND). It sits in the first
+/// one's place and takes the lowest of their lines, since an extraction need not give a file's
+/// tagged references in line order. The leaf keeps apart the two a declared extractor may write
+/// alike: an unqualified `a.b` and `b` under the member `a`.
+fn one_tagged_mention_per_site_kind(mentions: impl Iterator<Item = Mention>) -> Vec<Mention> {
+    let mut kept: Vec<Mention> = Vec::new();
+    let mut at: HashMap<_, usize> = HashMap::new();
+    for mention in mentions {
+        let MentionKind::Tagged(tag) = &mention.kind else {
+            kept.push(mention);
+            continue;
+        };
+        let site_kind = (
+            mention.enclosing,
+            mention.name.clone(),
+            mention.leaf.clone(),
+            tag.clone(),
+            mention.test,
+        );
+        match at.entry(site_kind) {
+            hash_map::Entry::Occupied(first) => {
+                let first = &mut kept[*first.get()];
+                first.line = first.line.min(mention.line);
+            }
+            hash_map::Entry::Vacant(none) => {
+                none.insert(kept.len());
+                kept.push(mention);
+            }
+        }
+    }
+    kept
 }
 
 /// The index in `defs` of the definition a path names, for the paths an extraction gives a parent
@@ -1974,17 +2007,17 @@ fn f() -> u32 {
             // C#
             ("cs", "csharp-tags-v4", "a6e816e8572b143e"),
             // TypeScript
-            ("ts", "typescript-tags-v5", "c86fc0a2aea47f3e"),
+            ("ts", "typescript-tags-v5", "ea4e6938dc08f1b3"),
             // TSX
-            ("tsx", "tsx-tags-v5", "95fbd3050e7da0d0"),
+            ("tsx", "tsx-tags-v5", "11cb8ac6fae0ab22"),
             // JavaScript
             ("js", "javascript-tags-v5", "04c009a62eb98170"),
             // Go
-            ("go", "go-tags-v3", "f9d10fb20ec8989c"),
+            ("go", "go-tags-v3", "4d23a95104b19556"),
             // Python
             ("py", "python-tags-v1", "4c940d044409c6d8"),
         ];
-        const PINNED_FACTS: (&str, &str) = ("facts-v4", "006133eb2aae6c76");
+        const PINNED_FACTS: (&str, &str) = ("facts-v5", "006133eb2aae6c76");
         fn digest(facts: &impl std::fmt::Debug) -> String {
             format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()))
         }

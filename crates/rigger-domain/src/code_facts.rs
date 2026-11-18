@@ -135,7 +135,9 @@ impl Recorded<'_> {
     }
 }
 
-/// One name-reference in a file: the name as written, never a target.
+/// A name-reference in a file: the name as written, never a target. Each call is one mention, at
+/// its line; the tagged references sharing an enclosing definition, name, leaf, tag and test flag
+/// are one mention, at the first of their lines (spec 117, ONE TAGGED MENTION PER SITE KIND).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {
     /// The index in the file's `defs` of the enclosing definition; none at file level.
