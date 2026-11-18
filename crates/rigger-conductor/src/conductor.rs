@@ -1703,8 +1703,8 @@ struct SpecCandidate {
 }
 
 /// What a speculation group's losing lanes failed with, gathered in lane order: each red gate's
-/// evidence and each review's rejection, with the first loss's cause. A group with no winner
-/// records it as the unit's failure. A loss to infrastructure
+/// evidence, each review's rejection and each refusal git made of a lane's work, with the first
+/// loss's cause. A group with no winner records it as the unit's failure. A loss to infrastructure
 /// ([`is_infra_cause`]) is left out, as the single lane charges an outage no `UnitFailed`.
 ///
 /// A group writes its lanes' failures only once its outcome is known, so one loss is one
@@ -1756,17 +1756,69 @@ impl LostLanes {
             return;
         }
         self.cause.get_or_insert(cause);
-        let reasons = &mut self.failure.review_reason;
-        if !reasons.is_empty() {
-            reasons.push_str("\n\n");
-        }
-        reasons.push_str(reason);
+        push_paragraph(&mut self.failure.review_reason, reason);
     }
 
-    /// The first loss's cause and the gathered failure, or none when no lane lost on its gates
-    /// or review other than to infrastructure.
+    /// A lane lost on git refusing a content step on its own work (`e`, a [`refused_unit_work`]
+    /// error), cause [`CAUSE_GIT_REFUSED`]: git's refusal joins the failure's refusal, so a
+    /// re-entered lane's prompt carries it on its own line.
+    fn refused(&mut self, e: &Error) {
+        self.cause
+            .get_or_insert_with(|| CAUSE_GIT_REFUSED.to_string());
+        push_paragraph(&mut self.failure.refusal, &refusal_text(e));
+    }
+
+    /// The first loss's cause and the gathered failure, or none when no lane lost on its gates,
+    /// review or a refusal other than to infrastructure.
     fn failure(self) -> Option<(String, PriorFailure)> {
         self.cause.map(|cause| (cause, self.failure))
+    }
+}
+
+/// `text` appended to `into` as its own paragraph, a blank line after what `into` held.
+fn push_paragraph(into: &mut String, text: &str) {
+    if !into.is_empty() {
+        into.push_str("\n\n");
+    }
+    into.push_str(text);
+}
+
+/// What a speculation lane's error means for its group: the ONE decision point Phase A's lanes
+/// and Phase B's integrate door take ([`RunCtx::lane_error`]). A refused or failed lane is a
+/// lost candidate, so the group ends only when no candidate survives; a fault no lane made ends
+/// the drive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneError {
+    /// A driver's park ([`is_parked`]): the lane is collected and the group unwinds once every
+    /// lane has been asked.
+    Parked,
+    /// A fault of the run's infrastructure ([`INFRA_MARKER`]) or git not answering a step
+    /// ([`GIT_STEP_MARKER`]): the drive ends on it, after the lane's cleanup, and the run is held
+    /// for the orchestrator with no attempt charged.
+    Fault,
+    /// Git refused a content step on the lane's own work ([`refused_unit_work`]): a lost
+    /// candidate whose refusal the group's failure carries ([`LostLanes::refused`]).
+    Refused,
+    /// Anything else (a crashed or silent author, a refused record): a lost candidate, with no
+    /// feedback for its author.
+    Failed,
+}
+
+impl LaneError {
+    /// The class of a lane's error `e`.
+    fn of(e: &Error) -> Self {
+        if is_parked(e) {
+            Self::Parked
+        } else if [INFRA_MARKER, GIT_STEP_MARKER]
+            .iter()
+            .any(|m| carries_marker(e, m))
+        {
+            Self::Fault
+        } else if refused_unit_work(e) {
+            Self::Refused
+        } else {
+            Self::Failed
+        }
     }
 }
 
@@ -2978,6 +3030,12 @@ fn on_regenerable_paths<T>(step: Result<T, Error>) -> Result<T, Error> {
 /// uncharged).
 fn refused_unit_work(e: &Error) -> bool {
     carries_marker(e, CONTENT_REFUSAL_MARKER) && !HALT_MARKERS.iter().any(|m| carries_marker(e, m))
+}
+
+/// Git's refusal `e` ([`refused_unit_work`]) as a failure record carries it: every marker
+/// stripped, so the next prompt reads git's own words.
+fn refusal_text(e: &Error) -> String {
+    without_halt_markers(Error(strip_failure_marker(e))).0
 }
 
 /// The halt sentinels [`run_wave`](RunCtx::run_wave) routes through its ONE no-lesson halt arm:
@@ -5877,10 +5935,7 @@ impl RunCtx<'_> {
         // tree git could not capture, an attempt whose checkpoint git did not answer) is kept
         // for it, one whose status cannot be read counted as holding work. A HALT NEVER
         // DISCARDS A TREE (spec 89, criterion 1).
-        let holds_work = result.is_err()
-            && wt
-                .as_ref()
-                .is_some_and(|w| crate::worktree::path_is_dirty(&w.dir).unwrap_or(true));
+        let holds_work = result.is_err() && wt.as_ref().is_some_and(|w| tree_is_dirty(&w.dir));
         // A PARKED return is not the stage ending - it is the stage HANDING WORK to
         // out-of-process agents that run BETWEEN conductor processes, in this worktree,
         // against this build cache. Removing either here deletes the tree the parked
@@ -8161,7 +8216,7 @@ impl RunCtx<'_> {
         open: &OpenAttempt,
         e: &Error,
     ) -> Result<bool, Error> {
-        let refusal = without_halt_markers(Error(strip_failure_marker(e))).0;
+        let refusal = refusal_text(e);
         let mut failure = PriorFailure {
             refusal: refusal.clone(),
             required: open.required.clone(),
@@ -8216,6 +8271,21 @@ impl RunCtx<'_> {
             && !self.deps.repo.is_empty()
             && self.agent_isolated(&st.agent)
             && self.resume_phase(st) == ResumePhase::Fresh
+    }
+
+    /// What the error `e` of `unit`'s speculation lane at `attempt` means ([`LaneError::of`]),
+    /// with one guard: git refusing the lane's merge after its work landed on the run branch is
+    /// no lost candidate, as a later lane winning would land a second lane's work over it, so
+    /// the drive ends on it as on a fault.
+    fn lane_error(&self, unit: &str, attempt: u32, e: &Error) -> LaneError {
+        match LaneError::of(e) {
+            LaneError::Refused
+                if cached(&self.landed, &conflict_regenerate_key(unit, attempt)).is_some() =>
+            {
+                LaneError::Fault
+            }
+            class => class,
+        }
     }
 
     /// The isolated worktree for speculation candidate `lane` (spec 13, unit 3). Candidate 0
@@ -8318,6 +8388,9 @@ impl RunCtx<'_> {
         // dir be reclaimed mid-flight.
         let mut candidates: Vec<SpecCandidate> = Vec::with_capacity(width as usize);
         let mut any_parked = false;
+        // Every lane's loss is gathered here, from Phase A's refusals on, so a group with no
+        // winner records why it lost for its re-entry.
+        let mut lost = LostLanes::default();
         for lane in 0..width {
             // Budget at spawn granularity (item 9): reserve THIS candidate's implementer
             // spawn. A refusal (the budget is spent) sets `budget_broke` and unwinds the unit
@@ -8349,7 +8422,7 @@ impl RunCtx<'_> {
             // every speculation candidate's own `cargo` invocations land in its own lane's
             // per-unit cache, never a `target/` dir embedded in its own lane worktree.
             let site = self.spawn_env(&build_env, &dir, crate::worktree::UNIT_CACHE_PREFIX);
-            match isolation_check
+            let spawned = isolation_check
                 .and_then(|()| {
                     self.deps.driver.spawn(
                         &agent_def,
@@ -8428,20 +8501,26 @@ impl RunCtx<'_> {
                         None => Ok(result),
                         Some(miss) => Err(Error(miss.evidence())),
                     }
-                }) {
+                })
+                // The candidate produced a diff: commit its worktree so the gates measure
+                // exactly the committed artifact. A commit git refuses loses the lane, and one
+                // git does not answer ends the drive ([`LaneError`]).
+                .and_then(|result| {
+                    git_step(wt.commit_checkpoint(&format!(
+                        "rigger: {} speculation candidate {lane}",
+                        st.name
+                    )))?;
+                    Ok(result)
+                });
+            match spawned.map_err(|e| (self.lane_error(&st.name, attempt, &e), e)) {
                 Ok(result) => {
-                    // The candidate produced a diff: commit its worktree so the gates measure
-                    // exactly the committed artifact. Its `green` status is DEFERRED until it is
+                    // Its `green` status is DEFERRED until it is
                     // chosen the winner below - emitting a routing status (Green/Verified) per
                     // candidate here would fold the unit out of `Fresh` and mis-route a resume
                     // of a divergent group onto the canonical lane-0 branch (and collide the
                     // lane-L candidate spawn id with lane-0 remediation attempt L). Keeping the
                     // unit `Fresh` across phase B makes a resume re-enter `run_speculation`
                     // deterministically (replaying the recorded candidates + gates + review).
-                    git_step(wt.commit_checkpoint(&format!(
-                        "rigger: {} speculation candidate {lane}",
-                        st.name
-                    )))?;
                     candidates.push(SpecCandidate {
                         attempt,
                         wt,
@@ -8451,18 +8530,33 @@ impl RunCtx<'_> {
                 }
                 // A candidate parked (a driver's unrecorded frontier): collect it and keep going so
                 // ALL K candidates park this step. The dir persists for the worker.
-                Err(e) if is_parked(&e) => any_parked = true,
-                // A candidate CRASHED (usage limit, non-zero exit, an sdet crash, or an sdet
-                // record refused past its re-run): it is simply absent from the group - a losing
-                // candidate whose diff never commits. The remaining candidates still race; if
-                // none survives, the escalation tail fires. Its lane worktree AND branch were
-                // already created (above), and NO terminal path below
-                // tears them down - winner cleanup, `cancel_speculation_candidates`, and the
-                // escalation tail all iterate `candidates`, which EXCLUDES this never-pushed
+                Err((LaneError::Parked, _)) => any_parked = true,
+                // A fault no lane made: no later lane is asked, and the drive ends on it, held
+                // for the orchestrator, whose release re-enters the group in this same tree. A
+                // HALT NEVER DISCARDS A TREE: one holding work no commit records (one whose
+                // status cannot be read counted so) is kept, a clean one removed, and the
+                // lane's branch kept either way.
+                Err((LaneError::Fault, e)) => {
+                    if !tree_is_dirty(&dir) {
+                        let _ = wt.remove();
+                    }
+                    return Err(e);
+                }
+                // A candidate git REFUSED, or one that CRASHED (usage limit, non-zero exit, an
+                // sdet crash, or an sdet record refused past its re-run): it is simply absent
+                // from the group - a losing candidate whose diff never commits. The remaining
+                // candidates still race; if none survives, the escalation tail fires, its
+                // failure carrying each refusal (a crash is no feedback for the author). Its
+                // lane worktree AND branch were already created (above), and NO terminal path
+                // below tears them down - winner cleanup, `cancel_speculation_candidates`, and
+                // the escalation tail all iterate `candidates`, which EXCLUDES this never-pushed
                 // lane, and `Worktree` has no `Drop`. So remove them HERE, or the conductor
                 // leaks a durable dir + branch, breaking the "conductor owns the K worktrees'
                 // whole lifecycle" invariant (spec 13, unit 3).
-                Err(_) => {
+                Err((class, e)) => {
+                    if class == LaneError::Refused {
+                        lost.refused(&e);
+                    }
                     let _ = wt.remove();
                     let _ = Worktree::delete_branch(&self.deps.repo, &wt.branch);
                 }
@@ -8479,7 +8573,6 @@ impl RunCtx<'_> {
         // cancelled. A candidate's review tiers park across steps exactly like the single-lane
         // path (their spawns are keyed by the candidate's attempt). Every lane's loss is gathered
         // into `lost`, so a group with no winner records why it lost for its re-entry.
-        let mut lost = LostLanes::default();
         for i in 0..candidates.len() {
             let attempt = candidates[i].attempt;
             let dir = candidates[i].dir.clone();
@@ -8583,12 +8676,21 @@ impl RunCtx<'_> {
                 self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
                 return Ok(false);
             }
-            let integration = self.integrate_and_emit(
+            let integration = match self.integrate_and_emit(
                 Some(&candidates[i].wt),
                 st,
                 attempt,
                 IntegrationApproval::approved(),
-            )?;
+            ) {
+                Ok(integration) => integration,
+                // Git refused the merge on the candidate's own work before any of it landed:
+                // the run branch is as it was, so the candidate loses and the next is tried.
+                Err(e) if self.lane_error(&st.name, attempt, &e) == LaneError::Refused => {
+                    lost.refused(&e);
+                    continue;
+                }
+                Err(e) => return Err(e),
+            };
             if let Some(evidence) = integration.blocked {
                 // The post-merge re-gate went RED (spec 12, unit 5): the merge was rolled back,
                 // so this candidate cannot land this step. CAPTURE the merge-break evidence so the
@@ -8647,8 +8749,8 @@ impl RunCtx<'_> {
             return Ok(true);
         }
 
-        // NO candidate won: every candidate was gate-red, review-rejected, crashed, or its
-        // winning merge broke post-merge (its evidence held in `lost` above). The K candidates
+        // NO candidate won: every candidate was gate-red, review-rejected, crashed, refused by
+        // git, or its winning merge broke post-merge (its evidence held in `lost` above). The K candidates
         // were the unit's parallel attempts, so it ESCALATES rather than re-fanning out forever
         // on the fresh re-entry. Clean up the losing candidates' worktrees.
         for c in &candidates {
@@ -8684,7 +8786,7 @@ impl RunCtx<'_> {
             None,
             &st.name,
             &format!(
-                "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration",
+                "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work",
                 st.name
             ),
             None,
@@ -31411,6 +31513,71 @@ stage "implement" adjudicator "adj" failed
         assert!(
             !block.contains("the runner died"),
             "an outage is no feedback: {block}"
+        );
+    }
+
+    /// The one decision point for a speculation lane's error reads its markers: a park is
+    /// collected, an outage of the run's infrastructure and git not answering end the drive,
+    /// git's refusal of the lane's own work loses the lane with the refusal, and anything else
+    /// loses it with no feedback.
+    #[test]
+    fn a_speculation_lanes_error_is_classed_by_its_markers() {
+        for (row, e, class) in [
+            ("a park", parked_spawn("s"), LaneError::Parked),
+            (
+                "an outage",
+                infra_fault("the store failed a read"),
+                LaneError::Fault,
+            ),
+            (
+                "git not answering",
+                marked(GIT_STEP_MARKER, "git: the index is locked"),
+                LaneError::Fault,
+            ),
+            (
+                "git's refusal",
+                marked(CONTENT_REFUSAL_MARKER, "worktree: refusing to commit"),
+                LaneError::Refused,
+            ),
+            (
+                "an sdet crash",
+                spawn_crash("the sdet author exited 1".into()),
+                LaneError::Failed,
+            ),
+            (
+                "a store read failing before the launch",
+                store_fault(Error("the read failed".into())),
+                LaneError::Failed,
+            ),
+            (
+                "a plain error",
+                Error("the author exited 1".into()),
+                LaneError::Failed,
+            ),
+        ] {
+            assert_eq!(LaneError::of(&e), class, "{row}");
+        }
+    }
+
+    /// Git refusing a lane's merge after the lane's work landed on the run branch ends the drive
+    /// as a fault, as a later lane winning would land a second lane's work over it; before the
+    /// landing, and for another lane, the same refusal loses the lane.
+    #[test]
+    fn a_lanes_refusal_after_its_work_landed_ends_the_drive() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let cfg = Config::default();
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let refusal = marked(CONTENT_REFUSAL_MARKER, "worktree: refusing to commit");
+        assert_eq!(ctx.lane_error("s", 1, &refusal), LaneError::Refused);
+        ctx.record_landed("s", 1, 0, "landed-sha", "pre-merge-sha")
+            .unwrap();
+        assert_eq!(ctx.lane_error("s", 1, &refusal), LaneError::Fault);
+        assert_eq!(
+            ctx.lane_error("s", 0, &refusal),
+            LaneError::Refused,
+            "another lane's landing is not this lane's"
         );
     }
 
