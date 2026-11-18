@@ -49058,6 +49058,160 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
+    /// A FAULT IS RETURNED AS IT IS HELD: a fault reaching the conductor's fault hold with a class
+    /// marker at its head - a store fault, a spawn's failure class, an emit guard's refusal, one
+    /// behind a halt marker - is held on its text and returned as that same text, no marker left.
+    #[test]
+    fn a_class_marked_fault_reaching_the_fault_hold_is_returned_as_the_text_it_holds() {
+        let rows = [
+            (
+                "store fault",
+                store_fault(Error("the store refused the read".into())),
+                "the store refused the read",
+            ),
+            (
+                "spawn failure class",
+                no_result_error(
+                    AgentFailure::RateLimit,
+                    "the agent stream ended with no result".into(),
+                ),
+                "the agent stream ended with no result",
+            ),
+            (
+                "emit refusal",
+                Error(format!(
+                    "{EMIT_REFUSED_MARKER}the emit guard refused the record"
+                )),
+                "the emit guard refused the record",
+            ),
+            (
+                "store fault behind a halt",
+                marked(
+                    INFRA_MARKER,
+                    store_fault(Error("the append failed".into())).0,
+                ),
+                "the append failed",
+            ),
+        ];
+        for (case, fault, text) in rows {
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = stub_deps(&store, &driver, Vec::new());
+            crate::run_store::ensure_started(&deps.folding(), &deps.criteria).unwrap();
+
+            let returned = held_on_a_fault(&deps, fault);
+
+            assert_eq!(
+                returned.0, text,
+                "{case}: the run returns the text it holds"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert_eq!(
+                holds_in(&events),
+                [conductor_fault_hold(text)],
+                "{case}: the run is held on the fault's text"
+            );
+        }
+    }
+
+    /// The error a store double's failed typed read returns.
+    const TYPED_READ_FAULT: &str = "simulated failure reading the run";
+
+    /// A store that fails its next `remaining` typed stream reads with [`TYPED_READ_FAULT`] and
+    /// forwards every other call: one failure is a fault at the run's start that clears, every
+    /// failure a store the run's hold cannot be written to either.
+    struct TypedReadsFail<'a> {
+        inner: &'a dyn EventStore,
+        remaining: AtomicU32,
+    }
+    impl EventStore for TypedReadsFail<'_> {
+        crate::delegate_event_store_reads!(append);
+        crate::delegate_event_store_reads!(untyped);
+        fn read_stream_typed(
+            &self,
+            stream: &str,
+            from: crate::eventstore::Revision,
+            selection: crate::eventstore::TypeSelection,
+        ) -> Result<Vec<Event>, crate::eventstore::Error> {
+            let failing = self
+                .remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok();
+            if failing {
+                return Err(crate::eventstore::Error::Backend(TYPED_READ_FAULT.into()));
+            }
+            self.inner.read_stream_typed(stream, from, selection)
+        }
+    }
+
+    /// A RUN'S START IS INSIDE ITS HOLD: a store fault that ends the drive before the run is
+    /// adopted - the read of the run's start failing once - holds the run on the fault like any
+    /// other, and the run returns the fault's text.
+    #[test]
+    fn a_store_fault_at_the_runs_start_holds_the_run() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let begun = stub_deps(&store, &driver, Vec::new());
+        crate::run_store::ensure_started(&begun.folding(), &begun.criteria).unwrap();
+        let failing = TypedReadsFail {
+            inner: &store,
+            remaining: AtomicU32::new(1),
+        };
+        let deps = stub_deps(&failing, &driver, Vec::new());
+
+        let Err(err) = run(&Config::default(), &deps) else {
+            panic!("the run's start read failed, yet the run drove");
+        };
+
+        let fault = Error::from(crate::eventstore::Error::Backend(TYPED_READ_FAULT.into())).0;
+        assert_eq!(err.0, fault, "the run returns the fault's text");
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&fault)],
+            "the run is held on the fault that ended it at its start"
+        );
+    }
+
+    /// A HOLD THAT CANNOT BE RECORDED IS SAID: when the store refuses the hold as it refused the
+    /// run, the run's log says in one line that the run stopped and that its hold could not be
+    /// recorded, with the write's error and the fault, and the run returns the fault's text.
+    #[test]
+    fn a_hold_that_cannot_be_recorded_says_the_run_stopped_unheld() {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let begun = stub_deps(&store, &driver, Vec::new());
+        crate::run_store::ensure_started(&begun.folding(), &begun.criteria).unwrap();
+        let failing = TypedReadsFail {
+            inner: &store,
+            remaining: AtomicU32::new(u32::MAX),
+        };
+        let lines = Mutex::new(Vec::<String>::new());
+        let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+        let deps = Deps {
+            log: &log,
+            ..stub_deps(&failing, &driver, Vec::new())
+        };
+
+        let Err(err) = run(&Config::default(), &deps) else {
+            panic!("the store refused every read, yet the run drove");
+        };
+
+        let write = crate::eventstore::Error::Backend(TYPED_READ_FAULT.into());
+        let fault = Error::from(crate::eventstore::Error::Backend(TYPED_READ_FAULT.into())).0;
+        assert_eq!(err.0, fault, "the run returns the fault's text");
+        assert_eq!(
+            snapshot(&lines),
+            [format!(
+                "rigger run: the run stopped, and its hold could not be recorded ({write}). \
+                 The fault: {fault}"
+            )],
+            "the log says the run stopped and was not held"
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(holds_in(&events), Vec::new(), "no hold was recorded");
+    }
+
     /// A FAULT MET AGAIN READS THE SAME FIRST LINE: every halt a conductor fault ends the drive
     /// with names what failed on its first line and what varied between two occurrences of it - a
     /// spawn id, a spawn's output, an error's own words, a count, a revision - on the lines below.
