@@ -437,6 +437,41 @@ mod tests {
         assert_eq!((running, report), (vec![], EndReport::default()));
     }
 
+    /// An end whose bound passes before the job's processes have exited closes the job, which ends
+    /// them, and says so: none is named as left running, each fault names the close, and none the
+    /// job held still runs once the end returns.
+    #[test]
+    fn an_end_past_its_bound_names_the_close_that_ended_what_still_ran() {
+        let job = Job::new().expect("a job");
+        let (mut main, lines) = in_job(
+            &job,
+            "start /b ping -n 60 127.0.0.1 & echo up& ping -n 60 127.0.0.1 >NUL",
+        );
+        assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
+        let (held, _) = reap::job_members(job.0.as_raw_handle());
+
+        let report = reap::end_job_with(job.0, &mut main, Duration::ZERO);
+
+        let running: Vec<u32> = held
+            .iter()
+            .filter(|member| member.running())
+            .map(|member| member.identity.pid)
+            .collect();
+        assert!(
+            report
+                .faults
+                .iter()
+                .all(|fault| fault.contains("closing the job ended them")),
+            "each fault names the close: {:?}",
+            report.faults
+        );
+        assert_eq!(
+            (running, report.residue, report.skipped),
+            (vec![], vec![], vec![])
+        );
+        assert!(ends(&lines), "nothing the job held holds the output");
+    }
+
     /// A process is read as a job's member only while that job holds it: the job's main is read,
     /// and a process this test started outside the job is not.
     #[test]
