@@ -3,29 +3,30 @@
 //! the run base; this test walks EVERY `.rs` file under `src/`, `crates/` and `tests/` in the checked-out
 //! tree and fails, naming file and line, on any of the gate's forbidden shapes found outside
 //! the two sanctioned lifecycle helpers (`crates/rigger-process/src/reap.rs`, `tests/common/mod.rs`) - or on a
-//! shell-out / `--` argv separator / negative-pid `format!` found INSIDE those two files (and
-//! on any reaper-only shape inside the test helper),
+//! process-group signal call, shell-out, `--` argv separator or negative-pid `format!` found
+//! INSIDE those two files (and on any reaper-only shape inside the test helper),
 //! where calling the internal signal API directly is exactly the point and must NOT be
 //! flagged. It runs under plain `cargo test`, so unlike the shell gate it also covers CI
 //! (`.github/workflows/rust.yml`), which runs `cargo test` but not the rigger-loop gate.
 //!
-//! The fourteen forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
+//! The thirteen forbidden shapes mirror `.rigger/gates/content.sh`'s `no-os-kill` check exactly - see
 //! that file (out of the gate's own scope, so it may name the literal pattern text) for the
-//! precise regex. In prose: a `Command::new` shell-out to any of five OS process-termination
-//! utility names, the Windows one among them, the name in any case; the bare shell form of two
-//! of those names, invoked with a leading-hyphen signal argument; one of the five also appearing
-//! as a standalone shell token on its own; the libc process-group signal call name; a direct call
-//! through `libc` or a `signal` module; the sanctioned rustix call itself (forbidden only
-//! OUTSIDE the two sanctioned files - see below); the `--` argv separator passed to
-//! `.arg(...)`; a `format!` call shaped to build a leading-hyphen (negative-pid-style)
-//! argument; an opened call of either Windows termination function (the process one and the
-//! job-object one); and the four confined signal calls: an opened call of the rustix
-//! process-group function, and the thread, queued and descriptor signal call names. The last six
-//! are the reaper-only shapes, forbidden in every file but `reap.rs`. Inside the two sanctioned
-//! files the Command::new shell-out, the `--` separator and the negative-pid `format!` remain
-//! banned (the gate's own narrower second check), and so do the reaper-only shapes inside the test
-//! helper - the direct unix signal call is exactly what those two files exist to make, and the
-//! reaper's `send_signal` and `end_job` are the Windows termination sites.
+//! precise regex. In prose: a process-group signal call, by any of the rustix and libc names for
+//! one; a `Command::new` shell-out to any of five OS process-termination utility names, the
+//! Windows one among them, the name in any case; the bare shell form of two of those names,
+//! invoked with a leading-hyphen signal argument; one of the five also appearing as a standalone
+//! shell token on its own; a direct call through `libc` or a `signal` module; the sanctioned
+//! rustix call itself (forbidden only OUTSIDE the two sanctioned files - see below); the `--`
+//! argv separator passed to `.arg(...)`; a `format!` call shaped to build a leading-hyphen
+//! (negative-pid-style) argument; an opened call of either Windows termination function (the
+//! process one and the job-object one); and the three confined signal calls: the thread, queued
+//! and descriptor signal call names. The process-group signal call is forbidden in every file,
+//! the two sanctioned ones included: a group can hold processes rigger never started. The last
+//! five are the reaper-only shapes, forbidden in every file but `reap.rs`. Inside the two
+//! sanctioned files the Command::new shell-out, the `--` separator and the negative-pid
+//! `format!` remain banned (the gate's own narrower second check), and so do the reaper-only
+//! shapes inside the test helper - the direct unix signal call is exactly what those two files
+//! exist to make, and the reaper's `send_signal` and `end_job` are the Windows termination sites.
 //!
 //! The test module also runs the shipped script itself, by path, over one fixture unit branch
 //! per row, so the script's own patterns for the reaper-only shapes are pinned by its exit and
@@ -101,10 +102,6 @@ fn windows_termination_open() -> String {
 /// is the reaper's `end_job`, ending a job object the process created.
 fn job_termination_open() -> String {
     join("TerminateJob", "Object(")
-}
-/// An opened call of the rustix process-group signal function (kill-process-group).
-fn group_signal_open() -> String {
-    join(&join(&kill_word(), "_process"), "_group(")
 }
 /// The process-group signal call names the gate bans in every file, as its own pattern names
 /// them: rustix's (kill-process-group, kill-current-process-group) and libc's (kill-pg).
@@ -222,14 +219,13 @@ fn shape_pkill(line: &str) -> bool {
     false
 }
 
-/// The four bare-substring shapes (see `.rigger/gates/content.sh` for each literal pattern),
-/// banned anywhere on a line with no delimiter required, each with its finding label: the libc
-/// process-group signal call name; a direct call through `libc`; a direct call through a
-/// `signal` module; and the sanctioned rustix signal call itself - forbidden everywhere OTHER
-/// than the two sanctioned files (checked by the caller, not here).
-fn substring_shapes() -> [(String, &'static str); 4] {
+/// The three bare-substring shapes (see `.rigger/gates/content.sh` for each literal pattern),
+/// banned anywhere on a line with no delimiter required, each with its finding label: a direct
+/// call through `libc`; a direct call through a `signal` module; and the sanctioned rustix
+/// signal call itself - forbidden everywhere OTHER than the two sanctioned files (checked by the
+/// caller, not here).
+fn substring_shapes() -> [(String, &'static str); 3] {
     [
-        (suffixed_kill("pg"), "libc process-group signal call"),
         (module_kill_open("libc::"), "direct libc signal call"),
         (module_kill_open("signal::"), "direct signal-module call"),
         (
@@ -283,9 +279,9 @@ const SANCTIONED_FILES: [&str; 2] = [REAPER, "tests/common/mod.rs"];
 const REAPER: &str = "crates/rigger-process/src/reap.rs";
 
 /// The shapes only [`REAPER`] may carry, each with its finding label: both Windows termination
-/// calls, then the four confined signal calls (the rustix process-group call, opened, and the
-/// thread, queued and descriptor signal call names, bare), as the gate's own pattern names them.
-fn reaper_only_shapes() -> [(String, &'static str); 6] {
+/// calls, then the three confined signal calls (the thread, queued and descriptor signal call
+/// names, bare), as the gate's own pattern names them.
+fn reaper_only_shapes() -> [(String, &'static str); 5] {
     [
         (
             windows_termination_open(),
@@ -294,10 +290,6 @@ fn reaper_only_shapes() -> [(String, &'static str); 6] {
         (
             job_termination_open(),
             "Windows job-termination call outside reap.rs",
-        ),
-        (
-            group_signal_open(),
-            "rustix process-group call outside reap.rs",
         ),
         (thread_signal_word(), "thread signal call outside reap.rs"),
         (queued_signal_word(), "queued signal call outside reap.rs"),
@@ -309,8 +301,9 @@ fn reaper_only_shapes() -> [(String, &'static str); 6] {
 }
 
 /// Every forbidden shape found in one line of a file that is NOT one of the two sanctioned
-/// lifecycle helpers - the gate's ban on every shape but the reaper-only ones, which
-/// [`scan_tree`] checks in every file but [`REAPER`].
+/// lifecycle helpers - the gate's ban on every shape but the process-group signal calls, which
+/// [`scan_tree`] checks in every file, and the reaper-only ones, which it checks in every file
+/// but [`REAPER`].
 fn general_hits(line: &str) -> Vec<&'static str> {
     let mut hits = Vec::new();
     if shape_command_new_signal(line) {
@@ -355,15 +348,16 @@ fn sanctioned_hits(line: &str) -> Vec<&'static str> {
 }
 
 /// Scan every `.rs` file under `root/src`, `root/crates` and `root/tests`, deterministically ordered by
-/// (file, line), applying [`general_hits`] outside [`SANCTIONED_FILES`] and
-/// [`sanctioned_hits`] inside them, and flagging every [`reaper_only_shapes`] entry in every
-/// file but [`REAPER`] - the whole-tree twin of the diff-scoped `no-os-kill` gate (spec 78, THE
-/// AUDIT TEST).
+/// (file, line), flagging a [`group_signal_words`] call in every file, applying
+/// [`general_hits`] outside [`SANCTIONED_FILES`] and [`sanctioned_hits`] inside them, and
+/// flagging every [`reaper_only_shapes`] entry in every file but [`REAPER`] - the whole-tree twin
+/// of the diff-scoped `no-os-kill` gate (spec 78, THE AUDIT TEST).
 fn scan_tree(root: &Path) -> Vec<Finding> {
     let mut files = Vec::new();
     for top in ["src", "crates", "tests"] {
         collect_rs_files(&root.join(top), &mut files);
     }
+    let group_signal = group_signal_words();
     let reaper_only = reaper_only_shapes();
     let mut findings = Vec::new();
     for path in &files {
@@ -377,11 +371,15 @@ fn scan_tree(root: &Path) -> Vec<Finding> {
             continue;
         };
         for (i, line) in content.lines().enumerate() {
-            let mut hits = if sanctioned {
+            let mut hits = Vec::new();
+            if group_signal.iter().any(|word| line.contains(word.as_str())) {
+                hits.push("process-group signal call");
+            }
+            hits.extend(if sanctioned {
                 sanctioned_hits(line)
             } else {
                 general_hits(line)
-            };
+            });
             if rel != REAPER {
                 hits.extend(
                     reaper_only
