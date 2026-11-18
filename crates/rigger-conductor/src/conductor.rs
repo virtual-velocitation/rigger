@@ -13757,8 +13757,12 @@ impl RunCtx<'_> {
         let serves_criterion = !st.criterion_id.is_empty();
         // A stage that serves no criterion has only the foreign-owner check below, which
         // reads an existing branch alone; with none there is nothing to read the log for
-        // (and `prior_criterion_unit` names no candidate for an empty criterion id).
+        // (and `prior_criterion_unit` names no candidate for an empty criterion id). A kept
+        // ref of this name with no branch beside it is no lineage this unit continues: it is
+        // set aside first ([`worktree::set_kept_aside`]), so this unit's keep and its
+        // integration's reap never touch it.
         if !serves_criterion && !git_step(worktree::branch_present(&self.deps.repo, &branch))? {
+            git_step(worktree::set_kept_aside(&self.deps.repo, &branch))?;
             return Ok(None);
         }
         // Adoption is decided across runs by contract (spec 88: a criterion's abandoned attempt
@@ -13852,6 +13856,9 @@ impl RunCtx<'_> {
             }
             return Ok(None);
         }
+        // No branch of this name and no adoption of this exact triple: a kept ref of this
+        // name is no lineage this unit continues, so it is set aside as above.
+        git_step(worktree::set_kept_aside(&self.deps.repo, &branch))?;
         let Some(prior) = prior_criterion_unit(&events, &st.criterion_id, &st.name) else {
             return Ok(None);
         };
@@ -13867,17 +13874,17 @@ impl RunCtx<'_> {
             // here is a genuine defect (a failed git step: the run halts and is held for
             // a person), never another silent "nothing to adopt" - spec 88's own
             // Operator rule: "a unit's reviewed history is never discarded by the
-            // harness." A quarantine ref branch collection reaped held nothing HEAD lacks
-            // ([`worktree::reap_held_refs`]), so its recorded tip, which HEAD's history holds,
-            // is adopted.
+            // harness." A quarantine ref gone while HEAD's history holds the tip its record
+            // names (branch collection reaps such a ref, [`worktree::reap_held_refs`]) held
+            // nothing HEAD lacks: NOTHING TO MOVE, as above, so nothing is adopted and the unit
+            // starts off HEAD, which holds every commit of that tip.
             let reaped = !recorded.is_empty()
                 && !git_step(worktree::branch_present(&self.deps.repo, &quarantine))?
                 && git_step(worktree::in_history(&self.deps.repo, &recorded, "HEAD"))?;
             if reaped {
-                recorded
-            } else {
-                git_step(worktree::branch_tip(&self.deps.repo, &quarantine))?
+                return Ok(None);
             }
+            git_step(worktree::branch_tip(&self.deps.repo, &quarantine))?
         } else {
             // The prior unit's durable branch is gone with no quarantine trail either
             // (manually pruned, or the prior process never actually committed one

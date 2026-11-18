@@ -761,9 +761,13 @@ impl Worktree {
     /// branch never moves, wherever HEAD stands: content git refused never enters the branch's
     /// history, and a merge in progress is no parent, so git still meets its conflict when the
     /// branch is checked out again. A clean tree whose HEAD the branch's tip is not is kept as
-    /// HEAD itself; a clean tree at the tip keeps nothing (`None`). A kept ref already holding
-    /// another commit is set aside first ([`set_kept_aside`]), so no kept tree is lost. Every
-    /// failure names the step, the branch and the ref on its first line, the same each time.
+    /// HEAD itself; a clean tree at the tip keeps nothing (`None`). A kept ref already holding a
+    /// keep of this tree on this HEAD answers that commit, so a keep repeated after a cut-off
+    /// drive makes no second copy. A kept ref holding another commit is set aside first
+    /// ([`set_kept_aside`]), so no kept tree is lost; while a worktree has it checked out, the
+    /// keep lands under its own [`orphaned_ref`] instead and the checked-out ref is left as it
+    /// stands. Every failure names the step, the branch and the ref on its first line, the same
+    /// each time.
     pub fn keep_tree_aside(&self, message: &str) -> Result<Option<Kept>, Error> {
         let reference = kept_ref(&self.branch);
         self.keep_on(&reference, message).map_err(|e| {
@@ -787,31 +791,42 @@ impl Worktree {
         let staged = staged_tree(&self.dir, &index);
         let _ = std::fs::remove_file(&index);
         let tree = staged?;
+        let full = format!("refs/heads/{reference}");
+        let held = ref_commit(&self.repo, &full)?;
         let commit = if git(&self.dir, &["rev-parse", "HEAD^{tree}"])?.trim() == tree {
             if head == tip {
                 return Ok(None);
             }
             head
         } else {
-            git(
-                &self.dir,
-                &["commit-tree", &tree, "-p", &head, "-m", message],
-            )?
-            .trim()
-            .to_string()
+            match held.as_deref() {
+                Some(prior) if keeps(&self.repo, prior, &tree, &head)? => prior.to_string(),
+                _ => git(
+                    &self.dir,
+                    &["commit-tree", &tree, "-p", &head, "-m", message],
+                )?
+                .trim()
+                .to_string(),
+            }
         };
-        let full = format!("refs/heads/{reference}");
-        if ref_commit(&self.repo, &full)?.as_deref() != Some(commit.as_str()) {
-            set_kept_aside(&self.repo, &self.branch)?;
-            git(
-                &self.repo,
-                &["update-ref", "-m", message, &full, &commit, ""],
-            )?;
+        let kept = |reference: String| {
+            Ok(Some(Kept {
+                reference,
+                commit: commit.clone(),
+            }))
+        };
+        if held.as_deref() == Some(commit.as_str()) {
+            return kept(reference.to_string());
         }
-        Ok(Some(Kept {
-            reference: reference.to_string(),
-            commit,
-        }))
+        if held.is_some() && checked_out(&self.repo)?.contains(&full) {
+            return kept(stand_aside(&self.repo, held_unit(reference), &commit)?);
+        }
+        set_kept_aside(&self.repo, &self.branch)?;
+        git(
+            &self.repo,
+            &["update-ref", "-m", message, &full, &commit, ""],
+        )?;
+        kept(reference.to_string())
     }
 
     /// The staged paths whose index content carries conflict-marker text the in-progress merge
@@ -1659,31 +1674,71 @@ pub fn orphaned_ref(unit: &str, tip: &str) -> String {
     format!("{ORPHANED_REFS}{unit}-{}", &tip[..tip.len().min(12)])
 }
 
+/// The unit a held ref names: `<unit>` of `rigger/kept/<unit>`.
+fn held_unit(reference: &str) -> &str {
+    reference.strip_prefix(KEPT_REFS).unwrap_or(reference)
+}
+
+/// Whether `commit` is a keep of `tree` on `head`: it holds that tree, and `head` is its one
+/// parent.
+fn keeps(repo: &str, commit: &str, tree: &str, head: &str) -> Result<bool, Error> {
+    let parents = git(repo, &["rev-list", "--parents", "-n1", commit])?;
+    if parents.split_whitespace().skip(1).ne([head]) {
+        return Ok(false);
+    }
+    Ok(git(repo, &["rev-parse", &format!("{commit}^{{tree}}")])?.trim() == tree)
+}
+
+/// Every branch a worktree of `repo` has checked out, the repository's own checkout included, by
+/// its full name (`refs/heads/...`): a ref a person stands on, which rigger never moves or
+/// deletes.
+fn checked_out(repo: &str) -> Result<std::collections::HashSet<String>, Error> {
+    let listed = git(repo, &["worktree", "list", "--porcelain"])?;
+    Ok(listed
+        .lines()
+        .filter_map(|line| line.strip_prefix("branch "))
+        .map(str::to_string)
+        .collect())
+}
+
+/// Stand `commit` of `unit`'s under [`orphaned_ref`], unless that ref is there already; answers
+/// its name.
+fn stand_aside(repo: &str, unit: &str, commit: &str) -> Result<String, Error> {
+    let aside = orphaned_ref(unit, commit);
+    let full = format!("refs/heads/{aside}");
+    if !ref_present(repo, &full)? {
+        git(repo, &["update-ref", &full, commit, ""])?;
+    }
+    Ok(aside)
+}
+
 /// Set aside the kept ref of the unit whose branch is `branch` ([`kept_ref`]): its commit moves to
 /// [`orphaned_ref`], which only a person or [`reap_held_refs`] removes, and the kept ref is
-/// deleted. Answers where it now stands, or `None` when there is no kept ref. A repeat after a
-/// cut-off one finishes it.
+/// deleted, unless a worktree has it checked out, when it is left as it stands. Answers where the
+/// commit now stands aside, or `None` when there is no kept ref. A repeat after a cut-off one
+/// finishes it.
 pub fn set_kept_aside(repo: &str, branch: &str) -> Result<Option<String>, Error> {
     let kept = kept_ref(branch);
     let full = format!("refs/heads/{kept}");
     let Some(tip) = ref_commit(repo, &full)? else {
         return Ok(None);
     };
-    let aside = orphaned_ref(kept.strip_prefix(KEPT_REFS).unwrap_or(&kept), &tip);
-    let aside_full = format!("refs/heads/{aside}");
-    if !ref_present(repo, &aside_full)? {
-        git(repo, &["update-ref", &aside_full, &tip, ""])?;
+    let aside = stand_aside(repo, held_unit(&kept), &tip)?;
+    if !checked_out(repo)?.contains(&full) {
+        git(repo, &["update-ref", "-d", &full, &tip])?;
     }
-    git(repo, &["update-ref", "-d", &full, &tip])?;
     Ok(Some(aside))
 }
 
-/// Delete the kept ref of the unit whose branch is `branch` ([`kept_ref`]), when there is one:
-/// called where the unit's branch is reaped once its work has landed.
+/// Delete the kept ref of the unit whose branch is `branch` ([`kept_ref`]), when there is one and
+/// no worktree has it checked out: called where the unit's branch is reaped once its work has
+/// landed.
 pub fn delete_kept(repo: &str, branch: &str) -> Result<(), Error> {
     let full = format!("refs/heads/{}", kept_ref(branch));
     if let Some(tip) = ref_commit(repo, &full)? {
-        git(repo, &["update-ref", "-d", &full, &tip])?;
+        if !checked_out(repo)?.contains(&full) {
+            git(repo, &["update-ref", "-d", &full, &tip])?;
+        }
     }
     Ok(())
 }
@@ -1712,15 +1767,15 @@ pub fn held_refs(repo: &str) -> Result<Vec<(String, String)>, Error> {
 }
 
 /// Delete every ref rigger holds aside ([`held_refs`]) whose tip `head`'s history holds, so it holds
-/// nothing `head` lacks; answers the refs deleted. A ref holding commits `head` lacks stays.
+/// nothing `head` lacks; answers the refs deleted. A ref holding commits `head` lacks stays, and so
+/// does one a worktree has checked out.
 pub fn reap_held_refs(repo: &str, head: &str) -> Result<Vec<String>, Error> {
+    let checked_out = checked_out(repo)?;
     let mut reaped = Vec::new();
     for (name, tip) in held_refs(repo)? {
-        if in_history(repo, &tip, head)? {
-            git(
-                repo,
-                &["update-ref", "-d", &format!("refs/heads/{name}"), &tip],
-            )?;
+        let full = format!("refs/heads/{name}");
+        if !checked_out.contains(&full) && in_history(repo, &tip, head)? {
+            git(repo, &["update-ref", "-d", &full, &tip])?;
             reaped.push(name);
         }
     }
