@@ -2016,17 +2016,17 @@ fn is_comment(node: tree_sitter::Node) -> bool {
 }
 
 /// The ATTRIBUTE STACK read from `first` along `advance`: each node of the contiguous run of
-/// comments ([`is_comment`]) and attribute items (`attribute_item`, `inner_attribute_item`) it
-/// starts, ending before the first node that is neither - the boundary of the stack. The one
-/// walk shared by [`scan_attribute_stack`], read backward over `prev_sibling` and forward over
-/// `next_named_sibling`, and by both doc spans, [`outer_doc`] and [`inner_doc`].
+/// comments ([`is_comment`]) and attribute items, outer and inner (the attribute kinds of
+/// [`OUTER_DOC`] and [`INNER_DOC`]), it starts, ending before the first node that is neither -
+/// the boundary of the stack. The one walk shared by [`scan_attribute_stack`], read backward over
+/// `prev_sibling` and forward over `next_named_sibling`, and by both doc spans, [`outer_doc`] and
+/// [`inner_doc`].
 fn attribute_stack<'a>(
     first: Option<tree_sitter::Node<'a>>,
     advance: impl Fn(tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>>,
 ) -> impl Iterator<Item = tree_sitter::Node<'a>> {
-    std::iter::successors(first, move |&node| advance(node)).take_while(|&node| {
-        is_comment(node) || matches!(node.kind(), "attribute_item" | "inner_attribute_item")
-    })
+    std::iter::successors(first, move |&node| advance(node))
+        .take_while(|&node| is_comment(node) || [OUTER_DOC.1, INNER_DOC.1].contains(&node.kind()))
 }
 
 /// The node the outer attribute stack above `node` starts at, its nearest: `node`'s previous
@@ -2041,11 +2041,13 @@ fn stack_above(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
 }
 
 /// An item's doc lines, read above it: a comment whose `outer` doc marker field is set (`///`,
-/// `/** */`) and an outer attribute item ([`is_doc_line`]).
+/// `/** */`) and an outer attribute item ([`is_doc_line`]), whose kind also bounds an
+/// [`attribute_stack`].
 const OUTER_DOC: (&str, &str) = ("outer", "attribute_item");
 
 /// A file's doc lines, read at its opening: a comment whose `inner` doc marker field is set
-/// (`//!`, `/*! */`) and an inner attribute item ([`is_doc_line`]).
+/// (`//!`, `/*! */`) and an inner attribute item ([`is_doc_line`]), whose kind also bounds an
+/// [`attribute_stack`].
 const INNER_DOC: (&str, &str) = ("inner", "inner_attribute_item");
 
 /// Whether `node`, a node of an attribute stack, is a Rust doc line of `(marker, attribute)`,
