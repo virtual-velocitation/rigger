@@ -1176,7 +1176,14 @@ std::cfg_select! {
             use windows_sys::Win32::System::JobObjects::TerminateJobObject;
             let handle = job.as_raw_handle();
             let mut report = EndReport::default();
-            let held = job_members(handle);
+            let (held, whole) = job_members(handle);
+            if !whole {
+                report.faults.push(format!(
+                    "the job of session {} could not be listed whole, so the end waited only for \
+                     the processes it listed",
+                    main.id()
+                ));
+            }
             // SAFETY: the handle is a job this process created and still holds; the call takes
             // no pointer.
             let ended = unsafe { TerminateJobObject(handle, 1) } != FALSE;
@@ -1193,7 +1200,7 @@ std::cfg_select! {
             }) {
                 let _ = main.wait();
             } else {
-                let listed = job_pids(handle);
+                let (listed, _) = job_pids(handle);
                 report.residue = held
                     .iter()
                     .filter(|member| running(member) && !listed.contains(&member.pid))
@@ -1231,18 +1238,21 @@ std::cfg_select! {
         }
 
         /// Each process the job `job` holds ([`job_pids`]), with the start time it reads now; one
-        /// gone before its start time is read is not named.
-        pub(crate) fn job_members(job: windows_sys::Win32::Foundation::HANDLE) -> Vec<Identity> {
-            job_pids(job)
+        /// gone before its start time is read is not named. Whether the job's list was read whole.
+        pub(crate) fn job_members(
+            job: windows_sys::Win32::Foundation::HANDLE,
+        ) -> (Vec<Identity>, bool) {
+            let (pids, whole) = job_pids(job);
+            let members = pids
                 .into_iter()
                 .filter_map(|pid| pid_starttime(pid).map(|start| Identity { pid, start }))
-                .collect()
+                .collect();
+            (members, whole)
         }
 
-        /// The pid of each process the job `job` holds, its nested jobs' among them; empty when
-        /// the list cannot be read. A list too short for the job is grown to the count the call
-        /// reports and read again, a few times at most.
-        fn job_pids(job: windows_sys::Win32::Foundation::HANDLE) -> Vec<u32> {
+        /// The pid of each process the job `job` holds, its nested jobs' among them, read until
+        /// the list is whole ([`whole_list`]), and whether it is.
+        fn job_pids(job: windows_sys::Win32::Foundation::HANDLE) -> (Vec<u32>, bool) {
             use windows_sys::Win32::Foundation::FALSE;
             use windows_sys::Win32::System::JobObjects::{
                 JobObjectBasicProcessIdList, QueryInformationJobObject,
@@ -1252,8 +1262,7 @@ std::cfg_select! {
             // first pid.
             let header = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
                 / size_of::<usize>();
-            let mut room = 64;
-            for _ in 0..4 {
+            whole_list(|room| {
                 let mut list = vec![0usize; header + room];
                 // SAFETY: `list` is the given number of writable bytes, aligned as the structure
                 // is, and no returned length is asked for.
@@ -1270,20 +1279,59 @@ std::cfg_select! {
                 // aligned for it.
                 let counts =
                     unsafe { list.as_ptr().cast::<JOBOBJECT_BASIC_PROCESS_ID_LIST>().read() };
-                let assigned = counts.NumberOfAssignedProcesses as usize;
-                if read {
-                    let listed = (counts.NumberOfProcessIdsInList as usize).min(room);
-                    return list[header..header + listed].iter().map(|&pid| pid as u32).collect();
+                let listed = if read {
+                    (counts.NumberOfProcessIdsInList as usize).min(room)
+                } else {
+                    0
+                };
+                ListRead {
+                    read,
+                    pids: list[header..header + listed].iter().map(|&pid| pid as u32).collect(),
+                    assigned: counts.NumberOfAssignedProcesses as usize,
                 }
-                if assigned <= room {
-                    return Vec::new();
-                }
-                room = assigned;
-            }
-            Vec::new()
+            })
         }
     }
     _ => {}
+}
+
+/// One read of a job's process list ([`whole_list`]): whether the call succeeded, the pids it
+/// listed, and how many processes the job counted.
+#[cfg(any(windows, test))]
+struct ListRead {
+    read: bool,
+    pids: Vec<u32>,
+    assigned: usize,
+}
+
+/// How many times [`whole_list`] reads a job's process list at most.
+#[cfg(any(windows, test))]
+const LIST_READS: usize = 4;
+
+/// The list `read` answers, and whether it is whole: every process the job counted at that read.
+/// `read` is given room for 64 pids first. A list shorter than the count its read reports, from a
+/// call that failed for want of room or one that succeeded with only what fit, is read again into
+/// room for that count, at most [`LIST_READS`] times in all, since processes can join the job
+/// between reads; the longest list read is answered when none is whole. A call that fails with
+/// room to spare is not read again.
+#[cfg(any(windows, test))]
+fn whole_list(mut read: impl FnMut(usize) -> ListRead) -> (Vec<u32>, bool) {
+    let mut room = 64;
+    let mut longest = Vec::new();
+    for _ in 0..LIST_READS {
+        let answer = read(room);
+        if answer.read && answer.pids.len() >= answer.assigned {
+            return (answer.pids, true);
+        }
+        if !answer.read && answer.assigned <= room {
+            break;
+        }
+        room = room.max(answer.assigned);
+        if answer.pids.len() > longest.len() {
+            longest = answer.pids;
+        }
+    }
+    (longest, false)
 }
 
 /// Validate that `base_dir` is a directory the reaper is authorized to touch (spec 78, THE

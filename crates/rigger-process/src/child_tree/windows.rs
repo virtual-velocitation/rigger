@@ -414,7 +414,7 @@ mod tests {
             "start /b ping -n 60 127.0.0.1 & echo up& ping -n 60 127.0.0.1 >NUL",
         );
         assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
-        let held = reap::job_members(job.0.as_raw_handle());
+        let (held, _) = reap::job_members(job.0.as_raw_handle());
 
         let report = reap::end_job(job.0, &mut main);
 
