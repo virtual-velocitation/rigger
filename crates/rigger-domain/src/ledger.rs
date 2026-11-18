@@ -136,6 +136,12 @@ pub struct Unit {
     /// leaves it - so it is read through [`Unit::spec_defect_reason`], which holds it only while
     /// the unit stays escalated.
     pub escalation_reason: String,
+    /// Every tree kept aside for this unit ([`Kept`]), as each `UnitFailed` recorded it,
+    /// accumulated across failures in the order recorded, a repeat recorded once: unlike the
+    /// failure's other specifics, a later failure never overwrites it, so the unit's integration
+    /// removes every keep the unit made, one since set aside included, by its commit. Empty on a
+    /// unit that kept nothing, and on a record that predates the field (serde-defaulted).
+    pub keeps: Vec<Kept>,
 }
 
 impl Unit {
@@ -160,6 +166,17 @@ pub struct RequiredItem {
     pub path: String,
     pub correctness: bool,
     pub pattern: String,
+}
+
+/// A tree rigger kept aside for a unit, off its branch: the ref that held it when it was kept,
+/// short form (`rigger/kept/<unit>`, or `rigger/orphaned/<unit>-<12-char sha>` when a worktree had
+/// the kept ref checked out), and the commit. Carried on `UnitFailed` ([`Unit::keeps`]), so the
+/// unit's integration removes exactly the keeps it made, identified by their commits.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Kept {
+    pub reference: String,
+    pub commit: String,
 }
 
 /// The operator identity and grant size of a unit's latest `UnitResumed` (spec 88,
@@ -813,6 +830,7 @@ impl RunState {
             resume_bound: 0,
             resumed: None,
             escalation_reason: String::new(),
+            keeps: Vec::new(),
         })
     }
 
@@ -1293,6 +1311,50 @@ mod tests {
 
         let unstamped = project(&[ev(TYPE_UNIT_FAILED, r#"{"id":"u","attempts":1}"#)]).unwrap();
         assert_eq!(unstamped.units["u"].max_retries, 0);
+    }
+
+    /// A UNIT'S KEEPS ACCUMULATE: each `UnitFailed`'s kept trees fold onto the unit after the
+    /// ones before, a repeat once, and a later failure never clears them; a record that predates
+    /// the field folds none.
+    #[test]
+    fn a_unit_failed_kept_trees_accumulate_on_the_unit() {
+        const ONE: &str = r#"{"reference":"rigger/kept/u","commit":"aaa"}"#;
+        const TWO: &str = r#"{"reference":"rigger/kept/u","commit":"bbb"}"#;
+        let kept = |commit: &str| Kept {
+            reference: "rigger/kept/u".to_string(),
+            commit: commit.to_string(),
+        };
+        // Each row: the `kept` field of each `UnitFailed` in turn (`None` leaves it out), and the
+        // keeps folded.
+        let cases: [(&str, &[Option<&str>], Vec<Kept>); 5] = [
+            ("a keep recorded", &[Some(ONE)], vec![kept("aaa")]),
+            (
+                "a later keep after it",
+                &[Some(ONE), Some(TWO)],
+                vec![kept("aaa"), kept("bbb")],
+            ),
+            (
+                "a later failure keeping nothing",
+                &[Some(ONE), Some(""), None],
+                vec![kept("aaa")],
+            ),
+            ("a repeat", &[Some(ONE), Some(ONE)], vec![kept("aaa")]),
+            ("a record that predates the field", &[None], vec![]),
+        ];
+        for (row, failures, keeps) in cases {
+            let events: Vec<_> = failures
+                .iter()
+                .enumerate()
+                .map(|(n, kept)| {
+                    let kept = kept.map(|k| format!(r#","kept":[{k}]"#)).unwrap_or_default();
+                    ev(
+                        TYPE_UNIT_FAILED,
+                        &format!(r#"{{"id":"u","attempts":{}{kept}}}"#, n + 1),
+                    )
+                })
+                .collect();
+            assert_eq!(project(&events).unwrap().units["u"].keeps, keeps, "{row}");
+        }
     }
 
     #[test]
