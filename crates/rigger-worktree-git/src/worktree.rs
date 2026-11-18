@@ -2819,6 +2819,10 @@ fn metadata_at(
 /// worktree remove --force` given a link removes the worktree the link names. A Unix link is
 /// unlinked like a file; a Windows directory link, which the file call refuses, is removed as a
 /// directory entry, which removes the link alone.
+///
+/// A tree git marks `locked` at `dir` ([`git_mark_at`]: a person's lock, an add git did not
+/// finish) is an error naming git's own commands that recover it ([`marked_entry`]), and nothing
+/// there is reaped, deregistered or removed: the lock says the tree is kept.
 fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
     if repo.is_empty() {
         return Err(step_failed(
@@ -2831,6 +2835,9 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
             .or_else(|_| std::fs::remove_dir(dir))
             .map_err(|e| step_failed(format!("removing the link at {dir}"), e))?;
     } else {
+        if let Some(mark) = git_mark_at(repo, dir)?.filter(|mark| mark_word(mark) == "locked") {
+            return Err(marked_entry(repo, &mark, dir));
+        }
         reap_dir_before_removal(dir, authorized_root);
         if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
             && std::path::Path::new(dir).exists()
