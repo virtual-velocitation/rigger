@@ -1335,7 +1335,8 @@ mod tests {
         };
         // Each row: the `kept` field of each `UnitFailed` in turn (`None` leaves it out), and the
         // keeps folded.
-        let cases: [(&str, &[Option<&str>], Vec<Kept>); 5] = [
+        type Row = (&'static str, &'static [Option<&'static str>], Vec<Kept>);
+        let cases: [Row; 5] = [
             ("a keep recorded", &[Some(ONE)], vec![kept("aaa")]),
             (
                 "a later keep after it",

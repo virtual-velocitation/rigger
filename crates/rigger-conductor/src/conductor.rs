@@ -32311,7 +32311,8 @@ stage "implement" adjudicator "adj" failed
                 .map(|lane| spawn_id("s", ROLE_IMPLEMENTER, lane))
                 .collect();
         }
-        let cases: [(&str, fn(&mut Stub)); 2] = [
+        type Row = (&'static str, fn(&mut Stub));
+        let cases: [Row; 2] = [
             (
                 "every lane's review blamed infrastructure",
                 review_blames_infrastructure,
@@ -49793,7 +49794,11 @@ stage "implement" adjudicator "adj" failed
             (repo, left)
         }
         // (the transient tree, the run that locks it)
-        let rows: [(&str, fn(Log<'_>) -> (tempfile::TempDir, Vec<String>)); 3] = [
+        type Row = (
+            &'static str,
+            fn(Log<'_>) -> (tempfile::TempDir, Vec<String>),
+        );
+        let rows: [Row; 3] = [
             ("the standalone review stage", review_stage),
             ("the plan-critique gate", plan_critique),
             ("the post-merge re-gate", post_merge),
