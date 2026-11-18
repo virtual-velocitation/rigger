@@ -4634,24 +4634,46 @@ enum FirstStop {
     /// It runs the hook at each stop the host would make, fixing nothing, until the hook allows
     /// the stop past its bound.
     PastTheBound,
+    /// It runs the hook once and its deadline (the entry's `timeout`) passes before the host acts
+    /// on the answer, which the host documents as a non-blocking error: the stop goes ahead. The
+    /// fake lets the hook finish and acts on no answer, which is what the host does.
+    TimedOut,
+    /// It runs the hook once and the hook's command exits 1 after printing its answer; the host
+    /// reads a hook's JSON only on exit 0 and documents any other exit but 2 as a non-blocking
+    /// error: the stop goes ahead.
+    Failed,
 }
 
 /// An arm of [`install_fake_claude`] for [`PRODUCER_WORKFLOW`]: the producer's first session
 /// writes `specs/plan.md`, commits nothing, and meets its `Stop` hook as `first` says, its
-/// answers left in the fake's directory; the next session leaves `git status --porcelain` of the
-/// tree it finds in the fake's directory, then commits the plan. Every launch stays on record.
+/// answers and the exit status the host saw left in the fake's directory; the next session leaves
+/// `git status --porcelain` of the tree it finds in the fake's directory, then commits the plan.
+/// Every launch stays on record.
 fn producer_ends_with_its_plan_outside_a_commit_arm(first: FirstStop) -> String {
+    let hook = r#"        hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+"#;
+    // One run of the hook the host acts on no answer of, the command's own exit after `then`.
+    let ignored = |then: &str| {
+        format!(
+            r#"{READ_LAUNCH_CONFIG}{hook}        answer=$(printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
+            sh -c "$hook{then}")
+        printf '%s\n' "$?" >> "$here/stop-status"
+        printf '%s\n' "$answer" >> "$here/stop-answers"
+"#
+        )
+    };
     let stops = match first {
         FirstStop::NoHook => String::new(),
         FirstStop::PastTheBound => format!(
-            r#"{READ_LAUNCH_CONFIG}        hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
-        for active in false true true true; do
+            r#"{READ_LAUNCH_CONFIG}{hook}        for active in false true true true; do
             answer=$(printf '{{"hook_event_name":"Stop","stop_hook_active":%s}}' "$active" |
                 sh -c "$hook")
             printf '%s\n' "$answer" >> "$here/stop-answers"
         done
 "#
         ),
+        FirstStop::TimedOut => ignored(""),
+        FirstStop::Failed => ignored("; exit 1"),
     };
     format!(
         r##"  *"Do the unit."*)
@@ -4671,15 +4693,22 @@ fn producer_ends_with_its_plan_outside_a_commit_arm(first: FirstStop) -> String 
 }
 
 /// A PRODUCER'S WORK PAST ITS STOP HOOK IS RETRIED, NEVER DROPPED, end to end: given a producer
-/// whose session ends with its plan outside a commit - on a host that runs no `Stop` hook, or with
-/// the hook allowing the stop past its bound - then the conductor fails the attempt as a reject
+/// whose session ends with its plan outside a commit - on a host that runs no `Stop` hook, with
+/// the hook allowing the stop past its bound, or with the host going ahead with the stop the hook
+/// held because the hook's deadline passed or its command exited non-zero, as the host documents
+/// both - then the conductor fails the attempt as a reject
 /// carrying the hook's refusal line and git's status, the retry is served that reason and finds
 /// the plan still uncommitted in its tree, commits it, and the plan lands on the run branch with
 /// no hold and no escalation.
 #[cfg(unix)]
 #[test]
 fn a_producers_work_left_outside_a_commit_fails_the_attempt_and_the_retry_lands_it() {
-    for first in [FirstStop::NoHook, FirstStop::PastTheBound] {
+    for first in [
+        FirstStop::NoHook,
+        FirstStop::PastTheBound,
+        FirstStop::TimedOut,
+        FirstStop::Failed,
+    ] {
         let dir = temp_git_project_with_commit();
         let root = std::fs::canonicalize(dir.path()).unwrap();
         write_workflow_fixture(&root, &PRODUCER_WORKFLOW);
@@ -4752,7 +4781,19 @@ fn a_producers_work_left_outside_a_commit_fails_the_attempt_and_the_retry_lands_
                 ],
                 &[true, true, true, false],
             ),
+            FirstStop::TimedOut | FirstStop::Failed => {
+                (&["stop check: ", "stop held (1 of 3): "], &[true])
+            }
         };
+        assert_eq!(
+            std::fs::read_to_string(bin.join("stop-status")).unwrap_or_default(),
+            match first {
+                FirstStop::Failed => "1\n",
+                FirstStop::TimedOut => "0\n",
+                FirstStop::NoHook | FirstStop::PastTheBound => "",
+            },
+            "{first:?}: the exit status the host saw of the hook it acted on no answer of"
+        );
         assert_eq!(stops.len(), starts.len(), "{first:?}: {stops:#?}");
         for (line, start) in stops.iter().zip(starts) {
             assert!(
