@@ -726,7 +726,7 @@ fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
     use crate::extractor_stub::{
@@ -735,6 +735,7 @@ mod tests {
     use crate::extractors_fixtures::{workflow_declaring_extractors, EXTRACTOR_REFUSALS};
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::content_hash;
+    use crate::grounder::symbols::extract::{extract, CompiledTags};
     use crate::js_ts_definition_sources::{
         JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
     };
@@ -749,12 +750,39 @@ mod tests {
     use rigger_store::code::Store;
     use std::collections::BTreeMap;
 
-    fn facts_of(path: &str, bytes: &[u8]) -> FileFacts {
-        let entry = Entry {
+    /// The entry of the file at `path`, its blob named for the path.
+    fn entry_of(path: &str) -> Entry {
+        Entry {
             path: path.to_string(),
             blob: format!("blob-of-{path}"),
-        };
-        FactsExtractor.extract(&entry, bytes)
+        }
+    }
+
+    fn facts_of(path: &str, bytes: &[u8]) -> FileFacts {
+        FactsExtractor.extract(&entry_of(path), bytes)
+    }
+
+    /// The facts of the code file at `path` holding `source`, read as `lang` with its symbols
+    /// extracted under the fixture query `tags` in place of the language's bundled one, through
+    /// the one skeleton every extraction reads a file through.
+    pub(crate) fn facts_under(
+        path: &str,
+        source: &str,
+        lang: Lang,
+        tags: &CompiledTags,
+    ) -> FileFacts {
+        let symbols = extract(source, lang, tags).expect("the fixture source extracts");
+        file_facts(&entry_of(path), source.as_bytes(), |_, _| {
+            Some(CodeFile {
+                lang: lang_str(lang).to_string(),
+                symbols: Some(Ok(CodeSymbols {
+                    defs: symbols.defs,
+                    refs: symbols.refs,
+                    partial: symbols.partial,
+                    doc: symbols.doc,
+                })),
+            })
+        })
     }
 
     /// A definition kind's name as the facts spell it, written here rather than taken from the
@@ -894,24 +922,9 @@ mod tests {
                 )
             })
             .collect();
-        let fixture = crate::grounder::symbols::extract::CompiledTags::compile(
-            &tree_sitter_python::LANGUAGE.into(),
-            &query,
-        )
-        .expect("the fixture query compiles");
-        let symbols = crate::grounder::symbols::extract::extract(&source, Lang::Python, &fixture)
-            .expect("the fixture source extracts");
-        let mut facts = FileFacts::default();
-        code_facts(
-            "tool/run.py",
-            &CodeSymbols {
-                defs: symbols.defs,
-                refs: symbols.refs,
-                partial: symbols.partial,
-                doc: symbols.doc,
-            },
-            &mut facts,
-        );
+        let fixture = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), &query)
+            .expect("the fixture query compiles");
+        let facts = facts_under("tool/run.py", &source, Lang::Python, &fixture);
         let expected: Vec<Mention> = table
             .into_iter()
             .zip(1..)

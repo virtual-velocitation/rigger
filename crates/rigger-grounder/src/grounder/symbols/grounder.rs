@@ -3276,4 +3276,54 @@ mod tests {
             assert_eq!((br.precise, br.safe), (radius.clone(), radius), "{query}");
         }
     }
+
+    /// Spec 117 (CAPTURES), AN IMPLEMENTING FILE STAYS IN THE BLAST RADIUS: under a fixture tags
+    /// query staging a Python class's base as an `impl` mention, `circle.py`, which names `Shape`
+    /// as its base and nothing else of it, is among `Shape`'s radius referencer files beside
+    /// `make.py`, which calls it, while `Shape`'s reference degree counts the call alone.
+    #[test]
+    fn an_implementing_file_stays_in_the_blast_radius() {
+        use crate::facts::tests::facts_under;
+        use crate::grounder::symbols::extract::CompiledTags;
+        use crate::grounder::symbols::model::Lang;
+        let query = "(class_definition name: (identifier) @name) @definition.class\n\
+                     (class_definition superclasses: \
+                     (argument_list (identifier) @name) @reference.implementation)\n\
+                     (call function: (identifier) @name) @reference.call\n";
+        let tags = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), query)
+            .expect("the fixture query compiles");
+        let files: Vec<FileFacts> = [
+            ("shapes.py", "class Shape:\n    pass\n"),
+            ("circle.py", "class Circle(Shape):\n    pass\n"),
+            ("make.py", "shape = Shape()\n"),
+        ]
+        .into_iter()
+        .map(|(path, source)| facts_under(path, source, Lang::Python, &tags))
+        .collect();
+        let circle: Vec<(&str, &MentionKind, u32)> = files[1]
+            .mentions
+            .iter()
+            .map(|m| (m.name.as_str(), &m.kind, m.line))
+            .collect();
+        let implementing = MentionKind::Tagged("impl".to_string());
+        assert_eq!(
+            circle,
+            [("Shape", &implementing, 1)],
+            "circle.py's mentions"
+        );
+        let view = view_of(files.clone());
+        assert_eq!(agreeing(&view).reference_degree("Shape", "python"), 1);
+        let g = Symbols::over(
+            "",
+            Box::new(Fixed {
+                files,
+                worktree: agreeing_tree(),
+            }),
+        );
+        let br = g.blast_radius("`Shape`", 8);
+        let radius: Vec<String> = ["shapes.py", "circle.py", "make.py"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!((br.precise, br.safe), (radius.clone(), radius));
+    }
 }
