@@ -104,10 +104,20 @@ pub(super) fn cwd(pid: u32) -> Option<PathBuf> {
         .map(|cwd| super::strip_deleted_suffix(&cwd))
 }
 
-/// The arguments ([`arguments`]) joined by single spaces, falling back to the short name
-/// ([`short_name`]).
+/// The arguments ([`arguments`]) that are not empty, joined by single spaces, falling back to the
+/// short name ([`short_name`]) when none is: a process that retitles itself over its arguments
+/// leaves the rest of them empty.
 pub(super) fn command(pid: u32) -> String {
-    arguments(pid).map_or_else(|| short_name(pid), |arguments| arguments.join(" "))
+    let named: Vec<String> = arguments(pid)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|argument| !argument.is_empty())
+        .collect();
+    if named.is_empty() {
+        short_name(pid)
+    } else {
+        named.join(" ")
+    }
 }
 
 /// `/proc/<pid>/comm`, the process's short name; empty when it cannot be read.

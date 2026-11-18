@@ -195,8 +195,9 @@ pub(crate) fn cwd_lies_in(pid: u32, dir: &Path) -> bool {
     cwd(pid).is_some_and(|cwd| cwd.starts_with(dir))
 }
 
-/// Process `pid`'s command: on Linux its arguments joined by single spaces, or its short name when
-/// its arguments cannot be read; on macOS and Windows the full path of its executable.
+/// Process `pid`'s command: on Linux its arguments that are not empty joined by single spaces, or
+/// its short name when none is or they cannot be read; on macOS and Windows the full path of its
+/// executable.
 /// Descriptive only, it names a process in a message and decides nothing. Empty when `pid` is
 /// gone.
 pub fn command(pid: u32) -> String {
