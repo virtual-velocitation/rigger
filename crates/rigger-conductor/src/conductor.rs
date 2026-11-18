@@ -31793,9 +31793,9 @@ stage "implement" adjudicator "adj" failed
     }
 
     /// A group whose every lane loses before any merge (`lose` sets up
-    /// how) escalates with the loss recorded, so an operator's grant re-drives its lanes as
-    /// fresh sessions told why the group lost, exactly as a single lane re-entering after its
-    /// own failure is told.
+    /// how) escalates with the loss recorded and its lesson naming it, so an operator's grant
+    /// re-drives its lanes as fresh sessions told why the group lost, exactly as a single lane
+    /// re-entering after its own failure is told and taught.
     fn assert_a_group_whose_lanes_all_lose_re_enters_told_why(
         lose: fn(&mut Config, &mut Stub) -> &'static str,
         why: &str,
@@ -31815,6 +31815,19 @@ stage "implement" adjudicator "adj" failed
             rs.units["s"].status,
             ledger::Status::Escalated,
             "premise: a group whose lanes all lose escalates: {why}"
+        );
+        let lessons: Vec<String> = store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+            .map(|e| String::from_utf8_lossy(&e.data).to_string())
+            .collect();
+        assert!(
+            lessons
+                .iter()
+                .any(|lesson| lesson.contains("escalated") && lesson.contains(told)),
+            "the group's escalation lesson names {told:?}: {why}; lessons: {lessons:?}"
         );
         // A host records every spawn it is asked for; the stub records none.
         park_lane_requests(&store, 0..2);
