@@ -66,9 +66,9 @@ pub const STOP_HOOK_HELD: &str = "This session cannot end yet. Once it ends, the
      git status in {dir} reads:\n\
      {status}\n\n\
      Before this session stops, HEAD must be on the branch {branch}, no merge, cherry-pick, revert \
-     or rebase may be in progress there, and no file the commit would carry may hold a \
-     complete set of conflict-marker lines (a start, a separator and an end line, in that order); \
-     then end as your task asks.";
+     or rebase may be in progress there, and no file the commit would carry may hold \
+     conflict-marker lines its committed text does not already hold (a start, a separator and an \
+     end line in that order, or a start or end line in no such set); then end as your task asks.";
 
 /// FRAMING: `rigger hook stop`'s reason for holding a producer's session from stopping, handed to
 /// the session as the reason to continue: in `{refusals}` the line saying the session's tree at

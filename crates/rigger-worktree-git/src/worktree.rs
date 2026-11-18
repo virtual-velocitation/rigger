@@ -3265,17 +3265,19 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
     git(dir, &["update-index", "-q", "--refresh"]).map(drop)
 }
 
-/// The git conflict-marker lines that `scope`'s files carry at `at`, as `(path, line)` pairs: the
-/// marker scan's one home. Only a COMPLETE, ORDERED set counts - a start line
-/// (`<<<<<<< `), then a separator (`=======`), then an end line (`>>>>>>> `), each a whole line
-/// with any trailing `\r` of a CRLF file dropped ([`marker`]); a diff3 base section
-/// (`||||||| `) between start and separator is content to it, like any other line. A
-/// separator-shaped line alone (a Setext heading's underline, an RST title's over- and
-/// underline), a start with no end after it and the three out of order are no conflict, so the
-/// scan answers none of their lines. [`ScanAt::Worktree`] reads the worktree copy (staged or
+/// The git conflict-marker lines that `scope`'s files carry at `at`, by path, [`Standing`] and
+/// line: the marker scan's one home. A COMPLETE, ORDERED set - a start line (`<<<<<<< `), then a
+/// separator (`=======`), then an end line (`>>>>>>> `), each a whole line with any trailing `\r`
+/// of a CRLF file dropped ([`marker`]) - stands its three lines [`Standing::InSet`]; a diff3 base
+/// section (`||||||| `) between start and separator is content to it, like any other line. A
+/// start or end line in no complete set (a start with no end after it, the three out of order,
+/// the start and end of a hunk git wrote around a set the file carries, which form no set of
+/// their own once that set sits between them) stands [`Standing::Alone`]. A separator-shaped
+/// line alone (a Setext heading's underline, an RST title's over- and underline) is no conflict,
+/// so the scan answers none. [`ScanAt::Worktree`] reads the worktree copy (staged or
 /// not) of every file a commit's `git add -A` would stage, an untracked one included and an
 /// ignored one never, [`ScanAt::Index`] what the next `git commit` takes, and [`ScanAt::Commit`]
-/// a commit's tree. Each line is answered with the number of complete sets it stands in at that path, which
+/// a commit's tree. Each line is answered with the number of times it stands so at that path, which
 /// [`markers_introduced`] compares with what a commit already carries: read at the worktree
 /// against `HEAD`, it is [`commit_refusal`]'s; read at the index against both parents, it is
 /// [`Worktree::merge_into_worktree`]'s finalize refusal, through
@@ -3359,8 +3361,10 @@ fn conflict_markers_present(
         ScanAt::Worktree | ScanAt::Index => String::new(),
     };
     // git grep lists a path's hits together, in the order they sit in it, so the set being
-    // read is the run of marker lines since its start: a start opens a new one, a line that
-    // does not continue it is passed over, and an end after its separator completes it.
+    // read is the run of marker lines since its start: a start opens a new one, cutting off the
+    // run before it, a separator that does not continue it is passed over, an end that does not
+    // stands alone, and an end after its separator completes it. A run a later start or the
+    // path's last hit cuts off leaves its start alone.
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut rest: &str = &stdout;
     let mut open: Vec<&str> = Vec::new();
@@ -3370,39 +3374,69 @@ fn conflict_markers_present(
         rest = next;
         let path = name.strip_prefix(prefix.as_str()).unwrap_or(name);
         if path != open_in {
-            open.clear();
+            cut_off(&mut lines, open_in, &mut open);
             open_in = path;
         }
         let Some(this) = marker(line) else {
             continue;
         };
         match (open.last().and_then(|last| marker(last)), this) {
-            (_, Marker::Start) => open = vec![line],
+            (_, Marker::Start) => {
+                cut_off(&mut lines, path, &mut open);
+                open.push(line);
+            }
             (Some(Marker::Start), Marker::Separator) => open.push(line),
             (Some(Marker::Separator), Marker::End) => {
                 open.push(line);
                 for line in open.drain(..) {
-                    *lines
-                        .entry((path.to_string(), line.to_string()))
-                        .or_default() += 1;
+                    stand(&mut lines, path, Standing::InSet, line);
                 }
             }
-            _ => {}
+            (_, Marker::End) => stand(&mut lines, path, Standing::Alone, line),
+            (_, Marker::Separator) => {}
         }
     }
+    cut_off(&mut lines, open_in, &mut open);
     Ok(lines)
 }
 
-/// Each conflict-marker line [`conflict_markers_present`] reads in a complete set, by path and
-/// line text, with the number of complete sets it stands in at that path.
-type MarkerLines = std::collections::BTreeMap<(String, String), usize>;
+/// Where a conflict-marker line stands in its file ([`conflict_markers_present`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Standing {
+    /// One of the three lines of a complete, ordered set.
+    InSet,
+    /// A start or end line in no complete set.
+    Alone,
+}
 
-/// The paths in `scope` where the content read `at` holds a conflict-marker line in more complete
-/// sets ([`conflict_markers_present`]) than any one commit of `carriers` holds it in at that path,
-/// sorted. A set a commit already carries (a fixture, a document showing one) is that file's
-/// content, never a conflict; a conflict beside it is a set more than the commit carries, even
-/// one whose lines repeat the carried set's. The one rule of [`commit_refusal`] (`HEAD` carries)
-/// and of the merge finalize ([`Worktree::markers_the_merge_introduced`], either parent carries).
+/// Each conflict-marker line [`conflict_markers_present`] reads, by path, [`Standing`] and line
+/// text, with the number of times it stands so at that path.
+type MarkerLines = std::collections::BTreeMap<(String, Standing, String), usize>;
+
+/// Count `line` once more as standing `standing` at `path` in `lines`.
+fn stand(lines: &mut MarkerLines, path: &str, standing: Standing, line: &str) {
+    *lines
+        .entry((path.to_string(), standing, line.to_string()))
+        .or_default() += 1;
+}
+
+/// End the `open` run of marker lines at `path` with no set completed: its start, when it has
+/// one, stands alone in `lines`, and its separator is passed over.
+fn cut_off(lines: &mut MarkerLines, path: &str, open: &mut Vec<&str>) {
+    if let Some(start) = open.first() {
+        stand(lines, path, Standing::Alone, start);
+    }
+    open.clear();
+}
+
+/// The paths in `scope` where the content read `at` holds a conflict-marker line more times in
+/// one [`Standing`] ([`conflict_markers_present`]) than any one commit of `carriers` holds it so
+/// at that path, sorted. Marker text a commit already carries (a fixture, a document showing a
+/// set) is that file's content, never a conflict; a conflict beside it is a set more than the
+/// commit carries, even one whose lines repeat the carried set's, and a hunk git wrote around it
+/// holds start and end lines alone that the commit does not. The one rule of [`commit_refusal`]
+/// (`HEAD` carries) and of the merge finalize ([`Worktree::markers_the_merge_introduced`], either
+/// parent carries).
 fn markers_introduced(
     dir: &str,
     at: ScanAt<'_>,
@@ -3410,7 +3444,7 @@ fn markers_introduced(
     carriers: &[&str],
 ) -> Result<Vec<String>, Error> {
     let found = conflict_markers_present(dir, at, scope)?;
-    let mut hit: Vec<String> = found.keys().map(|(path, _)| path.clone()).collect();
+    let mut hit: Vec<String> = found.keys().map(|(path, _, _)| path.clone()).collect();
     hit.dedup();
     let mut carried = MarkerLines::new();
     for rev in carriers {
@@ -3422,7 +3456,7 @@ fn markers_introduced(
     let mut introduced: Vec<String> = found
         .into_iter()
         .filter(|(line, sets)| *sets > carried.get(line).copied().unwrap_or_default())
-        .map(|((path, _), _)| path)
+        .map(|((path, _, _), _)| path)
         .collect();
     introduced.dedup();
     Ok(introduced)
