@@ -1910,24 +1910,28 @@ mod tests {
 
         /// The live OS as an end sees it, with `stranger` (a pid and the tree member it poses
         /// under) and `ghost` (a process gone before the end, and the member it poses under) added
-        /// to the table, `vanishing` left out of every read of the table but the first, the parent
-        /// of `unreadable_once` unreadable at its first read, every hard end of `swallowed`
-        /// dropped, and `forker` started on one more process ahead of each read of the table.
-        /// Every signal the end sends is recorded, dropped or not.
+        /// to the table, `vanishing` left out of every read of the table once it was sent a freeze,
+        /// the parent of `unreadable_once` unreadable at its first read, the parent of `stranded`'s
+        /// pid unreadable once that pid was sent its signal, every freeze of `unstoppable` and
+        /// every hard end of `swallowed` dropped, and `forker` started on one more process ahead
+        /// of each read of the table. Every signal the end sends is recorded, dropped or not, and
+        /// so is each process sent a freeze while its parent did not read frozen.
         #[derive(Default)]
         struct Rigged {
             stranger: Option<(u32, u32)>,
             ghost: Option<(Identity, u32)>,
             vanishing: Option<u32>,
             unreadable_once: Option<u32>,
+            stranded: Option<(u32, Signal)>,
+            unstoppable: Option<u32>,
             swallowed: Option<u32>,
             forker: Option<Forker>,
-            reads: usize,
             sent: Vec<(Signal, u32)>,
+            frozen_under_a_running_parent: Vec<u32>,
         }
 
-        /// A tree member that is never frozen, as on an OS with no freeze, and starts a process
-        /// each time a line reaches its `input`, `left` times more.
+        /// A tree member that starts a process each time a line reaches its `input`, `left` times
+        /// more.
         struct Forker {
             pid: u32,
             input: std::process::ChildStdin,
@@ -1979,9 +1983,10 @@ mod tests {
                         start: ghost.start,
                     });
                 }
-                self.reads += 1;
-                if self.reads > 1 {
-                    table.retain(|entry| Some(entry.pid) != self.vanishing);
+                if let Some(vanishing) = self.vanishing {
+                    if self.sent.contains(&(Signal::Stop, vanishing)) {
+                        table.retain(|entry| entry.pid != vanishing);
+                    }
                 }
                 table
             }
@@ -1991,15 +1996,27 @@ mod tests {
                     self.unreadable_once = None;
                     return None;
                 }
+                if let Some((stranded, signal)) = self.stranded {
+                    if stranded == pid && self.sent.contains(&(signal, pid)) {
+                        return None;
+                    }
+                }
                 os_process::parent(pid)
             }
 
             fn send(&mut self, signal: Signal, pid: u32) {
                 self.sent.push((signal, pid));
-                let never_frozen = self.forker.as_ref().is_some_and(|forker| forker.pid == pid);
+                if signal == Signal::Stop {
+                    let parent_frozen = os_process::parent(pid)
+                        .and_then(os_process::state)
+                        .is_some_and(|state| matches!(state, 'T' | 't'));
+                    if !parent_frozen {
+                        self.frozen_under_a_running_parent.push(pid);
+                    }
+                }
                 let dropped = match signal {
                     Signal::Hard => self.swallowed == Some(pid),
-                    Signal::Stop => never_frozen,
+                    Signal::Stop => self.unstoppable == Some(pid),
                     Signal::Term | Signal::Resume => false,
                 };
                 if !dropped {
@@ -2068,6 +2085,103 @@ mod tests {
                 position(&sent, (Signal::Hard, deepest)) < position(&sent, (Signal::Hard, middle)),
                 "a child ends before its parent: {sent:?}"
             );
+            assert_eq!(
+                os.frozen_under_a_running_parent,
+                vec![main.id()],
+                "every process but the main is frozen under a frozen parent"
+            );
+        }
+
+        /// A member whose chain check fails at its first freeze, its parent unreadable at that
+        /// read: its child is not frozen while the member runs, and both are frozen, the member
+        /// first, once a later walk's check passes, then ended.
+        #[test]
+        fn the_watched_end_freezes_a_child_only_while_its_parent_is_frozen() {
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "( holder; up; held ) & up; held");
+            assert!(witness.wait_up(3), "the fixture's three processes are up");
+            let middle = only_child(main.id());
+            let deepest = only_child(middle);
+            let mut os = Rigged {
+                unreadable_once: Some(middle),
+                ..Rigged::default()
+            };
+
+            let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
+
+            assert_eq!(
+                (witness.read(), report),
+                (Reading::Ended, EndReport::default())
+            );
+            let sent = os.sent;
+            assert_eq!(
+                os.frozen_under_a_running_parent,
+                vec![main.id()],
+                "no child is frozen while its parent runs: {sent:?}"
+            );
+            assert!(
+                position(&sent, (Signal::Stop, middle)) < position(&sent, (Signal::Stop, deepest)),
+                "the member is frozen before its child: {sent:?}"
+            );
+        }
+
+        /// A process the end froze whose parent chain is unreadable once `stranded_after` was sent
+        /// to it, as when a third party ends its frozen parent: the end can no longer reach it,
+        /// so it is reported as residue still frozen, and no resume is sent to it. Its freeze is
+        /// dropped, so the test's release ends it after.
+        fn the_watched_end_reports_still_frozen_a_process_it_froze_and_lost(
+            stranded_after: Signal,
+        ) {
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "( holder; up; held ) & up; held");
+            assert!(witness.wait_up(3), "the fixture's three processes are up");
+            let middle = only_child(main.id());
+            let deepest = only_child(middle);
+            let mut os = Rigged {
+                unstoppable: Some(deepest),
+                swallowed: Some(deepest),
+                stranded: Some((deepest, stranded_after)),
+                ..Rigged::default()
+            };
+
+            let report = end_watched_with(&mut os, &mut main, &[], Duration::from_secs(1));
+
+            let left: Vec<(u32, bool)> = report
+                .residue
+                .iter()
+                .map(|leftover| (leftover.pid, leftover.stopped))
+                .collect();
+            assert_eq!(
+                (left, report.skipped),
+                (vec![(deepest, true)], vec![]),
+                "{stranded_after:?}: reported still frozen"
+            );
+            assert_eq!(
+                (
+                    os.sent.contains(&(Signal::Hard, deepest)),
+                    os.sent.contains(&(Signal::Resume, deepest)),
+                ),
+                (stranded_after == Signal::Hard, false),
+                "{stranded_after:?}: ended only while reachable, never resumed: {:?}",
+                os.sent
+            );
+            assert!(
+                matches!(main.try_wait(), Ok(Some(_))),
+                "the main is ended and reaped"
+            );
+            assert_eq!(
+                witness.read(),
+                Reading::Held,
+                "the process left behind holds the witness"
+            );
+            assert_eq!(witness.release(), Reading::Ended);
+        }
+
+        crate::test_cases! {
+            the_watched_end_reports_still_frozen_a_process_it_froze_and_could_not_end:
+                the_watched_end_reports_still_frozen_a_process_it_froze_and_lost(Signal::Stop);
+            the_watched_end_reports_still_frozen_a_process_it_ended_and_could_not_resume:
+                the_watched_end_reports_still_frozen_a_process_it_froze_and_lost(Signal::Hard);
         }
 
         #[test]
@@ -2227,12 +2341,12 @@ mod tests {
             assert_eq!(witness.release(), Reading::Ended);
         }
 
-        /// A tree member that is never frozen and starts a process at every read of the table: the
-        /// watched end stops walking once its bound passes, long before the member stops forking,
-        /// and still ends every process it found, and the main.
+        /// A tree member that is never frozen, as on an OS with no freeze, and starts a process at
+        /// every read of the table: the watched end stops walking once its bound passes, long
+        /// before the member stops forking, and still ends every process it found, and the main.
         #[test]
         fn the_watched_end_stops_walking_at_its_bound_when_a_member_keeps_forking() {
-            const FORKS: usize = 40;
+            const FORKS: usize = 200;
             let mut witness = Witness::new();
             let mut main = tree(&witness, "up; while read -r unused; do holder; done; held");
             assert!(witness.wait_up(1), "the fixture is up");
@@ -2243,6 +2357,7 @@ mod tests {
                     input,
                     left: FORKS,
                 }),
+                unstoppable: Some(main.id()),
                 ..Rigged::default()
             };
             let bound = Duration::from_secs(1);
@@ -2251,6 +2366,11 @@ mod tests {
             let report = end_watched_with(&mut os, &mut main, &[], bound);
             let elapsed = started.elapsed();
 
+            assert_eq!(
+                os.frozen_under_a_running_parent,
+                vec![main.id()],
+                "no process under the member that never froze is frozen"
+            );
             let forks_left = os.forker.as_ref().map_or(0, |forker| forker.left);
             assert_eq!(
                 (report, witness.read(), forks_left > 0),
