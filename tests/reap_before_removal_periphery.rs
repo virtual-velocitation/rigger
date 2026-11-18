@@ -28,7 +28,7 @@ use crate::common;
 use std::path::Path;
 
 use common::fixtures::{assert_teardown_reaps_what_is_rooted_inside, cleanup, sigterm_ignorer_in};
-use common::git::init_repo;
+use common::git::{git_ok, init_repo};
 use common::wait_until;
 use rigger::gate::STORE_FENCE_SUFFIX;
 use rigger::reap::processes_rooted_under;
@@ -527,4 +527,79 @@ fn reclaim_gate_scratch_sibling_removes_nothing_beside_a_dir_that_is_not_a_unit_
             "a dir named {dir} is not a unit worktree, so {lookalike} beside it is kept"
         );
     }
+}
+
+/// A TEARDOWN REAPS NOTHING IN A TREE A PERSON LOCKED: a unit worktree a person locked during its
+/// stage, torn down by [`Worktree::remove`], and a review worktree a person locked, cleared by
+/// [`Worktree::discard`], each fail naming the lock and where, and a live process rooted in the
+/// tree and the tree's work both stay.
+#[test]
+fn a_teardown_reaps_nothing_in_a_tree_a_person_locked() {
+    let mut violations = Vec::new();
+    for teardown in [Teardown::UnitRemove, Teardown::ReviewDiscard] {
+        let repo = tempfile::tempdir().unwrap();
+        let repo_path = repo.path().canonicalize().unwrap();
+        init_repo(&repo_path);
+        let repo_s = repo_path.to_str().unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch_path = scratch.path().canonicalize().unwrap();
+        let root = scratch_path.to_str().unwrap();
+        let (name, branch) = match teardown {
+            Teardown::UnitRemove => ("rigger-wt-locked-0", "rigger/u/locked-0"),
+            Teardown::ReviewDiscard => ("rigger-review-locked-0", "rigger/review/locked-0"),
+        };
+        let dir = scratch_path.join(name);
+        let dir_s = dir.to_str().unwrap();
+        let wt = Worktree::create(repo_s, dir_s, branch, root).expect("create the worktree");
+        std::fs::write(dir.join("work.txt"), "work\n").unwrap();
+        git_ok(
+            &repo_path,
+            &["worktree", "lock", "--reason", "a person's lock", dir_s],
+        );
+        let mut child = sigterm_ignorer_in(&dir);
+        assert!(
+            wait_until(|| processes_rooted_under(&dir)
+                .iter()
+                .any(|(pid, _)| *pid == child.id())),
+            "precondition: the fixture process is rooted in {dir_s} before the teardown runs"
+        );
+
+        let (row, torn) = match teardown {
+            Teardown::UnitRemove => ("remove", wt.remove()),
+            Teardown::ReviewDiscard => {
+                drop(wt);
+                ("discard", Worktree::discard(repo_s, dir_s, branch, root))
+            }
+        };
+        // Give a reap every chance to have fired before reading whether the process lives.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let alive = matches!(child.try_wait(), Ok(None));
+        cleanup(&mut child);
+
+        let named = format!(
+            "a worktree git marks `locked a person's lock` is registered at {dir_s}: nothing \
+             there is cleared or adopted"
+        );
+        match torn {
+            Ok(()) => violations.push(format!("{row}: the teardown went through")),
+            Err(e) if e.0.lines().next() != Some(named.as_str()) => violations.push(format!(
+                "{row}: the error does not name the lock and where: {}",
+                e.0
+            )),
+            Err(_) => {}
+        }
+        if !alive {
+            violations.push(format!(
+                "{row}: the process rooted in the locked tree was reaped"
+            ));
+        }
+        if std::fs::read_to_string(dir.join("work.txt"))
+            .ok()
+            .as_deref()
+            != Some("work\n")
+        {
+            violations.push(format!("{row}: the work in the locked tree is gone"));
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
