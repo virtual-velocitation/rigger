@@ -84,10 +84,11 @@ sink and beat source; a host built without them, as `rigger critique` builds it
 (`src/cli/critique.rs:207`), appends no hold, keeps spec 104's classed errors and counts silence
 from the last line. The host merges spec 104's per-spawn hooks into each launch's `--settings`,
 since every conductor spawn site passes an empty `settings_json`
-(`crates/rigger-conductor/src/conductor.rs:4768`): the `PreToolUse` `rigger guard-write` rooted
+(`crates/rigger-conductor/src/conductor.rs:6213`): the `PreToolUse` `rigger guard-write` rooted
 at the spawn's `dir` and scratch container, an empty `dir` rooted at the session's cwd, and one
-`StopFailure` entry per `AgentFailure::CATEGORIES` running `rigger hook stop-failure`; each
-command of these two hooks runs `rigger_bin`, each path in it shell-quoted, while hooks the host
+`StopFailure` entry per `AgentFailure::CATEGORIES` running `rigger hook stop-failure`; each hook
+of these two is exec form, its command `rigger_bin` and its arguments the words after it, each
+path one unquoted argument, since Claude Code runs it with no shell, while hooks the host
 already merges keep their commands. The host pre-approves its spawn-bound `rigger_emit`,
 `rigger_progress` and `rigger_scratch` beside the helper tools in `--allowed-tools`
 (`allowed_tools_args`, `crates/rigger-driver/src/driver/mod.rs:45`). The host bridges no printed

@@ -579,8 +579,9 @@ shell so every nested cargo inherits it, overrides `.cargo/config.toml`'s Unix w
 The version derivation degrades without the version tool, so the job installs nothing else.
 `tests/ci_lanes.rs`' `every_job_that_builds_dash_installs_the_console_core_wasm_target` (:616)
 adds `cross-os-check` to its job list and names the three jobs in its doc (:608-615); it is the
-job's one wasm-target pin. No job runs a test on macOS or Windows: their adapters ship compiled
-and unrun. Nothing in the run compiles a macOS or Windows arm, since nothing is installed: the
+job's one wasm-target pin. On macOS and Windows the job's one test step runs the process crate's
+unit tests (`cargo test -p rigger-process --lib`) before the check; no other test runs there.
+Nothing in the run compiles a macOS or Windows arm, since nothing is installed: the
 PR's `cross-os-check` is their first compile. The spec is done when its PR merges, and the PR
 merges only with `cross-os-check` green, the check that observes the Goal's macOS and Windows
 compile. A red `cross-os-check` is fixed on the PR branch by an operator fix that runs this
