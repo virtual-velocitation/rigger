@@ -241,7 +241,7 @@ impl Worktree {
             // adopted or cleared only on a plain answer of whether it is registered there
             // ([`registered_at`]).
             let present = branch_present(repo, branch)?;
-            let registered = registered_at(repo, dir)?;
+            let registered = registered_at(repo, dir, branch, authorized_root)?;
             if present {
                 // FAST PATH - adoption by PATH LOOKUP (Gap 12, spec 06). The dir is now
                 // DETERMINISTIC (derived from the unit id / stage+attempt, no per-process
@@ -2589,14 +2589,22 @@ fn checked_out_elsewhere(branch: &str, at: &str, authorized_root: &str) -> Error
 /// or no is an error, so nothing at `dir` is cleared or adopted on it:
 /// - a list git refuses, or a `dir` the filesystem cannot read or resolve;
 /// - a listed path that cannot be resolved for a reason other than nothing being there, since it
-///   may be `dir` ([`names_dir`]);
+///   may be `dir` ([`names_dir`]), when that entry could be the tree of the unit on `branch`
+///   ([`could_be_the_units`]). Any other such entry is passed over, so a worktree on an
+///   unreadable disk elsewhere holds no create, yet `dir` is never cleared on its account: with
+///   no entry naming `dir`, its error is the answer;
 /// - an entry at `dir` git marks `locked` (an add git has not finished, or a lock a person set) or
 ///   `prunable` (a tree git can no longer use, its dir still there): git's own prune and the heal
 ///   ([`worktree_admin_is_corrupt`]) leave a locked entry untouched, and a prunable one at a dir
 ///   that is there still holds what is in it;
 /// - a tree at `dir` whose registration git does not list ([`unlisted_registration`]): git leaves
 ///   out an entry it cannot read, saying nothing.
-fn registered_at(repo: &str, dir: &str) -> Result<bool, Error> {
+fn registered_at(
+    repo: &str,
+    dir: &str,
+    branch: &str,
+    authorized_root: &str,
+) -> Result<bool, Error> {
     match occupant(dir)? {
         Some(found) if !found.file_type().is_symlink() => {}
         _ => return Ok(false),
@@ -2609,29 +2617,45 @@ fn registered_at(repo: &str, dir: &str) -> Result<bool, Error> {
             e.0,
         )
     })?;
-    for entry in out.split("\n\n") {
-        let mut lines = entry.lines();
-        let Some(path) = lines
-            .next()
-            .and_then(|first| first.strip_prefix("worktree "))
-        else {
-            continue;
-        };
-        if !names_dir(path, dir, &want)? {
-            continue;
+    let mut passed_over = None;
+    for entry in listed(&out) {
+        match names_dir(entry.path, dir, &want) {
+            Ok(false) => {}
+            Ok(true) => {
+                return match entry.mark {
+                    Some(mark) => Err(marked_entry(mark, dir)),
+                    None => Ok(true),
+                };
+            }
+            Err(e) if could_be_the_units(&entry, branch, authorized_root) => return Err(e),
+            Err(e) => {
+                passed_over.get_or_insert(e);
+            }
         }
-        if let Some(mark) = lines.find(|line| {
-            let word = line.split_once(' ').map_or(*line, |(word, _)| word);
-            word == "locked" || word == "prunable"
-        }) {
-            return Err(Error(format!(
-                "a worktree git marks `{mark}` is registered at {dir}: nothing there is cleared or \
-                 adopted"
-            )));
-        }
-        return Ok(true);
     }
-    unlisted_registration(dir)
+    match passed_over {
+        Some(e) => Err(e),
+        None => unlisted_registration(dir),
+    }
+}
+
+/// Whether `entry`, a worktree git lists, could be the tree of the unit on `branch` working under
+/// `authorized_root`: it has that branch checked out, or its path lies under the root, as given or
+/// resolved. The comparison is by path components and never resolves the entry's own path, which
+/// is what cannot be resolved. An empty root has nothing under it.
+fn could_be_the_units(entry: &Listed<'_>, branch: &str, authorized_root: &str) -> bool {
+    if entry.branch == Some(branch) {
+        return true;
+    }
+    if authorized_root.is_empty() {
+        return false;
+    }
+    let path = std::path::Path::new(entry.path);
+    let root = std::path::Path::new(authorized_root);
+    path.starts_with(root)
+        || root
+            .canonicalize()
+            .is_ok_and(|resolved| path.starts_with(resolved))
 }
 
 /// Whether `path`, a worktree `git worktree list` names, is `dir`: the same spelling, or the same
