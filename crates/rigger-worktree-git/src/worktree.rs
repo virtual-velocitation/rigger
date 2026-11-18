@@ -2564,9 +2564,18 @@ const HEAL_GRACE_PERIOD: std::time::Duration = std::time::Duration::from_secs(60
 ///   healed on an unprovable age.
 ///
 /// A healthy entry always has both markers present and non-empty, so this never flags a
-/// live worktree regardless of age or lock state.
+/// live worktree regardless of age or lock state. A marker is missing only when the filesystem
+/// says nothing is there: a marker read failing any other way (a permission, a link to itself)
+/// proves nothing, and the entry is left alone, as it is when the `locked` marker cannot be
+/// read.
 fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
-    if admin.join("locked").exists() {
+    // A marker's length when it is there, `None` when nothing is, an error when the read fails.
+    let read = |marker: &str| match std::fs::metadata(admin.join(marker)) {
+        Ok(found) => Ok(Some(found.len())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e),
+    };
+    if !matches!(read("locked"), Ok(None)) {
         return false;
     }
     let old_enough = std::fs::metadata(admin)
@@ -2579,7 +2588,7 @@ fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
     }
     ["commondir", "gitdir"]
         .iter()
-        .any(|marker| std::fs::metadata(admin.join(marker)).map_or(true, |m| m.len() == 0))
+        .any(|marker| matches!(read(marker), Ok(None | Some(0))))
 }
 
 /// Tear down any scratch worktree still CHECKED OUT on `branch`, then reclaim its sibling
@@ -7833,6 +7842,100 @@ mod tests {
             let _ = std::fs::remove_file(git_dir(&dir).join("index.lock"));
             wt.remove().unwrap();
         }
+    }
+
+    /// A tree the create-misread table plants: its registration (admin) directory.
+    struct Plant {
+        admin: std::path::PathBuf,
+    }
+
+    /// Give `path` back its owner's full access, after a row took it away.
+    fn full_access(path: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        #[cfg(not(unix))]
+        let _ = path;
+    }
+
+    /// CREATE NEVER CLEARS OR ADOPTS A TREE IT CANNOT READ AS UNREGISTERED: a tree holding
+    /// uncommitted work at the unit's dir whose registration git marks unusable, or that git or the
+    /// filesystem cannot read, makes `create` fail, and the tree, its work and its registration
+    /// stay as they were. Every row's violations are gathered, so a red run names
+    /// each row that fails.
+    #[test]
+    fn create_leaves_a_tree_it_cannot_read_as_unregistered_as_it_stands() {
+        const BRANCH: &str = "rigger/u/unit-misread";
+        // Each row: what the tree's state is, whether the unit's branch exists, whether the
+        // tree is added on that branch (else detached at HEAD), and what puts the tree in its
+        // state, returning any path it made unreadable.
+        type Row = (
+            &'static str,
+            bool,
+            bool,
+            fn(&Plant) -> Option<std::path::PathBuf>,
+        );
+        let rows: &[Row] = &[
+            #[cfg(unix)]
+            (
+                "a registration marker the heal cannot read (a link to itself)",
+                true,
+                false,
+                |p| {
+                    let commondir = p.admin.join("commondir");
+                    std::fs::remove_file(&commondir).unwrap();
+                    std::os::unix::fs::symlink("commondir", &commondir).unwrap();
+                    backdate(&p.admin, 120);
+                    None
+                },
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (state, branch_present, on_branch, put) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap();
+            let place = tempfile::tempdir().unwrap();
+            let dir = place.path().join("wt");
+            let dir_s = dir.to_str().unwrap();
+            if *branch_present {
+                run_git(repo_path, &["branch", BRANCH]).unwrap();
+            }
+            let at: &[&str] = if *on_branch {
+                &[BRANCH]
+            } else {
+                &["--detach", "HEAD"]
+            };
+            run_git(
+                repo_path,
+                &[&["worktree", "add", "-q", dir_s][..], at].concat(),
+            )
+            .unwrap();
+            std::fs::write(dir.join("work.txt"), "work\n").unwrap();
+            let plant = Plant {
+                admin: repo.path().join(".git").join("worktrees").join("wt"),
+            };
+            let denied = put(&plant);
+            let created = Worktree::create(repo_path, dir_s, BRANCH, "");
+            if let Some(path) = denied {
+                full_access(&path);
+            }
+            if created.is_ok() {
+                violations.push(format!("{state}: create returned a worktree"));
+            }
+            if std::fs::read_to_string(dir.join("work.txt"))
+                .ok()
+                .as_deref()
+                != Some("work\n")
+            {
+                violations.push(format!("{state}: the tree's uncommitted work is gone"));
+            }
+            if !plant.admin.is_dir() {
+                violations.push(format!("{state}: the tree's registration is gone"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
     /// A TREE IS READY FOR THE CHECKPOINT ONLY WITH NOTHING LEFT UNFINISHED AND NOTHING THE COMMIT
