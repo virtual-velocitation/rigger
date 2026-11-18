@@ -478,8 +478,7 @@ pub const OPERATOR: &str = "operator";
 pub const CONDUCTOR_FAULT: &str = "conductor-fault";
 
 /// A hold for the orchestrator ([`DispositionRow::for_orchestrator`]) held for a person instead:
-/// the hold its run last released held it on the same fault, so the orchestrator's fix did not
-/// hold.
+/// a hold its run released held it on the same fault, so the orchestrator's fix did not hold.
 pub const FAULT_RECURRED: DispositionRow = DispositionRow {
     action: "the orchestrator's fix did not hold: a person decides, then runs rigger release",
     needs_person: true,

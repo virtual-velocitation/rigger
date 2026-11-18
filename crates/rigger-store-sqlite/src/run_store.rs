@@ -328,14 +328,11 @@ pub fn record_failed_probe(store: &dyn EventStore, category: &str) -> Result<(),
 /// The `RunHeld` of `cause` by `by` a host sighting or a failed probe appends over `read`, `None`
 /// when it says nothing to the open hold ([`Hold::moved_by`], asked by the cause's row's
 /// [`DispositionRow::asks`]). Its row is the cause's as [`escalated`] holds it: a category recurs
-/// when the hold the run last released held it on the same cause, since a category names its
-/// fault whichever line sighted it.
+/// when any hold the current run released held it on the same cause ([`HoldRead::recurs`]), since
+/// a category names its fault whichever line sighted it.
 fn sighted(read: &HoldRead, cause: &str, detail: &str, by: &str, model: &str) -> Option<RunHeld> {
     let row = cause_row(cause);
-    let recurred = read
-        .released
-        .as_ref()
-        .is_some_and(|hold| hold.latest.cause == cause);
+    let recurred = read.recurs(|released| released.cause == cause);
     let open = read.open.as_ref();
     let body = held_on(escalated(row, recurred, open), cause, detail, by, model);
     Hold::moved_by(open, &body, row.asks()).then_some(body)
@@ -344,8 +341,9 @@ fn sighted(read: &HoldRead, cause: &str, detail: &str, by: &str, model: &str) ->
 /// Hold the current run on a fault of the conductor's own that ended its drive (`fault`, its
 /// text; spec 105): one `RunHeld {by: conductor}` of cause `conductor-fault`, the fault's lines as
 /// its detail ([`fault_detail`]), carrying the open hold's latest model forward. The hold is for
-/// the orchestrator, the cause's row as [`escalated`] holds it, a fault recurring when the hold the
-/// run last released named the same fault ([`RunHeld::same_fault`]). It lands over any open hold,
+/// the orchestrator, the cause's row as [`escalated`] holds it, a fault recurring when any hold the
+/// current run released named the same fault ([`RunHeld::same_fault`], [`HoldRead::recurs`]), so
+/// faults F, G, F reach a person on the second F. It lands over any open hold,
 /// an operator hold included, since the fault is news to whoever releases it; an open hold whose
 /// latest `RunHeld` already names the same fault takes nothing, so a relaunch meeting the fault
 /// again adds no second hold.
@@ -375,10 +373,7 @@ fn hold_on_a_fault_of(
         if open.is_some_and(|hold| hold.latest.same_fault(&held)) {
             return Ok(None);
         }
-        let recurred = read
-            .released
-            .as_ref()
-            .is_some_and(|hold| hold.latest.same_fault(&held));
+        let recurred = read.recurs(|released| released.same_fault(&held));
         let row = escalated(row, recurred, open);
         let body = held_on(row, CONDUCTOR_FAULT, &detail, HOLD_BY_CONDUCTOR, model);
         serialized(TYPE_RUN_HELD, body.to_event()).map(Some)
@@ -387,9 +382,9 @@ fn hold_on_a_fault_of(
 }
 
 /// The row a hold of `row`'s cause stands on (spec 105): `row` itself, save that a hold for the
-/// orchestrator ([`DispositionRow::for_orchestrator`]) is held for a person where `recurred`, the
-/// hold the run last released holding it on the same fault, says the orchestrator's fix did not
-/// hold ([`FAULT_RECURRED`]), or where the hold open now (`open`) already waits on a person
+/// orchestrator ([`DispositionRow::for_orchestrator`]) is held for a person where `recurred`, a
+/// hold the current run released holding it on the same fault, says the orchestrator's fix did
+/// not hold ([`FAULT_RECURRED`]), or where the hold open now (`open`) already waits on a person
 /// ([`FAULT_ON_A_PERSONS_HOLD`]).
 fn escalated(row: DispositionRow, recurred: bool, open: Option<&Hold>) -> DispositionRow {
     if !row.for_orchestrator() {
@@ -579,14 +574,23 @@ pub(crate) fn append_at_head(
 struct HoldRead {
     /// The hold open now, `None` when the run is unheld.
     open: Option<Hold>,
-    /// The hold the run last released, `None` when it released none or that hold's `RunHeld`
-    /// does not decode.
-    released: Option<Hold>,
+    /// Every hold the current run released, in log order, a hold one of whose `RunHeld` events
+    /// does not decode left out.
+    released: Vec<Hold>,
+}
+
+impl HoldRead {
+    /// Whether the latest `RunHeld` of any hold the current run released is the fault `same`
+    /// recognizes: the one recurrence rule, which holds a fault the orchestrator's release did not
+    /// fix for a person ([`escalated`]) however many holds of other faults were released since.
+    fn recurs(&self, same: impl Fn(&RunHeld) -> bool) -> bool {
+        self.released.iter().any(|hold| same(&hold.latest))
+    }
 }
 
 /// Append what `decide` makes of the current run's hold through [`append_at_head`], the hold
 /// read ([`HoldRead`]) from the run's slice and forward through the [`HOLD_TYPES`] that land
-/// behind it, the open hold folded by [`fold_holds`] and the released one read by [`holds`]:
+/// behind it, the open hold folded by [`fold_holds`] and the released ones read by [`holds`]:
 /// every `RunHeld` and `RunReleased` but the operator's hold goes through here (spec 105), so a
 /// concurrent writer's hold or release is never missed; [`hold_by_operator`] folds the whole run
 /// behind its read through [`append_at_head`] itself, to decide liveness too. `what` names the
@@ -605,9 +609,9 @@ fn append_on_hold(
         fold_holds(&mut state, events)?;
         let released = holds(events)
             .into_iter()
-            .rev()
-            .find(|span| span.release.is_some())
-            .and_then(|span| span.hold);
+            .filter(|span| span.release.is_some())
+            .filter_map(|span| span.hold)
+            .collect();
         decide(&HoldRead {
             open: state.hold,
             released,
@@ -735,9 +739,10 @@ mod tests {
     /// one; a differing one asking no one appends nothing; an operator or a conductor hold, however
     /// late a host hold landed on it, takes none; and a released hold, or one standing before the
     /// current run's boundary, is no hold. `model_not_found` is held for the orchestrator, save
-    /// for a person where the hold the run last released held it on the same cause, so the
-    /// orchestrator's fix did not hold, or where the open hold already waits on a person; an
-    /// outage sighted again after its release is held as at first.
+    /// for a person where any hold the current run released held it on the same cause, however
+    /// many holds of other causes were released after it, so the orchestrator's fix did not hold,
+    /// or where the open hold already waits on a person; an outage sighted again after its
+    /// release is held as at first.
     #[test]
     fn a_sighting_appends_only_what_the_open_hold_leaves_it_to_say() {
         let login = || host_hold("authentication_failed", LOGIN, true);
@@ -746,7 +751,7 @@ mod tests {
         let model_for_a_person =
             |row: DispositionRow| host_hold("model_not_found", row.action, true);
         let unseen = || held("model_not_found", HOLD_BY_HOST, "");
-        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 19] = [
+        let rows: [(&str, Vec<Event>, &str, Option<RunHeld>); 20] = [
             (
                 "a first sighting of a hold class",
                 vec![],
@@ -858,6 +863,18 @@ mod tests {
                     released(),
                 ],
                 "model_not_found",
+                Some(model_for_a_person(FAULT_RECURRED)),
+            ),
+            (
+                "model_not_found after a released model_not_found hold in the run before",
+                vec![
+                    unseen(),
+                    released(),
+                    RunStarted::default().to_event().unwrap(),
+                    held("rate_limit", HOLD_BY_HOST, ""),
+                    released(),
+                ],
+                "model_not_found",
                 Some(model()),
             ),
             (
@@ -906,13 +923,14 @@ mod tests {
     /// A CONDUCTOR FAULT HOLDS THE RUN ONCE, FOR THE ORCHESTRATOR FIRST (spec 105): on an unheld
     /// run, over a hold a probe ends, or after a released hold of another fault, it appends one
     /// `RunHeld {by: conductor}` for the orchestrator, the fault's lines its detail and the
-    /// hold's model carried; after a released hold of the same fault in the current run - its
+    /// hold's model carried; after any released hold of the same fault in the current run - its
     /// cause and its detail's first line alike, byte for byte, whatever its later lines - it is
-    /// held for a person, the orchestrator's fix not having held; over an open hold that waits on
-    /// a person, an operator hold, it is held for that person; and on a hold whose latest
-    /// `RunHeld` already names the same fault it appends nothing. A released hold the current
-    /// run's boundary stands after, or one a later released hold of another fault follows, and
-    /// a hold recorded before details kept their lines, are no recurrence.
+    /// held for a person, the orchestrator's fix not having held, however many released holds of
+    /// other faults follow it, so faults F, G, F reach a person on the second F; over an open hold
+    /// that waits on a person, an operator hold, it is held for that person; and on a hold whose
+    /// latest `RunHeld` already names the same fault it appends nothing. A released hold the
+    /// current run's boundary stands after, and a hold recorded before details kept their lines,
+    /// are no recurrence.
     #[test]
     fn a_conductor_fault_holds_for_the_orchestrator_then_a_person_when_it_recurs() {
         let orchestrator = |model| Some(fault_hold(cause_row(CONDUCTOR_FAULT), DETAIL, model));
@@ -935,7 +953,7 @@ mod tests {
         let boundary = || RunStarted::default().to_event().unwrap();
         const OTHER: &str = "plan landing failed";
         const ONE_LINE: &str = "worktree: git worktree add failed: the path already exists";
-        let rows: [(&str, Vec<Event>, Option<RunHeld>); 12] = [
+        let rows: [(&str, Vec<Event>, Option<RunHeld>); 13] = [
             ("an unheld run", vec![], orchestrator("")),
             (
                 "a host hold the run retries by itself",
@@ -972,8 +990,19 @@ mod tests {
                 orchestrator(""),
             ),
             (
-                "a released hold of the same fault, then a released hold of another",
+                "F, G, F: a released hold of the same fault, then a released hold of another",
                 vec![named(DETAIL), released(), named(OTHER), released()],
+                person.clone(),
+            ),
+            (
+                "a released hold of the same fault in the run before, then a released other",
+                vec![
+                    named(DETAIL),
+                    released(),
+                    boundary(),
+                    named(OTHER),
+                    released(),
+                ],
                 orchestrator(""),
             ),
             (
