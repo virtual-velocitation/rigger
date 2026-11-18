@@ -8,6 +8,10 @@
 /// and the auth method it reports.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod claude_auth;
+/// The one reader of `claude --version`: the session host's version and whether the installed
+/// hooks need a newer one.
+#[cfg(any(feature = "store", not(feature = "core")))]
+pub mod claude_version;
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub mod driver;
 #[cfg(any(feature = "store", not(feature = "core")))]
