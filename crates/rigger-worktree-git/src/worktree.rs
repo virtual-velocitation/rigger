@@ -9360,45 +9360,38 @@ mod tests {
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
-    /// A DISCARD KEEPS A TREE GIT MARKS LOCKED OR PRUNABLE: a throwaway's tree a person locked, or
-    /// whose add git did not finish, its tree there or gone and its path spelled as git lists it or
-    /// as it resolves through a link git lists, or one whose remove git did not finish after it
-    /// deleted the tree's link, its tree still there, is an error naming the mark, the path as the
-    /// discard was given it and the commands that recover it, and nothing there is reaped or
-    /// removed: the tree and its work when there, its registration and its branch stay.
+    /// A DISCARD KEEPS A TREE GIT MARKS LOCKED: a throwaway's tree a person locked, or whose add git
+    /// did not finish, its tree there or gone and its path spelled as git lists it or as it resolves
+    /// through a link git lists, is an error naming the mark, the path as the discard was given it
+    /// and the commands that recover it, and nothing there is reaped or removed: the tree and its
+    /// work when there, its registration and its branch stay.
     #[test]
-    fn a_discard_keeps_a_tree_git_marks_locked_or_prunable() {
-        // Each row: the case, the mark git gives the tree, and what is done to the tree, answering
-        // the path the discard is at.
-        type Row = (&'static str, &'static str, fn(&HeldElsewhere) -> String);
+    fn a_discard_keeps_a_tree_git_marks_locked() {
+        // Each row: the case, and what is done to the tree, answering the path the discard is at.
+        type Row = (&'static str, fn(&HeldElsewhere) -> String);
         #[cfg_attr(not(unix), allow(unused_mut))]
         let mut rows: Vec<Row> = vec![
-            ("a person's lock", "locked", |h| {
+            ("a person's lock", |h| {
                 h.lock();
                 h.at().to_string()
             }),
-            ("an add cut off", "locked", |h| {
+            ("an add cut off", |h| {
                 add_cut_off(h);
                 h.at().to_string()
             }),
-            ("a person's lock, its tree deleted", "locked", |h| {
+            ("a person's lock, its tree deleted", |h| {
                 h.lock();
                 std::fs::remove_dir_all(&h.at).unwrap();
                 h.at().to_string()
             }),
-            ("an add cut off, its tree cleared", "locked", |h| {
+            ("an add cut off, its tree cleared", |h| {
                 add_cut_off_then_cleared(h);
-                h.at().to_string()
-            }),
-            ("a remove cut off, its tree still there", "prunable", |h| {
-                unlink(h);
                 h.at().to_string()
             }),
         ];
         #[cfg(unix)]
         rows.push((
             "a person's lock, the tree moved behind a link git lists",
-            "locked",
             |h| {
                 h.lock();
                 let moved = h.root.join("held-moved");
@@ -9408,7 +9401,7 @@ mod tests {
             },
         ));
         let mut violations = Vec::new();
-        for (row, mark, spoil) in rows {
+        for (row, spoil) in rows {
             let h = held_elsewhere(Held::Under);
             let dir = spoil(&h);
             let present = std::path::Path::new(&dir).exists();
@@ -9417,7 +9410,7 @@ mod tests {
                 Ok(()) => violations.push(format!("{row}: the discard went through")),
                 Err(e) => {
                     let (first, rest) = e.0.split_once('\n').unwrap_or((&e.0, ""));
-                    if !first.starts_with(&format!("a worktree git marks `{mark}"))
+                    if !first.starts_with("a worktree git marks `locked")
                         || !first.ends_with(&format!(
                             "` is registered at {dir}: nothing there is cleared or adopted"
                         ))
@@ -9426,11 +9419,7 @@ mod tests {
                             "{row}: the first line does not name the mark and where: {first}"
                         ));
                     }
-                    let recovery = if mark == "locked" {
-                        locked_recovery(repo, &dir)
-                    } else {
-                        prunable_recovery(repo, &dir)
-                    };
+                    let recovery = locked_recovery(repo, &dir);
                     if rest != recovery {
                         violations.push(format!(
                             "{row}: the recovery reads {rest:?}, not {recovery:?}"
@@ -9448,6 +9437,60 @@ mod tests {
             if !branch_exists(repo, HELD_BRANCH) {
                 violations.push(format!("{row}: the branch is gone"));
             }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// A DISCARD CLEARS A THROWAWAY'S TREE GIT MARKS PRUNABLE: a throwaway tree whose remove git did
+    /// not finish after it deleted the tree's link, its tree still there, holds nothing kept, so the
+    /// discard takes it off disk, drops its registration and deletes its branch, and a create at the
+    /// same path then succeeds. Another tree git marks prunable with its dir there keeps its
+    /// registration and its work.
+    #[test]
+    fn a_discard_clears_a_throwaway_tree_git_marks_prunable() {
+        let h = held_elsewhere(Held::Under);
+        unlink(&h);
+        let (repo, at) = (h.repo(), h.at());
+        let other = h.root.join("other");
+        let other_dir = other.to_str().unwrap();
+        Worktree::create(repo, other_dir, "rigger/u/other", h.root()).unwrap();
+        std::fs::write(other.join("work.txt"), "other work\n").unwrap();
+        std::fs::remove_file(other.join(".git")).unwrap();
+
+        if let Err(e) = Worktree::discard(repo, at, HELD_BRANCH, h.root()) {
+            panic!(
+                "the discard of a throwaway git marks prunable failed: {}",
+                e.0
+            );
+        }
+        let mut violations = Vec::new();
+        if std::path::Path::new(at).exists() {
+            violations.push("the throwaway's tree is still on disk".to_string());
+        }
+        if h.listed() {
+            violations.push("the throwaway's registration is still listed".to_string());
+        }
+        if branch_exists(repo, HELD_BRANCH) {
+            violations.push("the throwaway's branch is still there".to_string());
+        }
+        let listed = run_git(repo, &["worktree", "list", "--porcelain"]).unwrap_or_default();
+        if !listed
+            .lines()
+            .any(|line| line == format!("worktree {other_dir}"))
+        {
+            violations.push(format!(
+                "the other prunable tree lost its registration:\n{listed}"
+            ));
+        }
+        if std::fs::read_to_string(other.join("work.txt"))
+            .ok()
+            .as_deref()
+            != Some("other work\n")
+        {
+            violations.push("the other prunable tree lost its work".to_string());
+        }
+        if let Err(e) = Worktree::create(repo, at, HELD_BRANCH, h.root()) {
+            violations.push(format!("a create at the same path failed: {}", e.0));
         }
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
