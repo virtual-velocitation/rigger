@@ -775,25 +775,35 @@ impl Worktree {
     /// stands. Every failure names the step, the branch and the ref on its first line, the same
     /// each time.
     pub fn keep_tree_aside(&self, message: &str) -> Result<Option<Kept>, Error> {
-        let reference = kept_ref(&self.branch);
-        self.keep_on(&reference, message).map_err(|e| {
-            step_failed(
-                format!("keeping the tree of {} on {reference}", self.branch),
-                e,
-            )
-        })
+        self.keep_aside(message, false)
     }
 
     /// Keep a speculation lane's tree for the group that lost it: [`Self::keep_tree_aside`], with
     /// a clean tree at the branch's tip kept as that tip, since the lane's branch goes with its
     /// tree.
     pub fn keep_lane_aside(&self, message: &str) -> Result<Option<Kept>, Error> {
-        let _ = message;
-        Ok(None)
+        self.keep_aside(message, true)
     }
 
-    /// [`Self::keep_tree_aside`] onto `reference`.
-    fn keep_on(&self, reference: &str, message: &str) -> Result<Option<Kept>, Error> {
+    /// [`Self::keep_tree_aside`], the branch's tip kept too when `whole_branch`.
+    fn keep_aside(&self, message: &str, whole_branch: bool) -> Result<Option<Kept>, Error> {
+        let reference = kept_ref(&self.branch);
+        self.keep_on(&reference, message, whole_branch)
+            .map_err(|e| {
+                step_failed(
+                    format!("keeping the tree of {} on {reference}", self.branch),
+                    e,
+                )
+            })
+    }
+
+    /// [`Self::keep_aside`] onto `reference`.
+    fn keep_on(
+        &self,
+        reference: &str,
+        message: &str,
+        whole_branch: bool,
+    ) -> Result<Option<Kept>, Error> {
         let tip = branch_tip(&self.repo, &self.branch)?;
         let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
         let index = git(&self.dir, &["rev-parse", "--git-path", KEPT_INDEX])?;
@@ -808,7 +818,7 @@ impl Worktree {
         let full = format!("refs/heads/{reference}");
         let held = ref_commit(&self.repo, &full)?;
         let commit = if git(&self.dir, &["rev-parse", "HEAD^{tree}"])?.trim() == tree {
-            if head == tip {
+            if head == tip && !whole_branch {
                 return Ok(None);
             }
             head
@@ -1747,9 +1757,21 @@ fn set_held_aside(repo: &str, kept: &str) -> Result<Option<String>, Error> {
 /// prefix holds no recorded commit, and a record naming a ref outside the held namespaces
 /// names nothing this deletes.
 pub fn reap_keeps(repo: &str, branch: &str, keeps: &[Kept]) -> Result<(), Error> {
+    reap_named(repo, vec![kept_ref(branch)], keeps)
+}
+
+/// The keeps a speculation group made of its lanes git refused ([`Worktree::keep_lane_aside`]),
+/// dropped once another lane settled the group without landing the unit: [`reap_keeps`] over
+/// the refs the keeps name alone, so the unit's own kept ref, holding a keep of an earlier
+/// attempt that goes when the unit lands, is not read.
+pub fn drop_keeps(repo: &str, keeps: &[Kept]) -> Result<(), Error> {
+    reap_named(repo, Vec::new(), keeps)
+}
+
+/// [`reap_keeps`] over the kept refs `kept_refs` and each one a keep of `keeps` names.
+fn reap_named(repo: &str, mut kept_refs: Vec<String>, keeps: &[Kept]) -> Result<(), Error> {
     let checked_out = checked_out(repo)?;
     let recorded = |tip: &str| keeps.iter().any(|k| k.commit == tip);
-    let mut kept_refs = vec![kept_ref(branch)];
     for k in keeps {
         if k.reference.starts_with(KEPT_REFS) && !kept_refs.contains(&k.reference) {
             kept_refs.push(k.reference.clone());
@@ -1781,13 +1803,6 @@ pub fn reap_keeps(repo: &str, branch: &str, keeps: &[Kept]) -> Result<(), Error>
             git(repo, &["update-ref", "-d", &full, &k.commit])?;
         }
     }
-    Ok(())
-}
-
-/// The keeps a speculation group made of its lanes git refused ([`Worktree::keep_lane_aside`]),
-/// dropped once another lane settled the group.
-pub fn drop_keeps(repo: &str, keeps: &[Kept]) -> Result<(), Error> {
-    let _ = (repo, keeps);
     Ok(())
 }
 
@@ -9830,7 +9845,9 @@ mod tests {
             let kept = kept.unwrap_or_else(|| panic!("{row}: the lane's work is kept"));
             assert_eq!(kept.reference, "rigger/kept/unit-lane-spec1", "{row}");
             assert_eq!(
-                run_git(&repo_path, &["rev-parse", &kept.reference]).unwrap().trim(),
+                run_git(&repo_path, &["rev-parse", &kept.reference])
+                    .unwrap()
+                    .trim(),
                 kept.commit,
                 "{row}: the kept ref holds the kept commit"
             );
@@ -9866,7 +9883,14 @@ mod tests {
         let moved = &keeps[1];
         let theirs = run_git(
             &repo_path,
-            &["commit-tree", &format!("{}^{{tree}}", moved.commit), "-p", &moved.commit, "-m", "theirs"],
+            &[
+                "commit-tree",
+                &format!("{}^{{tree}}", moved.commit),
+                "-p",
+                &moved.commit,
+                "-m",
+                "theirs",
+            ],
         )
         .unwrap();
         let theirs = theirs.trim().to_string();
