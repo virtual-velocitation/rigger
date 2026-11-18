@@ -711,6 +711,65 @@ impl Worktree {
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
+    /// Commit the tree as it stands onto the unit's branch, with no hook and no guard, for the
+    /// attempt that spent the unit's retry bound on git refusing a step on its work: the
+    /// escalation removes the tree, and this commit is where its work is kept. It takes every
+    /// path `git add -A` would stage, through an index of its own in the tree's git directory
+    /// (the tree's own index is left as it is, a lock on it included), on a commit whose first
+    /// parent is the branch's tip, with HEAD and the merge in progress (`MERGE_HEAD`) as
+    /// further parents when the tip's history lacks them, so every commit the tree reached
+    /// stays reachable from the branch. Returns the branch's tip after: the new commit, or the
+    /// tip unchanged when the tree holds nothing it lacks.
+    pub fn keep_tree_on_branch(&self, message: &str) -> Result<String, Error> {
+        let tip = branch_tip(&self.repo, &self.branch)?;
+        let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
+        let merging = finish_git_query(start_git(
+            &self.dir,
+            &["rev-parse", "--verify", "-q", "MERGE_HEAD"],
+        ))
+        .map_err(|out| {
+            Error(format!(
+                "rev-parse MERGE_HEAD: {}",
+                String::from_utf8_lossy(&out)
+            ))
+        })?
+        .map(|out| String::from_utf8_lossy(&out).trim().to_string());
+        let mut parents = vec![tip.clone()];
+        for reached in std::iter::once(head).chain(merging) {
+            if !parents.contains(&reached) && !in_history(&self.dir, &reached, &tip)? {
+                parents.push(reached);
+            }
+        }
+        let git_dir = git(&self.dir, &["rev-parse", "--absolute-git-dir"])?;
+        let index = std::path::Path::new(git_dir.trim()).join("rigger-kept-index");
+        let staged = staged_tree(&self.dir, &index);
+        let _ = std::fs::remove_file(&index);
+        let tree = staged?;
+        if parents.len() == 1
+            && git(&self.dir, &["rev-parse", &format!("{tip}^{{tree}}")])?.trim() == tree
+        {
+            return Ok(tip);
+        }
+        let mut args = vec!["commit-tree", tree.as_str()];
+        for parent in &parents {
+            args.extend(["-p", parent.as_str()]);
+        }
+        args.extend(["-m", message]);
+        let commit = git(&self.dir, &args)?.trim().to_string();
+        git(
+            &self.repo,
+            &[
+                "update-ref",
+                "-m",
+                message,
+                &format!("refs/heads/{}", self.branch),
+                &commit,
+                &tip,
+            ],
+        )?;
+        Ok(commit)
+    }
+
     /// The staged paths whose index content carries conflict-marker text the in-progress merge
     /// introduced, sorted (op-105-merge-finalize-refuses-markers): a marker line
     /// [`conflict_markers_present`] reads in the index at a staged path counts unless
@@ -2916,6 +2975,21 @@ pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
 /// The error of a `git <args>` run that failed, naming the command and what git said.
 fn git_failed(args: &[&str], out: impl std::fmt::Display) -> Error {
     Error(format!("git {}: {out}", args.join(" ")))
+}
+
+/// The tree `git add -A` stages over HEAD in the tree rooted at `dir`, written through the index
+/// at `index` rather than the tree's own ([`Worktree::keep_tree_on_branch`]).
+fn staged_tree(dir: &str, index: &std::path::Path) -> Result<String, Error> {
+    let with_index = |args: &[&str]| -> Result<String, Error> {
+        let mut command = crate::subprocess::git_in(dir).map_err(|e| git_failed(args, e))?;
+        command.env("GIT_INDEX_FILE", index);
+        finish_git(start_command(command, args), GitOutput::Stdout)
+            .map(|out| String::from_utf8_lossy(&out).trim().to_string())
+            .map_err(|out| git_failed(args, String::from_utf8_lossy(&out).trim()))
+    };
+    with_index(&["read-tree", "HEAD"])?;
+    with_index(&["add", "-A"])?;
+    with_index(&["write-tree"])
 }
 
 /// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
@@ -7605,6 +7679,159 @@ mod tests {
                 "{leave:?}: back on the branch, the checkpoint carries the work onto it"
             );
             adopted.remove().unwrap();
+        }
+    }
+
+    /// A TREE GIT REFUSED IS KEPT ON ITS BRANCH AS IT STANDS: `keep_tree_on_branch` commits every
+    /// path `git add -A` would stage onto the unit's branch whatever stopped the checkpoint - a
+    /// hook that refuses every commit, a detached HEAD with a commit of its own, a merge left
+    /// with its conflict markers, a lock on the tree's index - the commit's first parent the
+    /// branch's old tip and the commit HEAD or the merge reached a further parent, so all of it
+    /// stays reachable from the branch; with nothing the branch lacks the branch stays where it
+    /// was. The tree's own index keeps its bytes and the capture's own index is gone after.
+    #[test]
+    fn a_tree_git_refused_is_kept_on_its_branch_as_it_stands() {
+        const BRANCH: &str = "rigger/u/unit-keep";
+        fn write(dir: &str, file: &str, text: &str) {
+            let path = std::path::Path::new(dir).join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        fn git_dir(dir: &str) -> std::path::PathBuf {
+            let at = run_git(dir, &["rev-parse", "--absolute-git-dir"]).unwrap();
+            std::path::PathBuf::from(at.trim())
+        }
+        // Each row: what leaves the unit's tree in its state (given the tree and the repo),
+        // then each path the branch then holds with text its content carries, the ref whose
+        // commit is the further parent, and whether the branch moves.
+        type Row = (
+            &'static str,
+            fn(&str, &str),
+            &'static [(&'static str, &'static str)],
+            Option<&'static str>,
+            bool,
+        );
+        let cases: [Row; 6] = [
+            (
+                "a hook that refuses every commit",
+                |dir, repo| {
+                    for hook in ["pre-commit", "prepare-commit-msg", "commit-msg"] {
+                        let path = std::path::Path::new(repo).join(".git/hooks").join(hook);
+                        std::fs::write(&path, "#!/bin/sh\nexit 1\n").unwrap();
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mut mode = std::fs::metadata(&path).unwrap().permissions();
+                            mode.set_mode(0o755);
+                            std::fs::set_permissions(&path, mode).unwrap();
+                        }
+                    }
+                    assert!(
+                        run_git_with_status(dir, &["commit", "-q", "--allow-empty", "-m", "x"])
+                            .is_err(),
+                        "the hook refuses a commit in the tree"
+                    );
+                    write(dir, "unit.txt", "refused\n");
+                },
+                &[("unit.txt", "refused\n")],
+                None,
+                true,
+            ),
+            (
+                "an untracked file in a subdirectory",
+                |dir, _| write(dir, "deep/er/new.txt", "new\n"),
+                &[("deep/er/new.txt", "new\n"), ("unit.txt", "committed\n")],
+                None,
+                true,
+            ),
+            (
+                "a detached HEAD with a commit of its own",
+                |dir, _| {
+                    run_git(dir, &["checkout", "-q", "--detach"]).unwrap();
+                    write(dir, "detached.txt", "detached\n");
+                    run_git(dir, &["add", "detached.txt"]).unwrap();
+                    run_git(dir, &["commit", "-qm", "detached"]).unwrap();
+                    write(dir, "late.txt", "late\n");
+                },
+                &[("detached.txt", "detached\n"), ("late.txt", "late\n")],
+                Some("HEAD"),
+                true,
+            ),
+            (
+                "a merge left with its conflict",
+                |dir, repo| {
+                    write(repo, "unit.txt", "run\n");
+                    run_git(repo, &["add", "unit.txt"]).unwrap();
+                    run_git(repo, &["commit", "-qm", "run side"]).unwrap();
+                    assert!(
+                        run_git_with_status(dir, &["merge", "-q", "rigger-run"]).is_err(),
+                        "the merge stops on its conflict"
+                    );
+                },
+                &[("unit.txt", "<<<<<<< "), ("unit.txt", "run\n")],
+                Some("MERGE_HEAD"),
+                true,
+            ),
+            (
+                "a lock on the tree's index",
+                |dir, _| {
+                    write(dir, "locked.txt", "locked\n");
+                    std::fs::write(git_dir(dir).join("index.lock"), "").unwrap();
+                },
+                &[("locked.txt", "locked\n")],
+                None,
+                true,
+            ),
+            (
+                "nothing the branch lacks",
+                |_, _| {},
+                &[("unit.txt", "committed\n")],
+                None,
+                false,
+            ),
+        ];
+        for (row, leave, holds, further, moves) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-keep");
+            write(&dir, "unit.txt", "committed\n");
+            wt.commit("unit work").unwrap();
+            leave(&dir, &repo_path);
+            let tip = run_git(&repo_path, &["rev-parse", BRANCH]).unwrap();
+            let tip = tip.trim();
+            let further = further.map(|at| run_git(&dir, &["rev-parse", at]).unwrap());
+            let index = git_dir(&dir).join("index");
+            let before = std::fs::read(&index).unwrap();
+
+            let kept = wt.keep_tree_on_branch("wip(unit-keep): kept").unwrap();
+            let now = run_git(&repo_path, &["rev-parse", BRANCH]).unwrap();
+            assert_eq!(kept, now.trim(), "{row}: it returns the branch's tip");
+            assert_eq!(kept != tip, moves, "{row}: whether the branch moves");
+            for (path, text) in holds {
+                let content = run_git(&repo_path, &["show", &format!("{BRANCH}:{path}")]).unwrap();
+                assert!(
+                    content.contains(text),
+                    "{row}: the branch holds {path} with {text:?}: {content:?}"
+                );
+            }
+            if moves {
+                let line = run_git(&repo_path, &["rev-list", "--parents", "-n1", BRANCH]).unwrap();
+                let parents: Vec<&str> = line.split_whitespace().skip(1).collect();
+                let expected: Vec<&str> = std::iter::once(tip)
+                    .chain(further.as_deref().map(str::trim))
+                    .collect();
+                assert_eq!(parents, expected, "{row}: the commit's parents");
+            }
+            assert_eq!(
+                std::fs::read(&index).unwrap(),
+                before,
+                "{row}: the tree's own index keeps its bytes"
+            );
+            assert!(
+                !git_dir(&dir).join("rigger-kept-index").exists(),
+                "{row}: the capture's own index is gone"
+            );
+            let _ = std::fs::remove_file(git_dir(&dir).join("index.lock"));
+            wt.remove().unwrap();
         }
     }
 

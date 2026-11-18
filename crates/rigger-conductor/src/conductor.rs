@@ -2226,6 +2226,10 @@ struct PriorFailure {
     /// 89, criterion 1: A HALT NEVER DISCARDS A TREE). Empty except on the one re-entry
     /// that found the freshly adopted worktree genuinely dirty.
     halted_commit: String,
+    /// Where the tree of an attempt git refused at the unit's retry bound is kept, `commit
+    /// <sha> on <branch>` ([`RunCtx::charge_refused_work`]): read by the escalation lesson
+    /// alone, so no record or prompt carries it.
+    kept: String,
 }
 
 impl PriorFailure {
@@ -2242,6 +2246,7 @@ impl PriorFailure {
             required: u.required.clone(),
             contradiction: String::new(),
             halted_commit: String::new(),
+            kept: String::new(),
         }
     }
 
@@ -2272,6 +2277,7 @@ impl PriorFailure {
             && self.required.is_empty()
             && self.contradiction.trim().is_empty()
             && self.halted_commit.trim().is_empty()
+            && self.kept.trim().is_empty()
     }
 
     /// A one-line summary of the failure, for the escalation lesson (spec 02: the
@@ -2295,6 +2301,9 @@ impl PriorFailure {
                 "recovered a halted spawn's tree as commit {}",
                 self.halted_commit.trim()
             ));
+        }
+        if !self.kept.trim().is_empty() {
+            parts.push(format!("the tree it left is kept as {}", self.kept.trim()));
         }
         parts.join("; ")
     }
@@ -5810,12 +5819,14 @@ impl RunCtx<'_> {
         // Git refusing a step on the unit's own work ended the attempt `open` holds: it is
         // charged like a failed gate, the REQUIRED list it owed still owed, and the tree is kept
         // for the next attempt, which a release of the run's hold launches with the refusal in
-        // its prompt.
+        // its prompt. The attempt that spends the bound escalates with its work committed onto
+        // the unit's branch, and its tree goes as any escalated unit's does.
         let refused = matches!(&result, Err(e) if refused_unit_work(e));
         let result = match result {
             Err(e) if refused => self.charge_refused_work(st, wt.as_ref(), &dir, &open, &e),
             other => other,
         };
+        let kept_for_retry = refused && result.is_err();
         // A PARKED return is not the stage ending - it is the stage HANDING WORK to
         // out-of-process agents that run BETWEEN conductor processes, in this worktree,
         // against this build cache. Removing either here deletes the tree the parked
@@ -5834,7 +5845,7 @@ impl RunCtx<'_> {
         let parked_unwind = any_parked.load(Ordering::SeqCst)
             || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &wt {
-            if !parked_unwind && !refused {
+            if !parked_unwind && !kept_for_retry {
                 let _ = w.remove();
             }
             // The unit's branch is its DURABLE checkpoint (resume-continuity): it must
@@ -8000,6 +8011,12 @@ impl RunCtx<'_> {
         }
     }
 
+    /// The remediation unit `st` takes when, `attempts` attempts already failed, one more fails:
+    /// the next attempt, or escalation once its retry bound ([`Self::max_retries_for`]) is spent.
+    fn remediation(&self, st: &Stage, attempts: u32) -> safety::Remediation {
+        safety::remediate(attempts, self.max_retries_for(&st.name, st))
+    }
+
     /// THE UNIT'S REMEDIATION CHARGE: unit `st`, `attempts` attempts already failed, failed
     /// one more on `failure` of `cause`. Records its `UnitFailed` at the next attempt count,
     /// the failure's specifics riding along (gap 61) so a later process re-entering the unit
@@ -8016,7 +8033,7 @@ impl RunCtx<'_> {
         cause: &str,
     ) -> Result<safety::Remediation, Error> {
         let max_retries = self.max_retries_for(&st.name, st);
-        let rem = safety::remediate(attempts, max_retries);
+        let rem = self.remediation(st, attempts);
         // Ensure-on-park, defense in depth (spec 64 criterion 3, rounds 4 and 6): whatever
         // ran last could have deleted the tree as its side effect after the last re-assert
         // and BEFORE this read - a review tier's own spawn (most reachably the adjudicator's,
@@ -8066,11 +8083,16 @@ impl RunCtx<'_> {
     /// refusal is the failure of the attempt it ended (`open`), charged like a failed gate's
     /// ([`Self::charge_failed_attempt`], cause [`CAUSE_GIT_REFUSED`]): git's message is the
     /// failure's refusal, so the next attempt's prompt carries it on its own line, and the
-    /// REQUIRED list the attempt owed stays owed, as a red gate leaves it. The caller
-    /// keeps the unit's worktree, so the work in the tree at the refusal is there for that
-    /// attempt. A spent bound escalates the unit (`Ok(false)`, no hold); otherwise the drive
-    /// ends on the refusal marked with [`UNIT_RETRY_MARKER`], its first line naming the attempt,
-    /// so the run is held for the orchestrator and its release launches the next attempt.
+    /// REQUIRED list the attempt owed stays owed, as a red gate leaves it. Unless the bound is
+    /// spent, the drive ends on the refusal marked with [`UNIT_RETRY_MARKER`], its first line
+    /// naming the attempt, so the run is held for the orchestrator and its release launches the
+    /// next attempt, in the tree the caller keeps for it with the work it held at the refusal.
+    /// The attempt that spends the bound has no next attempt to continue that tree: its work
+    /// is committed onto the unit's branch first ([`Worktree::keep_tree_on_branch`]), where the
+    /// escalation hands the unit to a person, its lesson naming the commit, and the unit
+    /// escalates (`Ok(false)`, no hold), the caller removing the tree as it removes any
+    /// escalated unit's. A commit git cannot make ends the drive on that fault, uncharged, the
+    /// tree kept.
     fn charge_refused_work(
         &self,
         st: &Stage,
@@ -8080,11 +8102,19 @@ impl RunCtx<'_> {
         e: &Error,
     ) -> Result<bool, Error> {
         let refusal = without_halt_markers(Error(strip_failure_marker(e))).0;
-        let failure = PriorFailure {
+        let mut failure = PriorFailure {
             refusal: refusal.clone(),
             required: open.required.clone(),
             ..Default::default()
         };
+        let next = self.remediation(st, open.attempts);
+        if let (safety::Decision::Escalate, Some(w)) = (next.decision, wt) {
+            let commit = git_step(w.keep_tree_on_branch(&format!(
+                "wip({}): tree of attempt {}, which git refused",
+                st.name, next.attempts
+            )))?;
+            failure.kept = format!("commit {commit} on {}", w.branch);
+        }
         let rem =
             self.charge_failed_attempt(st, wt, dir, open.attempts, &failure, CAUSE_GIT_REFUSED)?;
         if rem.decision == safety::Decision::Escalate {
@@ -56879,6 +56909,7 @@ mod tests {
                     required: vec![required("{shape}")],
                     contradiction: "{contradiction}".to_string(),
                     halted_commit: "{commit}".to_string(),
+                    kept: "{kept}".to_string(),
                 }),
                 format!(
                     "{}{item_line}{pattern}{}\n",

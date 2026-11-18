@@ -1165,7 +1165,13 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
             &format!(
                 "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
              branch rigger itself created and kept for this unit's committed work across every \
-             attempt) - nothing more, nothing less. Then relaunch the run fresh - `rigger run \
+             attempt) - nothing more, nothing less. When git refused a step on the last \
+             attempt's work, the tree that attempt left is committed onto that branch too, the \
+             escalation lesson naming the commit, and the tree itself is removed: the commit \
+             carries the tree exactly as git refused it, so the remedy starts from it (a run of \
+             another spec that plans a unit of the same name moves the branch aside to \
+             `rigger/orphaned/<unit-id>-<sha>`, where the commit stays). Then relaunch the run \
+             fresh - `rigger run \
              <spec> --base <ref> --fresh` - against the same, otherwise-unchanged spec: the \
              conductor mints a new run boundary, and the loop picks the escalated unit back up \
              with a clean remediation budget. Stop the old driver first if it still runs, so the \
