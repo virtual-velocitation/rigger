@@ -250,7 +250,7 @@ pub const MEMBER_SEPARATOR: &str = ".";
 /// separator, none when the path holds neither, and the text after it, the whole path when it
 /// holds neither (`a::b.c` gives `a::b` and `c`, `new` gives none and `new`). The one cut of a
 /// path: [`path_leaf`] reads its leaf, and the resolver a qualified mention's qualifier (spec
-/// 117, RESOLVER AT READ). [`qualified_name`] is its inverse.
+/// 117, RESOLVER AT READ). [`qualified_name`] is its inverse for a leaf holding neither separator.
 pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
     let (head, tail) = path
         .rsplit_once(PATH_SEPARATOR)
@@ -264,10 +264,12 @@ pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
     }
 }
 
-/// The ONE join of a qualified name, the inverse of [`split_path`]: `qualifier`, then `::` for a
-/// path qualifier or `.` for a member qualifier, then `leaf` (`T`, a path, and `new` give
-/// `T::new`; `S`, a member, and `field` give `S.field`). The facts layer writes a qualified
-/// mention's name with it (spec 117, CAPTURES).
+/// The ONE join of a qualified name: `qualifier`, then `::` for a path qualifier or `.` for a
+/// member qualifier, then `leaf` (`T`, a path, and `new` give `T::new`; `S`, a member, and `field`
+/// give `S.field`). The facts layer writes a qualified mention's name with it (spec 117,
+/// CAPTURES). It is the inverse of [`split_path`] for a `leaf` holding neither `::` nor `.`; the
+/// cut would read one holding either back under another qualifier, so the extractor protocol
+/// refuses a declared extractor's qualified ref whose name holds one.
 pub fn qualified_name(qualifier: &str, path: bool, leaf: &str) -> String {
     let separator = if path {
         PATH_SEPARATOR
