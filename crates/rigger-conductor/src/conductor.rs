@@ -1718,11 +1718,15 @@ struct SpecCandidate {
 /// A group writes its lanes' failures only once its outcome is known, so one loss is one
 /// failure: a lane whose merge broke post-merge is held in `breaks`, written as its own
 /// `UnitFailed` when a later lane wins, and carried in the group's one record when none does.
+/// For the same reason a lane Phase A lost to git refusing its work keeps its tree and branch in
+/// `left` until that outcome: a win or the escalation tail removes them, and a park or a hold
+/// leaves them for the re-entry, which meets the same refusal in the same tree.
 #[derive(Default)]
 struct LostLanes {
     cause: Option<String>,
     failure: PriorFailure,
     breaks: Vec<LaneBreak>,
+    left: Vec<Worktree>,
 }
 
 /// A speculation lane whose merge broke post-merge: its attempt, the re-gate's evidence and the
@@ -8390,8 +8394,8 @@ impl RunCtx<'_> {
     }
 
     /// A SPECULATION LANE GIT REFUSED: lane `lane` of unit `st`'s group, its tree `w`, lost on
-    /// git refusing a content step on its work (`e`). The lane's tree and branch go with the lane,
-    /// and a group with no winner escalates, as the attempt that spends a single lane's bound
+    /// git refusing a content step on its work (`e`). The lane's tree and branch go at the group's
+    /// outcome, and a group with no winner escalates, as the attempt that spends a single lane's bound
     /// does ([`Self::kept_at_the_bound`]), so the lane's work is kept first on the lane's own
     /// kept ref ([`Worktree::keep_lane_aside`]): `rigger/kept/<unit>` for lane 0 and
     /// `rigger/kept/<unit>-spec<lane>` for lane `lane`, as its branch is named. The refusal and
@@ -8432,6 +8436,13 @@ impl RunCtx<'_> {
                 ));
             }
         }
+    }
+
+    /// Tear down a speculation lane's tree `w` ([`Self::remove_or_say`]) and its branch, once
+    /// its group is done with the lane.
+    fn remove_lane(&self, w: &Worktree) {
+        self.remove_or_say(w);
+        let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
     }
 
     /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
@@ -8744,18 +8755,20 @@ impl RunCtx<'_> {
                 // candidates still race; if none survives, the escalation tail fires, its
                 // failure carrying each refusal and where each refused tree is kept (a crash is
                 // no feedback for the author). Its lane worktree AND branch were already created
-                // (above), and NO terminal path below tears them down - winner cleanup,
-                // `cancel_speculation_candidates`, and the escalation tail all iterate
-                // `candidates`, which EXCLUDES this never-pushed lane, and `Worktree` has no
-                // `Drop`. So remove them HERE, a refused lane's work kept first, or the conductor
-                // leaks a durable dir + branch, breaking the "conductor owns the K worktrees'
-                // whole lifecycle" invariant (spec 13, unit 3).
+                // (above), and `Worktree` has no `Drop`, so the conductor owns them here (spec
+                // 13, unit 3). A crashed lane's are removed now: its loss is answered from the
+                // log on any re-entry. A refused lane's work is kept, and its tree and branch
+                // stay with the group's losses ([`LostLanes::left`]) until the group's outcome
+                // removes them: a re-entry before it (another lane's park, a hold's release)
+                // answers this lane's implementer from the log, so only the same tree meets the
+                // same refusal again; a fresh one would commit nothing and race empty.
                 Err((class, e)) => {
                     if class == LaneError::Refused {
                         self.lane_refused(st, lane, &wt, &e, &mut lost)?;
+                        lost.left.push(wt);
+                    } else {
+                        self.remove_lane(&wt);
                     }
-                    self.remove_or_say(&wt);
-                    let _ = Worktree::delete_branch(&self.deps.repo, &wt.branch);
                 }
             }
         }
@@ -8870,7 +8883,7 @@ impl RunCtx<'_> {
                     &candidates[i],
                     &review,
                 )?;
-                self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
+                self.cancel_speculation_candidates(st, &group, attempt, &candidates, &lost)?;
                 // The refused lanes' keeps go with the group; the unit's own recorded keeps wait
                 // for its landing.
                 let _ = worktree::drop_keeps(&self.deps.repo, lost.kept());
@@ -8943,12 +8956,11 @@ impl RunCtx<'_> {
                     (META_SPEC_LOSERS, &losers.join(",")),
                 ],
             )?;
-            self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
+            self.cancel_speculation_candidates(st, &group, attempt, &candidates, &lost)?;
             // The winner's work merged into the base: tear down its worktree and branch too,
             // exactly as the single-lane path deletes an integrated unit's branch, and the
             // unit's recorded keeps with them, the keeps of this group's refused lanes included.
-            self.remove_or_say(&candidates[i].wt);
-            let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
+            self.remove_lane(&candidates[i].wt);
             let keeps: Vec<ledger::Kept> = self
                 .recorded_keeps(&st.name)
                 .iter()
@@ -8962,11 +8974,11 @@ impl RunCtx<'_> {
         // NO candidate won: every candidate was gate-red, review-rejected, crashed, refused by
         // git, or its winning merge broke post-merge (its evidence held in `lost` above). The K candidates
         // were the unit's parallel attempts, so it ESCALATES rather than re-fanning out forever
-        // on the fresh re-entry. Clean up the losing candidates' worktrees: each lane git refused
-        // was kept when it was refused, and its record below names where.
-        for c in &candidates {
-            self.remove_or_say(&c.wt);
-            let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+        // on the fresh re-entry. Clean up the losing lanes' worktrees, the candidates' and those
+        // Phase A lost to a refusal: each lane git refused was kept when it was refused, and its
+        // record below names where.
+        for wt in candidates.iter().map(|c| &c.wt).chain(&lost.left) {
+            self.remove_lane(wt);
         }
         // Record why the group lost as the unit's failure, one past its
         // last lane, so an operator's grant re-drives every lane told it, as a single lane
@@ -9201,14 +9213,19 @@ impl RunCtx<'_> {
     /// at the `winner` attempt is SKIPPED here (its worktree/branch is the caller's to clean up: removed once it merged, or
     /// kept as the verified-but-unmerged checkpoint on an `on_pass: none` unit).
     /// `STATUS_SPECULATION_CANCELLED` is not a real lifecycle status, so folding it leaves the
-    /// unit's terminal state as the winner's `Integrated`.
+    /// unit's terminal state as the winner's `Integrated`. The trees and branches of the lanes
+    /// Phase A lost to a refusal (`lost`'s [`LostLanes::left`]) go with the group too.
     fn cancel_speculation_candidates(
         &self,
         st: &Stage,
         group: &str,
         winner: u32,
         candidates: &[SpecCandidate],
+        lost: &LostLanes,
     ) -> Result<(), Error> {
+        for wt in &lost.left {
+            self.remove_lane(wt);
+        }
         for c in candidates {
             // The winner is NOT cancelled and its worktree/branch is the caller's to clean up
             // (deleted once it MERGED, or kept as the verified-but-unmerged checkpoint on an
@@ -9231,8 +9248,7 @@ impl RunCtx<'_> {
                 }),
                 &[(META_SPEC_GROUP, group)],
             )?;
-            self.remove_or_say(&c.wt);
-            let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+            self.remove_lane(&c.wt);
         }
         Ok(())
     }
