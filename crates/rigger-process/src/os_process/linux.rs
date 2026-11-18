@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub(super) use super::read_then_checked as arguments_of;
 pub(super) use super::scan_holders as holders;
 
 /// The link `/proc` holds to the image this process runs.

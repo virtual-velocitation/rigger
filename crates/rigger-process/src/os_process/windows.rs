@@ -3,7 +3,7 @@
 //! name (command), IP Helper's owner-pid TCP listener table ([`listening_pid`]) and the Restart
 //! Manager ([`holders`]) - and the one undocumented call it makes, which reads the command line a
 //! process was created with ([`created_line`]), split into its arguments by the documented split
-//! ([`arguments`]). Each function answers the fact its namesake in
+//! ([`arguments`], [`arguments_of`]). Each function answers the fact its namesake in
 //! [`super`] documents; a call that fails - the process exited, or this process may not open it -
 //! answers absent.
 //! Windows documents no call that reads another process's working directory or open files, so
@@ -173,7 +173,20 @@ pub(super) fn command(pid: u32) -> String {
 /// The arguments `pid` was created with: the command line it was created with
 /// ([`created_line`]), split into its arguments ([`split_command_line`]).
 pub(super) fn arguments(pid: u32) -> Option<Vec<String>> {
-    split_command_line(&created_line(pid)?)
+    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    split_command_line(&created_line(&process)?)
+}
+
+/// The arguments ([`arguments`]) of the process that started at `started` and holds `pid`, read
+/// through one handle whose process's creation time ([`created`]) reads `started` first: the
+/// handle keeps the pid that process's own while it is open, so the line read through it is that
+/// process's, never one a later process that took the pid was created with.
+pub(super) fn arguments_of(pid: u32, started: u64) -> Option<Vec<String>> {
+    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+    if created(process.0) != Some(started) {
+        return None;
+    }
+    split_command_line(&created_line(&process)?)
 }
 
 /// `line`, a command line as a process is created with, split into its arguments, its program
@@ -210,15 +223,15 @@ pub(super) fn split_command_line(line: &[u16]) -> Option<Vec<String>> {
     Some(arguments)
 }
 
-/// The command line `pid` was created with, read by `NtQueryInformationProcess` with
+/// The command line the process `process` holds was created with, read through that handle,
+/// opened with at least `PROCESS_QUERY_LIMITED_INFORMATION`, by `NtQueryInformationProcess` with
 /// `ProcessCommandLineInformation`, the call Task Manager reads it by and the one Windows offers:
 /// no documented call reads another process's command line. The call answers a `UNICODE_STRING`
 /// naming the line, followed by the line itself, into a buffer given room for the longest line a
-/// `UNICODE_STRING` can name, so one read answers it. `None` when the process cannot be opened,
-/// the call fails (a Windows that drops the class among its causes), the structure names bytes
-/// outside the buffer ([`super::command_line_span`]), or the line is empty.
-fn created_line(pid: u32) -> Option<Vec<u16>> {
-    let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
+/// `UNICODE_STRING` can name, so one read answers it. `None` when the call fails (a Windows that
+/// drops the class among its causes), the structure names bytes outside the buffer
+/// ([`super::command_line_span`]), or the line is empty.
+fn created_line(process: &Owned) -> Option<Vec<u16>> {
     let header = size_of::<UNICODE_STRING>();
     // Words of eight bytes, so the buffer is aligned for the structure at its start.
     let mut buffer = vec![0u64; (header + usize::from(u16::MAX) + 1).div_ceil(8)];

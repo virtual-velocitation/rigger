@@ -43,6 +43,7 @@ std::cfg_select! {
             use std::path::PathBuf;
 
             pub(super) use super::command_file_name as executable_name;
+            pub(super) use super::read_then_checked as arguments_of;
             pub(super) use super::reported_image as running_image;
             pub(super) use super::scan_holders as holders;
 
@@ -250,8 +251,18 @@ pub fn arguments(pid: u32) -> Option<Vec<String>> {
 /// other OS reads them by the pid and keeps them only where the pid still reads `started` after
 /// the read, since a pid that names one process before and after a read named it throughout.
 /// `None` where `pid` names no process that started at `started`, or its arguments cannot be read.
-pub fn arguments_of(pid: u32, _started: u64) -> Option<Vec<String>> {
-    arguments(pid)
+pub fn arguments_of(pid: u32, started: u64) -> Option<Vec<String>> {
+    native::arguments_of(pid, started)
+}
+
+/// [`arguments_of`] on every OS without a handle that keeps a pid its process's: the arguments
+/// read by `pid` ([`arguments`]), kept only where `pid` reads `started` ([`start_time`]) after the
+/// read. A pid names one process from its start until that process is reaped, so one that names
+/// the process that started at `started` after the read named it throughout the read.
+#[cfg(not(target_os = "windows"))]
+fn read_then_checked(pid: u32, started: u64) -> Option<Vec<String>> {
+    let arguments = native::arguments(pid)?;
+    (native::start_time(pid) == Some(started)).then_some(arguments)
 }
 
 /// Process `pid`'s run state as one letter: `R` running, `S` sleeping, `T` stopped, `Z` a zombie
