@@ -784,6 +784,14 @@ impl Worktree {
         })
     }
 
+    /// Keep a speculation lane's tree for the group that lost it: [`Self::keep_tree_aside`], with
+    /// a clean tree at the branch's tip kept as that tip, since the lane's branch goes with its
+    /// tree.
+    pub fn keep_lane_aside(&self, message: &str) -> Result<Option<Kept>, Error> {
+        let _ = message;
+        Ok(None)
+    }
+
     /// [`Self::keep_tree_aside`] onto `reference`.
     fn keep_on(&self, reference: &str, message: &str) -> Result<Option<Kept>, Error> {
         let tip = branch_tip(&self.repo, &self.branch)?;
@@ -1773,6 +1781,13 @@ pub fn reap_keeps(repo: &str, branch: &str, keeps: &[Kept]) -> Result<(), Error>
             git(repo, &["update-ref", "-d", &full, &k.commit])?;
         }
     }
+    Ok(())
+}
+
+/// The keeps a speculation group made of its lanes git refused ([`Worktree::keep_lane_aside`]),
+/// dropped once another lane settled the group.
+pub fn drop_keeps(repo: &str, keeps: &[Kept]) -> Result<(), Error> {
+    let _ = (repo, keeps);
     Ok(())
 }
 
@@ -9786,6 +9801,88 @@ mod tests {
 
             assert_eq!(held_refs(&repo_path).unwrap(), left, "{row}");
         }
+    }
+
+    /// A LANE'S KEEP HOLDS ITS WORK WHEN ITS BRANCH GOES WITH ITS TREE: a speculation lane's tree
+    /// is kept on its own kept ref as a unit's is ([`Worktree::keep_tree_aside`]), and a clean tree
+    /// at its branch's tip is kept as that tip, since the lane's branch is deleted with its tree.
+    #[test]
+    fn a_lanes_keep_holds_its_work_when_its_branch_goes_with_its_tree() {
+        // Each row: whether the lane's tree holds work outside its last commit.
+        let cases = [
+            ("a clean tree at its branch's tip", false),
+            ("a tree with work outside a commit", true),
+        ];
+        for (row, dirty) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-lane-spec1");
+            let at = std::path::Path::new(&dir);
+            std::fs::write(at.join("unit.txt"), "committed\n").unwrap();
+            wt.commit("lane work").unwrap();
+            if dirty {
+                std::fs::write(at.join("late.txt"), "late\n").unwrap();
+            }
+            let tip = run_git(&repo_path, &["rev-parse", &wt.branch]).unwrap();
+            let tip = tip.trim();
+
+            let kept = wt.keep_lane_aside("wip(unit-lane): lane 1").unwrap();
+
+            let kept = kept.unwrap_or_else(|| panic!("{row}: the lane's work is kept"));
+            assert_eq!(kept.reference, "rigger/kept/unit-lane-spec1", "{row}");
+            assert_eq!(
+                run_git(&repo_path, &["rev-parse", &kept.reference]).unwrap().trim(),
+                kept.commit,
+                "{row}: the kept ref holds the kept commit"
+            );
+            if dirty {
+                assert_eq!(parents_of(&repo_path, &kept.commit), [tip], "{row}");
+                let late = run_git(&repo_path, &["show", &format!("{}:late.txt", kept.commit)]);
+                assert_eq!(late.unwrap(), "late\n", "{row}");
+            } else {
+                assert_eq!(kept.commit, tip, "{row}: the tip itself is kept");
+            }
+            wt.remove().unwrap();
+        }
+    }
+
+    /// A GROUP'S OWN KEEPS GO ONCE ANOTHER LANE SETTLES IT: dropping the keeps a speculation group
+    /// made deletes each ref one names while it holds that keep and sets aside one holding another
+    /// commit, and reads no other ref: the unit's own kept ref, holding a keep the group did not
+    /// make, stays as it stands.
+    #[test]
+    fn dropping_a_groups_keeps_reads_only_the_refs_they_name() {
+        let (_repo, repo_path, root) = scratch_repo(true);
+        let (dir, unit) = unit_wt(&repo_path, &root, "unit-g");
+        std::fs::write(std::path::Path::new(&dir).join("one.txt"), "one\n").unwrap();
+        let (own, earlier) = keep_aside(&unit).expect("the unit's earlier keep");
+        unit.remove().unwrap();
+        let mut keeps = Vec::new();
+        for lane in ["unit-g-spec1", "unit-g-spec2"] {
+            let (dir, wt) = unit_wt(&repo_path, &root, lane);
+            std::fs::write(std::path::Path::new(&dir).join("lane.txt"), "lane\n").unwrap();
+            keeps.push(wt.keep_lane_aside("wip(unit-g): lane").unwrap().unwrap());
+            wt.remove().unwrap();
+        }
+        let moved = &keeps[1];
+        let theirs = run_git(
+            &repo_path,
+            &["commit-tree", &format!("{}^{{tree}}", moved.commit), "-p", &moved.commit, "-m", "theirs"],
+        )
+        .unwrap();
+        let theirs = theirs.trim().to_string();
+        let full = format!("refs/heads/{}", moved.reference);
+        run_git(&repo_path, &["update-ref", &full, &theirs]).unwrap();
+
+        drop_keeps(&repo_path, &keeps).unwrap();
+
+        assert_eq!(
+            held_refs(&repo_path).unwrap(),
+            [
+                (own, earlier),
+                (orphaned_ref("unit-g-spec2", &theirs), theirs.clone()),
+            ],
+            "the group's keep goes, a person's commit stands aside, the unit's own keep stays"
+        );
     }
 
     /// A HELD REF IS READ BY ITS FULL NAME: a tag or a remote's ref with the same short name as a
