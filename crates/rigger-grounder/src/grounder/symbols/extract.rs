@@ -2584,13 +2584,13 @@ pub(crate) fn lang_str(l: Lang) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
 
     /// `query` compiled against `language` with no constructor kinds, for a test that injects a
     /// query of its own.
-    fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
+    pub(crate) fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
         CompiledTags::compile(language, query, &[]).expect("the query compiles")
     }
 

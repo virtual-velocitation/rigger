@@ -726,7 +726,7 @@ fn text_of(bytes: Option<&[u8]>) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
     use crate::extractor_stub::{
@@ -735,6 +735,8 @@ mod tests {
     use crate::extractors_fixtures::{workflow_declaring_extractors, EXTRACTOR_REFUSALS};
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::content_hash;
+    use crate::grounder::symbols::extract::tests::compiled;
+    use crate::grounder::symbols::extract::{extract, CompiledTags};
     use crate::js_ts_definition_sources::{
         JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
     };
@@ -749,12 +751,39 @@ mod tests {
     use rigger_store::code::Store;
     use std::collections::BTreeMap;
 
-    fn facts_of(path: &str, bytes: &[u8]) -> FileFacts {
-        let entry = Entry {
+    /// The entry of the file at `path`, its blob named for the path.
+    fn entry_of(path: &str) -> Entry {
+        Entry {
             path: path.to_string(),
             blob: format!("blob-of-{path}"),
-        };
-        FactsExtractor.extract(&entry, bytes)
+        }
+    }
+
+    fn facts_of(path: &str, bytes: &[u8]) -> FileFacts {
+        FactsExtractor.extract(&entry_of(path), bytes)
+    }
+
+    /// The facts of the code file at `path` holding `source`, read as `lang` with its symbols
+    /// extracted under the fixture query `tags` in place of the language's bundled one, through
+    /// the one skeleton every extraction reads a file through.
+    pub(crate) fn facts_under(
+        path: &str,
+        source: &str,
+        lang: Lang,
+        tags: &CompiledTags,
+    ) -> FileFacts {
+        let symbols = extract(source, lang, tags).expect("the fixture source extracts");
+        file_facts(&entry_of(path), source.as_bytes(), |_, _| {
+            Some(CodeFile {
+                lang: lang_str(lang).to_string(),
+                symbols: Some(Ok(CodeSymbols {
+                    defs: symbols.defs,
+                    refs: symbols.refs,
+                    partial: symbols.partial,
+                    doc: symbols.doc,
+                })),
+            })
+        })
     }
 
     /// A definition kind's name as the facts spell it, written here rather than taken from the
@@ -894,25 +923,8 @@ mod tests {
                 )
             })
             .collect();
-        let fixture = crate::grounder::symbols::extract::CompiledTags::compile(
-            &tree_sitter_python::LANGUAGE.into(),
-            &query,
-            &[],
-        )
-        .expect("the fixture query compiles");
-        let symbols = crate::grounder::symbols::extract::extract(&source, Lang::Python, &fixture)
-            .expect("the fixture source extracts");
-        let mut facts = FileFacts::default();
-        code_facts(
-            "tool/run.py",
-            &CodeSymbols {
-                defs: symbols.defs,
-                refs: symbols.refs,
-                partial: symbols.partial,
-                doc: symbols.doc,
-            },
-            &mut facts,
-        );
+        let fixture = compiled(&tree_sitter_python::LANGUAGE.into(), &query);
+        let facts = facts_under("tool/run.py", &source, Lang::Python, &fixture);
         let expected: Vec<Mention> = table
             .into_iter()
             .zip(1..)
@@ -962,6 +974,104 @@ mod tests {
                     (path, facts_of(path, source.as_bytes()).mentions),
                     (path, mentions),
                 )
+            })
+            .unzip();
+        assert_eq!(found, expected);
+    }
+
+    /// A QUALIFIER CAPTURE NAMES THE MENTION (spec 117, CAPTURES): a mention is named
+    /// `<qualifier>::<leaf>` under a path qualifier and `<qualifier>.<leaf>` under a member one,
+    /// its leaf always the bare leaf. A fixture query's `@qualifier.path` and `@qualifier.member`
+    /// captures name a Python `Shape.area` call and field read `Shape::area` and `Shape.area`,
+    /// the capture deciding the qualifier over the text a `@name` holding it reads. A `@name`
+    /// with named children is split: its named leaves outside the type arguments, joined by `.`
+    /// or `::`, give the last as the leaf and the text before its separator as the qualifier, so
+    /// a C# base type `Ns.IShape` yields the leaf `IShape`, `global::IShape` the leaf `IShape`
+    /// under a path, `List<IShape>` the leaf `List`, and a JavaScript `new Ns.Kit.Box()` a call
+    /// of `Box`; a `@name` that is no such chain (`new arr[0]()`, `new a[0].b()`, `new (Box)()`)
+    /// stages no mention.
+    #[test]
+    fn a_qualifier_capture_names_the_mention() {
+        let mention = |name: &str, leaf: &str, kind: MentionKind, enclosing: Option<u32>| Mention {
+            enclosing,
+            name: name.to_string(),
+            leaf: leaf.to_string(),
+            kind,
+            line: 1,
+            test: false,
+        };
+        let tagged = |kind: &str| MentionKind::Tagged(kind.to_string());
+        // (path, source, the Python fixture query its symbols are extracted under, or none for
+        // the bundled grammar, the mentions its facts hold)
+        let table = [
+            (
+                "tool/run.py",
+                "Shape.area()\n",
+                Some(
+                    "(call function: (attribute object: (_) @qualifier.path \
+                     attribute: (identifier) @name)) @reference.call",
+                ),
+                vec![mention("Shape::area", "area", MentionKind::Call, None)],
+            ),
+            (
+                "tool/run.py",
+                "Shape.area\n",
+                Some(
+                    "(expression_statement (attribute object: (_) @qualifier.member \
+                     attribute: (identifier) @name)) @reference.field",
+                ),
+                vec![mention("Shape.area", "area", tagged("field"), None)],
+            ),
+            (
+                "tool/run.py",
+                "Shape.area()\n",
+                Some(
+                    "(call function: (attribute object: (_) @qualifier.path) @name) \
+                     @reference.call",
+                ),
+                vec![mention("Shape::area", "area", MentionKind::Call, None)],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : Ns.IShape { }\n",
+                None,
+                vec![mention("Ns.IShape", "IShape", tagged("type"), Some(0))],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : global::IShape { }\n",
+                None,
+                vec![mention("global::IShape", "IShape", tagged("type"), Some(0))],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : List<IShape> { }\n",
+                None,
+                vec![mention("List", "List", tagged("type"), Some(0))],
+            ),
+            (
+                "web/make.js",
+                "new Ns.Kit.Box();\n",
+                None,
+                vec![mention("Ns.Kit.Box", "Box", MentionKind::Call, None)],
+            ),
+            ("web/make.js", "new arr[0]();\n", None, vec![]),
+            ("web/make.js", "new a[0].b();\n", None, vec![]),
+            ("web/make.js", "new (Box)();\n", None, vec![]),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(path, source, fixture, mentions)| {
+                let facts = match fixture {
+                    Some(query) => facts_under(
+                        path,
+                        source,
+                        Lang::Python,
+                        &compiled(&tree_sitter_python::LANGUAGE.into(), query),
+                    ),
+                    None => facts_of(path, source.as_bytes()),
+                };
+                ((source, facts.mentions), (source, mentions))
             })
             .unzip();
         assert_eq!(found, expected);
