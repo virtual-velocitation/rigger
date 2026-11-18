@@ -56361,6 +56361,84 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
+    /// A PRODUCER'S PLAN OUTLIVES ITS ESCALATION: a producer that leaves its plan outside a
+    /// commit on every attempt is charged each one as a reject, and the attempt that spends its
+    /// retry bound escalates the unit with the plan committed onto the unit's branch, the
+    /// escalation lesson naming the commit and the branch; the tree is removed as an escalated
+    /// unit's tree is, the plan on the branch.
+    #[test]
+    fn a_producer_escalating_with_its_plan_outside_a_commit_keeps_the_plan_on_its_branch() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_dir = unit_worktree_dir(&scratch, "plan");
+        let mut cfg = Config::default();
+        cfg.agents.insert("planner".into(), agent("planner"));
+        cfg.workflow.defaults.max_retries = 2;
+        cfg.workflow.stages.insert(
+            "plan".into(),
+            Stage {
+                name: "plan".into(),
+                agent: "planner".into(),
+                produces: "dag".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            write_files_by_spawn_id: (0..2)
+                .map(|n| {
+                    let plan = vec!["specs/90-foo.md".to_string()];
+                    (spawn_id("plan", ROLE_IMPLEMENTER, n), plan)
+                })
+                .collect(),
+            ..Stub::new()
+        };
+        let st = Store::open(":memory:").unwrap();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        assert_eq!(rs.units["plan"].status, ledger::Status::Escalated);
+        let events = run_log(&st);
+        assert_eq!(
+            payloads_of_type(&events, ledger::TYPE_UNIT_FAILED)
+                .iter()
+                .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
+                .collect::<Vec<_>>(),
+            [(Some(1), Some("reject")), (Some(2), Some("reject"))],
+            "each attempt that left its plan outside a commit is charged as a reject"
+        );
+        let lesson = payloads_of_type(&events, contextgraph::TYPE_LESSON_LEARNED)
+            .iter()
+            .filter_map(|l| l["summary"].as_str().map(str::to_string))
+            .find(|s| s.contains("escalated after 2 attempts"))
+            .expect("the escalation lesson");
+        let kept = lesson
+            .split_once("; the tree it left is kept as commit ")
+            .and_then(|(_, rest)| rest.strip_suffix(" on rigger/u/plan"))
+            .unwrap_or_else(|| {
+                panic!("the lesson names the commit and the branch the plan is kept on: {lesson}")
+            })
+            .to_string();
+        assert!(
+            !Path::new(&unit_dir).exists(),
+            "the escalated unit's tree is removed, as an escalated unit's tree is"
+        );
+        assert_eq!(
+            git_out(&repo_path, &["rev-parse", "rigger/u/plan"]),
+            kept,
+            "the unit's branch names the commit"
+        );
+        assert_eq!(
+            git_out(&repo_path, &["show", &format!("{kept}:specs/90-foo.md")]),
+            "work",
+            "the commit holds the plan the producer left outside a commit"
+        );
+    }
+
     /// A speculation candidate's sdet author refused on its run and on its re-run loses the
     /// candidate, as a crashed candidate does - a losing candidate has no continuation to carry
     /// a reason into - and the next candidate races on and wins.
