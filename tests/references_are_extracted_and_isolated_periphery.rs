@@ -22,9 +22,11 @@
 //!  - a constructor stays a call: a TypeScript, TSX, JavaScript or C# `new Square()` lands as
 //!    the call's `REFERENCES` and `CALLS` edges onto its one same-file class, no placeholder;
 //!  - and a qualifier capture names the mention: a TypeScript, TSX or JavaScript `new Ns.Box()`
-//!    and a C# base `Ns.IShape` or `List<IShape>` land on the one definition the name as written
-//!    reaches - the member qualifier's fallback to the one same-file `Box`, the `namespace Ns`
-//!    member over its same-file namesake, and `List`, the leaf before the type arguments.
+//!    and a C# base `Ns.IShape` or `List<IShape>` are stored as the mentions `Ns.Box` of the leaf
+//!    `Box`, `Ns.IShape` of `IShape` and `List` of `List`, and land on the one definition the name
+//!    as written reaches - the member qualifier's fallback to the one same-file `Box`, the
+//!    `namespace Ns` member over its same-file namesake, and `List`, the leaf before the type
+//!    arguments.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -484,21 +486,24 @@ fn graph_build_lands_a_constructor_as_a_call_onto_its_class() {
 const JS_QUALIFIED_SOURCE: &str = "class Box {}\nfunction make() { return new Ns.Box(); }\n";
 
 /// One file per corner of a qualified reference's name (spec 117, CAPTURES), each `(file, source,
-/// the id path of the definition the reference is staged from, the id path of the one definition
-/// it lands on, whether it lands as a call)`: in TypeScript, TSX and JavaScript a `new Ns.Box()`
-/// whose member qualifier `Ns` names no definition, beside one `Box`; in TypeScript the same call
-/// beside a top-level `Box` and the `Box` of a `namespace Ns`; in C# a base `Ns.IShape` beside
-/// the `IShape` of `namespace Ns` and of `namespace Other`; and in C# a base `List<IShape>`, a
-/// name holding type arguments, beside a class `List` and an interface `IShape`.
+/// the id path of the definition the reference is staged from, the name of its one stored
+/// mention, that mention's leaf, the id path of the one definition it lands on, whether it lands
+/// as a call)`: in TypeScript, TSX and JavaScript a `new Ns.Box()` whose member qualifier `Ns`
+/// names no definition, beside one `Box`; in TypeScript the same call beside a top-level `Box`
+/// and the `Box` of a `namespace Ns`; in C# a base `Ns.IShape` beside the `IShape` of
+/// `namespace Ns` and of `namespace Other`; and in C# a base `List<IShape>`, a name holding type
+/// arguments, beside a class `List` and an interface `IShape`.
 #[cfg(feature = "symbols")]
-const QUALIFIED_FILES: [(&str, &str, &str, &str, bool); 6] = [
-    ("f.ts", JS_QUALIFIED_SOURCE, "make", "Box", true),
-    ("f.tsx", JS_QUALIFIED_SOURCE, "make", "Box", true),
-    ("f.js", JS_QUALIFIED_SOURCE, "make", "Box", true),
+const QUALIFIED_FILES: [(&str, &str, &str, &str, &str, &str, bool); 6] = [
+    ("f.ts", JS_QUALIFIED_SOURCE, "make", "Ns.Box", "Box", "Box", true),
+    ("f.tsx", JS_QUALIFIED_SOURCE, "make", "Ns.Box", "Box", "Box", true),
+    ("f.js", JS_QUALIFIED_SOURCE, "make", "Ns.Box", "Box", "Box", true),
     (
         "f.ts",
         "namespace Ns { export class Box {} }\nclass Box {}\nfunction make() { return new Ns.Box(); }\n",
         "make",
+        "Ns.Box",
+        "Box",
         "Ns::Box",
         true,
     ),
@@ -506,6 +511,8 @@ const QUALIFIED_FILES: [(&str, &str, &str, &str, bool); 6] = [
         "f.cs",
         "namespace Ns { interface IShape { } }\nnamespace Other { interface IShape { } }\nclass A : Ns.IShape { }\n",
         "A",
+        "Ns.IShape",
+        "IShape",
         "Ns::IShape",
         false,
     ),
@@ -514,6 +521,8 @@ const QUALIFIED_FILES: [(&str, &str, &str, &str, bool); 6] = [
         "class List<T> { }\ninterface IShape { }\nclass A : List<IShape> { }\n",
         "A",
         "List",
+        "List",
+        "List",
         false,
     ),
 ];
@@ -521,24 +530,35 @@ const QUALIFIED_FILES: [(&str, &str, &str, &str, bool); 6] = [
 /// GIVEN a project whose one file names a definition through a qualifier or with type arguments
 /// ([`QUALIFIED_FILES`]),
 /// WHEN the operator runs `rigger graph build`,
-/// THEN A QUALIFIER CAPTURE NAMES THE MENTION (spec 117, CAPTURES): the graph's `REFERENCES` and
-/// `CALLS` edges are exactly the reference's, each `extracted`, onto the one definition its name
-/// as written reaches - a call's two, a type reference's one from the class naming its base. The
-/// member qualifier `Ns` of `new Ns.Box()` keeps no candidate and leaves the call to its one
-/// same-file `Box`, where a path qualifier naming nothing would make no link; the qualifier
-/// keeps the `Box` and the `IShape` that `namespace Ns` holds over their same-file namesakes,
-/// which leave a reference by its leaf alone no one target; and `List<IShape>` lands on `List`,
-/// its leaf before the type arguments.
+/// THEN A QUALIFIER CAPTURE NAMES THE MENTION (spec 117, CAPTURES): the store holds the file's
+/// one mention, named as written (`Ns.Box`, `Ns.IShape`, `List`) of its leaf (`Box`, `IShape`,
+/// `List`), and the graph's `REFERENCES` and `CALLS` edges are exactly the reference's, each
+/// `extracted`, onto the one definition its name as written reaches - a call's two, a type
+/// reference's one from the class naming its base. The member qualifier `Ns` of `new Ns.Box()`
+/// keeps no candidate and leaves the call to its one same-file `Box`, where a path qualifier
+/// naming nothing would make no link; the qualifier keeps the `Box` and the `IShape` that
+/// `namespace Ns` holds over their same-file namesakes, which leave a reference by its leaf alone
+/// no one target; and `List<IShape>` is named and lands on `List`, its leaf before the type
+/// arguments.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_lands_a_qualified_reference_where_its_name_as_written_reaches() {
     use rigger::contextgraph::query::entity_id;
     use rigger::contextgraph::TIER_EXTRACTED;
+    use rigger_domain::code_view::CodeView;
 
     let (found, expected): (Vec<_>, Vec<_>) = QUALIFIED_FILES
         .into_iter()
-        .map(|(file, source, from, to, call)| {
+        .map(|(file, source, from, name, leaf, to, call)| {
             let (_project, graph) = common::cli::built_graph(&[(file, source)]);
+            let mentions = graph.view.file(file).map(|facts| {
+                facts
+                    .into_owned()
+                    .mentions
+                    .into_iter()
+                    .map(|mention| (mention.name, mention.leaf))
+                    .collect::<Vec<_>>()
+            });
             let to = entity_id(file, to);
             let edges = if call {
                 common::fixtures::a_call_from(file, from, &to, TIER_EXTRACTED)
@@ -550,15 +570,20 @@ fn graph_build_lands_a_qualified_reference_where_its_name_as_written_reaches() {
                 )]
             };
             (
-                (file, source, common::fixtures::landed(&graph)),
-                (file, source, edges),
+                (file, source, mentions, common::fixtures::landed(&graph)),
+                (
+                    file,
+                    source,
+                    Some(vec![(name.to_string(), leaf.to_string())]),
+                    edges,
+                ),
             )
         })
         .unzip();
     assert_eq!(
         found, expected,
-        "each qualified or type-argument reference lands on the one definition its name as \
-         written reaches"
+        "each qualified or type-argument reference is stored named as written, of its leaf, and \
+         lands on the one definition that name reaches"
     );
 }
 
