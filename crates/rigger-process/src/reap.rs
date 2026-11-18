@@ -1902,6 +1902,35 @@ mod tests {
         );
     }
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
+    #[test]
+    fn processes_rooted_under_names_a_process_by_its_executable_never_its_arguments() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inside = sleeper_in(root.path());
+        // Until its exec is done the sleeper is still this test's own image, already in its cwd.
+        wait_until(|| {
+            processes_rooted_under(root.path())
+                .iter()
+                .any(|(pid, _)| *pid == inside.id())
+                && !os_process::is_unexeced_fork_of(inside.id(), std::process::id())
+        });
+        let program = os_process::executable_name(inside.id());
+
+        let named: Vec<String> = processes_rooted_under(root.path())
+            .into_iter()
+            .filter(|(pid, _)| *pid == inside.id())
+            .map(|(_, name)| name)
+            .collect();
+
+        cleanup(&mut inside);
+        assert_eq!(
+            (named, program.contains("300")),
+            (vec![program], false),
+            "the scan names the sleeper by its executable, never its argument `300`"
+        );
+    }
+
     #[test]
     fn processes_rooted_under_is_a_graceful_no_op_when_the_base_is_absent() {
         // Platform tolerance / read-only safety: an absent base (nothing to scan, and the
