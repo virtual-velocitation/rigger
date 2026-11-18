@@ -2910,7 +2910,8 @@ mod leaf_tests {
 
     #[test]
     fn a_path_query_is_looked_up_by_the_text_after_its_last_separator() {
-        // (the path, its qualifier, its leaf, whether it is cut at a `::`)
+        // (the path, its qualifier, its leaf, whether it is cut at a `::`); a path with a
+        // qualifier is also joined back from its three parts, the cut's inverse.
         let cases = [
             ("T::new", Some("T"), "new", true),
             ("S.field", Some("S"), "field", false),
@@ -2929,6 +2930,9 @@ mod leaf_tests {
                 ((qualifier, leaf), leaf, path_qualified),
                 "{path}"
             );
+            if let Some(qualifier) = qualifier {
+                assert_eq!(qualified_name(qualifier, path_qualified, leaf), path);
+            }
         }
     }
 
