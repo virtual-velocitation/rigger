@@ -219,7 +219,10 @@ const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
 /// with none of [`GIT_REPOSITORY_VARIABLES`] passed on, so the repository git finds from `dir` is
 /// the one it operates on whatever repository this process's environment names (the convention
 /// git documents for a hook that operates on another repository). A caller may still set one of
-/// them on the command it is handed.
+/// them on the command it is handed. The agents' login token
+/// ([`RIGGER_AGENT_TOKEN_VAR`](rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR)) is not passed on
+/// either: git and every hook the repository runs need no login, and a hook is code rigger did
+/// not write.
 ///
 /// The one place a production git command is built, so the one place an empty `dir` is refused:
 /// git reads `-C ""` as the process's own working directory, which for a caller holding no
@@ -238,6 +241,7 @@ pub fn git_in(dir: impl AsRef<OsStr>) -> std::io::Result<Command> {
     for variable in GIT_REPOSITORY_VARIABLES {
         cmd.env_remove(variable);
     }
+    cmd.env_remove(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR);
     Ok(cmd)
 }
 
