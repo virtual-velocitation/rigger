@@ -8415,9 +8415,12 @@ fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
     let took = started.elapsed();
     assert!(!ok, "the run fails; stderr: {err}\nstdout: {out}");
     assert_eq!(out, "", "the error leaves before any summary of the run");
+    let Some((_, evidence)) = err.split_once(&format!("rigger: conductor: {HALT}\n")) else {
+        panic!("the conductor's error is the one the run leaves with; stderr: {err}");
+    };
     assert!(
-        err.lines().any(|line| line.ends_with(HALT)),
-        "the conductor's error is the one the run leaves with; stderr: {err}"
+        evidence.starts_with("agent \"worker\": ") && evidence.trim_end().ends_with(')'),
+        "the halt's evidence, the spawn's failure, runs from below it to the end; stderr: {err}"
     );
     assert_eq!(
         common::cli::recorded_progress::<SupervisorBeat>(root),
