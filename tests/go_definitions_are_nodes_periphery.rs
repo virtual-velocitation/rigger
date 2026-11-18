@@ -5,7 +5,7 @@
 //!
 //!  - the graph `rigger graph build` folds from the Go definitions fixture: each definition is a
 //!    node carrying its kind string and line, a function-local `var` and an alias named `_` are
-//!    no node, and each reference hangs off the caller the fixture gives it.
+//!    no node, and each call hangs off the caller the fixture gives it.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -15,8 +15,10 @@ rigger::test_cases! {
     /// WHEN the operator runs `rigger graph build`,
     /// THEN the graph's definitions are exactly one node per definition, at its `<file>::<path>` id
     /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly its leaf, kind and line,
-    /// and its placeholders one per name a reference reaches that no call target of the file gives (`Canvas`, `Coord`, `Gen`, `Ptr`, `Qual`, `Side`, `_`, `f`,
-    /// `g`, `h`, `int`, `k`, `probe`), a field being no call target:
+    /// and its placeholders one per name a call reaches that no call target of the file gives (`f`,
+    /// `g`, `h`, `k`, `probe`); a reference to a type, an embedded field's, a parameter's, a
+    /// receiver's or an alias's, is a type reference, no call, and makes neither a placeholder nor
+    /// a `CALLS` edge (spec 117, CAPTURES):
     ///
     ///  - each name of a const spec is a `constant`, the two of `const a, b` and the function-local
     ///    `host::inner` included; a package-level `var` is a `variable`, single (`single`), grouped
@@ -27,25 +29,15 @@ rigger::test_cases! {
     ///    identifier, the pointer of `Ptr`, the package of `Qual` and the type argument of `Gen`
     ///    stripped;
     ///  - the embedded field `Shape.Base` is a node apart from the struct type `Base` it names;
-    ///  - the alias `Alias` is a `type`, and the alias named `_` no definition: `_` is the
-    ///    placeholder its name's type reference reaches;
+    ///  - the alias `Alias` is a `type`, and the alias named `_` no definition;
     ///  - the interface's method `Drawer::Draw`, the function `ext` and the method `Shape::bare`,
     ///    none with a body, are each a `declaration`, and the method `Shape::area` a `method`, each
     ///    method under its receiver's type.
     ///
-    /// Its `CALLS` edges are exactly: both calls of `const a, b = f(), g()` from `a` and both of
-    /// `var m, n = h(), k()` from `m`; each embedded field's reference to its type from the field,
-    /// onto the type `Base`'s node for `Shape.Base` and onto its leaf's placeholder for the fields
-    /// `Gen`, `Ptr` and `Qual`, the generic one's type argument too; the named field's type from
-    /// the field and that of the declaration naming two from `x`; the alias's name and its target
-    /// from the alias; the call in the function-local const from its function; the interface
-    /// method's parameter type from the interface; the method's receiver type from the method; and
-    /// each reference no definition encloses (the parameter and receiver types of the two bodiless
-    /// declarations, both names of the alias named `_`) from the file. Each edge hangs off the node of
-    /// its caller's path, `<file>::<path>` (spec 119 criterion 8), so a field's or a method's is
-    /// that definition's own node (`Shape.Gen`, `Shape.Ptr`, `Shape.Qual`, `Shape.side`,
-    /// `Shape.x`, `Shape::area`), and the embedded field `Shape.Base`'s is its own, apart from the
-    /// type `Base`'s.
+    /// Its `CALLS` edges are exactly: both calls of `const a, b = f(), g()` from `a`, both of
+    /// `var m, n = h(), k()` from `m`, and the call in the function-local const from its function
+    /// `host`, each hanging off the node of its caller's path, `<file>::<path>` (spec 119
+    /// criterion 8).
     #[cfg(feature = "symbols")]
     graph_build_makes_each_go_definition_a_node_of_its_kind_and_none_of_a_function_local_var:
         common::cli::assert_built_graph_holds(
@@ -76,26 +68,8 @@ rigger::test_cases! {
                 ("n", "n", "variable", 6),
                 ("single", "single", "variable", 4),
             ],
+            &["f", "g", "h", "k", "probe"],
             &[
-                "Canvas", "Coord", "Gen", "Ptr", "Qual", "Side", "_", "f", "g", "h", "int", "k",
-                "probe",
-            ],
-            &[
-                ("f.go", "f.go::%Canvas"),
-                ("f.go", "f.go::%_"),
-                ("f.go", "f.go::Base"),
-                ("f.go", "f.go::Shape"),
-                ("f.go::Alias", "f.go::Alias"),
-                ("f.go::Alias", "f.go::Base"),
-                ("f.go::Drawer", "f.go::%Canvas"),
-                ("f.go::Shape.Base", "f.go::Base"),
-                ("f.go::Shape.Gen", "f.go::%Gen"),
-                ("f.go::Shape.Gen", "f.go::%int"),
-                ("f.go::Shape.Ptr", "f.go::%Ptr"),
-                ("f.go::Shape.Qual", "f.go::%Qual"),
-                ("f.go::Shape.side", "f.go::%Side"),
-                ("f.go::Shape.x", "f.go::%Coord"),
-                ("f.go::Shape::area", "f.go::Shape"),
                 ("f.go::a", "f.go::%f"),
                 ("f.go::a", "f.go::%g"),
                 ("f.go::host", "f.go::%probe"),
@@ -103,6 +77,6 @@ rigger::test_cases! {
                 ("f.go::m", "f.go::%k"),
             ],
             "every definition of the built graph at its path, none for a function-local var or \
-             the alias named _, one placeholder per undefined name a reference reaches",
+             the alias named _, one placeholder per undefined name a call reaches",
         );
 }

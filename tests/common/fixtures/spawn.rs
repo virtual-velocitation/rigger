@@ -24,9 +24,10 @@ pub fn test_request(
 
 /// The spawn host a test's spawns carry: the one test-side spelling of the struct the production
 /// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off, over a checkout holding
-/// exactly the [`OPERATOR_HELPER_COPIES`], so a spawn that reads its helpers anywhere but the
-/// host carries the embedded text instead of these copies, and a test pinning the copies goes
-/// red. A test that needs the flag set spreads this one.
+/// exactly the [`OPERATOR_HELPER_COPIES`] and declaring no specs location, so its producer output
+/// is `specs/`; a spawn that reads its helpers anywhere but the host carries the embedded text
+/// instead of these copies, and a test pinning the copies goes red. A test that needs the flag
+/// or another output set spreads this one.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
     rigger_domain::agent::SpawnHost {
@@ -39,6 +40,7 @@ pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
                 present: true,
             })
             .collect(),
+        producer_output: "specs/".to_string(),
     }
 }
 
@@ -50,6 +52,18 @@ pub fn hook_block(matcher: &str, command: &str) -> serde_json::Value {
 /// One inner hook running `command`, as the settings installers write it.
 pub fn hook(command: &str) -> serde_json::Value {
     serde_json::json!({"type": "command", "command": command})
+}
+
+/// One hook block running `argv` in exec form under `matcher` ([`exec_hook`]).
+pub fn exec_block(matcher: &str, argv: &[&str]) -> serde_json::Value {
+    serde_json::json!({"matcher": matcher, "hooks": [exec_hook(argv)]})
+}
+
+/// One inner hook running `argv` in exec form, as the settings installers write every command
+/// rigger installs: the program `argv[0]`, which the host spawns with the rest of `argv` as its
+/// argument vector and no shell.
+pub fn exec_hook(argv: &[&str]) -> serde_json::Value {
+    serde_json::json!({"type": "command", "command": argv[0], "args": argv[1..]})
 }
 
 /// An operator's helper copy as its `(file, text)` under `.claude/agents/`.

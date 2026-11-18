@@ -140,7 +140,15 @@ result.
 
 ### 4.4 Hooks
 
-Per-spawn, through `--settings`:
+Per-spawn, through `--settings`, each an exec-form hook: `command` is the rigger binary's path
+and `args` the words after it, so Claude Code spawns rigger with that argument vector and no
+shell on every OS, and a path, spawn id or branch reaches it as written whatever it holds.
+The session hooks the spawn carries beside them, `SessionStart` running `rigger prime` and the
+`PreToolUse` lookup guard running `rigger grep-guard`, are exec-form too, with `command` the
+`rigger` on `PATH`: the same entries `rigger setup` writes into the checkout's
+`.claude/settings.json`, which it rewrites where an older setup left either as one shell-form
+command line, so the host, which runs a handler defined in more than one settings file once,
+runs each once.
 
 - `PreToolUse` on `Edit|MultiEdit|Write|NotebookEdit` runs `rigger guard-write --root <dir>...`,
   rooted at the spawn's `dir` (the session's cwd when `dir` is empty) and its scratch
@@ -148,6 +156,27 @@ Per-spawn, through `--settings`:
 - `StopFailure`, one entry per error category, runs `rigger hook stop-failure --spawn <id>
   --class <category>`: the category that ended a turn is recorded even when the stream's
   last line is lost.
+- `Stop`, for a spawn whose tree the conductor commits once its session ends (an implementer
+  that is not a producer, a speculation candidate, the test author, the conflict resolver),
+  runs `rigger hook stop --spawn <id> --dir <dir> --branch <branch>` with a 60-second timeout.
+  It asks, read-only and through the conductor's own checks, whether that commit and the next
+  merge into the tree would be refused: HEAD off the unit's branch, conflict-marker text the
+  commit would carry, or a merge, cherry-pick, revert or rebase left unfinished. When one
+  would, it blocks the stop (`{"decision": "block", "reason": ...}`) with the refusal and
+  `git status` in git's words, so the session that left the tree so fixes it before it ends.
+  A producer's implementer, whose tree the conductor lands only the commits of, runs
+  `rigger hook stop --spawn <id> --dir <dir> --own-commits <output>` instead, `<output>` the
+  specs location the project declares (`specs/` when it declares none): it is held while its
+  tree holds work in the stage's output outside a commit, which would otherwise never land. It
+  asks the plan landing's own scope check, so it holds only on work that landing would carry;
+  work outside the output never lands whatever the session does, so it holds nothing up alone.
+  Beside held work, the reason names that other work too: it never lands, a commit touching
+  it would be refused as out of scope, so it stays out of the commit and may be taken out of
+  the tree. It holds a launch at most three times, counted from its own progress lines; past
+  that, and on any error, it allows the stop and records why, and the conductor's own handling
+  meets the tree: a checkpoint's refusal fails the unit's attempt, and a producer's work in its
+  output outside a commit fails the stage's attempt, whose retry finds that work in the same
+  tree. Reviewers get no `Stop` hook: the conductor takes nothing from their tree.
 
 ### 4.5 Verdicts are data
 
@@ -168,17 +197,20 @@ created for that child. Never a pid read from elsewhere, a group or a shell-out.
 
 ### 5.1 Classes and dispositions
 
-The classes are Claude Code's own error categories; rigger adds two causes it observes
+The classes are Claude Code's own error categories; rigger adds three causes it observes
 itself.
 
 | Category | Disposition | Released when |
 |---|---|---|
 | `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error` | HOLD on first sight | `claude auth status` reports logged in, then a canary turn succeeds |
 | `billing_error`, `account_on_hold`, `verification_required` | HOLD on first sight | a canary turn succeeds |
-| `model_not_found` | HOLD on first sight, naming the model | a canary turn on that model succeeds |
+| `model_not_found` | HOLD on first sight, naming the model, for the orchestrator, the agent's configured model being its to fix; for a person when it holds again after a release, or lands on a hold that needs a person | a canary turn on that model succeeds |
 | `rate_limit`, `overloaded`, `server_error` | WAIT while Claude Code retries; HOLD when a session dies of it | a canary turn succeeds; a known reset time is honored |
-| `invalid_request`, `max_output_tokens`, `unknown` | FAULT: the error takes its spawn site's existing error path unchanged, so at the implementer it reruns uncharged under the infra limit and a spawn past that limit halts the run naming its class | - |
-| three consecutive FAULTs across the run | HOLD `api-unstable` | a canary turn succeeds |
+| `invalid_request` | REJECTED on first sight: the API refused the request as the conductor built it, the conductor's fault, so the run holds `conductor-fault` as a conductor fault does, its detail naming the spawn and its unit, then its prompt's size, and the spawn parks with nothing recorded and no attempt charged | `rigger release` |
+| `max_output_tokens`, `unknown` | FAULT: the error takes its spawn site's existing error path unchanged, so at the implementer it reruns uncharged under the infra limit and a spawn past that limit halts the run naming its class, which holds `conductor-fault` | - |
+| three consecutive FAULTs across the run, a REJECTED close counting toward none | HOLD `api-unstable` | a canary turn succeeds |
+| a conductor fault: any error but a park that ends the run's drive, a halt, a REJECTED spawn and a step git refused over a unit's work included | HOLD `conductor-fault` for the orchestrator, the session that launched the run and watches it, the fault its detail; for a person when the same fault holds again after a release, or lands on a hold that needs a person | `rigger release`, by the orchestrator once it fixed the cause, else by a person |
+| a unit's checkpoint commit or the merge of the run branch into its worktree refused after its session ended | the attempt that step ended charged to the unit (`UnitFailed`, cause `git-refused`, the refusal its evidence) and its worktree kept; HOLD `conductor-fault` for the orchestrator, the fault naming the unit's attempt and the action saying the release retries the unit; each attempt's refusal is its own fault, so the unit's retry bound, not a recurrence, decides when the unit escalates | `rigger release`, which launches the unit's next attempt, the refusal in its prompt |
 | host suspended, supervisor absent | an implicit hold interval (5.3) | the supervisor is alive |
 | operator | `rigger hold --reason <text>` | `rigger release` |
 
@@ -186,6 +218,7 @@ itself.
 
 ```
              first hold-class category | session death by a wait-class | 3 FAULTs | rigger hold
+                                              | a conductor fault, a REJECTED spawn included
   RUNNING ----------------------------------------------------------------------------> HELD
      ^                RunHeld {cause, detail, action, needs_person, by, model}           |
      |                                                                                   |
@@ -195,6 +228,14 @@ itself.
          live sessions are left alone: each finishes, or ends by itself
          a launch that ends with an API-side category is `interrupted`: no result, no charge
          gates and merges already running continue - they need no API
+
+  a conductor-fault or model_not_found hold, by whom it is held:
+    fault F, the run released no hold of F         -> for the orchestrator  (needs_person false)
+    rigger release, then F again                   -> for a person         (needs_person true)
+    releases of F and then of G, then F again      -> for a person
+    F on an open hold that needs a person          -> for a person
+    the same fault: the same cause and the same first line of the detail, byte for byte;
+                    for model_not_found, the same cause
 ```
 
 `RunHeld` and `RunReleased` are run-stream events; held is the fold "a `RunHeld` with no
@@ -226,8 +267,14 @@ that cannot resume gets a fresh launch of the same spawn. Neither charges an att
 
 - `rigger status`, first line: `HELD 17h02m - authentication_failed - log in to Claude
   Code (/login); the run resumes by itself`.
-- needs-you ranks `held` first when the cause needs a person (credential, billing,
-  account, model); the statusline health word is `held`; the dash health strip shows it.
+- needs-you ranks `held` first when the hold needs a person (credential, billing,
+  account, operator, a conductor fault or a missing model that held again after a
+  release); the
+  statusline health word is `held`; the dash health strip shows it.
+- `rigger watch` prints a line for every open hold no probe ends: `hold for the
+  orchestrator`, a conductor fault or a missing model the launching session fixes at its
+  root and releases,
+  or `hold for a person`.
 - Attention gains two crossings, `held` and `released`; the plugin monitor delivers each
   to the operator's session within seconds.
 - `rigger validate` reports the auth method and never warns of a login: the long-lived

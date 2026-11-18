@@ -3871,7 +3871,20 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
         let settings: serde_json::Value =
             serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
         let bin = std::fs::canonicalize(rigger_bin()).unwrap();
-        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), row.spawn, &roots, false);
+        let stop = row.worktree.map(|_| {
+            (
+                session_cwd.to_str().unwrap(),
+                &["--branch", "rigger/u/solo"][..],
+            )
+        });
+        assert_carries_spawn_hooks(
+            &settings,
+            bin.to_str().unwrap(),
+            row.spawn,
+            &roots,
+            false,
+            stop,
+        );
 
         let mut targets = vec![
             (session_cwd.join("new.rs"), true),
@@ -3923,7 +3936,13 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
 }
 
 /// The shell reading the launch's `--mcp-config` and `--settings` off its arguments, into `$config`
-/// and `$settings`.
+/// and `$settings`, and into `$commands` each command `$settings` names, its hooks' and its status
+/// line's, one per line, as a command line that runs it the way the host does when handed to
+/// `sh -c`: an exec-form command (one carrying `args`) as its `command` and each of its `args`,
+/// each a single word whatever it holds, since the host spawns that program with that argv and no
+/// shell; a shell-form command as written, since the host hands it to a shell. It reads the
+/// settings as the driver prints them, one key or array element to a line, in whatever order the
+/// keys come.
 const READ_LAUNCH_CONFIG: &str = r#"    for word in "$@"; do
         case "$flag" in
             --mcp-config) config=$word ;;
@@ -3931,13 +3950,45 @@ const READ_LAUNCH_CONFIG: &str = r#"    for word in "$@"; do
         esac
         flag=$word
     done
+    commands=$(printf '%s\n' "$settings" | awk '
+        function text(s,   out, i, c) {
+            sub(/^[ \t]*"/, "", s)
+            sub(/",?[ \t]*$/, "", s)
+            out = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "\\") { i++; c = substr(s, i, 1) }
+                out = out c
+            }
+            return out
+        }
+        function word(s,   out, i, c) {
+            out = q
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                out = out (c == q ? q "\\" q q : c)
+            }
+            return out q
+        }
+        BEGIN { q = sprintf("%c", 39) }
+        /"args": \[\]/ { exec = 1; next }
+        /"args": \[/ { exec = 1; listing = 1; next }
+        listing && /^[ \t]*\],?$/ { listing = 0; next }
+        listing { args = args " " word(text($0)); next }
+        /"command": "/ { sub(/^[ \t]*"command": /, ""); command = text($0); next }
+        /^[ \t]*\},?$/ {
+            if (command != "") print (exec ? word(command) args : command)
+            command = ""; args = ""; exec = 0
+        }
+    ')
 "#;
 
-/// The shell running, through a shell, the `StopFailure` command `$settings` names for `category`,
-/// the hook's payload on stdin, leaving what it printed and its status in the fake's directory.
+/// The shell running, as the host does, the `StopFailure` hook `$settings` names for `category`
+/// (its line of [`READ_LAUNCH_CONFIG`]'s `$commands`), the hook's payload on stdin, leaving what it
+/// printed and its status in the fake's directory.
 fn fire_stop_failure_hook(category: &str) -> String {
     format!(
-        r#"    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*{category}[^"]*\)".*/\1/p')
+        r#"    hook=$(printf '%s\n' "$commands" | sed -n '/stop-failure.*{category}/p')
     printf '%s' '{{"hook_event_name":"StopFailure","error":"{category}"}}' |
         sh -c "$hook" > "$here/hook-out" 2> "$here/hook-err"
     echo $? > "$here/hook-status"
@@ -3955,8 +4006,8 @@ const ASK_THE_SERVER_ITS_SCRATCH: &str = r#"    server=$(printf '%s\n' "$config"
 /// An arm of [`install_fake_claude`] standing in for the real host ending the first `Do the unit.`
 /// turn on an API error, from the session's own working directory and environment: the launch
 /// records its argv and working directory, asks the server its `--mcp-config` names for the
-/// spawn's scratch, runs through a shell the `StopFailure` command its `--settings` names for
-/// `max_output_tokens`, the hook's payload on stdin, and ends the session with no `result`. A
+/// spawn's scratch, runs the `StopFailure` hook its `--settings` names for `max_output_tokens` as
+/// the host does, the hook's payload on stdin, and ends the session with no `result`. A
 /// later launch completes.
 fn api_error_worker_arm() -> String {
     let hook = fire_stop_failure_hook("max_output_tokens");
@@ -3975,7 +4026,7 @@ fn api_error_worker_arm() -> String {
 }
 
 /// Spec 105's hook injection from inside the session: given a launch, when its session runs the
-/// `StopFailure` command the launch's `--settings` handed it, through a shell from its own working
+/// `StopFailure` hook the launch's `--settings` handed it, as the host does, from its own working
 /// directory, then the record lands in the project's progress store under the live run, so the
 /// launch closes as a fault of that class; and the path the session's bound server names for its
 /// scratch is one the launch's own write guard admits. The unit worktree row is the one a hook run
@@ -4114,6 +4165,748 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             serde_json::json!({}),
             "{name}: the launch's guard admits the scratch its server names"
         );
+    }
+}
+
+/// An arm of [`install_fake_claude`] standing in for the real host's `Stop` contract over a `Do
+/// the unit.` session that leaves its tree where the checkpoint refuses it: the session writes its
+/// work, leaves HEAD off the unit's branch and finishes; the host runs the `Stop` hook the
+/// launch's `--settings` names, `stop_hook_active` false, and on its
+/// `"decision":"block"` the session continues, moves back onto its branch and finishes again, and
+/// the host runs the hook again, `stop_hook_active` true. The hook's two answers are left in the
+/// fake's directory.
+fn held_then_fixed_worker_arm() -> String {
+    format!(
+        r#"  *"Do the unit."*)
+    echo "pub fn work() {{}}" > work.rs
+    git checkout -q --detach
+{READ_LAUNCH_CONFIG}    hook=$(printf '%s\n' "$commands" | sed -n '/stop.*--dir/p')
+    printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
+        sh -c "$hook" > "$here/stop-held"
+    case "$(cat "$here/stop-held")" in
+        *'"decision":"block"'*) git switch -q rigger/u/solo ;;
+    esac
+    printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":true}}' |
+        sh -c "$hook" > "$here/stop-allowed"
+    ;;
+"#
+    )
+}
+
+/// A WRITING SESSION FIXES WHAT ITS STOP HOOK HOLDS IT ON, end to end: given a unit session that
+/// leaves HEAD off its branch, when the host runs the `Stop` hook its launch's `--settings` names,
+/// then the hook holds the session once with the checkpoint's refusal, the session moves back onto
+/// its branch, the hook allows the next stop, and the conductor's checkpoint and merge land the
+/// work on the run branch with no hold and no failed unit.
+#[cfg(unix)]
+#[test]
+fn a_session_held_by_its_stop_hook_fixes_its_tree_and_the_unit_lands() {
+    let dir = temp_git_project_with_commit();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    write_workflow_fixture(&root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = common::cli::run_on_arms(
+        &root,
+        &["run"],
+        scratch.path(),
+        &held_then_fixed_worker_arm(),
+    );
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+    let read = |file: &str| {
+        std::fs::read_to_string(fake.path().join("bin").join(file))
+            .unwrap_or_else(|e| panic!("the session left {file}: {e}\nstderr: {err}"))
+    };
+    let held: serde_json::Value = serde_json::from_str(read("stop-held").trim())
+        .unwrap_or_else(|e| panic!("the first stop is held ({e}): stderr: {err}"));
+    assert_eq!(held["decision"], "block", "{held}");
+    assert!(
+        held["reason"]
+            .as_str()
+            .unwrap()
+            .contains("HEAD is not on the unit's branch rigger/u/solo"),
+        "the hold names the refusal: {held}"
+    );
+    assert_eq!(
+        read("stop-allowed"),
+        "",
+        "the stop after the fix is allowed"
+    );
+
+    let lines: Vec<String> =
+        common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
+            .into_iter()
+            .filter(|line| line.id == "solo/implementer#0" && line.activity.starts_with("stop "))
+            .map(|line| line.activity)
+            .collect();
+    let starts = [
+        "stop check: ",
+        "stop held (1 of 3): refusing to commit in ",
+        "stop check: ",
+        "stop allowed: nothing refuses the checkpoint",
+    ];
+    assert_eq!(lines.len(), starts.len(), "{lines:#?}");
+    for (line, start) in lines.iter().zip(starts) {
+        assert!(line.starts_with(start), "{line:?} begins {start:?}");
+    }
+    assert!(
+        lines[2].ends_with(", continuing after a hold"),
+        "{lines:#?}"
+    );
+
+    assert!(
+        run_git(&root, &["cat-file", "-e", "rigger-run:work.rs"])
+            .status
+            .success(),
+        "the session's work landed on the run branch"
+    );
+    let types: Vec<String> = common::cli::read_run_events(&root)
+        .into_iter()
+        .map(|event| event.type_)
+        .collect();
+    for absent in ["RunHeld", "UnitFailed", "UnitEscalated"] {
+        assert!(
+            !types.iter().any(|t| t == absent),
+            "no {absent} in the run: {types:?}"
+        );
+    }
+}
+
+/// The arms of [`install_fake_claude`] for [`BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW`] standing in
+/// for the real host's `Stop` contract over a conflict resolver: each implementer meets the other
+/// before it writes its own working directory to `shared.rs`, so the unit integrating second meets
+/// a real merge conflict there. Its resolver stages `resolved` and finishes with the merge
+/// unfinished; the host runs the `Stop` hook the launch's `--settings` names,
+/// `stop_hook_active` false, and on its `"decision":"block"` the resolver concludes the merge, as
+/// its task asks, and finishes again, and the host runs the hook again, `stop_hook_active` true.
+/// The hook's two answers are left in the fake's directory. Each unit's reviewers approve it.
+fn resolver_held_until_its_merge_is_concluded_arm() -> String {
+    let met = rendezvous("edited", 2);
+    format!(
+        r#"  *"Do the unit."*)
+    case "$RIGGER_SPAWN" in
+      *"~retry"*)
+        echo resolved > shared.rs
+        git add shared.rs
+{READ_LAUNCH_CONFIG}        hook=$(printf '%s\n' "$commands" | sed -n '/stop.*--dir/p')
+        printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
+            sh -c "$hook" > "$here/stop-held"
+        case "$(cat "$here/stop-held")" in
+            *'"decision":"block"'*) git commit -q --no-edit ;;
+        esac
+        printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":true}}' |
+            sh -c "$hook" > "$here/stop-allowed"
+        ;;
+      *)
+{met}        pwd -P > shared.rs
+        ;;
+    esac
+    ;;
+{APPROVING_REVIEWER_ARMS}"#
+    )
+}
+
+/// A CONFLICT RESOLVER IS HELD UNTIL ITS MERGE IS CONCLUDED, end to end: given two approved units
+/// of one wave writing one file, when the unit integrating second meets a real merge conflict and
+/// its resolver stages a resolution but leaves the merge unfinished, then the resolver's `Stop`
+/// hook holds it once with the unfinished merge, the resolver concludes the merge, the hook allows
+/// the next stop, and the conductor lands the resolution with no hold and no failed unit.
+#[cfg(unix)]
+#[test]
+fn a_conflict_resolver_is_held_until_its_merge_is_concluded_and_the_unit_lands() {
+    let dir = temp_git_project_with_commit();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    write_workflow_fixture(&root, &BUDGET_SEVEN_TWO_REVIEWED_UNITS_WORKFLOW);
+    write_agent(&root, "lens", "Read", "Review it.");
+    write_agent(&root, "judge", "Read", "Adjudicate it.");
+    let scratch = tempfile::tempdir().unwrap();
+    let (out, err, ok, fake) = common::cli::run_on_arms(
+        &root,
+        &["run"],
+        scratch.path(),
+        &resolver_held_until_its_merge_is_concluded_arm(),
+    );
+    assert!(
+        !fake.path().join("bin/alone").exists(),
+        "both implementers met before either wrote; stderr: {err}"
+    );
+    assert_eq!(
+        (ok, how_the_run_ended(&out)),
+        (true, vec!["done: every unit integrated"]),
+        "the run lands both units; stderr: {err}"
+    );
+    let read = |file: &str| {
+        std::fs::read_to_string(fake.path().join("bin").join(file))
+            .unwrap_or_else(|e| panic!("the resolver left {file}: {e}\nstderr: {err}"))
+    };
+    let held: serde_json::Value = serde_json::from_str(read("stop-held").trim())
+        .unwrap_or_else(|e| panic!("the first stop is held ({e}): stderr: {err}"));
+    assert_eq!(held["decision"], "block", "{held}");
+    assert!(
+        held["reason"]
+            .as_str()
+            .unwrap()
+            .contains("a merge is in progress in "),
+        "the hold names the unfinished merge: {held}"
+    );
+    assert_eq!(
+        read("stop-allowed"),
+        "",
+        "the stop after the merge is concluded is allowed"
+    );
+
+    let resolver = closed_launches(&root)
+        .into_iter()
+        .map(|close| close.0)
+        .find(|spawn| spawn.ends_with("~retry1"))
+        .unwrap_or_else(|| panic!("a resolution round closed; stderr: {err}"));
+    let lines: Vec<String> =
+        common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
+            .into_iter()
+            .filter(|line| line.id == resolver && line.activity.starts_with("stop "))
+            .map(|line| line.activity)
+            .collect();
+    let starts = [
+        "stop check: ",
+        "stop held (1 of 3): a merge is in progress in ",
+        "stop check: ",
+        "stop allowed: nothing refuses the checkpoint",
+    ];
+    assert_eq!(lines.len(), starts.len(), "{lines:#?}");
+    for (line, start) in lines.iter().zip(starts) {
+        assert!(line.starts_with(start), "{line:?} begins {start:?}");
+    }
+
+    assert_eq!(
+        String::from_utf8(run_git(&root, &["show", "rigger-run:shared.rs"]).stdout).unwrap(),
+        "resolved\n",
+        "the resolution landed on the run branch"
+    );
+    let types: Vec<String> = common::cli::read_run_events(&root)
+        .into_iter()
+        .map(|event| event.type_)
+        .collect();
+    for absent in ["RunHeld", "UnitFailed", "UnitEscalated"] {
+        assert!(
+            !types.iter().any(|t| t == absent),
+            "no {absent} in the run: {types:?}"
+        );
+    }
+}
+
+/// A producer stage alone, its git-isolated worker landing only the commits it makes under its
+/// output: the project's declared `specs_location`, `specs/` when it declares none.
+const PRODUCER_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+stages:
+  plan:
+    agent: worker
+    produces: dag
+"#,
+};
+
+/// One way a producer's session leaves its tree before its first stop, and, when its `Stop` hook
+/// holds it there, how the session settles the tree.
+struct ProducerLeaves {
+    name: &'static str,
+    /// The project's docs overlay, empty when the project writes none.
+    declares: &'static str,
+    /// The stage's output the overlay declares, `specs/` when it declares none.
+    output: &'static str,
+    /// The shell leaving the tree, in the session's working directory.
+    leaves: &'static str,
+    /// The shell settling it once the hook holds the session.
+    settles: &'static str,
+    /// What the hold's reason says of each path, none when the first stop is allowed, and what
+    /// it must not say.
+    says: &'static [&'static str],
+    never_says: &'static [&'static str],
+}
+
+/// The producer trees [`a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands`]
+/// walks: its plan alone outside a commit, which the hold says to commit; its plan beside a
+/// leftover outside the stage's output, which the hold says never lands and may be taken out of
+/// the tree, and which the session leaves where it is; its committed plan beside such a
+/// leftover, which the hook never holds; and, in a project declaring `requirements/` its output,
+/// its plan there beside a draft under `specs/`, which the hold names as outside that output.
+const PRODUCER_LEAVES: &[ProducerLeaves] = &[
+    ProducerLeaves {
+        name: "its plan outside a commit",
+        declares: "",
+        output: "specs/",
+        leaves: "mkdir -p specs && echo planned > specs/plan.md",
+        settles: "git add specs/plan.md && git commit -q -m plan",
+        says: &["holds work in specs/ that no commit records: specs/ - "],
+        never_says: &["outside specs/"],
+    },
+    ProducerLeaves {
+        name: "its plan and a leftover outside its output",
+        declares: "",
+        output: "specs/",
+        leaves: "mkdir -p specs && echo planned > specs/plan.md && echo scratch > notes.txt",
+        settles: "git add specs/plan.md && git commit -q -m plan",
+        says: &[
+            "holds work in specs/ that no commit records: specs/ - ",
+            "also holds work outside specs/ that no commit records: notes.txt - it never lands",
+            "leave it out of the commit; it may be taken out of the tree",
+        ],
+        never_says: &[],
+    },
+    ProducerLeaves {
+        name: "its committed plan beside a leftover outside its output",
+        declares: "",
+        output: "specs/",
+        leaves: "mkdir -p specs && echo planned > specs/plan.md && git add specs/plan.md && \
+                 git commit -q -m plan && echo scratch > notes.txt",
+        settles: "",
+        says: &[],
+        never_says: &[],
+    },
+    ProducerLeaves {
+        name: "its plan in a declared output beside a draft under specs/",
+        declares: "specs_location: requirements/\n",
+        output: "requirements/",
+        leaves: "mkdir -p requirements specs && echo planned > requirements/plan.md && \
+                 echo draft > specs/draft.md",
+        settles: "git add requirements/plan.md && git commit -q -m plan",
+        says: &[
+            "holds work in requirements/ that no commit records: requirements/ - ",
+            "also holds work outside requirements/ that no commit records: specs/ - it never \
+             lands",
+        ],
+        never_says: &[],
+    },
+];
+
+/// The shell running, from the session's working directory, every command the launch's
+/// `--settings` names but its `Stop` and `StopFailure` hooks - the SessionStart prime, the
+/// status line, the write guard - each as the host does ([`READ_LAUNCH_CONFIG`]'s `$commands`)
+/// with the rigger it read from `--mcp-config` first on `PATH` and one payload carrying what each reads, then asking
+/// that server for the spawn's scratch: everything rigger's tooling does in a session's tree
+/// before it stops. Each command run is left in `$here/tooling-ran` after its exit status, the
+/// server's reply in `$here/scratch-reply`, and git's porcelain status of the tree after them all,
+/// untracked files listed one by one, in `$here/fresh-status`.
+const RUN_THE_SESSIONS_TOOLING: &str = r#"    server=$(printf '%s\n' "$config" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p')
+    payload='{"hook_event_name":"PreToolUse","source":"startup","session_id":"fresh","cwd":"'"$PWD"'","workspace":{"current_dir":"'"$PWD"'"},"tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/specs/plan.md","content":"planned"}}'
+    printf '%s\n' "$commands" |
+        while IFS= read -r command; do
+            case "$command" in *stop*--dir*|*stop-failure*) continue ;; esac
+            printf '%s' "$payload" | PATH="$(dirname "$server"):$PATH" sh -c "$command" > /dev/null 2>&1
+            printf '%s %s\n' "$?" "$command" >> "$here/tooling-ran"
+        done
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_scratch","arguments":{}}}' |
+        "$server" mcp --spawn "$RIGGER_SPAWN" > "$here/scratch-reply" 2> /dev/null
+    git status --porcelain --untracked-files=all > "$here/fresh-status"
+"#;
+
+/// An arm of [`install_fake_claude`] standing in for the real host's `Stop` contract over a
+/// producer's session that leaves its tree as `case` says: the session first runs rigger's tooling
+/// in its fresh tree ([`RUN_THE_SESSIONS_TOOLING`]), then leaves the tree and finishes; the host
+/// runs the `Stop` hook the launch's `--settings` names, `stop_hook_active` false, and only on its `"decision":"block"` the session settles the tree as `case` says and
+/// finishes again, and the host runs the hook again, `stop_hook_active` true. The launch stays on
+/// record and the hook's answers are left in the fake's directory.
+fn producer_held_until_its_tree_is_settled_arm(case: &ProducerLeaves) -> String {
+    let ProducerLeaves {
+        leaves, settles, ..
+    } = case;
+    format!(
+        r#"  *"Do the unit."*)
+{RECORD_EACH_LAUNCH}{READ_LAUNCH_CONFIG}{RUN_THE_SESSIONS_TOOLING}    {leaves}
+    hook=$(printf '%s\n' "$commands" | sed -n '/stop.*--dir/p')
+    printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
+        sh -c "$hook" > "$here/stop-first"
+    case "$(cat "$here/stop-first")" in
+        *'"decision":"block"'*)
+            {settles}
+            printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":true}}' |
+                sh -c "$hook" > "$here/stop-after"
+            ;;
+    esac
+    ;;
+"#
+    )
+}
+
+/// A PRODUCER IS HELD ONLY ON WORK OF ITS OUTPUT OUTSIDE A COMMIT, end to end: given a producer
+/// stage whose launch carries the `Stop` hook asking of its tree for its own commits in the output
+/// the project declares (`specs/` when it declares none), in a repository with no `.gitignore`,
+/// when its session runs rigger's tooling in its fresh tree, then
+/// the tree reads clean; and when the session leaves its plan outside a commit, alone or beside a
+/// leftover outside the stage's output, then the hook holds it once, saying of the plan to commit
+/// it and of the leftover that it never lands and may be taken out of the tree, the session
+/// commits the plan alone, and the hook allows the next stop; when it leaves only such a leftover
+/// beside its committed plan, the hook allows its first stop. Each time the conductor lands the
+/// plan's commit on the run branch with no hold and no attempt charged.
+#[cfg(unix)]
+#[test]
+fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
+    for case in PRODUCER_LEAVES {
+        let name = case.name;
+        let dir = temp_git_project_with_commit();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        assert!(
+            !root.join(".gitignore").exists(),
+            "{name}: precondition: the repository ignores nothing"
+        );
+        write_workflow_fixture(&root, &PRODUCER_WORKFLOW);
+        if !case.declares.is_empty() {
+            std::fs::write(root.join(".rigger").join("docs-overlay.yml"), case.declares).unwrap();
+        }
+        let held = tempfile::tempdir().unwrap();
+        let scratch = std::fs::canonicalize(held.path()).unwrap();
+        let (out, err, ok, fake) = common::cli::run_on_arms(
+            &root,
+            &["run"],
+            &scratch,
+            &producer_held_until_its_tree_is_settled_arm(case),
+        );
+        assert!(ok, "{name}: the run succeeds; stderr: {err}\nstdout: {out}");
+
+        let run = common::cli::current_run_id_of(&root).expect("the run has an id");
+        let bin = std::fs::canonicalize(rigger_bin()).unwrap();
+        let launches = stand_in_launches(&fake.path().join("bin/launches"));
+        let spawns: Vec<&str> = launches.iter().map(|l| l.spawn.as_str()).collect();
+        assert_eq!(
+            spawns,
+            ["plan/implementer#0"],
+            "{name}: the producer launches once; the run: {:#?}",
+            common::cli::read_run_events(&root)
+                .into_iter()
+                .filter(|event| event.type_ != "AgentProgress")
+                .map(|event| format!("{} {}", event.type_, String::from_utf8_lossy(&event.data)))
+                .collect::<Vec<_>>()
+        );
+        let launch = &launches[0];
+        let container = rigger::driver::replay::spawn_scratch_path(
+            scratch.to_str().unwrap(),
+            &run,
+            &launch.spawn,
+        )
+        .unwrap();
+        let roots = [launch.cwd.as_str(), container.to_str().unwrap()].map(str::to_string);
+        let settings: serde_json::Value =
+            serde_json::from_str(flag_value(&launch.argv, "--settings")).unwrap();
+        assert_carries_spawn_hooks(
+            &settings,
+            bin.to_str().unwrap(),
+            &launch.spawn,
+            &roots,
+            false,
+            Some((launch.cwd.as_str(), &["--own-commits", case.output][..])),
+        );
+
+        let read = |file: &str| {
+            std::fs::read_to_string(fake.path().join("bin").join(file))
+                .unwrap_or_else(|e| panic!("{name}: the session left {file}: {e}\nstderr: {err}"))
+        };
+        let ran = read("tooling-ran");
+        for tool in ["prime", "guard-write", "status"] {
+            assert!(
+                ran.lines().any(|command| command.contains(tool)),
+                "{name}: the session ran rigger's {tool}: {ran}"
+            );
+        }
+        assert!(
+            ran.lines().all(|command| command.starts_with("0 ")),
+            "{name}: each of rigger's tools exits 0: {ran}"
+        );
+        let reply = read("scratch-reply");
+        assert!(
+            reply.contains("\"result\"") && reply.contains(container.to_str().unwrap()),
+            "{name}: the server answers with the spawn's scratch {}: {reply}",
+            container.display()
+        );
+        assert_eq!(
+            read("fresh-status"),
+            "",
+            "{name}: after rigger's tooling the fresh tree holds nothing git does not ignore"
+        );
+        if case.says.is_empty() {
+            assert_eq!(read("stop-first"), "", "{name}: the first stop is allowed");
+        } else {
+            let held: serde_json::Value = serde_json::from_str(read("stop-first").trim())
+                .unwrap_or_else(|e| panic!("{name}: the first stop is held ({e}): stderr: {err}"));
+            assert_eq!(held["decision"], "block", "{name}: {held}");
+            let reason = held["reason"].as_str().unwrap();
+            for words in case.says {
+                assert!(
+                    reason.contains(words),
+                    "{name}: the hold says {words:?}: {reason}"
+                );
+            }
+            for words in case.never_says {
+                assert!(
+                    !reason.contains(words),
+                    "{name}: the hold never says {words:?}: {reason}"
+                );
+            }
+            assert_eq!(
+                read("stop-after"),
+                "",
+                "{name}: the stop after the tree is settled is allowed"
+            );
+        }
+
+        let lines: Vec<String> =
+            common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
+                .into_iter()
+                .filter(|line| {
+                    line.id == "plan/implementer#0" && line.activity.starts_with("stop ")
+                })
+                .map(|line| line.activity)
+                .collect();
+        let allowed = format!(
+            "stop allowed: no work in {} is left outside a commit",
+            case.output
+        );
+        let starts: &[&str] = if case.says.is_empty() {
+            &["stop check: ", &allowed]
+        } else {
+            &[
+                "stop check: ",
+                "stop held (1 of 3): ",
+                "stop check: ",
+                &allowed,
+            ]
+        };
+        assert_eq!(lines.len(), starts.len(), "{name}: {lines:#?}");
+        for (line, start) in lines.iter().zip(starts) {
+            assert!(line.starts_with(start), "{name}: {line:?} begins {start:?}");
+        }
+        assert!(
+            lines[0].ends_with(" for its own commits"),
+            "{name}: {lines:#?}"
+        );
+
+        assert_eq!(
+            String::from_utf8(
+                run_git(
+                    &root,
+                    &["show", &format!("rigger-run:{}plan.md", case.output)]
+                )
+                .stdout
+            )
+            .unwrap(),
+            "planned\n",
+            "{name}: the plan's commit landed on the run branch"
+        );
+        let types: Vec<String> = common::cli::read_run_events(&root)
+            .into_iter()
+            .map(|event| event.type_)
+            .collect();
+        for absent in ["RunHeld", "UnitFailed", "UnitEscalated"] {
+            assert!(
+                !types.iter().any(|t| t == absent),
+                "{name}: no {absent} in the run: {types:?}"
+            );
+        }
+    }
+}
+
+/// What a producer's first session, having left its plan outside a commit, does about the `Stop`
+/// hook its launch's `--settings` names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FirstStop {
+    /// It runs no hook, as a host that installs no per-spawn hooks.
+    NoHook,
+    /// It runs the hook at each stop the host would make, fixing nothing, until the hook allows
+    /// the stop past its bound.
+    PastTheBound,
+    /// It runs the hook once and its deadline (the entry's `timeout`) passes before the host acts
+    /// on the answer, which the host documents as a non-blocking error: the stop goes ahead. The
+    /// fake lets the hook finish and acts on no answer, which is what the host does.
+    TimedOut,
+    /// It runs the hook once and the hook's command exits 1 after printing its answer; the host
+    /// reads a hook's JSON only on exit 0 and documents any other exit but 2 as a non-blocking
+    /// error: the stop goes ahead.
+    Failed,
+}
+
+/// An arm of [`install_fake_claude`] for [`PRODUCER_WORKFLOW`]: the producer's first session
+/// writes `specs/plan.md`, commits nothing, and meets its `Stop` hook as `first` says, its
+/// answers and the exit status the host saw left in the fake's directory; the next session leaves
+/// `git status --porcelain` of the tree it finds in the fake's directory, then commits the plan.
+/// Every launch stays on record.
+fn producer_ends_with_its_plan_outside_a_commit_arm(first: FirstStop) -> String {
+    let hook = r#"        hook=$(printf '%s\n' "$commands" | sed -n '/stop.*--dir/p')
+"#;
+    // One run of the hook the host acts on no answer of, the command's own exit after `then`.
+    let ignored = |then: &str| {
+        format!(
+            r#"{READ_LAUNCH_CONFIG}{hook}        answer=$(printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
+            sh -c "$hook{then}")
+        printf '%s\n' "$?" >> "$here/stop-status"
+        printf '%s\n' "$answer" >> "$here/stop-answers"
+"#
+        )
+    };
+    let stops = match first {
+        FirstStop::NoHook => String::new(),
+        FirstStop::PastTheBound => format!(
+            r#"{READ_LAUNCH_CONFIG}{hook}        for active in false true true true; do
+            answer=$(printf '{{"hook_event_name":"Stop","stop_hook_active":%s}}' "$active" |
+                sh -c "$hook")
+            printf '%s\n' "$answer" >> "$here/stop-answers"
+        done
+"#
+        ),
+        FirstStop::TimedOut => ignored(""),
+        FirstStop::Failed => ignored("; exit 1"),
+    };
+    format!(
+        r##"  *"Do the unit."*)
+{RECORD_EACH_LAUNCH}    case "$RIGGER_SPAWN" in
+      *"#0")
+        mkdir -p specs
+        echo planned > specs/plan.md
+{stops}        ;;
+      *)
+        git status --porcelain > "$here/retry-found"
+        git add specs/plan.md && git commit -q -m plan
+        ;;
+    esac
+    ;;
+"##
+    )
+}
+
+/// A PRODUCER'S WORK PAST ITS STOP HOOK IS RETRIED, NEVER DROPPED, end to end: given a producer
+/// whose session ends with its plan outside a commit - on a host that runs no `Stop` hook, with
+/// the hook allowing the stop past its bound, or with the host going ahead with the stop the hook
+/// held because the hook's deadline passed or its command exited non-zero, as the host documents
+/// both - then the conductor fails the attempt as a reject
+/// carrying the hook's refusal line and git's status, the retry is served that reason and finds
+/// the plan still uncommitted in its tree, commits it, and the plan lands on the run branch with
+/// no hold and no escalation.
+#[cfg(unix)]
+#[test]
+fn a_producers_work_left_outside_a_commit_fails_the_attempt_and_the_retry_lands_it() {
+    for first in [
+        FirstStop::NoHook,
+        FirstStop::PastTheBound,
+        FirstStop::TimedOut,
+        FirstStop::Failed,
+    ] {
+        let dir = temp_git_project_with_commit();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        write_workflow_fixture(&root, &PRODUCER_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = common::cli::run_on_arms(
+            &root,
+            &["run"],
+            scratch.path(),
+            &producer_ends_with_its_plan_outside_a_commit_arm(first),
+        );
+        assert!(
+            ok,
+            "{first:?}: the run succeeds; stderr: {err}\nstdout: {out}"
+        );
+        let bin = fake.path().join("bin");
+        let launches = stand_in_launches(&bin.join("launches"));
+        let spawns: Vec<&str> = launches.iter().map(|l| l.spawn.as_str()).collect();
+        assert_eq!(
+            spawns,
+            ["plan/implementer#0", "plan/implementer#1"],
+            "{first:?}: the producer is launched again once; stderr: {err}"
+        );
+
+        let failed = common::cli::run_payloads(&root, "UnitFailed");
+        assert_eq!(
+            failed.len(),
+            1,
+            "{first:?}: one attempt is charged: {failed:#?}"
+        );
+        assert_eq!(failed[0]["cause"], "reject", "{first:?}: {failed:#?}");
+        assert_eq!(failed[0]["attempts"], 1, "{first:?}: {failed:#?}");
+        let reason = failed[0]["review_reason"].as_str().unwrap();
+        for words in ["no commit records", "git status in ", "specs/"] {
+            assert!(
+                reason.contains(words),
+                "{first:?}: the reason carries {words:?}: {reason}"
+            );
+        }
+        let task = common::fixtures::served_task(&bin.join("launches"), "plan/implementer#1");
+        assert!(
+            task.contains("no commit records"),
+            "{first:?}: the retry is served the reason: {task}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bin.join("retry-found")).unwrap(),
+            "?? specs/\n",
+            "{first:?}: the retry's tree still holds the uncommitted plan"
+        );
+
+        let stops: Vec<String> =
+            common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
+                .into_iter()
+                .filter(|line| {
+                    line.id == "plan/implementer#0" && line.activity.starts_with("stop ")
+                })
+                .map(|line| line.activity)
+                .collect();
+        let (starts, answers): (&[&str], &[bool]) = match first {
+            FirstStop::NoHook => (&[], &[]),
+            FirstStop::PastTheBound => (
+                &[
+                    "stop check: ",
+                    "stop held (1 of 3): ",
+                    "stop check: ",
+                    "stop held (2 of 3): ",
+                    "stop check: ",
+                    "stop held (3 of 3): ",
+                    "stop check: ",
+                    "stop allowed with the refusal standing after 3 holds: ",
+                ],
+                &[true, true, true, false],
+            ),
+            FirstStop::TimedOut | FirstStop::Failed => {
+                (&["stop check: ", "stop held (1 of 3): "], &[true])
+            }
+        };
+        assert_eq!(
+            std::fs::read_to_string(bin.join("stop-status")).unwrap_or_default(),
+            match first {
+                FirstStop::Failed => "1\n",
+                FirstStop::TimedOut => "0\n",
+                FirstStop::NoHook | FirstStop::PastTheBound => "",
+            },
+            "{first:?}: the exit status the host saw of the hook it acted on no answer of"
+        );
+        assert_eq!(stops.len(), starts.len(), "{first:?}: {stops:#?}");
+        for (line, start) in stops.iter().zip(starts) {
+            assert!(
+                line.starts_with(start),
+                "{first:?}: {line:?} begins {start:?}"
+            );
+        }
+        let held: Vec<bool> = std::fs::read_to_string(bin.join("stop-answers"))
+            .unwrap_or_default()
+            .lines()
+            .map(|answer| answer.contains(r#""decision":"block""#))
+            .collect();
+        assert_eq!(
+            held, answers,
+            "{first:?}: the hook's answers, held or allowed"
+        );
+
+        assert_eq!(
+            String::from_utf8(run_git(&root, &["show", "rigger-run:specs/plan.md"]).stdout)
+                .unwrap(),
+            "planned\n",
+            "{first:?}: the retry's commit landed on the run branch"
+        );
+        let types: Vec<String> = common::cli::read_run_events(&root)
+            .into_iter()
+            .map(|event| event.type_)
+            .collect();
+        for absent in ["RunHeld", "UnitEscalated"] {
+            assert!(
+                !types.iter().any(|t| t == absent),
+                "{first:?}: no {absent} in the run: {types:?}"
+            );
+        }
     }
 }
 
@@ -4515,7 +5308,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
     let cases = [
         Case {
             name: "a FAULT class on an unheld run",
-            category: "invalid_request",
+            category: "max_output_tokens",
             session: classed_session,
             operator_holds: false,
             ended: "fault",
@@ -4568,7 +5361,7 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
         },
         Case {
             name: "a FAULT class on a held run",
-            category: "invalid_request",
+            category: "max_output_tokens",
             session: classed_session,
             operator_holds: true,
             ended: "interrupted",
@@ -4731,6 +5524,155 @@ fn an_is_error_result_reruns_uncharged_and_holds_as_its_class_says() {
     }
 }
 
+/// A SPAWN THE API REFUSES HOLDS THE RUN FOR THE ORCHESTRATOR, THEN FOR A PERSON: a launch the
+/// API refuses (`invalid_request`, as it refuses a prompt too long) is the conductor's fault,
+/// never an outage: it reruns nothing, charges the unit no attempt, records no lesson and no
+/// result, holds the run on a fault naming the spawn and its unit on its first line and its
+/// prompt's size after, and ends the driver non-zero with its record left, naming whom the hold
+/// is for. The first refusal is held for the orchestrator: `rigger status` shows the hold, its
+/// action and its fault without listing it among what needs a person. Released, the same refusal
+/// again is held for a person, and `rigger status` lists it among what needs one. Each `rigger
+/// release` relaunches the run, and the run driven again launches the spawn once more and is
+/// done.
+#[cfg(unix)]
+#[test]
+fn a_spawn_the_api_refuses_holds_the_run_for_the_orchestrator_then_a_person() {
+    use rigger_domain::agent::{cause_row, CONDUCTOR_FAULT, FAULT_RECURRED};
+    let refused = classed_session("invalid_request");
+    let arm = format!("  *\"Do the unit.\"*)\n{refused}    ;;\n");
+    let spawn = "solo/implementer#0";
+    let first_line = format!("the API refused spawn {spawn} of unit solo");
+    // Each row: how many launches the API refuses in a row, and whom the last refusal's hold is
+    // for, with its action.
+    let rows = [
+        (1, "the orchestrator", cause_row(CONDUCTOR_FAULT).action),
+        (2, "a person", FAULT_RECURRED.action),
+    ];
+    for (refusals, held_for, action) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let mut launches = Vec::new();
+        let mut record = String::new();
+        for refusal in 1..=refusals {
+            let (out, err, ok, _fake) =
+                run_on_arms_beside(root, &["run"], scratch.path(), &arm, |_| {});
+            let (held_for, action) = if refusal == refusals {
+                (held_for, action)
+            } else {
+                ("the orchestrator", cause_row(CONDUCTOR_FAULT).action)
+            };
+            let ended = format!(
+                "is held for {held_for} ({CONDUCTOR_FAULT}: {first_line} - {action}), so this \
+                 driver ended; `rigger release` relaunches it"
+            );
+            assert!(
+                !ok && err.contains(&ended),
+                "{refusals}/{refusal}: the driver ends non-zero, naming the hold, whom it is for \
+                 and its release; stdout: {out}\nstderr: {err}"
+            );
+            launches.push((
+                spawn.to_string(),
+                refusal - 1,
+                "fault".to_string(),
+                Some("invalid_request".to_string()),
+            ));
+            assert_eq!(
+                closed_launches(root),
+                launches,
+                "{refusals}/{refusal}: each refused launch is never rerun; stderr: {err}"
+            );
+            record = common::cli::driver_record(root);
+            assert!(
+                !record.is_empty(),
+                "{refusals}/{refusal}: the ended driver leaves its record"
+            );
+            if refusal < refusals {
+                let released = invoke_over_record(root, &record, &["release"], &[]);
+                assert!(
+                    released.err.contains(RELAUNCHED),
+                    "{refusals}/{refusal}: `rigger release` relaunches the run; stderr: {}",
+                    released.err
+                );
+            }
+        }
+        let holds = run_holds(root);
+        let fault = holds.first().map(|h| h.detail.clone()).unwrap_or_default();
+        let mut expected = vec![common::fixtures::conductor_fault_hold(&fault)];
+        if refusals == 2 {
+            expected.push(common::fixtures::recurred_fault_hold(&fault));
+        }
+        assert_eq!(
+            holds, expected,
+            "{refusals}: one hold per refusal, never `api-unstable`, the recurrence for a person"
+        );
+        assert!(
+            fault.starts_with(&format!("{first_line}\na prompt of "))
+                && fault.contains(" characters: "),
+            "{refusals}: the hold names the spawn and its unit, then its prompt's size: {fault}"
+        );
+        let charged = [
+            rigger::ledger::TYPE_UNIT_FAILED,
+            rigger::contextgraph::TYPE_LESSON_LEARNED,
+            rigger::spawn::TYPE_SPAWN_RESULT,
+        ];
+        assert_eq!(
+            charged.map(|type_| common::cli::run_payloads(root, type_)),
+            charged.map(|_| Vec::<serde_json::Value>::new()),
+            "{refusals}: no attempt charged, no lesson and no result recorded"
+        );
+        let status = invoke_over_record(root, &record, &["status"], &[]);
+        let needs_you = status.out.split_once("needs you:").map(|(_, after)| after);
+        assert_eq!(
+            needs_you
+                .is_some_and(|after| after.contains(&format!("run: held - {CONDUCTOR_FAULT}"))),
+            refusals == 2,
+            "{refusals}: status lists the hold among what needs a person only when it is for one; \
+             stdout: {}",
+            status.out
+        );
+        assert!(
+            status
+                .out
+                .contains(&format!("{CONDUCTOR_FAULT} - {action}"))
+                && status.out.contains(&format!("\n  {first_line}\n"))
+                && status.out.contains("rigger release"),
+            "{refusals}: status shows the hold's action, its fault and `rigger release`; \
+             stdout: {}",
+            status.out
+        );
+        let released = invoke_over_record(root, &record, &["release"], &[]);
+        assert_eq!(
+            (released.relaunches, released.err.contains(RELAUNCHED)),
+            (vec![relaunch_line(&record)], true),
+            "{refusals}: `rigger release` relaunches the run; stderr: {}",
+            released.err
+        );
+        let (out, err, ok, _fake) = run_on_arms(
+            root,
+            &["run"],
+            scratch.path(),
+            &sighting_worker_arm("", &[]),
+        );
+        assert!(
+            ok && out.lines().nth(2) == Some("done: every unit integrated"),
+            "{refusals}: the run driven again is done; stdout: {out}\nstderr: {err}"
+        );
+        launches.push((spawn.to_string(), refusals, "completed".to_string(), None));
+        assert_eq!(
+            closed_launches(root),
+            launches,
+            "{refusals}: the refused spawn launches once more and completes; stderr: {err}"
+        );
+        assert_eq!(
+            common::cli::run_payloads(root, rigger::ledger::TYPE_UNIT_FAILED),
+            Vec::<serde_json::Value>::new(),
+            "{refusals}: the unit is charged nothing"
+        );
+    }
+}
+
 /// [`REVIEWLESS_GIT_UNIT_WORKFLOW`] whose worker is stopped after a second of stream silence.
 const SILENCE_BOUNDED_WORKFLOW: WorkflowFixture = WorkflowFixture {
     worker: "---\nid: worker\nmodel: sonnet\ntools: [Read, Edit]\nmax_wall_clock: 1\n---\nDo the unit.\n",
@@ -4762,7 +5704,8 @@ stages:
 /// ordinal with no infra mark, and that launch's error, on a run the release left unheld, halts
 /// the run past the infra limit naming its cause. Given a session failing a hold class on every
 /// launch, the id relaunches twice and the third error passes though the run holds, the bound
-/// spent, and a run that is not done leaves that hold.
+/// spent, and a run that is not done leaves that hold. The halt holds the run for the
+/// orchestrator, or for a person over a hold already waiting on one.
 #[cfg(unix)]
 #[test]
 fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
@@ -4778,7 +5721,10 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
         launches: Vec<(&'static str, u32)>,
         holds: Vec<rigger::run::RunHeld>,
         releases: Vec<&'static str>,
+        /// The row of the halt's own hold: whom it is for and its action.
+        halt: rigger_domain::agent::DispositionRow,
     }
+    let orchestrator = rigger_domain::agent::cause_row(rigger_domain::agent::CONDUCTOR_FAULT);
     let unstable = worker_hold(
         "api-unstable",
         "",
@@ -4796,12 +5742,13 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
         Case {
             name: "a classed fault",
             workflow: &REVIEWLESS_GIT_UNIT_WORKFLOW,
-            session: classed_session("invalid_request"),
-            close: ("fault", Some("invalid_request")),
-            cause: "class invalid_request",
+            session: classed_session("max_output_tokens"),
+            close: ("fault", Some("max_output_tokens")),
+            cause: "class max_output_tokens",
             launches: reran_then_relaunched.clone(),
             holds: vec![unstable.clone()],
             releases: vec!["operator"],
+            halt: orchestrator,
         },
         Case {
             name: "a stream-silence stop",
@@ -4812,6 +5759,7 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             launches: reran_then_relaunched,
             holds: vec![unstable],
             releases: vec!["operator"],
+            halt: orchestrator,
         },
         Case {
             name: "a hold class past the relaunch bound",
@@ -4822,6 +5770,7 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             launches: vec![(first, 0), (first, 1), (first, 2)],
             holds: vec![billing.clone(), billing.clone(), billing],
             releases: vec!["operator", "operator"],
+            halt: rigger_domain::agent::FAULT_ON_A_PERSONS_HOLD,
         },
     ];
     for case in cases {
@@ -4861,8 +5810,38 @@ fn a_launch_past_the_infra_limit_halts_naming_its_cause_and_leaves_the_hold() {
             expected,
             "{name}: the closes; stderr: {err}"
         );
-        assert_eq!(run_holds(root), case.holds, "{name}: the holds");
+        let holds = run_holds(root);
+        let (halt, before) = holds
+            .split_last()
+            .unwrap_or_else(|| panic!("{name}: the halt holds the run; stderr: {err}"));
+        assert_eq!(before, case.holds, "{name}: the holds before the halt");
+        assert_eq!(
+            (
+                halt.cause.as_str(),
+                halt.by.as_str(),
+                halt.needs_person,
+                halt.action.as_str()
+            ),
+            (
+                "conductor-fault",
+                "conductor",
+                case.halt.needs_person,
+                case.halt.action
+            ),
+            "{name}: the halt holds the run for whom its row names"
+        );
+        assert!(
+            halt.detail.contains(case.cause)
+                && halt
+                    .detail
+                    .contains("past the failure taxonomy's infra limit"),
+            "{name}: the hold names the halt: {halt:?}"
+        );
         assert_eq!(run_releases(root), case.releases, "{name}: the releases");
+        assert!(
+            !common::cli::driver_record(root).is_empty(),
+            "{name}: the driver leaves its record for `rigger release` to relaunch the run"
+        );
     }
 }
 
@@ -4973,9 +5952,9 @@ fn sessions_of_one_wave_racing_append_one_hold_between_them() {
         },
         Case {
             name: "the third consecutive fault among closes at once",
-            arm: faulting_at_once_arm("invalid_request"),
+            arm: faulting_at_once_arm("max_output_tokens"),
             hold: worker_hold("api-unstable", "", retries, false),
-            closes: closed_then_launched("fault", "invalid_request"),
+            closes: closed_then_launched("fault", "max_output_tokens"),
             reruns_race_relaunches: true,
             releases: vec!["operator"],
         },
@@ -6728,7 +7707,21 @@ fn a_restarted_supervisor_launches_nothing_until_the_hold_it_finds_is_released()
         ],
         &format!("stderr: {err}"),
     );
-    assert_eq!(run_holds(root).len(), 6, "each launch's hold");
+    let launches = ["billing_error"; 3];
+    assert_eq!(
+        run_holds(root)
+            .iter()
+            .map(|hold| hold.cause.as_str())
+            .collect::<Vec<_>>(),
+        [
+            &launches[..],
+            &["conductor-fault"],
+            &launches[..],
+            &["conductor-fault"]
+        ]
+        .concat(),
+        "each launch's hold, then each halt's hold for a person"
+    );
     assert_eq!(run_releases(root), ["operator"; 5], "the releases");
 }
 
@@ -6875,12 +7868,17 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
             let roots = [launch.cwd.as_str(), container.to_str().unwrap()].map(str::to_string);
             let settings: serde_json::Value =
                 serde_json::from_str(flag_value(&launch.argv, "--settings")).unwrap();
+            // The implementer's tree is the one the conductor commits; a reviewer's is not.
+            let stop = spawn
+                .contains("/implementer#")
+                .then_some((launch.cwd.as_str(), &["--branch", "rigger/u/solo"][..]));
             assert_carries_spawn_hooks(
                 &settings,
                 bin.to_str().unwrap(),
                 &spawn,
                 &roots,
                 grep_guard,
+                stop,
             );
             launches.push((spawn, launch.argv.iter().any(|word| word == "--resume")));
         }
@@ -7518,10 +8516,10 @@ fn run_stops_a_session_silent_past_its_bound_with_the_supervisor_beating() {
 #[test]
 fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
     use rigger::progress::{SupervisorBeat, SUPERVISOR_BEAT_INTERVAL};
-    const HALT: &str = "(unit \"solo\" failed on infrastructure (infra:spawn) at attempt 0 past \
-                        the failure taxonomy's infra limit, so the step halts and the unit is \
-                        charged no attempt; fix the outage and re-run - the unit resumes at the \
-                        same attempt with a fresh bound)";
+    const HALT: &str = "infra: unit \"solo\" failed on infrastructure (infra:spawn) at attempt 0 \
+                        past the failure taxonomy's infra limit, so the step halts and the unit \
+                        is charged no attempt; fix the outage and re-run - the unit resumes at \
+                        the same attempt with a fresh bound";
 
     let dir = temp_git_project_with_commit();
     let root = dir.path();
@@ -7532,10 +8530,12 @@ fn a_run_that_fails_leaves_with_its_error_and_no_interval_to_wait_out() {
     let took = started.elapsed();
     assert!(!ok, "the run fails; stderr: {err}\nstdout: {out}");
     assert_eq!(out, "", "the error leaves before any summary of the run");
-    assert_eq!(
-        err.lines().last(),
-        Some(HALT),
-        "the conductor's error is the one the run leaves with"
+    let Some((_, evidence)) = err.split_once(&format!("rigger: conductor: {HALT}\n")) else {
+        panic!("the conductor's error is the one the run leaves with; stderr: {err}");
+    };
+    assert!(
+        evidence.starts_with("agent \"worker\": ") && evidence.trim_end().ends_with(')'),
+        "the halt's evidence, the spawn's failure, runs from below it to the end; stderr: {err}"
     );
     assert_eq!(
         common::cli::recorded_progress::<SupervisorBeat>(root),
@@ -13693,9 +14693,10 @@ fn validate_spec_flags_shape_defects_as_named_advisories_and_is_silent_on_a_clea
 }
 
 /// Spec 06 done-when line 60 (Gap 14d): `rigger validate` reports residue - scratch
-/// worktrees with no live unit, orphaned build caches, shadow stores, and `rigger/u/*`
-/// branches with no live unit - each with a size, as warnings that NEVER fail validation
-/// and NEVER delete anything. Driving the real binary is the only way to prove the store +
+/// worktrees with no live unit, orphaned build caches, shadow stores, `rigger/u/*`
+/// branches with no live unit and every ref rigger holds aside (`rigger/kept/*`,
+/// `rigger/orphaned/*`, each with its tip) - each with a size, as warnings that NEVER fail
+/// validation and NEVER delete anything. Driving the real binary is the only way to prove the store +
 /// git + filesystem read wiring; the pure scan is unit-tested in `src/main.rs`.
 #[test]
 fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
@@ -13745,6 +14746,11 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     )
     .unwrap();
     git_ok(root, &["branch", "rigger/u/unit-99-ghost"]);
+    // Refs rigger holds aside: a kept tree and one set aside under the quarantine namespace.
+    let tip = common::git::git_out(root, &["rev-parse", "HEAD"]);
+    let aside = format!("rigger/orphaned/unit-98-gone-{}", &tip[..12]);
+    git_ok(root, &["branch", "rigger/kept/unit-99-ghost"]);
+    git_ok(root, &["branch", &aside]);
 
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
     assert!(
@@ -13775,6 +14781,12 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
         err.contains("rigger/u/unit-99-ghost"),
         "the dead `rigger/u/*` branch must be named; stderr:\n{err}"
     );
+    for held in ["rigger/kept/unit-99-ghost", aside.as_str()] {
+        assert!(
+            err.contains(&format!("ref held aside: {held} at {}", &tip[..12])),
+            "each ref held aside is named with its tip; stderr:\n{err}"
+        );
+    }
     // Sizes accompany the disk-bearing items (a parenthesized human size).
     assert!(
         err.contains("(4.0K)") || err.contains("(4.5K)"),
@@ -16115,7 +17127,7 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
             &["watch", "--once"],
             Over::Held,
             false,
-            Some("held by the operator, and no driver runs it; `rigger release` relaunches it"),
+            Some("hold for a person: run - operator - the operator stops the run"),
         ),
         (&["status"], Over::LinkedWorktree, false, None),
         (&["prime"], Over::LinkedWorktree, false, None),
@@ -16577,32 +17589,102 @@ fn hold_the_run(root: &Path) {
     assert!(ok, "the operator hold lands; stdout: {out}\nstderr: {err}");
 }
 
-/// AN OPERATOR HOLD IS THE STOP: a run its operator held, whether the hold came before its
-/// driver's death or after it, a relaunched driver that died at once included, is relaunched by
-/// no invocation, and its record is left as it was, until `rigger release` relaunches it.
+/// The fault a conductor-fault hold [`hold_on_a_conductor_fault`] seeds names.
+const SEEDED_CONDUCTOR_FAULT: &str = "worktree: git worktree add failed: the path already exists";
+
+/// Hold the current run of the project at `root` as the conductor does on a fault of its own that
+/// ended the run's drive.
+fn hold_on_a_conductor_fault(root: &Path) {
+    common::cli::seed_on_the_run(
+        root,
+        common::fixtures::run_held_event(&common::fixtures::conductor_fault_hold(
+            SEEDED_CONDUCTOR_FAULT,
+        )),
+    );
+}
+
+/// One case of [`an_operator_hold_stops_a_run_for_good_until_its_release`]: its name, the hold,
+/// whether the hold lands before the death, whether the dead driver was itself a relaunch made just
+/// now, what `rigger status` says of the hold, whether it lists the hold among what needs a
+/// person, and the line `rigger watch` reports it on.
+type ManualHoldCase = (
+    &'static str,
+    fn(&Path),
+    bool,
+    bool,
+    &'static str,
+    bool,
+    &'static str,
+);
+
+/// The line `rigger watch` reports an operator hold of [`hold_the_run`] on.
+const OPERATOR_HOLD_WATCHED: &str =
+    "hold for a person: run - operator - the operator stops the run \
+     (respond: a person decides, then runs rigger release)";
+
+/// A MANUAL HOLD IS THE STOP: a run its operator held, or the conductor held on a fault of its
+/// own, whether the hold came before its driver's death or after it, a relaunched driver that died
+/// at once included, is relaunched by no invocation, and its record is left as it was, until
+/// `rigger release` relaunches it. `rigger status` shows the hold with `rigger release` as what
+/// continues the run, listing it among what needs a person only when it is for one (the
+/// operator's), and `rigger watch` reports it for whoever resolves it: a person, or the
+/// orchestrator with what to do.
 #[test]
 fn an_operator_hold_stops_a_run_for_good_until_its_release() {
-    // Each row: its name, whether the hold lands before the death, and whether the dead driver
-    // was itself a relaunch made just now.
-    let rows = [
-        ("a hold, then the death", true, false),
-        ("the death, then a hold", false, false),
-        ("a relaunched driver held, then dead at once", true, true),
+    let rows: [ManualHoldCase; 4] = [
+        (
+            "a hold, then the death",
+            hold_the_run,
+            true,
+            false,
+            "the operator stops the run",
+            true,
+            OPERATOR_HOLD_WATCHED,
+        ),
+        (
+            "the death, then a hold",
+            hold_the_run,
+            false,
+            false,
+            "the operator stops the run",
+            true,
+            OPERATOR_HOLD_WATCHED,
+        ),
+        (
+            "a relaunched driver held, then dead at once",
+            hold_the_run,
+            true,
+            true,
+            "the operator stops the run",
+            true,
+            OPERATOR_HOLD_WATCHED,
+        ),
+        (
+            "a conductor fault held the run as its driver ended",
+            hold_on_a_conductor_fault,
+            true,
+            false,
+            SEEDED_CONDUCTOR_FAULT,
+            false,
+            "hold for the orchestrator: run - conductor-fault: worktree: git worktree add failed: \
+             the path already exists - read the fault rigger status prints under this hold, fix \
+             its cause at the root, then run rigger release (respond: rigger-resume-a-run)",
+        ),
     ];
-    for (case, hold_first, revived) in rows {
+    for (case, hold, hold_first, revived, reason, for_a_person, watch_line) in rows {
         let dir = temp_git_project_with_commit();
         let root = dir.path();
         write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
         let scratch = common::default_scratch_root(root);
         let ended = common::cli::a_run_ended_mid_unit(root, &scratch, &[], |driver| {
             if hold_first {
-                hold_the_run(root);
+                hold(root);
             }
             common::fixtures::cleanup(driver);
         });
         common::cli::release_the_unit(ended.fake.path());
         if !hold_first {
-            hold_the_run(root);
+            hold(root);
         }
         let mut record: serde_json::Value = serde_json::from_str(&ended.record).unwrap();
         if revived {
@@ -16618,6 +17700,27 @@ fn an_operator_hold_stops_a_run_for_good_until_its_release() {
                 after.err
             );
         }
+        let status = invoke_over_record(root, &record, &["status"], &[]);
+        let needs_you = status.out.split_once("needs you:").map(|(_, after)| after);
+        assert!(
+            status.out.contains(reason) && status.out.contains("rigger release"),
+            "{case}: status shows the hold and `rigger release`; stdout: {}",
+            status.out
+        );
+        assert_eq!(
+            needs_you.is_some_and(|after| after.contains(reason)),
+            for_a_person,
+            "{case}: status lists the hold among what needs a person only when it is for one; \
+             stdout: {}",
+            status.out
+        );
+        let watched = invoke_over_record(root, &record, &["watch", "--once"], &[]);
+        assert!(
+            watched.out.contains(watch_line) || watched.err.contains(watch_line),
+            "{case}: watch reports the hold for whoever resolves it; stdout: {}\nstderr: {}",
+            watched.out,
+            watched.err
+        );
         let released = invoke_over_record(root, &record, &["release"], &[]);
         assert_eq!(
             (released.relaunches, released.err.contains(RELAUNCHED)),
@@ -27370,8 +28473,8 @@ fn prime_given_a_spec_path_names_the_spec_lint_after_real_decision_content() {
 
 // --- Spec 66, criterion 5 (round 2): DISCOVERABILITY reaches the REAL pre-launch entry ---
 //
-// `rigger prime` above is the SessionStart hook, but the hook is always invoked with ZERO
-// args (crates/rigger-driver/src/hooks.rs pins the literal `rigger prime` string) - so in production it NEVER
+// `rigger prime` above is the SessionStart hook, but the hook is always invoked with no spec
+// (crates/rigger-driver/src/hooks.rs pins its one argument, `prime`) - so in production it NEVER
 // carries a spec path and the reminder wired there alone never reaches an operator. The
 // surface that DOES hold the parsed spec path at the real pre-launch moment is `run_cli`
 // (`rigger run <spec>`); these tests drive the compiled binary through it, proving the reminder
@@ -28026,17 +29129,16 @@ fn setup_registers_the_operator_mcp_server_and_lookup_hook() {
     .unwrap();
     let pretool = settings["hooks"]["PreToolUse"].as_array().unwrap();
     assert!(
-        pretool
-            .iter()
-            .any(|b| b["hooks"][0]["command"] == "rigger grep-guard"
-                && b["matcher"] == "Grep|Bash"),
-        "the lookup hook must be installed under PreToolUse; got:\n{settings}"
+        pretool.iter().any(|b| b["hooks"][0]
+            == common::fixtures::exec_hook(&["rigger", "grep-guard"])
+            && b["matcher"] == "Grep|Bash"),
+        "the lookup hook must be installed under PreToolUse, in exec form; got:\n{settings}"
     );
     // The pre-existing SessionStart hook (installed by the same setup run) must survive
     // untouched - the two merges share one settings.json and must not clobber each other.
     assert_eq!(
-        settings["hooks"]["SessionStart"][0]["hooks"][0]["command"],
-        "rigger prime"
+        settings["hooks"]["SessionStart"][0]["hooks"][0],
+        common::fixtures::exec_hook(&["rigger", "prime"])
     );
 
     // A rerun on an up-to-date repo is a silent no-op for both new artifacts.
@@ -28136,6 +29238,60 @@ fn setup_edits_only_its_own_lookup_hook_whether_the_grep_guard_is_declared_or_no
              (declared: {declared}); stdout:\n{out}\nstderr:\n{err}"
         );
     }
+}
+
+/// Given a project set up with the scaffolded workflow, which declares `defaults.grep_guard`,
+/// whose `.claude/settings.json` then carries the SessionStart prime hook and the PreToolUse
+/// grep-guard each as one shell-form command line (`rigger prime`, `rigger grep-guard`): when the
+/// operator runs `rigger validate`, then `rigger setup`, then `rigger validate` again, then the
+/// first validate warns that the file lacks rigger's session hooks, setup leaves each hook once,
+/// in exec form (the program `rigger` and its one argument), every other setting kept, and the
+/// second validate warns of nothing in the file.
+#[test]
+fn setup_rewrites_a_session_hook_carried_as_a_shell_line_in_exec_form() {
+    let dir = temp_project();
+    let root = dir.path();
+    setup_ok(root, &[]);
+    let settings_path = root.join(".claude").join("settings.json");
+    let read_settings = || -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap()
+    };
+    let mut in_lines = read_settings();
+    let line = |matcher: &str, command: &str| {
+        serde_json::json!([common::fixtures::hook_block(matcher, command)])
+    };
+    in_lines["hooks"]["SessionStart"] = line("", "rigger prime");
+    in_lines["hooks"]["PreToolUse"] = line("Grep|Bash", "rigger grep-guard");
+    std::fs::write(
+        &settings_path,
+        serde_json::to_vec_pretty(&in_lines).unwrap(),
+    )
+    .unwrap();
+    let settings_warnings = || -> Vec<String> {
+        let (out, err, ok) = run_rigger(root, &["validate"]);
+        assert!(ok, "validate succeeds; stderr:\n{err}");
+        out.lines()
+            .chain(err.lines())
+            .filter(|line| line.contains(".claude/settings.json"))
+            .map(str::to_string)
+            .collect()
+    };
+    let before = settings_warnings();
+    assert!(
+        before.len() == 1 && before[0].contains("does not carry rigger's session hooks"),
+        "validate reads shell-form hooks as missing: {before:?}"
+    );
+
+    setup_ok(root, &[]);
+    let mut expected = in_lines.clone();
+    expected["hooks"]["SessionStart"] =
+        serde_json::json!([common::fixtures::exec_block("", &["rigger", "prime"])]);
+    expected["hooks"]["PreToolUse"] = serde_json::json!([common::fixtures::exec_block(
+        "Grep|Bash",
+        &["rigger", "grep-guard"]
+    )]);
+    assert_eq!(read_settings(), expected);
+    assert_eq!(settings_warnings(), Vec::<String>::new());
 }
 
 /// A live `rigger mcp` session over a store holding one decision, its workflow pinning

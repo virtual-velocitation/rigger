@@ -377,9 +377,13 @@ pub(crate) fn cmd_status(args: &[String]) -> Res {
 
     // WHAT A PERSON SEES (spec 105): a held run's status opens with its HELD line, ahead of
     // every other line, so the hold is the first thing an operator reads.
+    // The hold's detail follows, each line indented: what whoever resolves it reads first.
     if let Some(hold) = &console_state.hold {
         let latest_beat = rigger::liveness::beat_times(&prog_events).last().copied();
         println!("{}", held_line(hold, latest_beat, now));
+        for line in hold.latest.detail.lines() {
+            println!("  {line}");
+        }
     }
 
     // The auto-started dash's URL for this run (spec 19b, unit 1 discoverability): shown
@@ -633,9 +637,9 @@ mod tests {
         use std::time::{Duration, SystemTime, UNIX_EPOCH};
         let now = UNIX_EPOCH + Duration::from_secs(10_000);
         let ago = |millis: u64| now - Duration::from_millis(millis);
-        let hold = |cause: &str, operator: bool, since: SystemTime| ledger::Hold {
+        let hold = |cause: &str, manual: bool, since: SystemTime| ledger::Hold {
             since,
-            operator,
+            manual,
             latest: runscope::RunHeld {
                 cause: cause.to_string(),
                 action: "wait it out".to_string(),

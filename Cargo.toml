@@ -109,6 +109,10 @@ name = "registry_refresh_driver_courier_convergence_periphery"
 path = "tests/registry_refresh_driver_courier_convergence_periphery.rs"
 
 [[test]]
+name = "repo_less_run_leaves_its_working_directory_alone"
+path = "tests/repo_less_run_leaves_its_working_directory_alone.rs"
+
+[[test]]
 name = "spawn_target_dir_periphery"
 path = "tests/spawn_target_dir_periphery.rs"
 

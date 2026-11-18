@@ -281,13 +281,26 @@ pub trait TreeSource {
         -> Result<(), String>;
 }
 
-/// Reads one file's facts from its path and bytes.
+/// Reads one file's facts from its path and bytes, and the text of a doc span those facts hold.
 pub trait Extract: Send + Sync {
     /// Changes whenever any extraction output can change; a snapshot of another fingerprint is
     /// not trusted.
     fn fingerprint(&self) -> u64;
     /// The facts of the file `entry` names, read from `bytes`; `path` and `blob` come from `entry`.
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;
+    /// The text of a doc span's `raw` lines in a file read as `lang`, which the facts never
+    /// store: by default the lines trimmed ([`trimmed_lines`]); an extractor that knows a
+    /// language's doc comments gives their text alone.
+    fn doc_text(&self, _lang: &str, raw: &str) -> String {
+        trimmed_lines(raw)
+    }
+}
+
+/// `raw` split into lines as [`str::lines`] splits it, on `\n` with a trailing `\r` dropped and a
+/// final line ending adding no line, each line trimmed and joined by `\n`: the doc text of a
+/// language with no doc rule ([`Extract::doc_text`]).
+pub fn trimmed_lines(raw: &str) -> String {
+    raw.lines().map(str::trim).collect::<Vec<_>>().join("\n")
 }
 
 /// Computes a view's groupings.
@@ -529,6 +542,41 @@ mod tests {
         }
     }
 
+    /// An extractor with no doc rule of its own, so it keeps [`Extract::doc_text`]'s default.
+    struct NoDocRule;
+
+    impl Extract for NoDocRule {
+        fn fingerprint(&self) -> u64 {
+            0
+        }
+
+        fn extract(&self, entry: &Entry, _bytes: &[u8]) -> FileFacts {
+            FileFacts {
+                path: entry.path.clone(),
+                ..FileFacts::default()
+            }
+        }
+    }
+
+    /// An extractor with no doc rule gives a span's raw lines trimmed, whatever the language: split
+    /// on `\n` with a trailing `\r` dropped, a final line ending adding no line, a blank line kept
+    /// and every marker kept.
+    #[test]
+    fn an_extractor_with_no_doc_rule_gives_the_lines_trimmed() {
+        // (the language, the span's raw lines, the doc text)
+        for (lang, raw, text) in [
+            (
+                "rust",
+                "  /// a\r\n\t#[doc(hidden)]  \r\n\r\n/// b\r",
+                "/// a\n#[doc(hidden)]\n\n/// b",
+            ),
+            ("zig", "one\n", "one"),
+            ("", "", ""),
+        ] {
+            assert_eq!(NoDocRule.doc_text(lang, raw), text, "{lang}: {raw:?}");
+        }
+    }
+
     fn def(local: &str, leaf: &str, test: bool) -> Def {
         Def {
             local: local.into(),
@@ -538,6 +586,7 @@ mod tests {
             end_line: 2,
             parent: None,
             test,
+            doc: None,
         }
     }
 

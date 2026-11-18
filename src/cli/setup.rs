@@ -49,8 +49,7 @@ fn normalize_origin_url(url: &str) -> String {
 /// network and no newer git than the rest of rigger already assumes.
 fn origin_url_at(root: &Path) -> Option<String> {
     let out = subprocess::git_in(root)
-        .args(["config", "--get", "remote.origin.url"])
-        .output()
+        .and_then(|mut git| git.args(["config", "--get", "remote.origin.url"]).output())
         .ok()?;
     if !out.status.success() {
         return None;
@@ -479,10 +478,8 @@ fn write_gitignore_entries(root: &Path, pattern: &str) -> Result<bool, Box<dyn s
 
     // Check if the path is tracked in git (it should not be, as .claude/ is machine-local and
     // should never be committed). This is just a safety check.
-    let is_tracked = subprocess::command("git")
-        .args(["ls-files"])
-        .current_dir(root)
-        .output()
+    let is_tracked = subprocess::git_in(root)
+        .and_then(|mut git| git.arg("ls-files").output())
         .ok()
         .map(|output| {
             String::from_utf8_lossy(&output.stdout)
@@ -645,8 +642,7 @@ fn git_hooks_dir(root: &Path) -> Result<Option<PathBuf>, String> {
     }
     let args = ["rev-parse", "--git-path", "hooks"];
     let out = subprocess::git_in(root)
-        .args(args)
-        .output()
+        .and_then(|mut git| git.args(args).output())
         .map_err(|e| format!("git {} in {}: {e}", args.join(" "), root.display()))?;
     if !out.status.success() {
         return Err(format!(
@@ -5635,13 +5631,15 @@ mod tests {
     /// `Installed`, an existing file the edit changes is `Refreshed`, a file the edit leaves as it
     /// is (or no file with the guard undeclared, which creates no `.claude/`) is `AlreadyCurrent`.
     /// An UNRELATED PreToolUse hook and every other event survive either way; an entry under a
-    /// drifted matcher is replaced.
+    /// drifted matcher, or carried as one shell-form command line, is replaced by the one in exec
+    /// form.
     #[test]
     fn install_lookup_hook_installs_or_removes_only_riggers_own_entry_as_declared() {
-        use crate::test_support::hook_block as block;
-        let guard = block(hooks::GREP_GUARD_MATCHER, hooks::GREP_GUARD_COMMAND);
+        use crate::test_support::{exec_block, hook_block as block};
+        let guard = exec_block(hooks::GREP_GUARD_MATCHER, &["rigger", "grep-guard"]);
+        let line_guard = block(hooks::GREP_GUARD_MATCHER, "rigger grep-guard");
         let foreign = block("Write", "prettier --write");
-        let prime = serde_json::json!({"SessionStart": [block("", "rigger prime")]});
+        let prime = serde_json::json!({"SessionStart": [exec_block("", &["rigger", "prime"])]});
         let rows = [
             (
                 "no file, declared",
@@ -5680,7 +5678,7 @@ mod tests {
             (
                 "the guard under a drifted matcher, declared",
                 Some(serde_json::json!({"hooks": {"PreToolUse": [
-                    block("Grep", hooks::GREP_GUARD_COMMAND),
+                    exec_block("Grep", &["rigger", "grep-guard"]),
                     foreign.clone(),
                 ]}})),
                 true,
@@ -5688,6 +5686,26 @@ mod tests {
                 Some(
                     serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
                 ),
+            ),
+            (
+                "the guard as one shell-form line beside a foreign hook, declared",
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [line_guard.clone(), foreign.clone()]}}),
+                ),
+                true,
+                InstallOutcome::Refreshed,
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), guard.clone()]}}),
+                ),
+            ),
+            (
+                "the guard as one shell-form line beside a foreign hook, undeclared",
+                Some(
+                    serde_json::json!({"hooks": {"PreToolUse": [foreign.clone(), line_guard.clone()]}}),
+                ),
+                false,
+                InstallOutcome::Refreshed,
+                Some(serde_json::json!({"hooks": {"PreToolUse": [foreign.clone()]}})),
             ),
             (
                 "the guard beside a foreign hook, undeclared",

@@ -1,10 +1,11 @@
 //! The grammar registry (architecture 5.5.3): the `extension -> (grammar, tag query)` table
 //! that decides WHICH grammar a file is parsed under. It supplies the injected pair unit 1's
 //! `extract` consumes; it never parses anything itself. Adding a language is adding one match
-//! arm here, and a language whose query cannot tag a definition (its grammar gives it no name
-//! node, or the upstream query already holds that node as a reference) also adds a read-off in
-//! `extract`. Confined to the `symbols` feature because it names `tree_sitter::Language`;
-//! the parser-free model stays in the light lane.
+//! arm here, naming its grammar, its query and the node kinds that construct an object in it,
+//! and a tags generation for its entry in the model, and a language whose query cannot
+//! tag a definition (its grammar gives it no name node, or the upstream query already holds that
+//! node as a reference) also adds a read-off in `extract`. Confined to the `symbols` feature
+//! because it names `tree_sitter::Language`; the parser-free model stays in the light lane.
 
 use crate::grounder::symbols::extract::CompiledTags;
 use crate::grounder::symbols::model::Lang;
@@ -264,27 +265,41 @@ const PYTHON_TAGS: &str = r#"
   ]) @reference.call
 "#;
 
-/// A registered language: the rigger `Lang`, its tree-sitter grammar, and the `tags` query the
-/// extractor runs over a file in that language, resolved together so a file maps to exactly one
-/// grammar+query pair, with that pair's one compilation ([`LanguageEntry::tags`]).
+/// A registered language: the rigger `Lang`, its tree-sitter grammar, the `tags` query the
+/// extractor runs over a file in that language and the grammar's node kinds that construct an
+/// object, resolved together so a file maps to exactly one grammar+query pair, with that pair's
+/// one compilation ([`LanguageEntry::tags`]).
 pub struct LanguageEntry {
     pub lang: Lang,
     pub language: tree_sitter::Language,
     pub tags_query: &'static str,
+    /// The node kinds on which the query's `@reference.class` capture is a call, not a type
+    /// reference (spec 117, CAPTURES): [`JS_CONSTRUCTORS`] for TypeScript, TSX and JavaScript,
+    /// [`CSHARP_CONSTRUCTORS`] for C#, none for the rest.
+    constructors: &'static [&'static str],
     compiled: &'static Compiled,
 }
+
+/// The node kind constructing an object in the JavaScript, TypeScript and TSX grammars, `new T()`.
+const JS_CONSTRUCTORS: &[&str] = &["new_expression"];
+
+/// The node kind constructing an object in the C# grammar, `new T()`.
+const CSHARP_CONSTRUCTORS: &[&str] = &["object_creation_expression"];
 
 /// The process's one compilation of a grammar+query pair, made at its first use.
 type Compiled = OnceLock<Result<CompiledTags, String>>;
 
 impl LanguageEntry {
-    /// The entry's `tags` query compiled against its grammar: compiled at the first call in the
-    /// process, and that compilation every later call for the same grammar+query pair returns, so
-    /// the extractor matches each file against an already compiled query and an entry looked up for
-    /// its `lang` alone compiles nothing. An `Err` is a query that does not compile.
+    /// The entry's `tags` query compiled against its grammar, with its `constructors`: compiled at
+    /// the first call in the process, and that compilation every later call for the same
+    /// grammar+query pair returns, so the extractor matches each file against an already compiled
+    /// query and an entry looked up for its `lang` alone compiles nothing. An `Err` is a query
+    /// that does not compile.
     pub fn tags(&self) -> Result<&'static CompiledTags, String> {
         self.compiled
-            .get_or_init(|| CompiledTags::compile(&self.language, self.tags_query))
+            .get_or_init(|| {
+                CompiledTags::compile(&self.language, self.tags_query, self.constructors)
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -323,22 +338,25 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     static JS: Compiled = OnceLock::new();
     static GO: Compiled = OnceLock::new();
     static PYTHON: Compiled = OnceLock::new();
-    let (lang, language, tags_query, compiled): (
+    let (lang, language, tags_query, constructors, compiled): (
         Lang,
         tree_sitter::Language,
         &'static str,
+        &'static [&'static str],
         &'static Compiled,
     ) = match ext {
         "rs" => (
             Lang::Rust,
             tree_sitter_rust::LANGUAGE.into(),
             RUST_TAGS,
+            &[],
             &RUST,
         ),
         "cs" => (
             Lang::CSharp,
             tree_sitter_c_sharp::LANGUAGE.into(),
             CSHARP_TAGS,
+            CSHARP_CONSTRUCTORS,
             &CSHARP,
         ),
         "ts" => (
@@ -358,6 +376,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            JS_CONSTRUCTORS,
             &TS,
         ),
         "tsx" => (
@@ -377,6 +396,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            JS_CONSTRUCTORS,
             &TSX,
         ),
         "js" | "mjs" | "cjs" | "jsx" => (
@@ -393,18 +413,21 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            JS_CONSTRUCTORS,
             &JS,
         ),
         "go" => (
             Lang::Go,
             tree_sitter_go::LANGUAGE.into(),
             composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
+            &[],
             &GO,
         ),
         "py" => (
             Lang::Python,
             tree_sitter_python::LANGUAGE.into(),
             PYTHON_TAGS,
+            &[],
             &PYTHON,
         ),
         _ => return None,
@@ -413,6 +436,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         lang,
         language,
         tags_query,
+        constructors,
         compiled,
     })
 }
@@ -463,7 +487,10 @@ pub(crate) mod tests {
     use crate::csharp_definition_sources::CSHARP_DEFINITIONS_SOURCE;
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::extract::extract;
-    use crate::grounder::symbols::model::{Kind, Lang};
+    use crate::grounder::symbols::model::{
+        Kind, Lang, CSHARP_TAGS_GENERATION, GO_TAGS_GENERATION, JS_TAGS_GENERATION,
+        PYTHON_TAGS_GENERATION, RUST_TAGS_GENERATION, TSX_TAGS_GENERATION, TS_TAGS_GENERATION,
+    };
     use crate::js_ts_definition_sources::{
         JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
     };
@@ -742,21 +769,24 @@ pub(crate) mod tests {
         (24, "M.N", Kind::Module),
     ];
 
-    /// The references in the TS lines of the TS and TSX definitions fixtures, each with its
+    /// The call references in the TS lines of the TS and TSX definitions fixtures, each with its
     /// caller, as `(line, name, caller)`, sorted.
-    const TS_LINES_REFERENCES: [(u32, &str, Option<&str>); 11] = [
-        (16, "Arg", None),
-        (16, "Ret", None),
-        (17, "PQ", Some("Shape2.p-q")),
-        (17, "PType", Some("Shape2.prop")),
-        (17, "Ret", Some("Shape2")),
-        (17, "Two", Some("Shape2.2")),
-        (17, "V", Some("Shape2")),
-        (18, "FT", Some("Abs.fld")),
+    const TS_LINES_REFERENCES: [(u32, &str, Option<&str>); 3] = [
         (19, "mk", Some("Color::Blue")),
         (21, "boot", Some("x")),
         (22, "setup", Some("A.B")),
     ];
+
+    /// The tagged references of the TS and TSX definitions fixtures, all in their TS lines, each
+    /// a type reference with its caller, as [`crate::symbol_index::tagged_refs`] renders them.
+    const TS_LINES_TAGGED: &str = "16 type Arg -\n\
+                                   16 type Ret -\n\
+                                   17 type PQ Shape2.p-q\n\
+                                   17 type PType Shape2.prop\n\
+                                   17 type Ret Shape2\n\
+                                   17 type Two Shape2.2\n\
+                                   17 type V Shape2\n\
+                                   18 type FT Abs.fld";
 
     /// Rust's declared non-definitions (spec 116): the named node types of the Rust grammar
     /// that THE RULE classifies no definition. An extern block, `foreign_mod_item`, carries no
@@ -1128,13 +1158,16 @@ pub(crate) mod tests {
         );
     }
 
-    /// The golden fixtures: an (extension, source) for each registered grammar and query and a
-    /// malformed Rust file. The extraction golden and the facts golden both digest them.
+    /// The golden fixtures: an (extension, source) for each registry entry and a malformed Rust
+    /// file, each keyed by its entry's extension in [`TAGS_GENERATIONS`]. The extraction golden
+    /// and the facts golden both digest them, one row per entry ([`generation_rows`]).
     pub(crate) const GOLDEN_SOURCES: [(&str, &str); 8] = [
         (
             "rs",
             "\
+//! The ledger's quotas.
 use crate::store::Ledger;
+/// The most a ledger holds.
 pub const QUOTA_CAP: u32 = 3;
 pub struct Kestrel { size: u32 }
 trait Grow { fn grow(&self) -> u32; }
@@ -1165,6 +1198,8 @@ class Box {
     int Width() { return Calc(Cap); }
     static int Calc(int n) { return n; }
 }
+class Lid : Box { }
+class Tray { object made = new Box(); }
 ",
         ),
         (
@@ -1175,6 +1210,10 @@ class Box {
     width(): number { return calc(LIMIT); }
 }
 function calc(n: number): number { return n; }
+/** Zero is nothing. */
+function zero(): number { return 0; }
+function same(b: Box): Box { return b; }
+const made = new Box();
 ",
         ),
         (
@@ -1183,6 +1222,10 @@ function calc(n: number): number { return n; }
 const LABEL = \"x\";
 function View() { return <div>{label(LABEL)}</div>; }
 function label(s: string) { return s; }
+/** Blank is no label. */
+function blank() { return \"\"; }
+function keep(s: Label): Label { return s; }
+const made = new Label();
 ",
         ),
         (
@@ -1193,6 +1236,9 @@ class Box {
     width() { return calc(LIMIT); }
 }
 function calc(n) { return n; }
+/** Zero is nothing. */
+function zero() { return 0; }
+const made = new Box();
 ",
         ),
         (
@@ -1203,6 +1249,10 @@ const Limit = 3
 type T struct{}
 func (T) Width() int { return calc(Limit) }
 func calc(n int) int { return n }
+
+// Zero is nothing.
+// It reads nothing.
+func Zero() int { return 0 }
 ",
         ),
         (
@@ -1218,18 +1268,179 @@ def calc(n):
         ),
     ];
 
-    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP: the golden fixtures, a source for each registered
-    /// grammar and query and a malformed Rust file, extract to one serialized form whose digest
-    /// is pinned beside the `GRAMMAR_TAGS_VERSION` it was taken under, so a change to what
-    /// extraction records fails here until the tag is bumped and the pair re-pinned, and a snapshot
-    /// of the code store written before the change is not trusted. The fixtures set every part a
-    /// snapshot stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind included, so a change to any of them moves the digest.
+    /// The generation table: each registry entry's tags generation, keyed by the extension its
+    /// golden fixtures carry, in `for_extension`'s order. `GRAMMAR_TAGS_VERSION` is these
+    /// generations joined by `,` in this order, and each golden pins one row per entry.
+    const TAGS_GENERATIONS: [(&str, &str); 7] = [
+        ("rs", RUST_TAGS_GENERATION),
+        ("cs", CSHARP_TAGS_GENERATION),
+        ("ts", TS_TAGS_GENERATION),
+        ("tsx", TSX_TAGS_GENERATION),
+        ("js", JS_TAGS_GENERATION),
+        ("go", GO_TAGS_GENERATION),
+        ("py", PYTHON_TAGS_GENERATION),
+    ];
+
+    /// A golden's language rows: one per [`TAGS_GENERATIONS`] entry, in its order, holding the
+    /// entry's extension, its tags generation and `digest` over the fixtures keyed by that
+    /// extension, in their order, so a language's row moves with its own fixtures alone. Refuses
+    /// a fixture keyed by an extension no entry has and an entry no fixture is keyed by, naming
+    /// both lists, so no fixture falls outside a row and no row is pinned over nothing.
+    pub(crate) fn generation_rows<T>(
+        fixtures: &[(&str, T)],
+        digest: impl Fn(&[&T]) -> String,
+    ) -> Result<Vec<(&'static str, &'static str, String)>, String> {
+        let unkeyed: Vec<&str> = fixtures
+            .iter()
+            .map(|(ext, _)| *ext)
+            .filter(|ext| TAGS_GENERATIONS.iter().all(|(entry, _)| entry != ext))
+            .collect();
+        let uncovered: Vec<&str> = TAGS_GENERATIONS
+            .iter()
+            .map(|(entry, _)| *entry)
+            .filter(|entry| fixtures.iter().all(|(ext, _)| ext != entry))
+            .collect();
+        if !unkeyed.is_empty() || !uncovered.is_empty() {
+            return Err(format!(
+                "fixtures keyed by no entry: {unkeyed:?}; entries no fixture is keyed by: \
+                 {uncovered:?}"
+            ));
+        }
+        Ok(TAGS_GENERATIONS
+            .iter()
+            .map(|(entry, generation)| {
+                let keyed: Vec<&T> = fixtures
+                    .iter()
+                    .filter(|(ext, _)| ext == entry)
+                    .map(|(_, fixture)| fixture)
+                    .collect();
+                (*entry, *generation, digest(&keyed))
+            })
+            .collect())
+    }
+
+    /// The rows a golden pins, in the form [`generation_rows`] answers them.
+    pub(crate) fn pinned_rows(
+        rows: &[(&'static str, &'static str, &str)],
+    ) -> Result<Vec<(&'static str, &'static str, String)>, String> {
+        Ok(rows
+            .iter()
+            .map(|(ext, generation, hash)| (*ext, *generation, hash.to_string()))
+            .collect())
+    }
+
+    /// THE ROWS ARE THE TABLE'S: [`generation_rows`] answers one row per generation-table entry,
+    /// in the table's order whatever the fixtures' order, digesting an entry's fixtures in their
+    /// order, and refuses a fixture keyed by no entry, an entry no fixture is keyed by, and both.
+    #[test]
+    fn golden_rows_follow_the_generation_table() {
+        let every = [
+            ("py", "p"),
+            ("rs", "r1"),
+            ("go", "g"),
+            ("cs", "c"),
+            ("rs", "r2"),
+            ("ts", "t"),
+            ("tsx", "x"),
+            ("js", "j"),
+        ];
+        let no_go: Vec<(&str, &str)> = every.into_iter().filter(|(e, _)| *e != "go").collect();
+        let stray: Vec<(&str, &str)> = every.into_iter().chain([("zig", "z")]).collect();
+        let both: Vec<(&str, &str)> = no_go.iter().copied().chain([("zig", "z")]).collect();
+        for (fixtures, expected) in [
+            (
+                &every[..],
+                pinned_rows(&[
+                    ("rs", RUST_TAGS_GENERATION, "r1|r2"),
+                    ("cs", CSHARP_TAGS_GENERATION, "c"),
+                    ("ts", TS_TAGS_GENERATION, "t"),
+                    ("tsx", TSX_TAGS_GENERATION, "x"),
+                    ("js", JS_TAGS_GENERATION, "j"),
+                    ("go", GO_TAGS_GENERATION, "g"),
+                    ("py", PYTHON_TAGS_GENERATION, "p"),
+                ]),
+            ),
+            (
+                &stray[..],
+                Err(
+                    "fixtures keyed by no entry: [\"zig\"]; entries no fixture is keyed by: []"
+                        .to_string(),
+                ),
+            ),
+            (
+                &no_go[..],
+                Err(
+                    "fixtures keyed by no entry: []; entries no fixture is keyed by: [\"go\"]"
+                        .to_string(),
+                ),
+            ),
+            (
+                &both[..],
+                Err(
+                    "fixtures keyed by no entry: [\"zig\"]; entries no fixture is keyed by: \
+                     [\"go\"]"
+                        .to_string(),
+                ),
+            ),
+            (
+                &[][..],
+                Err(
+                    "fixtures keyed by no entry: []; entries no fixture is keyed by: [\"rs\", \
+                     \"cs\", \"ts\", \"tsx\", \"js\", \"go\", \"py\"]"
+                        .to_string(),
+                ),
+            ),
+        ] {
+            assert_eq!(
+                generation_rows(fixtures, |keyed| keyed
+                    .iter()
+                    .map(|fixture| **fixture)
+                    .collect::<Vec<&str>>()
+                    .join("|")),
+                expected,
+                "the rows of {fixtures:?}"
+            );
+        }
+    }
+
+    /// AN EXTRACTION CHANGE SHIPS WITH A BUMP, and EACH LANGUAGE PINS ITS OWN ROWS (spec 117): the
+    /// golden fixtures, a source for each registry entry and a malformed Rust file, extract to
+    /// one serialized form per entry whose digest is pinned beside that entry's tags generation,
+    /// so a change to what one language's extraction records fails that language's row alone
+    /// until its generation is bumped and the row re-pinned, and a snapshot of the code store
+    /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
+    /// generation table's generations joined in its order. The fixtures set every part a snapshot
+    /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
+    /// kind a registered language records (a const read, a type reference and a use) included, so
+    /// a change to any of them moves a digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
         use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
         use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
-        const PINNED: (&str, &str) = ("ts-tags-v5", "fc5e234cbf5253a5");
+        // One row per line with a comment line between rows, so units re-pinning different
+        // languages' rows merge clean.
+        const PINNED: [(&str, &str, &str); 7] = [
+            // Rust
+            ("rs", "rust-tags-v2", "cf79ba29624d68ed"),
+            // C#
+            ("cs", "csharp-tags-v3", "0f7eae63e5337fed"),
+            // TypeScript
+            ("ts", "typescript-tags-v4", "f6f3255db8983a6b"),
+            // TSX
+            ("tsx", "tsx-tags-v4", "09c3a95feee0c5f9"),
+            // JavaScript
+            ("js", "javascript-tags-v4", "93e654df71c8f486"),
+            // Go
+            ("go", "go-tags-v3", "40f80b41e4a13f29"),
+            // Python
+            ("py", "python-tags-v1", "2ae6674264c03453"),
+        ];
+        assert_eq!(
+            GRAMMAR_TAGS_VERSION,
+            TAGS_GENERATIONS.map(|(_, generation)| generation).join(","),
+            "`GRAMMAR_TAGS_VERSION`'s `concat!` expands each entry's generation macro, joined by \
+             `,` in the generation table's order"
+        );
         let extracted: Vec<(&str, FileSymbols)> = GOLDEN_SOURCES
             .iter()
             .map(|(ext, src)| (*ext, crate::symbol_index::extracted(ext, src)))
@@ -1279,18 +1490,26 @@ def calc(n):
             ("a type reference", tagged(REF_KIND_TYPE)),
             ("a use", tagged(REF_KIND_USE)),
             ("a partial file", extracted.iter().any(|(_, fs)| fs.partial)),
+            (
+                "a definition's doc span",
+                defs.iter().any(|d| d.doc.is_some()),
+            ),
+            (
+                "a file's doc span",
+                extracted.iter().any(|(_, fs)| fs.doc.is_some()),
+            ),
         ] {
             assert!(covered, "the golden fixtures set {part}");
         }
-        let digest =
-            crate::grounder::symbols::content_hash(&serde_json::to_string(&extracted).unwrap());
         assert_eq!(
-            (GRAMMAR_TAGS_VERSION, digest.as_str()),
-            PINNED,
-            "this build's extraction generation and golden digest (left) differ from the pinned \
-             pair: a change to what extraction records ships with a bump, so bump \
-             `GRAMMAR_TAGS_VERSION` and re-pin this pair to the new tag and this build's digest \
-             together"
+            generation_rows(&extracted, |keyed| crate::grounder::symbols::content_hash(
+                &serde_json::to_string(keyed).unwrap()
+            )),
+            pinned_rows(&PINNED),
+            "each entry's tags generation and the digest of its golden fixtures' extraction (left) \
+             differ from the pinned rows: a change to what one language's extraction records \
+             ships with a bump, so bump that language's generation macro in model.rs and re-pin \
+             its row here and in the facts golden to this build's values together"
         );
     }
 
@@ -1299,7 +1518,8 @@ def calc(n):
     /// definition, while the named type and function beside them keep theirs; the call inside
     /// `func _()` has the file, no caller, as have the receiver type and the call of
     /// `func (T) _()` and the underlying type of `type _ int`, a named function's call still
-    /// being its own.
+    /// being its own. The receiver type and the underlying type are each a type reference, no
+    /// call (spec 117, CAPTURES).
     #[test]
     fn a_go_definition_named_with_the_blank_identifier_makes_no_def() {
         let fs = crate::symbol_index::extracted("go", crate::name_filter_sources::GO_BLANK_SOURCE);
@@ -1312,12 +1532,16 @@ def calc(n):
             crate::symbol_index::refs_with_callers(&fs),
             vec![
                 (3, "probe", None),
-                (4, "T", None),
                 (4, "reach", None),
-                (5, "int", None),
                 (6, "other", Some("named")),
             ],
-            "every reference inside a dropped definition takes the file as its caller"
+            "every call inside a dropped definition takes the file as its caller"
+        );
+        crate::symbol_index::assert_tagged_refs(
+            "go",
+            crate::name_filter_sources::GO_BLANK_SOURCE,
+            "4 type T -\n5 type int -",
+            "every type reference inside a dropped definition takes the file as its caller",
         );
     }
 
@@ -1372,6 +1596,8 @@ def calc(n):
         /// a call in a function-local const is its function's; an interface method's parameter type
         /// is the interface's, a declaration being no caller, so that of a function or a method
         /// with no body is the file's; and both references of the alias named `_` are the file's.
+        /// Each reference to a type, the alias's name and target included, is a type reference,
+        /// no call (spec 117, CAPTURES).
         every_go_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "go",
@@ -1408,23 +1634,23 @@ def calc(n):
                     (3, "g", Some("a")),
                     (6, "h", Some("m")),
                     (6, "k", Some("m")),
-                    (8, "Base", Some("Shape.Base")),
-                    (8, "Coord", Some("Shape.x")),
-                    (8, "Gen", Some("Shape.Gen")),
-                    (8, "Ptr", Some("Shape.Ptr")),
-                    (8, "Qual", Some("Shape.Qual")),
-                    (8, "Side", Some("Shape.side")),
-                    (8, "int", Some("Shape.Gen")),
-                    (9, "Alias", Some("Alias")),
-                    (9, "Base", Some("Alias")),
-                    (10, "Canvas", Some("Drawer")),
                     (11, "probe", Some("host")),
-                    (12, "Shape", Some("Shape::area")),
-                    (13, "Canvas", None),
-                    (14, "Shape", None),
-                    (15, "Base", None),
-                    (15, "_", None),
                 ],
+                "8 type Base Shape.Base\n\
+                 8 type Coord Shape.x\n\
+                 8 type Gen Shape.Gen\n\
+                 8 type Ptr Shape.Ptr\n\
+                 8 type Qual Shape.Qual\n\
+                 8 type Side Shape.side\n\
+                 8 type int Shape.Gen\n\
+                 9 type Alias Alias\n\
+                 9 type Base Alias\n\
+                 10 type Canvas Drawer\n\
+                 12 type Shape Shape::area\n\
+                 13 type Canvas -\n\
+                 14 type Shape -\n\
+                 15 type Base -\n\
+                 15 type _ -",
             );
         /// C# DEFINITIONS ARE NODES (spec 116 criterion 8): under `CSHARP_TAGS` the fixture yields
         /// every definition it holds at its own kind and leaf: a class, a struct, a record, an
@@ -1445,7 +1671,8 @@ def calc(n):
         /// event's and in a property's value the property's; that in a constructor body is named by
         /// the leaf its class shares; those in a destructor, an operator, a conversion operator and
         /// an indexer are each named by that member's leaf; and that in a local function is the
-        /// local function's, the method keeping its own.
+        /// local function's, the method keeping its own. Each `new Probe()` is a call, as is `Go`,
+        /// and each field's declared type `Probe` a type reference (spec 117, CAPTURES).
         every_csharp_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "cs",
@@ -1491,8 +1718,6 @@ def calc(n):
                     (19, "~Ext", Kind::Declaration),
                 ],
                 &[
-                    (7, "Probe", Some("S.T::Cell")),
-                    (7, "Probe", Some("S.T::Cell")),
                     (7, "Probe", Some("S.T::Cell.made")),
                     (10, "Probe", Some("S.T::Foo.Moved")),
                     (11, "Probe", Some("S.T::Foo.Size")),
@@ -1505,6 +1730,8 @@ def calc(n):
                     (17, "Probe", Some("S.T::Foo::Run")),
                     (17, "Probe", Some("S.T::Foo::Run::Inner")),
                 ],
+                "7 type Probe S.T::Cell\n\
+                 7 type Probe S.T::Cell",
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered JS
         /// query: the fixture yields every definition it holds at its own kind and leaf. A
@@ -1532,6 +1759,7 @@ def calc(n):
                 &JS_DEFINITION_TYPES,
                 &JS_LINES_DEFINITIONS,
                 &JS_LINES_REFERENCES,
+                "",
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered TS
         /// query: the JS lines yield what they yield under the JS query, a type assertion value
@@ -1550,7 +1778,7 @@ def calc(n):
         /// signature's types are its interface's, a declaration being no caller, so an ambient
         /// function's are the file's; an index signature's is its interface's; an enum member
         /// value's call is the member's; and a module's and a namespace's body calls are
-        /// theirs.
+        /// theirs. Each type in an annotation is a type reference, no call (spec 117, CAPTURES).
         every_ts_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "ts",
@@ -1558,6 +1786,7 @@ def calc(n):
                 &TS_DEFINITION_TYPES,
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
+                TS_LINES_TAGGED,
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the TSX query `.tsx`
         /// registers: the TSX fixture, the TS one with a JSX element in place of the type
@@ -1570,6 +1799,7 @@ def calc(n):
                 &TS_DEFINITION_TYPES,
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
+                TS_LINES_TAGGED,
             );
         /// PYTHON DEFINITIONS ARE NODES (spec 116 criterion 10), under the registered Python
         /// query: the fixture yields every definition it holds at its own kind and leaf. A def
@@ -1631,6 +1861,7 @@ def calc(n):
                     (18, "f", None),
                     (19, "f", None),
                 ],
+                "",
             );
         /// Every Python definition carries its extent (spec 119, ONE EXTENT): a single-target
         /// module-level assignment (`z = 1`, `w: int`, and one of each other value type the

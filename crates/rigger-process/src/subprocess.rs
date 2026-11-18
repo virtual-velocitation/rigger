@@ -219,15 +219,35 @@ const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
 /// with none of [`GIT_REPOSITORY_VARIABLES`] passed on, so the repository git finds from `dir` is
 /// the one it operates on whatever repository this process's environment names (the convention
 /// git documents for a hook that operates on another repository). A caller may still set one of
-/// them on the command it is handed.
-pub fn git_in(dir: impl AsRef<OsStr>) -> Command {
+/// them on the command it is handed. The agents' login token
+/// ([`RIGGER_AGENT_TOKEN_VAR`](rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR)) is not passed on
+/// either: git and every hook the repository runs need no login, and a hook is code rigger did
+/// not write.
+///
+/// The one place a production git command is built, so the one place an empty `dir` is refused:
+/// git reads `-C ""` as the process's own working directory, which for a caller holding no
+/// repository (a repo-less run) is whatever repository the process happens to sit in, never one
+/// the caller chose. Every git call of such a caller fails here instead of acting there.
+pub fn git_in(dir: impl AsRef<OsStr>) -> std::io::Result<Command> {
+    let dir = dir.as_ref();
+    if dir.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            NO_REPOSITORY,
+        ));
+    }
     let mut cmd = command("git");
     cmd.arg("-C").arg(dir);
     for variable in GIT_REPOSITORY_VARIABLES {
         cmd.env_remove(variable);
     }
-    cmd
+    cmd.env_remove(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR);
+    Ok(cmd)
 }
+
+/// Why [`git_in`] refuses an empty repository path.
+pub const NO_REPOSITORY: &str =
+    "no repository: an empty repository path names the process's working directory";
 
 #[cfg(test)]
 mod tests {
@@ -255,11 +275,12 @@ mod tests {
             assert_eq!(cwd_of(&command_in("sh", "/x")), Some(std::path::Path::new("/x")));
     }
 
-    /// `git_in` is exactly `git -C <dir>` with every variable naming a repository removed from
-    /// the child's environment, and nothing else added.
+    /// `git_in` is exactly `git -C <dir>` with every variable naming a repository, and the one
+    /// carrying the agents' login token, removed from the child's environment, and nothing else
+    /// added: no git child rigger starts, nor any hook git runs, is handed the token.
     #[test]
     fn git_in_anchors_git_at_the_directory() {
-        let cmd = git_in("/repo");
+        let cmd = git_in("/repo").unwrap();
         assert_eq!(cmd.get_program(), program("git"));
         let args: Vec<&OsStr> = cmd.get_args().collect();
         assert_eq!(args, vec![OsStr::new("-C"), OsStr::new("/repo")]);
@@ -267,10 +288,20 @@ mod tests {
         let envs: Vec<(&OsStr, Option<&OsStr>)> = cmd.get_envs().collect();
         let mut removed: Vec<(&OsStr, Option<&OsStr>)> = GIT_REPOSITORY_VARIABLES
             .iter()
+            .chain([&rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR])
             .map(|variable| (OsStr::new(variable), None))
             .collect();
         removed.sort();
         assert_eq!(envs, removed);
+    }
+
+    /// An empty repository path builds no git command: git would read it as this process's own
+    /// working directory.
+    #[test]
+    fn git_in_refuses_an_empty_repository_path() {
+        let refused = git_in("").unwrap_err();
+        assert_eq!(refused.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(refused.to_string(), NO_REPOSITORY);
     }
 
     /// `cmd_argument` is cmd's switches - no AutoRun, the outer quotes stripped, run then end -

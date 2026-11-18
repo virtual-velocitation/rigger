@@ -2361,6 +2361,21 @@ fn live_branches_for_sweep(
     }
 }
 
+/// Why git's registry keeps the unit worktree `dir` out of the orphan sweep: git lists a worktree
+/// there it marks `locked` or `prunable` ([`rigger::worktree::git_mark_at`]), or the list cannot
+/// be read, so nothing there is reaped or removed on a guess. `None` lets the sweep reclaim `dir`.
+/// An empty `repo` names no registry to read, so `dir` is reclaimed as any leftover dir is.
+fn kept_by_git(repo: &str, dir: &std::path::Path) -> Option<String> {
+    if repo.is_empty() {
+        return None;
+    }
+    match rigger::worktree::git_mark_at(repo, &dir.to_string_lossy()) {
+        Ok(None) => None,
+        Ok(Some(mark)) => Some(format!("git marks it `{mark}`")),
+        Err(e) => Some(e.0),
+    }
+}
+
 /// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
 /// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
 /// scratch entry git may still track. A killed run can leave a `rigger-wt-<slug>` worktree
@@ -2372,13 +2387,13 @@ fn live_branches_for_sweep(
 /// `authorized_root` is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
 fn reap_then_remove_worktree(repo: &str, dir: &std::path::Path, authorized_root: &std::path::Path) {
     rigger::reap::reap_processes_rooted_under(dir, authorized_root);
-    let deregistered = !repo.is_empty()
-        && subprocess::git_in(repo)
-            .args(["worktree", "remove", "--force"])
-            .arg(dir)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+    let deregistered = subprocess::git_in(repo)
+        .and_then(|mut git| {
+            git.args(["worktree", "remove", "--force"])
+                .arg(dir)
+                .output()
+        })
+        .is_ok_and(|o| o.status.success());
     if !deregistered {
         let _ = std::fs::remove_dir_all(dir);
     }
@@ -3267,8 +3282,9 @@ fn run_started_id(e: &Event) -> Option<String> {
         .map(|r| r.run)
 }
 
-/// Load the candidate [`Config`](config), its definition hash and the spawn host its defaults
-/// and helper copies resolve ([`hooks::resolve_spawn_host`], the replay's one resolution point)
+/// Load the candidate [`Config`](config), its definition hash and the spawn host its defaults,
+/// helper copies and declared specs location resolve ([`spawn_host`], the replay's one
+/// resolution point)
 /// from git `<rev>` via a throwaway DETACHED worktree under `scratch_root`, removed once loaded.
 /// Reading the config through a real checkout (rather than piping `git show`) reuses the exact
 /// [`config::load`] / [`definition_hash`] readers the live path uses, so a replay evaluates
@@ -3285,7 +3301,7 @@ fn materialize_config_at_rev(
     let checkout_str = checkout
         .to_str()
         .ok_or("rigger replay: non-utf8 scratch path")?;
-    let add = subprocess::git_in(repo)
+    let add = subprocess::git_in(repo)?
         .args(["worktree", "add", "--detach"])
         .arg(checkout_str)
         .arg(rev)
@@ -3302,7 +3318,7 @@ fn materialize_config_at_rev(
     let loaded = config_store::load(checkout_str)
         .map_err(|e| format!("rigger replay: candidate config at {rev:?} is invalid: {e}"))
         .and_then(|cfg| {
-            let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, &checkout)
+            let host = spawn_host(&cfg.workflow.defaults, &checkout)
                 .map_err(|e| format!("rigger replay: candidate helpers at {rev:?}: {e}"))?;
             definition_hash(checkout_str, &host.helpers)
                 .map(|def| (cfg, def, host))
@@ -3310,13 +3326,14 @@ fn materialize_config_at_rev(
         });
     // reap-exempt (spec 79, criterion 2): `checkout_str` is created and removed entirely
     // within this one function, and the ONLY things ever run against it in between are
-    // `config::load`, `resolve_spawn_host` and `definition_hash` (just above) - each a pure
+    // `config::load`, `spawn_host` and `definition_hash` (just above) - each a pure
     // `std::fs` reader with no subprocess spawned inside the checkout - so nothing can be rooted
     // there to reap.
-    let _ = subprocess::git_in(repo)
-        .args(["worktree", "remove", "--force"])
-        .arg(checkout_str)
-        .output();
+    let _ = subprocess::git_in(repo).and_then(|mut git| {
+        git.args(["worktree", "remove", "--force"])
+            .arg(checkout_str)
+            .output()
+    });
     Ok(loaded?)
 }
 
@@ -3795,19 +3812,12 @@ fn watch_poll_over(
         .map(|s| s.trim().to_string())
         .is_some_and(|attempted_run| !attempted_run.is_empty() && attempted_run == run_id);
 
-    // An operator hold on the run is its stop: `watch` reports it held, never its driver dead.
-    // Folded from the run this poll already read, which holds the run's hold events.
-    let mut held = RunState::new();
-    runscope::read::fold_holds(&mut held, &run_events)?;
-    let operator_held = held.hold.is_some_and(|hold| hold.operator);
-
     let inputs = watch::WatchInputs {
         run_events: &run_events,
         now,
         last_event_at,
         step_lock_free,
         driver_record_left,
-        operator_held,
         wave_liveness_ages: &wave_liveness_ages,
         dash,
         run_started_at,
@@ -3856,8 +3866,9 @@ fn spec_lint_warning_lines(spec_path: &str, text: &str) -> Vec<String> {
 // the run teardown (`reclaim_run_scratch`); this half only reports.
 
 /// The leftover artifacts a `rigger validate` residue scan found under the scratch root
-/// (plus dead `rigger/u/*` branches), each with a size where one is meaningful. Held as
-/// data so the scan is unit-testable apart from its stderr rendering ([`format_residue`]).
+/// (plus dead `rigger/u/*` branches and the refs rigger holds aside), each with a size where
+/// one is meaningful. Held as data so the scan is unit-testable apart from its stderr rendering
+/// ([`format_residue`]).
 #[derive(Debug, Default, PartialEq, Eq)]
 struct ResidueReport {
     /// Scratch-root worktrees (`rigger-wt-*`) whose unit is not live: (dir name, bytes).
@@ -3868,6 +3879,9 @@ struct ResidueReport {
     shadow_stores: Vec<(String, u64)>,
     /// Local `rigger/u/*` branches with no live unit.
     branches: Vec<String>,
+    /// Every ref rigger holds aside ([`rigger::worktree::held_refs`]), a kept tree or one set
+    /// aside: (name, tip).
+    held: Vec<(String, String)>,
 }
 
 impl ResidueReport {
@@ -3876,6 +3890,7 @@ impl ResidueReport {
             && self.caches.is_empty()
             && self.shadow_stores.is_empty()
             && self.branches.is_empty()
+            && self.held.is_empty()
     }
 }
 
@@ -3946,7 +3961,7 @@ fn current_run_units(events: &[Event]) -> RunUnits {
                 rigger::worktree::SpawnFence::InFlight { .. }
             );
         if run.is_terminal(&u.id) && !fenced_live {
-            if let Some(slug) = u.branch.strip_prefix("rigger/u/") {
+            if let Some(slug) = u.branch.strip_prefix(rigger::worktree::UNIT_BRANCHES) {
                 if !slug.is_empty() {
                     out.dead_slugs.insert(slug.to_string());
                 }
@@ -3978,7 +3993,10 @@ fn live_slugs(
 ) -> std::collections::HashSet<String> {
     live_branches
         .iter()
-        .filter_map(|b| b.strip_prefix("rigger/u/").map(str::to_string))
+        .filter_map(|b| {
+            b.strip_prefix(rigger::worktree::UNIT_BRANCHES)
+                .map(str::to_string)
+        })
         .collect()
 }
 
@@ -4002,6 +4020,10 @@ fn live_slugs(
 /// `CARGO_TARGET_DIR`). Those are run-level scratch reclaimed by the run's fixpoint/teardown
 /// once no spawn is live, never by this run-start backstop, so it can never delete a target a
 /// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
+///
+/// A unit worktree git marks `locked` or `prunable` (a person's lock, an add or remove git did not
+/// finish) is kept and named on stderr, as [`rigger::worktree::sweep_terminal`] keeps it: nothing
+/// in it is reaped or removed ([`kept_by_git`]).
 ///
 /// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
 /// `rigger/u/<slug>` stages - config, never the event log, the SAME set `run_cli` also hands
@@ -4069,8 +4091,15 @@ fn reclaim_orphan_scratch(
                 && path.join(".git").exists()
                 && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
-                reap_then_remove_worktree(repo, &path, root_path);
-                removed += 1;
+                match kept_by_git(repo, &path) {
+                    None => {
+                        reap_then_remove_worktree(repo, &path, root_path);
+                        removed += 1;
+                    }
+                    Some(why) => rigger::whole_line::say(format_args!(
+                        "rigger run: orphan sweep: kept {path:?} - {why}"
+                    )),
+                }
             }
         } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
             // A per-unit / ad-hoc `cargo-target-<slug>` cache, a unit's review cache
@@ -4438,6 +4467,10 @@ fn format_residue(report: &ResidueReport) -> Vec<String> {
     }
     for b in &report.branches {
         msg.push_str(&format!("\n  branch with no live unit: {b}"));
+    }
+    for (name, tip) in &report.held {
+        let short = &tip[..tip.len().min(12)];
+        msg.push_str(&format!("\n  ref held aside: {name} at {short}"));
     }
     vec![msg]
 }
@@ -5146,13 +5179,11 @@ struct DocsOverlay {
 impl DocsOverlay {
     /// Merge this overlay onto `ctx`, overriding ONLY the fields the overlay declares, so a
     /// repo customizes just the facts it differs on and inherits the shared defaults for
-    /// the rest.
+    /// the rest. Its `specs_location` is not merged here: it reaches `ctx` through
+    /// [`declared_specs_location`], spelled as every command spells it.
     fn apply(&self, ctx: &mut rigger::docs::DocsContext) {
         if let Some(base) = &self.base_ref {
             ctx.base_ref = base.clone();
-        }
-        if let Some(specs) = &self.specs_location {
-            ctx.specs_location = specs.clone();
         }
         if let Some(constraints) = &self.global_constraints {
             ctx.global_constraints = constraints.clone();
@@ -5173,7 +5204,47 @@ fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Err
         Err(e) => return Err(setup_read_error(&path, e)),
     };
     serde_yaml::from_str(&raw)
-        .map_err(|e| format!("setup: {} is not a valid docs overlay: {e}", path.display()).into())
+        .map_err(|e| format!("{} is not a valid docs overlay: {e}", path.display()).into())
+}
+
+/// The directory a producer's commits may touch in the project at `root`: the `specs_location`
+/// its [`DocsOverlay`] declares, else [`DEFAULT_SPECS_LOCATION`], spelled relative to the root
+/// with `/` between its parts and one closing `/` (a `\` reads as `/`, and empty and `.` parts
+/// are dropped). A declared location naming no directory inside the project - none at all, an
+/// absolute one, or one stepping out through `..` - is an error naming the overlay, as is an
+/// overlay [`read_docs_overlay`] refuses.
+fn declared_specs_location(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let Some(declared) = read_docs_overlay(root)?.specs_location else {
+        return Ok(DEFAULT_SPECS_LOCATION.to_string());
+    };
+    let spelled = declared.trim().replace('\\', "/");
+    let parts: Vec<&str> = spelled
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .collect();
+    if parts.is_empty()
+        || spelled.starts_with('/')
+        || Path::new(&spelled).is_absolute()
+        || parts.contains(&"..")
+    {
+        return Err(format!(
+            "{}: specs_location {declared:?} names no directory inside the project",
+            rigger_path(root, DOCS_OVERLAY_FILE).display()
+        )
+        .into());
+    }
+    Ok(format!("{}/", parts.join("/")))
+}
+
+/// The host values every spawn of one command in the project at `root` carries
+/// ([`hooks::resolve_spawn_host`]), its producer output the project's
+/// [`declared_specs_location`]. Fails as either does.
+fn spawn_host(
+    defaults: &config::Defaults,
+    root: &Path,
+) -> Result<conductor::SpawnHost, Box<dyn std::error::Error>> {
+    let output = declared_specs_location(root)?;
+    Ok(hooks::resolve_spawn_host(defaults, root, &output)?)
 }
 
 /// The `rigger setup` failure for a project file at `path` it could not read: the path, then
@@ -5248,9 +5319,15 @@ fn read_project_skill(
 /// copy. Through [`install_file_if_changed`], each entry writes ONLY when its file is absent or
 /// differs, so a `rigger setup` rerun on an up-to-date repo is a true no-op that does not even
 /// move a file's mtime.
+///
+/// The skills name the project's specs location as every command spells it
+/// ([`declared_specs_location`]), and one every later command refuses fails the install before
+/// any skill renders it.
 fn install_skills(root: &Path) -> Result<SkillInstall, Box<dyn std::error::Error>> {
+    let specs_location = declared_specs_location(root)?;
     let mut ctx = docs_context();
     read_docs_overlay(root)?.apply(&mut ctx);
+    ctx.specs_location = specs_location;
     // Every entry no project copy has claimed yet; what is left after the loop is the strays.
     let mut unclaimed = project_skill_entries(root)?;
     let mut outcomes = Vec::new();
@@ -7096,6 +7173,36 @@ mod tests {
         ]);
     }
 
+    /// The escalation skill names the refs a keep writes by the names the code writes them
+    /// under ([`rigger::worktree::kept_ref`], [`rigger::worktree::orphaned_ref`]) and the unit
+    /// branch it never moves, so a person sent to the kept tree reads the ref that holds it, and
+    /// tells that person to free the branch from their own tree before the relaunch, since a run
+    /// finding it checked out outside rigger's work root holds.
+    #[test]
+    fn the_escalation_skill_names_the_refs_a_keep_writes() {
+        let registry = rigger::docs::skill_registry();
+        let rendered = registry
+            .iter()
+            .find(|e| e.name == "rigger-handle-an-escalation")
+            .expect("the escalation skill is in the registry")
+            .render(&docs_context());
+        let branch = format!("{}<unit-id>", rigger::worktree::UNIT_BRANCHES);
+        for name in [
+            rigger::worktree::kept_ref(&branch),
+            rigger::worktree::orphaned_ref("<unit-id>", "<sha>"),
+            branch.clone(),
+        ] {
+            assert!(
+                rendered.contains(&format!("`{name}`")),
+                "the escalation skill names `{name}`"
+            );
+        }
+        assert!(
+            rendered.contains("`git -C <tree> switch --detach`"),
+            "the escalation skill frees the unit's branch from the person's tree before the relaunch"
+        );
+    }
+
     rigger::test_cases! {
         /// Spec 69, criterion 1 (the accuracy pin, extending the spec-68 sibling
         /// [`per_operation_skills_reference_only_real_subcommands`] to the three watch-discipline
@@ -8080,6 +8187,10 @@ mod tests {
             caches: vec![("cargo-target".to_string(), 5_905_580_032)],
             shadow_stores: vec![("probe/.rigger/events.db".to_string(), 6)],
             branches: vec!["rigger/u/unit-99-ghost".to_string()],
+            held: vec![(
+                "rigger/kept/unit-99-ghost".to_string(),
+                "0123456789abcdef0123456789abcdef01234567".to_string(),
+            )],
         };
         let lines = format_residue(&report);
         assert_eq!(lines.len(), 1, "the residue report is one stderr block");
@@ -8091,6 +8202,7 @@ mod tests {
         assert!(block.contains("orphaned build cache: cargo-target (5.5G)"));
         assert!(block.contains("shadow store: probe/.rigger/events.db (6B)"));
         assert!(block.contains("branch with no live unit: rigger/u/unit-99-ghost"));
+        assert!(block.ends_with("\n  ref held aside: rigger/kept/unit-99-ghost at 0123456789ab"));
     }
 
     // ---- spec 77 criterion 6: FOOTPRINT ACCOUNTING -----------------------------------
@@ -8901,6 +9013,65 @@ mod tests {
             !wt_dir.exists(),
             "the undeclared, unrelated worktree is gone"
         );
+    }
+
+    /// The orphan sweep keeps a tree git marks locked (a person's lock, an add git did not
+    /// finish) out of its reclaim: nothing in it is reaped or removed and its registration stays,
+    /// and the trees beside it are still reclaimed.
+    #[test]
+    fn reclaim_orphan_scratch_keeps_a_tree_git_marks_locked_and_reclaims_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        init_committed_repo(&root, "README.md", "seed\n");
+        let repo = root.to_str().unwrap();
+        let locked = root.join("rigger-wt-a-locked");
+        let done = root.join("rigger-wt-done");
+        Worktree::create(repo, locked.to_str().unwrap(), "rigger/u/a-locked", "").unwrap();
+        Worktree::create(repo, done.to_str().unwrap(), "rigger/u/done", "").unwrap();
+        write_file(&locked.join("work.txt"), b"a person's work\n");
+        git_ok(&locked, &["add", "work.txt"]);
+        git_ok(&locked, &["commit", "-q", "-m", "work"]);
+        git_ok(
+            &root,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "a person's lock",
+                locked.to_str().unwrap(),
+            ],
+        );
+        let run_units = RunUnits {
+            live_branches: slugs([]),
+            dead_slugs: slugs(["a-locked", "done"]),
+            live_spawn_leaf_names: slugs([]),
+            current_run_scratch_leaf: None,
+        };
+        let removed = reclaim_orphan_scratch(
+            repo,
+            root.to_str().unwrap(),
+            &run_units,
+            &std::collections::HashSet::new(),
+        );
+        assert_eq!(removed, 1, "only the tree git does not mark is reclaimed");
+        assert!(
+            locked.join("work.txt").exists(),
+            "the tree git marks locked keeps its work"
+        );
+        let listed = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "list", "--porcelain"])
+            .output()
+            .unwrap();
+        let listed = String::from_utf8_lossy(&listed.stdout);
+        assert!(
+            listed
+                .lines()
+                .any(|line| line == format!("worktree {}", locked.display())),
+            "the tree git marks locked keeps its registration: {listed}"
+        );
+        assert!(!done.exists(), "the tree beside it is reclaimed");
     }
 
     #[test]
@@ -9853,7 +10024,7 @@ mod tests {
             .unwrap();
             let pinned = || {
                 let cfg = config_store::load(repo).unwrap();
-                let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, root).unwrap();
+                let host = spawn_host(&cfg.workflow.defaults, root).unwrap();
                 definition_hash(repo, &host.helpers).unwrap()
             };
             at_rev(root);
@@ -10875,6 +11046,102 @@ mod tests {
             err.to_string().contains("docs-overlay.yml"),
             "the error must name the overlay file; got: {err}"
         );
+    }
+
+    /// A PRODUCER'S OUTPUT IS THE SPECS LOCATION THE PROJECT DECLARES: the spawn host every
+    /// command resolves carries the overlay's `specs_location`, spelled relative to the root with
+    /// `/` between its parts and one closing `/`, and `specs/` when the project declares none; a
+    /// location naming no directory inside the project fails the resolution, naming the overlay,
+    /// and fails `rigger setup`'s skill install the same way. An installed skill names the
+    /// location as the spawn host carries it.
+    #[test]
+    fn a_producers_output_is_the_specs_location_the_project_declares() {
+        // Each row: the case, the overlay (none for no file), and the output the host carries or
+        // the declared location the error quotes.
+        let rows: [(&str, Option<&str>, Result<&str, &str>); 10] = [
+            ("no overlay", None, Ok("specs/")),
+            (
+                "an overlay declaring no location",
+                Some("base_ref: main\n"),
+                Ok("specs/"),
+            ),
+            (
+                "a location with its closing slash",
+                Some("specs_location: requirements/\n"),
+                Ok("requirements/"),
+            ),
+            (
+                "a location without it",
+                Some("specs_location: requirements\n"),
+                Ok("requirements/"),
+            ),
+            (
+                "a location spelled from the root",
+                Some("specs_location: ./docs//requirements/\n"),
+                Ok("docs/requirements/"),
+            ),
+            (
+                "a location spelled with backslashes",
+                Some("specs_location: 'docs\\requirements\\'\n"),
+                Ok("docs/requirements/"),
+            ),
+            (
+                "an empty location",
+                Some("specs_location: ''\n"),
+                Err("\"\""),
+            ),
+            (
+                "the root itself",
+                Some("specs_location: ./\n"),
+                Err("\"./\""),
+            ),
+            (
+                "an absolute location",
+                Some("specs_location: /abs/\n"),
+                Err("\"/abs/\""),
+            ),
+            (
+                "a location stepping out of the project",
+                Some("specs_location: docs/../../x/\n"),
+                Err("\"docs/../../x/\""),
+            ),
+        ];
+        for (case, overlay, expected) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            if let Some(overlay) = overlay {
+                std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+                std::fs::write(rigger_path(root, DOCS_OVERLAY_FILE), overlay).unwrap();
+            }
+            let expected = expected.map(str::to_string).map_err(|declared| {
+                format!(
+                    "{}: specs_location {declared} names no directory inside the project",
+                    rigger_path(root, DOCS_OVERLAY_FILE).display()
+                )
+            });
+            assert_eq!(
+                spawn_host(&config::Defaults::default(), root)
+                    .map(|host| host.producer_output)
+                    .map_err(|e| e.to_string()),
+                expected,
+                "{case}"
+            );
+            assert_eq!(
+                install_skills(root).map(|_| ()).map_err(|e| e.to_string()),
+                expected.clone().map(|_| ()),
+                "{case}: rigger setup installs no skill naming a location every later command \
+                 refuses"
+            );
+            if let Ok(output) = &expected {
+                let installed =
+                    std::fs::read_to_string(skill_install_path(root, "using-rigger")).unwrap();
+                assert!(
+                    installed.contains(&format!("This repo keeps its specs in {output}.")),
+                    "{case}: the installed using-rigger names the location as every command \
+                     spells it"
+                );
+            }
+        }
     }
 
     /// Spec 05, criterion 4 and spec 121, criterion 14: `rigger setup` reports an install step's

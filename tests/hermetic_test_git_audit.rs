@@ -43,8 +43,8 @@
 
 use crate::common;
 
-use common::repo::collect_rs_files;
 use common::repo::repo_text;
+use common::repo::rs_sources_under;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -335,24 +335,11 @@ fn no_test_source_sets_the_signing_hermetic_variables_itself() {
         .into_owned();
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut files = Vec::new();
-    for top in ["src", "tests"] {
-        collect_rs_files(&root.join(top), &mut files);
-    }
-
     let mut findings = Vec::new();
-    for path in &files {
-        let rel = path
-            .strip_prefix(&root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
+    for (rel, content) in rs_sources_under(&root, &["src", "tests"]) {
         if rel == format!("tests/{self_path}") {
             continue;
         }
-        let Ok(content) = std::fs::read_to_string(path) else {
-            continue;
-        };
         for (i, line) in content.lines().enumerate() {
             for needle in BANNED {
                 if line.contains(needle) {

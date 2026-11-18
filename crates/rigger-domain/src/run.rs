@@ -55,6 +55,10 @@ pub const HOLD_BY_HOST: &str = "host";
 /// The `by` of a hold a failed probe wrote, and of the release a passing probe wrote.
 pub const HOLD_BY_PROBE: &str = "probe";
 
+/// The [`RunHeld::by`] of the conductor, on a fault of its own that ended the run's drive: like
+/// an operator hold, only `rigger release` ends it.
+pub const HOLD_BY_CONDUCTOR: &str = "conductor";
+
 /// The metadata key that stamps every conductor-emitted event with the id of the run it
 /// belongs to (spec 06, unit 1). Its value is the current run's uuid; a pre-run-id
 /// (legacy) event carries no such key and so belongs to no run - it folds as "before the
@@ -165,15 +169,17 @@ impl RunStarted {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RunHeld {
-    /// The hold's cause: an error category, `api-unstable` or `operator`.
+    /// The hold's cause: an error category, `api-unstable`, `operator` or `conductor-fault`.
     pub cause: String,
-    /// The error text of the line that sighted the hold, else empty.
+    /// The error text of the line that sighted the hold, the conductor's fault as
+    /// [`fault_detail`] writes it, else empty.
     pub detail: String,
     /// The action text of the cause's row.
     pub action: String,
     /// Whether the cause's row needs a person.
     pub needs_person: bool,
-    /// Who held the run: [`HOLD_BY_HOST`], [`HOLD_BY_PROBE`] or [`HOLD_BY_OPERATOR`].
+    /// Who held the run: [`HOLD_BY_HOST`], [`HOLD_BY_PROBE`], [`HOLD_BY_OPERATOR`] or
+    /// [`HOLD_BY_CONDUCTOR`].
     pub by: String,
     /// The model the hold's probes ask, empty for the default model: a host hold names its
     /// launch's model.
@@ -575,6 +581,43 @@ impl RunHeld {
     pub fn to_event(&self) -> Result<Event, serde_json::Error> {
         Ok(Event::new(TYPE_RUN_HELD, serde_json::to_vec(self)?))
     }
+
+    /// The first line of [`RunHeld::detail`], all of it when it holds no line feed: the line a
+    /// hold is named by and [`RunHeld::same_fault`] compares.
+    pub fn first_line(&self) -> &str {
+        self.detail.split('\n').next().unwrap_or_default()
+    }
+
+    /// Whether `other` holds the run on the same fault as this hold (spec 105): the bytes compared
+    /// are the cause and the detail up to its first line feed ([`RunHeld::first_line`]), each
+    /// byte for byte, as their writers recorded them; the action, the need for a person, the
+    /// writer, the model and every later line of the detail are not compared.
+    pub fn same_fault(&self, other: &RunHeld) -> bool {
+        self.cause == other.cause && self.first_line() == other.first_line()
+    }
+}
+
+/// The detail a conductor-fault hold records for `fault`, the fault's text: each line with its
+/// runs of whitespace collapsed to one space and its ends trimmed, blank lines dropped. The
+/// fault's first line, which [`RunHeld::same_fault`] compares, names what failed; a fault that
+/// varies from one occurrence to the next, such as a prompt's size or the API's own words, puts
+/// that on a later line.
+pub fn fault_detail(fault: &str) -> String {
+    fault
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// A fault's text in the shape a hold tells one fault from another by
+/// ([`RunHeld::same_fault`]): `what` failed on the first line, which reads alone and reads the
+/// same each time the fault recurs, and what `varied` between two occurrences of it - a spawn id,
+/// a spawn's output, an error's own words, a count, a revision - on the lines below, so the same
+/// fault met again after a release is the recurrence a person is held for.
+pub fn fault_text(what: impl std::fmt::Display, varied: impl std::fmt::Display) -> String {
+    format!("{what}\n{varied}")
 }
 
 impl RunReleased {
@@ -1005,5 +1048,84 @@ mod tests {
             },
             r#"{"by":"probe","held_for_s":90}"#,
         );
+    }
+
+    /// THE SAME FAULT (spec 105): a conductor fault's detail keeps the fault's lines, each with
+    /// its whitespace collapsed and blank lines dropped, and two holds name the same fault exactly
+    /// when their causes and their details' first lines are the same bytes; a later line, the
+    /// action, the need for a person, the writer and the model never enter the comparison.
+    #[test]
+    fn two_holds_name_the_same_fault_by_their_cause_and_first_line_alone() {
+        use super::*;
+        assert_eq!(
+            fault_detail("  worktree:\tgit  failed \r\n\n   \n fatal:  locked\n"),
+            "worktree: git failed\nfatal: locked",
+            "each line collapsed and trimmed, blank lines dropped"
+        );
+        let fault = |cause: &str, detail: &str| RunHeld {
+            cause: cause.to_string(),
+            detail: detail.to_string(),
+            action: "fix it".to_string(),
+            by: HOLD_BY_CONDUCTOR.to_string(),
+            ..RunHeld::default()
+        };
+        let first = fault(
+            "conductor-fault",
+            "the API refused spawn u/w#0 of unit u\na prompt of 9",
+        );
+        let cases = [
+            (
+                "a later line differs",
+                fault(
+                    "conductor-fault",
+                    "the API refused spawn u/w#0 of unit u\na prompt of 12",
+                ),
+                true,
+            ),
+            (
+                "one line alone",
+                fault("conductor-fault", "the API refused spawn u/w#0 of unit u"),
+                true,
+            ),
+            (
+                "the action, the person, the writer and the model differ",
+                RunHeld {
+                    action: "a person decides".to_string(),
+                    needs_person: true,
+                    by: HOLD_BY_OPERATOR.to_string(),
+                    model: "opus".to_string(),
+                    ..first.clone()
+                },
+                true,
+            ),
+            (
+                "the first line differs",
+                fault(
+                    "conductor-fault",
+                    "the API refused spawn u/w#1 of unit u\na prompt of 9",
+                ),
+                false,
+            ),
+            (
+                "the first line differs in case",
+                fault("conductor-fault", "The API refused spawn u/w#0 of unit u"),
+                false,
+            ),
+            (
+                "the cause differs",
+                fault("operator", "the API refused spawn u/w#0 of unit u"),
+                false,
+            ),
+            ("an empty detail", fault("conductor-fault", ""), false),
+        ];
+        for (name, other, same) in cases {
+            assert_eq!(
+                (first.same_fault(&other), other.same_fault(&first)),
+                (same, same),
+                "{name}"
+            );
+        }
+        assert_eq!(first.first_line(), "the API refused spawn u/w#0 of unit u");
+        assert_eq!(fault("operator", "").first_line(), "");
     }
 }

@@ -1897,7 +1897,7 @@ pub fn build_head(root: &Path) -> String {
 /// exactly one node `<path>::<id path>` per `definitions` row, an (id path, leaf, kind, line)
 /// quadruple (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly that leaf as its
 /// name, kind and line, and one placeholder `<path>::%<leaf>` ([`placeholder_id`]) per
-/// `placeholders` leaf, a name a reference reaches that no one same-file call target gives
+/// `placeholders` leaf, a name a call reaches that no one same-file call target gives
 /// (`entities_why` says what makes no node), and its `CALLS` edges are exactly `calls`. Any other
 /// code entity is the nameless node a call folds from, named in `calls`.
 ///

@@ -10,7 +10,8 @@ use crate::contextgraph::{
     CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD,
     CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE,
     CODE_KIND_OTHER, CODE_KIND_PROPERTY, CODE_KIND_STATIC, CODE_KIND_TRAIT, CODE_KIND_TYPE,
-    CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE,
+    CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL,
+    REF_KIND_TYPE, REF_KIND_USE,
 };
 use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 use rigger_domain::code_facts::{Bound, Recorded};
@@ -38,6 +39,23 @@ fn kind_of(syntax_type: &str) -> Kind {
         "constructor" => Kind::Constructor,
         "property" => Kind::Property,
         _ => Kind::Other,
+    }
+}
+
+/// Map a grammar tag's reference SUFFIX (the `<kind>` of a `@reference.<kind>` capture) to the
+/// kind of reference it tags, spelled as the `EdgeInferred` payload spells it (spec 117,
+/// CAPTURES): `class`, `type` and `interface` a type reference, `implementation` an impl,
+/// `constant` a const read, `field` a field and `import` a use. `call`, `send` and every suffix
+/// not named here give `None`, a call, as an unknown definition name folds to `Other` in
+/// [`kind_of`].
+fn ref_kind_of(suffix: &str) -> Option<&'static str> {
+    match suffix {
+        "class" | "type" | "interface" => Some(REF_KIND_TYPE),
+        "implementation" => Some(REF_KIND_IMPL),
+        "constant" => Some(REF_KIND_CONST),
+        "field" => Some(REF_KIND_FIELD),
+        "import" => Some(REF_KIND_USE),
+        _ => None,
     }
 }
 
@@ -162,8 +180,8 @@ fn lowered_kind(lang: Lang, tagged: Kind, node: Option<tree_sitter::Node>, sourc
 }
 
 /// One file's source text with the byte offset each of its lines begins at, computed once per
-/// [`extract`] so [`def_of`] maps a definition's last byte to its line by one binary search
-/// rather than rescanning the text per definition.
+/// [`extract`] so a byte maps to its line by one binary search ([`Source::line`]) rather than a
+/// rescan of the text per definition.
 struct Source<'s> {
     text: &'s str,
     line_starts: Vec<usize>,
@@ -176,6 +194,24 @@ impl<'s> Source<'s> {
             line_starts: line_start_offsets(text),
         }
     }
+
+    /// The 1-based line holding the byte at `at`.
+    fn line(&self, at: usize) -> u32 {
+        line_of_byte(&self.line_starts, at) + 1
+    }
+
+    /// The 1-based line of the last byte of `range`, a non-empty range: [`def_of`]'s end line, and
+    /// a doc span's last line ([`Source::span`]), so a comment node holding its line's `\n` ends on
+    /// its own line, never the next.
+    fn last_line(&self, range: &std::ops::Range<usize>) -> u32 {
+        self.line(range.end - 1)
+    }
+
+    /// The doc span of the doc lines over `range`, a non-empty range: the 1-based lines of its
+    /// first byte and of its last.
+    fn span(&self, range: &std::ops::Range<usize>) -> (u32, u32) {
+        (self.line(range.start), self.last_line(range))
+    }
 }
 
 /// THE ONE CONSTRUCTOR of a `Def` (spec 119, ONE EXTENT): every tagged, read-off and impl
@@ -183,7 +219,9 @@ impl<'s> Source<'s> {
 /// it (a tagged definition's name row, a read-off's as its reader gives it) and `end_line` the
 /// 1-based line of `range`'s last byte, `range` the definition's whole byte range, never below
 /// `line`; a zero-length `range` gives `line`. Its `path` is its `name` here and it has no
-/// `parent`. It is built ahead of the passes over the whole file that resolve the rest: `path`
+/// `parent` and no doc span, which [`extract`] gives it from its tag's `@doc` capture, else, in
+/// Rust, its outer doc lines ([`outer_doc`]). It is built ahead of the passes over the whole file
+/// that resolve the rest: `path`
 /// and `parent` need every definition's range ([`def_paths`] decides containment over the whole
 /// set), as `is_test` does (`test_regions`),
 /// and the out-of-line module facts are read from the parsed tree once every definition is known
@@ -198,7 +236,7 @@ fn def_of(
     let end_line = if range.is_empty() {
         line
     } else {
-        (line_of_byte(&source.line_starts, range.end - 1) + 1).max(line)
+        source.last_line(&range).max(line)
     };
     Def {
         kind,
@@ -211,6 +249,7 @@ fn def_of(
         is_out_of_line_module: false,
         path_override: None,
         enclosing_inline_module_path: None,
+        doc: None,
     }
 }
 
@@ -248,34 +287,66 @@ pub struct CompiledTags {
     query: tree_sitter::Query,
     /// What each of the query's captures is to the tags reading, by capture index.
     captures: Vec<Capture>,
+    /// The node kinds that construct an object in the grammar, on which a `@reference.class`
+    /// capture stays a call ([`Capture::Class`]).
+    constructors: &'static [&'static str],
 }
 
 /// What one capture of a tags query is to the tags reading ([`CompiledTags::tags_in`]).
 enum Capture {
     /// `@name`: the node naming the tag.
     Name,
-    /// `@definition.<kind>`: a definition of the kind its suffix names.
-    Definition(Kind),
-    /// `@reference.<kind>`: a reference.
-    Reference,
-    /// `@doc`: a doc comment, which upstream queries capture and the reading passes over.
+    /// `@definition.<kind>` or `@reference.<kind>`, `@reference.class` aside: the tagged node,
+    /// and what its suffix makes it.
+    Tagged(TagRole),
+    /// `@reference.class`: the tagged node, a reference of the kind its suffix names
+    /// ([`ref_kind_of`]) unless its node kind is one of the grammar's constructors
+    /// ([`CompiledTags::constructors`]), where it stays a call, so `new T()` is a call of `T`
+    /// (spec 117, CAPTURES).
+    Class(Option<&'static str>),
+    /// `@doc`: a doc comment of the match's definition, which gives it its doc span.
     Doc,
 }
 
+/// What a tagged node is, by the suffix of the capture tagging it: a definition of the kind a
+/// `@definition.<kind>` suffix names ([`kind_of`]), or a reference of the kind a
+/// `@reference.<kind>` suffix names ([`ref_kind_of`]), `None` for a call, a `@reference.class`
+/// capture on a constructor node kind included ([`Capture::Class`]).
+#[derive(Clone, Copy)]
+enum TagRole {
+    Definition(Kind),
+    Reference(Option<&'static str>),
+}
+
 /// One tag a tags query yields: the tagged node's byte range widened to cover its name, the
-/// name's byte range and start row, and the kind it defines (`None` for a reference).
+/// name's byte range and start row, what its capture makes it ([`TagRole`]), and the byte range
+/// covering every `@doc` capture of its match ([`covering`]), when it holds any.
 struct Tag {
     range: std::ops::Range<usize>,
     name_range: std::ops::Range<usize>,
     row: usize,
-    definition: Option<Kind>,
+    role: TagRole,
+    doc: Option<std::ops::Range<usize>>,
+}
+
+/// The byte range from the earlier start of `a` and `b` to the later end: the one widening of a
+/// tagged node over its name ([`Tag::range`]) and of a doc span over each doc line it holds.
+fn covering(a: std::ops::Range<usize>, b: std::ops::Range<usize>) -> std::ops::Range<usize> {
+    a.start.min(b.start)..a.end.max(b.end)
 }
 
 impl CompiledTags {
-    /// `tags_query` compiled against `language`, or an `Err` naming the tags-config step when the
-    /// query is malformed, does not fit the grammar, or captures what the tags reading does not
-    /// read (anything but `@name`, `@doc`, `@definition.*` and `@reference.*`).
-    pub fn compile(language: &tree_sitter::Language, tags_query: &str) -> Result<Self, String> {
+    /// `tags_query` compiled against `language`, each `@definition.<kind>` and
+    /// `@reference.<kind>` capture keeping what its suffix names ([`TagRole`]), a
+    /// `@reference.class` one on a node of a `constructors` kind a call ([`Capture::Class`]), or
+    /// an `Err` naming the tags-config step when the query is malformed, does not fit the
+    /// grammar, or captures what the tags reading does not read (anything but `@name`, `@doc`,
+    /// `@definition.*` and `@reference.*`).
+    pub fn compile(
+        language: &tree_sitter::Language,
+        tags_query: &str,
+        constructors: &'static [&'static str],
+    ) -> Result<Self, String> {
         let query = tree_sitter::Query::new(language, tags_query)
             .map_err(|e| format!("symbols: tags config: {e}"))?;
         let captures = query
@@ -288,8 +359,9 @@ impl CompiledTags {
                     name.strip_prefix("definition."),
                     name.strip_prefix("reference."),
                 ) {
-                    (Some(kind), _) => Ok(Capture::Definition(kind_of(kind))),
-                    (_, Some(_)) => Ok(Capture::Reference),
+                    (Some(kind), _) => Ok(Capture::Tagged(TagRole::Definition(kind_of(kind)))),
+                    (_, Some(kind @ "class")) => Ok(Capture::Class(ref_kind_of(kind))),
+                    (_, Some(kind)) => Ok(Capture::Tagged(TagRole::Reference(ref_kind_of(kind)))),
                     _ => Err(format!(
                         "symbols: tags config: the capture @{name} is not one a tags query \
                          makes: @name, @doc, @definition.* or @reference.*"
@@ -301,6 +373,7 @@ impl CompiledTags {
             language: language.clone(),
             query,
             captures,
+            constructors,
         })
     }
 
@@ -309,8 +382,10 @@ impl CompiledTags {
     /// definition or reference makes a tag, unless its name node holds a parse error; of the
     /// matches naming the same node, the one of the earliest pattern makes its tag; and a tag
     /// is yielded once a later-matched name starts past its name's end, the rest in name order
-    /// when the matches run out. Within a match the last name capture names it and the last
-    /// definition or reference capture is the tagged node.
+    /// when the matches run out. Within a match the last name capture names it, the last
+    /// definition or reference capture is the tagged node, a `@reference.class` one a call when
+    /// that node's kind is one of the [`CompiledTags::constructors`], and its `@doc` captures,
+    /// read as the matcher yields them, cover its doc ([`Tag::doc`]), for every language.
     fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, source.as_bytes());
@@ -331,15 +406,26 @@ impl CompiledTags {
             };
             let mut name = None;
             let mut tagged = None;
+            let mut doc = None;
             for capture in found.captures {
                 match self.captures[capture.index as usize] {
                     Capture::Name => name = Some(capture.node),
-                    Capture::Definition(kind) => tagged = Some((capture.node, Some(kind))),
-                    Capture::Reference => tagged = Some((capture.node, None)),
-                    Capture::Doc => {}
+                    Capture::Tagged(role) => tagged = Some((capture.node, role)),
+                    Capture::Class(ref_kind) => {
+                        let constructs = self.constructors.contains(&capture.node.kind());
+                        let role = TagRole::Reference(ref_kind.filter(|_| !constructs));
+                        tagged = Some((capture.node, role));
+                    }
+                    Capture::Doc => {
+                        let line = capture.node.byte_range();
+                        doc = Some(match doc.take() {
+                            Some(span) => covering(span, line),
+                            None => line,
+                        });
+                    }
                 }
             }
-            let (Some(name), Some((node, definition))) = (name, tagged) else {
+            let (Some(name), Some((node, role))) = (name, tagged) else {
                 continue;
             };
             if name.has_error() {
@@ -348,10 +434,11 @@ impl CompiledTags {
             let name_range = name.byte_range();
             let node_range = node.byte_range();
             let tag = Tag {
-                range: node_range.start.min(name_range.start)..node_range.end.max(name_range.end),
+                range: covering(node_range, name_range.clone()),
                 row: name.start_position().row,
                 name_range,
-                definition,
+                role,
+                doc,
             };
             let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
             match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
@@ -392,11 +479,19 @@ impl CompiledTags {
 /// an impl block's included, is built by [`def_of`] from its byte range, which gives its
 /// `end_line`, and takes its id path and parent from [`def_paths`].
 ///
+/// A reference tag is a reference of the kind its capture's suffix names ([`ref_kind_of`], spec
+/// 117), its `ref_kind` none for a call, a `@reference.class` tag on a constructor node kind
+/// staying a call ([`Capture::Class`]).
+///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
 /// every call reference so it takes its caller and test region by the same position rules, an
 /// impl header's trait row taking the self type's path when exactly one non-test definition of
 /// the file has the self type's leaf, else the impl block's.
+///
+/// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, in every
+/// language; in Rust, a definition with no capture takes its outer doc lines' ([`outer_doc`]) and
+/// the file takes its opening inner doc lines' ([`inner_doc`]). Every other file has none.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags reading yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -436,28 +531,38 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         };
         // 1-based line from the tag name's start row.
         let line = tag.row as u32 + 1;
-        if let Some(kind) = tag.definition {
-            // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
-            // definition is filtered by, recorded under and ranked by as a caller is one.
-            let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
-            dropped.extend(record_def(
-                lang,
-                &text,
-                node,
-                kind,
-                (tag.range.clone(), def_leaf(node, name), line),
-                &mut defs,
-                &mut def_ranges,
-            ));
-        } else {
-            ref_positions.push(tag.range.start);
-            refs.push(SymRef {
-                name: name.to_string(),
-                line,
-                enclosing: None,
-                is_test: false,
-                ref_kind: None,
-            });
+        match tag.role {
+            TagRole::Definition(kind) => {
+                // THE LEAF, ahead of the filter and both pushes `record_def` makes, so the name a
+                // definition is filtered by, recorded under and ranked by as a caller is one.
+                let node = root.descendant_for_byte_range(tag.range.start, tag.range.end);
+                let at = defs.len();
+                dropped.extend(record_def(
+                    lang,
+                    &text,
+                    node,
+                    kind,
+                    (tag.range.clone(), def_leaf(node, name), line),
+                    &mut defs,
+                    &mut def_ranges,
+                ));
+                // Spec 117 (DOC FACTS): the `@doc` capture gives the definition just recorded its
+                // span; a definition the name filter drops was not recorded, so its capture gives
+                // none.
+                if let Some(def) = defs.get_mut(at) {
+                    def.doc = tag.doc.map(|doc| text.span(&doc));
+                }
+            }
+            TagRole::Reference(ref_kind) => {
+                ref_positions.push(tag.range.start);
+                refs.push(SymRef {
+                    name: name.to_string(),
+                    line,
+                    enclosing: None,
+                    is_test: false,
+                    ref_kind: ref_kind.map(str::to_string),
+                });
+            }
         }
     }
     // Every impl block is a definition of its own (gap 104), named by its header, with its trait
@@ -554,6 +659,19 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             ));
         }
     }
+    // Spec 117 (DOC FACTS): in Rust, a definition no `@doc` capture gave a span, an impl block's
+    // and a read-off's included, takes the one its outer doc lines give it ([`outer_doc`]), and
+    // the file takes the one its opening inner doc lines give it ([`inner_doc`]).
+    let doc = if lang == Lang::Rust {
+        for (d, (range, _, _)) in defs.iter_mut().zip(&def_ranges) {
+            d.doc = d
+                .doc
+                .or_else(|| outer_doc(root, range, source.as_bytes()).map(|doc| text.span(&doc)));
+        }
+        inner_doc(root, source.as_bytes()).map(|doc| text.span(&doc))
+    } else {
+        None
+    };
     // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH; CONTAINS IS STRUCTURE): each definition's id path
     // and parent, decided over every definition's range at once, so a container recorded after
     // what it holds still prefixes and parents it.
@@ -659,6 +777,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         defs,
         refs,
         partial,
+        doc,
     })
 }
 
@@ -793,14 +912,11 @@ fn outermost_node<'t>(
 /// `use`, a statement): self-attributed test either through the node's OWN leading
 /// inner attribute ([`leading_inner_test_attribute`]) or through an outer attribute stack sitting
 /// as its sibling immediately before it. A tuple field's `pub` is a sibling too, between its
-/// attributes and its type, so the walk first steps over a `visibility_modifier`.
+/// attributes and its type, so the walk first steps over a `visibility_modifier`
+/// ([`stack_above`]).
 fn node_preceded_by_test_attribute(node: tree_sitter::Node, source: &[u8]) -> bool {
-    let above = match node.prev_sibling() {
-        Some(visibility) if visibility.kind() == "visibility_modifier" => visibility.prev_sibling(),
-        above => above,
-    };
     leading_inner_test_attribute(node, source)
-        || attribute_stack_names_test(source, above, |n| n.prev_sibling())
+        || attribute_stack_names_test(source, stack_above(node), |n| n.prev_sibling())
 }
 
 /// One impl block read off the parsed tree: its header name (`impl Trait for Type`, or
@@ -1950,37 +2066,126 @@ fn opens_with_inner_test_attribute(first: Option<tree_sitter::Node>, source: &[u
     .is_some()
 }
 
-/// The one walk shared by [`preceded_by_test_attribute`] (backward over `prev_sibling`),
+/// Whether `node` is a Rust comment: a `//` line or a `/* */` block, doc or plain.
+fn is_comment(node: tree_sitter::Node) -> bool {
+    matches!(node.kind(), "line_comment" | "block_comment")
+}
+
+/// The ATTRIBUTE STACK read from `first` along `advance`: each node of the contiguous run of
+/// comments ([`is_comment`]) and attribute items, outer and inner (the attribute kinds of
+/// [`OUTER_DOC`] and [`INNER_DOC`]), it starts, ending before the first node that is neither -
+/// the boundary of the stack. The one walk shared by [`scan_attribute_stack`], read backward over
+/// `prev_sibling` and forward over `next_named_sibling`, and by both doc spans, [`outer_doc`] and
+/// [`inner_doc`].
+fn attribute_stack<'a>(
+    first: Option<tree_sitter::Node<'a>>,
+    advance: impl Fn(tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>>,
+) -> impl Iterator<Item = tree_sitter::Node<'a>> {
+    std::iter::successors(first, move |&node| advance(node))
+        .take_while(|&node| is_comment(node) || [OUTER_DOC.1, INNER_DOC.1].contains(&node.kind()))
+}
+
+/// The node the outer attribute stack above `node` starts at, its nearest: `node`'s previous
+/// sibling, or the one before that when it is a `visibility_modifier` - a tuple field's `pub`,
+/// which the grammar gives as a sibling between the field's attributes and its type. The one
+/// step onto the stack [`node_preceded_by_test_attribute`] and [`outer_doc`] take.
+fn stack_above(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    match node.prev_sibling() {
+        Some(visibility) if visibility.kind() == "visibility_modifier" => visibility.prev_sibling(),
+        above => above,
+    }
+}
+
+/// An item's doc lines, read above it: a comment whose `outer` doc marker field is set (`///`,
+/// `/** */`) and an outer attribute item ([`is_doc_line`]), whose kind also bounds an
+/// [`attribute_stack`].
+const OUTER_DOC: (&str, &str) = ("outer", "attribute_item");
+
+/// A file's doc lines, read at its opening: a comment whose `inner` doc marker field is set
+/// (`//!`, `/*! */`) and an inner attribute item ([`is_doc_line`]), whose kind also bounds an
+/// [`attribute_stack`].
+const INNER_DOC: (&str, &str) = ("inner", "inner_attribute_item");
+
+/// Whether `node`, a node of an attribute stack, is a Rust doc line of `(marker, attribute)`,
+/// [`OUTER_DOC`] or [`INNER_DOC`]: a comment whose `marker` doc marker field is set, so `////`,
+/// `/**/` and `/***/` are plain, or an attribute item of the `attribute` kind naming `doc` with a
+/// string literal value, plain or raw, `#[doc = ".."]`, so `#[doc(hidden)]` and
+/// `#[doc = include_str!(..)]` are none.
+fn is_doc_line(node: tree_sitter::Node, source: &[u8], (marker, attribute): (&str, &str)) -> bool {
+    if is_comment(node) {
+        node.child_by_field_name(marker).is_some()
+    } else {
+        node.kind() == attribute
+            && named_attribute(node, source).is_some_and(|(attribute, name)| {
+                name == "doc"
+                    && attribute.child_by_field_name("value").is_some_and(|value| {
+                        matches!(value.kind(), "string_literal" | "raw_string_literal")
+                    })
+            })
+    }
+}
+
+/// The byte range covering the doc lines of `side` in `stack` ([`is_doc_line`]), from the first
+/// to the last, every other node between them inside it; `None` when it holds none.
+fn doc_lines<'a>(
+    stack: impl Iterator<Item = tree_sitter::Node<'a>>,
+    source: &[u8],
+    side: (&str, &str),
+) -> Option<std::ops::Range<usize>> {
+    stack
+        .filter(|&node| is_doc_line(node, source, side))
+        .map(|node| node.byte_range())
+        .reduce(covering)
+}
+
+/// Spec 117 (DOC FACTS): the byte range of the Rust definition over `range`'s outer doc lines -
+/// `///` lines, `/** */` blocks and `#[doc = ".."]` attributes with a string literal value
+/// ([`OUTER_DOC`]) - in the attribute stack above its outermost node ([`outermost_node`],
+/// [`stack_above`]); `None` when the stack holds none.
+fn outer_doc(
+    root: tree_sitter::Node,
+    range: &std::ops::Range<usize>,
+    source: &[u8],
+) -> Option<std::ops::Range<usize>> {
+    let node = outermost_node(root, range)?;
+    doc_lines(
+        attribute_stack(stack_above(node), |n| n.prev_sibling()),
+        source,
+        OUTER_DOC,
+    )
+}
+
+/// Spec 117 (DOC FACTS): the byte range of the inner doc lines a Rust file opens with - `//!`
+/// lines, `/*! */` blocks and `#![doc = ".."]` attributes with a string literal value
+/// ([`INNER_DOC`]) - in the attribute stack read forward from the root's first named child;
+/// `None` when the stack holds none.
+fn inner_doc(root: tree_sitter::Node, source: &[u8]) -> Option<std::ops::Range<usize>> {
+    doc_lines(
+        attribute_stack(root.named_child(0), |n| n.next_named_sibling()),
+        source,
+        INNER_DOC,
+    )
+}
+
+/// The attribute walk of [`preceded_by_test_attribute`] (backward over `prev_sibling`),
 /// [`opens_with_inner_test_attribute`] (forward over `next_named_sibling`, from a body's or the
-/// file root's first named child), [`is_proc_macro_fn`] and (round 7) [`out_of_line_path_override`]: starting at `first`, follow `advance`
-/// across a contiguous run of comment (`line_comment`, `block_comment`) and attribute
-/// (`attribute_item`, `inner_attribute_item`) nodes, stopping at the first node that is neither -
-/// the boundary of the stack. `visit` is asked of every attribute node encountered along the way
-/// (not merely the nearest one), and the LAST `Some` it returns wins - so a comment or an unrelated
-/// attribute sitting between two stacked attributes never severs the scan, and (for
-/// [`attribute_stack_names_test`]'s boolean-shaped `visit`) a match two attributes further along is
-/// never hidden by a nearer one that does not match.
+/// file root's first named child), [`is_proc_macro_fn`] and (round 7)
+/// [`out_of_line_path_override`]: `visit` is asked of every attribute item of the
+/// [`attribute_stack`] read from `first` along `advance` (not merely the nearest one), and the
+/// LAST `Some` it returns wins - so a comment or an unrelated attribute sitting between two
+/// stacked attributes never severs the scan, and (for [`attribute_stack_names_test`]'s
+/// boolean-shaped `visit`) a match two attributes further along is never hidden by a nearer one
+/// that does not match.
 fn scan_attribute_stack<'a, T>(
     source: &[u8],
     first: Option<tree_sitter::Node<'a>>,
     advance: impl Fn(tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>>,
     mut visit: impl FnMut(tree_sitter::Node<'a>, &[u8]) -> Option<T>,
 ) -> Option<T> {
-    let mut found = None;
-    let mut cur = first;
-    while let Some(node) = cur {
-        match node.kind() {
-            "line_comment" | "block_comment" => {}
-            "attribute_item" | "inner_attribute_item" => {
-                if let Some(v) = visit(node, source) {
-                    found = Some(v);
-                }
-            }
-            _ => break,
-        }
-        cur = advance(node);
-    }
-    found
+    attribute_stack(first, advance)
+        .filter(|&node| !is_comment(node))
+        .filter_map(|node| visit(node, source))
+        .last()
 }
 
 /// [`scan_attribute_stack`] applied to the "does any attribute in the stack gate on `test`"
@@ -2383,9 +2588,10 @@ mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
 
-    /// `query` compiled against `language`, for a test that injects a query of its own.
+    /// `query` compiled against `language` with no constructor kinds, for a test that injects a
+    /// query of its own.
     fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
-        CompiledTags::compile(language, query).expect("the query compiles")
+        CompiledTags::compile(language, query, &[]).expect("the query compiles")
     }
 
     /// Each kind lowers to its own kind string: the eight a graph folded before the kind constants
@@ -2752,7 +2958,8 @@ setup!();
 
     /// A CALLER IS NAMED BY ITS PATH (spec 119 criterion 8): a reference's `enclosing` is its
     /// caller's `Def.path`, never its leaf - a call in `impl T { fn new() }` is `T::new`'s and one
-    /// in a Go receiver method `Recv::name`'s.
+    /// in a Go receiver method `Recv::name`'s, as is that method's receiver type, a type reference
+    /// (spec 117, CAPTURES).
     #[test]
     fn a_reference_s_enclosing_is_its_caller_s_path() {
         crate::symbol_index::assert_callers(
@@ -2763,10 +2970,13 @@ setup!();
         crate::symbol_index::assert_callers(
             "go",
             crate::caller_sources::GO_RECEIVER_CALLER_SOURCE,
-            &[
-                (5, "Recv", Some("Recv::name")),
-                (5, "helper", Some("Recv::name")),
-            ],
+            &[(5, "helper", Some("Recv::name"))],
+        );
+        crate::symbol_index::assert_tagged_refs(
+            "go",
+            crate::caller_sources::GO_RECEIVER_CALLER_SOURCE,
+            "5 type Recv Recv::name",
+            "a Go receiver method's receiver type is that method's, by its path",
         );
     }
 
@@ -3707,7 +3917,7 @@ fn product() {}
     #[test]
     fn a_capture_the_tags_reading_does_not_read_fails_to_compile() {
         let language: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
-        let msg = CompiledTags::compile(&language, tree_sitter_c_sharp::TAGS_QUERY)
+        let msg = CompiledTags::compile(&language, tree_sitter_c_sharp::TAGS_QUERY, &[])
             .err()
             .expect("a bare @module capture fails to compile");
         assert!(
@@ -3721,7 +3931,7 @@ fn product() {}
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         // A malformed tags query must return Err from the config step, never panic, so a bad
         // registry entry degrades loudly instead of crashing the indexer.
-        let msg = CompiledTags::compile(&language, "(this is not valid scm")
+        let msg = CompiledTags::compile(&language, "(this is not valid scm", &[])
             .err()
             .expect("malformed query should be Err");
         assert!(
@@ -4437,14 +4647,15 @@ pub fn f() -> u8 {
     }
 
     /// Spec 117 criterion 6: the tagged reference pass reads Rust alone, so a TypeScript type
-    /// name, a `type_identifier` in its grammar too, stages no row.
+    /// name, a `type_identifier` in its grammar too, stages no row of its own: its one row is the
+    /// type reference the TypeScript query's `@reference.type` capture tags (spec 117, CAPTURES).
     #[test]
     fn the_tagged_reference_pass_reads_rust_alone() {
         crate::symbol_index::assert_tagged_refs(
             "ts",
             "let k: Kestrel = q;\n",
-            "",
-            "another language's type stages nothing",
+            "1 type Kestrel k",
+            "another language's type stages nothing beyond its capture's row",
         );
     }
 
@@ -4468,5 +4679,171 @@ pub fn f() -> u8 {
             "3 type Plover g",
             "no prelude name is tagged",
         );
+    }
+
+    /// A doc span: its first and last 1-based line.
+    type DocSpan = Option<(u32, u32)>;
+
+    /// The doc span of `fs` and each of its definitions' as `(name, span)`, the definitions in
+    /// line order: the one projection the doc-span tests compare whole.
+    fn doc_spans(fs: &FileSymbols) -> (DocSpan, Vec<(&str, DocSpan)>) {
+        let mut defs: Vec<_> = fs
+            .defs
+            .iter()
+            .map(|d| (d.line, d.name.as_str(), d.doc))
+            .collect();
+        defs.sort();
+        (
+            fs.doc,
+            defs.into_iter().map(|(_, name, doc)| (name, doc)).collect(),
+        )
+    }
+
+    /// RUST DOC SPANS ARE EXTRACTED: a definition's span runs from its first outer doc line - a
+    /// `///` line, a `/** */` block or a name-value `#[doc = ".."]` - to its last, the attributes
+    /// and plain comments between them inside it and those before the first or after the last
+    /// outside it, over a tuple field's `pub`, an enum variant's, an impl block's and a method's
+    /// alike, and up to the first other node only; a file opening with inner doc lines - `//!`,
+    /// `/*! */`, `#![doc = ".."]` - has its file span from the first to the last of them, an inner
+    /// doc inside an item's body joining neither the file's span nor the item's; a
+    /// `#[doc(hidden)]`, a doc attribute whose value is no string literal (`include_str!(..)`,
+    /// `concat!(..)`), a name-value attribute not naming `doc` (`#[must_use = ".."]`), `////`,
+    /// `/**/` and `/***/` is no doc line, while a raw string value is one; and under a fixture
+    /// query a `@doc` capture in a definition's match gives that definition the captured span,
+    /// over the rule's, while a capture in the match of a definition the extraction drops gives no
+    /// other definition a span.
+    #[test]
+    fn rust_doc_spans_are_extracted() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let fixture = compiled(
+            &language,
+            "((line_comment)* @doc . (function_item name: (identifier) @name) @definition.function)\n\
+             ((line_comment)* @doc . (const_item name: (identifier) @name) @definition.constant)\n",
+        );
+        // (case, whether the fixture query reads the source - else the registered one does -, the
+        // source, its file span, each definition's span)
+        let rows = [
+            (
+                "doc lines around a doc(hidden) attribute",
+                false,
+                "/// First.\n#[doc(hidden)]\n/// Last.\npub fn f() {}\n",
+                None,
+                vec![("f", Some((1, 3)))],
+            ),
+            (
+                "inner line docs after a plain comment open the file",
+                false,
+                "// Licence.\n//! The crate.\n//! More.\n\nfn g() {}\n",
+                Some((2, 3)),
+                vec![("g", None)],
+            ),
+            (
+                "an inner doc inside a module's body",
+                false,
+                "//! Crate.\n\n/// M.\nmod m {\n    //! Inner.\n    fn b() {}\n}\n",
+                Some((1, 1)),
+                vec![("m", Some((3, 3))), ("b", None)],
+            ),
+            (
+                "plain comments and attributes inside the span and outside it",
+                false,
+                "// plain\n/// A.\n// plain\n#[doc = \"B.\"]\n// trail\n#[derive(Debug)]\nstruct S;\n",
+                None,
+                vec![("S", Some((2, 4)))],
+            ),
+            (
+                "an outer doc block",
+                false,
+                "/**\n * Block.\n */\nfn b() {}\n",
+                None,
+                vec![("b", Some((1, 3)))],
+            ),
+            (
+                "no doc line",
+                false,
+                "#[doc(hidden)]\nfn h() {}\n////\nfn i() {}\n/**/\nfn j() {}\n/***/\nfn k() {}\n",
+                None,
+                vec![("h", None), ("i", None), ("j", None), ("k", None)],
+            ),
+            (
+                "a name-value attribute not naming doc",
+                false,
+                "#[must_use = \"use it\"]\nfn m() {}\n",
+                None,
+                vec![("m", None)],
+            ),
+            (
+                "a doc value that is no string literal",
+                false,
+                "#![doc = include_str!(\"../README.md\")]\n#[doc = include_str!(\"x.md\")]\nfn d() {}\n/// A.\n#[doc = concat!(\"B\", \".\")]\n/// C.\nfn e() {}\n",
+                None,
+                vec![("d", None), ("e", Some((4, 6)))],
+            ),
+            (
+                "raw string doc values",
+                false,
+                "#![doc = r\"Crate.\"]\n#[doc = r#\"Raw.\"#]\nfn r() {}\n",
+                Some((1, 1)),
+                vec![("r", Some((2, 2)))],
+            ),
+            (
+                "an inner doc attribute and block, then an item's doc",
+                false,
+                "#![doc = \"Crate.\"]\n/*! More. */\n/// Item.\nfn i() {}\n",
+                Some((1, 2)),
+                vec![("i", Some((3, 3)))],
+            ),
+            (
+                "a tuple field, a variant, an impl block and a method",
+                false,
+                "/// T.\npub struct T(\n    /// Zero.\n    pub u8,\n);\n/// E.\nenum E {\n    /// A.\n    A,\n}\n/// Impl.\nimpl E {\n    /// M.\n    fn m() {}\n}\n",
+                None,
+                vec![
+                    ("T", Some((1, 1))),
+                    ("0", Some((3, 3))),
+                    ("E", Some((6, 6))),
+                    ("A", Some((8, 8))),
+                    ("impl E", Some((11, 11))),
+                    ("m", Some((13, 13))),
+                ],
+            ),
+            (
+                "a doc line above another node",
+                false,
+                "/// Use.\nuse x;\nfn u() {}\n",
+                None,
+                vec![("u", None)],
+            ),
+            ("an empty file", false, "", None, vec![]),
+            (
+                "a capture gives its definition the span",
+                true,
+                "// One.\n// Two.\nfn f() {}\nfn g() {}\n",
+                None,
+                vec![("f", Some((1, 2))), ("g", None)],
+            ),
+            (
+                "a capture wins over the rule",
+                true,
+                "/// R.\n// plain\nfn r() {}\n",
+                None,
+                vec![("r", Some((1, 2)))],
+            ),
+            (
+                "a dropped definition's capture",
+                true,
+                "fn f() {}\n// Gone.\nconst _: u8 = 0;\n",
+                None,
+                vec![("f", None)],
+            ),
+        ];
+        for (case, under_fixture, src, file, defs) in rows {
+            let fs = if under_fixture {
+                extract(src, Lang::Rust, &fixture).expect("the fixture query extracts the source")
+            } else {
+                crate::symbol_index::extracted("rs", src)
+            };
+            assert_eq!(doc_spans(&fs), (file, defs), "{case}");
+        }
     }
 }

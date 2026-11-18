@@ -353,6 +353,7 @@ pub fn planted_file(
                 end_line: line,
                 parent: None,
                 test: false,
+                doc: None,
             })
             .collect(),
         mentions: calls.chain(refs).collect(),
@@ -440,6 +441,7 @@ pub fn define_member(
         end_line: line,
         parent: Some(at as u32),
         test: false,
+        doc: None,
     });
 }
 
@@ -475,6 +477,7 @@ impl PlantedTree {
             end_line: line,
             parent: None,
             test: false,
+            doc: None,
         });
     }
 

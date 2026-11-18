@@ -83,7 +83,7 @@ pub enum Kind {
     /// The unit failed and is remediating: this is failure `n` of the `max` bound it
     /// escalates at ([`ledger::Unit::max_retries`], stamped on its failure). `cause` is the
     /// conductor's own closed-vocabulary tag for WHY (spec 69, criterion 3: the cause wire) -
-    /// `reject`, `gate:<name>`, `integrate-conflict`, or `infra:<kind>` - defaulted to
+    /// `reject`, `gate:<name>`, `integrate-conflict`, `git-refused`, or `infra:<kind>` - defaulted to
     /// `"unknown"` when the folded [`ledger::Unit::cause`] is empty (a cause-less prior event).
     RejectRecurrence { n: u32, max: u32, cause: String },
     /// The review approved (on the result channel) but the unit is not yet integrated.
