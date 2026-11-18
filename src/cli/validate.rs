@@ -725,21 +725,21 @@ fn residue_advisories(
 
 /// The warning-only `rigger validate` advisories (spec 23, unit 2) naming every process still
 /// rooted under the scratch root: a leak the teardown reap missed, or a process left running
-/// while no teardown is active. ONE advisory per process, each naming its pid and command, so
-/// an operator can see and reclaim it - surfaced only, like the residue block, never a hard
-/// failure and never a kill (the teardown reaps, such as `Worktree::remove`'s, are the only
-/// kill). Empty when nothing is rooted there; and because the shared scan authority
+/// while no teardown is active. ONE advisory per process, each naming its pid and executable,
+/// never its arguments, which can hold a secret, so an operator can see and reclaim it -
+/// surfaced only, like the residue block, never a hard failure and never a kill (the teardown
+/// reaps, such as `Worktree::remove`'s, are the only kill). Empty when nothing is rooted there; and because the shared scan authority
 /// ([`rigger::reap::processes_rooted_under`] - the SAME one the teardown reap consumes) returns
 /// empty where the dir is absent or the process interface cannot read the OS, this is a
 /// graceful no-op (empty, never an error) on such an OS too.
 fn leaked_process_advisories(scratch_root: &Path) -> Vec<String> {
     rigger::reap::processes_rooted_under(scratch_root)
         .into_iter()
-        .map(|(pid, command)| {
-            let named = if command.is_empty() {
+        .map(|(pid, program)| {
+            let named = if program.is_empty() {
                 format!("pid {pid}")
             } else {
-                format!("pid {pid} ({command})")
+                format!("pid {pid} ({program})")
             };
             format!(
                 "warning: process rooted under the scratch root (surfaced only - validate \

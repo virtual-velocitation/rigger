@@ -12,8 +12,8 @@
 //! children) to ANY process rooted in a dir rigger owns, regardless of who spawned it.
 //!
 //! Three entry points share one scan authority and one termination sequence:
-//! - [`processes_rooted_under`] - the pure detection primitive, `(pid, command)` for every
-//!   process whose cwd resolves strictly inside a base dir. Both the teardown reap AND
+//! - [`processes_rooted_under`] - the pure detection primitive, `(pid, executable name)` for
+//!   every process whose cwd resolves strictly inside a base dir. Both the teardown reap AND
 //!   `rigger validate`'s leaked-process advisory (spec 23, unit 2) consume this exact
 //!   function; there is no second scan. UNGUARDED by [`is_reapable_base`] - `rigger
 //!   validate` deliberately scans a whole scratch tree for visibility, which the reap's own
@@ -117,7 +117,7 @@ use std::time::{Duration, Instant};
 const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Every process whose resolved cwd is `base_dir` itself or strictly inside it, as
-/// `(pid, command)`. The SINGLE scan authority both the teardown reap
+/// `(pid, executable name)`. The SINGLE scan authority both the teardown reap
 /// ([`reap_processes_rooted_under`]) and `rigger validate`'s leaked-process advisory
 /// (spec 23, unit 2) consume - there is no second implementation. UNGUARDED: unlike the
 /// reap, this pure detection primitive is not scoped by [`is_reapable_base`], so a caller
@@ -137,9 +137,10 @@ const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 /// Component matching (not string prefix) is the load-bearing safety boundary -
 /// `<base>-sibling` shares a string prefix with `<base>` but is a different component and is
 /// never matched, so a process outside the exact dir is never reaped. The scanning process
-/// itself is excluded (rigger never reaps its own pid). Each
-/// match's command ([`crate::os_process::command`]) is purely descriptive: it names the leak in
-/// the `rigger validate` advisory and never affects which processes are reaped.
+/// itself is excluded (rigger never reaps its own pid). Each match's executable name
+/// ([`crate::os_process::executable_name`]), never its arguments, which can hold a secret, is
+/// purely descriptive: it names the leak in the `rigger validate` advisory and never affects
+/// which processes are reaped.
 pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
     // Resolve the base LEXICALLY (spec 89 criterion 3), not by requiring it to exist: a
     // process can hold a now-DELETED dir as its cwd (a test binary still looping after the
@@ -159,7 +160,7 @@ pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
         .into_iter()
         .filter(|&pid| pid != self_pid)
         .filter(|&pid| os_process::cwd_lies_in(pid, &base))
-        .map(|pid| (pid, os_process::command(pid)))
+        .map(|pid| (pid, os_process::executable_name(pid)))
         .collect()
 }
 
