@@ -6017,7 +6017,7 @@ impl RunCtx<'_> {
             // ([`Worktree::keep_tree_aside`]) goes with its branch.
             if matches!(result, Ok(true)) {
                 let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
-                let _ = worktree::delete_kept(&self.deps.repo, &w.branch);
+                let _ = worktree::reap_keeps(&self.deps.repo, &w.branch, &[]);
             }
         }
         result
@@ -8852,7 +8852,7 @@ impl RunCtx<'_> {
             // unit's kept ref with them.
             let _ = candidates[i].wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
-            let _ = worktree::delete_kept(&self.deps.repo, &unit_branch(&st.name));
+            let _ = worktree::reap_keeps(&self.deps.repo, &unit_branch(&st.name), &[]);
             return Ok(true);
         }
 
@@ -11101,7 +11101,7 @@ impl RunCtx<'_> {
                                 ));
                             }
                             let _ = Worktree::delete_branch(&self.deps.repo, &branch);
-                            let _ = worktree::delete_kept(&self.deps.repo, &branch);
+                            let _ = worktree::reap_keeps(&self.deps.repo, &branch, &[]);
                             None
                         }
                         Err(e) => Some(e.0),
@@ -51175,6 +51175,74 @@ stage "implement" adjudicator "adj" failed
             )),
             "",
             "nor any commit the run branch holds"
+        );
+    }
+
+    /// A UNIT THAT KEPT TWICE LEAVES NO KEEP ONCE IT LANDS: a unit git refuses escalates with its
+    /// tree kept, is resumed and escalates again with another, the first set aside by the second;
+    /// resumed once more with git no longer refusing, it lands, and its integration removes both
+    /// keeps its record names, the one set aside included, while another lineage's ref sharing
+    /// the unit's prefix stays.
+    #[test]
+    #[cfg(unix)]
+    fn a_unit_that_kept_twice_leaves_no_keep_once_it_lands() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let (hook, cfg, driver) = refusing_every_attempt(repo.path());
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        for attempt in 1..=2 {
+            assert!(
+                run_isolated(&cfg, &deps).is_err(),
+                "attempt {attempt}: the refusal ends the drive"
+            );
+            assert!(release_the_hold(&deps), "attempt {attempt}: released");
+        }
+        let escalates = |what: &str| match run_isolated(&cfg, &deps) {
+            Ok(state) => assert_eq!(
+                state.units["unit-a"].status,
+                ledger::Status::Escalated,
+                "{what}"
+            ),
+            Err(e) => panic!("{what}: {}", e.0),
+        };
+        escalates("the attempt that spends the bound escalates the unit");
+        let first = git_out(&repo_path, &["rev-parse", "rigger/kept/unit-a"]);
+        grant_resume(&store, "unit-a", 1);
+        escalates("the granted attempt, refused, escalates the unit again");
+        let second = git_out(&repo_path, &["rev-parse", "rigger/kept/unit-a"]);
+        let first_aside = format!("rigger/orphaned/unit-a-{}", &first[..12]);
+        assert_ne!(first, second, "precondition: the second keep is another tree");
+        assert_eq!(
+            git_out(&repo_path, &["rev-parse", &first_aside]),
+            first,
+            "precondition: the first keep stands aside"
+        );
+        let other = git_out(
+            &repo_path,
+            &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "another lineage"],
+        );
+        let theirs = format!("rigger/orphaned/unit-a-{}", &other[..12]);
+        git_out(
+            &repo_path,
+            &["update-ref", &format!("refs/heads/{theirs}"), &other],
+        );
+        std::fs::remove_file(&hook).unwrap();
+        grant_resume(&store, "unit-a", 1);
+
+        let state = match run_isolated(&cfg, &deps) {
+            Ok(state) => state,
+            Err(e) => panic!("the unit lands once git no longer refuses: {}", e.0),
+        };
+
+        assert_eq!(state.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(
+            crate::worktree::held_refs(&repo_path).unwrap(),
+            [(theirs, other)],
+            "both keeps go with the unit's landing, and only another lineage's ref stays"
         );
     }
 

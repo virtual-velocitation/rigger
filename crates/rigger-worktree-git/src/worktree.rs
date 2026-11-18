@@ -1727,7 +1727,7 @@ pub fn set_kept_aside(repo: &str, branch: &str) -> Result<Option<String>, Error>
 /// Delete the kept ref of the unit whose branch is `branch` ([`kept_ref`]), when there is one and
 /// no worktree has it checked out: called where the unit's branch is reaped once its work has
 /// landed.
-pub fn delete_kept(repo: &str, branch: &str) -> Result<(), Error> {
+pub fn reap_keeps(repo: &str, branch: &str, _keeps: &[Kept]) -> Result<(), Error> {
     let full = format!("refs/heads/{}", kept_ref(branch));
     if let Some(tip) = ref_commit(repo, &full)? {
         if !checked_out(repo)?.contains(&full) {
@@ -9626,11 +9626,106 @@ mod tests {
                 Some(orphaned_ref("unit-look", &looked_at)),
                 "{row}: setting it aside copies it"
             );
-            delete_kept(&repo_path, BRANCH).unwrap();
+            let recorded = [Kept {
+                reference: KEPT.to_string(),
+                commit: looked_at.clone(),
+            }];
+            reap_keeps(&repo_path, BRANCH, &recorded).unwrap();
             stands("after the unit's integration");
             reap_held_refs(&repo_path, KEPT).unwrap();
             stands("after branch collection");
             wt.remove().unwrap();
+        }
+    }
+
+    /// A UNIT'S INTEGRATION REAPS ITS OWN KEEPS AND SETS ASIDE THE REST: every keep the unit's
+    /// record names goes, by its commit, wherever it stands (still on the kept ref, set aside by
+    /// a later keep, or landed aside while the kept ref was checked out); a kept ref whose tip is
+    /// no recorded keep (a person's commit on it, a keep no record names) is set aside rather
+    /// than deleted; and another lineage's ref sharing the unit's prefix stays.
+    #[test]
+    fn a_unit_integration_reaps_its_own_keeps_and_sets_aside_the_rest() {
+        const BRANCH: &str = "rigger/u/unit-r";
+        fn commit_on(repo: &str, parent: &str, message: &str) -> String {
+            let tree = format!("{parent}^{{tree}}");
+            let commit = run_git(repo, &["commit-tree", &tree, "-p", parent, "-m", message]);
+            commit.unwrap().trim().to_string()
+        }
+        fn kept((reference, commit): (String, String)) -> Kept {
+            Kept { reference, commit }
+        }
+        fn write(dir: &str, name: &str) {
+            std::fs::write(std::path::Path::new(dir).join(name), format!("{name}\n")).unwrap()
+        }
+        // Each row, given the repo and the unit's tree: the keeps the unit's record names, and
+        // the held refs its integration leaves.
+        type Row = (&'static str, fn(&str, &str, &Worktree) -> (Vec<Kept>, Vec<(String, String)>));
+        let cases: [Row; 5] = [
+            ("a keep set aside by a later keep", |repo, dir, wt| {
+                write(dir, "one.txt");
+                let one = kept(keep_aside(wt).unwrap());
+                write(dir, "two.txt");
+                let two = kept(keep_aside(wt).unwrap());
+                assert!(
+                    ref_present(repo, &format!("refs/heads/{}", orphaned_ref("unit-r", &one.commit)))
+                        .unwrap(),
+                    "precondition: the first keep stands aside"
+                );
+                (vec![one, two], vec![])
+            }),
+            ("a keep landed aside while the kept ref was checked out", |repo, dir, wt| {
+                write(dir, "one.txt");
+                let one = kept(keep_aside(wt).unwrap());
+                let spare = tempfile::tempdir().unwrap();
+                let spare = spare.path().join("look");
+                let spare = spare.to_str().unwrap();
+                run_git(repo, &["worktree", "add", "-q", spare, &one.reference]).unwrap();
+                write(dir, "two.txt");
+                let two = kept(keep_aside(wt).unwrap());
+                assert_eq!(
+                    two.reference,
+                    orphaned_ref("unit-r", &two.commit),
+                    "precondition: the second keep lands aside"
+                );
+                run_git(repo, &["worktree", "remove", "--force", spare]).unwrap();
+                (vec![one, two], vec![])
+            }),
+            ("a person's commit on the kept ref", |repo, dir, wt| {
+                write(dir, "one.txt");
+                let one = kept(keep_aside(wt).unwrap());
+                let theirs = commit_on(repo, &one.commit, "a person's commit");
+                run_git(
+                    repo,
+                    &["update-ref", &format!("refs/heads/{}", one.reference), &theirs],
+                )
+                .unwrap();
+                let aside = orphaned_ref("unit-r", &theirs);
+                (vec![one], vec![(aside, theirs)])
+            }),
+            ("a keep no record names", |_, dir, wt| {
+                write(dir, "one.txt");
+                let one = kept(keep_aside(wt).unwrap());
+                let aside = orphaned_ref("unit-r", &one.commit);
+                (vec![], vec![(aside, one.commit)])
+            }),
+            ("another lineage's ref sharing the prefix", |repo, dir, wt| {
+                let other = commit_on(repo, "HEAD", "another lineage's keep");
+                let theirs = orphaned_ref("unit-r", &other);
+                run_git(repo, &["update-ref", &format!("refs/heads/{theirs}"), &other]).unwrap();
+                write(dir, "one.txt");
+                let one = kept(keep_aside(wt).unwrap());
+                (vec![one], vec![(theirs, other)])
+            }),
+        ];
+        for (row, set_up) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-r");
+            let (keeps, left) = set_up(&repo_path, &dir, &wt);
+            wt.remove().unwrap();
+
+            reap_keeps(&repo_path, BRANCH, &keeps).unwrap();
+
+            assert_eq!(held_refs(&repo_path).unwrap(), left, "{row}");
         }
     }
 
