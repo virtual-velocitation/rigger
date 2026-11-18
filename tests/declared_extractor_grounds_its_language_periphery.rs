@@ -12,7 +12,8 @@
 //! shown tree's text, in a session of its own, a failed answer leaving a note and never the
 //! bundled grammar's bound; and a reference the answer qualifies by a path or a member is held as
 //! the mention named as written, of its leaf (spec 117, CAPTURES), and lands on the definition its
-//! qualifier keeps.
+//! qualifier keeps, while an answer qualifying a name that holds a separator, or that the name
+//! written after its qualifier reads back as another leaf, is a failed answer.
 
 use std::path::Path;
 
@@ -198,9 +199,11 @@ fn graph_build_grounds_each_committed_declared_file_from_one_session() {
 
 /// Given a committed repository declaring the stub for `zig`, when the operator builds the graph,
 /// each file the stub answers with an error (quoted, so its line break says no second line), with
-/// another file's path, with two defs each naming the other its parent, or not at all is said on
-/// stderr with why on one line, holds its identity facts and no
-/// definitions, and closes the session, so the next file starts a new one in the root, while the
+/// another file's path, with two defs each naming the other its parent, with a qualified ref whose
+/// name holds a separator (`+.` of the member `Float`) or reads back from the name written after
+/// its qualifier as another leaf (`:b` of the path `Q`, written `Q:::b`, read back as `b`), or not
+/// at all is said on stderr with why on one line, holds its identity facts and no definitions or
+/// mentions, and closes the session, so the next file starts a new one in the root, while the
 /// file the stub answers well holds its definition. Built again, nothing changed asks nothing; a
 /// committed change asks that file alone; and a changed declaration asks every file - each of them
 /// in one session, saying nothing on stderr.
@@ -211,8 +214,15 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
     let stub = StubExtractor::new(kept.path());
     declare(&root, &stub, "zig", "[zig]");
     let root_dir = root.display().to_string();
+    // The answer to `path` referring on its first line to `name` qualified by `qualifier`, a path
+    // when `is_path`, a member access otherwise.
+    let qualifying = |path: &str, name: &str, qualifier: &str, is_path: bool| {
+        format!(
+            r#"{{"path":"{path}","defs":[],"refs":[{{"name":"{name}","line":1,"qualifier":{{"name":"{qualifier}","path":{is_path}}}}}]}}"#
+        )
+    };
     // (the file, its committed text, the stub's first answer, why that answer fails)
-    let first: [(&str, &str, Option<String>, Option<&str>); 5] = [
+    let first: [(&str, &str, Option<String>, Option<&str>); 7] = [
         (
             "src/a.zig",
             "a\n",
@@ -237,6 +247,18 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
             "e\n",
             Some(answer_defining("src/e.zig", "e")),
             None,
+        ),
+        (
+            "src/f.zig",
+            "f\n",
+            Some(qualifying("src/f.zig", "+.", "Float", false)),
+            Some(r#"refs[0]: a qualified ref's name "+." holds "::" or ".""#),
+        ),
+        (
+            "src/g.zig",
+            "g\n",
+            Some(qualifying("src/g.zig", ":b", "Q", true)),
+            Some(r#"refs[0]: a qualified ref's name ":b" reads back from "Q:::b" as "b""#),
         ),
     ];
     commit(
@@ -300,14 +322,14 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
 
     let good = |path: &str, leaf: &str| (path.to_string(), answer_defining(path, leaf));
     // (what changed, the files committed, the answers the stub gives, the extensions declared, the
-    // requests the build asks, the leaves src/a.zig to src/e.zig then hold)
+    // requests the build asks, the leaves src/a.zig to src/g.zig then hold)
     type Rebuild<'a> = (
         &'a str,
         &'a [(&'a str, &'a str)],
         Vec<(String, String)>,
         &'a str,
         Vec<String>,
-        [&'a [&'a str]; 5],
+        [&'a [&'a str]; 7],
     );
     let rebuilds: [Rebuild; 3] = [
         (
@@ -316,7 +338,7 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
             vec![],
             "[zig]",
             vec![],
-            [&[], &[], &[], &[], &["e"]],
+            [&[], &[], &[], &[], &["e"], &[], &[]],
         ),
         (
             "src/a.zig's committed text",
@@ -324,7 +346,7 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
             vec![good("src/a.zig", "a")],
             "[zig]",
             vec![request_for("src/a.zig", "a2\n")],
-            [&["a"], &[], &[], &[], &["e"]],
+            [&["a"], &[], &[], &[], &["e"], &[], &[]],
         ),
         (
             "the declaration",
@@ -333,6 +355,8 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
                 good("src/b.zig", "b"),
                 good("src/c.zig", "c"),
                 good("src/d.zig", "d"),
+                good("src/f.zig", "f"),
+                good("src/g.zig", "g"),
             ],
             "[zig, zag]",
             [
@@ -341,10 +365,12 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
                 ("src/c.zig", "c\n"),
                 ("src/d.zig", "d\n"),
                 ("src/e.zig", "e\n"),
+                ("src/f.zig", "f\n"),
+                ("src/g.zig", "g\n"),
             ]
             .map(|(path, text)| request_for(path, text))
             .to_vec(),
-            [&["a"], &["b"], &["c"], &["d"], &["e"]],
+            [&["a"], &["b"], &["c"], &["d"], &["e"], &["f"], &["g"]],
         ),
     ];
     for (changed, commits, answers, extensions, asked, leaves) in rebuilds {
