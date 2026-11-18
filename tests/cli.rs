@@ -15435,12 +15435,12 @@ fn reset_build_cache_reclaims_a_dead_units_gate_scratch_root_and_spares_a_live_u
 
 /// Spec 23 (unit 2), done-when line 60: `rigger validate` reports, as a warning-only advisory
 /// that NEVER fails validation, any process whose cwd is under the scratch root - one line
-/// naming its pid, its command and the scratch root - and reports none once nothing is rooted
-/// there. Driving the real binary proves the config -> residue-scan -> process-interface scan
-/// (`os_process`'s process list, working directory and command line) -> stderr wiring end to
-/// end; `leaked_process_advisories` is unit-tested in `src/cli/validate.rs`. On an OS the process
-/// interface cannot read the scan is a graceful no-op (the shared scanner returns empty), so
-/// this behaves like the no-process case, never an error.
+/// naming its pid, its executable (never its arguments) and the scratch root - and reports none
+/// once nothing is rooted there. Driving the real binary proves the config -> residue-scan ->
+/// process-interface scan (`os_process`'s process list, working directory and executable) ->
+/// stderr wiring end to end; `leaked_process_advisories` is unit-tested in `src/cli/validate.rs`.
+/// On an OS the process interface cannot read the scan is a graceful no-op (the shared scanner
+/// returns empty), so this behaves like the no-process case, never an error.
 #[test]
 fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let dir = temp_project();
@@ -15455,21 +15455,20 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     let tmp = scratch.to_str().unwrap();
     let mut child = common::fixtures::sleeper_in(&probe);
 
-    // Wait until the scan validate runs names the child rooted under the scratch root with its
-    // whole command. `spawn` returns while the child's exec may still be laying out its
-    // arguments: the OS already reports its working directory but no arguments yet. A scan that
-    // never names the whole command is left to the advisory assertion below, which shows what
-    // validate printed.
-    let whole = (child.id(), "sleep 300".to_string());
+    // Wait until the scan validate runs finds the child rooted under the scratch root, its exec
+    // done. `spawn` returns while the child may still be this test's own image: the OS already
+    // reports its working directory but not yet the executable it runs.
     let mut rooted = Vec::new();
     common::fixtures::wait_until(|| {
         rooted = rigger::reap::processes_rooted_under(&scratch);
-        rooted.contains(&whole)
+        rooted.iter().any(|(pid, _)| *pid == child.id())
+            && !rigger::os_process::is_unexeced_fork_of(child.id(), std::process::id())
     });
     assert!(
         rooted.iter().any(|(pid, _)| *pid == child.id()),
         "precondition: the probe child is rooted under the scratch root; the scan names {rooted:?}"
     );
+    let program = rigger::os_process::executable_name(child.id());
 
     let (out, err, ok) = run_rigger_envs(root, &["validate"], &[("RIGGER_TMPDIR", tmp)]);
 
@@ -15495,15 +15494,15 @@ fn validate_warns_about_a_process_rooted_under_the_scratch_root() {
     }
     let expected = format!(
         "warning: process rooted under the scratch root (surfaced only - validate never reaps \
-         it): pid {} (sleep 300) - its cwd is under {tmp}; it outlives a dir rigger owns until \
+         it): pid {} ({program}) - its cwd is under {tmp}; it outlives a dir rigger owns until \
          the next teardown or run start reaps it.",
         child.id()
     );
     assert_eq!(
-        advisories(&err),
-        vec![expected.as_str()],
-        "validate warns once, naming the rooted process's pid, its command and the scratch root; \
-         stderr:\n{err}"
+        (advisories(&err), program.contains("300")),
+        (vec![expected.as_str()], false),
+        "validate warns once, naming the rooted process's pid, its executable, never its argument \
+         `300`, and the scratch root; stderr:\n{err}"
     );
     assert!(
         ok2,

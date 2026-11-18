@@ -565,9 +565,9 @@ impl Driver<'_> {
     /// shape (`ended_via_break` below) and, on a clean EOF ONLY, blocks on the main's own
     /// status (`reaper.wait()`, no signal) BEFORE it finishes with the tree, so that teardown
     /// always finishes on its own first. Every exit that leaves the loop finishes with the tree
-    /// the one way ([`crate::child_tree::ReapedChild::finish`]): a session whose main has exited
-    /// is let go, what it left running running on, and one whose main still runs (the
-    /// post-result silence or read-error `break` below) is ended with its whole tree.
+    /// the one way ([`crate::child_tree::ReapedChild::finish`]), which ends the whole tree: what a
+    /// main that has exited left running, and a main that still runs (the post-result silence or
+    /// read-error `break` below) with it.
     ///
     /// A read error AFTER a result is already captured (adj-u104-stream round-2 REQUIRED
     /// FIX) is handled the same uniform way: the loop below just stops reading (`break`)
@@ -1002,12 +1002,12 @@ impl Driver<'_> {
         // `try_wait` treated "not yet known to have exited" the same as "gone missing",
         // so a child still finishing that teardown got force-ended mid-flight.
         // A direct BLOCKING wait - no signal - here on the clean-EOF path ONLY lets that
-        // teardown finish on its own first; the finish just below then finds the main exited
-        // and lets the tree go, ending nothing.
+        // teardown finish on its own first; the finish just below then ends what the main
+        // left running.
         //
         // The `break` path (a read error, or post-result silence) is neither evidence of
-        // in-progress teardown nor of an exit: the finish just below ends the tree of a main
-        // still running, and lets go of one whose main has exited.
+        // in-progress teardown nor of an exit: the finish just below ends the tree, its main
+        // with it where the main still runs.
         if !ended_via_break {
             // Its input closes first, so a session still reading it sees the end and exits.
             pipes.close_input();
@@ -1016,10 +1016,14 @@ impl Driver<'_> {
 
         // Finish with the tree through the ONE canonical mechanism, on every exit path alike,
         // right here rather than at the function's end: the join just below depends on the
-        // child's stderr pipe having already closed. An end reports what it left.
-        self.record_end(opts, &reaper.finish());
-        // A session let go leaves what its main started running: a descendant that inherited
-        // a copy of either pipe's write end keeps it open regardless, so both joins below are
+        // child's stderr pipe having already closed. An end reports what it left. rigger's own
+        // writers for the spawn, its StopFailure hook and its tool server, each still able to
+        // write the spawn's record past the main's exit, finish their writes first
+        // (`ReapedChild::finish`); no other process is waited for.
+        let writer = |arguments: &[String]| hooks::is_spawn_writer(arguments, &opts.id);
+        self.record_end(opts, &reaper.finish(Some(&writer)));
+        // A process the end left running, or one that left the tree before a watch saw it,
+        // can hold a copy of either pipe's write end open regardless, so both joins below are
         // bounded ([`Driver::join_within`]) rather than a bare `join()` that could wait on such a
         // stranger forever - never a caller-visible wait for its own sake in the ordinary
         // case, where the thread has already hit EOF or is about to. Bounded by
@@ -1533,10 +1537,10 @@ impl Driver<'_> {
         self.join_pipes(opts, pipes);
     }
 
-    /// Say on the spawn's progress what an end of its session's tree left ([`end_line`]), when
-    /// it left anything.
+    /// Say on the spawn's progress what an end of its session's tree left ([`super::end_lines`]),
+    /// a line each.
     fn record_end(&self, opts: &SpawnOpts, report: &crate::child_tree::EndReport) {
-        if let Some(line) = end_line(report) {
+        for line in super::end_lines(report, "stream") {
             self.record_progress(opts, &line);
         }
     }
@@ -1591,11 +1595,11 @@ impl Driver<'_> {
     /// (spec 104 criterion 6 round-4 fix, decision
     /// `op-104-stop-end-the-tree-and-bound-the-joins`): a process the driven child forked
     /// but never `exec`'d can inherit a copy of the stdout/stderr pipe's write end, and once
-    /// that process runs on past the session's end - let go at an ordinary end, or escaped a
-    /// watched tree before its end - nothing this function does closes it: the thread blocked
-    /// reading that pipe would otherwise never see EOF, and neither [`Driver::read_stream`]
-    /// nor [`Driver::stop_for_wall_clock_silence`] would ever return. Polling
-    /// `JoinHandle::is_finished` against a deadline, rather than calling `join()` directly,
+    /// that process runs on past the session's end - left by a watched tree whose main has
+    /// exited, or escaped a watched tree before its end - nothing this function does closes it:
+    /// the thread blocked reading that pipe would otherwise never see EOF, and neither
+    /// [`Driver::read_stream`] nor [`Driver::stop_for_wall_clock_silence`] would ever return.
+    /// Polling `JoinHandle::is_finished` against a deadline, rather than calling `join()` directly,
     /// bounds the CALLER's own return time regardless of what such a stranger does with the
     /// pipe - the SAME seam every join of a reader or drain thread in this file goes
     /// through, so a stop (and an ordinary stream end) both return on a bounded clock no
@@ -1852,9 +1856,10 @@ impl HoldProbe for Driver<'_> {
                 }
                 std::ops::ControlFlow::Continue(())
             });
-            // A canary that has exited is let go, and one still running is ended with its tree.
-            // It writes no store, so what an end left is said on stderr ([`canary_end_line`]).
-            if let Some(line) = canary_end_line(&canary.finish()) {
+            // The canary's tree is ended, its main with it where the main still runs. It runs
+            // with every hook off and no server, so the end waits for no writer, and it writes
+            // no store, so what the end left is said on stderr ([`canary_end_lines`]).
+            for line in canary_end_lines(&canary.finish(None)) {
                 rigger_process::whole_line::say(format_args!("{line}"));
             }
         }
@@ -2026,55 +2031,11 @@ fn api_retry_line(v: &Value) -> String {
     format!("waiting: {category} (attempt {attempt}, retrying in {delay_ms}ms)")
 }
 
-/// The progress line an end of a session's tree records: what it left ([`end_text`]), on the
-/// stream. `None` when it left nothing and nothing was refused.
-fn end_line(report: &crate::child_tree::EndReport) -> Option<String> {
-    end_text(report).map(|text| format!("stream: {text}"))
-}
-
-/// The line the hold probe says on stderr when its canary's end left anything ([`end_text`]),
-/// since the probe writes no store. `None` when it left nothing and nothing was refused.
-fn canary_end_line(report: &crate::child_tree::EndReport) -> Option<String> {
-    end_text(report).map(|text| format!("rigger: the hold probe's canary: {text}"))
-}
-
-/// What an end of a session's tree left ([`crate::child_tree::EndReport`]): each call the OS
-/// refused it, as the report says it; then how many processes it signalled and could not end, and
-/// how many it found outside the tree and never signalled, each named by pid and program, a
-/// still-frozen one marked so. `None` when it left nothing and nothing was refused.
-fn end_text(report: &crate::child_tree::EndReport) -> Option<String> {
-    let named = |left: &[crate::child_tree::Leftover]| {
-        left.iter()
-            .map(|left| {
-                let frozen = if left.stopped { ", stopped" } else { "" };
-                format!("{} ({}{frozen})", left.pid, left.program)
-            })
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
-    let mut parts = Vec::new();
-    if !report.residue.is_empty() {
-        parts.push(format!(
-            "{} it signalled and could not end: {}",
-            report.residue.len(),
-            named(&report.residue)
-        ));
-    }
-    if !report.skipped.is_empty() {
-        parts.push(format!(
-            "{} outside the session's tree, never signalled: {}",
-            report.skipped.len(),
-            named(&report.skipped)
-        ));
-    }
-    let left = (!parts.is_empty()).then(|| {
-        format!(
-            "the end of the session left processes running; {}",
-            parts.join("; ")
-        )
-    });
-    let said: Vec<String> = report.faults.iter().cloned().chain(left).collect();
-    (!said.is_empty()).then(|| said.join("; "))
+/// The lines the hold probe says on stderr for its canary's end ([`super::end_lines`]), since the
+/// probe writes no store. Empty when the end was sent to nothing besides the canary's main, left
+/// nothing and nothing was refused.
+fn canary_end_lines(report: &crate::child_tree::EndReport) -> Vec<String> {
+    super::end_lines(report, "rigger: the hold probe's canary")
 }
 
 /// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the
@@ -2281,7 +2242,7 @@ pub fn build_args(
     args.extend(spawn_config_args(
         agent,
         rigger_bin,
-        &["mcp", "--spawn", &opts.id],
+        &hooks::tool_server_args(&opts.id),
         &settings,
         &opts.host,
     )?);
@@ -2776,6 +2737,36 @@ mod tests {
         );
         // Exactly one server named.
         assert_eq!(cfg["mcpServers"].as_object().unwrap().len(), 1);
+    }
+
+    /// The server a launch binds to its spawn is, by the arguments the OS reports it running
+    /// with, a writer of the spawn that the spawn's ordinary end waits for: the launch and the end
+    /// know it by the same arguments, a spawn id holding a space included.
+    #[test]
+    fn build_args_binds_a_server_the_spawns_end_waits_for() {
+        let o = opts("u 7-launch/implementer#2");
+        let args = build_args(
+            &AgentDef::default(),
+            &SystemPromptFile::default(),
+            &o,
+            &fresh_session("sess"),
+            "/opt/it's here/rigger",
+            &[],
+        )
+        .unwrap();
+        let i = args.iter().position(|x| x == "--mcp-config").unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
+        let server = &cfg["mcpServers"][hooks::MCP_SERVER_NAME];
+        let arguments: Vec<String> = std::iter::once(&server["command"])
+            .chain(server["args"].as_array().unwrap())
+            .map(|word| word.as_str().unwrap().to_string())
+            .collect();
+
+        assert!(
+            hooks::is_spawn_writer(&arguments, &o.id),
+            "{arguments:?} is a writer of {:?}",
+            o.id
+        );
     }
 
     #[test]
@@ -3886,92 +3877,28 @@ mod tests {
         );
     }
 
-    /// The line an end that answered `residue`, `skipped` and `faults` is recorded as, if any.
-    fn assert_end_line(
-        residue: &[(u32, &str, bool)],
-        skipped: &[(u32, &str, bool)],
-        faults: &[&str],
-        expected: Option<&str>,
-    ) {
-        let left = |rows: &[(u32, &str, bool)]| {
-            rows.iter()
-                .map(|&(pid, program, stopped)| crate::child_tree::Leftover {
-                    pid,
-                    program: program.to_string(),
-                    stopped,
-                })
-                .collect()
-        };
-        let report = crate::child_tree::EndReport {
-            residue: left(residue),
-            skipped: left(skipped),
-            faults: faults.iter().map(|fault| fault.to_string()).collect(),
-            by_pid_because: None,
-        };
-        assert_eq!(end_line(&report).as_deref(), expected);
-    }
-
-    crate::test_cases! {
-        an_end_that_left_nothing_is_no_line: assert_end_line(&[], &[], &[], None);
-        an_end_that_could_not_end_a_process_names_it_and_whether_it_is_stopped: assert_end_line(
-            &[(41, "sleep", false), (42, "node", true)],
-            &[],
-            &[],
-            Some(
-                "stream: the end of the session left processes running; 2 it signalled and \
-                 could not end: 41 (sleep), 42 (node, stopped)",
-            ),
-        );
-        an_end_that_found_a_process_outside_the_tree_names_it_as_never_signalled:
-            assert_end_line(
-                &[(41, "sleep", false)],
-                &[(77, "daemon", false)],
-                &[],
-                Some(
-                    "stream: the end of the session left processes running; 1 it signalled and \
-                     could not end: 41 (sleep); 1 outside the session's tree, never signalled: \
-                     77 (daemon)",
-                ),
-            );
-        an_end_the_os_refused_says_why: assert_end_line(
-            &[],
-            &[],
-            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
-            Some(
-                "stream: the job of session 7 could not be ended (denied), so the end did not \
-                 wait for it",
-            ),
-        );
-        an_end_that_hit_a_fault_and_left_a_process_says_both: assert_end_line(
-            &[(41, "sleep", false)],
-            &[],
-            &["the job of session 7 could not be let go (denied)"],
-            Some(
-                "stream: the job of session 7 could not be let go (denied); the end of the \
-                 session left processes running; 1 it signalled and could not end: 41 (sleep)",
-            ),
-        );
-    }
-
     crate::test_cases! {
         a_canary_end_that_left_nothing_says_nothing: assert_eq!(
-            canary_end_line(&crate::child_tree::EndReport::default()),
-            None
+            canary_end_lines(&crate::child_tree::EndReport::default()),
+            Vec::<String>::new()
         );
-        a_canary_end_that_left_a_process_says_so_naming_the_canary: assert_eq!(
-            canary_end_line(&crate::child_tree::EndReport {
+        a_canary_end_that_left_processes_says_so_naming_the_canary: assert_eq!(
+            canary_end_lines(&crate::child_tree::EndReport {
                 residue: vec![crate::child_tree::Leftover {
                     pid: 41,
                     program: "claude".to_string(),
                     stopped: false,
                 }],
+                skipped: vec![crate::child_tree::Leftover {
+                    pid: 42,
+                    program: "node".to_string(),
+                    stopped: false,
+                }],
                 ..crate::child_tree::EndReport::default()
-            })
-            .as_deref(),
-            Some(
-                "rigger: the hold probe's canary: the end of the session left processes \
-                 running; 1 it signalled and could not end: 41 (claude)"
-            )
+            }),
+            ["rigger: the hold probe's canary: the end of the session left processes running; 1 \
+              it signalled and could not end: 41 (claude); 1 left running, never signalled: 42 \
+              (node)"]
         );
     }
 

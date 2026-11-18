@@ -104,24 +104,51 @@ pub(super) fn cwd(pid: u32) -> Option<PathBuf> {
         .map(|cwd| super::strip_deleted_suffix(&cwd))
 }
 
-/// `/proc/<pid>/cmdline` (the NUL-separated arguments) joined by spaces, falling back to
-/// `/proc/<pid>/comm` (the short name) and finally an empty string.
+/// The arguments ([`arguments`]) that are not empty, joined by single spaces, falling back to the
+/// short name ([`short_name`]) when none is: a process that retitles itself over its arguments
+/// leaves the rest of them empty.
 pub(super) fn command(pid: u32) -> String {
-    let dir = proc_of(pid);
-    if let Ok(bytes) = std::fs::read(dir.join("cmdline")) {
-        let joined = bytes
-            .split(|b| *b == 0)
-            .filter(|part| !part.is_empty())
-            .map(|part| String::from_utf8_lossy(part).into_owned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !joined.is_empty() {
-            return joined;
-        }
+    let named: Vec<String> = arguments(pid)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|argument| !argument.is_empty())
+        .collect();
+    if named.is_empty() {
+        short_name(pid)
+    } else {
+        named.join(" ")
     }
-    std::fs::read_to_string(dir.join("comm"))
+}
+
+/// `/proc/<pid>/comm`, the process's short name; empty when it cannot be read.
+fn short_name(pid: u32) -> String {
+    std::fs::read_to_string(proc_of(pid).join("comm"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// The file name of the image `/proc/<pid>/exe` links to, without the `" (deleted)"` marker
+/// the kernel adds once that file is replaced ([`super::strip_deleted_suffix`]); the short name
+/// ([`short_name`]) when the link cannot be read, as a zombie's or another user's cannot.
+pub(super) fn executable_name(pid: u32) -> String {
+    std::fs::read_link(proc_of(pid).join("exe"))
+        .ok()
+        .and_then(|image| super::file_name_text(&super::strip_deleted_suffix(&image)))
+        .unwrap_or_else(|| short_name(pid))
+}
+
+/// `/proc/<pid>/cmdline`, the arguments the process's exec laid out, each ended by a NUL, split
+/// at those NULs, so an argument holding a space stays whole and an empty argument stays one;
+/// `None` when it cannot be read or names no argument, as a zombie's names none.
+pub(super) fn arguments(pid: u32) -> Option<Vec<String>> {
+    let bytes = std::fs::read(proc_of(pid).join("cmdline")).ok()?;
+    let ended = bytes.strip_suffix(&[0]).unwrap_or(&bytes);
+    (!bytes.is_empty()).then(|| {
+        ended
+            .split(|b| *b == 0)
+            .map(|argument| String::from_utf8_lossy(argument).into_owned())
+            .collect()
+    })
 }
 
 /// The first letter of `/proc/<pid>/stat`'s state field: `R` running, `S` sleeping, `D`

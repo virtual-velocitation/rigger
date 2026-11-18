@@ -573,14 +573,17 @@ criterion 11's (`tests/os_home_boundary.rs`) finds `"HOME"` outside
 **THE CROSS-OS CHECK, decided here (criterion 12).** `.github/workflows/rust.yml` gains a job
 `cross-os-check` over a matrix `os: [windows-latest, macos-latest]`, `runs-on: ${{ matrix.os }}`:
 checkout with `fetch-depth: 0`, the toolchain step with the `wasm32-unknown-unknown` target (the
-dash's build script builds its console for it), and a check step under `shell: bash` running
-`export RUSTC_WRAPPER=` and then `cargo check --workspace` (an empty value, set in the step's own
+dash's build script builds its console for it), then a test step and a check step under
+`shell: bash`, each running `export RUSTC_WRAPPER=` and then its command, the test step's
+`cargo test -p rigger-process --lib` and the check step's
+`cargo check --workspace --all-targets --keep-going` (an empty value, set in each step's own
 shell so every nested cargo inherits it, overrides `.cargo/config.toml`'s Unix wrapper script).
 The version derivation degrades without the version tool, so the job installs nothing else.
 `tests/ci_lanes.rs`' `every_job_that_builds_dash_installs_the_console_core_wasm_target` (:616)
 adds `cross-os-check` to its job list and names the three jobs in its doc (:608-615); it is the
-job's one wasm-target pin. No job runs a test on macOS or Windows: their adapters ship compiled
-and unrun. Nothing in the run compiles a macOS or Windows arm, since nothing is installed: the
+job's one wasm-target pin. On macOS and Windows the job's one test step runs the process crate's
+unit tests (`cargo test -p rigger-process --lib`) before the check; no other test runs there.
+Nothing in the run compiles a macOS or Windows arm, since nothing is installed: the
 PR's `cross-os-check` is their first compile. The spec is done when its PR merges, and the PR
 merges only with `cross-os-check` green, the check that observes the Goal's macOS and Windows
 compile. A red `cross-os-check` is fixed on the PR branch by an operator fix that runs this

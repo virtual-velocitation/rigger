@@ -1307,10 +1307,12 @@ mod forks_at_stop {
     /// What a row's ending leaves running.
     #[derive(Clone, Copy, Debug)]
     enum Leaves {
-        /// Nothing the session started.
+        /// Nothing the session started; an ordinary end names in its progress line the holder it
+        /// was sent to.
         Nothing,
-        /// The process the session started before its result, which an ordinary end leaves
-        /// alone, or one that left a watched tree before the watch saw it.
+        /// The process the session started before its result, which a watched tree's ordinary
+        /// end leaves alone (its main has exited), or one that left a watched tree before the
+        /// watch saw it.
         TheLeftover,
         /// The process the watch saw leave the session's tree: left running, never signalled, and
         /// named in the end's progress line.
@@ -1409,11 +1411,23 @@ mod forks_at_stop {
         if let Leaves::TheEscapee = leaves {
             let named = fx.activities().into_iter().any(|line| {
                 line.contains("left processes running")
-                    && line.contains("outside the session's tree, never signalled")
+                    && line.contains("left running, never signalled")
             });
             assert!(
                 named,
                 "{mode}: the end names the escapee: {:?}",
+                fx.activities()
+            );
+        }
+        if let (Window::Result, Leaves::Nothing) = (window, leaves) {
+            let holder = format!(" ({})", shell_name());
+            let named = fx.activities().into_iter().any(|line| {
+                line.contains("the end of the session was sent to 1 process besides its main: ")
+                    && line.ends_with(&holder)
+            });
+            assert!(
+                named,
+                "{mode}: the ordinary end names the holder it was sent to: {:?}",
                 fx.activities()
             );
         }
@@ -1422,6 +1436,15 @@ mod forks_at_stop {
             Reading::Ended,
             "{mode}: the test's release ends every process the fixture started"
         );
+    }
+
+    /// The name an end gives a holder, a fresh `sh` the fixture starts: the file name of the
+    /// image `sh` on this test's `PATH` runs, never the holder's arguments.
+    fn shell_name() -> String {
+        let search = rigger::subprocess::SearchPath::ambient();
+        let sh = rigger::subprocess::find_executable(&search, "sh").expect("sh is on PATH");
+        let image = std::fs::canonicalize(sh).unwrap();
+        image.file_name().unwrap().to_string_lossy().into_owned()
     }
 
     /// [`ends_held_at`] with the tree kept, as the composition root holds it.
@@ -1500,9 +1523,9 @@ mod forks_at_stop {
         a_stop_ends_a_process_started_in_another_directory:
             ends_at(Window::Silence(1), "chdir", Duration::from_secs(1), 2, Leaves::Nothing);
         // An ordinary end at the production grace, which it never waits: the result returns within
-        // the read's 1 s and two 2 s joins, and the process still holding the pipes runs on.
-        a_result_returns_promptly_and_leaves_a_leftover_alone:
-            ends_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::TheLeftover);
+        // the read's 1 s and two 2 s joins, and the end ends the process still holding the pipes.
+        a_result_returns_promptly_and_ends_what_the_session_left:
+            ends_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::Nothing);
         // Watched: the end freezes the tree and asks nothing of it, so no trap of the session's
         // runs.
         a_watched_init_fault_ends_the_session_without_running_its_term_trap:
@@ -1545,8 +1568,115 @@ mod forks_at_stop {
                 2,
                 Leaves::TheEscapee,
             );
+        // A watched tree's main has exited at its result, so the end signals nothing and the
+        // process holding the pipes runs on.
         a_watched_result_returns_promptly_and_leaves_a_leftover_alone:
             ends_watched_at(Window::Result, "clean-exit", STOP_GRACE, 2, Leaves::TheLeftover);
+    }
+}
+
+// ---- A WRITE IN FLIGHT AT AN ORDINARY END: a StopFailure hook still writing its record when the
+// session's main exits (`claude-code-late-stop-failure-hook-agent.sh`), read back through the
+// progress store the host classifies by ----
+
+#[cfg(unix)]
+mod late_writer {
+    use super::*;
+    use crate::common::witness::{Reading, Witness};
+    use rigger::eventstore::Revision;
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+
+    /// The spawn the late hook writes for.
+    const LATE_HOOK_SPAWN: &str = "u-late-hook/implementer#0";
+
+    /// A progress store that imports, ahead of each stream read, every record the stand-in hook
+    /// (`late-hook-rigger.sh`) has renamed into `dir` since the last read, as the `StopFailure` the
+    /// real hook appends: the store the hook writes is the store the host reads.
+    struct ImportsHookRecords<'a> {
+        inner: &'a dyn EventStore,
+        dir: PathBuf,
+        imported: Mutex<HashSet<PathBuf>>,
+    }
+
+    impl EventStore for ImportsHookRecords<'_> {
+        fn read_stream(
+            &self,
+            stream: &str,
+            from: Revision,
+            direction: Direction,
+        ) -> Result<Vec<Event>, rigger::eventstore::Error> {
+            let mut imported = self.imported.lock().unwrap();
+            for entry in std::fs::read_dir(&self.dir).unwrap() {
+                let path = entry.unwrap().path();
+                let whole = path
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("record."));
+                if whole && imported.insert(path.clone()) {
+                    let record = std::fs::read_to_string(&path).unwrap();
+                    let mut fields = record.lines().map(str::to_string);
+                    let failure = rigger::progress::StopFailure {
+                        spawn: fields.next().unwrap(),
+                        class: fields.next().unwrap(),
+                    };
+                    rigger::progress_store::record_stop_failure(
+                        self.inner,
+                        &opts("").run_id,
+                        &failure,
+                    )
+                    .unwrap();
+                }
+            }
+            drop(imported);
+            self.inner.read_stream(stream, from, direction)
+        }
+        crate::delegate_event_store_reads!(append);
+        crate::delegate_event_store_reads!(rest);
+        crate::delegate_event_store_reads!(group);
+        crate::delegate_event_store_reads!(typed);
+    }
+
+    /// The session's main exits while the StopFailure hook it started is still writing: the hook
+    /// finishes its write before the session's end, so the launch closes a fault of the class it
+    /// recorded, and the end leaves nothing the session started running.
+    #[test]
+    fn a_stop_failure_hook_still_writing_when_the_main_exits_classes_the_launch() {
+        let mut witness = Witness::new();
+        let records = tempfile::tempdir().unwrap();
+        let fx = Fixture::new();
+        let store = ImportsHookRecords {
+            inner: &fx.progress_store,
+            dir: records.path().to_path_buf(),
+            imported: Mutex::default(),
+        };
+        let mut env = witness.env();
+        let dir = records.path().to_string_lossy().into_owned();
+        env.push(("RIGGER_TEST_RECORDS".to_string(), dir));
+        let o = SpawnOpts {
+            env,
+            ..opts(LATE_HOOK_SPAWN)
+        };
+
+        let err = Driver {
+            rigger_bin: fixture_script("late-hook-rigger.sh"),
+            progress_store: &store,
+            ..fx.driver_running("claude-code-late-stop-failure-hook-agent.sh")
+        }
+        .spawn(&AgentDef::default(), "do the thing", &o, &no_emit)
+        .expect_err("a session ending with no result must not succeed");
+        let reading = witness.read();
+
+        assert!(
+            rigger::conductor::strip_failure_marker(&err).contains("class rate_limit"),
+            "the hook's record classes the launch: {}",
+            err.0
+        );
+        assert_closed_as_a_fault(&fx, AgentFailure::RateLimit);
+        assert_eq!(
+            (witness.up(), reading),
+            (1, Reading::Ended),
+            "the hook started, and nothing the session started is still running"
+        );
     }
 }
 

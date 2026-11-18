@@ -6,14 +6,12 @@
 //!
 //! The driver holds two pipes to the keeper, passed by descriptor number. The keeper writes
 //! [`Record`]s on the status pipe, one a line, and reads the control pipe, which is the driver's
-//! whole say over the tree: an `r` byte releases the tree, so the keeper exits once the main has
-//! and ends nothing, and the pipe's end without that byte, a close by the driver and the driver's
-//! death alike, asks the keeper to end the tree. A TERM to the keeper ends the tree at once,
-//! asking no member to exit first, so a sweep that sends the keeper its TERM ends the whole tree
-//! within the sweep's grace. INT, HUP and QUIT, which a terminal sends its whole foreground group,
-//! leave the keeper running, so the driver's own handling of them decides. The keeper puts
-//! `/dev/null` over its standard streams once the main holds them, so it keeps none of the
-//! session's streams open.
+//! whole say over the tree: the pipe's end, a close by the driver and the driver's death alike,
+//! asks the keeper to end the tree. A TERM to the keeper ends the tree at once, asking no member
+//! to exit first, so a sweep that sends the keeper its TERM ends the whole tree within the sweep's
+//! grace. INT, HUP and QUIT, which a terminal sends its whole foreground group, leave the keeper
+//! running, so the driver's own handling of them decides. The keeper puts `/dev/null` over its
+//! standard streams once the main holds them, so it keeps none of the session's streams open.
 
 use super::{line_channel, Contain, Containment, Hold, ReapedChild, Why};
 use crate::reap::{self, EndReport, Identity, Leftover, END_BOUND};
@@ -21,7 +19,7 @@ use crate::{os_process, subprocess, whole_line};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
-use std::io::{self, PipeReader, PipeWriter, Read, Write};
+use std::io::{self, PipeReader, PipeWriter, Read};
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
@@ -167,8 +165,6 @@ fn keep(mut status: File, control: File, program: &OsStr, args: &[OsString]) -> 
         status,
         control: Some(control),
         main,
-        main_exited: false,
-        released: false,
     }
     .run()
 }
@@ -236,31 +232,27 @@ fn tell(status: &mut File, record: &Record) {
     let _ = whole_line::write_line(status, format_args!("{}", record.encode()));
 }
 
-/// A keeper at work: its status pipe, its control pipe while it is open, its main, and what it has
-/// seen.
+/// A keeper at work: its status pipe, its control pipe while it is open, and its main.
 struct Keeper {
     status: File,
     control: Option<File>,
     main: u32,
-    main_exited: bool,
-    released: bool,
 }
 
 impl Keeper {
-    /// Reaps, reads its signals and reads its control pipe until the tree is ended or let go: a
-    /// TERM ends the tree at once; the control pipe's end without a release ends it, asking each
-    /// member to exit first; and a release lets the keeper exit, ending nothing, once the main has.
+    /// Reaps, reads its signals and reads its control pipe until the tree is ended: a TERM ends
+    /// the tree at once, and the control pipe's end ends it, asking each member to exit first. The
+    /// keeper outlives the main's exit, holding what the main left until the driver ends the tree.
     fn run(mut self) -> i32 {
         loop {
             self.reap_ready();
             if TERMED.load(Ordering::SeqCst) {
                 return self.end(false);
             }
-            match (self.control.is_some(), self.released, self.main_exited) {
-                (false, false, _) => return self.end(true),
-                (_, true, true) => return 0,
-                _ => self.wait_for_control(),
+            if self.control.is_none() {
+                return self.end(true);
             }
+            self.wait_for_control();
         }
     }
 
@@ -271,7 +263,6 @@ impl Keeper {
             match rustix::process::wait(rustix::process::WaitOptions::NOHANG) {
                 Ok(Some((pid, status))) => {
                     if u32::try_from(pid.as_raw_nonzero().get()) == Ok(self.main) {
-                        self.main_exited = true;
                         tell(&mut self.status, &Record::Exited(status.as_raw()));
                     }
                 }
@@ -283,9 +274,9 @@ impl Keeper {
     }
 
     /// Waits up to [`TICK_MS`] for a byte or the end on the control pipe, or for a signal, then
-    /// reads one byte if one is ready: an `r` releases the tree, and the pipe's end or a failed
-    /// read closes the pipe. A closed pipe is the descriptor -1, which the wait ignores, so the
-    /// wait is then the tick alone.
+    /// reads one byte if one is ready: the pipe's end or a failed read closes the pipe, and a byte
+    /// read means nothing. A closed pipe is the descriptor -1, which the wait ignores, so the wait
+    /// is then the tick alone.
     fn wait_for_control(&mut self) {
         let mut fds = [libc::pollfd {
             fd: self.control.as_ref().map_or(-1, AsRawFd::as_raw_fd),
@@ -303,7 +294,7 @@ impl Keeper {
         let mut byte = [0];
         match control.read(&mut byte) {
             Ok(0) => self.control = None,
-            Ok(_) => self.released |= byte == *b"r",
+            Ok(_) => {}
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => self.control = None,
         }
@@ -311,13 +302,14 @@ impl Keeper {
 
     /// Ends the tree ([`crate::reap::end_own_descendants`]), asking each member to exit first when
     /// `graceful` and reaping as it walks, then writes why it signalled by pid if it did, what the
-    /// end left running and what it never signalled, then that it ended.
+    /// end was sent to, what it left running and what it never signalled, then that it ended.
     fn end(mut self, graceful: bool) -> i32 {
         let report = reap::end_own_descendants(graceful, || self.reap_ready());
         let records = report
             .by_pid_because
             .map(Record::ByPid)
             .into_iter()
+            .chain(report.sent.into_iter().map(Record::Sent))
             .chain(report.residue.into_iter().map(Record::Residue))
             .chain(report.skipped.into_iter().map(Record::Skipped))
             .chain([Record::Ended]);
@@ -481,10 +473,12 @@ impl Kept {
     }
 
     /// Takes in one line the keeper wrote after its spawn record: the main's status, why its end
-    /// signalled by pid, a leftover of its end, or its end. Any other line is said and ignored.
+    /// signalled by pid, a process its end was sent to or left, or its end. Any other line is said
+    /// and ignored.
     fn take(&mut self, line: io::Result<String>) {
         match line.as_deref().ok().and_then(Record::decode) {
             Some(Record::Exited(raw)) => self.status = Some(ExitStatus::from_raw(raw)),
+            Some(Record::Sent(left)) => self.report.add_sent(left),
             Some(Record::Residue(left)) => self.report.residue.push(left),
             Some(Record::Skipped(left)) => self.report.skipped.push(left),
             Some(Record::ByPid(reason)) => self.report.by_pid_because = Some(reason),
@@ -499,10 +493,21 @@ impl Kept {
 
     /// Adds `other` to what the end reports.
     fn merge(&mut self, other: EndReport) {
+        for left in other.sent {
+            self.report.add_sent(left);
+        }
         self.report.residue.extend(other.residue);
         self.report.skipped.extend(other.skipped);
         self.report.faults.extend(other.faults);
         self.report.by_pid_because = self.report.by_pid_because.take().or(other.by_pid_because);
+    }
+
+    /// What the end reports, taken: every process besides the main it was sent to, as no end names
+    /// its main, though the keeper's end, and an end of the keeper, signal it among the tree.
+    fn taken_report(&mut self) -> EndReport {
+        let mut report = std::mem::take(&mut self.report);
+        report.sent.retain(|left| left.pid != self.main);
+        report
     }
 
     /// The end of a tree whose keeper closed its records before it wrote that it ended the tree.
@@ -540,6 +545,14 @@ fn lost_status() -> io::Error {
 impl Hold for Kept {
     fn id(&self, _keeper: &Child) -> u32 {
         self.main
+    }
+
+    /// The keeper's running descendants but the main: every process the keeper's end reaches.
+    fn members(&mut self, keeper: &mut Child) -> Vec<Identity> {
+        reap::descendants_of(keeper.id())
+            .into_iter()
+            .filter(|member| member.pid != self.main && reap::running(member))
+            .collect()
     }
 
     fn try_wait(&mut self, _keeper: &mut Child) -> io::Result<Option<ExitStatus>> {
@@ -582,7 +595,7 @@ impl Hold for Kept {
                 Ok(line) => self.take(line),
                 Err(RecvTimeoutError::Disconnected) => {
                     self.lost(keeper);
-                    return std::mem::take(&mut self.report);
+                    return self.taken_report();
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     whole_line::say(format_args!(
@@ -593,7 +606,7 @@ impl Hold for Kept {
                     ));
                     let report = reap::end_watched(keeper, &[]);
                     self.merge(report);
-                    return std::mem::take(&mut self.report);
+                    return self.taken_report();
                 }
             }
         }
@@ -604,26 +617,7 @@ impl Hold for Kept {
             ));
             self.merge(report);
         }
-        std::mem::take(&mut self.report)
-    }
-
-    /// Writes the release on the control pipe and closes it, so the keeper exits once the main
-    /// has, ending nothing, and reaps the keeper when the main's status is already read. A keeper
-    /// released before the main's exit is left to exit on its own.
-    fn release(&mut self, keeper: &mut Child) -> EndReport {
-        while let Ok(line) = self.records.try_recv() {
-            self.take(line);
-        }
-        if let Some(mut control) = self.control.take() {
-            let _ = control.write_all(b"r");
-        }
-        if self.status.is_some() && !exits_within(keeper, SLACK) {
-            whole_line::say(format_args!(
-                "rigger: the keeper of session {} did not exit at its release; it is left running",
-                self.main
-            ));
-        }
-        EndReport::default()
+        self.taken_report()
     }
 }
 
@@ -665,6 +659,8 @@ pub(super) enum Record {
     Probed,
     /// The main exited, with this raw wait status.
     Exited(i32),
+    /// A process the keeper's end was sent to, running just before its signal.
+    Sent(Leftover),
     /// A process the keeper's end signalled is still running past its bound.
     Residue(Leftover),
     /// A process the keeper's end found and never signalled.
@@ -688,6 +684,7 @@ impl Record {
             Record::Unavailable(errno) => format!("unavailable {errno}"),
             Record::Probed => "ok".to_string(),
             Record::Exited(raw) => format!("exited {raw}"),
+            Record::Sent(left) => format!("sent {}", Record::fields(left)),
             Record::Residue(left) => format!("residue {}", Record::fields(left)),
             Record::Skipped(left) => format!("skipped {}", Record::fields(left)),
             Record::ByPid(reason) => format!("bypid {}", reason.replace(['\n', '\r'], " ")),
@@ -708,6 +705,7 @@ impl Record {
             ("failed", Some(errno)) => errno.parse().ok().map(Record::Failed),
             ("unavailable", Some(errno)) => errno.parse().ok().map(Record::Unavailable),
             ("exited", Some(raw)) => raw.parse().ok().map(Record::Exited),
+            ("sent", Some(rest)) => Record::leftover(rest).map(Record::Sent),
             ("residue", Some(rest)) => Record::leftover(rest).map(Record::Residue),
             ("skipped", Some(rest)) => Record::leftover(rest).map(Record::Skipped),
             ("bypid", Some(reason)) => Some(Record::ByPid(reason.to_string())),
@@ -764,6 +762,7 @@ mod tests {
         an_unavailable_record_round_trips: round_trips(Record::Unavailable(1));
         a_probe_answer_round_trips: round_trips(Record::Probed);
         an_exit_status_round_trips: round_trips(Record::Exited(15));
+        a_sent_record_round_trips: round_trips(Record::Sent(leftover(5, "sh -c sleep 30")));
         a_residue_record_round_trips: round_trips(Record::Residue(leftover(7, "sh -c sleep 30")));
         a_skipped_record_round_trips: round_trips(Record::Skipped(leftover(9, " sh  -c x ")));
         a_leftover_with_no_program_round_trips: round_trips(Record::Residue(leftover(11, "")));
@@ -784,7 +783,8 @@ mod tests {
         );
     }
 
-    /// A kept tree whose keeper wrote `lines` after its spawn record, and `merged` added.
+    /// What the end of a kept tree whose main is this process answers, its keeper having
+    /// written `lines` after its spawn record and `merged` added.
     fn kept_report(lines: &[String], merged: EndReport) -> EndReport {
         let (_keeper, records) = std::sync::mpsc::channel();
         let (_read, control) = std::io::pipe().expect("a control pipe");
@@ -793,7 +793,27 @@ mod tests {
             kept.take(Ok(line.clone()));
         }
         kept.merge(merged);
-        kept.report
+        kept.taken_report()
+    }
+
+    /// The keeper's end and an end merged after it each signal the main among the tree, and may
+    /// both signal one process: the kept end names each process besides the main it was sent to,
+    /// once.
+    #[test]
+    fn a_kept_end_names_each_process_sent_its_end_once_and_never_the_main() {
+        let lines = [
+            Record::Sent(leftover(std::process::id(), "main")),
+            Record::Sent(leftover(7, "sh")),
+        ]
+        .map(|record| record.encode());
+        let merged = EndReport {
+            sent: vec![leftover(7, "sh"), leftover(8, "cat")],
+            ..EndReport::default()
+        };
+
+        let report = kept_report(&lines, merged);
+
+        assert_eq!(report.sent, vec![leftover(7, "sh"), leftover(8, "cat")]);
     }
 
     /// Why the end that a kept tree's keeper relayed, or one merged into it, signalled by pid.

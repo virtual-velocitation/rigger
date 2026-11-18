@@ -12,8 +12,8 @@
 //! children) to ANY process rooted in a dir rigger owns, regardless of who spawned it.
 //!
 //! Three entry points share one scan authority and one termination sequence:
-//! - [`processes_rooted_under`] - the pure detection primitive, `(pid, command)` for every
-//!   process whose cwd resolves strictly inside a base dir. Both the teardown reap AND
+//! - [`processes_rooted_under`] - the pure detection primitive, `(pid, executable name)` for
+//!   every process whose cwd resolves strictly inside a base dir. Both the teardown reap AND
 //!   `rigger validate`'s leaked-process advisory (spec 23, unit 2) consume this exact
 //!   function; there is no second scan. UNGUARDED by [`is_reapable_base`] - `rigger
 //!   validate` deliberately scans a whole scratch tree for visibility, which the reap's own
@@ -117,7 +117,7 @@ use std::time::{Duration, Instant};
 const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Every process whose resolved cwd is `base_dir` itself or strictly inside it, as
-/// `(pid, command)`. The SINGLE scan authority both the teardown reap
+/// `(pid, executable name)`. The SINGLE scan authority both the teardown reap
 /// ([`reap_processes_rooted_under`]) and `rigger validate`'s leaked-process advisory
 /// (spec 23, unit 2) consume - there is no second implementation. UNGUARDED: unlike the
 /// reap, this pure detection primitive is not scoped by [`is_reapable_base`], so a caller
@@ -137,9 +137,10 @@ const GRACE: std::time::Duration = std::time::Duration::from_millis(300);
 /// Component matching (not string prefix) is the load-bearing safety boundary -
 /// `<base>-sibling` shares a string prefix with `<base>` but is a different component and is
 /// never matched, so a process outside the exact dir is never reaped. The scanning process
-/// itself is excluded (rigger never reaps its own pid). Each
-/// match's command ([`crate::os_process::command`]) is purely descriptive: it names the leak in
-/// the `rigger validate` advisory and never affects which processes are reaped.
+/// itself is excluded (rigger never reaps its own pid). Each match's executable name
+/// ([`crate::os_process::executable_name`]), never its arguments, which can hold a secret, is
+/// purely descriptive: it names the leak in the `rigger validate` advisory and never affects
+/// which processes are reaped.
 pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
     // Resolve the base LEXICALLY (spec 89 criterion 3), not by requiring it to exist: a
     // process can hold a now-DELETED dir as its cwd (a test binary still looping after the
@@ -159,7 +160,7 @@ pub fn processes_rooted_under(base_dir: &Path) -> Vec<(u32, String)> {
         .into_iter()
         .filter(|&pid| pid != self_pid)
         .filter(|&pid| os_process::cwd_lies_in(pid, &base))
-        .map(|pid| (pid, os_process::command(pid)))
+        .map(|pid| (pid, os_process::executable_name(pid)))
         .collect()
 }
 
@@ -245,7 +246,7 @@ fn ancestor_pids(pid: u32) -> HashSet<u32> {
 /// Best-effort and platform-tolerant like every other scan in this module: an OS the process
 /// interface cannot read, or a process the listing could not read, contributes nothing, never a
 /// hard error.
-fn descendants_of(root_pid: u32) -> Vec<Identity> {
+pub(crate) fn descendants_of(root_pid: u32) -> Vec<Identity> {
     descendants_in(&os_process::table(), root_pid)
 }
 
@@ -738,35 +739,43 @@ const CHAIN_STEPS: usize = 4096;
 /// without freezing it first, and confirms no freeze.
 const FREEZES: bool = cfg!(unix);
 
-/// A process an end left running, or never signalled.
+/// A process an end ended, left running, or never signalled.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Leftover {
     /// The process's pid when the end saw it.
     pub pid: u32,
-    /// Its command ([`crate::os_process::command`]), naming it in a progress line.
+    /// Its executable's file name ([`crate::os_process::executable_name`]), naming it in a
+    /// progress line: never its arguments, which can hold a secret.
     pub program: String,
     /// Whether it is still frozen: the end froze it, could not end it, and could not resume it.
     pub stopped: bool,
 }
 
 impl Leftover {
-    /// `pid` as a leftover, named by its command as it reads now.
-    fn of(pid: u32, stopped: bool) -> Leftover {
+    /// `pid` as a leftover, named by its executable as it reads now.
+    pub(crate) fn of(pid: u32, stopped: bool) -> Leftover {
         Leftover {
             pid,
-            program: os_process::command(pid),
+            program: os_process::executable_name(pid),
             stopped,
         }
     }
 }
 
-/// What an end left: `residue`, the processes it signalled that are still running past
-/// [`END_BOUND`]; `skipped`, those still running that it found but never signalled, because at
-/// signal time their parent chain no longer reached the tree's root (an escape, or a stranger that
-/// took a pid), or because the walk could not tell them from strangers ([`Walk::untrusted`]); and
-/// `faults`, what the OS refused it; and `by_pid_because`, why it signalled by pid.
+/// What an end signalled and what it left: `sent`, the processes besides the main it sent its end
+/// to, each running just before its signal; `residue`, the processes it signalled that are still
+/// running past [`END_BOUND`]; `skipped`, those still running that it found but never signalled,
+/// because at signal time their parent chain no longer reached the tree's root (an escape, or a
+/// stranger that took a pid), or because the walk could not tell them from strangers
+/// ([`Walk::untrusted`]); `faults`, what the OS refused it; and `by_pid_because`, why it signalled
+/// by pid.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndReport {
+    /// Each process besides the main the end sent its end to (a hard end, or a TERM asking it to
+    /// exit), once, named by its executable as it read just before the signal, while it still
+    /// ran: a process that had exited by then is never named. One still running past the bound
+    /// is in `residue` too.
+    pub sent: Vec<Leftover>,
     /// Signalled, and still running past the bound.
     pub residue: Vec<Leftover>,
     /// Found, never signalled, and still running.
@@ -782,14 +791,27 @@ pub struct EndReport {
 
 impl EndReport {
     /// Report `target` as found and never signalled, once, while it is still running: a process
-    /// that is gone by then left nothing to report.
+    /// that is gone by then left nothing to report, and one the end sent its end to
+    /// ([`EndReport::sent`]) was signalled.
     fn skip(&mut self, target: &Identity) {
         let reported = self
             .skipped
             .iter()
             .any(|leftover| leftover.pid == target.pid);
-        if !reported && running(target) {
+        if !reported && !self.was_sent(target.pid) && running(target) {
             self.skipped.push(Leftover::of(target.pid, false));
+        }
+    }
+
+    /// Whether the end sent its end to `pid` ([`EndReport::sent`]).
+    fn was_sent(&self, pid: u32) -> bool {
+        self.sent.iter().any(|leftover| leftover.pid == pid)
+    }
+
+    /// Report `left` as sent the end ([`EndReport::sent`]), unless it is already.
+    pub(crate) fn add_sent(&mut self, left: Leftover) {
+        if !self.was_sent(left.pid) {
+            self.sent.push(left);
         }
     }
 
@@ -923,8 +945,9 @@ impl Tree {
     /// the pid its process's, is confirmed by reading the start time again
     /// ([`EndOs::start_after_freeze`]): one that reached another process, which took the pid
     /// between the checks and the freeze, is resumed at once, reported in `report`'s faults, and
-    /// counts as not sent. Answers whether it was sent: a process that cannot be addressed, or
-    /// fails either check, is never signalled.
+    /// counts as not sent. A hard end or a TERM sent to a target still running just before it is
+    /// reported as sent the end ([`EndReport::sent`]), named as it read then. Answers whether it
+    /// was sent: a process that cannot be addressed, or fails either check, is never signalled.
     fn send(
         &self,
         os: &mut impl EndOs,
@@ -940,6 +963,9 @@ impl Tree {
         if !holds {
             return false;
         }
+        let ends = matches!(signal, Signal::Term | Signal::Hard);
+        let named = (ends && !report.was_sent(target.pid) && running(target))
+            .then(|| Leftover::of(target.pid, false));
         os.send(signal, &to);
         if signal == Signal::Stop && to.descriptor.is_none() {
             let reached = os.start_after_freeze(&to);
@@ -949,6 +975,7 @@ impl Tree {
                 return false;
             }
         }
+        report.sent.extend(named);
         true
     }
 
@@ -1325,7 +1352,8 @@ std::cfg_select! {
         /// each still running is reported as residue. Then the main is reaped. A job the OS will
         /// not end is reported as a fault, with no wait for it, since nothing was sent to it. The
         /// kernel names a job's members, so no member is found by a walk, and none is signalled
-        /// one at a time.
+        /// one at a time; each member but the main still running just before the end is reported
+        /// as sent it ([`EndReport::sent`]).
         pub fn end_job(
             job: std::os::windows::io::OwnedHandle,
             main: &mut std::process::Child,
@@ -1353,10 +1381,17 @@ std::cfg_select! {
                     main.id()
                 ));
             }
+            let main_pid = main.id();
+            let sent: Vec<Leftover> = held
+                .iter()
+                .filter(|member| member.identity.pid != main_pid && member.running())
+                .map(|member| Leftover::of(member.identity.pid, false))
+                .collect();
             // SAFETY: the handle is a job this process created and still holds; the call takes
             // no pointer.
-            let ended = unsafe { TerminateJobObject(handle, 1) } != FALSE;
-            if !ended {
+            let terminated = unsafe { TerminateJobObject(handle, 1) } != FALSE;
+            report.sent = if terminated { sent } else { Vec::new() };
+            if !terminated {
                 let error = std::io::Error::last_os_error();
                 report.faults.push(format!(
                     "the job of session {} could not be ended ({error}), so the end did not wait \
@@ -1870,6 +1905,35 @@ mod tests {
             !pids.contains(&sib.id()),
             "a SIBLING sharing a string prefix (`<base>-evil`) must never be matched (pid {})",
             sib.id()
+        );
+    }
+
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
+    #[test]
+    fn processes_rooted_under_names_a_process_by_its_executable_never_its_arguments() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inside = sleeper_in(root.path());
+        // Until its exec is done the sleeper is still this test's own image, already in its cwd.
+        wait_until(|| {
+            processes_rooted_under(root.path())
+                .iter()
+                .any(|(pid, _)| *pid == inside.id())
+                && !os_process::is_unexeced_fork_of(inside.id(), std::process::id())
+        });
+        let program = os_process::executable_name(inside.id());
+
+        let named: Vec<String> = processes_rooted_under(root.path())
+            .into_iter()
+            .filter(|(pid, _)| *pid == inside.id())
+            .map(|(_, name)| name)
+            .collect();
+
+        cleanup(&mut inside);
+        assert_eq!(
+            (named, program.contains("300")),
+            (vec![program], false),
+            "the scan names the sleeper by its executable, never its argument `300`"
         );
     }
 
@@ -2923,6 +2987,33 @@ mod tests {
                 .collect()
         }
 
+        /// The pids `report` names as sent its end, in order, and the rest of the report.
+        fn split(report: EndReport) -> (Vec<u32>, EndReport) {
+            let mut sent: Vec<u32> = report.sent.iter().map(|left| left.pid).collect();
+            sent.sort_unstable();
+            let rest = EndReport {
+                sent: Vec::new(),
+                ..report
+            };
+            (sent, rest)
+        }
+
+        /// Each process besides `main` that `os` was asked to send an end to (a hard end or a
+        /// TERM), in order.
+        fn ended_by(os: &Rigged, main: u32) -> Vec<u32> {
+            let mut pids: Vec<u32> = os
+                .sent
+                .iter()
+                .filter(|(signal, pid)| {
+                    matches!(signal, Signal::Term | Signal::Hard) && *pid != main
+                })
+                .map(|(_, pid)| *pid)
+                .collect();
+            pids.sort_unstable();
+            pids.dedup();
+            pids
+        }
+
         /// Whether `pid` is running and not frozen.
         fn runs(pid: u32) -> bool {
             os_process::state(pid).is_some_and(|state| !frozen_state(state) && state != 'Z')
@@ -3175,15 +3266,18 @@ mod tests {
             assert_eq!(
                 (
                     next == Some((Signal::Resume, holder)),
-                    report,
+                    split(report),
                     witness.read()
                 ),
                 (
                     resumed,
-                    EndReport {
-                        faults,
-                        ..EndReport::default()
-                    },
+                    (
+                        vec![holder],
+                        EndReport {
+                            faults,
+                            ..EndReport::default()
+                        }
+                    ),
                     Reading::Ended
                 ),
                 "by pid {by_pid}: {:?}",
@@ -3334,8 +3428,11 @@ mod tests {
             let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
 
             assert_eq!(
-                (witness.read(), report),
-                (Reading::Ended, EndReport::default())
+                (witness.read(), split(report)),
+                (
+                    Reading::Ended,
+                    (ended_by(&os, main.id()), EndReport::default())
+                )
             );
             let status = main.try_wait().expect("read the main's status");
             assert_eq!(
@@ -3393,8 +3490,11 @@ mod tests {
             let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
 
             assert_eq!(
-                (witness.read(), report),
-                (Reading::Ended, EndReport::default())
+                (witness.read(), split(report)),
+                (
+                    Reading::Ended,
+                    (ended_by(&os, main.id()), EndReport::default())
+                )
             );
             let sent = os.sent;
             assert_eq!(
@@ -3693,8 +3793,12 @@ mod tests {
             );
             let forks_left = os.forker.as_ref().map_or(0, |forker| forker.left);
             assert_eq!(
-                (report, witness.read(), forks_left > 0),
-                (EndReport::default(), Reading::Ended, true),
+                (split(report), witness.read(), forks_left > 0),
+                (
+                    (ended_by(&os, main.id()), EndReport::default()),
+                    Reading::Ended,
+                    true
+                ),
                 "the end stopped walking with {forks_left} of {FORKS} forks left, and ended every \
                  process it found"
             );
@@ -3739,8 +3843,12 @@ mod tests {
 
             let forks_left = os.forker.as_ref().map_or(0, |forker| forker.left);
             assert_eq!(
-                (report, forks_left, witness.read()),
-                (EndReport::default(), 0, Reading::Ended),
+                (split(report), forks_left, witness.read()),
+                (
+                    (ended_by(&os, main.id()), EndReport::default()),
+                    0,
+                    Reading::Ended
+                ),
                 "every process the main started while the end ran is ended: {:?}",
                 os.sent
             );
@@ -3763,8 +3871,11 @@ mod tests {
             let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
 
             assert_eq!(
-                (witness.read(), report),
-                (Reading::Ended, EndReport::default())
+                (witness.read(), split(report)),
+                (
+                    Reading::Ended,
+                    (ended_by(&os, main.id()), EndReport::default())
+                )
             );
             let sent = os.sent;
             assert!(
@@ -3874,9 +3985,13 @@ mod tests {
             let root_exited =
                 crate::test_support::wait_until(|| matches!(root.try_wait(), Ok(Some(_))));
             assert_eq!(
-                (report, root_exited, witness.read()),
-                (EndReport::default(), true, Reading::Ended),
-                "{ending:?}: nothing is reported and the tree is ended"
+                (split(report), root_exited, witness.read()),
+                (
+                    (ended_by(&os, root_pid), EndReport::default()),
+                    true,
+                    Reading::Ended
+                ),
+                "{ending:?}: only what the end signalled is reported and the tree is ended"
             );
             assert!(
                 !os.sent.iter().any(|(_, pid)| *pid == ghost.pid),
@@ -3892,10 +4007,73 @@ mod tests {
                 an_end_never_reports_a_process_gone_before_its_signal(Ending::Descendants);
         }
 
+        /// `ending` over a tree whose member has a child that exited and is left unreaped, since
+        /// the member never waits for it: the end names the member as one it was sent to, by the
+        /// executable read before its signal, and never the child, which the table still lists
+        /// but which had exited before the end reached it.
+        fn an_end_names_what_it_signalled_and_no_process_that_had_exited(ending: Ending) {
+            let mut witness = Witness::new();
+            let mut root = tree(
+                &witness,
+                "sh -c 'true & exec sh -c \"$1\"' sh \"$witness_held\" & up; wait",
+            );
+            assert!(witness.wait_up(1), "the fixture's root is up");
+            let member = only_child(root.id());
+            let exited = || {
+                os_process::table()
+                    .into_iter()
+                    .find(|entry| {
+                        entry.parent == member && os_process::state(entry.pid) == Some('Z')
+                    })
+                    .map(|entry| entry.pid)
+            };
+            assert!(
+                crate::test_support::wait_until(|| exited().is_some()),
+                "the member's child has exited and is left unreaped"
+            );
+            let program = os_process::executable_name(member);
+            let mut os = Rigged::default();
+
+            let report = end(ending, &mut os, &mut root, END_BOUND);
+
+            let root_exited =
+                crate::test_support::wait_until(|| matches!(root.try_wait(), Ok(Some(_))));
+            let named: Vec<(u32, String)> = report
+                .sent
+                .iter()
+                .map(|leftover| (leftover.pid, leftover.program.clone()))
+                .collect();
+            assert_eq!(
+                (
+                    named,
+                    report.residue,
+                    report.skipped,
+                    root_exited,
+                    witness.read()
+                ),
+                (
+                    vec![(member, program)],
+                    vec![],
+                    vec![],
+                    true,
+                    Reading::Ended
+                ),
+                "{ending:?}: the member alone is named as one the end was sent to: {:?}",
+                os.sent
+            );
+        }
+
+        crate::test_cases! {
+            the_watched_end_names_what_it_signalled_and_no_process_that_had_exited:
+                an_end_names_what_it_signalled_and_no_process_that_had_exited(Ending::Watched);
+            the_descendant_end_names_what_it_signalled_and_no_process_that_had_exited:
+                an_end_names_what_it_signalled_and_no_process_that_had_exited(Ending::Descendants);
+        }
+
         /// `ending` over a tree whose one descendant fails its chain check once, its parent
         /// unreadable at that read and readable at the next, as when its parent exits and is
         /// reaped mid-check: a later check passes, so the end signals it, ends it, and reports
-        /// nothing.
+        /// only that it was sent the end.
         fn an_end_signals_a_process_whose_chain_check_failed_once(ending: Ending) {
             let mut witness = Witness::new();
             let mut root = tree(&witness, "holder; up; wait");
@@ -3911,9 +4089,9 @@ mod tests {
             let root_exited =
                 crate::test_support::wait_until(|| matches!(root.try_wait(), Ok(Some(_))));
             assert_eq!(
-                (report, root_exited, witness.read()),
-                (EndReport::default(), true, Reading::Ended),
-                "{ending:?}: the process is ended and nothing is reported"
+                (split(report), root_exited, witness.read()),
+                ((vec![holder], EndReport::default()), true, Reading::Ended),
+                "{ending:?}: the process is ended and only its end is reported"
             );
             assert!(
                 os.sent.contains(&(Signal::Hard, holder)),
