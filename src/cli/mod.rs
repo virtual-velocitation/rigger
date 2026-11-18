@@ -2373,24 +2373,14 @@ fn live_branches_for_sweep(
 /// (git's "not a working tree", a bare leftover dir). Every other refusal keeps `dir` and is the
 /// error: a tree git marks `locked`, or `prunable` with its dir there; a tree git lists unmarked
 /// yet refuses to remove; a tree whose registration git does not list; a list git cannot give,
-/// including git failing to spawn. An empty `repo` names no repository a tree could be registered
-/// with (a run always passes its own, [`rigger::worktree::kept_by_git`] reads none), so `dir` is
-/// reaped and goes off disk as any leftover dir does. `Ok` means `dir` is gone. `authorized_root`
-/// is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
+/// including git failing to spawn; and an empty `repo`, which names no repository (a run always
+/// passes its own). `Ok` means `dir` is gone. `authorized_root` is the resolved scratch root `dir`
+/// was enumerated from (spec 78 round 2).
 fn reap_then_remove_worktree(
     repo: &str,
     dir: &std::path::Path,
     authorized_root: &std::path::Path,
 ) -> Result<(), String> {
-    if repo.is_empty() {
-        rigger::reap::reap_processes_rooted_under(dir, authorized_root);
-        return std::fs::remove_dir_all(dir).map_err(|e| {
-            format!(
-                "removing leftover worktree dir {} failed: {e}",
-                dir.display()
-            )
-        });
-    }
     rigger::worktree::remove_worktree_at(
         repo,
         &dir.to_string_lossy(),
@@ -8853,10 +8843,13 @@ mod tests {
             live_spawn_leaf_names: slugs([]),
             current_run_scratch_leaf: None,
         };
-        // Empty repo -> the git-aware worktree deregister is skipped and a plain removal runs,
-        // which is all the synthetic (non-registered) worktree dirs here need.
+        // The worktree dirs here are registered with no repository, so git refuses each as not a
+        // working tree, the one refusal the sweep answers by removing the dir.
+        let repo_dir = tempfile::tempdir().unwrap();
+        init_committed_repo(repo_dir.path(), "README.md", "seed\n");
+        let repo = repo_dir.path().to_str().unwrap();
         let removed = reclaim_orphan_scratch(
-            "",
+            repo,
             scratch.to_str().unwrap(),
             &run_units,
             &std::collections::HashSet::new(),
@@ -8921,7 +8914,7 @@ mod tests {
         // Idempotent: a re-run over the now-clean root reclaims nothing and errors on nothing.
         assert_eq!(
             reclaim_orphan_scratch(
-                "",
+                repo,
                 scratch.to_str().unwrap(),
                 &run_units,
                 &std::collections::HashSet::new(),
