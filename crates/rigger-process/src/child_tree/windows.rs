@@ -415,19 +415,48 @@ mod tests {
         );
         assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
         let (held, _) = reap::job_members(job.0.as_raw_handle());
+        let started = Instant::now();
 
         let report = reap::end_job(job.0, &mut main);
 
+        let elapsed = started.elapsed();
         let running: Vec<u32> = held
             .iter()
-            .filter(|member| reap::running(member))
-            .map(|member| member.pid)
+            .filter(|member| member.running())
+            .map(|member| member.identity.pid)
             .collect();
         assert!(
             held.len() >= 2,
-            "the job lists the main and the background ping: {held:?}"
+            "the job lists the main and the background ping: {} listed",
+            held.len()
+        );
+        assert!(
+            elapsed < reap::END_BOUND,
+            "the end returns within its bound: {elapsed:?}"
         );
         assert_eq!((running, report), (vec![], EndReport::default()));
+    }
+
+    /// A process is read as a job's member only while that job holds it: the job's main is read,
+    /// and a process this test started outside the job is not.
+    #[test]
+    fn a_process_is_read_as_a_member_only_of_the_job_that_holds_it() {
+        let job = Job::new().expect("a job");
+        let (mut main, lines) = in_job(&job, "echo up& ping -n 60 127.0.0.1 >NUL");
+        assert!(read_until(&lines, "up"), "the main is up");
+        let mut outside = Command::new("cmd")
+            .raw_arg("/c ping -n 60 127.0.0.1 >NUL")
+            .spawn()
+            .expect("spawn a process outside the job");
+
+        let read = [main.id(), outside.id()].map(|pid| {
+            reap::job_member(job.0.as_raw_handle(), pid).map(|member| member.identity.pid)
+        });
+
+        crate::test_support::cleanup(&mut outside);
+        drop(job);
+        let _ = main.wait();
+        assert_eq!(read, [Some(main.id()), None]);
     }
 
     /// A jobbed command whose caller's own creation flags replace [`CREATE_SUSPENDED`] starts its
