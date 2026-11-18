@@ -70,10 +70,13 @@
 //! OUTSIDE `base_dir` is still refused, whether or not it exists.
 //!
 //! SIGNAL API (spec 78): every signal rigger issues to a process it does not hold a
-//! [`std::process::Child`] handle to goes through [`send_signal`], whose unix arm is
+//! [`std::process::Child`] handle to goes through [`send_signal`]. On Linux it goes through a
+//! process descriptor opened on the target before the signal's checks ([`address`]), so it
+//! reaches the process the checks passed or none. Elsewhere, and on a Linux host where
+//! descriptors are unavailable ([`no_process_descriptors`]), its unix arm is
 //! `rustix::process::kill_process` - never a shell-out to `kill(1)`, never `libc::kill`, never
-//! a process-group (negative pid) target - whose Windows arm opens the one pid for termination
-//! and ends it, and whose arm for any other OS sends nothing. On Windows a job object this process
+//! a process-group (negative pid) target - its Windows arm opens the one pid for termination
+//! and ends it, and its arm for any other OS sends nothing. On Windows a job object this process
 //! created is ended through `end_job` alone, the one site of the job end.
 //! `rustix::process::Pid::from_raw` accepts negative raw values (it rejects only zero), so
 //! [`send_signal`] and [`is_signal_eligible`] each carry their OWN explicit `pid > 1` guard
@@ -90,6 +93,13 @@
 //! ancestor of its own process (the reaper's launching shell/session, walked up the parent
 //! chain [`crate::os_process::parent`] reads, [`ancestor_pids`]) - so a coincidence or a
 //! recycled pid can never reach upward into the process tree running rigger itself.
+//!
+//! On Linux the re-read comes after a process descriptor is opened on the pid ([`address`]), and
+//! the signal goes through that descriptor, so a pid recycled between the re-read and the signal
+//! is not signalled either: the descriptor names the process that held the pid when it was opened,
+//! and a re-read that matches proves that is the process the scan found. Where descriptors are
+//! unavailable that last gap stays open, and a driver says so once
+//! ([`no_process_descriptors`]).
 
 use crate::os_process;
 use std::collections::{HashMap, HashSet};
@@ -307,24 +317,29 @@ fn toctou_still_same_process(
         && still_started(target.pid, target.start)
 }
 
-/// Re-read `target`'s cwd ([`crate::os_process::cwd`]) IMMEDIATELY before signalling it, and
-/// signal only if it still lies in `base` ([`crate::os_process::cwd_lies_in`]) AND
+/// Address `target` through `os` ([`EndOs::address`]), then re-read its cwd
+/// ([`crate::os_process::cwd`]) IMMEDIATELY before signalling it, and signal it through that
+/// address only if it still lies in `base` ([`crate::os_process::cwd_lies_in`]) AND
 /// [`toctou_still_same_process`]. This is the cwd half of the TOCTOU guard (spec 78): a pid
 /// that exited and was recycled onto an unrelated process (even one that happens to also be
 /// rooted under `base`) between the scan and this call is silently skipped, never signalled,
-/// and so is a pid whose cwd cannot be read.
+/// and so is a pid whose cwd cannot be read or that cannot be addressed.
 fn signal_if_unchanged(
+    os: &mut impl EndOs,
     target: &Identity,
     base: &Path,
     self_pid: u32,
     self_ancestors: &HashSet<u32>,
     signal: Signal,
 ) {
+    let Some(to) = os.address(target.pid) else {
+        return;
+    };
     if !os_process::cwd_lies_in(target.pid, base) {
         return;
     }
     if toctou_still_same_process(target, self_pid, self_ancestors) {
-        send_signal(signal, target.pid);
+        os.send(signal, &to);
     }
 }
 
@@ -371,9 +386,7 @@ fn os_call(signal: Signal, pid: u32) -> Option<OsCall> {
     }
     std::cfg_select! {
         unix => {
-            use rustix::process::Pid;
-            let raw = i32::try_from(pid).ok()?;
-            let rpid = Pid::from_raw(raw)?;
+            let rpid = unix_pid(pid)?;
             let signal = match signal {
                 Signal::Term => rustix::process::Signal::TERM,
                 Signal::Hard => rustix::process::Signal::KILL,
@@ -396,19 +409,130 @@ fn os_call(signal: Signal, pid: u32) -> Option<OsCall> {
     }
 }
 
-/// Send `signal` to `pid` - the reaper's ONE sanctioned signalling call (the `no-os-kill`
+/// `pid` as a unix pid, or `None` for a pid that would be 0 or negative as one: the pinned
+/// rustix's `Pid::from_raw` accepts a negative raw value, so a pid that does not fit a positive
+/// `i32` is refused here, before it can become one.
+#[cfg(unix)]
+fn unix_pid(pid: u32) -> Option<rustix::process::Pid> {
+    rustix::process::Pid::from_raw(i32::try_from(pid).ok()?)
+}
+
+std::cfg_select! {
+    target_os = "linux" => {
+        /// A process descriptor: it names the one process it was opened on until it is closed,
+        /// so a signal sent through it reaches that process or none, never one that took its pid.
+        type Descriptor = std::os::fd::OwnedFd;
+
+        /// Send `call`'s signal through `descriptor`.
+        fn send_through(descriptor: &Descriptor, call: OsCall) {
+            let (_, signal) = call;
+            let _ = rustix::process::pidfd_send_signal(descriptor, signal);
+        }
+
+        /// Why opening a process descriptor failed with `error`, as the driver's line says it.
+        fn unavailable_because(error: rustix::io::Errno) -> String {
+            if error == rustix::io::Errno::NOSYS {
+                "this kernel has no process descriptors".to_string()
+            } else {
+                format!("opening one fails here: {error}")
+            }
+        }
+    }
+    _ => {
+        /// No process descriptor: this OS signals a process by its pid alone.
+        type Descriptor = std::convert::Infallible;
+
+        /// No descriptor exists here, so nothing is sent through one.
+        fn send_through(descriptor: &Descriptor, _call: OsCall) {
+            match *descriptor {}
+        }
+    }
+}
+
+/// Where a signal goes: the pid it names and, on Linux, the process descriptor opened on that pid
+/// before the signal's checks, which the signal is sent through.
+struct Addressee {
+    pid: u32,
+    descriptor: Option<Descriptor>,
+}
+
+impl Addressee {
+    /// `pid` addressed by its number alone: a held child, whose unreaped handle keeps its pid its
+    /// own, and every process where descriptors are unavailable.
+    fn by_pid(pid: u32) -> Addressee {
+        Addressee {
+            pid,
+            descriptor: None,
+        }
+    }
+}
+
+/// `pid` addressed for a signal, ahead of every check the signal passes: where this host opens
+/// process descriptors (`by_descriptor`, [`descriptors_here`]), through one opened on the process
+/// that holds `pid` now, so the signal sent after the checks reaches that process or none; by the
+/// pid alone otherwise. `None` when the descriptor does not open, since the process is gone: it is
+/// sent nothing.
+fn address(pid: u32, by_descriptor: bool) -> Option<Addressee> {
+    std::cfg_select! {
+        target_os = "linux" => {
+            if !by_descriptor {
+                return Some(Addressee::by_pid(pid));
+            }
+            let opened =
+                rustix::process::pidfd_open(unix_pid(pid)?, rustix::process::PidfdFlags::empty());
+            Some(Addressee {
+                pid,
+                descriptor: Some(opened.ok()?),
+            })
+        }
+        _ => {
+            let _ = by_descriptor;
+            Some(Addressee::by_pid(pid))
+        }
+    }
+}
+
+/// Why this process cannot address a process through a process descriptor here, where its OS has
+/// them: on Linux, the error that opening one on this process answers ([`unavailable_because`]).
+/// `None` where one opens, and on every other OS, which addresses a process by its pid alone.
+pub fn no_process_descriptors() -> Option<String> {
+    std::cfg_select! {
+        target_os = "linux" => {
+            let me = rustix::process::getpid();
+            rustix::process::pidfd_open(me, rustix::process::PidfdFlags::empty())
+                .err()
+                .map(unavailable_because)
+        }
+        _ => {
+            None
+        }
+    }
+}
+
+/// Whether this host addresses a process through a process descriptor
+/// ([`no_process_descriptors`]).
+fn descriptors_here() -> bool {
+    no_process_descriptors().is_none()
+}
+
+/// Send `signal` to `to` - the reaper's ONE sanctioned signalling call (the `no-os-kill`
 /// gate, spec 78, exempts only this function and `tests/common/mod.rs::terminate_pid` from
 /// its ban on calling a signal API directly, never from its ban on shelling out to a process
-/// termination utility, and this function alone from its ban on the Windows
-/// process-termination call): the call [`os_call`] maps it to, on unix the internal rustix
+/// termination utility, and this file alone from its ban on the Windows process-termination
+/// call and on a signal sent through a descriptor): the call [`os_call`] maps it to, through
+/// `to`'s process descriptor where it holds one, and otherwise on unix the internal rustix
 /// syscall, on Windows the process opened for termination and ended with exit code 1, on any
 /// other OS nothing. Best-effort: ESRCH (the process already exited) or any other failure
 /// (permission, ...) is silently ignored, since the reap is teardown cleanup, never a hard error
 /// that could fail a worktree removal or a step.
-fn send_signal(signal: Signal, pid: u32) {
-    let Some(call) = os_call(signal, pid) else {
+fn send_signal(signal: Signal, to: &Addressee) {
+    let Some(call) = os_call(signal, to.pid) else {
         return;
     };
+    if let Some(descriptor) = &to.descriptor {
+        send_through(descriptor, call);
+        return;
+    }
     std::cfg_select! {
         unix => {
             let (rpid, signal) = call;
@@ -507,21 +631,36 @@ impl EndReport {
     }
 }
 
-/// The three OS facilities an end uses, so a test can add a stranger to the table it walks, fail
-/// a parent read the chain check makes, or keep one signal from landing. A test can break a chain
-/// this way, never make one. The start-time check every signal passes reads the live OS and is
-/// never part of this.
+/// The OS facilities an end and a sweep use, so a test can add a stranger to the table an end
+/// walks, fail a parent read the chain check makes, see what is addressed, or keep one signal from
+/// landing. A test can break a chain this way, never make one. The start-time check every signal
+/// passes reads the live OS and is never part of this.
 trait EndOs {
     /// The process table ([`crate::os_process::table`]).
     fn table(&mut self) -> Vec<os_process::Entry>;
     /// The parent of `pid` ([`crate::os_process::parent`]), as a signal's chain check reads it.
     fn parent(&mut self, pid: u32) -> Option<u32>;
-    /// Send `signal` to `pid` ([`send_signal`]).
-    fn send(&mut self, signal: Signal, pid: u32);
+    /// `pid` addressed for a signal ([`address`]), ahead of every check the signal passes;
+    /// `None` when it is gone.
+    fn address(&mut self, pid: u32) -> Option<Addressee>;
+    /// Send `signal` to `to` ([`send_signal`]).
+    fn send(&mut self, signal: Signal, to: &Addressee);
 }
 
-/// The live OS.
-struct LiveOs;
+/// The live OS, and whether it addresses a process through a process descriptor
+/// ([`descriptors_here`]), read once when it is made.
+struct LiveOs {
+    by_descriptor: bool,
+}
+
+impl LiveOs {
+    /// The live OS as this host addresses a process now.
+    fn new() -> LiveOs {
+        LiveOs {
+            by_descriptor: descriptors_here(),
+        }
+    }
+}
 
 impl EndOs for LiveOs {
     fn table(&mut self) -> Vec<os_process::Entry> {
@@ -532,8 +671,12 @@ impl EndOs for LiveOs {
         os_process::parent(pid)
     }
 
-    fn send(&mut self, signal: Signal, pid: u32) {
-        send_signal(signal, pid);
+    fn address(&mut self, pid: u32) -> Option<Addressee> {
+        address(pid, self.by_descriptor)
+    }
+
+    fn send(&mut self, signal: Signal, to: &Addressee) {
+        send_signal(signal, to);
     }
 }
 
@@ -575,15 +718,19 @@ impl Tree {
         }
     }
 
-    /// Send `signal` to `target` through `os`, only if, read right now, `target`'s parent chain
-    /// in `os` still reaches the root ([`chain_reaches`]) and its pid still names the process the
-    /// walk found ([`toctou_still_same_process`]). Answers whether it was sent: a process that
-    /// fails either check is never signalled.
+    /// Address `target` through `os` ([`EndOs::address`]), then send `signal` to it through that
+    /// address, only if, read right now, `target`'s parent chain in `os` still reaches the root
+    /// ([`chain_reaches`]) and its pid still names the process the walk found
+    /// ([`toctou_still_same_process`]). Answers whether it was sent: a process that cannot be
+    /// addressed, or fails either check, is never signalled.
     fn send(&self, os: &mut impl EndOs, signal: Signal, target: &Identity) -> bool {
+        let Some(to) = os.address(target.pid) else {
+            return false;
+        };
         let holds = chain_reaches(target.pid, self.root, |pid| os.parent(pid))
             && toctou_still_same_process(target, self.self_pid, &self.self_ancestors);
         if holds {
-            os.send(signal, target.pid);
+            os.send(signal, &to);
         }
         holds
     }
@@ -690,7 +837,7 @@ pub fn left_running(main: &Identity) -> Vec<Leftover> {
 /// tree, a resume among them. A main that has already exited is reaped and nothing is signalled:
 /// what it left has a parent outside the tree, and its pid may name another process.
 pub fn end_watched(main: &mut std::process::Child, remembered: &[Identity]) -> EndReport {
-    end_watched_with(&mut LiveOs, main, remembered, END_BOUND)
+    end_watched_with(&mut LiveOs::new(), main, remembered, END_BOUND)
 }
 
 /// What a watched end found of the tree under its main: each process at its depth when first
@@ -788,8 +935,9 @@ fn end_watched_with(
         return report;
     }
     let main_pid = main.id();
+    let main_at = Addressee::by_pid(main_pid);
     let tree = Tree::rooted_at(main_pid);
-    os.send(Signal::Stop, main_pid);
+    os.send(Signal::Stop, &main_at);
     if FREEZES {
         poll_until(deadline, || frozen_or_gone(main_pid));
     }
@@ -819,11 +967,11 @@ fn end_watched_with(
         }
     }
     if matches!(main.try_wait(), Ok(None)) {
-        os.send(Signal::Hard, main_pid);
+        os.send(Signal::Hard, &main_at);
     }
     let main_deadline = deadline.max(Instant::now() + FLOOR);
     if !poll_until(main_deadline, || !matches!(main.try_wait(), Ok(None))) {
-        os.send(Signal::Resume, main_pid);
+        os.send(Signal::Resume, &main_at);
         report.residue.push(Leftover::of(main_pid, false));
     }
     for target in remembered
@@ -844,7 +992,7 @@ fn end_watched_with(
 /// they refuse at every walk is reported skipped and never signalled.
 pub fn end_own_descendants(graceful: bool, children_left: impl FnMut() -> bool) -> EndReport {
     end_descendants_with(
-        &mut LiveOs,
+        &mut LiveOs::new(),
         std::process::id(),
         graceful,
         children_left,
@@ -1144,14 +1292,15 @@ pub fn reap_authorized(base: PathBuf) {
     if term_targets.is_empty() {
         return;
     }
+    let os = &mut LiveOs::new();
     for target in &term_targets {
-        signal_if_unchanged(target, &base, self_pid, &self_ancestors, Signal::Term);
+        signal_if_unchanged(os, target, &base, self_pid, &self_ancestors, Signal::Term);
     }
     std::thread::sleep(GRACE);
     // Re-scan so only processes STILL rooted inside are force-killed - each gets its own
     // fresh start-time baseline here, then is rechecked again immediately below.
     for target in scan_with_starttime(&base) {
-        signal_if_unchanged(&target, &base, self_pid, &self_ancestors, Signal::Hard);
+        signal_if_unchanged(os, &target, &base, self_pid, &self_ancestors, Signal::Hard);
     }
 }
 
@@ -1785,6 +1934,7 @@ mod tests {
             start: pid_starttime(child.id()).unwrap(),
         };
         signal_if_unchanged(
+            &mut LiveOs::new(),
             &target,
             &base,
             std::process::id(),
@@ -1815,6 +1965,7 @@ mod tests {
                 .wrapping_add(starttime_shift),
         };
         signal_if_unchanged(
+            &mut LiveOs::new(),
             &target,
             &signal_base,
             std::process::id(),
@@ -1857,14 +2008,28 @@ mod tests {
             start: pid_starttime(child.id()).unwrap(),
         };
         // Pretend the child IS "self" - it must never be signalled.
-        signal_if_unchanged(&target, &base, child.id(), &HashSet::new(), Signal::Hard);
+        signal_if_unchanged(
+            &mut LiveOs::new(),
+            &target,
+            &base,
+            child.id(),
+            &HashSet::new(),
+            Signal::Hard,
+        );
         let alive_as_self = matches!(child.try_wait(), Ok(None));
         assert!(alive_as_self, "a pid equal to self_pid must be skipped");
 
         // Pretend the child is a recorded ancestor - it must never be signalled.
         let mut ancestors = HashSet::new();
         ancestors.insert(child.id());
-        signal_if_unchanged(&target, &base, std::process::id(), &ancestors, Signal::Hard);
+        signal_if_unchanged(
+            &mut LiveOs::new(),
+            &target,
+            &base,
+            std::process::id(),
+            &ancestors,
+            Signal::Hard,
+        );
         let alive_as_ancestor = matches!(child.try_wait(), Ok(None));
         cleanup(&mut child);
         assert!(
@@ -1998,7 +2163,8 @@ mod tests {
         /// pid unreadable once that pid was sent its signal, every freeze of `unstoppable` and
         /// every hard end of `swallowed` dropped, and `forker` started on one more process ahead
         /// of each read of the table. Every signal the end sends is recorded, dropped or not, and
-        /// so is each process sent a freeze while its parent did not read frozen.
+        /// so is each process sent a freeze while its parent did not read frozen, and each address
+        /// and parent read, in order.
         #[derive(Default)]
         struct Rigged {
             stranger: Option<(u32, u32)>,
@@ -2011,6 +2177,15 @@ mod tests {
             forker: Option<Forker>,
             sent: Vec<(Signal, u32)>,
             frozen_under_a_running_parent: Vec<u32>,
+            steps: Vec<Step>,
+        }
+
+        /// One step a signal takes through [`Rigged`] before it is sent: its target addressed, or
+        /// a parent read for its chain check.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Step {
+            Addressed(u32),
+            ParentRead(u32),
         }
 
         /// A tree member that starts a process each time a line reaches its `input`, `left` times
@@ -2076,6 +2251,7 @@ mod tests {
             }
 
             fn parent(&mut self, pid: u32) -> Option<u32> {
+                self.steps.push(Step::ParentRead(pid));
                 if self.unreadable_once == Some(pid) {
                     self.unreadable_once = None;
                     return None;
@@ -2088,7 +2264,13 @@ mod tests {
                 os_process::parent(pid)
             }
 
-            fn send(&mut self, signal: Signal, pid: u32) {
+            fn address(&mut self, pid: u32) -> Option<Addressee> {
+                self.steps.push(Step::Addressed(pid));
+                address(pid, descriptors_here())
+            }
+
+            fn send(&mut self, signal: Signal, to: &Addressee) {
+                let pid = to.pid;
                 self.sent.push((signal, pid));
                 if signal == Signal::Stop && !os_process::parent(pid).is_some_and(frozen) {
                     self.frozen_under_a_running_parent.push(pid);
@@ -2099,8 +2281,135 @@ mod tests {
                     Signal::Term | Signal::Resume => false,
                 };
                 if !dropped {
-                    send_signal(signal, pid);
+                    send_signal(signal, to);
                 }
+            }
+        }
+
+        /// A signal's target is addressed before its chain is checked, so the signal goes to the
+        /// process the check passed, and the target is sent its signal once.
+        #[test]
+        fn a_signal_addresses_its_target_before_it_checks_the_chain() {
+            let mut witness = Witness::new();
+            let mut root = tree(&witness, "holder; up; held");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let member = only_child(root.id());
+            let target = Identity {
+                pid: member,
+                start: os_process::start_time(member).expect("the member is running"),
+            };
+            let mut os = Rigged::default();
+
+            let sent = Tree::rooted_at(root.id()).send(&mut os, Signal::Hard, &target);
+
+            assert_eq!(
+                (sent, os.steps, os.sent),
+                (
+                    true,
+                    vec![Step::Addressed(member), Step::ParentRead(member)],
+                    vec![(Signal::Hard, member)]
+                )
+            );
+            assert_eq!(witness.release(), Reading::Ended);
+            assert!(crate::test_support::wait_until(|| matches!(
+                root.try_wait(),
+                Ok(Some(_))
+            )));
+        }
+
+        /// Process descriptors, on the one OS that has them.
+        #[cfg(target_os = "linux")]
+        mod descriptors {
+            use super::*;
+
+            /// Two held processes, a hard end sent naming the second's pid, through a descriptor
+            /// opened on the process `opened_on` names where it is some and by the pid alone where
+            /// it is none: the signal each process ended on, in order.
+            fn a_hard_end_naming_the_second_ends(
+                opened_on: Option<usize>,
+                ended: [Option<i32>; 2],
+            ) {
+                let mut held = [sleeper_in(Path::new("/")), sleeper_in(Path::new("/"))];
+                let to = Addressee {
+                    pid: held[1].id(),
+                    descriptor: opened_on.map(|which| {
+                        address(held[which].id(), true)
+                            .and_then(|to| to.descriptor)
+                            .expect("a descriptor opens on a running process")
+                    }),
+                };
+
+                send_signal(Signal::Hard, &to);
+
+                wait_until(|| {
+                    held.iter_mut()
+                        .any(|child| matches!(child.try_wait(), Ok(Some(_))))
+                });
+                let signals = held.each_mut().map(|child| {
+                    child
+                        .try_wait()
+                        .expect("read the process's status")
+                        .and_then(|status| status.signal())
+                });
+                for child in &mut held {
+                    cleanup(child);
+                }
+                assert_eq!(signals, ended);
+            }
+
+            crate::test_cases! {
+                a_descriptor_opened_on_the_first_ends_the_first_whatever_pid_is_named:
+                    a_hard_end_naming_the_second_ends(Some(0), [Some(9), None]);
+                a_signal_by_pid_ends_the_process_its_pid_names:
+                    a_hard_end_naming_the_second_ends(None, [None, Some(9)]);
+            }
+
+            /// What [`address`] answers, with descriptors or without (`by_descriptor`), for a
+            /// running process and for one already gone: `expected` for each, as whether its
+            /// address holds a descriptor, or `None` where it is not addressed.
+            fn addressed(by_descriptor: bool, expected: [Option<bool>; 2]) {
+                let mut running = sleeper_in(Path::new("/"));
+                let mut gone = sleeper_in(Path::new("/"));
+                cleanup(&mut gone);
+                let pids = [running.id(), gone.id()];
+
+                let answers = pids.map(|pid| {
+                    address(pid, by_descriptor).map(|to| (to.pid, to.descriptor.is_some()))
+                });
+
+                cleanup(&mut running);
+                assert_eq!(
+                    answers,
+                    [
+                        expected[0].map(|held| (pids[0], held)),
+                        expected[1].map(|held| (pids[1], held)),
+                    ]
+                );
+            }
+
+            crate::test_cases! {
+                with_descriptors_a_running_process_is_held_by_one_and_a_gone_one_is_not_addressed:
+                    addressed(true, [Some(true), None]);
+                without_descriptors_both_are_addressed_by_pid:
+                    addressed(false, [Some(false), Some(false)]);
+            }
+
+            #[test]
+            fn this_kernel_opens_process_descriptors() {
+                assert_eq!((no_process_descriptors(), descriptors_here()), (None, true));
+            }
+
+            crate::test_cases! {
+                a_kernel_without_process_descriptors_says_so:
+                    assert_eq!(
+                        unavailable_because(rustix::io::Errno::NOSYS),
+                        "this kernel has no process descriptors"
+                    );
+                a_refused_process_descriptor_names_the_error:
+                    assert_eq!(
+                        unavailable_because(rustix::io::Errno::PERM),
+                        "opening one fails here: Operation not permitted (os error 1)"
+                    );
             }
         }
 

@@ -230,10 +230,29 @@ impl TreeCommand {
         &mut self.command
     }
 
-    /// Starts the tree, contained as the command was made.
+    /// Starts the tree, contained as the command was made. Where this process signals a
+    /// session's processes by pid because process descriptors are unavailable, it says so once
+    /// ([`signalled_by_pid`]).
     pub fn spawn(self) -> io::Result<ReapedChild> {
+        static CHECKED: Once = Once::new();
+        CHECKED.call_once(|| {
+            if let Some(reason) = reap::no_process_descriptors() {
+                whole_line::say(format_args!("{}", signalled_by_pid(&reason)));
+            }
+        });
         self.contain.spawn(self.command)
     }
+}
+
+/// The line this process says once on its error output when it signals a session's processes by
+/// pid, because process descriptors are unavailable for `reason`
+/// ([`crate::reap::no_process_descriptors`]).
+fn signalled_by_pid(reason: &str) -> String {
+    format!(
+        "rigger: process descriptors unavailable: {reason}; a session's processes are signalled \
+         by pid after a check, and a process that takes a checked pid before the signal lands \
+         can receive it"
+    )
 }
 
 /// How a tree is started: a containment spawns the command it was made with and answers the
@@ -618,6 +637,16 @@ mod tests {
             ends_the_tree("setsid sh -c 'printf u >&9; read -r unused <&8' & up; held", 2);
         a_watched_end_ends_a_process_started_in_another_directory:
             ends_the_tree("cd / && holder; up; held", 2);
+    }
+
+    #[test]
+    fn a_host_without_process_descriptors_says_its_sessions_are_signalled_by_pid() {
+        assert_eq!(
+            signalled_by_pid("this kernel has no process descriptors"),
+            "rigger: process descriptors unavailable: this kernel has no process descriptors; a \
+             session's processes are signalled by pid after a check, and a process that takes a \
+             checked pid before the signal lands can receive it"
+        );
     }
 
     #[test]
