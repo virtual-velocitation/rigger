@@ -158,7 +158,8 @@ pub enum MergeOutcome {
 /// Where [`conflict_markers_present`] reads a path's content.
 #[derive(Clone, Copy)]
 enum ScanAt<'a> {
-    /// The worktree copy, staged or not.
+    /// The worktree copy, staged or not, of a tracked file or an untracked one `git add -A`
+    /// would stage; an ignored file is never read.
     Worktree,
     /// The index: what the next `git commit` takes.
     Index,
@@ -3197,16 +3198,17 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
     git(dir, &["update-index", "-q", "--refresh"]).map(drop)
 }
 
-/// The git conflict-marker lines that `scope`'s TRACKED files carry at `at`, as `(path, line)`
-/// pairs: the marker scan's one home. Only a COMPLETE, ORDERED set counts - a start line
+/// The git conflict-marker lines that `scope`'s files carry at `at`, as `(path, line)` pairs: the
+/// marker scan's one home. Only a COMPLETE, ORDERED set counts - a start line
 /// (`<<<<<<< `), then a separator (`=======`), then an end line (`>>>>>>> `), each a whole line
 /// with any trailing `\r` of a CRLF file dropped ([`marker`]); a diff3 base section
 /// (`||||||| `) between start and separator is content to it, like any other line. A
 /// separator-shaped line alone (a Setext heading's underline, an RST title's over- and
 /// underline), a start with no end after it and the three out of order are no conflict, so the
 /// scan answers none of their lines. [`ScanAt::Worktree`] reads the worktree copy (staged or
-/// not), [`ScanAt::Index`] what the next `git commit` takes, and [`ScanAt::Commit`] a commit's
-/// tree. Each line is answered with the number of complete sets it stands in at that path, which
+/// not) of every file a commit's `git add -A` would stage, an untracked one included and an
+/// ignored one never, [`ScanAt::Index`] what the next `git commit` takes, and [`ScanAt::Commit`]
+/// a commit's tree. Each line is answered with the number of complete sets it stands in at that path, which
 /// [`markers_introduced`] compares with what a commit already carries: read at the worktree
 /// against `HEAD`, it is [`commit_refusal`]'s; read at the index against both parents, it is
 /// [`Worktree::merge_into_worktree`]'s finalize refusal, through
@@ -3263,7 +3265,7 @@ fn conflict_markers_present(
         "^>>>>>>> ",
     ];
     match at {
-        ScanAt::Worktree => {}
+        ScanAt::Worktree => args.push("--untracked"),
         ScanAt::Index => args.push("--cached"),
         ScanAt::Commit(rev) => args.push(rev),
     }
@@ -3427,8 +3429,8 @@ pub fn commit_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> 
     scope.dedup();
     if !markers_introduced(dir, ScanAt::Worktree, &scope, &["HEAD"])?.is_empty() {
         return Ok(Some(format!(
-            "refusing to commit in {dir}: conflict-marker text is present in tracked file \
-             content - resolve it before committing"
+            "refusing to commit in {dir}: conflict-marker text is present in file content the \
+             commit would carry - resolve it before committing"
         )));
     }
     Ok(None)
