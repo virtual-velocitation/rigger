@@ -288,7 +288,7 @@ impl Worktree {
                         });
                     }
                     OnBranch::Gone(_) => {
-                        git(repo, &["worktree", "prune"])?;
+                        prune_gone(repo, authorized_root)?;
                     }
                     OnBranch::Nowhere => {}
                 }
@@ -589,7 +589,7 @@ impl Worktree {
         authorized_root: &str,
     ) -> Result<(), Error> {
         // Serialize this WHOLE call - both the dir-present `clear_worktree_dir` path and the
-        // dir-absent `git worktree prune` fallback below - against every other in-process
+        // dir-absent prune fallback below ([`prune_gone`]) - against every other in-process
         // admin-directory mutation this process makes for the SAME repository (spec 103
         // checkin round 4: a sibling unit's `Worktree::create` heal-scanning or adding into
         // this same admin directory while this call prunes/removes it corrupts whichever one
@@ -602,7 +602,7 @@ impl Worktree {
             // No dir to clear, but a killed process may still leave a dangling admin entry, which
             // the prune drops; a locked one it keeps, and the discard with it.
             refuse_marked_at(repo, dir)?;
-            git(repo, &["worktree", "prune"])?;
+            prune_gone(repo, authorized_root)?;
         }
         reclaim_cache_sibling(dir, authorized_root);
         Self::delete_branch(repo, branch)
@@ -2344,7 +2344,8 @@ pub fn spawn_fence(events: &[Event], unit: &str) -> SpawnFence {
     }
 }
 
-/// Sweep the scratch root's TERMINAL worktrees: prune stale registrations, then remove
+/// Sweep the scratch root's TERMINAL worktrees: prune stale registrations ([`prune_gone`], which
+/// keeps a tree git marks `prunable` with its dir there), then remove
 /// every registered worktree under `root` whose branch tip is already an ancestor of
 /// `run_branch` - integrated (or never-advanced review scaffolding), so the worktree
 /// serves no in-flight unit. Unmerged branches are in-flight checkpoints and are left
@@ -2424,10 +2425,11 @@ pub fn sweep_terminal_logged(
     // Serialize this WHOLE sweep - the prune below and every candidate's own `git worktree
     // remove --force` in the loop - against every other in-process admin-directory mutation
     // this process makes for the SAME repository (spec 103 checkin round 4; see
-    // `repo_admin_lock`'s doc comment).
+    // `repo_admin_lock`'s doc comment). The prune reads git's marks first ([`prune_gone`]), so
+    // a tree git marks `prunable` with its dir there keeps its registration for the check below.
     let repo_lock = repo_admin_lock(repo);
     let _repo_guard = repo_lock.lock().unwrap();
-    git(repo, &["worktree", "prune"])?;
+    prune_gone(repo, root)?;
     let out = git(repo, &["worktree", "list", "--porcelain"])?;
     let mut removed = 0;
     for entry in listed(&out) {
@@ -2811,6 +2813,43 @@ fn mark_keeps(mark: &str, at: &str) -> bool {
     mark_word(mark) == "locked" || !matches!(occupant(at), Ok(None))
 }
 
+/// Drop the registrations git keeps for trees whose dir is gone, the job of `git worktree prune`,
+/// reading git's marks FIRST. A bare prune drops every entry git marks `prunable`, its dir there or
+/// not, so a tree whose link was lost (or whose remove git did not finish after deleting the link)
+/// would lose its registration, and its files would then read to every sweep as a leftover nothing
+/// registers, to be taken off disk. So: with no `prunable` entry that [`mark_keeps`], the prune runs
+/// as before (and also drops an admin entry git cannot list, its gitdir file unreadable); with one,
+/// the prune is not run, and each `prunable` entry whose dir is gone is dropped by its own `git
+/// worktree remove --force`, so the kept tree's registration stays (an unlistable admin entry then
+/// waits for a later prune). A list git refuses, or a removal it refuses, is the error. Every
+/// `git worktree prune` rigger runs outside its tests is this one.
+///
+/// Before each removal, whatever is still rooted under that path (a process whose cwd was deleted
+/// with the dir) is reaped within `authorized_root` ([`reap_dir_before_removal`]), as before every
+/// removal; nothing is removed from disk, since nothing is there.
+///
+/// CALLER-LOCKED (spec 103 checkin round 4): it mutates the worktree admin directory, so every
+/// caller holds `repo_admin_lock(repo)` across its whole call; this never takes that lock.
+fn prune_gone(repo: &str, authorized_root: &str) -> Result<(), Error> {
+    let out = git(repo, &["worktree", "list", "--porcelain"])
+        .map_err(|e| step_failed("reading git's marks before a prune".to_string(), e.0))?;
+    let prunable: Vec<(&str, bool)> = listed(&out)
+        .filter_map(|entry| {
+            let mark = entry.mark.filter(|mark| mark_word(mark) == "prunable")?;
+            Some((entry.path, mark_keeps(mark, entry.path)))
+        })
+        .collect();
+    if prunable.iter().any(|&(_, kept)| kept) {
+        for (gone, _) in prunable.into_iter().filter(|&(_, kept)| !kept) {
+            reap_dir_before_removal(gone, authorized_root);
+            git(repo, &["worktree", "remove", "--force", gone])?;
+        }
+        return Ok(());
+    }
+    git(repo, &["worktree", "prune"])?;
+    Ok(())
+}
+
 /// Why git keeps the scratch at `dir` out of a sweep: `dir` is a worktree git marks, or one of
 /// the scratch dirs beside such a tree that serve it ([`scratch_siblings`]), and the mark keeps
 /// what is there ([`mark_keeps`]), so nothing at `dir` is reaped or removed. A list git cannot
@@ -3053,7 +3092,7 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
     } else {
         remove_tree_or_leftover(repo, dir, authorized_root)?;
     }
-    git(repo, &["worktree", "prune"])?;
+    prune_gone(repo, authorized_root)?;
     Ok(())
 }
 
@@ -3281,7 +3320,7 @@ fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
 /// This composes the EXISTING single-authorities, minting no parallel teardown:
 /// [`registration_on`] finds where the branch is checked out and whether that tree is the
 /// run's to take, [`clear_worktree_dir`] deregisters a usable tree under the work root, a
-/// `git worktree prune` drops a registration whose dir was deleted out from under git (so even a
+/// prune ([`prune_gone`]) drops a registration whose dir was deleted out from under git (so even a
 /// residue that no longer occupies disk stops holding the branch), and [`reclaim_cache_sibling`]
 /// reclaims the multi-gigabyte `cargo-target-<slug>` cache of a tree under the work root,
 /// exactly as the two teardowns above do. A branch with no lingering worktree is a graceful
@@ -3314,7 +3353,7 @@ pub fn reclaim_worktree_on_branch(
     match registration_on(repo, branch, authorized_root)? {
         OnBranch::Nowhere => Ok(None),
         OnBranch::Gone(dir) => {
-            git(repo, &["worktree", "prune"])?;
+            prune_gone(repo, authorized_root)?;
             let root = std::path::Path::new(authorized_root);
             if crate::reap::strictly_under(std::path::Path::new(&dir), root).is_some() {
                 reclaim_cache_sibling(&dir, authorized_root);
