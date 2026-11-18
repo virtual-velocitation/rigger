@@ -1,10 +1,10 @@
 //! The grammar registry (architecture 5.5.3): the `extension -> (grammar, tag query)` table
 //! that decides WHICH grammar a file is parsed under. It supplies the injected pair unit 1's
 //! `extract` consumes; it never parses anything itself. Adding a language is adding one match
-//! arm here, and a language whose query cannot tag a definition (its grammar gives it no name
-//! node, or the upstream query already holds that node as a reference) also adds a read-off in
-//! `extract`. Confined to the `symbols` feature because it names `tree_sitter::Language`;
-//! the parser-free model stays in the light lane.
+//! arm here and a tags generation for its entry in the model, and a language whose query cannot
+//! tag a definition (its grammar gives it no name node, or the upstream query already holds that
+//! node as a reference) also adds a read-off in `extract`. Confined to the `symbols` feature
+//! because it names `tree_sitter::Language`; the parser-free model stays in the light lane.
 
 use crate::grounder::symbols::extract::CompiledTags;
 use crate::grounder::symbols::model::Lang;

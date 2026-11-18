@@ -40,12 +40,14 @@ use crate::grounder::workflowdef;
 
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
-/// it whenever any of them can give a file other facts than before, as the symbol extractors'
-/// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the extractor's fingerprint,
-/// with the digest of the project's declared extractors when it declares any ([`ProjectExtractor`]),
-/// which the store's fingerprint ([`store_fingerprint`]) folds with the grouper's generation. A golden
-/// test pins it beside the digest of the facts read over a fixture set, so a change that is not
-/// bumped fails there.
+/// it whenever any of them can give a file other facts than before, as each symbol extractor's
+/// tags generation, joined in [`GRAMMAR_TAGS_VERSION`], is bumped for its own; the two together make
+/// the extractor's fingerprint, with the digest of the project's declared extractors when it
+/// declares any ([`ProjectExtractor`]), which the store's fingerprint ([`store_fingerprint`]) folds
+/// with the grouper's generation. A golden test pins it beside the digest of the facts read over a
+/// design, a rationale and a workflow fixture, so a change that is not bumped fails there; a
+/// conversion change that moves a language's facts re-pins that language's row of the same golden
+/// with the bump.
 const FACTS_GENERATION: &str = "facts-v3";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot

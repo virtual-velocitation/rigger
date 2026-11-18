@@ -328,12 +328,14 @@ Stamp                                (a Tip plus what only advance knows)
   tip         the Tip the snapshot describes
   fingerprint the extractor's fingerprint folded with the grouper's generation and the
               settled generation: changes when any extractor's output, the groupings or the
-              rows settled at advance can change (the symbol extractors' tag version, the facts
-              generation, the digest of the extractors the project's workflow declares, when it
-              declares any, the grouping generation and the settled generation; golden tests pin
-              the generations and the tag version beside digests of the facts, the groupings and
-              the settled rows over fixtures, so a change that moves one of those digests fails
-              until a version pinned beside it is bumped and the digest re-pinned)
+              rows settled at advance can change (the symbol extractors' tag version, which
+              joins each bundled language's tags generation, the facts generation, the digest
+              of the extractors the project's workflow declares, when it declares any, the
+              grouping generation and the settled generation; golden tests pin each language's
+              tags generation beside digests of its fixtures' symbols and facts, and the other
+              generations beside digests of the other facts, the groupings and the settled rows
+              over fixtures, so a change that moves one of those digests fails until a version
+              pinned beside it is bumped and the digest re-pinned)
   seq         the snapshot's sequence number
 ```
 
@@ -1486,8 +1488,9 @@ a reader holding one open (or mapped) never blocks a writer.
   on a branch one commit ahead: the stamp stays on the operator checkout's HEAD, and the reader's
   label counts the differing file.
 - `a_fingerprint_change_advances_from_empty`.
-- `a_change_to_the_facts_ships_with_a_generation_bump`: the facts generation is pinned to a digest
-  of the facts read over the golden fixtures.
+- `a_change_to_the_facts_ships_with_a_generation_bump`: each bundled language's tags generation
+  is pinned to a digest of the facts read over that language's golden fixtures, and the facts
+  generation to a digest of the facts read over the design, rationale and workflow fixtures.
 - `a_corrupt_snapshot_is_treated_as_absent`.
 - `a_reader_never_sees_a_partial_snapshot`, and
   `a_crash_between_renames_leaves_the_old_stamp_current`, both using a fault-injecting publish.
