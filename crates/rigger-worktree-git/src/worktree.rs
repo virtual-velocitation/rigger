@@ -789,8 +789,9 @@ impl Worktree {
     /// introduced, sorted (op-105-merge-finalize-refuses-markers): a marker line
     /// [`conflict_markers_present`] reads in the index at a staged path counts unless
     /// either parent - `HEAD`, the unit's own side, or `MERGE_HEAD`, the run branch's tip -
-    /// already carries that same line at that path, so a Setext underline a parent holds never
-    /// refuses while a resolution staged with the merge's markers still in it does. The index
+    /// already carries that same line in a marker set at that path, so a set a parent holds (a
+    /// document showing one) never refuses while a resolution staged with the merge's markers
+    /// still in it does. The index
     /// is read, not the worktree, because it is what the finalize commit takes.
     fn markers_the_merge_introduced(&self) -> Result<Vec<String>, Error> {
         let staged: Vec<String> = git(&self.dir, &["diff", "--cached", "--name-only", "-z"])?
@@ -1029,7 +1030,7 @@ impl Worktree {
             // A staged resolution still carrying marker text the merge introduced is no
             // resolution (op-105-merge-finalize-refuses-markers): the paths go back to the
             // caller's conflict route, the merge left in progress and nothing committed. A
-            // marker-shaped line either parent already carries at that path never refuses.
+            // marker set either parent already carries at that path never refuses.
             let introduced = self.markers_the_merge_introduced()?;
             if !introduced.is_empty() {
                 return Ok(MergeOutcome::Conflict(introduced));
@@ -2807,10 +2808,14 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
     git(dir, &["update-index", "-q", "--refresh"]).map(drop)
 }
 
-/// The literal git conflict-marker lines (`<<<<<<<`, `=======`, `>>>>>>>`, each anchored at
-/// line-start so ordinary prose mentioning the symbols in passing cannot match) that
-/// `scope`'s TRACKED files carry at `at`, as `(path, line)` pairs: the marker scan's one
-/// home. [`ScanAt::Worktree`] reads the worktree copy (staged or not), [`ScanAt::Index`]
+/// The git conflict-marker lines that `scope`'s TRACKED files carry at `at`, as `(path, line)`
+/// pairs: the marker scan's one home. Only a COMPLETE, ORDERED set counts - a start line
+/// (`<<<<<<< `), then a separator (`=======`), then an end line (`>>>>>>> `), each a whole line
+/// with any trailing `\r` of a CRLF file dropped ([`marker`]); a diff3 base section
+/// (`||||||| `) between start and separator is content to it, like any other line. A
+/// separator-shaped line alone (a Setext heading's underline, an RST title's over- and
+/// underline), a start with no end after it and the three out of order are no conflict, so the
+/// scan answers none of their lines. [`ScanAt::Worktree`] reads the worktree copy (staged or not), [`ScanAt::Index`]
 /// what the next `git commit` takes, and [`ScanAt::Commit`] a commit's tree. Read at the
 /// worktree, a non-empty answer is [`commit_refusal`]'s; read at the index and at
 /// both parents, it is [`Worktree::merge_into_worktree`]'s finalize refusal, through
@@ -2833,9 +2838,8 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
 /// the CALLER's own path list ([`commit_refusal`]'s uncommitted union unmerged paths, both
 /// read before the commit's `git add -A` can clear either signal; the finalize's staged
 /// paths) - never an unconditional whole-tracked-tree scan: a pre-existing, untouched file ELSEWHERE in
-/// the repo that merely happens to contain a line matching one of these patterns (a
-/// Markdown Setext heading's `=======` underline, say) must never block a commit that never
-/// touches it. An empty `scope` (nothing pending) is a no-op - never even shells out -
+/// the repo that merely happens to contain a complete marker set (a document showing one, say)
+/// must never block a commit that never touches it. An empty `scope` (nothing pending) is a no-op - never even shells out -
 /// matching the unconditional call's own no-op on a genuinely clean tree. `git grep` exits
 /// 1 (not an error) when nothing matches, distinct from a real invocation failure.
 fn conflict_markers_present(
@@ -2848,17 +2852,21 @@ fn conflict_markers_present(
         return Ok(lines);
     }
     // `-z` ends each path with a NUL, so a path is read whole whatever it spells; the
-    // line-number and column flags are pinned off so no git config adds either to a line.
+    // line-number and column flags are pinned off so no git config adds either to a line, and
+    // the pattern syntax is pinned to basic so no git config reads the patterns as another. The
+    // separator's pattern leaves the line's end open, so a CRLF line reaches [`marker`], which
+    // reads the whole line.
     let mut args = vec![
         "grep",
         "-I",
         "-z",
         "--no-line-number",
         "--no-column",
+        "--basic-regexp",
         "-e",
         "^<<<<<<< ",
         "-e",
-        "^=======$",
+        "^=======",
         "-e",
         "^>>>>>>> ",
     ];
@@ -2889,15 +2897,64 @@ fn conflict_markers_present(
         ScanAt::Commit(rev) => format!("{rev}:"),
         ScanAt::Worktree | ScanAt::Index => String::new(),
     };
+    // git grep lists a path's hits together, in the order they sit in it, so the set being
+    // read is the run of marker lines since its start: a start opens a new one, a line that
+    // does not continue it is passed over, and an end after its separator completes it.
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut rest: &str = &stdout;
+    let mut open: Vec<&str> = Vec::new();
+    let mut open_in = "";
     while let Some((name, tail)) = rest.split_once('\0') {
         let (line, next) = tail.split_once('\n').unwrap_or((tail, ""));
-        let path = name.strip_prefix(prefix.as_str()).unwrap_or(name);
-        lines.insert((path.to_string(), line.to_string()));
         rest = next;
+        let path = name.strip_prefix(prefix.as_str()).unwrap_or(name);
+        if path != open_in {
+            open.clear();
+            open_in = path;
+        }
+        let Some(this) = marker(line) else {
+            continue;
+        };
+        match (open.last().and_then(|last| marker(last)), this) {
+            (_, Marker::Start) => open = vec![line],
+            (Some(Marker::Start), Marker::Separator) => open.push(line),
+            (Some(Marker::Separator), Marker::End) => {
+                open.push(line);
+                for line in open.drain(..) {
+                    lines.insert((path.to_string(), line.to_string()));
+                }
+            }
+            _ => {}
+        }
     }
     Ok(lines)
+}
+
+/// The three lines of a git conflict-marker set, in the order [`conflict_markers_present`]
+/// requires them.
+#[derive(Clone, Copy)]
+enum Marker {
+    /// `<<<<<<< ` and the side it names.
+    Start,
+    /// `=======`, the whole line.
+    Separator,
+    /// `>>>>>>> ` and the side it names.
+    End,
+}
+
+/// Which conflict-marker line `line` is, read with any trailing `\r` of a CRLF file dropped, or
+/// `None` for any other line.
+fn marker(line: &str) -> Option<Marker> {
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    if line.starts_with("<<<<<<< ") {
+        Some(Marker::Start)
+    } else if line == "=======" {
+        Some(Marker::Separator)
+    } else if line.starts_with(">>>>>>> ") {
+        Some(Marker::End)
+    } else {
+        None
+    }
 }
 
 /// Why a commit of the tree rooted at `dir` for the unit's `branch` would be refused before it
@@ -4312,6 +4369,61 @@ mod tests {
         );
     }
 
+    /// ONLY A COMPLETE, ORDERED SET OF CONFLICT MARKERS IS CONFLICT-MARKER TEXT: a commit is
+    /// refused over a start line, then a separator, then an end line - a diff3 base section
+    /// between start and separator, and CRLF line ends, included - and never over a separator-
+    /// shaped line alone (a Setext heading's underline, an RST title's over- and underline), a
+    /// start with no end after it, or the three lines out of order.
+    #[test]
+    fn a_commit_is_refused_only_over_a_complete_ordered_set_of_conflict_markers() {
+        // Each row: the file's text in the commit, and whether the commit is refused.
+        let rows = [
+            ("a Setext heading", "Title\n=======\nbody\n", false),
+            (
+                "an RST title, over- and underlined",
+                "=======\nTitle\n=======\nbody\n",
+                false,
+            ),
+            (
+                "a conflict",
+                "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n",
+                true,
+            ),
+            (
+                "a diff3 conflict",
+                "<<<<<<< ours\na\n||||||| base\no\n=======\nb\n>>>>>>> theirs\n",
+                true,
+            ),
+            (
+                "a conflict with CRLF line ends",
+                "<<<<<<< ours\r\na\r\n=======\r\nb\r\n>>>>>>> theirs\r\n",
+                true,
+            ),
+            (
+                "a start marker with no end",
+                "<<<<<<< ours\na\n=======\nb\n",
+                false,
+            ),
+            (
+                "the markers out of order",
+                ">>>>>>> theirs\nb\n=======\na\n<<<<<<< ours\n",
+                false,
+            ),
+        ];
+        for (row, text, refused) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/markers");
+            let dir = wt_path.to_str().unwrap();
+            std::fs::write(wt_path.join("notes.txt"), "seed\n").unwrap();
+            wt.commit("seed notes").unwrap();
+            std::fs::write(wt_path.join("notes.txt"), text).unwrap();
+            let refusal = commit_refusal(dir, "rigger/u/markers").unwrap();
+            assert_eq!(refusal.is_some(), refused, "{row}: {refusal:?}");
+            wt.remove().unwrap();
+        }
+    }
+
     #[test]
     fn commit_checkpoint_commits_through_a_refusing_hook_while_commit_is_refused() {
         // A checkpoint preserves a halted spawn's tree; a content hook (the docs-drift
@@ -4678,9 +4790,9 @@ mod tests {
         // (adv-u89c1-conflict-marker-scan-is-repo-wide-content-not-diff-scoped-false-positive):
         // the guard is scoped to THIS commit's own touched/unmerged paths, never an
         // unconditional whole-tracked-tree scan. A pre-existing, ALREADY-committed file this
-        // commit never touches - here a benign Markdown Setext heading underline, seven `=`
-        // characters, which happens to match the same `^=======$` pattern a real conflict
-        // marker line does - must never block an unrelated commit anywhere else in the repo.
+        // commit never touches - here a document showing a complete conflict-marker set, the
+        // same lines a real conflict leaves - must never block an unrelated commit anywhere
+        // else in the repo.
         // `commit_refuses_when_tracked_content_carries_conflict_marker_text` above pins the
         // opposite case (the guard MUST still catch marker text in a file THIS commit does
         // touch); this test is its negative-space twin.
@@ -4698,11 +4810,12 @@ mod tests {
         // Seed the lookalike file via raw git, bypassing `Worktree::commit` entirely, so it
         // lands as ALREADY-committed history this test's own commit call below never touches -
         // exactly like any other pre-existing file elsewhere in a real repo.
-        std::fs::write(wt_path.join("notes.md"), "Title\n=======\nbody text\n").unwrap();
+        const SHOWN: &str = "Markers look like:\n<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n";
+        std::fs::write(wt_path.join("notes.md"), SHOWN).unwrap();
         git(wt_path.to_str().unwrap(), &["add", "notes.md"]).unwrap();
         git(
             wt_path.to_str().unwrap(),
-            &["commit", "-m", "seed a benign Setext heading"],
+            &["commit", "-m", "seed a document showing a marker set"],
         )
         .unwrap();
 
@@ -4714,7 +4827,7 @@ mod tests {
         assert!(!sha.is_empty(), "the commit must actually land");
         assert_eq!(
             std::fs::read_to_string(wt_path.join("notes.md")).unwrap(),
-            "Title\n=======\nbody text\n",
+            SHOWN,
             "the untouched lookalike file is unchanged"
         );
     }
@@ -4760,10 +4873,14 @@ mod tests {
     /// (op-105-merge-finalize-refuses-markers): a resolution staged with markers still in it,
     /// or staged with them and cleared only in the worktree (the commit takes the index), is a
     /// `Conflict` naming the path, the merge left in progress and the unit branch unmoved; a
-    /// resolution keeping the Setext underline both parents carry at that path finalizes clean.
+    /// resolution keeping the complete marker set both parents carry at that path (a document
+    /// showing one) finalizes clean.
     #[test]
     fn a_merge_finalize_refuses_marker_text_the_merge_introduced_and_no_line_a_parent_carries() {
-        const RESOLVED: &str = "Title\n=======\nA and B\n";
+        // What every version of the file starts with: a marker set it shows, and a Setext title.
+        const SHOWN: &str =
+            "Markers look like:\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n\nTitle\n=======\n";
+        let resolved = format!("{SHOWN}A and B\n");
         // (row, what the resolver stages - `None` is the file as the merge left it - what it
         // then leaves in the worktree unstaged, the conflict the finalize answers)
         let rows = [
@@ -4776,12 +4893,12 @@ mod tests {
             (
                 "markers staged and cleared only in the worktree",
                 None,
-                Some(RESOLVED),
+                Some(resolved.as_str()),
                 Some(&["notes.md"]),
             ),
             (
-                "a resolution keeping the underline both parents carry",
-                Some(RESOLVED),
+                "a resolution keeping the marker set both parents carry",
+                Some(resolved.as_str()),
                 None,
                 None,
             ),
@@ -4789,13 +4906,13 @@ mod tests {
         for (row, staged, unstaged, conflict) in rows {
             let repo = init_repo();
             let repo_path = repo.path().to_str().unwrap().to_string();
-            std::fs::write(repo.path().join("notes.md"), "Title\n=======\nbase\n").unwrap();
+            std::fs::write(repo.path().join("notes.md"), format!("{SHOWN}base\n")).unwrap();
             run_git(&repo_path, &["add", "notes.md"]).unwrap();
             run_git(&repo_path, &["commit", "-q", "-m", "seed notes"]).unwrap();
             // Each side commits its edit directly: `Worktree::commit`'s own marker scan reads
-            // the Setext underline in a touched file as marker text.
+            // the marker set the file shows, in a touched file, as marker text.
             let edit = |dir: &std::path::Path, body: &str| {
-                std::fs::write(dir.join("notes.md"), format!("Title\n=======\n{body}\n")).unwrap();
+                std::fs::write(dir.join("notes.md"), format!("{SHOWN}{body}\n")).unwrap();
                 git(dir.to_str().unwrap(), &["commit", "-q", "-am", body]).unwrap();
             };
             let (wa, a) = temp_wt(&repo_path, "rigger/u/a");
@@ -4831,7 +4948,7 @@ mod tests {
                     assert_eq!(commit, tip_after, "{row}: the merge commits");
                     assert_eq!(
                         git(&repo_path, &["show", "rigger/u/b:notes.md"]).unwrap(),
-                        RESOLVED,
+                        resolved,
                         "{row}: the unit branch holds the resolution"
                     );
                 }
