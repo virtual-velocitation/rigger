@@ -1175,7 +1175,10 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
              branch: read it (`git show rigger/kept/<unit-id>`, or a worktree of your own on it) \
              and bring onto the unit's branch only what the remedy keeps, as a commit git's own \
              checks accept (`git checkout rigger/kept/<unit-id> -- <path>` in a tree on \
-             `rigger/u/<unit-id>`, then commit). The kept ref goes when the unit integrates. A run \
+             `rigger/u/<unit-id>`, then commit). Free the branch from that tree before the \
+             relaunch (`git -C <tree> switch --detach`, or remove the tree), since a run that \
+             finds the unit's branch checked out outside rigger's work root holds and names the \
+             tree. The kept ref goes when the unit integrates. A run \
              of another spec that plans a unit of the same name first sets it aside to \
              `rigger/orphaned/<unit-id>-<sha>`, where the commit stays, and while a worktree has \
              it checked out rigger never moves or deletes it, a later keep standing under \
