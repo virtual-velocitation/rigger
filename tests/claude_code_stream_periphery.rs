@@ -1411,7 +1411,7 @@ mod forks_at_stop {
         if let Leaves::TheEscapee = leaves {
             let named = fx.activities().into_iter().any(|line| {
                 line.contains("left processes running")
-                    && line.contains("outside the session's tree, never signalled")
+                    && line.contains("left running, never signalled")
             });
             assert!(
                 named,

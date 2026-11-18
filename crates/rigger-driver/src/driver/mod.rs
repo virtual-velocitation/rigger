@@ -431,10 +431,9 @@ pub(crate) fn spawn_config_args(
 /// The lines an end of a session's tree is said in ([`crate::child_tree::EndReport`]), each led
 /// by `host`, the host that says it: first how many processes besides the main the end was sent
 /// to; then, in a line of its own, each call the OS refused the end, as the report says it, and
-/// how many processes the end signalled and could not end, and how many it found outside the
-/// tree and never signalled. Each process is named by pid and program, a still-frozen one marked
-/// so. Empty when the end was sent to nothing besides the main, left nothing and nothing was
-/// refused.
+/// how many processes the end signalled and could not end, and how many it left running and never
+/// signalled. Each process is named by pid and program, a still-frozen one marked so. Empty when
+/// the end was sent to nothing besides the main, left nothing and nothing was refused.
 pub(crate) fn end_lines(report: &crate::child_tree::EndReport, host: &str) -> Vec<String> {
     let named = |left: &[crate::child_tree::Leftover]| {
         left.iter()
@@ -455,7 +454,7 @@ pub(crate) fn end_lines(report: &crate::child_tree::EndReport, host: &str) -> Ve
     }
     if !report.skipped.is_empty() {
         parts.push(format!(
-            "{} outside the session's tree, never signalled: {}",
+            "{} left running, never signalled: {}",
             report.skipped.len(),
             named(&report.skipped)
         ));
@@ -752,19 +751,18 @@ mod tests {
                 &[
                     "stream: the end of the session was sent to 1 process besides its main: 41 \
                      (sleep)",
-                    "stream: the end of the session left processes running; 1 outside the \
-                     session's tree, never signalled: 77 (daemon)",
+                    "stream: the end of the session left processes running; 1 left running, \
+                     never signalled: 77 (daemon)",
                 ],
             );
-        an_end_that_found_a_process_outside_the_tree_names_it_as_never_signalled:
+        an_end_that_never_signalled_a_process_names_it_as_left_running:
             assert_end_lines(
                 &[],
                 &[(41, "sleep", false)],
                 &[(77, "daemon", false)],
                 &[],
                 &["stream: the end of the session left processes running; 1 it signalled and \
-                   could not end: 41 (sleep); 1 outside the session's tree, never signalled: 77 \
-                   (daemon)"],
+                   could not end: 41 (sleep); 1 left running, never signalled: 77 (daemon)"],
             );
         an_end_the_os_refused_says_why: assert_end_lines(
             &[],

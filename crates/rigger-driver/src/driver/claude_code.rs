@@ -3832,17 +3832,23 @@ mod tests {
             canary_end_lines(&crate::child_tree::EndReport::default()),
             Vec::<String>::new()
         );
-        a_canary_end_that_left_a_process_says_so_naming_the_canary: assert_eq!(
+        a_canary_end_that_left_processes_says_so_naming_the_canary: assert_eq!(
             canary_end_lines(&crate::child_tree::EndReport {
                 residue: vec![crate::child_tree::Leftover {
                     pid: 41,
                     program: "claude".to_string(),
                     stopped: false,
                 }],
+                skipped: vec![crate::child_tree::Leftover {
+                    pid: 42,
+                    program: "node".to_string(),
+                    stopped: false,
+                }],
                 ..crate::child_tree::EndReport::default()
             }),
             ["rigger: the hold probe's canary: the end of the session left processes running; 1 \
-              it signalled and could not end: 41 (claude)"]
+              it signalled and could not end: 41 (claude); 1 left running, never signalled: 42 \
+              (node)"]
         );
     }
 
