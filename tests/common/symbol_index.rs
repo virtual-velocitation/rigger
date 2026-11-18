@@ -1,5 +1,5 @@
 //! Shared fixtures for the symbol extraction suites: building a one-file set of symbols, building
-//! them from Rust sources, a reference's qualifier, a tree whose inline mod declares a
+//! them from Rust sources, a reference of a tagged kind or a call, a reference's qualifier, a tree whose inline mod declares a
 //! `#[cfg(test)]` mod out of line, the `mod x;` declaration sources, the one-fn source the
 //! module-row tests extract and the one-`use` source, projecting a file's definitions, its
 //! test-marked definitions and references and its call references with their callers, checking
@@ -48,6 +48,21 @@ pub fn sym_ref(name: &str, line: u32, enclosing: Option<&str>, is_test: bool) ->
         is_test,
         ref_kind: None,
         qualifier: None,
+    }
+}
+
+/// A reference to `name` at `line`, attributed to `enclosing` when it has a caller, of the tagged
+/// mention kind `ref_kind`, a call when it has none.
+pub fn sym_ref_of_kind(
+    name: &str,
+    line: u32,
+    enclosing: Option<&str>,
+    ref_kind: Option<&str>,
+    is_test: bool,
+) -> SymRef {
+    SymRef {
+        ref_kind: ref_kind.map(str::to_string),
+        ..sym_ref(name, line, enclosing, is_test)
     }
 }
 

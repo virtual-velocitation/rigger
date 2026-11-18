@@ -252,7 +252,7 @@ fn parent_cycle(defs: &[model::Def]) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::grounder::symbols::model::Kind;
-    use crate::symbol_index::qualifier;
+    use crate::symbol_index::{qualifier, sym_ref_of_kind};
 
     /// A def an answer carries: a function named `name` at `path` over `line..=end_line`, its
     /// container `parent`.
@@ -270,20 +270,6 @@ mod tests {
             parent: parent.map(str::to_string),
             is_test,
             ..crate::symbol_index::def(Kind::Function, name)
-        }
-    }
-
-    /// A ref an answer carries: `name` at `line`, inside the def at `enclosing`, of `ref_kind`.
-    fn answered_ref(
-        name: &str,
-        line: u32,
-        enclosing: Option<&str>,
-        ref_kind: Option<&str>,
-        is_test: bool,
-    ) -> SymRef {
-        SymRef {
-            ref_kind: ref_kind.map(str::to_string),
-            ..crate::symbol_index::sym_ref(name, line, enclosing, is_test)
         }
     }
 
@@ -376,11 +362,11 @@ mod tests {
                         answered_def("a", "a", (2, 3), Some("c"), true),
                     ],
                     refs: vec![
-                        answered_ref("x", 1, None, None, false),
-                        answered_ref("y", 4, Some("a"), None, true),
-                        answered_ref("C", 2, None, Some("const"), false),
-                        answered_ref("T", 3, None, Some("type"), false),
-                        answered_ref("u", 4, None, Some("use"), false),
+                        sym_ref_of_kind("x", 1, None, None, false),
+                        sym_ref_of_kind("y", 4, Some("a"), None, true),
+                        sym_ref_of_kind("C", 2, None, Some("const"), false),
+                        sym_ref_of_kind("T", 3, None, Some("type"), false),
+                        sym_ref_of_kind("u", 4, None, Some("use"), false),
                     ],
                     partial: false,
                     doc: None,
@@ -409,7 +395,7 @@ mod tests {
                 TEXT,
                 answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"field"}"#),
                 Ok(CodeSymbols {
-                    refs: vec![answered_ref("x", 1, None, Some("field"), false)],
+                    refs: vec![sym_ref_of_kind("x", 1, None, Some("field"), false)],
                     ..empty()
                 }),
             ),
@@ -417,7 +403,7 @@ mod tests {
                 TEXT,
                 answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"variant"}"#),
                 Ok(CodeSymbols {
-                    refs: vec![answered_ref("x", 1, None, Some("variant"), false)],
+                    refs: vec![sym_ref_of_kind("x", 1, None, Some("variant"), false)],
                     ..empty()
                 }),
             ),
@@ -425,7 +411,7 @@ mod tests {
                 TEXT,
                 answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"impl"}"#),
                 Ok(CodeSymbols {
-                    refs: vec![answered_ref("x", 1, None, Some("impl"), false)],
+                    refs: vec![sym_ref_of_kind("x", 1, None, Some("impl"), false)],
                     ..empty()
                 }),
             ),
@@ -439,11 +425,11 @@ mod tests {
                     refs: vec![
                         SymRef {
                             qualifier: Some(qualifier("Shape", true)),
-                            ..answered_ref("area", 1, None, None, false)
+                            ..sym_ref_of_kind("area", 1, None, None, false)
                         },
                         SymRef {
                             qualifier: Some(qualifier("s", false)),
-                            ..answered_ref("area", 2, None, None, false)
+                            ..sym_ref_of_kind("area", 2, None, None, false)
                         },
                     ],
                     ..empty()
@@ -648,11 +634,11 @@ mod tests {
                 )),
                 Ok(CodeSymbols {
                     refs: vec![
-                        answered_ref("a.b", 1, None, None, false),
-                        answered_ref("a::b", 2, None, None, false),
+                        sym_ref_of_kind("a.b", 1, None, None, false),
+                        sym_ref_of_kind("a::b", 2, None, None, false),
                         SymRef {
                             qualifier: Some(qualifier("Q", true)),
-                            ..answered_ref("a:b", 3, None, None, false)
+                            ..sym_ref_of_kind("a:b", 3, None, None, false)
                         },
                     ],
                     ..empty()
@@ -677,15 +663,15 @@ mod tests {
                     refs: vec![
                         SymRef {
                             qualifier: Some(qualifier("Q", false)),
-                            ..answered_ref(":b", 1, None, None, false)
+                            ..sym_ref_of_kind(":b", 1, None, None, false)
                         },
                         SymRef {
                             qualifier: Some(qualifier("Q", true)),
-                            ..answered_ref("b:", 2, None, None, false)
+                            ..sym_ref_of_kind("b:", 2, None, None, false)
                         },
                         SymRef {
                             qualifier: Some(qualifier("Q:", true)),
-                            ..answered_ref("b", 3, None, None, false)
+                            ..sym_ref_of_kind("b", 3, None, None, false)
                         },
                     ],
                     ..empty()

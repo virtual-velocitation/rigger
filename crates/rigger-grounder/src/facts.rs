@@ -798,8 +798,35 @@ pub(crate) mod tests {
         format!("{kind:?}").to_lowercase()
     }
 
+    /// The mention written `name` of `leaf` on `line`, inside the definition at `enclosing`, of
+    /// the tagged mention kind `kind`, a call when it has none.
+    fn mention_in(
+        enclosing: Option<u32>,
+        name: &str,
+        leaf: &str,
+        kind: Option<&str>,
+        line: u32,
+        test: bool,
+    ) -> Mention {
+        Mention {
+            enclosing,
+            name: name.to_string(),
+            leaf: leaf.to_string(),
+            kind: match kind {
+                None => MentionKind::Call,
+                Some(kind) => MentionKind::Tagged(kind.to_string()),
+            },
+            line,
+            test,
+        }
+    }
+
+    /// Every definition and every call the symbol extractor finds in each language's fixture is
+    /// held, and its tagged references one per site kind (spec 117, ONE TAGGED MENTION PER SITE
+    /// KIND): a tagged reference repeating an earlier one's enclosing definition, leaf, tag and
+    /// test flag is held once, in the earlier one's place at the lower of their lines.
     #[test]
-    fn facts_hold_every_def_and_mention_the_symbol_extractor_finds() {
+    fn facts_hold_every_def_and_call_and_one_tagged_mention_per_site_kind() {
         let table = [
             ("src/lib.rs", "rust", RUST_DEFINITIONS_SOURCE),
             ("pkg/main.go", "go", GO_DEFINITIONS_SOURCE),
@@ -859,17 +886,23 @@ pub(crate) mod tests {
                 .collect();
             assert_eq!(held_defs, found_defs, "{path}: definitions");
 
-            let found_refs: Vec<_> = symbols
-                .refs
-                .iter()
-                .map(|r| {
-                    let kind = match &r.ref_kind {
-                        None => "call".to_string(),
-                        Some(kind) => format!("tagged:{kind}"),
-                    };
-                    (r.name.clone(), kind, r.line, r.is_test, r.enclosing.clone())
-                })
-                .collect();
+            let mut found_refs: Vec<(String, String, u32, bool, Option<String>)> = Vec::new();
+            for r in &symbols.refs {
+                let kind = match &r.ref_kind {
+                    None => "call".to_string(),
+                    Some(kind) => format!("tagged:{kind}"),
+                };
+                let row = (r.name.clone(), kind, r.line, r.is_test, r.enclosing.clone());
+                let repeated = r.ref_kind.as_ref().and_then(|_| {
+                    found_refs.iter_mut().find(|held| {
+                        (&held.0, &held.1, held.3, &held.4) == (&row.0, &row.1, row.3, &row.4)
+                    })
+                });
+                match repeated {
+                    Some(held) => held.2 = held.2.min(row.2),
+                    None => found_refs.push(row),
+                }
+            }
             let held_refs: Vec<_> = facts
                 .mentions
                 .iter()
@@ -1082,6 +1115,242 @@ pub(crate) mod tests {
                     None => facts_of(path, source.as_bytes()),
                 };
                 ((source, facts.mentions), (source, mentions))
+            })
+            .unzip();
+        assert_eq!(found, expected);
+    }
+
+    /// ONE TAGGED MENTION PER SITE KIND (spec 117): a Rust function reading one constant three
+    /// times holds one `const` mention, at the first read's line, while its three calls to one
+    /// function stay three call mentions, one per call's line.
+    #[test]
+    fn one_tagged_mention_per_site_kind() {
+        let source = "\
+const LIMIT: u32 = 3;
+fn g() {}
+fn f() -> u32 {
+    let a = LIMIT;
+    g();
+    let b = LIMIT;
+    g();
+    let c = LIMIT;
+    g();
+    a + b + c
+}
+";
+        let facts = facts_of("src/lib.rs", source.as_bytes());
+        assert_eq!(
+            facts
+                .defs
+                .iter()
+                .map(|d| d.local.as_str())
+                .collect::<Vec<_>>(),
+            ["LIMIT", "g", "f"],
+            "the definitions, `f` at index 2"
+        );
+        assert_eq!(
+            facts.mentions,
+            [
+                mention_in(Some(2), "g", "g", None, 5, false),
+                mention_in(Some(2), "g", "g", None, 7, false),
+                mention_in(Some(2), "g", "g", None, 9, false),
+                mention_in(Some(2), "LIMIT", "LIMIT", Some("const"), 4, false),
+            ]
+        );
+    }
+
+    /// ONE TAGGED MENTION PER SITE KIND (spec 117), part by part: of an extraction's tagged
+    /// references, one is kept per enclosing definition, name, leaf, tag and test flag, in the
+    /// first one's place at the lowest of their lines, and one differing from it in any single
+    /// part is kept beside it; every call is kept, one per site, two on one line included.
+    #[test]
+    fn a_tagged_mention_is_kept_once_per_enclosing_name_leaf_tag_and_test_flag() {
+        use crate::symbol_index::{def, qualifier, sym_ref_of_kind};
+        let defs = vec![
+            def(model::Kind::Function, "f"),
+            def(model::Kind::Function, "g"),
+        ];
+        let qualified = |q: &str, path: bool, r: SymRef| SymRef {
+            qualifier: Some(qualifier(q, path)),
+            ..r
+        };
+        // (the case, the references the extraction gives, the mentions the facts hold; `f` is
+        // the definition at index 0 and `g` the one at index 1)
+        let table = [
+            ("no reference", vec![], vec![]),
+            (
+                "a repeat in one definition",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 5, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 7, Some("f"), Some("const"), false),
+                ],
+                vec![mention_in(
+                    Some(0),
+                    "LIMIT",
+                    "LIMIT",
+                    Some("const"),
+                    3,
+                    false,
+                )],
+            ),
+            (
+                "a repeat at a lower line, after a call",
+                vec![
+                    sym_ref_of_kind("LIMIT", 5, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("h", 6, Some("f"), None, false),
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "h", "h", None, 6, false),
+                ],
+            ),
+            (
+                "a repeat at file level",
+                vec![
+                    sym_ref_of_kind("LIMIT", 1, None, Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 2, None, Some("const"), false),
+                ],
+                vec![mention_in(None, "LIMIT", "LIMIT", Some("const"), 1, false)],
+            ),
+            (
+                "another enclosing definition, or none",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 5, Some("g"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 7, None, Some("const"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(1), "LIMIT", "LIMIT", Some("const"), 5, false),
+                    mention_in(None, "LIMIT", "LIMIT", Some("const"), 7, false),
+                ],
+            ),
+            (
+                "another tag",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 4, Some("f"), Some("type"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("type"), 4, false),
+                ],
+            ),
+            (
+                "another test flag",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 4, Some("f"), Some("const"), true),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 4, true),
+                ],
+            ),
+            (
+                "another name: `x.f` beside `T { f }`",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    sym_ref_of_kind("f", 4, Some("f"), Some("field"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "x.f", "f", Some("field"), 3, false),
+                    mention_in(Some(0), "f", "f", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "another name: `x.f` beside `x::f`",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    qualified(
+                        "x",
+                        true,
+                        sym_ref_of_kind("f", 4, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![
+                    mention_in(Some(0), "x.f", "f", Some("field"), 3, false),
+                    mention_in(Some(0), "x::f", "f", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "a repeat under one qualifier",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 5, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![mention_in(Some(0), "x.f", "f", Some("field"), 3, false)],
+            ),
+            (
+                "another leaf: an unqualified `a.b` beside `b` under the member `a`",
+                vec![
+                    sym_ref_of_kind("a.b", 3, Some("f"), Some("field"), false),
+                    qualified(
+                        "a",
+                        false,
+                        sym_ref_of_kind("b", 4, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![
+                    mention_in(Some(0), "a.b", "a.b", Some("field"), 3, false),
+                    mention_in(Some(0), "a.b", "b", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "three calls to one function",
+                vec![
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                    sym_ref_of_kind("g", 7, Some("f"), None, false),
+                    sym_ref_of_kind("g", 9, Some("f"), None, false),
+                ],
+                vec![
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                    mention_in(Some(0), "g", "g", None, 7, false),
+                    mention_in(Some(0), "g", "g", None, 9, false),
+                ],
+            ),
+            (
+                "two calls on one line",
+                vec![
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                ],
+                vec![
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                ],
+            ),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(case, refs, mentions)| {
+                let symbols = CodeSymbols {
+                    defs: defs.clone(),
+                    refs,
+                    partial: false,
+                    doc: None,
+                };
+                let mut facts = FileFacts::default();
+                code_facts("src/lib.rs", &symbols, &mut facts);
+                ((case, facts.mentions), (case, mentions))
             })
             .unzip();
         assert_eq!(found, expected);
