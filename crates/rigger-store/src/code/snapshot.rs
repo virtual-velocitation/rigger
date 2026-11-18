@@ -1179,13 +1179,31 @@ impl CodeView for Snapshot {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rigger_domain::code_facts::{
         Def, DocConcept, DocLink, Half, Mention, MentionKind, ModuleDecl, Scope, Tip, WfNode,
         WfRelation,
     };
     use rigger_domain::code_view::{Cluster, FactsView};
+
+    /// The snapshot `bytes`, at [`VERSION`], written again at format `version` with `edit` applied
+    /// to each section by its kind, every crc recomputed.
+    pub(crate) fn rewritten(
+        bytes: &[u8],
+        version: u16,
+        edit: impl Fn(u16, &mut Vec<u8>),
+    ) -> Vec<u8> {
+        let parsed = Container::parse(bytes, MAGIC, VERSION).expect("parses");
+        let sections: Vec<(u16, Vec<u8>)> = (STRINGS..=IDX_PROOF_FILE)
+            .map(|kind| {
+                let mut section = parsed.section(kind).expect("every section").to_vec();
+                edit(kind, &mut section);
+                (kind, section)
+            })
+            .collect();
+        write_container(MAGIC, version, parsed.payload, &sections).expect("writes")
+    }
 
     fn stamp(commit: Option<&str>, seq: u64) -> Stamp {
         Stamp {
@@ -1203,7 +1221,7 @@ mod tests {
     /// span covers three lines, and two module declarations: `inner`, whose `as_root` and
     /// `as_child` lists differ, and `renamed`, with `path_attr` and lists of different lengths,
     /// one of them empty.
-    fn code_file() -> FileFacts {
+    pub(crate) fn code_file() -> FileFacts {
         FileFacts {
             path: "src/ünï.rs".into(),
             blob: "b1".into(),
@@ -1518,19 +1536,13 @@ mod tests {
         let view = FactsView::new(stamp(None, 1), vec![code_file()]);
         let bytes = encode(&view, &Groupings::default()).expect("encodes");
         let rewrite = |bounds: [u32; 3]| {
-            let parsed = Container::parse(&bytes, MAGIC, VERSION).expect("parses");
-            let sections: Vec<(u16, Vec<u8>)> = (STRINGS..=IDX_PROOF_FILE)
-                .map(|kind| {
-                    let mut section = parsed.section(kind).expect("every section").to_vec();
-                    if kind == MODULES {
-                        let at = MODULE_ROW + MOD_CANDS;
-                        let row: Vec<u8> = bounds.iter().flat_map(|b| b.to_le_bytes()).collect();
-                        section[at..at + 12].copy_from_slice(&row);
-                    }
-                    (kind, section)
-                })
-                .collect();
-            write_container(MAGIC, VERSION, parsed.payload, &sections).expect("writes")
+            rewritten(&bytes, VERSION, |kind, section| {
+                if kind == MODULES {
+                    let at = MODULE_ROW + MOD_CANDS;
+                    let row: Vec<u8> = bounds.iter().flat_map(|b| b.to_le_bytes()).collect();
+                    section[at..at + 12].copy_from_slice(&row);
+                }
+            })
         };
         assert_eq!(rewrite([4, 5, 5]), bytes, "the bounds as encoded");
         const REFUSED: &str = "module candidates are not one run a module";
