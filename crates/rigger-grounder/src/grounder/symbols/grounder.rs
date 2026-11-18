@@ -3347,11 +3347,11 @@ mod tests {
     /// reader's head is compared with. A file joins `Shape`'s radius by an implementation header
     /// naming it, whether the view or the worktree's bytes serve the file, and leaves when the
     /// worktree deletes the file or rewrites its header to name another trait. A type mention
-    /// places no file. A worktree that cannot be compared serves no implementing file, so the
-    /// precise view is empty and the safe view falls back to the text search of the disk, which
-    /// holds `circle.rs`. `Shape`'s ranked row counts `make.rs`'s call alone throughout. Each row:
-    /// the worktree, then `Shape`'s precise and safe views and its ranked rows as (file, line,
-    /// degree).
+    /// places no file. A worktree that cannot be compared serves no code file, so the precise view
+    /// is empty, the safe view falls back to the text search of the disk, which holds
+    /// `circle.rs`, and no row is ranked. Wherever the worktree can be compared, `Shape`'s one
+    /// ranked row counts `make.rs`'s call alone. Each row: the worktree, then `Shape`'s precise and
+    /// safe views and its ranked rows as (file, line, degree).
     #[test]
     fn an_implementing_file_joins_and_leaves_the_radius_with_the_worktree() {
         use crate::contextgraph::{
