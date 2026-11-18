@@ -1534,7 +1534,9 @@ mod tests {
         };
         assert_eq!(rewrite([4, 5, 5]), bytes, "the bounds as encoded");
         const REFUSED: &str = "module candidates are not one run a module";
-        let cases: [(&str, [u32; 3], Result<[&[&str]; 2], &str>); 5] = [
+        /// The module's `as_root` and `as_child` lists, or the decode's refusal.
+        type Decoded = Result<[&'static [&'static str]; 2], &'static str>;
+        let cases: [(&str, [u32; 3], Decoded); 5] = [
             ("as encoded", [4, 5, 5], Ok([&["src/p/y.rs"], &[]])),
             ("an empty as_root", [4, 4, 5], Ok([&[], &["src/p/y.rs"]])),
             ("a gap before the run", [5, 5, 5], Err(REFUSED)),
