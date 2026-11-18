@@ -18461,6 +18461,70 @@ mod tests {
              over; got:\n{}",
             worker_prompts[0]
         );
+        // A relaunch of the halted spawn's interrupted session is told the capture after its
+        // note, the one line of the prompt that session never saw.
+        let halted = fill(
+            crate::prompt_surface::PRIOR_HALTED,
+            &[("commit", &recovery_sha)],
+        );
+        assert_eq!(
+            driver.relaunch_task_of(&spawn_id("u-halt", ROLE_IMPLEMENTER, 0)),
+            Some(format!("{halted}\n")),
+            "the relaunch is told the recovery commit"
+        );
+        assert!(
+            worker_prompts[0].contains(&halted),
+            "the prompt holds the relaunch task too: {}",
+            worker_prompts[0]
+        );
+    }
+
+    /// What a halted spawn's relaunch is told after its note, the capture of its tree or git's
+    /// refusal of it, is a passage of the prior-failure block the same entry's prompt and resume
+    /// task carry, whatever else that block names, so a relaunch whose carried task holds the
+    /// block is told it once.
+    #[test]
+    fn a_halts_relaunch_task_is_a_passage_of_the_prior_failure_block() {
+        let required = vec![RequiredItem {
+            finding: "a finding".to_string(),
+            path: "src/a.rs".to_string(),
+            ..RequiredItem::default()
+        }];
+        let others = [
+            PriorFailure::default(),
+            PriorFailure {
+                gate_evidence: vec!["test FAIL".to_string()],
+                review_reason: "the review's reason".to_string(),
+                required,
+                contradiction: "a later unit's contradiction".to_string(),
+                ..PriorFailure::default()
+            },
+        ];
+        let halts = [
+            ("c0ffee", ""),
+            ("", "conflict-marker text is present"),
+            ("c0ffee", "conflict-marker text is present"),
+        ];
+        for (commit, refusal) in halts {
+            for other in &others {
+                let halt = PriorFailure {
+                    halted_commit: commit.to_string(),
+                    refusal: refusal.to_string(),
+                    ..PriorFailure::default()
+                };
+                let told = halt.block("u", 1);
+                let block = PriorFailure {
+                    halted_commit: commit.to_string(),
+                    refusal: refusal.to_string(),
+                    ..other.clone()
+                }
+                .block("u", 1);
+                assert!(
+                    !told.trim().is_empty() && block.contains(told.trim()),
+                    "{commit:?} {refusal:?}: {told:?} in {block:?}"
+                );
+            }
+        }
     }
 
     /// A HALTED SPAWN'S TREE GIT REFUSES TO CAPTURE CHARGES NOTHING: when the wip commit of a
@@ -18570,6 +18634,16 @@ mod tests {
                 "no capture and no failed check to name ({line:?}): {prompt}"
             );
         }
+        // A relaunch of the halted spawn's interrupted session is told git's refusal after its
+        // note, the one line of the prompt that session never saw, and nothing else.
+        let told = driver.relaunch_task_of(&implementer).unwrap_or_default();
+        assert!(
+            told.starts_with(&lead(crate::prompt_surface::PRIOR_REFUSED))
+                && told.contains("conflict-marker text is present")
+                && !told.contains(&lead(crate::prompt_surface::PRIOR_HALTED))
+                && prompt.contains(told.trim()),
+            "the relaunch is told git's refusal, which the prompt holds: {told:?}"
+        );
         let branch = unit_branch(UNIT);
         let log = run_git(&repo_path, &["log", "--pretty=%s", &branch]);
         let log = String::from_utf8_lossy(&log.stdout).to_string();
@@ -19200,6 +19274,8 @@ mod tests {
         resume_answer: ResumeAnswer,
         /// Every spawn's `(id, resumed_from, resume_task)`, in spawn order.
         resumes: Mutex<Vec<(String, String, String)>>,
+        /// Every spawn's `(id, relaunch_task)`, in spawn order.
+        relaunch_tasks: Mutex<Vec<(String, String)>>,
         /// With [`sessions`](Self::sessions): the spawns, by id, whose session ends without
         /// handing over. Every other session spawn whose task carries [`AUTHOR_HANDOVER_LINE`]
         /// ends its output with that line (trailing spaces and blank lines after it), as a host's
@@ -19267,6 +19343,7 @@ mod tests {
                 sessions: false,
                 resume_answer: ResumeAnswer::Continued,
                 resumes: Mutex::new(Vec::new()),
+                relaunch_tasks: Mutex::new(Vec::new()),
                 withhold_handover_ids: std::collections::HashSet::new(),
             }
         }
@@ -19279,6 +19356,16 @@ mod tests {
                 .iter()
                 .find(|(spawn, _, _)| spawn == id)
                 .map(|(_, from, task)| (from.clone(), task.clone()))
+        }
+
+        /// The [`SpawnOpts::relaunch_task`] the spawn `id` was launched with, if it ran.
+        fn relaunch_task_of(&self, id: &str) -> Option<String> {
+            self.relaunch_tasks
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(spawn, _)| spawn == id)
+                .map(|(_, task)| task.clone())
         }
 
         /// Every prompt the named agent was spawned with, in spawn order.
@@ -19395,6 +19482,10 @@ mod tests {
                 opts.resumed_from.clone(),
                 opts.resume_task.clone(),
             ));
+            self.relaunch_tasks
+                .lock()
+                .unwrap()
+                .push((opts.id.clone(), opts.relaunch_task.clone()));
             self.targets_by_agent
                 .lock()
                 .unwrap()
