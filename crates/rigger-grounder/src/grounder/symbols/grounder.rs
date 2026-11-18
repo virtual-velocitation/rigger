@@ -19,6 +19,7 @@ use rigger_domain::code_view::{
 };
 use rigger_domain::composed::Label;
 use rigger_domain::contextgraph::query::path_leaf;
+use rigger_domain::resolve::is_impl;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -210,12 +211,18 @@ impl<'v> Sight<'v> {
         view.defs_named(leaf).filter(move |d| self.serves(&d.file))
     }
 
-    /// The served call references to `leaf`: no tagged reference (spec 117) counts, ranks or
-    /// places a file.
-    fn calls_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
+    /// The served references to `leaf`, of every kind.
+    fn mentions_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
         let view = self.view;
         view.mentions_named(leaf)
-            .filter(move |m| m.kind == MentionKind::Call && self.serves(&m.file))
+            .filter(move |m| self.serves(&m.file))
+    }
+
+    /// The served call references to `leaf`: no tagged reference (spec 117, CAPTURES) counts or
+    /// ranks.
+    fn calls_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
+        self.mentions_named(leaf)
+            .filter(|m| m.kind == MentionKind::Call)
     }
 
     /// How many definitions named `name` the served files of `lang` hold, and with `count_refs`
@@ -714,8 +721,9 @@ impl Grounder for Symbols {
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
     ///   queried symbols (and any file the tree holds that a path term names) ranked ABOVE the
-    ///   files whose call references name them (spec 117: a tagged reference places no file) -
-    ///   capped at `k`. It is what seeds an agent's prompt, so it favors precision.
+    ///   files whose call references or implementation headers name them (spec 117, CAPTURES: an
+    ///   implementing file stays in a trait's radius, and no other tagged reference places a
+    ///   file) - capped at `k`. It is what seeds an agent's prompt, so it favors precision.
     /// - `safe` (the safety contract) is the structural view UNIONed, UNCAPPED, with a
     ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the view
     ///   does NOT define - the fallback for references a name index never sees (a string-literal
@@ -724,9 +732,10 @@ impl Grounder for Symbols {
     ///   worktree that cannot be compared withholds every code file from the structural view, so a
     ///   text hit is added for every named symbol: a missed reference is the unsafe error.
     /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
-    ///   every file that defines it or holds a call reference to it is in the view, never
-    ///   truncated, so the partitioning consumer's overlap test keeps the unit apart from exactly
-    ///   the units that share one of those files - and pairs it with every unit that shares none.
+    ///   every file that defines it, calls it or names it in an implementation header is in the
+    ///   view, never truncated, so the partitioning consumer's overlap test keeps the unit apart
+    ///   from exactly the units that share one of those files - and pairs it with every unit that
+    ///   shares none.
     ///
     /// Determinism is by construction: the served files come in path order, so both structural
     /// passes are sorted, and the grep-recovered tail of `safe` is explicitly SORTED before it is
@@ -1048,9 +1057,15 @@ impl Symbols {
                 definers.insert(d.file.path);
             }
         }
+        // A referencer file holds a call to a named symbol or an implementation header naming
+        // it, so an implementing file stays in a trait's radius (spec 117, CAPTURES); no other
+        // tagged reference places a file.
         let referencers: BTreeSet<&str> = names
             .iter()
-            .flat_map(|name| sight.calls_named(name))
+            .flat_map(|name| {
+                let impls = sight.mentions_named(name).filter(|m| is_impl(&m.kind));
+                sight.calls_named(name).chain(impls)
+            })
             .map(|m| m.file.path)
             .collect();
         // A named path the view holds no facts for (`.gitignore`) still grounds on its own file
@@ -3191,12 +3206,13 @@ mod tests {
         }
     }
 
-    /// Spec 117 criterion 6: a type reference, a const read and a `use` move no count, rank or
-    /// radius - [`Sight::reference_degree`], [`Sight::occurrences`], [`scored_hits`],
-    /// [`Symbols::ground_ranked`] and [`Symbols::blast_radius`] count call references alone - over
-    /// a view holding one of each beside a call.
+    /// Spec 117 (CAPTURES): a type reference, a const read and a `use` move no count, rank or
+    /// radius - [`Sight::reference_degree`], [`Sight::occurrences`], [`scored_hits`] and
+    /// [`Symbols::ground_ranked`] count call references alone, and [`Symbols::blast_radius`]
+    /// places a file by a call or an implementation header alone - over a view holding one of
+    /// each beside a call.
     #[test]
-    fn tagged_references_move_no_degree_commonness_rank_or_radius() {
+    fn type_const_and_use_references_move_no_degree_commonness_rank_or_radius() {
         use crate::rust_definition_sources::{
             REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_TREE, REFERENCE_KINDS_USER as USER,
         };
