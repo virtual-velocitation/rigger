@@ -2073,8 +2073,8 @@ mod tests {
     }
 
     /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust
-    /// spans, `\r\n` endings and `#[doc(hidden)]` lines among them, and the lines of a language
-    /// with no doc rule.
+    /// spans, `\r\n` endings, `#[doc(hidden)]` lines, nested block comments and literals holding
+    /// a comment marker or a quote among them, and the lines of a language with no doc rule.
     const DOC_TEXT_ROWS: &[(&str, &str, &str)] = &[
         (
             "rust",
@@ -2148,6 +2148,38 @@ Unclosed"#,
             "/// Not read as Rust.\n #[doc(hidden)] ",
             "/// Not read as Rust.\n#[doc(hidden)]",
         ),
+        (
+            "rust",
+            "/**\n * ```\n * /* set up */\n * let x = 1;\n * ```\n */",
+            "```\n/* set up */\nlet x = 1;\n```",
+        ),
+        ("rust", "/** a /* b */ c */", "a /* b */ c"),
+        (
+            "rust",
+            "/// a\n/* commented out\n/// not doc\n*/\n/// b",
+            "a\nb",
+        ),
+        ("rust", "#[doc = \"Doc.\"] // see \"x\"", "Doc."),
+        ("rust", "#[doc = \"a\"] #[cfg(feature = \"y\")]", "a"),
+        (
+            "rust",
+            r###"#[doc = r##"Holds "# inside."##]"###,
+            r##"Holds "# inside."##,
+        ),
+        ("rust", "#[doc = \"a\"] /* x\n/// y\n*/ /// b", "a\nb"),
+        ("rust", "/* a /* b */ /// c */\n/// d", "d"),
+        ("rust", "/// a // b /* c\n/// d", "a // b /* c\nd"),
+        ("rust", "#[cfg(feature = \"/*\")]\n/// After.", "After."),
+        ("rust", "#[attr('\"', '\\\"')]\n/// After.", "After."),
+        ("rust", "#[attr(&'a str)]\n/// After.", "After."),
+        (
+            "rust",
+            "#[attr(r#type, r#\"a\" /*\"#, br#\"b\" /*\"#, cr#\"c\" /*\"#)]\n/// After.",
+            "After.",
+        ),
+        ("rust", "#[doc = r#\"Raw \"open", "Raw \"open"),
+        ("rust", "#[doc = \"a\n  b\"]\n/// c", "a\nb\nc"),
+        ("rust", "/** Unclosed\n", "Unclosed"),
     ];
 
     /// `extractor`'s doc text of each [`DOC_TEXT_ROWS`] span is the row's, `name` naming the
@@ -2163,10 +2195,11 @@ Unclosed"#,
     }
 
     /// THE DOC TEXT IS STRIPPED: `doc_text` turns a Rust span's raw lines, `\r\n` endings and a
-    /// `#[doc(hidden)]` line included, into the comment text alone - each doc line's text after
-    /// its marker, every line with no doc marker dropped, a doc block's opener, closer and one
-    /// leading `*` stripped - and gives a language with no rule its lines trimmed. The project's
-    /// extractor with no declaration answers as the bundled one.
+    /// `#[doc(hidden)]` line included, into the comment text alone - the text of each doc comment
+    /// and each doc attribute's literal, every comment and literal bounded as Rust lexes it,
+    /// everything else dropped, a doc block's opener, closer and one leading `*` stripped - and
+    /// gives a language with no rule its lines trimmed. The project's extractor with no
+    /// declaration answers as the bundled one.
     #[test]
     fn the_doc_text_is_the_comment_text_alone() {
         let project = project_declaring(None);
