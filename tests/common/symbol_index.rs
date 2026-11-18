@@ -19,8 +19,8 @@ use rigger::grounder::symbols::model::SymbolIndex;
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 
 /// A line-1 file-level definition of `kind` named `name` with every optional field unset, its doc
-/// span included, `end_line` 0 and `path` its name - the shape a product-only definition takes; a caller sets the
-/// one field its case is about with struct-update syntax.
+/// span included, `end_line` 0 and `path` its name - the shape a product-only definition takes;
+/// a caller sets the one field its case is about with struct-update syntax.
 pub fn def(kind: Kind, name: &str) -> Def {
     Def {
         kind,
