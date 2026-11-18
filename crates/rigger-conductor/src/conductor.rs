@@ -5827,6 +5827,15 @@ impl RunCtx<'_> {
             other => other,
         };
         let kept_for_retry = refused && result.is_err();
+        // Any other drive that ends on an error leaves the run held, and its release re-enters
+        // the unit in this same tree: a tree holding work no commit records (a halted spawn's
+        // tree git could not capture, an attempt whose checkpoint git did not answer) is kept
+        // for it, one whose status cannot be read counted as holding work. A HALT NEVER
+        // DISCARDS A TREE (spec 89, criterion 1).
+        let holds_work = result.is_err()
+            && wt
+                .as_ref()
+                .is_some_and(|w| crate::worktree::path_is_dirty(&w.dir).unwrap_or(true));
         // A PARKED return is not the stage ending - it is the stage HANDING WORK to
         // out-of-process agents that run BETWEEN conductor processes, in this worktree,
         // against this build cache. Removing either here deletes the tree the parked
@@ -5845,7 +5854,7 @@ impl RunCtx<'_> {
         let parked_unwind = any_parked.load(Ordering::SeqCst)
             || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &wt {
-            if !parked_unwind && !kept_for_retry {
+            if !parked_unwind && !kept_for_retry && !holds_work {
                 let _ = w.remove();
             }
             // The unit's branch is its DURABLE checkpoint (resume-continuity): it must
