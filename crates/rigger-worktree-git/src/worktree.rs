@@ -10720,24 +10720,67 @@ mod tests {
     /// A LANE'S KEEP HOLDS ITS WORK WHEN ITS BRANCH GOES WITH ITS TREE: a speculation lane's tree
     /// is kept on its own kept ref as a unit's is ([`Worktree::keep_tree_aside`]), and a clean tree
     /// at its branch's tip is kept as that tip, since the lane's branch is deleted with its tree.
+    /// A lane whose HEAD left its branch, the tip outside HEAD's history, keeps that tip as the
+    /// keep's second parent, clean or not, so every commit the lane made stays reachable from the
+    /// kept ref once its branch is deleted; a HEAD whose history holds the tip is the one parent.
     #[test]
     fn a_lanes_keep_holds_its_work_when_its_branch_goes_with_its_tree() {
-        // Each row: whether the lane's tree holds work outside its last commit.
+        /// Where the lane's HEAD stands at its keep.
+        #[derive(Clone, Copy, PartialEq)]
+        enum Head {
+            /// On the branch, at its tip.
+            Tip,
+            /// Detached at the commit the lane's work sits on.
+            Base,
+            /// Detached past the tip, on a commit of its own.
+            Past,
+        }
+        // Each row: where HEAD stands and whether the lane's tree holds work outside its last
+        // commit.
         let cases = [
-            ("a clean tree at its branch's tip", false),
-            ("a tree with work outside a commit", true),
+            ("a clean tree at its branch's tip", Head::Tip, false),
+            ("a tree with work outside a commit", Head::Tip, true),
+            (
+                "a clean tree detached at the lane's base",
+                Head::Base,
+                false,
+            ),
+            (
+                "a tree with work outside a commit, detached at the lane's base",
+                Head::Base,
+                true,
+            ),
+            (
+                "a tree with work outside a commit, detached past the tip",
+                Head::Past,
+                true,
+            ),
         ];
-        for (row, dirty) in cases {
+        for (row, stands, dirty) in cases {
             let (_repo, repo_path, root) = scratch_repo(true);
             let (dir, wt) = unit_wt(&repo_path, &root, "unit-lane-spec1");
             let at = std::path::Path::new(&dir);
             std::fs::write(at.join("unit.txt"), "committed\n").unwrap();
             wt.commit("lane work").unwrap();
+            match stands {
+                Head::Tip => {}
+                Head::Base => run_git(&dir, &["checkout", "-q", "--detach", "HEAD~1"])
+                    .map(drop)
+                    .unwrap(),
+                Head::Past => {
+                    run_git(&dir, &["checkout", "-q", "--detach"]).unwrap();
+                    std::fs::write(at.join("past.txt"), "past\n").unwrap();
+                    run_git(&dir, &["add", "past.txt"]).unwrap();
+                    run_git(&dir, &["commit", "-qm", "past"]).unwrap();
+                }
+            }
             if dirty {
                 std::fs::write(at.join("late.txt"), "late\n").unwrap();
             }
             let tip = run_git(&repo_path, &["rev-parse", &wt.branch]).unwrap();
             let tip = tip.trim();
+            let head = run_git(&dir, &["rev-parse", "HEAD"]).unwrap();
+            let head = head.trim();
 
             let kept = wt.keep_lane_aside("wip(unit-lane): lane 1").unwrap();
 
@@ -10750,14 +10793,25 @@ mod tests {
                 kept.commit,
                 "{row}: the kept ref holds the kept commit"
             );
+            match (stands, dirty) {
+                (Head::Tip, false) => assert_eq!(kept.commit, tip, "{row}: the tip itself is kept"),
+                (Head::Base, _) => assert_eq!(
+                    parents_of(&repo_path, &kept.commit),
+                    [head, tip],
+                    "{row}: HEAD, then the tip HEAD's history lacks"
+                ),
+                _ => assert_eq!(parents_of(&repo_path, &kept.commit), [head], "{row}"),
+            }
             if dirty {
-                assert_eq!(parents_of(&repo_path, &kept.commit), [tip], "{row}");
                 let late = run_git(&repo_path, &["show", &format!("{}:late.txt", kept.commit)]);
                 assert_eq!(late.unwrap(), "late\n", "{row}");
-            } else {
-                assert_eq!(kept.commit, tip, "{row}: the tip itself is kept");
             }
             wt.remove().unwrap();
+            Worktree::delete_branch(&repo_path, &wt.branch).unwrap();
+            assert!(
+                in_history(&repo_path, tip, &kept.reference).unwrap(),
+                "{row}: the lane's commits stay reachable from its kept ref once its branch is gone"
+            );
         }
     }
 
