@@ -922,7 +922,7 @@ pub(crate) mod tests {
                 )
             })
             .collect();
-        let fixture = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), &query)
+        let fixture = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), &query, &[])
             .expect("the fixture query compiles");
         let facts = facts_under("tool/run.py", &source, Lang::Python, &fixture);
         let expected: Vec<Mention> = table
@@ -938,6 +938,45 @@ pub(crate) mod tests {
             })
             .collect();
         assert_eq!(facts.mentions, expected);
+    }
+
+    /// A CONSTRUCTOR STAYS A CALL (spec 117, CAPTURES): a `@reference.class` capture on one of
+    /// its registry entry's `constructors` node kinds yields a call mention, so a TypeScript, a
+    /// TSX, a JavaScript and a C# `new Square()` each credit `Square` as called, while the C#
+    /// local's declared type, a `@reference.class` capture on no constructor, stays a `type`
+    /// mention.
+    #[test]
+    fn a_constructor_stays_a_call() {
+        let square = |kind: MentionKind| Mention {
+            enclosing: None,
+            name: "Square".to_string(),
+            leaf: "Square".to_string(),
+            kind,
+            line: 1,
+            test: false,
+        };
+        let call = || square(MentionKind::Call);
+        // (path, source, the mentions its facts hold)
+        let table = [
+            ("web/shape.ts", "new Square();\n", vec![call()]),
+            ("web/shape.tsx", "new Square();\n", vec![call()]),
+            ("web/shape.js", "new Square();\n", vec![call()]),
+            (
+                "App/Shape.cs",
+                "Square s = new Square();\n",
+                vec![square(MentionKind::Tagged("type".to_string())), call()],
+            ),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(path, source, mentions)| {
+                (
+                    (path, facts_of(path, source.as_bytes()).mentions),
+                    (path, mentions),
+                )
+            })
+            .unzip();
+        assert_eq!(found, expected);
     }
 
     #[test]
@@ -1556,13 +1595,13 @@ pub(crate) mod tests {
             // Rust
             ("rs", "rust-tags-v2", "7ffb605da6fb93dd"),
             // C#
-            ("cs", "csharp-tags-v2", "5061538299850c9d"),
+            ("cs", "csharp-tags-v3", "1219fbe9ccd55d87"),
             // TypeScript
-            ("ts", "typescript-tags-v3", "5a7985e0a054c684"),
+            ("ts", "typescript-tags-v4", "d1fdef8457b78129"),
             // TSX
-            ("tsx", "tsx-tags-v3", "1f323d01dd355695"),
+            ("tsx", "tsx-tags-v4", "01ba0329c337ba1f"),
             // JavaScript
-            ("js", "javascript-tags-v3", "b064975fe77ab41b"),
+            ("js", "javascript-tags-v4", "0b4c01075a5c5218"),
             // Go
             ("go", "go-tags-v3", "f9d10fb20ec8989c"),
             // Python

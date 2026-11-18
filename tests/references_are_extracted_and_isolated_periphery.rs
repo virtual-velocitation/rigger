@@ -16,9 +16,11 @@
 //!    new `use`-only file gains its file node; and the tagged
 //!    references of a test file, of a `#[cfg(test)]` module or under their own `#[cfg(test)]`
 //!    fold no edge and prove no definition, while their call proves one;
-//!  - and, through CAPTURES, a type that the Go, TypeScript, TSX or C# tags query captures as a
-//!    reference folds no placeholder and no `CALLS` edge, landing instead as one `REFERENCES`
-//!    edge onto its one same-file definition, and nowhere when nothing defines it.
+//!  - through CAPTURES, a type that the Go, TypeScript, TSX or C# tags query captures as a
+//!    reference outside a constructor folds no placeholder and no `CALLS` edge, landing instead as
+//!    one `REFERENCES` edge onto its one same-file definition, and nowhere when nothing defines it;
+//!  - and a constructor stays a call: a TypeScript, TSX, JavaScript or C# `new Square()` lands as
+//!    the call's `REFERENCES` and `CALLS` edges onto its one same-file class, no placeholder.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -399,6 +401,77 @@ fn graph_build_lands_another_language_s_type_reference_as_a_staged_edge_never_a_
             "{file}: no placeholder stands for `Kestrel` or the undefined `Wren`"
         );
     }
+}
+
+/// The TypeScript row's source of [`CONSTRUCTING_FILES`], the TSX and JavaScript rows' too.
+#[cfg(feature = "symbols")]
+const JS_CONSTRUCTING_SOURCE: &str = "class Square {}\nfunction make() { return new Square(); }\n";
+
+/// One file per language whose registry entry names a node kind that constructs an object (spec
+/// 117, CAPTURES): TypeScript, TSX, JavaScript and C#. Each defines a class `Square` with no
+/// constructor of its own and constructs it, `new Square()`, in `make` (in C#, `Shop`'s method
+/// `Make`, into a local declared `object`, so `Square` is named in no type position). Each row is
+/// `(file, source, the id paths of its definitions, sorted, the constructing definition's id
+/// path)`.
+#[cfg(feature = "symbols")]
+const CONSTRUCTING_FILES: [(&str, &str, &[&str], &str); 4] = [
+    ("f.ts", JS_CONSTRUCTING_SOURCE, &["Square", "make"], "make"),
+    ("f.tsx", JS_CONSTRUCTING_SOURCE, &["Square", "make"], "make"),
+    ("f.js", JS_CONSTRUCTING_SOURCE, &["Square", "make"], "make"),
+    (
+        "f.cs",
+        "class Square { }\nclass Shop\n{\n    void Make() { object s = new Square(); }\n}\n",
+        &["Shop", "Shop::Make", "Square"],
+        "Shop::Make",
+    ),
+];
+
+/// GIVEN a project whose one file, in TypeScript, TSX, JavaScript or C#
+/// ([`CONSTRUCTING_FILES`]), defines a class `Square` and constructs it, `new Square()`, in `make`
+/// (in C#, `Shop`'s method `Make`),
+/// WHEN the operator runs `rigger graph build`,
+/// THEN A CONSTRUCTOR STAYS A CALL (spec 117, CAPTURES): the graph's `REFERENCES` and `CALLS`
+/// edges are exactly the call's two onto `Square`, each `extracted`, the query's
+/// `@reference.class` capture on the language's constructor node kind landing as a call of the
+/// class, never as a type reference; and its code entities are the definitions alone, no
+/// placeholder standing for `Square`.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_lands_a_constructor_as_a_call_onto_its_class() {
+    use rigger::contextgraph::query::entity_id;
+    use rigger::contextgraph::TIER_EXTRACTED;
+
+    let (found, expected): (Vec<_>, Vec<_>) = CONSTRUCTING_FILES
+        .into_iter()
+        .map(|(file, source, definitions, maker)| {
+            let (_project, graph) = common::cli::built_graph(&[(file, source)]);
+            let found = (
+                file,
+                common::fixtures::landed(&graph),
+                common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
+            );
+            let ids: Vec<String> = definitions
+                .iter()
+                .map(|path| entity_id(file, path))
+                .collect();
+            let expected = (
+                file,
+                common::fixtures::a_call_from(
+                    file,
+                    maker,
+                    &entity_id(file, "Square"),
+                    TIER_EXTRACTED,
+                ),
+                [vec![file.to_string()], ids],
+            );
+            (found, expected)
+        })
+        .unzip();
+    assert_eq!(
+        found, expected,
+        "each `new Square()` lands as the call's two edges onto its one same-file class, no \
+         placeholder standing for it"
+    );
 }
 
 /// A production file whose `#[cfg(test)]` module imports `Kestrel` and, in `fn check`, takes it

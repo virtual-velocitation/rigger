@@ -287,22 +287,31 @@ pub struct CompiledTags {
     query: tree_sitter::Query,
     /// What each of the query's captures is to the tags reading, by capture index.
     captures: Vec<Capture>,
+    /// The node kinds that construct an object in the grammar, on which a `@reference.class`
+    /// capture stays a call ([`Capture::Class`]).
+    constructors: &'static [&'static str],
 }
 
 /// What one capture of a tags query is to the tags reading ([`CompiledTags::tags_in`]).
 enum Capture {
     /// `@name`: the node naming the tag.
     Name,
-    /// `@definition.<kind>` or `@reference.<kind>`: the tagged node, and what its suffix makes
-    /// it.
+    /// `@definition.<kind>` or `@reference.<kind>`, `@reference.class` aside: the tagged node,
+    /// and what its suffix makes it.
     Tagged(TagRole),
+    /// `@reference.class`: the tagged node, a reference of the kind its suffix names
+    /// ([`ref_kind_of`]) unless its node kind is one of the grammar's constructors
+    /// ([`CompiledTags::constructors`]), where it stays a call, so `new T()` is a call of `T`
+    /// (spec 117, CAPTURES).
+    Class(Option<&'static str>),
     /// `@doc`: a doc comment of the match's definition, which gives it its doc span.
     Doc,
 }
 
 /// What a tagged node is, by the suffix of the capture tagging it: a definition of the kind a
 /// `@definition.<kind>` suffix names ([`kind_of`]), or a reference of the kind a
-/// `@reference.<kind>` suffix names ([`ref_kind_of`]), `None` for a call.
+/// `@reference.<kind>` suffix names ([`ref_kind_of`]), `None` for a call, a `@reference.class`
+/// capture on a constructor node kind included ([`Capture::Class`]).
 #[derive(Clone, Copy)]
 enum TagRole {
     Definition(Kind),
@@ -328,11 +337,16 @@ fn covering(a: std::ops::Range<usize>, b: std::ops::Range<usize>) -> std::ops::R
 
 impl CompiledTags {
     /// `tags_query` compiled against `language`, each `@definition.<kind>` and
-    /// `@reference.<kind>` capture keeping what its suffix names ([`TagRole`]), or an `Err`
-    /// naming the tags-config step when the query is malformed, does not fit the grammar, or
-    /// captures what the tags reading does not read (anything but `@name`, `@doc`,
+    /// `@reference.<kind>` capture keeping what its suffix names ([`TagRole`]), a
+    /// `@reference.class` one on a node of a `constructors` kind a call ([`Capture::Class`]), or
+    /// an `Err` naming the tags-config step when the query is malformed, does not fit the
+    /// grammar, or captures what the tags reading does not read (anything but `@name`, `@doc`,
     /// `@definition.*` and `@reference.*`).
-    pub fn compile(language: &tree_sitter::Language, tags_query: &str) -> Result<Self, String> {
+    pub fn compile(
+        language: &tree_sitter::Language,
+        tags_query: &str,
+        constructors: &'static [&'static str],
+    ) -> Result<Self, String> {
         let query = tree_sitter::Query::new(language, tags_query)
             .map_err(|e| format!("symbols: tags config: {e}"))?;
         let captures = query
@@ -346,6 +360,7 @@ impl CompiledTags {
                     name.strip_prefix("reference."),
                 ) {
                     (Some(kind), _) => Ok(Capture::Tagged(TagRole::Definition(kind_of(kind)))),
+                    (_, Some(kind @ "class")) => Ok(Capture::Class(ref_kind_of(kind))),
                     (_, Some(kind)) => Ok(Capture::Tagged(TagRole::Reference(ref_kind_of(kind)))),
                     _ => Err(format!(
                         "symbols: tags config: the capture @{name} is not one a tags query \
@@ -358,6 +373,7 @@ impl CompiledTags {
             language: language.clone(),
             query,
             captures,
+            constructors,
         })
     }
 
@@ -367,8 +383,9 @@ impl CompiledTags {
     /// matches naming the same node, the one of the earliest pattern makes its tag; and a tag
     /// is yielded once a later-matched name starts past its name's end, the rest in name order
     /// when the matches run out. Within a match the last name capture names it, the last
-    /// definition or reference capture is the tagged node, and its `@doc` captures, read as the
-    /// matcher yields them, cover its doc ([`Tag::doc`]), for every language.
+    /// definition or reference capture is the tagged node, a `@reference.class` one a call when
+    /// that node's kind is one of the [`CompiledTags::constructors`], and its `@doc` captures,
+    /// read as the matcher yields them, cover its doc ([`Tag::doc`]), for every language.
     fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, source.as_bytes());
@@ -394,6 +411,11 @@ impl CompiledTags {
                 match self.captures[capture.index as usize] {
                     Capture::Name => name = Some(capture.node),
                     Capture::Tagged(role) => tagged = Some((capture.node, role)),
+                    Capture::Class(ref_kind) => {
+                        let constructs = self.constructors.contains(&capture.node.kind());
+                        let role = TagRole::Reference(ref_kind.filter(|_| !constructs));
+                        tagged = Some((capture.node, role));
+                    }
                     Capture::Doc => {
                         let line = capture.node.byte_range();
                         doc = Some(match doc.take() {
@@ -458,7 +480,8 @@ impl CompiledTags {
 /// `end_line`, and takes its id path and parent from [`def_paths`].
 ///
 /// A reference tag is a reference of the kind its capture's suffix names ([`ref_kind_of`], spec
-/// 117), its `ref_kind` none for a call.
+/// 117), its `ref_kind` none for a call, a `@reference.class` tag on a constructor node kind
+/// staying a call ([`Capture::Class`]).
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
@@ -2565,9 +2588,10 @@ mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
 
-    /// `query` compiled against `language`, for a test that injects a query of its own.
+    /// `query` compiled against `language` with no constructor kinds, for a test that injects a
+    /// query of its own.
     fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
-        CompiledTags::compile(language, query).expect("the query compiles")
+        CompiledTags::compile(language, query, &[]).expect("the query compiles")
     }
 
     /// Each kind lowers to its own kind string: the eight a graph folded before the kind constants
@@ -3893,7 +3917,7 @@ fn product() {}
     #[test]
     fn a_capture_the_tags_reading_does_not_read_fails_to_compile() {
         let language: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
-        let msg = CompiledTags::compile(&language, tree_sitter_c_sharp::TAGS_QUERY)
+        let msg = CompiledTags::compile(&language, tree_sitter_c_sharp::TAGS_QUERY, &[])
             .err()
             .expect("a bare @module capture fails to compile");
         assert!(
@@ -3907,7 +3931,7 @@ fn product() {}
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         // A malformed tags query must return Err from the config step, never panic, so a bad
         // registry entry degrades loudly instead of crashing the indexer.
-        let msg = CompiledTags::compile(&language, "(this is not valid scm")
+        let msg = CompiledTags::compile(&language, "(this is not valid scm", &[])
             .err()
             .expect("malformed query should be Err");
         assert!(

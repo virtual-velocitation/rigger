@@ -3306,7 +3306,7 @@ mod tests {
                      (class_definition superclasses: \
                      (argument_list (identifier) @name) @reference.implementation)\n\
                      (call function: (identifier) @name) @reference.call\n";
-        let tags = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), query)
+        let tags = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), query, &[])
             .expect("the fixture query compiles");
         let files: Vec<FileFacts> = [
             ("shapes.py", "class Shape:\n    pass\n"),
