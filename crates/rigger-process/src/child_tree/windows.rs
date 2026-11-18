@@ -158,7 +158,7 @@ impl Job {
 
 /// Resumes each thread of the suspended process `pid`, found in a ToolHelp thread snapshot: no
 /// stable std call answers a spawned process's thread. A process with no thread found, or one
-/// that cannot be resumed, answers an error.
+/// that cannot be resumed or was not suspended ([`resume_thread`]), answers an error.
 fn resume(pid: u32) -> io::Result<()> {
     // SAFETY: the call takes no pointer and answers `INVALID_HANDLE_VALUE` on failure.
     let handle = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
@@ -191,7 +191,9 @@ fn resume(pid: u32) -> io::Result<()> {
     Ok(())
 }
 
-/// Resumes the thread `id`.
+/// Resumes the thread `id` of the session's main. A thread that was not suspended (a previous
+/// suspend count of 0) answers an error: the main then ran before it was held, as when a caller's
+/// own creation flags replaced [`CREATE_SUSPENDED`].
 fn resume_thread(id: u32) -> io::Result<()> {
     // SAFETY: the call takes no pointer and answers a null handle on failure.
     let handle = unsafe { OpenThread(THREAD_SUSPEND_RESUME, FALSE, id) };
@@ -201,10 +203,14 @@ fn resume_thread(id: u32) -> io::Result<()> {
     // SAFETY: the handle is a valid one the call just answered, owned by nothing else.
     let thread = unsafe { OwnedHandle::from_raw_handle(handle) };
     // SAFETY: the handle is open with the suspend-resume right the call needs.
-    if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
-        return Err(io::Error::last_os_error());
+    match unsafe { ResumeThread(thread.as_raw_handle()) } {
+        u32::MAX => Err(io::Error::last_os_error()),
+        0 => Err(io::Error::other(format!(
+            "thread {id} of the session's main was not held suspended, so the main ran before it \
+             was held"
+        ))),
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// A jobbed tree: the handle's process is the main, and the job, until the end or the release
@@ -279,6 +285,41 @@ mod tests {
                 Err(RecvTimeoutError::Timeout) => return false,
             }
         }
+    }
+
+    /// A jobbed command whose caller's own creation flags replace [`CREATE_SUSPENDED`] starts its
+    /// main running before the job holds it, and its start is refused for it. The main runs a
+    /// ping long enough that its thread is there to resume.
+    #[test]
+    fn a_main_started_running_before_its_job_holds_it_is_refused() {
+        let mut command = TreeCommand::new("cmd", &Containment::Job).expect("a jobbed command");
+        command
+            .command_mut()
+            .raw_arg("/c ping -n 30 127.0.0.1 >NUL")
+            .creation_flags(0);
+
+        let started = command.spawn().map(|_| ());
+
+        let error = started.expect_err("a main that was not held suspended is refused");
+        assert!(
+            error.to_string().contains("was not held suspended"),
+            "the refusal says why: {error}"
+        );
+    }
+
+    /// A jobbed main is resumed once its job holds it: it writes, and exits on its own.
+    #[test]
+    fn a_jobbed_main_runs_once_its_job_holds_it() {
+        let (mut tree, lines) = jobbed("echo up");
+        assert!(read_until(&lines, "up"), "the main runs");
+        let deadline = Instant::now() + BOUND;
+        while matches!(tree.try_wait(), Ok(None)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            matches!(tree.try_wait(), Ok(Some(_))),
+            "the main exits on its own"
+        );
     }
 
     #[test]
