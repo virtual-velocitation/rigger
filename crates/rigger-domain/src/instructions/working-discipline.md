@@ -32,6 +32,11 @@ the output it rests on.
 A denied or blocked command comes back to you as an error that names its alternative; your
 turn is not over - use the alternative.
 
+When git refuses a step, or your session's stop is held over the state of your tree, your turn
+is not over either: read the message, find the cause and fix the cause, then end as your task
+asks. Never force, reset, delete or discard work to get past a refusal, and never touch another
+unit's branch or worktree.
+
 ## Hand over a tree the gates only confirm
 
 When you author a change, you report only once the tree you hand over meets every rule below.
