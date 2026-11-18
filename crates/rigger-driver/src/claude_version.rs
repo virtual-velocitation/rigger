@@ -122,14 +122,16 @@ mod tests {
         }
     }
 
+    /// The too-old line names the host's binary, its version and the minimum, and says of the
+    /// minimum only what the host's changelog establishes: it is the version that added the hook
+    /// `args` field rigger's exec-form hooks are written with.
     #[test]
-    fn the_too_old_line_names_the_version_the_minimum_and_what_an_older_host_does() {
+    fn the_too_old_line_names_the_host_its_version_and_the_minimum_that_added_the_args_field() {
         assert_eq!(
             too_old(&SessionHost::default(), v(2, 1, 138)).as_deref(),
             Some(
-                "the session host `claude` is 2.1.138, below 2.1.139, the first version that runs \
-                 rigger's exec-form hooks (their `args` field): on it every tool call a hook \
-                 guards is blocked and every stop is held, with no word why; update it to 2.1.139 \
+                "the session host `claude` is 2.1.138, below 2.1.139, the version that added the \
+                 hook `args` field rigger's exec-form hooks are written with; update it to 2.1.139 \
                  or later"
             )
         );
