@@ -2821,8 +2821,9 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
 /// (`||||||| `) between start and separator is content to it, like any other line. A
 /// separator-shaped line alone (a Setext heading's underline, an RST title's over- and
 /// underline), a start with no end after it and the three out of order are no conflict, so the
-/// scan answers none of their lines. [`ScanAt::Worktree`] reads the worktree copy (staged or not), [`ScanAt::Index`]
-/// what the next `git commit` takes, and [`ScanAt::Commit`] a commit's tree. Read at the
+/// scan answers none of their lines. [`ScanAt::Worktree`] reads the worktree copy (staged or
+/// not), [`ScanAt::Index`] what the next `git commit` takes, and [`ScanAt::Commit`] a commit's
+/// tree. Read at the
 /// worktree, a non-empty answer is [`commit_refusal`]'s; read at the index and at
 /// both parents, it is [`Worktree::merge_into_worktree`]'s finalize refusal, through
 /// [`Worktree::markers_the_merge_introduced`].
