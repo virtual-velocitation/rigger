@@ -49487,8 +49487,11 @@ mod tests {
     /// unit, each hold its own fault (its first line names the attempt), so none recurs to a
     /// person; released each time, the relaunch launches the next attempt. The attempt that
     /// spends the unit's retry bound escalates the unit (its lesson naming the refusal as git's,
-    /// `UnitEscalated`) and holds nothing, the drive going on, and the unit's worktree keeps the
-    /// work the refused trees held.
+    /// `UnitEscalated`) and holds nothing, the drive going on. The work the refused trees held
+    /// is committed onto the unit's branch, the lesson naming the commit and the branch, and the
+    /// tree is removed as an escalated unit's tree is; a run of another spec that plans a unit
+    /// of the same name moves the branch aside, and the commit the lesson names is still
+    /// reachable from the ref that run records.
     #[test]
     #[cfg(unix)]
     fn a_unit_git_refuses_on_every_attempt_escalates_when_its_bound_is_spent() {
@@ -49610,11 +49613,66 @@ mod tests {
             ],
             "each release launches the next attempt, once"
         );
-        assert_eq!(
-            std::fs::read_to_string(Path::new(&unit_dir).join("kept.txt")).ok(),
-            Some("work\n".to_string()),
-            "the escalated unit's worktree keeps the work the refused trees held"
+        let lesson = of_type(contextgraph::TYPE_LESSON_LEARNED)
+            .iter()
+            .filter_map(|l| l["summary"].as_str().map(str::to_string))
+            .find(|s| s.contains("escalated after 3 attempts"))
+            .expect("the escalation lesson");
+        let kept = lesson
+            .split_once("; the tree it left is kept as commit ")
+            .and_then(|(_, rest)| rest.strip_suffix(" on rigger/u/unit-a"))
+            .unwrap_or_else(|| {
+                panic!("the lesson names the commit and the branch the tree is kept on: {lesson}")
+            })
+            .to_string();
+        assert!(
+            !Path::new(&unit_dir).exists(),
+            "the escalated unit's tree is removed, as an escalated unit's tree is"
         );
+        assert_eq!(
+            git_out(&repo_path, &["rev-parse", "rigger/u/unit-a"]),
+            kept,
+            "the unit's branch names the commit"
+        );
+        let work = |rev: &str| git_out(&repo_path, &["show", &format!("{rev}:kept.txt")]);
+        assert_eq!(
+            work(&kept),
+            "work",
+            "the commit holds the refused trees' work"
+        );
+
+        std::fs::remove_file(&hook).unwrap();
+        let other = Event::new(
+            crate::run::TYPE_RUN_STARTED,
+            serde_json::to_vec(&json!({"run": "other", "spec": "specs/other.md", "criteria": []}))
+                .unwrap(),
+        );
+        store
+            .append(STREAM, ExpectedRevision::Any, std::slice::from_ref(&other))
+            .unwrap();
+        assert!(
+            run_isolated(&cfg, &deps).is_ok(),
+            "a run of another spec plans unit-a again"
+        );
+        let moved_to = store
+            .read_stream(STREAM, 0, Direction::Forward)
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STATUS)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+            .find(|v| v["status"] == STATUS_BRANCH_QUARANTINED)
+            .and_then(|v| v["quarantined_to"]["branch"].as_str().map(str::to_string))
+            .expect("the run of another spec moves the escalated unit's branch aside");
+        assert!(
+            run_git(
+                &repo_path,
+                &["merge-base", "--is-ancestor", &kept, &moved_to]
+            )
+            .status
+            .success(),
+            "the commit the lesson names is reachable from {moved_to}"
+        );
+        assert_eq!(work(&kept), "work", "and still holds the work");
     }
 
     #[test]
