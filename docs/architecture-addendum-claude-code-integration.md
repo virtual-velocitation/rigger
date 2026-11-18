@@ -167,7 +167,9 @@ handle, so on Linux and Windows nothing a session starts outlives it. The end fi
 at most its bound, while a process in the tree names the spawn on its command line, so a
 `StopFailure` hook still writing its record finishes before the end. A watched tree (macOS, or
 a launch whose containment degraded to a watch) signals nothing once its main has exited: what
-the main left running is reported, never signalled.
+the main left running is reported, never signalled. Each ordinary end names, in a progress
+line, every process besides the main that it was sent to; who starts a daemon other sessions
+share, and when, is the handbook's rule (`docs/handbook/using-rigger.md`).
 
 ---
 
