@@ -276,4 +276,48 @@ mod tests {
             Some("rigger-named")
         );
     }
+
+    /// THE SESSION HOST IS ONE HOME: a host given no binary is `claude` on `PATH`, a host given
+    /// one names it, and its version read, its login read, a session's start and the too-old line
+    /// each run or name that one binary, so a run that checks its host's version checks the
+    /// binary its driver starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_host_is_the_one_binary_its_reads_and_starts_run() {
+        for host in [SessionHost::default(), SessionHost::at("")] {
+            assert_eq!(host.bin(), DEFAULT_BIN, "a host given no binary");
+        }
+        let fake = tempfile::tempdir().unwrap();
+        let bin = crate::test_support::arms_claude(
+            fake.path(),
+            &probe_arms(&printing(LOGGED_IN_STATUS), PASSING_CANARY),
+        );
+        let host = SessionHost::at(bin.clone());
+        assert_eq!(host.bin(), bin, "a host given a binary");
+        assert_eq!(
+            crate::claude_version::read(&host, crate::claude_version::READ_BOUND)
+                .map(|version| version.to_string()),
+            Ok("2.1.139".to_string()),
+            "the version read runs the host's binary"
+        );
+        assert!(
+            logged_in(&host, Instant::now() + Duration::from_secs(5)),
+            "the login read runs the host's binary"
+        );
+        assert_eq!(
+            recorded_argv(&fake.path().join("auth-argv")),
+            ["auth", "status", "--json"]
+        );
+        assert_eq!(
+            host.command_in("").get_program(),
+            std::ffi::OsStr::new(&bin),
+            "a session starts the host's binary"
+        );
+        let below = crate::claude_version::parse("2.1.138").unwrap();
+        let line = crate::claude_version::too_old(&host, below).unwrap();
+        assert!(
+            line.contains(&format!("`{bin}`")),
+            "the too-old line names the host's binary: {line}"
+        );
+    }
 }
