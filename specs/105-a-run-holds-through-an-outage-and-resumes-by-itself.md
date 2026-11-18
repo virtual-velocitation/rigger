@@ -158,9 +158,9 @@ size or the API's words, sits on a later line. THE SAME FAULT is `RunHeld::same_
 `action`, `needs_person`, `by`, `model` and every later line are not compared. Deciding inside
 its compare-and-append over the current run's hold events, the writer appends nothing when the
 open hold's latest `RunHeld` is the same fault; else `FAULT_RECURRED`, needing a person, action
-`the orchestrator's fix did not hold: a person decides, then runs rigger release`, when the
-latest `RunHeld` of any hold the run released is the same fault, however many holds of other
-faults it released since; else
+`the orchestrator's fix did not hold: a person decides, then runs rigger release`, when any
+`RunHeld` of any hold the run released is the same fault, however many holds of other faults it
+released since or later `RunHeld` events that hold took; else
 `FAULT_ON_A_PERSONS_HOLD`, needing a person, action `a person holds this run: they read the
 fault, decide, then run rigger release`, when the open hold's latest `RunHeld` needs a person;
 else the `conductor-fault` row. A fault no hold the run released named is the orchestrator's

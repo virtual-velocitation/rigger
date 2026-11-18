@@ -574,17 +574,18 @@ pub(crate) fn append_at_head(
 struct HoldRead {
     /// The hold open now, `None` when the run is unheld.
     open: Option<Hold>,
-    /// Every hold the current run released, in log order, a hold one of whose `RunHeld` events
-    /// does not decode left out.
-    released: Vec<Hold>,
+    /// Every `RunHeld` of every hold the current run released, in log order, a hold one of whose
+    /// `RunHeld` events does not decode left out.
+    released: Vec<RunHeld>,
 }
 
 impl HoldRead {
-    /// Whether the latest `RunHeld` of any hold the current run released is the fault `same`
-    /// recognizes: the one recurrence rule, which holds a fault the orchestrator's release did not
-    /// fix for a person ([`escalated`]) however many holds of other faults were released since.
+    /// Whether any `RunHeld` of any hold the current run released is the fault `same` recognizes:
+    /// the one recurrence rule, which holds a fault the orchestrator's release did not fix for a
+    /// person ([`escalated`]) however many holds of other faults were released since, and whatever
+    /// later `RunHeld` moved the hold it was released in.
     fn recurs(&self, same: impl Fn(&RunHeld) -> bool) -> bool {
-        self.released.iter().any(|hold| same(&hold.latest))
+        self.released.iter().any(same)
     }
 }
 
@@ -609,8 +610,14 @@ fn append_on_hold(
         fold_holds(&mut state, events)?;
         let released = holds(events)
             .into_iter()
-            .filter(|span| span.release.is_some())
-            .filter_map(|span| span.hold)
+            .filter(|span| span.hold.is_some())
+            .filter_map(|span| span.release.map(|release| span.first..release.revision))
+            .flat_map(|span| {
+                events
+                    .iter()
+                    .filter(move |e| e.type_ == TYPE_RUN_HELD && span.contains(&e.revision))
+                    .filter_map(|e| e.decode::<RunHeld>())
+            })
             .collect();
         decide(&HoldRead {
             open: state.hold,
