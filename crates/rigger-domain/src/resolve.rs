@@ -45,8 +45,8 @@ use crate::contextgraph::{
 /// The generation of what a store settles from the tree alone when it advances ([`Settled`]):
 /// the test-module closure and the proof rule. Bump it whenever either can settle other rows for
 /// a view than before; the store's fingerprint folds it in, so a snapshot settled under an older
-/// one is computed anew. A golden test pins it beside a digest of the rows over a fixture, so a
-/// change that is not bumped fails there.
+/// one is computed anew. A golden test pins it beside a digest of the rows over two fixtures, so
+/// a change that is not bumped fails there.
 pub const SETTLED_GENERATION: u64 = 4;
 
 /// The node kinds a design concept or a workflow node may name.
@@ -1459,6 +1459,11 @@ pub(crate) mod tests {
         }
     }
 
+    /// A test's call written `name` (`Q::leaf`) from the definition at `enclosing`.
+    fn test_call(name: &str, enclosing: u32, line: u32) -> Mention {
+        qualified(MentionKind::Call, name, Some(enclosing), line, true)
+    }
+
     fn decl(name: &str, def: u32, test: bool, candidates: &[&str]) -> ModuleDecl {
         ModuleDecl {
             name: name.into(),
@@ -1806,17 +1811,20 @@ pub(crate) mod tests {
         FactsView::new(stamp(), files)
     }
 
+    /// The rows a store settles from `view` alone, settling it whole: its test files and its
+    /// proof calls.
+    fn settled_rows(view: &FactsView) -> (Vec<String>, Vec<ProofCall>) {
+        let whole = Resolver::new(view);
+        let test_files = whole.test_files().into_iter().map(str::to_string).collect();
+        (test_files, whole.proof_calls().to_vec())
+    }
+
     /// Re-settling `view`, which holds `base`'s facts but for the files at `differing`, from the
     /// rows `base` settled computes the test files and proof calls settling `view` whole
     /// computes, and those rows move from `base`'s exactly when a file differs: `case` fails
     /// otherwise.
     fn assert_resettles(case: &str, base: &FactsView, view: &FactsView, differing: &[&str]) {
-        let settled = |view: &FactsView| -> (Vec<String>, Vec<ProofCall>) {
-            let whole = Resolver::new(view);
-            let test_files = whole.test_files().into_iter().map(str::to_string).collect();
-            (test_files, whole.proof_calls().to_vec())
-        };
-        let (was, want) = (settled(base), settled(view));
+        let (was, want) = (settled_rows(base), settled_rows(view));
         let differing: BTreeSet<&str> = differing.iter().copied().collect();
         assert_eq!(differing.is_empty(), want == was, "{case}: the rows move");
         assert_eq!(resettle(base, view, &differing), want, "{case}");
@@ -1879,23 +1887,15 @@ pub(crate) mod tests {
         }
     }
 
-    /// A QUALIFIED PROOF RESETTLES (spec 117, RESOLVER AT READ): a test call's proof narrows by
-    /// its qualifier as its call edge does, so a second `impl Cursor` holding `new` moves the
-    /// proof of a test's `Cursor::new()` from the first `new` to none, and a test beside the
-    /// second `new` proves neither; and re-settling reaches every proof a qualifier moves, after
-    /// a file that only adds the type `AtomicU64` a test's `AtomicU64::new()` names, one that only
-    /// renames an `impl` mention over unchanged method ids, one that adds a test trait's method a
-    /// qualifier keeps through an implementation in another file, one that turns test the call
-    /// target a qualified call proves, and one that turns a type into a trait over unchanged
-    /// method ids, a qualifier reaching it only through an implementation in a file it does not
-    /// touch. The proofs of each definition say what the proof calls say.
-    #[test]
-    fn a_qualified_proof_resettles() {
-        let test_call = |name: &str, enclosing, line| {
-            qualified(MentionKind::Call, name, Some(enclosing), line, true)
-        };
+    /// A tree of qualified test calls, one for each way the proof rule ([`Resolver::proof`])
+    /// narrows one: its qualifier keeps one product method (`Cursor::new`, `Store::new`), one
+    /// test method (`Bell::ring`), or several (`Lamp::glow`, called from a test module beside
+    /// one of them); it keeps none but names a type (`Gauge::read`), so the unqualified rule
+    /// takes the call; or it keeps none and names nothing (`AtomicU64::new`, called from a test
+    /// module beside a `new`, `Reader::new`, `Valve::shut`), so the call proves none.
+    fn qualified_proof_fixture() -> FactsView {
         let fn_def = |name: &str| vec![def(name, "function", 1, None, true)];
-        let base = FactsView::new(
+        FactsView::new(
             stamp(),
             vec![
                 code(
@@ -1931,6 +1931,31 @@ pub(crate) mod tests {
                     vec![],
                 ),
                 code(
+                    "src/lamp.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Lamp", "impl", 1, None, false),
+                        def("Lamp::glow", "method", 2, Some(0), false),
+                        def("tests", "module", 10, None, true),
+                        def("tests::lit", "function", 11, Some(2), true),
+                    ],
+                    vec![
+                        tagged("impl", "Lamp", Some(0), 1),
+                        test_call("Lamp::glow", 3, 12),
+                    ],
+                ),
+                code(
+                    "src/lamp_ext.rs",
+                    "rust",
+                    Scope::Product,
+                    vec![
+                        def("impl Lamp", "impl", 1, None, false),
+                        def("Lamp::glow", "method", 2, Some(0), false),
+                    ],
+                    vec![tagged("impl", "Lamp", Some(0), 1)],
+                ),
+                code(
                     "src/meter.rs",
                     "rust",
                     Scope::Product,
@@ -1950,6 +1975,20 @@ pub(crate) mod tests {
                         def("Seal::shut", "method", 3, Some(1), false),
                     ],
                     vec![tagged("impl", "Seal", Some(1), 2)],
+                ),
+                code(
+                    "tests/bell.rs",
+                    "rust",
+                    Scope::Test,
+                    vec![
+                        def("impl Bell", "impl", 1, None, true),
+                        def("Bell::ring", "method", 2, Some(0), true),
+                        def("rings", "function", 5, None, true),
+                    ],
+                    vec![
+                        tagged("impl", "Bell", Some(0), 1),
+                        test_call("Bell::ring", 2, 6),
+                    ],
                 ),
                 code(
                     "tests/gauge.rs",
@@ -2004,12 +2043,28 @@ pub(crate) mod tests {
                     ],
                 ),
             ],
-        );
+        )
+    }
+
+    /// A QUALIFIED PROOF RESETTLES (spec 117, RESOLVER AT READ): a test call's proof narrows by
+    /// its qualifier as its call edge does, so a second `impl Cursor` holding `new` moves the
+    /// proof of a test's `Cursor::new()` from the first `new` to none, and a test beside the
+    /// second `new` proves neither; and re-settling reaches every proof a qualifier moves, after
+    /// a file that only adds the type `AtomicU64` a test's `AtomicU64::new()` names, one that only
+    /// renames an `impl` mention over unchanged method ids, one that adds a test trait's method a
+    /// qualifier keeps through an implementation in another file, one that turns test the call
+    /// target a qualified call proves, and one that turns a type into a trait over unchanged
+    /// method ids, a qualifier reaching it only through an implementation in a file it does not
+    /// touch. The proofs of each definition say what the proof calls say.
+    #[test]
+    fn a_qualified_proof_resettles() {
+        let base = qualified_proof_fixture();
         // (case, the files that differ, the change, the proofs settled after it)
         let cases: [(&str, &[&str], FactsView, &[&str]); 7] = [
             (
-                "no file differs: each qualified call proves the one call target it keeps, and \
-                 one whose path qualifier names nothing proves none",
+                "no file differs: a qualified call proves the one product call target its \
+                 qualifier keeps, and none when that one is test, it keeps several, or it keeps \
+                 none and its path qualifier names nothing",
                 &[],
                 changed_from(&base, |_| {}),
                 &[
@@ -2304,29 +2359,26 @@ pub(crate) mod tests {
 
     /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): of same-path twins of one kind the lower
     /// line settles the id wherever it sits among them, and of twins on one line the first.
-    /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the fixture's test files and proof
-    /// calls are pinned by digest beside the generation the store's fingerprint folds in, so a
-    /// change to the test-module closure or the proof rule fails here until `SETTLED_GENERATION`
-    /// is bumped and the pair re-pinned.
+    /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the test files and proof calls of
+    /// [`fixture`], and of [`qualified_proof_fixture`], whose qualified test calls take each way
+    /// the proof rule narrows one, are pinned by digest beside the generation the store's
+    /// fingerprint folds in, so a change to the test-module closure or the proof rule fails here
+    /// until `SETTLED_GENERATION` is bumped and the pair re-pinned.
     #[test]
     fn a_change_to_the_settled_rows_ships_with_a_generation_bump() {
-        const PINNED: (u64, &str) = (4, "6126b9cf9571d2f0");
-        let view = fixture();
-        let resolver = Resolver::new(&view);
-        let test_files: Vec<&str> = (view.files())
-            .map(|f| f.path)
-            .filter(|path| resolver.is_test_file(path))
-            .collect();
-        let proofs = resolver.proof_calls();
+        const PINNED: (u64, &str) = (4, "66ea4c83fbdb81c6");
+        let (test_files, proofs) = settled_rows(&fixture());
         assert!(
             !proofs.is_empty() && test_files.iter().any(|p| !p.starts_with("tests/")),
             "the fixture holds proofs and a test file by the closure alone"
         );
-        let digest = crate::community::fnv1a_hex(&format!("{test_files:#?}{proofs:#?}"));
+        let qualified = settled_rows(&qualified_proof_fixture());
+        let rows = format!("{test_files:#?}{proofs:#?}{qualified:#?}");
+        let digest = crate::community::fnv1a_hex(&rows);
         assert_eq!(
             (SETTLED_GENERATION, digest.as_str()),
             PINNED,
-            "this build's settled generation and the digest of the fixture's settled rows (left) \
+            "this build's settled generation and the digest of the fixtures' settled rows (left) \
              differ from the pinned pair: a change to what a store settles ships with a bump, so \
              bump `SETTLED_GENERATION` and re-pin the pair to this build's values together"
         );
