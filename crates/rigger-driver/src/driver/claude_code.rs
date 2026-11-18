@@ -3919,6 +3919,28 @@ mod tests {
         );
     }
 
+    crate::test_cases! {
+        a_canary_end_that_left_nothing_says_nothing: assert_eq!(
+            canary_end_line(&crate::child_tree::EndReport::default()),
+            None
+        );
+        a_canary_end_that_left_a_process_says_so_naming_the_canary: assert_eq!(
+            canary_end_line(&crate::child_tree::EndReport {
+                residue: vec![crate::child_tree::Leftover {
+                    pid: 41,
+                    program: "claude".to_string(),
+                    stopped: false,
+                }],
+                ..crate::child_tree::EndReport::default()
+            })
+            .as_deref(),
+            Some(
+                "rigger: the hold probe's canary: the end of the session left processes \
+                 running; 1 it signalled and could not end: 41 (claude)"
+            )
+        );
+    }
+
     // ---- THE STREAM (spec 104 criterion 2): the pure per-line mappings ----
 
     crate::test_cases! {
