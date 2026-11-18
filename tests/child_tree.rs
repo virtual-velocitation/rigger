@@ -3,16 +3,18 @@
 //! exact status; an end, a finish, a drop and a TERM to the keeper each leave nothing the tree
 //! started running; a finish after the main's exit first waits, to a bound, for a process naming
 //! the session's spawn; a wait for the main's output ends, once the main exits, what it left
-//! holding that output; a release, before the main's exit or after it, leaves what the main left
-//! running; the keeper holds none of the session's streams; and a keeper that is gone or deaf is
-//! reported, never trusted, and a main a gone keeper left is reported, never signalled.
-//! Every process a row starts is read through the FIFO witness (`common::witness`), and the test
-//! signals none of them.
+//! holding that output; a daemon one session started ends with it under the keeper, so a sibling
+//! session waiting on its answer sees the answers end and its next request fail, and runs on, while
+//! a watched session's exited main leaves it running; a release, before the main's exit or after
+//! it, leaves what the main left running; the keeper holds none of the session's streams; and a
+//! keeper that is gone or deaf is reported, never trusted, and a main a gone keeper left is
+//! reported, never signalled. Every process a row starts is read through the FIFO witness
+//! (`common::witness`), and the test signals none of them.
 
 use crate::common::fixtures::fixture_script;
 use crate::common::rigger_bin;
 use crate::common::wait_until;
-use crate::common::witness::{Reading, Witness};
+use crate::common::witness::{make_fifo, Reading, Witness};
 use rigger::child_tree::{line_channel, Containment, EndReport, ReapedChild, TreeCommand, Why};
 use rigger::os_process;
 use rigger::reap::END_BOUND;
@@ -327,6 +329,101 @@ fn a_kept_wait_for_the_output_ends_what_the_main_left_holding_it() {
         ),
         (Some(0), "out\n".to_string(), 1, vec![], vec![])
     );
+}
+
+/// The lines `lines` carries until none comes for a second.
+fn lines_until_quiet(lines: &std::sync::mpsc::Receiver<io::Result<String>>) -> Vec<String> {
+    let mut read = Vec::new();
+    while let Ok(line) = lines.recv_timeout(Duration::from_secs(1)) {
+        read.push(line.expect("a line of text"));
+    }
+    read
+}
+
+/// Session A, contained as `how`, starts the stand-in daemon (`daemon` in
+/// `tests/fixtures/witness.sh`) and exits a second later; session B, kept, uses it as `client`,
+/// and is waiting on an answer when A finishes. B then says `seen` and runs on, never signalled;
+/// A's finish reports `ended` processes it ended and `skipped` it never signalled, and leaves A's
+/// witness reading `left`.
+fn a_sibling_using_a_daemon_the_session_started(
+    how: Containment,
+    seen: &[&str],
+    ended: usize,
+    skipped: usize,
+    left: Reading,
+) {
+    let channel = tempfile::tempdir().expect("a directory for the daemon's channel");
+    make_fifo(&channel.path().join("requests"));
+    make_fifo(&channel.path().join("answers"));
+    let daemon = ("RIGGER_TEST_DAEMON", channel.path());
+    let (mut witness_a, mut witness_b) = (Witness::new(), Witness::new());
+    let mut a = command(&witness_a, &how, "daemon; up; sleep 1");
+    a.command_mut().env(daemon.0, daemon.1);
+    let mut a = a.spawn().expect("spawn session A");
+    assert!(witness_a.wait_up(1), "A's main is up");
+    let mut b = command(&witness_b, &keeper(), "client; up; held");
+    b.command_mut().env(daemon.0, daemon.1);
+    let mut b = b.spawn().expect("spawn session B");
+    let (lines, _reader) = line_channel(b.take_stdout().expect("B's output"));
+    assert_eq!(
+        (lines_until_quiet(&lines), witness_a.wait_up(2)),
+        (
+            vec![
+                "client: answered: answer first".to_string(),
+                "client: waiting".to_string()
+            ],
+            true
+        ),
+        "B uses the daemon A started, and waits on its answer to `hold`"
+    );
+    a.wait().expect("wait on A's main");
+
+    let report = a.finish(Some(SPAWN));
+
+    assert_eq!(
+        (
+            lines_until_quiet(&lines),
+            report.ended.len(),
+            report.residue,
+            report.skipped.len(),
+            witness_a.read()
+        ),
+        (
+            seen.iter().map(|line| line.to_string()).collect::<Vec<_>>(),
+            ended,
+            vec![],
+            skipped,
+            left
+        )
+    );
+    assert!(
+        matches!(b.try_wait(), Ok(None)),
+        "B's main runs on past A's end"
+    );
+    assert_eq!(witness_b.read(), Reading::Held, "B's processes run on");
+    assert_eq!(
+        (b.end(), witness_b.read()),
+        (EndReport::default(), Reading::Ended)
+    );
+}
+
+rigger::test_cases! {
+    a_sibling_sees_a_kept_sessions_daemon_end_with_it:
+        a_sibling_using_a_daemon_the_session_started(
+            keeper(),
+            &["client: the answers ended", "client: a request failed"],
+            1,
+            0,
+            Reading::Ended,
+        );
+    a_sibling_keeps_a_watched_sessions_daemon_its_exited_main_left:
+        a_sibling_using_a_daemon_the_session_started(
+            Containment::Watch(Why::Chosen),
+            &[],
+            0,
+            1,
+            Reading::Held,
+        );
 }
 
 #[test]

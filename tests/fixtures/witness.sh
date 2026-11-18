@@ -43,3 +43,39 @@ idle() {
         [ $? -gt 128 ] || exit 0
     done
 }
+
+# Starts a stand-in daemon in a fresh shell, as a session starts a server other sessions use. Its
+# channel is the FIFOs `requests` and `answers` in `$RIGGER_TEST_DAEMON`; it is up once a client has
+# opened the channel too, answers each request on a line of its own, and answers `hold` with
+# nothing, running until the test releases the fixture.
+daemon() {
+    sh -c "exec <\"\$RIGGER_TEST_DAEMON/requests\" >\"\$RIGGER_TEST_DAEMON/answers\"; $witness_up
+        while read -r request; do
+            [ \"\$request\" = hold ] && { $witness_held; exit 0; }
+            echo \"answer \$request\"
+        done" &
+}
+
+# Uses the stand-in daemon as a client, as a session uses a server another session started, and
+# says on its output what it sees: the answer to `first`; that it waits once it has sent `hold`;
+# how that wait ended; and whether one more request was taken. It ignores SIGPIPE, as most runtimes
+# do, so a request with no daemon left to read it fails rather than ending this shell.
+client() {
+    trap '' PIPE
+    exec 3>"$RIGGER_TEST_DAEMON/requests" 4<"$RIGGER_TEST_DAEMON/answers"
+    echo first >&3
+    read -r answer <&4
+    echo "client: answered: $answer"
+    echo hold >&3
+    echo "client: waiting"
+    if read -r answer <&4; then
+        echo "client: answered: $answer"
+    else
+        echo "client: the answers ended"
+    fi
+    if echo again >&3 2>/dev/null; then
+        echo "client: a request was taken"
+    else
+        echo "client: a request failed"
+    fi
+}
