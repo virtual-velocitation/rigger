@@ -717,9 +717,17 @@ fn residue_advisories(
         &run_units.live_branches,
     );
     // Every ref rigger holds aside, a kept tree or one set aside, live or not: only a person
-    // or the run-start reaper removes one. A read failure lists none, as the branch read above.
-    report.held = rigger::worktree::held_refs(&repo).unwrap_or_default();
+    // or the run-start reaper removes one. A read that fails lists none and says so on its own
+    // line, naming git's error, so an empty list is never read as none held.
+    let unread = match rigger::worktree::held_refs(&repo) {
+        Ok(held) => {
+            report.held = held;
+            None
+        }
+        Err(e) => Some(held_refs_unread(&e.0)),
+    };
     let mut advisories = format_residue(&report);
+    advisories.extend(unread);
     // Leaked-process advisory (spec 23, unit 2): any process still rooted under the SAME
     // resolved scratch root, warning-only like the residue block above. Reuses the `scratch`
     // path already resolved here and the shared scan authority - no second resolver, no second
@@ -727,6 +735,15 @@ fn residue_advisories(
     // visible even when no teardown is running.
     advisories.extend(leaked_process_advisories(&scratch));
     Ok(advisories)
+}
+
+/// The advisory `rigger validate` gives when the refs rigger holds aside cannot be read: one line
+/// naming `error`, the read's own failure, its lines joined.
+fn held_refs_unread(error: &str) -> String {
+    format!(
+        "warning: the refs rigger holds aside could not be read, so none are listed: {}",
+        rigger::wave::normalize_ws(error)
+    )
 }
 
 /// The warning-only `rigger validate` advisories (spec 23, unit 2) naming every process still
