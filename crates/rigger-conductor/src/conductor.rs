@@ -38292,6 +38292,132 @@ mod tests {
         );
     }
 
+    /// A RESUMED APPROVE'S FAILURE ON ITS LAST ATTEMPT ESCALATES THE UNIT: a prior window approved
+    /// unit `s` but its merge never landed, and the resumed merge fails - the exhaustive suite
+    /// red on the approved tree, the merged tree's re-gate red, or git refusing the merge's
+    /// conclusion. Each is the unit's failed attempt, charged through its remediation, so on the
+    /// attempt that spends its retry bound the unit escalates: one `UnitFailed` at that attempt
+    /// with the failure's cause, a lesson naming the failure, `UnitEscalated`, no hold, the drive
+    /// going on, and no implementer launched.
+    #[test]
+    #[cfg(unix)]
+    fn a_resumed_approves_failure_on_its_last_attempt_escalates_the_unit() {
+        use std::os::unix::fs::PermissionsExt;
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        enum Fails {
+            /// The exhaustive suite is red on the approved tree.
+            Exhaustive,
+            /// The run branch gained poison.rs since the approve, and the merged tree's re-gate
+            /// is red on it beside the unit's feature.rs.
+            MergedTree,
+            /// The run branch gained g.txt since the approve, so the merge is a real one, and a
+            /// prepare-commit-msg hook refuses its conclusion.
+            MergeRefused,
+        }
+        // Each row: how the resumed merge fails, the cause it is charged with and the text its
+        // lesson names.
+        let cases = [
+            (Fails::Exhaustive, "gate:ok", "EXHAUSTIVE-RED"),
+            (Fails::MergedTree, CAUSE_INTEGRATE_CONFLICT, "MERGED-RED"),
+            (
+                Fails::MergeRefused,
+                CAUSE_GIT_REFUSED,
+                "hook: refusing the merge",
+            ),
+        ];
+        for (fails, cause, named) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            seed_prior_window_s(&repo_path, &store, approved_but_unmerged_s());
+            let lands = |file: &str| {
+                std::fs::write(repo.path().join(file), "run\n").unwrap();
+                run_git(&repo_path, &["add", file]);
+                run_git(&repo_path, &["commit", "-q", "-m", file]);
+            };
+            let gate = match fails {
+                Fails::Exhaustive => "echo EXHAUSTIVE-RED; exit 1",
+                Fails::MergedTree => {
+                    lands("poison.rs");
+                    "if [ -e poison.rs ] && [ -e feature.rs ]; then echo MERGED-RED; exit 1; fi"
+                }
+                Fails::MergeRefused => {
+                    lands("g.txt");
+                    let hook = repo
+                        .path()
+                        .join(".git")
+                        .join("hooks")
+                        .join("prepare-commit-msg");
+                    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+                    std::fs::write(
+                        &hook,
+                        "#!/bin/sh\nif [ \"$2\" = merge ]; then \
+                         echo 'hook: refusing the merge' >&2; exit 1; fi\nexit 0\n",
+                    )
+                    .unwrap();
+                    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                    "true"
+                }
+            };
+            let mut cfg = reviewed_merge_cfg(false);
+            cfg.workflow.defaults.max_retries = 1;
+            cfg.workflow.gates.insert("ok".into(), gate_def(gate));
+            let driver = Stub::new();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let state = match run_isolated(&cfg, &deps) {
+                Ok(state) => state,
+                Err(e) => panic!("{fails:?}: the escalation ends no drive: {}", e.0),
+            };
+            assert_eq!(
+                state.units["s"].status,
+                ledger::Status::Escalated,
+                "{fails:?}: the unit escalates"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let of_type = |type_: &str| {
+                events
+                    .iter()
+                    .filter(|e| e.type_ == type_)
+                    .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                of_type(ledger::TYPE_UNIT_FAILED)
+                    .iter()
+                    .map(|f| (f["attempts"].clone(), f["cause"].clone()))
+                    .collect::<Vec<_>>(),
+                [(json!(1), json!(cause))],
+                "{fails:?}: the failure is charged once, at the attempt that spends the bound"
+            );
+            assert_eq!(
+                of_type(ledger::TYPE_UNIT_ESCALATED).len(),
+                1,
+                "{fails:?}: escalated"
+            );
+            assert!(
+                of_type(contextgraph::TYPE_LESSON_LEARNED).iter().any(|l| {
+                    l["summary"].as_str().is_some_and(|s| {
+                        s.contains("unit \"s\" escalated after 1 attempts; ") && s.contains(named)
+                    })
+                }),
+                "{fails:?}: the escalation lesson names the failure"
+            );
+            assert_eq!(
+                holds_in(&events),
+                [],
+                "{fails:?}: the escalation holds nothing"
+            );
+            assert!(
+                !driver.spawned("worker"),
+                "{fails:?}: no implementer is launched"
+            );
+        }
+    }
+
     #[test]
     fn a_resumed_reviewed_units_genuine_unresolved_conflict_reaches_the_idempotent_merge_path() {
         // Spec 89, criterion 1, round 2 fix (arch-u89c1-halted-commit-guard-preempts-resumed-
