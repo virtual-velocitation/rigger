@@ -280,8 +280,9 @@ pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 /// one that step takes, with [`STOP_HOOK_TIMEOUT_SECS`]: `--branch <branch>` for a tree the
 /// conductor commits onto that branch, `--own-commits` for one it lands only the commits of. Each
 /// runs `rigger_bin` under `shell`, which reads `rigger_bin`, `spawn`, each root, `dir` and the
-/// branch as one word whatever they hold ([`HookShell::word`]), and each entry names `shell` where
-/// Claude Code would not pick it alone ([`HookShell::field`]). `existing` may be empty.
+/// branch as one word whatever they hold ([`HookShell::word`]), each command exits with the
+/// program's own status ([`HookShell::command`]), and each entry names `shell` where Claude Code
+/// would not pick it alone ([`HookShell::field`]). `existing` may be empty.
 pub fn install_spawn_hooks(
     existing: &[u8],
     rigger_bin: &str,
@@ -298,11 +299,14 @@ pub fn install_spawn_hooks(
     for root in roots {
         guard.push_str(&format!(" --root {}", shell.word(root)));
     }
+    let guard = shell.command(guard);
     let matcher = write_guard_matcher();
     let mut merged = merge_hook_block(existing, "PreToolUse", &matcher, &guard, None, field)?;
     for category in AgentFailure::CATEGORIES {
         let class = category.as_str();
-        let command = format!("{bin} hook stop-failure --spawn {spawn} --class {class}");
+        let command = shell.command(format!(
+            "{bin} hook stop-failure --spawn {spawn} --class {class}"
+        ));
         merged = merge_hook_block(&merged, "StopFailure", class, &command, None, field)?;
     }
     let asks = match duty {
@@ -312,7 +316,9 @@ pub fn install_spawn_hooks(
     };
     if let Some(asks) = asks {
         let dir = shell.word(dir);
-        let command = format!("{bin} hook stop --spawn {spawn} --dir {dir} {asks}");
+        let command = shell.command(format!(
+            "{bin} hook stop --spawn {spawn} --dir {dir} {asks}"
+        ));
         let timeout = Some(STOP_HOOK_TIMEOUT_SECS);
         merged = merge_hook_block(&merged, "Stop", "", &command, timeout, field)?;
     }
@@ -373,6 +379,17 @@ impl HookShell {
         match self {
             HookShell::Posix => self.word(path),
             HookShell::PowerShell => format!("& {}", self.word(path)),
+        }
+    }
+
+    /// The hook command running `body`, whose exit status is the program's own. PowerShell run
+    /// with `-Command` turns a program's last exit status other than 0 or 1 into 1, which would
+    /// make the write guard's blocking 2 a non-blocking error, so its command ends by exiting with
+    /// `$LASTEXITCODE`, as PowerShell's own documentation says to (`about_pwsh`, `-Command`).
+    fn command(self, body: String) -> String {
+        match self {
+            HookShell::Posix => body,
+            HookShell::PowerShell => format!("{body}; exit $LASTEXITCODE"),
         }
     }
 
