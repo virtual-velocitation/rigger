@@ -51020,6 +51020,18 @@ stage "implement" adjudicator "adj" failed
                 panic!("the lesson names the commit and the ref the tree is kept on: {lesson}")
             })
             .to_string();
+        assert_eq!(
+            of_type(ledger::TYPE_UNIT_FAILED)
+                .iter()
+                .map(|f| f["kept"].clone())
+                .collect::<Vec<_>>(),
+            [
+                json!([]),
+                json!([]),
+                json!([{"reference": "rigger/kept/unit-a", "commit": kept}])
+            ],
+            "the charge of the attempt that kept its tree records the keep, by ref and commit"
+        );
         assert!(
             !Path::new(&unit_dir).exists(),
             "the escalated unit's tree is removed, as an escalated unit's tree is"
