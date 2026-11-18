@@ -18373,6 +18373,59 @@ mod tests {
         );
     }
 
+    /// A HALTED SPAWN'S TREE GIT CANNOT CAPTURE IS KEPT: when git does not answer the wip commit
+    /// of a halted spawn's tree (a lock on its index), the run is held on the fault with no
+    /// attempt charged, and the tree stays on disk with the spawn's work in it, so the release
+    /// of the hold finds it there.
+    #[test]
+    fn a_halted_spawns_tree_git_cannot_capture_is_held_and_kept() {
+        const UNIT: &str = "u-halt-unanswered";
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let scratch = dirty_unit_worktree(&repo_path, UNIT, "halted-work.txt", "halted work\n");
+        let dir = unit_worktree_dir(&scratch, UNIT);
+        let git_dir = trimmed_stdout(&run_git(
+            &dir,
+            &["rev-parse", "--path-format=absolute", "--git-dir"],
+        ));
+        std::fs::write(Path::new(&git_dir).join("index.lock"), "").unwrap();
+        let store = Store::open(":memory:").unwrap();
+        crate::run_store::ensure_started(&store, &[]).unwrap();
+        park_implementer(&store, UNIT, 0);
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("ok".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            UNIT.into(),
+            Stage {
+                name: UNIT.into(),
+                agent: "worker".into(),
+                gates: vec!["ok".into()],
+                on_pass: "none".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+
+        let halted = run_isolated(&cfg, &deps);
+
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let err = assert_held_with_no_lesson("unanswered capture", halted, &events);
+        assert!(
+            err.contains("index.lock"),
+            "the hold names git's fault: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&dir).join("halted-work.txt")).ok(),
+            Some("halted work\n".to_string()),
+            "the halted spawn's work stays in its tree"
+        );
+    }
+
     /// Leave unit `unit`'s worktree in `repo` DIRTY with `file` = `content`, as an abandoned
     /// edit would; returns the run's scratch root.
     fn dirty_unit_worktree(repo: &str, unit: &str, file: &str, content: &str) -> String {
