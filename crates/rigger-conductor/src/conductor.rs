@@ -31087,6 +31087,120 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
+    /// A SPECULATION LANE WHOSE KEEP FAILS HOLDS THE RUN ONLY WHEN NO LANE WINS: a lane git
+    /// refused, at its checkpoint or at its merge, whose keep git cannot write is said through the
+    /// run's log, naming the lane's tree, its branch and the keep's fault, and its tree and branch
+    /// stay while the group races. Another lane winning settles the unit, the win removing the
+    /// unkept lane's tree and branch with the group's other losers. With no winner, every lane
+    /// asked, the run is held for the orchestrator on the keep's fault, uncharged, the unkept
+    /// lane's tree and branch in place for the release.
+    #[test]
+    fn a_lane_whose_keep_fails_holds_the_run_only_when_no_lane_wins() {
+        // Each row: what git refuses, the lanes it refuses, the lane whose keep fails, the agent
+        // each refused lane's refusal follows, and whether another lane wins.
+        type Row = (
+            &'static str,
+            fn(&mut Stub, u32),
+            &'static [u32],
+            u32,
+            &'static str,
+            bool,
+        );
+        let cases: [Row; 4] = [
+            (
+                "lane 1's checkpoint refused, lane 0 wins",
+                refuse_checkpoint,
+                &[1],
+                1,
+                "worker",
+                true,
+            ),
+            (
+                "lane 0's merge refused, lane 1 wins",
+                refuse_merge,
+                &[0],
+                0,
+                "adj",
+                true,
+            ),
+            (
+                "every lane's checkpoint refused",
+                refuse_checkpoint,
+                &[0, 1],
+                0,
+                "worker",
+                false,
+            ),
+            (
+                "every lane's merge refused",
+                refuse_merge,
+                &[0, 1],
+                0,
+                "adj",
+                false,
+            ),
+        ];
+        for (row, refuse, refused, unkept, agent, wins) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let mut driver = approving_speculation_stub();
+            for lane in refused {
+                refuse(&mut driver, *lane);
+            }
+            // A ref under the lane's kept ref's name stops git writing that ref. Its tip is outside
+            // HEAD's history, so the run's branch collection, which drops a held ref HEAD holds,
+            // leaves it in place.
+            let lane_branch = worktree::lane_name(&unit_branch("s"), unkept);
+            let blocker = format!("{}/blocker", worktree::kept_ref(&lane_branch));
+            let outside = git_out(&repo_path, &["commit-tree", "HEAD^{tree}", "-m", "blocker"]);
+            git_out(&repo_path, &["branch", &blocker, &outside]);
+            let lines = Mutex::new(Vec::<String>::new());
+            let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+            let deps = Deps {
+                repo: repo_path.clone(),
+                log: &log,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let outcome = run_isolated(&spec_cfg(2), &deps);
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let lane_dir = worktree::lane_name(&unit_worktree_dir(&scratch, "s"), unkept);
+            if wins {
+                let rs = outcome.unwrap_or_else(|e| panic!("{row}: another lane settles: {e:?}"));
+                assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{row}");
+                assert_eq!(holds_in(&events), Vec::new(), "{row}: the run is not held");
+                assert!(
+                    !Path::new(&lane_dir).exists() && !branch_present(&repo_path, &lane_branch),
+                    "{row}: the win removes the unkept lane's tree and branch"
+                );
+            } else {
+                let fault = assert_held_with_no_lesson(row, outcome, &events);
+                assert!(
+                    fault.contains(&format!("keeping the tree of {lane_branch}")),
+                    "{row}: the hold names the keep's fault: {fault}"
+                );
+                assert_eq!(
+                    occurrences(&driver.call_order, agent),
+                    2,
+                    "{row}: every lane is asked before the hold"
+                );
+                assert!(
+                    Path::new(&lane_dir).join("feature.rs").exists()
+                        && branch_present(&repo_path, &lane_branch),
+                    "{row}: the unkept lane's tree, with its work, and its branch stay"
+                );
+            }
+            let said = lines.lock().unwrap().clone();
+            assert!(
+                said.iter().any(|line| line.contains(&lane_dir)
+                    && line.contains(&lane_branch)
+                    && line.contains("keeping the tree of")),
+                "{row}: the failed keep is said, naming the lane's tree, branch and fault: {said:?}"
+            );
+        }
+    }
+
     /// A store that fails the run's spawn read a missed handover takes
     /// ([`RunCtx::handover_miss`]), counting each failure, and forwards every other call.
     struct HandoverReadFails<'a> {
