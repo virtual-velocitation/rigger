@@ -73,27 +73,32 @@ pub fn auth_method(bin: &str, deadline: Instant) -> Option<String> {
         .map(|status| status.auth_method)
 }
 
-/// The lines `bin auth status --json` printed by `deadline`, joined: the child reads no input
-/// and its stderr and exit status go unread, and a binary that does not start reports nothing at
-/// once.
+/// The lines `bin auth status --json` printed by `deadline`, joined ([`printed`]): a binary that
+/// does not start reports nothing at once.
 fn report(bin: &str, deadline: Instant) -> String {
+    printed(bin, &["auth", "status", "--json"], deadline).unwrap_or_default()
+}
+
+/// The one bounded read of what the session host prints for a read that carries no task: the
+/// lines `bin args` printed by `deadline`, joined, run on the environment a spawn gets
+/// ([`apply_agent_credential`]). The child reads no input and its stderr and exit status go
+/// unread; a child still running at `deadline` is reaped ([`ReapedChild`]). The error is the
+/// one the binary did not start on.
+pub(crate) fn printed(bin: &str, args: &[&str], deadline: Instant) -> std::io::Result<String> {
     let mut cmd = crate::subprocess::command(bin);
     apply_agent_credential(&mut cmd);
-    let Ok(child) = cmd
-        .args(["auth", "status", "--json"])
+    let child = cmd
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-    else {
-        return String::new();
-    };
-    let mut report = Vec::new();
+        .spawn()?;
+    let mut lines = Vec::new();
     ReapedChild::new(child).read_lines_until(deadline, |line| {
-        report.push(line.to_string());
+        lines.push(line.to_string());
         ControlFlow::Continue(())
     });
-    report.join("\n")
+    Ok(lines.join("\n"))
 }
 
 /// Whether `report` is one JSON object whose `loggedIn` is `true`.

@@ -4,7 +4,10 @@
 //! launch on a host below it, both with the one line [`too_old`] words.
 
 use std::fmt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use crate::claude_auth::{printed, DEFAULT_BIN};
+use crate::hooks::MIN_HOST_VERSION;
 
 /// A session host version, `major.minor.patch`, ordered by each part as a number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -26,19 +29,48 @@ impl fmt::Display for HostVersion {
 /// How long a version read waits on `<bin> --version`.
 pub const READ_BOUND: Duration = Duration::from_secs(5);
 
-/// The version `bin --version` prints within `bound`, or the error naming why none was read.
-pub fn read(_bin: &str, _bound: Duration) -> Result<HostVersion, String> {
-    Err(String::new())
+/// The version `bin --version` prints within `bound` ([`printed`], [`parse`]), or the error
+/// naming why none was read: the binary did not start, printed nothing by the bound, or printed
+/// a first line that opens with no version.
+pub fn read(bin: &str, bound: Duration) -> Result<HostVersion, String> {
+    let read = format!("`{bin} --version`");
+    let text = printed(bin, &["--version"], Instant::now() + bound)
+        .map_err(|e| format!("{read} did not start: {e}"))?;
+    let first = text.lines().next().unwrap_or_default().trim();
+    if first.is_empty() {
+        return Err(format!(
+            "{read} printed nothing within {} s",
+            bound.as_secs()
+        ));
+    }
+    parse(&text).ok_or_else(|| format!("{read} printed no version: {first}"))
 }
 
-/// The version `printed` opens with.
-pub fn parse(_printed: &str) -> Option<HostVersion> {
-    None
+/// The version `printed` opens with: its first line's leading word as three parts, each a
+/// number, as the session host prints it (`2.1.139 (Claude Code)`). Anything else is none, so
+/// text from some other binary is never read as a version.
+pub fn parse(printed: &str) -> Option<HostVersion> {
+    let word = printed.lines().next()?.split_whitespace().next()?;
+    let mut parts = word.split('.').map(|part| part.parse::<u32>().ok());
+    let version = HostVersion {
+        major: parts.next()??,
+        minor: parts.next()??,
+        patch: parts.next()??,
+    };
+    parts.next().is_none().then_some(version)
 }
 
-/// The line saying `version` is below the hooks' minimum, or none when it is not.
-pub fn too_old(_version: HostVersion) -> Option<String> {
-    None
+/// The one line `rigger validate` warns with and `rigger run` refuses with when `version` is
+/// below [`MIN_HOST_VERSION`]; none when it is not.
+pub fn too_old(version: HostVersion) -> Option<String> {
+    (version < MIN_HOST_VERSION).then(|| {
+        format!(
+            "the session host `{DEFAULT_BIN}` is {version}, below {MIN_HOST_VERSION}, the first \
+             version that runs rigger's exec-form hooks (their `args` field): on it every tool \
+             call a hook guards is blocked and every stop is held, with no word why; update it to \
+             {MIN_HOST_VERSION} or later"
+        )
+    })
 }
 
 #[cfg(test)]
