@@ -17159,6 +17159,26 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
     );
 }
 
+/// The step lock a test holds is free once the test drops it, while a copy of its descriptor
+/// lives, as one does in a process another test thread forks until that process execs. A lock
+/// released only by closing the descriptor stays held by the copy, so the next invocation finds
+/// a live holder and relaunches nothing.
+#[test]
+fn a_step_lock_a_test_dropped_is_free_while_a_copy_of_its_descriptor_lives() {
+    let project = temp_project();
+    let root = project.path();
+    std::fs::create_dir_all(root.join(rigger::config::RIGGER_DIR)).unwrap();
+    let held = common::cli::hold_step_lock(root);
+    let copy = common::cli::forked_copy(&held);
+    drop(held);
+    let free = common::cli::step_lock_free(root);
+    drop(copy);
+    assert!(
+        free,
+        "the dropped step lock must be free while a copy of its descriptor lives"
+    );
+}
+
 /// What an invocation leaves in the step lock.
 #[derive(Debug, PartialEq)]
 enum Left {

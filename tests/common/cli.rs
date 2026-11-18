@@ -2223,6 +2223,12 @@ pub fn hold_step_lock(root: &Path) -> std::fs::File {
     lock_file
 }
 
+/// A second descriptor on the open file a [`hold_step_lock`] guard holds, as a process another
+/// test thread forks holds one until it execs.
+pub fn forked_copy(lock: &std::fs::File) -> std::fs::File {
+    lock.try_clone().expect("the lock's descriptor duplicates")
+}
+
 /// Configures `defaults.workdir` in the `workflow.yml` of the store under `root` - a fresh
 /// directory, followed by `extra` (further `defaults` keys, two-space indented, or empty) - and
 /// returns that directory with the scratch root a run of that store stamps its spawns' liveness
