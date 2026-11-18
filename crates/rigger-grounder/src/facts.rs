@@ -2166,7 +2166,7 @@ Unclosed"#,
     /// `#[doc(hidden)]` line included, into the comment text alone - each doc line's text after
     /// its marker, every line with no doc marker dropped, a doc block's opener, closer and one
     /// leading `*` stripped - and gives a language with no rule its lines trimmed. The project's
-    /// extractor answers as the bundled one, so a declaration named `rust` reads Rust's rule.
+    /// extractor with no declaration answers as the bundled one.
     #[test]
     fn the_doc_text_is_the_comment_text_alone() {
         let project = project_declaring(None);
@@ -2176,6 +2176,33 @@ Unclosed"#,
         ];
         for (name, extractor) in extractors {
             assert_doc_texts(name, extractor);
+        }
+    }
+
+    /// THE DOC TEXT IS STRIPPED, under a declaration: a declared file's language is its
+    /// declaration's name, so the project's extractor under a declaration in force named `rust`
+    /// gives each span Rust's doc rule, and under one named `zig` the lines trimmed, as the
+    /// bundled extractor gives those languages.
+    #[test]
+    fn a_declared_language_reads_the_doc_rule_of_its_name() {
+        // (the declaration's name, the `extractors:` mapping declaring it)
+        let rows = [
+            ("rust", "{ rust: { extensions: [rs], run: rust-tags } }"),
+            ("zig", "{ zig: { extensions: [zig], run: zig-tags } }"),
+        ];
+        for (name, mapping) in rows {
+            let project = project_declaring(Some(&workflow_declaring_extractors(mapping)));
+            assert_eq!(
+                declared_extractors(project.path())
+                    .into_keys()
+                    .collect::<Vec<_>>(),
+                [name],
+                "{mapping} is in force"
+            );
+            assert_doc_texts(
+                &format!("declaring {name}"),
+                &ProjectExtractor::of(project.path()),
+            );
         }
     }
 }
