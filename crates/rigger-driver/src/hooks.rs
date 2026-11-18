@@ -20,7 +20,7 @@ use std::path::Path;
 use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
 
-use crate::agent::{AgentFailure, HelperCopy, SpawnHost, TreeDuty, PRODUCER_OUTPUT};
+use crate::agent::{AgentFailure, HelperCopy, SpawnHost, TreeDuty};
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
@@ -75,17 +75,19 @@ pub const HELPER_AGENTS: &[(&str, &str)] = &[
 pub const HELPER_AGENTS_DIR: &str = ".claude/agents";
 
 /// The host values every spawn of one command carries, resolved once from the workflow's
-/// `defaults` and the checkout at `repo_root`: the PreToolUse grep-guard exactly when
-/// `defaults.grep_guard` declares it, and the fan-out helpers [`resolved_helpers`] reads there.
-/// Fails as [`resolved_helpers`] does.
+/// `defaults`, the checkout at `repo_root` and the project's declared `producer_output`: the
+/// PreToolUse grep-guard exactly when `defaults.grep_guard` declares it, the fan-out helpers
+/// [`resolved_helpers`] reads there, and the directory a producer's commits may touch, as the
+/// caller read it from the project's declaration. Fails as [`resolved_helpers`] does.
 pub fn resolve_spawn_host(
     defaults: &rigger_domain::config::Defaults,
     repo_root: &Path,
+    producer_output: &str,
 ) -> Result<SpawnHost, Error> {
     Ok(SpawnHost {
         grep_guard: defaults.grep_guard,
         helpers: resolved_helpers(repo_root)?,
-        producer_output: PRODUCER_OUTPUT.to_string(),
+        producer_output: producer_output.to_string(),
     })
 }
 
@@ -295,11 +297,12 @@ pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 /// category for `spawn`; and, for a spawn the conductor takes something from the tree at `dir`
 /// of once its session ends (its `duty`), under `Stop` the `hook stop` asking whether the tree is
 /// one that step takes, with [`STOP_HOOK_TIMEOUT_SECS`]: `--branch <branch>` for a tree the
-/// conductor commits onto that branch, `--own-commits` for one it lands only the commits of. Each
-/// is an exec-form hook, `command` the program `rigger_bin` and `args` the words after it, which
-/// Claude Code spawns with that argument vector and no shell on every OS
-/// (<https://code.claude.com/docs/en/hooks>), so `rigger_bin`, `spawn`, each root, `dir` and the
-/// branch reach rigger as written whatever they hold, and the hook's exit status is rigger's own.
+/// conductor commits onto that branch, `--own-commits <output>` for one it lands only the commits
+/// of, in the producer's output. Each is an exec-form hook, `command` the program `rigger_bin` and
+/// `args` the words after it, which Claude Code spawns with that argument vector and no shell on
+/// every OS (<https://code.claude.com/docs/en/hooks>), so `rigger_bin`, `spawn`, each root, `dir`,
+/// the branch and the output reach rigger as written whatever they hold, and the hook's exit
+/// status is rigger's own.
 /// `existing` may be empty.
 pub fn install_spawn_hooks(
     existing: &[u8],
@@ -323,7 +326,7 @@ pub fn install_spawn_hooks(
     let asks = match duty {
         TreeDuty::None => None,
         TreeDuty::Checkpoint { branch } => Some(vec!["--branch", branch.as_str()]),
-        TreeDuty::OwnCommits { .. } => Some(vec!["--own-commits"]),
+        TreeDuty::OwnCommits { output } => Some(vec!["--own-commits", output.as_str()]),
     };
     if let Some(asks) = asks {
         let mut args = vec!["hook", "stop", "--spawn", spawn, "--dir", dir];
@@ -1085,11 +1088,12 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                resolve_spawn_host(&defaults, root.path()).map_err(|e| e.to_string()),
+                resolve_spawn_host(&defaults, root.path(), "requirements/")
+                    .map_err(|e| e.to_string()),
                 Ok(SpawnHost {
                     grep_guard: row.grep_guard,
                     helpers: row.helpers,
-                    producer_output: "specs/".to_string(),
+                    producer_output: "requirements/".to_string(),
                 }),
                 "{}",
                 row.name
@@ -1190,8 +1194,12 @@ mod tests {
             (row.setup)(root.path());
             let path = root.path().join(".claude/agents").join(row.file);
             assert_eq!(
-                resolve_spawn_host(&rigger_domain::config::Defaults::default(), root.path())
-                    .map_err(|e| e.to_string()),
+                resolve_spawn_host(
+                    &rigger_domain::config::Defaults::default(),
+                    root.path(),
+                    "specs/"
+                )
+                .map_err(|e| e.to_string()),
                 Err(format!(
                     "hooks: helper agent {}: {}",
                     path.display(),

@@ -6,7 +6,7 @@
 use crate::config::RIGGER_DIR;
 use crate::eventstore::Event;
 use crate::spawn::SpawnEvent;
-use rigger_domain::agent::{in_producer_output, PRODUCER_OUTPUT};
+use rigger_domain::agent::in_producer_output;
 
 pub use rigger_domain::worktree::{Error, StepError};
 
@@ -167,8 +167,9 @@ enum ScanAt<'a> {
 }
 
 /// The outcome of [`Worktree::cherry_pick_onto_run_branch`] (spec 88, criterion 4 - PLAN
-/// AMENDMENTS LAND): landing a `produces` stage's own `specs/`-only commits onto the run
-/// branch, so the next plan-critique worktree (branched from the run branch) sees them.
+/// AMENDMENTS LAND): landing a `produces` stage's own commits, each touching its output alone,
+/// onto the run branch, so the next plan-critique worktree (branched from the run branch) sees
+/// them.
 pub enum CherryPickOutcome {
     /// Every named commit applied cleanly, in order: the shas AS THEY LANDED on the run
     /// branch. Usually distinct new commit objects (cherry-pick mints a fresh committer
@@ -3388,31 +3389,31 @@ pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error
 
 /// Why a producer's tree rooted at `dir` is not ready for the conductor, which lands only the
 /// commits made there and never commits the tree itself: the changes no commit records, untracked
-/// files included ([`uncommitted_paths`]), in [`PRODUCER_OUTPUT`] - the one scope the plan landing
-/// carries ([`in_producer_output`]) - named in a line saying to commit them; then, beside that
-/// line, the rest named in one saying they never land, are refused in a commit, and may be taken
-/// out of the tree. Work outside the output alone is no refusal: it never lands whatever the
-/// session does, so it holds nothing up. Empty when the output holds no such work. Read-only,
-/// like [`checkpoint_refusals`]. `rigger hook stop --own-commits` asks it before a producer's
-/// session may end, and the conductor asks it again once the session has ended, failing the
-/// attempt on any line, since that work would otherwise never reach the run branch.
-pub fn own_commits_refusals(dir: &str) -> Result<Vec<String>, Error> {
+/// files included ([`uncommitted_paths`]), in the stage's `output` - the one scope the plan
+/// landing carries ([`in_producer_output`]) - named in a line saying to commit them; then, beside
+/// that line, the rest named in one saying they never land, are refused in a commit, and may be
+/// taken out of the tree. Work outside the output alone is no refusal: it never lands whatever
+/// the session does, so it holds nothing up. Empty when the output holds no such work. Read-only,
+/// like [`checkpoint_refusals`]. `rigger hook stop --own-commits <output>` asks it before a
+/// producer's session may end, and the conductor asks it again once the session has ended,
+/// failing the attempt on any line, since that work would otherwise never reach the run branch.
+pub fn own_commits_refusals(dir: &str, output: &str) -> Result<Vec<String>, Error> {
     let (mut inside, mut outside): (Vec<String>, Vec<String>) = uncommitted_paths(dir)?
         .into_iter()
-        .partition(|path| in_producer_output(path));
+        .partition(|path| in_producer_output(path, output));
     inside.sort();
     outside.sort();
     if inside.is_empty() {
         return Ok(Vec::new());
     }
     let mut refusals = vec![format!(
-        "{dir} holds work in {PRODUCER_OUTPUT} that no commit records: {} - the conductor lands \
+        "{dir} holds work in {output} that no commit records: {} - the conductor lands \
          only the commits made there, so commit this work for it to reach the run branch",
         inside.join(", ")
     )];
     if !outside.is_empty() {
         refusals.push(format!(
-            "{dir} also holds work outside {PRODUCER_OUTPUT} that no commit records: {} - it \
+            "{dir} also holds work outside {output} that no commit records: {} - it \
              never lands, and a commit touching it is refused as outside the stage's output, so \
              leave it out of the commit; it may be taken out of the tree",
             outside.join(", ")
@@ -9850,7 +9851,7 @@ mod tests {
             let index = std::path::Path::new(&dir).join(index.trim());
             let before = std::fs::read(&index).unwrap();
 
-            let refusals = own_commits_refusals(&dir).unwrap();
+            let refusals = own_commits_refusals(&dir, "specs/").unwrap();
             let mut expected = Vec::new();
             if !inside.is_empty() {
                 expected.push(format!(

@@ -398,7 +398,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "warning: {} is {dead_pct}% dead ({} of {} reclaimable) - {hi",
             "--build-cache: reclaimed {} ({} byte(s)) from {} ({} dead en",
             "--build-cache: left {} dead entr{} of {} in place - a live p",
-            "setup: {} is not a valid docs overlay: {e}",
+            "{}: specs_location {declared:?} names no directory inside th",
             "# >>> BEGIN rigger docs pre-commit (managed - do not edit) >",
             "# <<< END rigger docs pre-commit (managed) <<<",
             "__BEGIN__\n# Check rigger's code-derived docs before THIS com",

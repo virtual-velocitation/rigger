@@ -5,7 +5,6 @@ use rigger::prompt_surface::{
     GUARD_WRITE_ROOT_MISSING, GUARD_WRITE_ROOT_RELATIVE, GUARD_WRITE_STDERR_PREFIX,
     GUARD_WRITE_UNKNOWN_ARG, STOP_HOOK_HELD, STOP_HOOK_UNCOMMITTED,
 };
-use rigger_domain::agent::PRODUCER_OUTPUT;
 use rigger_domain::prompt_surface::{debug_escaped, fill};
 
 /// A `rigger grep-guard` decision: pass the tool call through untouched, or block it with the
@@ -606,13 +605,13 @@ pub(crate) fn cmd_hook(args: &[String]) -> Res {
         Some(other) => Err(format!(
             "hook: unknown subcommand {other:?}: rigger hook stop-failure --spawn <id> --class \
              <category> | rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | \
-             --own-commits)"
+             --own-commits <output>)"
         )
         .into()),
         None => Err(
             "hook: expected a subcommand: rigger hook stop-failure --spawn <id> --class \
              <category> | rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | \
-             --own-commits)"
+             --own-commits <output>)"
                 .into(),
         ),
     }
@@ -714,16 +713,16 @@ struct StopCheck {
 }
 
 /// The error of `rigger hook stop` arguments that do not name the spawn, its tree and one duty.
-const STOP_ARGS_REQUIRED: &str =
-    "--spawn and --dir are required, with exactly one of --branch <branch> and --own-commits";
+const STOP_ARGS_REQUIRED: &str = "--spawn and --dir are required, with exactly one of --branch \
+                                  <branch> and --own-commits <output>";
 
-/// `rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | --own-commits)`: a writing
-/// session's `Stop` hook, which Claude Code runs when the session's agent has finished
+/// `rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | --own-commits <output>)`: a
+/// writing session's `Stop` hook, which Claude Code runs when the session's agent has finished
 /// responding. It asks, read-only, whether the tree is one the conductor's next step on it takes:
 /// with `--branch`, whether committing it onto that branch, or the merge after, would be refused
 /// ([`rigger::worktree::checkpoint_refusals`], the reads the conductor's own commit and merge
 /// refuse on); with `--own-commits`, a producer's tree the conductor lands only the commits of,
-/// whether it holds work of the stage's output outside a commit
+/// whether it holds work of the stage's output, the directory `<output>` names, outside a commit
 /// ([`rigger::worktree::own_commits_refusals`], the plan landing's own scope, which the conductor
 /// asks again once the session has ended; work outside the output never lands, so it holds
 /// nothing up alone). When it is not, the hook holds the session from stopping by
@@ -767,19 +766,17 @@ fn cmd_hook_stop(args: &[String]) -> Res {
 }
 
 /// `rigger hook stop`'s arguments: `--spawn` and `--dir`, each with a non-empty value, and the
-/// tree's duty, exactly one of `--branch` with a non-empty value and `--own-commits`.
+/// tree's duty, exactly one of `--branch` and `--own-commits`, each with a non-empty value: the
+/// branch the conductor commits the tree onto, or the producer's output.
 fn parse_hook_stop_args(args: &[String]) -> Result<StopCheck, Box<dyn std::error::Error>> {
-    let (mut spawn, mut dir, mut branch, mut own_commits) = (None, None, None, false);
+    let (mut spawn, mut dir, mut branch, mut output) = (None, None, None, None);
     let mut rest = args.iter();
     while let Some(flag) = rest.next() {
         let slot = match flag.as_str() {
             "--spawn" => &mut spawn,
             "--dir" => &mut dir,
             "--branch" => &mut branch,
-            "--own-commits" => {
-                own_commits = true;
-                continue;
-            }
+            "--own-commits" => &mut output,
             other => return Err(format!("unknown argument {other:?}").into()),
         };
         match rest.next().filter(|value| !value.trim().is_empty()) {
@@ -787,11 +784,9 @@ fn parse_hook_stop_args(args: &[String]) -> Result<StopCheck, Box<dyn std::error
             None => return Err(format!("{flag} expects a non-empty value").into()),
         }
     }
-    let duty = match (branch, own_commits) {
-        (Some(branch), false) => TreeDuty::Checkpoint { branch },
-        (None, true) => TreeDuty::OwnCommits {
-            output: PRODUCER_OUTPUT.to_string(),
-        },
+    let duty = match (branch, output) {
+        (Some(branch), None) => TreeDuty::Checkpoint { branch },
+        (None, Some(output)) => TreeDuty::OwnCommits { output },
         _ => return Err(STOP_ARGS_REQUIRED.into()),
     };
     match (spawn, dir) {
@@ -819,9 +814,9 @@ fn hold_the_stop(
             STOP_HOOK_HELD,
             branch.as_str(),
         ),
-        TreeDuty::OwnCommits { .. } => (
+        TreeDuty::OwnCommits { output } => (
             "for its own commits".to_string(),
-            format!("no work in {PRODUCER_OUTPUT} is left outside a commit"),
+            format!("no work in {output} is left outside a commit"),
             STOP_HOOK_UNCOMMITTED,
             "",
         ),
@@ -847,7 +842,9 @@ fn hold_the_stop(
                 TreeDuty::Checkpoint { branch } => {
                     rigger::worktree::checkpoint_refusals(&check.dir, branch)
                 }
-                TreeDuty::OwnCommits { .. } => rigger::worktree::own_commits_refusals(&check.dir),
+                TreeDuty::OwnCommits { output } => {
+                    rigger::worktree::own_commits_refusals(&check.dir, output)
+                }
                 TreeDuty::None => Ok(Vec::new()),
             }
             .map(|refusals| (holds, refusals))

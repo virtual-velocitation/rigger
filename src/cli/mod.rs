@@ -3267,8 +3267,9 @@ fn run_started_id(e: &Event) -> Option<String> {
         .map(|r| r.run)
 }
 
-/// Load the candidate [`Config`](config), its definition hash and the spawn host its defaults
-/// and helper copies resolve ([`hooks::resolve_spawn_host`], the replay's one resolution point)
+/// Load the candidate [`Config`](config), its definition hash and the spawn host its defaults,
+/// helper copies and declared specs location resolve ([`spawn_host`], the replay's one
+/// resolution point)
 /// from git `<rev>` via a throwaway DETACHED worktree under `scratch_root`, removed once loaded.
 /// Reading the config through a real checkout (rather than piping `git show`) reuses the exact
 /// [`config::load`] / [`definition_hash`] readers the live path uses, so a replay evaluates
@@ -3302,7 +3303,7 @@ fn materialize_config_at_rev(
     let loaded = config_store::load(checkout_str)
         .map_err(|e| format!("rigger replay: candidate config at {rev:?} is invalid: {e}"))
         .and_then(|cfg| {
-            let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, &checkout)
+            let host = spawn_host(&cfg.workflow.defaults, &checkout)
                 .map_err(|e| format!("rigger replay: candidate helpers at {rev:?}: {e}"))?;
             definition_hash(checkout_str, &host.helpers)
                 .map(|def| (cfg, def, host))
@@ -3310,7 +3311,7 @@ fn materialize_config_at_rev(
         });
     // reap-exempt (spec 79, criterion 2): `checkout_str` is created and removed entirely
     // within this one function, and the ONLY things ever run against it in between are
-    // `config::load`, `resolve_spawn_host` and `definition_hash` (just above) - each a pure
+    // `config::load`, `spawn_host` and `definition_hash` (just above) - each a pure
     // `std::fs` reader with no subprocess spawned inside the checkout - so nothing can be rooted
     // there to reap.
     let _ = subprocess::git_in(repo).and_then(|mut git| {
@@ -5179,7 +5180,47 @@ fn read_docs_overlay(root: &Path) -> Result<DocsOverlay, Box<dyn std::error::Err
         Err(e) => return Err(setup_read_error(&path, e)),
     };
     serde_yaml::from_str(&raw)
-        .map_err(|e| format!("setup: {} is not a valid docs overlay: {e}", path.display()).into())
+        .map_err(|e| format!("{} is not a valid docs overlay: {e}", path.display()).into())
+}
+
+/// The directory a producer's commits may touch in the project at `root`: the `specs_location`
+/// its [`DocsOverlay`] declares, else [`DEFAULT_SPECS_LOCATION`], spelled relative to the root
+/// with `/` between its parts and one closing `/` (a `\` reads as `/`, and empty and `.` parts
+/// are dropped). A declared location naming no directory inside the project - none at all, an
+/// absolute one, or one stepping out through `..` - is an error naming the overlay, as is an
+/// overlay [`read_docs_overlay`] refuses.
+fn declared_specs_location(root: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    let Some(declared) = read_docs_overlay(root)?.specs_location else {
+        return Ok(DEFAULT_SPECS_LOCATION.to_string());
+    };
+    let spelled = declared.trim().replace('\\', "/");
+    let parts: Vec<&str> = spelled
+        .split('/')
+        .filter(|part| !matches!(*part, "" | "."))
+        .collect();
+    if parts.is_empty()
+        || spelled.starts_with('/')
+        || Path::new(&spelled).is_absolute()
+        || parts.contains(&"..")
+    {
+        return Err(format!(
+            "{}: specs_location {declared:?} names no directory inside the project",
+            rigger_path(root, DOCS_OVERLAY_FILE).display()
+        )
+        .into());
+    }
+    Ok(format!("{}/", parts.join("/")))
+}
+
+/// The host values every spawn of one command in the project at `root` carries
+/// ([`hooks::resolve_spawn_host`]), its producer output the project's
+/// [`declared_specs_location`]. Fails as either does.
+fn spawn_host(
+    defaults: &config::Defaults,
+    root: &Path,
+) -> Result<conductor::SpawnHost, Box<dyn std::error::Error>> {
+    let output = declared_specs_location(root)?;
+    Ok(hooks::resolve_spawn_host(defaults, root, &output)?)
 }
 
 /// The `rigger setup` failure for a project file at `path` it could not read: the path, then
@@ -9894,7 +9935,7 @@ mod tests {
             .unwrap();
             let pinned = || {
                 let cfg = config_store::load(repo).unwrap();
-                let host = hooks::resolve_spawn_host(&cfg.workflow.defaults, root).unwrap();
+                let host = spawn_host(&cfg.workflow.defaults, root).unwrap();
                 definition_hash(repo, &host.helpers).unwrap()
             };
             at_rev(root);
@@ -10916,6 +10957,85 @@ mod tests {
             err.to_string().contains("docs-overlay.yml"),
             "the error must name the overlay file; got: {err}"
         );
+    }
+
+    /// A PRODUCER'S OUTPUT IS THE SPECS LOCATION THE PROJECT DECLARES: the spawn host every
+    /// command resolves carries the overlay's `specs_location`, spelled relative to the root with
+    /// `/` between its parts and one closing `/`, and `specs/` when the project declares none; a
+    /// location naming no directory inside the project fails the resolution, naming the overlay.
+    #[test]
+    fn a_producers_output_is_the_specs_location_the_project_declares() {
+        // Each row: the case, the overlay (none for no file), and the output the host carries or
+        // the declared location the error quotes.
+        let rows: [(&str, Option<&str>, Result<&str, &str>); 10] = [
+            ("no overlay", None, Ok("specs/")),
+            (
+                "an overlay declaring no location",
+                Some("base_ref: main\n"),
+                Ok("specs/"),
+            ),
+            (
+                "a location with its closing slash",
+                Some("specs_location: requirements/\n"),
+                Ok("requirements/"),
+            ),
+            (
+                "a location without it",
+                Some("specs_location: requirements\n"),
+                Ok("requirements/"),
+            ),
+            (
+                "a location spelled from the root",
+                Some("specs_location: ./docs//requirements/\n"),
+                Ok("docs/requirements/"),
+            ),
+            (
+                "a location spelled with backslashes",
+                Some("specs_location: 'docs\\requirements\\'\n"),
+                Ok("docs/requirements/"),
+            ),
+            (
+                "an empty location",
+                Some("specs_location: ''\n"),
+                Err("\"\""),
+            ),
+            (
+                "the root itself",
+                Some("specs_location: ./\n"),
+                Err("\"./\""),
+            ),
+            (
+                "an absolute location",
+                Some("specs_location: /abs/\n"),
+                Err("\"/abs/\""),
+            ),
+            (
+                "a location stepping out of the project",
+                Some("specs_location: docs/../../x/\n"),
+                Err("\"docs/../../x/\""),
+            ),
+        ];
+        for (case, overlay, expected) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path();
+            if let Some(overlay) = overlay {
+                std::fs::create_dir_all(root.join(RIGGER_DIR)).unwrap();
+                std::fs::write(rigger_path(root, DOCS_OVERLAY_FILE), overlay).unwrap();
+            }
+            let expected = expected.map(str::to_string).map_err(|declared| {
+                format!(
+                    "{}: specs_location {declared} names no directory inside the project",
+                    rigger_path(root, DOCS_OVERLAY_FILE).display()
+                )
+            });
+            assert_eq!(
+                spawn_host(&config::Defaults::default(), root)
+                    .map(|host| host.producer_output)
+                    .map_err(|e| e.to_string()),
+                expected,
+                "{case}"
+            );
+        }
     }
 
     /// Spec 05, criterion 4 and spec 121, criterion 14: `rigger setup` reports an install step's

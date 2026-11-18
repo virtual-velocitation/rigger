@@ -78,8 +78,9 @@ fn launch_handing(
         hold_sink: None,
     };
     let mut opts = implementer_opts(SPAWN_ID);
-    opts.host = hooks::resolve_spawn_host(&rigger::config::Defaults::default(), &repo_root())
-        .expect("the repository's helper copies resolve");
+    opts.host =
+        hooks::resolve_spawn_host(&rigger::config::Defaults::default(), &repo_root(), "specs/")
+            .expect("the repository's helper copies resolve");
     opts.dir = dir.to_string_lossy().into_owned();
     opts.settings_json = settings_json.to_string();
     opts.env = vec![(

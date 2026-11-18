@@ -1057,8 +1057,9 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         base_tip = rigger::worktree::branch_tip(&repo, RUN_BRANCH).unwrap_or_default();
     }
     // The host values every spawn of this run carries, resolved once, after the run-branch
-    // checkout, so the helper copies are the tree's the run drives and its definition pin folds.
-    let spawn_host = rigger::hooks::resolve_spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
+    // checkout, so the helper copies are the tree's the run drives and its definition pin folds,
+    // and a producer's output is the specs location the project declares.
+    let spawn_host = super::spawn_host(&cfg.workflow.defaults, Path::new(&repo))?;
     // Register this instance in the machine-global discovery registry (spec 50, criterion 2).
     // `rigger run` drives the WHOLE run in-process through a single `conductor::run` below, so the
     // held guard's heartbeat thread (not a one-shot register) is what keeps the entry from aging out

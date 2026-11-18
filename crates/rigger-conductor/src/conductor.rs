@@ -1531,21 +1531,23 @@ enum PlanCommitOutcome {
     /// recovery could confirm, which - absent an internal bug - is always all of
     /// it).
     None,
-    /// Every commit touched ONLY `specs/` and landed on the run branch cleanly: the
-    /// shas AS THEY LANDED (see [`worktree::CherryPickOutcome::Picked`]), oldest-first.
+    /// Every commit touched ONLY the stage's output ([`SpawnHost::producer_output`]) and landed
+    /// on the run branch cleanly: the shas AS THEY LANDED (see
+    /// [`worktree::CherryPickOutcome::Picked`]), oldest-first.
     Landed(Vec<String>),
-    /// A commit touched a path outside `specs/` - the offending paths (sorted,
+    /// A commit touched a path outside the stage's output - the offending paths (sorted,
     /// deduplicated) named in the failure fed back to the planner.
     OutOfScope(Vec<String>),
-    /// The session ended with work in `specs/` no commit records, which no landing carries:
-    /// [`worktree::own_commits_refusals`]'s lines, the same its `Stop` hook holds the session
-    /// on, and [`worktree::tree_status`], both fed back to the planner, whose retry finds the
-    /// work still in the same tree. Work outside `specs/` alone never lands and is no refusal.
+    /// The session ended with work in the stage's output no commit records, which no landing
+    /// carries: [`worktree::own_commits_refusals`]'s lines, the same its `Stop` hook holds the
+    /// session on, and [`worktree::tree_status`], both fed back to the planner, whose retry finds
+    /// the work still in the same tree. Work outside the output alone never lands and is no
+    /// refusal.
     Uncommitted {
         refusals: Vec<String>,
         status: String,
     },
-    /// The cherry-pick conflicted with a concurrent operator commit under `specs/` and
+    /// The cherry-pick conflicted with a concurrent operator commit in the stage's output and
     /// was aborted; the run branch is untouched. Carries the conflict detail.
     Conflict(String),
 }
@@ -7848,15 +7850,16 @@ impl RunCtx<'_> {
                             return Ok(true);
                         }
                         PlanCommitOutcome::OutOfScope(paths) => {
-                            // A plan-stage commit may touch ONLY `specs/`: fail the
+                            // A plan-stage commit may touch ONLY its output: fail the
                             // stage loudly, naming exactly what it touched, and feed
                             // the normal remediation loop below - CAUSE_REJECT
                             // already covers "this unit's output was refused" (see
                             // its doc comment); a conductor-detected scope violation
                             // is the same kind of refusal.
                             cause = CAUSE_REJECT.to_string();
+                            let output = &self.deps.spawn_host.producer_output;
                             next.review_reason = format!(
-                                "a plan-stage commit touched paths outside specs/: {}",
+                                "a plan-stage commit touched paths outside {output}: {}",
                                 paths.join(", ")
                             );
                         }
@@ -7883,15 +7886,17 @@ impl RunCtx<'_> {
                         }
                         PlanCommitOutcome::Conflict(detail) => {
                             // CONSTRAINTS WALK (spec 88 c4): a plan amendment that
-                            // conflicts with a concurrent operator commit under
-                            // `specs/` must escalate to a human rather than
+                            // conflicts with a concurrent operator commit in its
+                            // output must escalate to a human rather than
                             // silently drop the amendment - bounded remediation
                             // below eventually reaches UnitEscalated (this
                             // project's "awaiting a human") when the planner's
                             // retries do not resolve it.
                             cause = CAUSE_INTEGRATE_CONFLICT.to_string();
+                            let output = &self.deps.spawn_host.producer_output;
                             next.review_reason = format!(
-                                "the plan amendment conflicts with a concurrent specs/ change: {}",
+                                "the plan amendment conflicts with a concurrent {output} change: \
+                                 {}",
                                 detail.trim()
                             );
                         }
@@ -12152,7 +12157,8 @@ impl RunCtx<'_> {
         // Work of the stage's output the session left outside a commit fails the stage before
         // anything lands, so the retry commits it beside whatever it already committed and all
         // of it lands once. Work outside the output never lands, so it fails nothing alone.
-        let refusals = git_step(worktree::own_commits_refusals(&w.dir))?;
+        let output = self.deps.spawn_host.producer_output.as_str();
+        let refusals = git_step(worktree::own_commits_refusals(&w.dir, output))?;
         if !refusals.is_empty() {
             return Ok(PlanCommitOutcome::Uncommitted {
                 refusals,
@@ -12166,9 +12172,9 @@ impl RunCtx<'_> {
         // Validate scope BEFORE landing anything, at TWO granularities: the aggregate
         // three-dot diff (`committed_since_base`) catches the common case, but nets a
         // path to NOTHING when a LATER commit in this SAME sequence reverts an EARLIER
-        // commit's own non-specs touch to it - so also walk every commit in `shas`
+        // commit's own touch outside the output to it - so also walk every commit in `shas`
         // INDIVIDUALLY (`adv-u88c4-scope-check-nets-the-diff-not-each-commit`). A
-        // producer's git access must never let a transient non-specs write ride the
+        // producer's git access must never let a transient write outside the output ride the
         // run branch just because a later commit in the same batch undid it - either
         // source flags a violation, and both feed the SAME offending-paths list so the
         // remediation feedback names every path either check caught.
@@ -12178,11 +12184,15 @@ impl RunCtx<'_> {
         let touched = git_step(w.committed_since_base())?;
         let mut offending: Vec<String> = touched
             .into_iter()
-            .filter(|p| !in_producer_output(p))
+            .filter(|p| !in_producer_output(p, output))
             .collect();
         for sha in &shas {
             let per_commit = git_step(w.files_touched_by_commit(sha))?;
-            offending.extend(per_commit.into_iter().filter(|p| !in_producer_output(p)));
+            offending.extend(
+                per_commit
+                    .into_iter()
+                    .filter(|p| !in_producer_output(p, output)),
+            );
         }
         if !offending.is_empty() {
             offending.sort();
@@ -14723,15 +14733,15 @@ fn review_evidence(reason: &str) -> BTreeMap<String, String> {
 ///   per-unit reject, a standalone/fan-out review reject, a plan-critique DAG-critique
 ///   reject (which runs no gates at all), a compensation revert (a LATER unit's review
 ///   proved this one wrong - a deferred reject, since the disqualifying signal is itself
-///   a review verdict), and a producer's own commit touching a path outside `specs/`
+///   a review verdict), and a producer's own commit touching a path outside its output
 ///   (spec 88 criterion 4: the conductor's OWN scope check refuses the unit's output,
 ///   the same kind of refusal a review verdict is), and a record the implementer emitted
 ///   that the emit guard refused (a payload the fold cannot apply, an id another seat
 ///   holds: the guard refuses the unit's output the same way).
 /// - [`CAUSE_INTEGRATE_CONFLICT`]: the merge landed cleanly but the POST-MERGE re-gate
 ///   went red - a batch-mate's already-integrated change combined into a broken tree -
-///   or a producer's `specs/`-only cherry-pick conflicted with a concurrent operator
-///   commit under `specs/` (spec 88 criterion 4: the same "a conflict blocked landing
+///   or a producer's cherry-pick of its output conflicted with a concurrent operator
+///   commit there (spec 88 criterion 4: the same "a conflict blocked landing
 ///   this unit's work" shape, textual git conflict either way). Distinguished from a
 ///   plain gate failure at the BRANCH POINT where it is detected (`integration.blocked`
 ///   or [`PlanCommitOutcome::Conflict`]), never inferred from the shared evidence

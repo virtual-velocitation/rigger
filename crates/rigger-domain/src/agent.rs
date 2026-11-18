@@ -89,8 +89,8 @@ pub struct SpawnHost {
     /// the embedded text.
     pub helpers: Vec<HelperCopy>,
     /// The one directory, relative to the tree's root and ending in `/`, a producer's commits
-    /// may touch: what a producer's `Stop` hook and the conductor's landing of its commits each
-    /// take as the stage's output.
+    /// may touch: the project's declared specs location, which a producer's `Stop` hook and the
+    /// conductor's landing of its commits each take as the stage's output.
     pub producer_output: String,
 }
 
@@ -240,15 +240,15 @@ pub enum TreeDuty {
     },
 }
 
-/// The one directory a producer's commits may touch: the conductor refuses a producer's commit
-/// touching any path outside it, and lands the rest on the run branch.
-pub const PRODUCER_OUTPUT: &str = "specs/";
-
-/// Whether `path`, relative to the tree's root, lies in [`PRODUCER_OUTPUT`]: the scope decision
-/// the conductor refuses a producer's commits on, and the one a producer's `Stop` hook holds its
-/// session on: only uncommitted work in the output, the only work that lands, holds it.
-pub fn in_producer_output(path: &str) -> bool {
-    path.starts_with(PRODUCER_OUTPUT)
+/// Whether `path`, relative to the tree's root, lies in the producer's `output`
+/// ([`SpawnHost::producer_output`]), a directory relative to the same root named with or without
+/// its closing `/`: the scope decision the conductor refuses a producer's commits on, and the one
+/// a producer's `Stop` hook holds its session on: only uncommitted work in the output, the only
+/// work that lands, holds it.
+pub fn in_producer_output(path: &str, output: &str) -> bool {
+    let dir = output.trim_end_matches('/');
+    path.strip_prefix(dir)
+        .is_some_and(|rest| rest.starts_with('/'))
 }
 
 impl SpawnOpts {

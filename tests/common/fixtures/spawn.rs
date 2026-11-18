@@ -24,9 +24,10 @@ pub fn test_request(
 
 /// The spawn host a test's spawns carry: the one test-side spelling of the struct the production
 /// resolver `hooks::resolve_spawn_host` returns, with the grep-guard off, over a checkout holding
-/// exactly the [`OPERATOR_HELPER_COPIES`], so a spawn that reads its helpers anywhere but the
-/// host carries the embedded text instead of these copies, and a test pinning the copies goes
-/// red. A test that needs the flag set spreads this one.
+/// exactly the [`OPERATOR_HELPER_COPIES`] and declaring no specs location, so its producer output
+/// is `specs/`; a spawn that reads its helpers anywhere but the host carries the embedded text
+/// instead of these copies, and a test pinning the copies goes red. A test that needs the flag
+/// or another output set spreads this one.
 #[cfg(any(feature = "store", not(feature = "core")))]
 pub fn test_spawn_host() -> rigger_domain::agent::SpawnHost {
     rigger_domain::agent::SpawnHost {

@@ -165,7 +165,8 @@ runs each once.
   would, it blocks the stop (`{"decision": "block", "reason": ...}`) with the refusal and
   `git status` in git's words, so the session that left the tree so fixes it before it ends.
   A producer's implementer, whose tree the conductor lands only the commits of, runs
-  `rigger hook stop --spawn <id> --dir <dir> --own-commits` instead: it is held while its
+  `rigger hook stop --spawn <id> --dir <dir> --own-commits <output>` instead, `<output>` the
+  specs location the project declares (`specs/` when it declares none): it is held while its
   tree holds work in the stage's output outside a commit, which would otherwise never land. It
   asks the plan landing's own scope check, so it holds only on work that landing would carry;
   work outside the output never lands whatever the session does, so it holds nothing up alone.
