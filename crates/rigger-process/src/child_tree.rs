@@ -649,16 +649,6 @@ mod tests {
     }
 
     #[test]
-    fn a_host_without_process_descriptors_says_its_sessions_are_signalled_by_pid() {
-        assert_eq!(
-            signalled_by_pid("this kernel has no process descriptors"),
-            "rigger: process descriptors unavailable: this kernel has no process descriptors; a \
-             session's processes are signalled by pid after a check, and a process that takes a \
-             checked pid before the signal lands can receive it"
-        );
-    }
-
-    #[test]
     fn a_watched_end_reports_a_process_that_left_the_tree_and_never_signals_it() {
         let mut witness = Witness::new();
         let mut tree = watched(&witness, "( holder; sleep 2.5 ); up; held");

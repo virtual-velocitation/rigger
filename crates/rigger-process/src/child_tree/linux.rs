@@ -760,6 +760,60 @@ mod tests {
         a_skipped_record_round_trips: round_trips(Record::Skipped(leftover(9, " sh  -c x ")));
         a_leftover_with_no_program_round_trips: round_trips(Record::Residue(leftover(11, "")));
         an_end_record_round_trips: round_trips(Record::Ended);
+        a_signalled_by_pid_record_round_trips: round_trips(Record::ByPid(
+            "opening one fails here: Too many open files (os error 24)".to_string()
+        ));
+    }
+
+    #[test]
+    fn a_reason_with_line_ends_is_written_on_one_line() {
+        let line = Record::ByPid("fails\nhere\r".to_string()).encode();
+
+        assert!(!line.contains(['\n', '\r']), "one line: {line:?}");
+        assert_eq!(
+            Record::decode(&line),
+            Some(Record::ByPid("fails here ".to_string()))
+        );
+    }
+
+    /// A kept tree whose keeper wrote `lines` after its spawn record, and `merged` added.
+    fn kept_report(lines: &[String], merged: EndReport) -> EndReport {
+        let (_keeper, records) = std::sync::mpsc::channel();
+        let (_read, control) = std::io::pipe().expect("a control pipe");
+        let mut kept = Kept::new(std::process::id(), records, control);
+        for line in lines {
+            kept.take(Ok(line.clone()));
+        }
+        kept.merge(merged);
+        kept.report
+    }
+
+    /// Why the end that a kept tree's keeper relayed, or one merged into it, signalled by pid.
+    fn by_pid_because(lines: &[String], merged: Option<&str>) -> Option<String> {
+        let merged = EndReport {
+            by_pid_because: merged.map(str::to_string),
+            ..EndReport::default()
+        };
+        kept_report(lines, merged).by_pid_because
+    }
+
+    crate::test_cases! {
+        a_keeper_that_signalled_by_pid_says_why_in_the_end_report: assert_eq!(
+            by_pid_because(
+                &[Record::ByPid("why".to_string()).encode(), Record::Ended.encode()],
+                None
+            )
+            .as_deref(),
+            Some("why")
+        );
+        an_end_merged_in_that_signalled_by_pid_says_why_in_the_end_report: assert_eq!(
+            by_pid_because(&[Record::Ended.encode()], Some("why")).as_deref(),
+            Some("why")
+        );
+        a_keeper_that_signalled_through_descriptors_says_nothing: assert_eq!(
+            by_pid_because(&[Record::Ended.encode()], None),
+            None
+        );
     }
 
     #[test]

@@ -2164,6 +2164,76 @@ mod tests {
         };
     }
 
+    /// What two reads of one cache through [`probed`] answer when the probe would answer `first`
+    /// and then `second`, and how many times it ran: an answer of 9 stands for an error that may
+    /// pass, every other answer for one that lasts.
+    fn read_twice(first: Option<u8>, second: Option<u8>) -> ([Option<u8>; 2], usize) {
+        let cache = std::sync::OnceLock::new();
+        let mut answers = [first, second].into_iter();
+        let mut probes = 0;
+        let mut read = || {
+            probed(
+                &cache,
+                || {
+                    probes += 1;
+                    answers.next().flatten()
+                },
+                |answer: &Option<u8>| *answer != Some(9),
+            )
+        };
+        let read = [read(), read()];
+        (read, probes)
+    }
+
+    crate::test_cases! {
+        a_probe_that_passes_is_kept_and_not_run_again:
+            assert_eq!(read_twice(None, Some(1)), ([None, None], 1));
+        a_probe_that_fails_for_good_is_kept_and_not_run_again:
+            assert_eq!(read_twice(Some(1), None), ([Some(1), Some(1)], 1));
+        a_probe_that_fails_for_now_is_run_again:
+            assert_eq!(read_twice(Some(9), None), ([Some(9), None], 2));
+    }
+
+    /// Whether each of `reasons`, in turn, is said ([`first_said`]): each is said the first
+    /// time only.
+    fn said(reasons: &[&str]) -> Vec<bool> {
+        let mut seen = Vec::new();
+        reasons
+            .iter()
+            .map(|reason| first_said(&mut seen, reason))
+            .collect()
+    }
+
+    crate::test_cases! {
+        a_reason_is_said_once: assert_eq!(said(&["a", "a"]), [true, false]);
+        each_reason_is_said_once: assert_eq!(said(&["a", "b", "a", "b"]), [true, true, false, false]);
+    }
+
+    #[test]
+    fn a_host_without_process_descriptors_says_its_sessions_are_signalled_by_pid() {
+        assert_eq!(
+            signalled_by_pid("this kernel has no process descriptors"),
+            "rigger: process descriptors unavailable: this kernel has no process descriptors; a \
+             session's processes are signalled by pid after a check, and a process that takes a \
+             checked pid before the signal lands can receive it"
+        );
+    }
+
+    /// An end over the live OS reports why it signalled by pid when it did.
+    #[test]
+    fn an_end_that_signalled_by_pid_says_why_in_its_report() {
+        let os = LiveOs {
+            by_pid_because: Some("this kernel has no process descriptors".to_string()),
+        };
+
+        let report = os.reporting(EndReport::default());
+
+        assert_eq!(
+            report.by_pid_because.as_deref(),
+            Some("this kernel has no process descriptors")
+        );
+    }
+
     /// Process handles, this OS's process descriptors: a handle opened on a process keeps that
     /// process's pid its own until the handle closes, so what is read and sent through it reaches
     /// that process or none.
@@ -2930,6 +3000,19 @@ mod tests {
             #[test]
             fn this_kernel_opens_process_descriptors() {
                 assert_eq!((no_process_descriptors(), descriptors_here()), (None, true));
+            }
+
+            crate::test_cases! {
+                a_kernel_without_process_descriptors_lacks_them_for_good:
+                    assert!(lasting(rustix::io::Errno::NOSYS));
+                a_process_refused_them_is_refused_for_good:
+                    assert!(lasting(rustix::io::Errno::PERM));
+                a_process_out_of_descriptors_may_open_one_later:
+                    assert!(!lasting(rustix::io::Errno::MFILE));
+                a_host_out_of_descriptors_may_open_one_later:
+                    assert!(!lasting(rustix::io::Errno::NFILE));
+                a_host_out_of_memory_may_open_one_later:
+                    assert!(!lasting(rustix::io::Errno::NOMEM));
             }
 
             crate::test_cases! {
