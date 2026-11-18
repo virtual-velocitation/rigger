@@ -1020,7 +1020,7 @@ impl Driver<'_> {
         // writers for the spawn, its StopFailure hook and its tool server, each still able to
         // write the spawn's record past the main's exit, finish their writes first
         // (`ReapedChild::finish`); no other process is waited for.
-        let writer = |line: &str| hooks::is_spawn_writer(line, &opts.id);
+        let writer = |arguments: &[String]| hooks::is_spawn_writer(arguments, &opts.id);
         self.record_end(opts, &reaper.finish(Some(&writer)));
         // A process the end left running, or one that left the tree before a watch saw it,
         // can hold a copy of either pipe's write end open regardless, so both joins below are

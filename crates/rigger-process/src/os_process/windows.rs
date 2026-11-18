@@ -2,7 +2,8 @@
 //! ToolHelp process snapshot (pids and parents), the process times (start time), the full image
 //! name (command), IP Helper's owner-pid TCP listener table ([`listening_pid`]) and the Restart
 //! Manager ([`holders`]) - and the one undocumented call it makes, which reads the command line a
-//! process was created with ([`command_line`]). Each function answers the fact its namesake in
+//! process was created with ([`created_line`]), split into its arguments by the documented split
+//! ([`arguments`]). Each function answers the fact its namesake in
 //! [`super`] documents; a call that fails - the process exited, or this process may not open it -
 //! answers absent.
 //! Windows documents no call that reads another process's working directory or open files, so
@@ -17,8 +18,8 @@ use windows_sys::Wdk::System::Threading::{
     NtQueryInformationProcess, ProcessCommandLineInformation,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS, FALSE, FILETIME,
-    HANDLE, INVALID_HANDLE_VALUE, NO_ERROR, UNICODE_STRING, WAIT_OBJECT_0,
+    CloseHandle, LocalFree, ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS, FALSE,
+    FILETIME, HANDLE, INVALID_HANDLE_VALUE, NO_ERROR, UNICODE_STRING, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
@@ -36,6 +37,7 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_ACCESS_RIGHTS, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_SYNCHRONIZE,
 };
+use windows_sys::Win32::UI::Shell::CommandLineToArgvW;
 
 use crate::win32::wide;
 
@@ -168,6 +170,46 @@ pub(super) fn command(pid: u32) -> String {
     String::from_utf16_lossy(&name)
 }
 
+/// The arguments `pid` was created with: the command line it was created with
+/// ([`created_line`]), split into its arguments ([`split_command_line`]).
+pub(super) fn arguments(pid: u32) -> Option<Vec<String>> {
+    split_command_line(&created_line(pid)?)
+}
+
+/// `line`, a command line as a process is created with, split into its arguments, its program
+/// first, by `CommandLineToArgvW`, the split Windows documents for a command line: an argument
+/// holding a space, or nothing, is one in double quotes, a quote inside one follows a backslash,
+/// and backslashes before a quote are doubled. `None` for an empty line, which the call would
+/// answer with this process's own path, and when the call fails.
+pub(super) fn split_command_line(line: &[u16]) -> Option<Vec<String>> {
+    if line.is_empty() {
+        return None;
+    }
+    let ended: Vec<u16> = line.iter().copied().chain([0]).collect();
+    let mut count = 0i32;
+    // SAFETY: `ended` is a NUL-terminated wide string that outlives the call, and `count` is a
+    // writable `i32`.
+    let list = unsafe { CommandLineToArgvW(ended.as_ptr(), &mut count) };
+    if list.is_null() {
+        return None;
+    }
+    let arguments = (0..usize::try_from(count).unwrap_or_default())
+        .map(|index| {
+            // SAFETY: the call answered `count` pointers, each to a NUL-terminated wide string,
+            // all in the one allocation `list` names until it is freed below.
+            unsafe {
+                let word = *list.add(index);
+                let length = (0..).take_while(|&at| *word.add(at) != 0).count();
+                String::from_utf16_lossy(std::slice::from_raw_parts(word, length))
+            }
+        })
+        .collect();
+    // SAFETY: `list` is the one allocation the call answered, which its caller frees with
+    // `LocalFree`, and nothing reads it after.
+    unsafe { LocalFree(list.cast()) };
+    Some(arguments)
+}
+
 /// The command line `pid` was created with, read by `NtQueryInformationProcess` with
 /// `ProcessCommandLineInformation`, the call Task Manager reads it by and the one Windows offers:
 /// no documented call reads another process's command line. The call answers a `UNICODE_STRING`
@@ -175,7 +217,7 @@ pub(super) fn command(pid: u32) -> String {
 /// `UNICODE_STRING` can name, so one read answers it. `None` when the process cannot be opened,
 /// the call fails (a Windows that drops the class among its causes), the structure names bytes
 /// outside the buffer ([`super::command_line_span`]), or the line is empty.
-pub(super) fn command_line(pid: u32) -> Option<String> {
+fn created_line(pid: u32) -> Option<Vec<u16>> {
     let process = open(pid, PROCESS_QUERY_LIMITED_INFORMATION)?;
     let header = size_of::<UNICODE_STRING>();
     // Words of eight bytes, so the buffer is aligned for the structure at its start.
@@ -210,8 +252,7 @@ pub(super) fn command_line(pid: u32) -> Option<String> {
         .chunks_exact(2)
         .map(|unit| u16::from_ne_bytes([unit[0], unit[1]]))
         .collect();
-    let text = String::from_utf16_lossy(&units);
-    (!text.is_empty()).then_some(text)
+    (!units.is_empty()).then_some(units)
 }
 
 /// `Z` once `pid` has exited while a handle still holds it: a process handle is signalled when

@@ -316,11 +316,11 @@ pub(super) fn command(pid: u32) -> String {
     String::from_utf8_lossy(&path).into_owned()
 }
 
-/// No command line is read here. macOS keeps a process's arguments readable only through the
+/// No arguments are read here. macOS keeps a process's arguments readable only through the
 /// `KERN_PROCARGS2` sysctl, and the one caller that needs them, a tree's ordinary end looking for
 /// a process still writing for its session, finds none to look at on macOS: a tree there is
 /// watched, and a watched tree whose main has exited signals nothing.
-pub(super) fn command_line(_pid: u32) -> Option<String> {
+pub(super) fn arguments(_pid: u32) -> Option<Vec<String>> {
     None
 }
 

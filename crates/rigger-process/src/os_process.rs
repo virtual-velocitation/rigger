@@ -1,6 +1,6 @@
 //! The process interface (spec 125, criterion 9): the one place rigger reads a fact about a
 //! running process - which processes exist, a process's parent, start time, working directory,
-//! command line, executable name, run state and open files, which process listens on a TCP
+//! arguments, executable name, run state and open files, which process listens on a TCP
 //! port, which processes hold a directory, and the path that execs this process's own image.
 //! Each fact is a function here, answered by the native adapter of the OS the binary is built
 //! for; the reaper ([`crate::reap`]), the holder check ([`crate::holders`]) and the dash read
@@ -70,7 +70,7 @@ std::cfg_select! {
                 String::new()
             }
 
-            pub(super) fn command_line(_pid: u32) -> Option<String> {
+            pub(super) fn arguments(_pid: u32) -> Option<Vec<String>> {
                 None
             }
 
@@ -226,12 +226,14 @@ fn command_file_name(pid: u32) -> String {
     file_name_text(Path::new(&command(pid))).unwrap_or_default()
 }
 
-/// Process `pid`'s command line: on Linux the arguments it was started with, joined by single
-/// spaces, and on Windows the command line it was created with. `None` when `pid` is gone or its
-/// arguments cannot be read, so unlike [`command`] it never answers a process's name in place of
-/// its arguments; and `None` on macOS, whose adapter reads no command line (its doc says why).
-pub fn command_line(pid: u32) -> Option<String> {
-    native::command_line(pid)
+/// Process `pid`'s arguments, its program first: the ones it was started with, each one whole as
+/// the OS holds it, so an argument holding a space stays one argument. Linux reads the vector its
+/// exec laid out, and Windows splits the command line the process was created with by the split it
+/// documents for one (`CommandLineToArgvW`). `None` when `pid` is gone or its arguments cannot be
+/// read, so unlike [`command`] it never answers a process's name in place of its arguments; and
+/// `None` on macOS, whose adapter reads no arguments (its doc says why).
+pub fn arguments(pid: u32) -> Option<Vec<String>> {
+    native::arguments(pid)
 }
 
 /// Process `pid`'s run state as one letter: `R` running, `S` sleeping, `T` stopped, `Z` a zombie

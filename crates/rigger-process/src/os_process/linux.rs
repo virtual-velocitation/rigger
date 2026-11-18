@@ -104,9 +104,10 @@ pub(super) fn cwd(pid: u32) -> Option<PathBuf> {
         .map(|cwd| super::strip_deleted_suffix(&cwd))
 }
 
-/// The command line ([`command_line`]), falling back to the short name ([`short_name`]).
+/// The arguments ([`arguments`]) joined by single spaces, falling back to the short name
+/// ([`short_name`]).
 pub(super) fn command(pid: u32) -> String {
-    command_line(pid).unwrap_or_else(|| short_name(pid))
+    arguments(pid).map_or_else(|| short_name(pid), |arguments| arguments.join(" "))
 }
 
 /// `/proc/<pid>/comm`, the process's short name; empty when it cannot be read.
@@ -126,17 +127,18 @@ pub(super) fn executable_name(pid: u32) -> String {
         .unwrap_or_else(|| short_name(pid))
 }
 
-/// `/proc/<pid>/cmdline` (the NUL-separated arguments) joined by spaces; `None` when it cannot be
-/// read or names no argument, as a zombie's names none.
-pub(super) fn command_line(pid: u32) -> Option<String> {
+/// `/proc/<pid>/cmdline`, the arguments the process's exec laid out, each ended by a NUL, split
+/// at those NULs, so an argument holding a space stays whole and an empty argument stays one;
+/// `None` when it cannot be read or names no argument, as a zombie's names none.
+pub(super) fn arguments(pid: u32) -> Option<Vec<String>> {
     let bytes = std::fs::read(proc_of(pid).join("cmdline")).ok()?;
-    let joined = bytes
-        .split(|b| *b == 0)
-        .filter(|part| !part.is_empty())
-        .map(|part| String::from_utf8_lossy(part).into_owned())
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!joined.is_empty()).then_some(joined)
+    let ended = bytes.strip_suffix(&[0]).unwrap_or(&bytes);
+    (!bytes.is_empty()).then(|| {
+        ended
+            .split(|b| *b == 0)
+            .map(|argument| String::from_utf8_lossy(argument).into_owned())
+            .collect()
+    })
 }
 
 /// The first letter of `/proc/<pid>/stat`'s state field: `R` running, `S` sleeping, `D`

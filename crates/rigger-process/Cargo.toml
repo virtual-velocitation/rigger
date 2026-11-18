@@ -53,7 +53,8 @@ tokio = { version = "1", features = ["rt", "time"] }
 # from Threading too, and the interrupt trigger's console control handler from Console. The process
 # interface's Windows adapter (spec 125) reads the process snapshot from ToolHelp, each process's
 # times and image name from Threading, its command line from the WDK's Threading
-# (`NtQueryInformationProcess`, which Win32 has no counterpart of), the TCP listener table from
+# (`NtQueryInformationProcess`, which Win32 has no counterpart of) split into its arguments by
+# Shell (`CommandLineToArgvW`), the TCP listener table from
 # IpHelper with its address family from WinSock, and a directory's holders from RestartManager; the
 # reaper's Windows signal opens and ends a process through Threading. A jobbed tree is held in a job
 # from JobObjects, which the reaper ends and counts, and its main, created suspended, is resumed
@@ -71,7 +72,7 @@ tokio = { version = "1", features = ["rt", "time"] }
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_RestartManager", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization", "Wdk_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_RestartManager", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization", "Wdk_System_Threading", "Win32_UI_Shell"] }
 
 [dev-dependencies]
 tempfile = "3"

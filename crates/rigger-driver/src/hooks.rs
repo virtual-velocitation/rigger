@@ -345,27 +345,38 @@ fn stop_failure_hook_args<'a>(spawn: &'a str, class: &'a str) -> [&'a str; 6] {
     ["hook", "stop-failure", "--spawn", spawn, "--class", class]
 }
 
-/// Whether `command_line`, a process's command line as the OS reports it, is one of rigger's own
-/// writers for `spawn`: a process that can still be writing the spawn's record once its
-/// session's main has exited, which an ordinary end waits for. Those are the stop-failure hook
-/// [`install_spawn_hooks`] installs for `spawn` and the tool server bound to it
-/// ([`tool_server_args`]), each known by the words it is built with.
-pub fn is_spawn_writer(command_line: &str, spawn: &str) -> bool {
-    is_stop_failure_hook(command_line, spawn) || is_tool_server(command_line, spawn)
+/// Whether `arguments`, a process's arguments as the OS reports them, its program first, are one
+/// of rigger's own writers for `spawn`: a process that can still be writing the spawn's record
+/// once its session's main has exited, which an ordinary end waits for. Those are the
+/// stop-failure hook [`install_spawn_hooks`] installs for `spawn` and the tool server bound to it
+/// ([`tool_server_args`]), each known by the arguments it is built with, compared whole after its
+/// program, so a spawn id holding a space is the one argument it was given as.
+pub fn is_spawn_writer(arguments: &[String], spawn: &str) -> bool {
+    let after_program = arguments.get(1..).unwrap_or_default();
+    is_stop_failure_hook(after_program, spawn) || is_tool_server(after_program, spawn)
 }
 
-/// Whether `command_line` is the tool server bound to `spawn`: a line that ends in
-/// [`tool_server_args`]'s words, as the host starts the server with no shell and nothing after
-/// them, so a server for a spawn whose id merely starts with `spawn`'s is not it.
-fn is_tool_server(command_line: &str, spawn: &str) -> bool {
-    command_line.ends_with(&format!(" {}", tool_server_args(spawn).join(" ")))
+/// Whether `after_program`, a process's arguments after its program, are the tool server bound to
+/// `spawn`: they end in [`tool_server_args`], as the host starts the server with no shell and
+/// nothing after them, so a server for a spawn whose id merely starts with `spawn`'s is not it.
+fn is_tool_server(after_program: &[String], spawn: &str) -> bool {
+    let server = tool_server_args(spawn);
+    after_program
+        .len()
+        .checked_sub(server.len())
+        .is_some_and(|start| after_program[start..] == server)
 }
 
-/// Whether `command_line` is the stop-failure hook [`install_spawn_hooks`] installs for `spawn`,
-/// of any class: a line holding [`stop_failure_hook_args`]'s words up to the class after its
-/// binary, as the host starts the hook in exec form with no shell, each word as written.
-fn is_stop_failure_hook(command_line: &str, spawn: &str) -> bool {
-    command_line.contains(&format!(" {}", stop_failure_hook_args(spawn, "").join(" ")))
+/// Whether `after_program`, a process's arguments after its program, are the stop-failure hook
+/// [`install_spawn_hooks`] installs for `spawn`, of any class: they hold
+/// [`stop_failure_hook_args`] up to the class and then a class, as the host starts the hook in
+/// exec form with no shell, each argument as written.
+fn is_stop_failure_hook(after_program: &[String], spawn: &str) -> bool {
+    let hook = stop_failure_hook_args(spawn, "");
+    let up_to_class = &hook[..hook.len() - 1];
+    after_program
+        .windows(hook.len())
+        .any(|window| window[..up_to_class.len()] == *up_to_class)
 }
 
 /// Whether the settings JSON `existing` already carries every session setting

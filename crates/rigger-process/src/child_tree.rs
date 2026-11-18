@@ -446,14 +446,14 @@ impl ReapedChild {
     /// Finishes with a tree its host is done reading by ending it ([`ReapedChild::end`]), whether
     /// its main has exited or still runs, so nothing the session started outlives it. Where the
     /// main has exited and a `writer` is given, the end first waits, for at most
-    /// [`crate::reap::END_BOUND`], while a process it would reach is a writer: one whose command
-    /// line ([`os_process::command_line`]) `writer` accepts, as a hook or a tool server still
+    /// [`crate::reap::END_BOUND`], while a process it would reach is a writer: one whose
+    /// arguments ([`os_process::arguments`]) `writer` accepts, as a hook or a tool server still
     /// writing the spawn's record is, so that write finishes before the end; a main that still
     /// runs is ended at once with all it started, as a stop ends it. A watched tree whose
     /// main has exited signals nothing, and answers what the main left running as never
     /// signalled ([`crate::reap::end_watched`]). Answers what the end signalled and what it left
     /// ([`ReapedChild::end`]).
-    pub fn finish(mut self, writer: Option<&dyn Fn(&str) -> bool>) -> EndReport {
+    pub fn finish(mut self, writer: Option<&IsWriter<'_>>) -> EndReport {
         if let Some(writer) = writer {
             if matches!(self.try_wait(), Ok(Some(_))) {
                 reap::poll_until(std::time::Instant::now() + reap::END_BOUND, || {
@@ -486,13 +486,16 @@ impl ReapedChild {
     }
 }
 
-/// Whether a process among `members` is a writer: one whose command line
-/// ([`os_process::command_line`]) `writer` accepts. A command line that cannot be read is no
-/// writer's.
-fn runs_a_writer(members: &[Identity], writer: &dyn Fn(&str) -> bool) -> bool {
+/// Whether a process, by its arguments ([`os_process::arguments`]), is a writer an ordinary end
+/// waits for ([`ReapedChild::finish`]).
+pub type IsWriter<'a> = dyn Fn(&[String]) -> bool + 'a;
+
+/// Whether a process among `members` is a writer: one whose arguments
+/// ([`os_process::arguments`]) `writer` accepts. Arguments that cannot be read are no writer's.
+fn runs_a_writer(members: &[Identity], writer: &IsWriter<'_>) -> bool {
     members
         .iter()
-        .any(|member| os_process::command_line(member.pid).is_some_and(|line| writer(&line)))
+        .any(|member| os_process::arguments(member.pid).is_some_and(|arguments| writer(&arguments)))
 }
 
 /// Reads `pipe` to its end on a thread of its own.
@@ -699,7 +702,7 @@ mod tests {
         body: &str,
         up: usize,
         exited: bool,
-        writer: Option<&dyn Fn(&[String]) -> bool>,
+        writer: Option<&IsWriter<'_>>,
         left: Reading,
         sent: usize,
         skipped: usize,
