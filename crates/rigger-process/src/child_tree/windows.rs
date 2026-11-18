@@ -590,6 +590,35 @@ mod tests {
         assert!(ends(&lines), "nothing the tree started holds its output");
     }
 
+    // The background ping holds the main's output pipe for a minute, so the wait answers within
+    // the bound only if the end of the tree ended it.
+    #[test]
+    fn a_jobbed_wait_for_the_output_ends_what_its_main_left_holding_it() {
+        let mut command = TreeCommand::new("cmd", &Containment::Job).expect("a jobbed command");
+        command
+            .command_mut()
+            .raw_arg("/c start /b ping -n 60 127.0.0.1 & echo up")
+            .stdout(Stdio::piped());
+        let tree = command.spawn().expect("spawn the jobbed tree");
+        assert_eq!(tree.degraded(), None, "the tree is held in a job");
+        let started = Instant::now();
+
+        let (output, report) = tree
+            .wait_with_output(Some("u-late-writer"))
+            .expect("wait for the output");
+
+        let elapsed = started.elapsed();
+        assert!(elapsed < BOUND, "the wait took {elapsed:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("up"),
+            "the main's line is read"
+        );
+        assert_eq!(
+            (report.ended.len(), report.residue, report.skipped),
+            (1, vec![], vec![])
+        );
+    }
+
     // The ping replies once a second, so two replies read after the lines already sent are drained
     // were written after the release, by a ping the release left running.
     #[test]

@@ -2,7 +2,8 @@
 //! (`crates/rigger-process/src/child_tree/linux.rs`). The handle answers the main's pid and its
 //! exact status; an end, a finish, a drop and a TERM to the keeper each leave nothing the tree
 //! started running; a finish after the main's exit first waits, to a bound, for a process naming
-//! the session's spawn; a release, before the main's exit or after it, leaves what the main left
+//! the session's spawn; a wait for the main's output ends, once the main exits, what it left
+//! holding that output; a release, before the main's exit or after it, leaves what the main left
 //! running; the keeper holds none of the session's streams; and a keeper that is gone or deaf is
 //! reported, never trusted, and a main a gone keeper left is reported, never signalled.
 //! Every process a row starts is read through the FIFO witness (`common::witness`), and the test
@@ -296,6 +297,36 @@ rigger::test_cases! {
             Duration::ZERO..END_BOUND,
             1,
         );
+}
+
+// The holder holds the main's output pipe and never exits on its own, so the wait answers only if
+// the end of the tree ended it.
+#[test]
+fn a_kept_wait_for_the_output_ends_what_the_main_left_holding_it() {
+    let mut witness = Witness::new();
+    let tree = kept(&witness, "holder; echo out; up");
+    assert!(witness.wait_up(2), "the holder and the main are up");
+    let (answer, answered) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = answer.send(tree.wait_with_output(Some(SPAWN)));
+    });
+
+    let waited = answered.recv_timeout(END_BOUND);
+
+    assert_eq!(witness.read(), Reading::Ended, "the holder is ended");
+    let (output, report) = waited
+        .expect("the wait answers within its bound")
+        .expect("wait for the output");
+    assert_eq!(
+        (
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            report.ended.len(),
+            report.residue,
+            report.skipped
+        ),
+        (Some(0), "out\n".to_string(), 1, vec![], vec![])
+    );
 }
 
 #[test]

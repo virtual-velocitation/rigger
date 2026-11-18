@@ -107,11 +107,18 @@ impl Driver {
                 let _ = stdin.write_all(framed.as_bytes());
             })
         });
-        let waited = child.wait_with_output();
+        let waited = child.wait_with_output(Some(&opts.id));
         if let Some(writer) = writer {
             let _ = writer.join();
         }
-        waited.map_err(|e| Error(format!("cli driver: wait for agent {:?}: {e}", agent.id)))
+        let (out, report) =
+            waited.map_err(|e| Error(format!("cli driver: wait for agent {:?}: {e}", agent.id)))?;
+        // This host keeps no progress record, so what the end of the session ended or left is
+        // said on this process's error output, the log of the run that spawned it.
+        for line in super::end_lines(&report, "cli driver") {
+            rigger_process::whole_line::say(format_args!("{line}"));
+        }
+        Ok(out)
     }
 
     /// Launch `agent` as the session `opts` asks for and return the exited process with the

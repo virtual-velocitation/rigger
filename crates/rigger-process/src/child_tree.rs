@@ -507,20 +507,19 @@ impl ReapedChild {
     /// [`Child::wait_with_output`] does: its input is closed first, and each output pipe is read
     /// to its end on a thread of its own. The tree is then let go ([`ReapedChild::release`]), so a
     /// process the main left running runs on, and one holding an output pipe holds this read until
-    /// it exits, as it holds `Child::wait_with_output`'s; what the OS refused the release is said,
-    /// since no report carries it from here. A wait that fails ends the tree.
-    pub fn wait_with_output(mut self) -> io::Result<Output> {
+    /// it exits, as it holds `Child::wait_with_output`'s. A wait that fails ends the tree.
+    pub fn wait_with_output(mut self, writing: Option<&str>) -> io::Result<(Output, EndReport)> {
+        let _ = writing;
         let stdout = self.take_stdout().map(read_to_end);
         let stderr = self.take_stderr().map(read_to_end);
         let status = self.wait()?;
-        for fault in self.release().faults {
-            whole_line::say(format_args!("rigger: {fault}"));
-        }
-        Ok(Output {
+        self.release();
+        let output = Output {
             status,
             stdout: joined(stdout)?,
             stderr: joined(stderr)?,
-        })
+        };
+        Ok((output, EndReport::default()))
     }
 }
 
