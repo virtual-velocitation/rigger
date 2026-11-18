@@ -5039,7 +5039,8 @@ mod tests {
     /// out of order), but never over a separator-shaped line alone (a Setext heading's underline,
     /// an RST title's over- and underline). Marker text the file's committed text already shows (a
     /// fixture, a document about conflicts) is its content, never a conflict, so an edit
-    /// elsewhere in that file is not refused; a set beside it is, and so is one whose lines repeat
+    /// elsewhere in that file is not refused, even where the worktree copy has CRLF line ends
+    /// and the committed text LF (a `core.autocrlf` checkout); a set beside it is, and so is one whose lines repeat
     /// the shown set's, which is one set more than HEAD carries, and so is a conflict hunk git
     /// wrote around the shown set, holding it on one side or cutting through it, whose own start
     /// and end lines stand in no set HEAD carries.
@@ -5048,6 +5049,7 @@ mod tests {
         // A committed file's text that shows a marker set.
         const SHOWN: &str = "Markers look like:\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n";
         let shown_edited = format!("{SHOWN}edited\n");
+        let shown_edited_crlf = shown_edited.replace('\n', "\r\n");
         let shown_and_a_conflict = format!("{SHOWN}<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\n");
         let shown_and_its_twin = format!("{SHOWN}<<<<<<< ours\nz\n=======\nw\n>>>>>>> theirs\n");
         // Conflict hunks git wrote over the shown set: holding it whole on the one side, then on
@@ -5109,6 +5111,12 @@ mod tests {
                 "another line of a file whose committed text shows a set",
                 SHOWN,
                 shown_edited.as_str(),
+                false,
+            ),
+            (
+                "another line of that file, its worktree copy in CRLF over the committed LF",
+                SHOWN,
+                shown_edited_crlf.as_str(),
                 false,
             ),
             (
