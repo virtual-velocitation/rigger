@@ -11027,53 +11027,40 @@ impl RunCtx<'_> {
                 // exactly as before - the fence has nothing to add and must never itself
                 // become a reason dead residue lingers.
                 let fence = worktree::spawn_fence(events, &u.id);
-                if fence.permits_reclaim() {
-                    // `sdet-u83c1r2-removing-evidence-repeats-forever-after-real-removal`
-                    // (UPHELD, ADJUDICATION u83c1 round 2): `rs.units` is a
-                    // ledger-projected, monotonic, never-shrinking `Integrated` set folded
-                    // fresh on EVERY `conductor::run`, so gating this log purely on ledger
-                    // status plus the fence's (also purely event-derived) liveness state -
-                    // never on the branch/worktree's actual PHYSICAL presence - would make
-                    // every already-integrated unit with any recorded spawn re-emit a false
-                    // "removing branch" claim on every later step, long after the real
-                    // removal happened.
+                let kept = if fence.permits_reclaim() {
+                    // Ordered teardown, mirroring the fresh half: remove the lingering worktree
+                    // FIRST (or `git branch -D` refuses the checked-out branch and BOTH
+                    // survive), THEN delete the branch, best-effort like the fresh half.
                     //
-                    // So the "removing" evidence reads the physical candidate set (`git
-                    // worktree list --porcelain`, never the ledger) and fires only when THIS
-                    // call finds the worktree still actually REGISTERED - i.e. only when
-                    // this call is the one genuinely performing the removal
-                    // (`gc_integrated_branches_logged_prints_removing_evidence_for_a_
-                    // terminal_spawns_decision`). A branch whose worktree is already gone -
-                    // reclaimed by a prior call to this same function on an earlier step
-                    // (`..._does_not_repeat_removing_evidence_once_the_real_
-                    // removal_already_happened`), or removed by anything else - stays silent
-                    // instead of re-claiming a removal that already happened. The
-                    // best-effort reclaim calls themselves stay unconditional and
-                    // idempotent: an orphaned branch a prior worktree removal left behind is
-                    // still silently cleaned up here
-                    // (`..._stays_silent_for_an_already_gone_worktree_but_still_
-                    // reclaims_an_orphaned_branch`), just without a second headline for
-                    // it.
-                    let worktree_present = !matches!(fence, worktree::SpawnFence::NoSpawn)
-                        && worktree::registered_worktree_for(&self.deps.repo, &branch).is_some();
-                    if worktree_present {
-                        log(&format!(
-                            "rigger: branch-gc: removing branch {branch:?} - {}",
-                            fence.evidence(&u.id)
-                        ));
+                    // The "removing" evidence fires only when THIS call took a worktree off the
+                    // branch, never on ledger status alone: `rs.units` re-folds every
+                    // `Integrated` unit on every run, so a status-keyed line would re-claim a
+                    // removal an earlier run already made. An orphaned branch a prior removal
+                    // left behind is still deleted here, silently. A branch checked out where the
+                    // run may not take it - a person's tree, the main checkout, a tree git marks
+                    // locked or prunable - is kept, with the reclaim's answer saying where.
+                    match worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch, &scratch) {
+                        Ok(reclaimed) => {
+                            if reclaimed.is_some()
+                                && !matches!(fence, worktree::SpawnFence::NoSpawn)
+                            {
+                                log(&format!(
+                                    "rigger: branch-gc: removing branch {branch:?} - {}",
+                                    fence.evidence(&u.id)
+                                ));
+                            }
+                            let _ = Worktree::delete_branch(&self.deps.repo, &branch);
+                            let _ = worktree::delete_kept(&self.deps.repo, &branch);
+                            None
+                        }
+                        Err(e) => Some(e.0),
                     }
-                    // Ordered teardown, mirroring the fresh half: remove the lingering
-                    // worktree FIRST (or `git branch -D` refuses the checked-out branch
-                    // and BOTH survive), THEN delete the branch. Best-effort exactly like
-                    // the fresh half's `let _`.
-                    let _ =
-                        worktree::reclaim_worktree_on_branch(&self.deps.repo, &branch, &scratch);
-                    let _ = Worktree::delete_branch(&self.deps.repo, &branch);
-                    let _ = worktree::delete_kept(&self.deps.repo, &branch);
                 } else {
+                    Some(fence.evidence(&u.id))
+                };
+                if let Some(evidence) = kept {
                     log(&format!(
-                        "rigger: branch-gc: kept branch {branch:?} - {}",
-                        fence.evidence(&u.id)
+                        "rigger: branch-gc: kept branch {branch:?} - {evidence}"
                     ));
                 }
             }
@@ -26711,7 +26698,8 @@ mod tests {
     /// carries committed work AND a worktree lingers on it, so `git branch -D` REFUSES to
     /// delete the branch until the worktree is torn down. Unlike `commit_on_unit_branch`
     /// (which `wt.remove()`s the seed worktree, leaving only the branch, the
-    /// worktree-already-gone happy path), this LEAVES the worktree registered. Returns the
+    /// worktree-already-gone happy path), this LEAVES the worktree registered, under the scratch
+    /// root a default-configured run in `repo` works in, where that run may take it. Returns the
     /// lingering worktree dir and its owning `TempDir`, kept alive by the caller so the dir
     /// survives into `run()` and is cleaned only when the test ends.
     fn seed_lingering_worktree_on_unit_branch(
@@ -26720,7 +26708,9 @@ mod tests {
         file: &str,
         content: &str,
     ) -> (String, tempfile::TempDir) {
-        let parent = tempfile::tempdir().unwrap();
+        let scratch = crate::worktree::scratch_root_from_env(repo, "");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let parent = tempfile::tempdir_in(&scratch).unwrap();
         // A UNIT_WORKTREE_PREFIX-named dir so the residue is realistic (it also owns a
         // `cargo-target-*` sibling the reclaim path is responsible for).
         let dir = parent.path().join("rigger-wt-lingering");
@@ -49674,8 +49664,9 @@ stage "implement" adjudicator "adj" failed
             /// A missing but locked worktree is registered at the unit's path, which no leftover
             /// clear or prune removes and `git worktree add` refuses.
             Make,
-            /// The lens's own spawn leaves the unit's worktree missing but locked, so the
-            /// re-assert before the next review tier is refused the same way.
+            /// The lens's own spawn leaves the unit's worktree missing but locked on the unit's
+            /// branch, so the re-assert before the next review tier finds the branch checked out
+            /// in a tree git marks locked, which it neither clears nor adopts.
             Reassert,
             /// The post-merge re-gate's throwaway branch is checked out in another worktree, so
             /// discarding it is refused.
@@ -49707,7 +49698,10 @@ stage "implement" adjudicator "adj" failed
         // Each row: the step git refuses, and the text of the refusal the halt names.
         let cases = [
             (Step::Make, "missing but locked"),
-            (Step::Reassert, "missing but locked"),
+            (
+                Step::Reassert,
+                "a worktree git marks `locked` is registered at",
+            ),
             (Step::Discard, "branch -D"),
             (Step::SeedBranch, "exists; cannot create"),
             (Step::Checkpoint, "add -A"),
@@ -49922,8 +49916,8 @@ stage "implement" adjudicator "adj" failed
         assert_eq!(
             err,
             format!(
-                "branch {branch} is checked out at {by_hand_s}, which is not a directory under \
-                 rigger's work root {scratch}: nothing there is cleared or adopted\n\
+                "worktree: branch {branch} is checked out at {by_hand_s}, which is not a directory \
+                 under rigger's work root {scratch}: nothing there is cleared or adopted\n\
                  the run takes the branch once it is checked out nowhere: \
                  `git -C {by_hand_s} switch --detach` frees it and keeps that tree and its work \
                  as they are"

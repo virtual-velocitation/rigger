@@ -89,7 +89,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "the adjudicator did not approve the decomposition",
             "plan-critique {gate:?} stopped the run: its {} reject at att",
             "rigger: branch-gc: removing branch {branch:?} - {}",
-            "rigger: branch-gc: kept branch {branch:?} - {}",
+            "rigger: branch-gc: kept branch {branch:?} - {evidence}",
             "rigger: branch-gc: removed {name:?} - HEAD's history holds i",
             "rigger: branch-gc: held refs not read: {}",
             "deferred gate {gid:?} failed at the phase boundary: {}",

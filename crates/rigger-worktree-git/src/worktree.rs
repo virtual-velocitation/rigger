@@ -272,17 +272,17 @@ impl Worktree {
                         reassert_mu: std::sync::Mutex::new(()),
                     });
                 }
-                // FALLBACK - adopt-or-prune, for a dir DELETED out from under git (the branch
-                // is still checked out in a PRIOR process's registration - a killed or
-                // superseded `rigger run` - whose working dir may be at a different/old path
-                // or gone entirely). ADOPT the surviving registration when its dir survives,
-                // and prune-then-recreate when it does not. Both reads decide the prune and the
-                // clear below, so each is read fail-closed: a registration list git refuses, or
-                // a registered dir the filesystem cannot read, stops here.
-                if let Some(existing) = registration_for(repo, branch)? {
-                    if metadata_at(&existing, std::fs::metadata(&existing))?
-                        .is_some_and(|m| m.is_dir())
-                    {
+                // FALLBACK - adopt-or-prune, for a branch still checked out in a PRIOR
+                // process's registration (a killed or superseded `rigger run`) at another path
+                // under the work root, or at a path whose dir was deleted out from under git.
+                // ADOPT the surviving tree, and prune-then-recreate when its dir is gone. A
+                // branch checked out anywhere else - a person's tree on a handed-back unit, the
+                // main checkout, a tree git marks locked or prunable - is not the run's: it is
+                // an error naming where ([`registration_on`]), so the run holds and nothing
+                // there is reaped, cleared or adopted. The read decides the prune and the clear
+                // below, so it is read fail-closed.
+                match registration_on(repo, branch, authorized_root)? {
+                    OnBranch::Under(existing) => {
                         return Ok(Worktree {
                             dir: existing,
                             branch: branch.to_string(),
@@ -291,7 +291,10 @@ impl Worktree {
                             reassert_mu: std::sync::Mutex::new(()),
                         });
                     }
-                    git(repo, &["worktree", "prune"])?;
+                    OnBranch::Gone(_) => {
+                        git(repo, &["worktree", "prune"])?;
+                    }
+                    OnBranch::Nowhere => {}
                 }
                 // ADOPT A TREE LEFT OFF ITS BRANCH. With the branch checked out nowhere, a
                 // worktree still registered at `dir` is the unit's own tree whose HEAD was moved
@@ -2107,7 +2110,7 @@ pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
 /// tautology`, both UPHELD): passed straight through to [`reap_dir_before_removal`] for
 /// every sibling, NEVER re-derived from `worktree_dir`'s own position. Every call site
 /// already has this value to hand ([`Worktree::remove`]/[`Worktree::discard`] carry or take
-/// it, [`sweep_terminal`] already resolves it to confirm `d.starts_with(root)`,
+/// it, [`sweep_terminal`] already resolves it to confirm each candidate lies under it,
 /// [`reclaim_worktree_on_branch`]'s caller resolves it the same way `Worktree::create`'s
 /// callers do).
 fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
@@ -2351,92 +2354,93 @@ pub fn sweep_terminal_logged(
     git(repo, &["worktree", "prune"])?;
     let out = git(repo, &["worktree", "list", "--porcelain"])?;
     let mut removed = 0;
-    let mut dir: Option<String> = None;
-    for line in out.lines() {
-        if let Some(d) = line.strip_prefix("worktree ") {
-            dir = Some(d.to_string());
-        } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
-            let Some(d) = dir.take() else { continue };
-            if !d.starts_with(root) || branch == run_branch || live_branches.contains(branch) {
-                continue;
-            }
-            let merged = is_ancestor(repo, branch, run_branch);
-            if merged {
-                // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), the ordering contract
-                // between this sweep and `run_single_stage`'s halted-commit recovery
-                // (src/conductor.rs): that recovery captures a prior incarnation's abandoned
-                // edit as its own `wip` commit the instant a unit's worktree is adopted, but
-                // `rigger run` (`run_cli`) runs THIS sweep strictly BEFORE it ever gets that
-                // chance. A candidate that still carries uncommitted changes - an in-progress
-                // merge or a real content conflict included, since either always leaves the
-                // tree dirty - has not yet had its edit captured, so removing it here would
-                // discard it outright rather than merely defer the capture. This spares the
-                // candidate regardless of the fence below (even `NoSpawn`, which normally
-                // defers entirely to the ancestry signal): a store desynced from the worktree
-                // on disk - a restored snapshot, or this project's very first run, adopting a
-                // worktree that already exists - never gets a chance to record a spawn before
-                // this sweep runs, so the fence alone cannot protect it. An unreadable status
-                // (`run_git` errors) is treated as dirty too - liveness here can only be
-                // under-, never over-determined, exactly like `live_branches_for_sweep`'s own
-                // fail-closed read one call site up. A clean worktree in this same shape
-                // (`sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_
-                // unchanged`) is unaffected: it sweeps exactly as it did before this fix.
-                //
-                // Gated on `declared_units` too (round 2 fix,
-                // `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
-                // ancestor_leftover`): dirtiness ALONE is not proof of a halted spawn worth
-                // protecting - a genuinely dead, unrelated branch (a prior run's leftover
-                // registration, a hand-made fixture) this workflow never declared is just as
-                // dirty-looking and must still be reclaimed exactly as before this criterion; a
-                // branch this run's OWN definition still claims as one of its units is the one
-                // worth deferring for.
-                //
-                // The status read itself goes through [`path_is_dirty`] (round 3 fix,
-                // `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - the same
-                // shared primitive `reclaim_orphan_scratch` (the `rigger` binary) calls too, rather than
-                // each growing its own inline `git status` call that can silently pick a
-                // different failure direction. `unwrap_or(true)`: an unreadable status fails
-                // CLOSED (dirty), never open - see that function's own doc comment for why.
-                let dirty = declared_units.contains(branch) && path_is_dirty(&d).unwrap_or(true);
-                if dirty {
-                    log(&format!(
-                        "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - \
-                         uncommitted changes are pending the halt-recovery commit"
-                    ));
-                    continue;
-                }
-                // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
-                // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
-                // dead/live-slug split already makes for a branch in this exact shape.
-                let unit = branch.strip_prefix(UNIT_BRANCHES).unwrap_or(branch);
-                let fence = spawn_fence(events, unit);
-                if !fence.permits_reclaim() {
-                    log(&format!(
-                        "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
-                        fence.evidence(unit)
-                    ));
-                    continue;
-                }
-                if !matches!(fence, SpawnFence::NoSpawn) {
-                    log(&format!(
-                        "rigger run: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
-                        fence.evidence(unit)
-                    ));
-                }
-                // Reap any process rooted inside this terminal worktree BEFORE removing it
-                // (spec 79, criterion 1): a crashed run process can leave a build or tool
-                // still running here, and this is the CRASH-recovery path, not the graceful
-                // `Worktree::remove` one - nothing else reaps it. `root` is the SAME resolved
-                // scratch root already used to confirm `d.starts_with(root)` above.
-                crate::reap::reap_processes_rooted_under(
-                    std::path::Path::new(&d),
-                    std::path::Path::new(root),
-                );
-                git(repo, &["worktree", "remove", "--force", &d])?;
-                reclaim_cache_sibling(&d, root);
-                removed += 1;
-            }
+    for entry in listed(&out) {
+        let Some(branch) = entry.branch else { continue };
+        let d = entry.path;
+        // A candidate lies strictly under the work root, compared as resolved paths: a sibling
+        // whose path merely begins with the root's text is not under it.
+        let under =
+            crate::reap::strictly_under(std::path::Path::new(d), std::path::Path::new(root));
+        if under.is_none()
+            || branch == run_branch
+            || live_branches.contains(branch)
+            || !is_ancestor(repo, branch, run_branch)
+        {
+            continue;
         }
+        // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), the ordering contract
+        // between this sweep and `run_single_stage`'s halted-commit recovery
+        // (src/conductor.rs): that recovery captures a prior incarnation's abandoned
+        // edit as its own `wip` commit the instant a unit's worktree is adopted, but
+        // `rigger run` (`run_cli`) runs THIS sweep strictly BEFORE it ever gets that
+        // chance. A candidate that still carries uncommitted changes - an in-progress
+        // merge or a real content conflict included, since either always leaves the
+        // tree dirty - has not yet had its edit captured, so removing it here would
+        // discard it outright rather than merely defer the capture. This spares the
+        // candidate regardless of the fence below (even `NoSpawn`, which normally
+        // defers entirely to the ancestry signal): a store desynced from the worktree
+        // on disk - a restored snapshot, or this project's very first run, adopting a
+        // worktree that already exists - never gets a chance to record a spawn before
+        // this sweep runs, so the fence alone cannot protect it. An unreadable status
+        // (`run_git` errors) is treated as dirty too - liveness here can only be
+        // under-, never over-determined, exactly like `live_branches_for_sweep`'s own
+        // fail-closed read one call site up. A clean worktree in this same shape
+        // (`sweep_terminal_reclaims_a_merged_branch_with_no_spawn_recorded_at_all_
+        // unchanged`) is unaffected: it sweeps exactly as it did before this fix.
+        //
+        // Gated on `declared_units` too (round 2 fix,
+        // `step_start_sweep_spares_a_live_units_empty_diff_worktree_but_reclaims_a_dead_
+        // ancestor_leftover`): dirtiness ALONE is not proof of a halted spawn worth
+        // protecting - a genuinely dead, unrelated branch (a prior run's leftover
+        // registration, a hand-made fixture) this workflow never declared is just as
+        // dirty-looking and must still be reclaimed exactly as before this criterion; a
+        // branch this run's OWN definition still claims as one of its units is the one
+        // worth deferring for.
+        //
+        // The status read itself goes through [`path_is_dirty`] (round 3 fix,
+        // `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`) - the same
+        // shared primitive `reclaim_orphan_scratch` (the `rigger` binary) calls too, rather than
+        // each growing its own inline `git status` call that can silently pick a
+        // different failure direction. `unwrap_or(true)`: an unreadable status fails
+        // CLOSED (dirty), never open - see that function's own doc comment for why.
+        let dirty = declared_units.contains(branch) && path_is_dirty(d).unwrap_or(true);
+        if dirty {
+            log(&format!(
+                "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - \
+                 uncommitted changes are pending the halt-recovery commit"
+            ));
+            continue;
+        }
+        // THE FENCE (spec 83, criterion 1): the unit id doubles as the branch's
+        // `rigger/u/<slug>` tail - the same assumption `current_run_units`'
+        // dead/live-slug split already makes for a branch in this exact shape.
+        let unit = branch.strip_prefix(UNIT_BRANCHES).unwrap_or(branch);
+        let fence = spawn_fence(events, unit);
+        if !fence.permits_reclaim() {
+            log(&format!(
+                "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - {}",
+                fence.evidence(unit)
+            ));
+            continue;
+        }
+        if !matches!(fence, SpawnFence::NoSpawn) {
+            log(&format!(
+                "rigger run: worktree sweep: removing {d:?} (branch {branch:?}) - {}",
+                fence.evidence(unit)
+            ));
+        }
+        // Reap any process rooted inside this terminal worktree BEFORE removing it
+        // (spec 79, criterion 1): a crashed run process can leave a build or tool
+        // still running here, and this is the CRASH-recovery path, not the graceful
+        // `Worktree::remove` one - nothing else reaps it. `root` is the SAME root the
+        // candidate was confirmed strictly under above.
+        crate::reap::reap_processes_rooted_under(
+            std::path::Path::new(d),
+            std::path::Path::new(root),
+        );
+        git(repo, &["worktree", "remove", "--force", d])?;
+        reclaim_cache_sibling(d, root);
+        removed += 1;
     }
     Ok(removed)
 }
@@ -2463,37 +2467,116 @@ pub fn worktree_on_branch(dir: &str, branch: &str) -> Result<bool, Error> {
     Ok(current_branch(dir)?.as_deref() == Some(branch))
 }
 
-/// The dir of the worktree that already has `branch` checked out, if any - parsed
-/// from `git worktree list --porcelain` (a `worktree <dir>` line followed by its
-/// `branch refs/heads/<name>` line). Registrations whose dirs were deleted out from
-/// under git still appear here; the caller decides adopt-vs-prune by checking the dir.
-///
-/// `pub` (spec 83 round 3): `conductor.rs::gc_integrated_branches_logged` uses this
-/// as its own presence check before printing "removing" evidence, mirroring `sweep_
-/// terminal_logged`'s identical `git worktree list --porcelain`-driven candidate set -
-/// never a second, parallel notion of "is this worktree still here".
-///
-/// A list git cannot give reads as no registration, which only skips a reclaim; a caller that
-/// clears on the answer reads it fail-closed through [`registration_for`].
-pub fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
-    registration_for(repo, branch).ok().flatten()
+/// One entry of `git worktree list --porcelain`: the path git lists, the branch checked out there
+/// (none when its HEAD is detached), and the first line marking it `locked` or `prunable`, its
+/// reason included.
+struct Listed<'a> {
+    path: &'a str,
+    branch: Option<&'a str>,
+    mark: Option<&'a str>,
 }
 
-/// The dir of the worktree that has `branch` checked out, read fail-closed: `None` when the
-/// registrations name no such worktree, and an error naming the branch when git cannot list them.
-fn registration_for(repo: &str, branch: &str) -> Result<Option<String>, Error> {
+/// The entries of `porcelain`, the output of `git worktree list --porcelain`: blocks separated by
+/// a blank line, each opening with its `worktree <path>` line.
+fn listed(porcelain: &str) -> impl Iterator<Item = Listed<'_>> {
+    porcelain.split("\n\n").filter_map(|entry| {
+        let mut lines = entry.lines();
+        let path = lines.next()?.strip_prefix("worktree ")?;
+        let mut found = Listed {
+            path,
+            branch: None,
+            mark: None,
+        };
+        for line in lines {
+            if let Some(branch) = line.strip_prefix("branch refs/heads/") {
+                found.branch = Some(branch);
+            } else if found.mark.is_none() && ["locked", "prunable"].contains(&mark_word(line)) {
+                found.mark = Some(line);
+            }
+        }
+        Some(found)
+    })
+}
+
+/// The first word of `line`, a line of a `git worktree list --porcelain` entry.
+fn mark_word(line: &str) -> &str {
+    line.split_once(' ').map_or(line, |(word, _)| word)
+}
+
+/// The path of the worktree that has `branch` checked out, wherever it is, or `None`; a list git
+/// cannot give reads as none.
+#[cfg(test)]
+fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
+    let out = git(repo, &["worktree", "list", "--porcelain"]).ok()?;
+    let found = listed(&out)
+        .find(|entry| entry.branch == Some(branch))
+        .map(|entry| entry.path.to_string());
+    found
+}
+
+/// Where a branch is checked out, as [`registration_on`] reads it for a caller working under a
+/// work root.
+enum OnBranch {
+    /// No worktree has the branch checked out.
+    Nowhere,
+    /// A registration has the branch checked out at this path, with nothing there.
+    Gone(String),
+    /// A usable tree strictly under the work root has the branch checked out at this path.
+    Under(String),
+}
+
+/// Where `branch` is checked out, read fail-closed for a caller that takes over or removes the
+/// tree it finds there. That tree is the caller's only when it is a directory strictly under
+/// `authorized_root`, compared as resolved paths ([`crate::reap::strictly_under`]), that git marks
+/// neither `locked` nor `prunable`; a registration with nothing at its path is
+/// [`OnBranch::Gone`], for the caller to prune. Anything else is an error naming where the branch
+/// is checked out, and nothing there is reaped, cleared or adopted:
+/// - a list git refuses, or a registered path the filesystem cannot read;
+/// - an entry git marks `locked` (an add git did not finish, or a lock a person set), its dir
+///   there or not, since git's prune keeps it;
+/// - an entry git marks `prunable` with its dir still there, holding what is in it;
+/// - a tree outside the work root, or no directory: a person's tree on a handed-back unit, the
+///   main checkout. An empty root contains nothing.
+fn registration_on(repo: &str, branch: &str, authorized_root: &str) -> Result<OnBranch, Error> {
     let out = git(repo, &["worktree", "list", "--porcelain"])
         .map_err(|e| step_failed(format!("reading where branch {branch} is checked out"), e.0))?;
-    let want = format!("branch refs/heads/{branch}");
-    let mut dir: Option<&str> = None;
-    for line in out.lines() {
-        if let Some(d) = line.strip_prefix("worktree ") {
-            dir = Some(d);
-        } else if line.trim() == want {
-            return Ok(dir.map(|d| d.to_string()));
-        }
+    let Some(entry) = listed(&out).find(|entry| entry.branch == Some(branch)) else {
+        return Ok(OnBranch::Nowhere);
+    };
+    let at = entry.path;
+    if let Some(mark) = entry.mark.filter(|mark| mark_word(mark) == "locked") {
+        return Err(marked_entry(mark, at));
     }
-    Ok(None)
+    let Some(found) = metadata_at(at, std::fs::metadata(at))? else {
+        return Ok(OnBranch::Gone(at.to_string()));
+    };
+    if let Some(mark) = entry.mark {
+        return Err(marked_entry(mark, at));
+    }
+    let root = std::path::Path::new(authorized_root);
+    if found.is_dir() && crate::reap::strictly_under(std::path::Path::new(at), root).is_some() {
+        return Ok(OnBranch::Under(at.to_string()));
+    }
+    Err(checked_out_elsewhere(branch, at, authorized_root))
+}
+
+/// The error for an entry git marks `mark` (its `locked` or `prunable` line) registered at `at`:
+/// nothing there is cleared or adopted.
+fn marked_entry(mark: &str, at: &str) -> Error {
+    Error(format!(
+        "a worktree git marks `{mark}` is registered at {at}: nothing there is cleared or adopted"
+    ))
+}
+
+/// The error for `branch` checked out at `at`, a tree that is not a directory under the work root
+/// `authorized_root`: it names where, and how to free the branch without touching that tree.
+fn checked_out_elsewhere(branch: &str, at: &str, authorized_root: &str) -> Error {
+    Error(format!(
+        "branch {branch} is checked out at {at}, which is not a directory under rigger's work \
+         root {authorized_root}: nothing there is cleared or adopted\n\
+         the run takes the branch once it is checked out nowhere: `git -C {at} switch --detach` \
+         frees it and keeps that tree and its work as they are"
+    ))
 }
 
 /// Whether `repo` has a worktree registered at `dir` that git can use: an entry of `git worktree
@@ -2895,12 +2978,15 @@ fn worktree_admin_is_corrupt(admin: &std::path::Path) -> bool {
 /// branch, so the branch-GC a resumed `rigger run` performs reclaims it here.
 ///
 /// This composes the EXISTING single-authorities, minting no parallel teardown:
-/// [`registered_worktree_for`] finds the dir, [`clear_worktree_dir`] deregisters it
-/// (tolerating both a still-tracked worktree and a bare leftover dir, and pruning a stale
-/// registration whose dir was deleted out from under git - so even a residue that no
-/// longer occupies disk stops holding the branch), and [`reclaim_cache_sibling`] reclaims
-/// the multi-gigabyte `cargo-target-<slug>` cache, exactly as the two teardowns above do.
-/// A branch with no lingering worktree is a graceful no-op.
+/// [`registration_on`] finds where the branch is checked out and whether that tree is the
+/// run's to take, [`clear_worktree_dir`] deregisters a usable tree under the work root, a
+/// `git worktree prune` drops a registration whose dir was deleted out from under git (so even a
+/// residue that no longer occupies disk stops holding the branch), and [`reclaim_cache_sibling`]
+/// reclaims the multi-gigabyte `cargo-target-<slug>` cache of a tree under the work root,
+/// exactly as the two teardowns above do. A branch with no lingering worktree is a graceful
+/// no-op. A branch checked out anywhere else - a person's tree, the main checkout, a tree git
+/// marks locked or prunable - is [`registration_on`]'s error naming where, and nothing there is
+/// reaped or removed. The answer is the dir this took the branch from, if any.
 ///
 /// The owning STEP process is dead on this path, but that is not the same as "nothing is
 /// rooted in the dir" (spec 79, criterion 1 - the prior wording here claimed exactly that,
@@ -2917,18 +3003,29 @@ pub fn reclaim_worktree_on_branch(
     repo: &str,
     branch: &str,
     authorized_root: &str,
-) -> Result<(), Error> {
+) -> Result<Option<String>, Error> {
     // Serialize this WHOLE call against every other in-process admin-directory mutation
     // this process makes for the SAME repository (spec 103 checkin round 4: this call's own
     // `clear_worktree_dir` below writes into `.git/worktrees` exactly like `Worktree::
     // create`'s heal-scan-then-add does; see `repo_admin_lock`'s doc comment).
     let repo_lock = repo_admin_lock(repo);
     let _repo_guard = repo_lock.lock().unwrap();
-    if let Some(dir) = registered_worktree_for(repo, branch) {
-        clear_worktree_dir(repo, &dir, authorized_root)?;
-        reclaim_cache_sibling(&dir, authorized_root);
+    match registration_on(repo, branch, authorized_root)? {
+        OnBranch::Nowhere => Ok(None),
+        OnBranch::Gone(dir) => {
+            git(repo, &["worktree", "prune"])?;
+            let root = std::path::Path::new(authorized_root);
+            if crate::reap::strictly_under(std::path::Path::new(&dir), root).is_some() {
+                reclaim_cache_sibling(&dir, authorized_root);
+            }
+            Ok(Some(dir))
+        }
+        OnBranch::Under(dir) => {
+            clear_worktree_dir(repo, &dir, authorized_root)?;
+            reclaim_cache_sibling(&dir, authorized_root);
+            Ok(Some(dir))
+        }
     }
-    Ok(())
 }
 
 /// The current HEAD sha of the git checkout at `dir`, or `""` when `dir` is empty
@@ -8168,6 +8265,10 @@ mod tests {
         }
     }
 
+    /// A row of a table over [`held_elsewhere`]: its name, where the branch is checked out, and
+    /// what is done to that tree before the call under test.
+    type HeldRow = (&'static str, Held, fn(&HeldElsewhere));
+
     /// A tree git marks `prunable` with its dir still there: its link to the repository is gone.
     fn unlink(h: &HeldElsewhere) {
         std::fs::remove_file(h.at.join(".git")).unwrap();
@@ -8179,7 +8280,7 @@ mod tests {
     /// and the tree, its work and its registration stay.
     #[test]
     fn create_takes_a_branch_checked_out_elsewhere_only_from_a_usable_tree_under_its_work_root() {
-        let rows: [(&str, Held, fn(&HeldElsewhere)); 5] = [
+        let rows: [HeldRow; 5] = [
             ("a tree outside the work root", Held::Outside, |_| {}),
             ("the main checkout", Held::Main, |_| {}),
             ("a locked tree", Held::Under, HeldElsewhere::lock),
@@ -8221,7 +8322,7 @@ mod tests {
     /// registration and the branch stay.
     #[test]
     fn reclaim_worktree_on_branch_takes_nothing_from_a_tree_where_rigger_may_not_take_it() {
-        let rows: [(&str, Held, fn(&HeldElsewhere)); 4] = [
+        let rows: [HeldRow; 4] = [
             ("a tree outside the work root", Held::Outside, |_| {}),
             ("the main checkout", Held::Main, |_| {}),
             ("a locked tree", Held::Under, HeldElsewhere::lock),
