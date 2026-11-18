@@ -613,7 +613,7 @@ so it runs once per advance and is stored in the snapshot:
   - **definition leaves:** the keys of `IDX_LEAF`, which a lookup's name index reads.
 
   Their generation (`SETTLED_GENERATION`) is folded into the fingerprint like the grouping
-  generation, and a golden test pins it beside a digest of the rows over a fixture. A view
+  generation, and a golden test pins it beside a digest of the rows over two fixtures. A view
   that holds no settled rows (an in-memory view) has the resolver compute them, and the two
   are tested to answer alike.
 - A grain other than the default is computed at read, on each open that asks for it, and is
