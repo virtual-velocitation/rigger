@@ -2727,6 +2727,7 @@ pub(crate) fn lang_str(l: Lang) -> &'static str {
 pub(crate) mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
+    use crate::symbol_index::qualifier;
 
     /// `query` compiled against `language` with no constructor or type-argument kinds, for a test
     /// that injects a query of its own.
@@ -4078,12 +4079,7 @@ fn product() {}
     fn a_reference_name_splits_to_its_last_leaf_and_the_qualifier_before_it() {
         let language: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
         let query = "(class_declaration (base_list (_) @name)) @reference.type";
-        let member = |name: &str| {
-            Some(Qualifier {
-                name: name.to_string(),
-                path: false,
-            })
-        };
+        let member = |name: &str| Some(qualifier(name, false));
         // (the type-argument kinds the query is compiled with, the source, the references'
         // names and qualifiers)
         type Row = (

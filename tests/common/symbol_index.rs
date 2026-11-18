@@ -1,7 +1,7 @@
 //! Shared fixtures for the symbol extraction suites: building a one-file set of symbols, building
-//! them from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of line, the
-//! `mod x;` declaration sources, the one-fn source the module-row tests extract and the one-`use`
-//! source, projecting a file's definitions, its test-marked definitions and references and its call
+//! them from Rust sources, a reference's qualifier, a tree whose inline mod declares a
+//! `#[cfg(test)]` mod out of line, the `mod x;` declaration sources, the one-fn source the
+//! module-row tests extract and the one-`use` source, projecting a file's definitions, its test-marked definitions and references and its call
 //! references with their callers, checking a language's definition types against a file's
 //! definitions, checking a language's definitions fixture whole and a source's callers whole,
 //! projecting a file's definition extents, rendering and checking a file's tagged references, and
@@ -17,7 +17,7 @@
 
 #[cfg(feature = "symbols")]
 use rigger::grounder::symbols::model::SymbolIndex;
-use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
+use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, Qualifier, SymRef};
 
 /// A line-1 file-level definition of `kind` named `name` with every optional field unset, its doc
 /// span included, `end_line` 0 and `path` its name - the shape a product-only definition takes;
@@ -47,6 +47,14 @@ pub fn sym_ref(name: &str, line: u32, enclosing: Option<&str>, is_test: bool) ->
         is_test,
         ref_kind: None,
         qualifier: None,
+    }
+}
+
+/// A reference's qualifier `name`, a path (`::`) when `path` and a member access (`.`) otherwise.
+pub fn qualifier(name: &str, path: bool) -> Qualifier {
+    Qualifier {
+        name: name.into(),
+        path,
     }
 }
 

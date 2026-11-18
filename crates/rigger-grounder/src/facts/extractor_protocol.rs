@@ -210,6 +210,7 @@ fn parent_cycle(defs: &[model::Def]) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::grounder::symbols::model::Kind;
+    use crate::symbol_index::qualifier;
 
     /// A def an answer carries: a function named `name` at `path` over `line..=end_line`, its
     /// container `parent`.
@@ -255,14 +256,16 @@ mod tests {
     }
 
     /// THE EXTRACTOR PROTOCOL, the answer: over a request for `a.zig`, an answer holding defs and
-    /// refs within the text's lines - the last one more than the `\n` the text holds - gives them
-    /// and its partial flag as written, and no doc span, the file's or a def's, whatever it
-    /// writes; every answer the protocol refuses gives the exact why:
+    /// refs within the text's lines - the last one more than the `\n` the text holds - gives them,
+    /// each ref's tagged mention kind and qualifier, its partial flag and the doc spans, the
+    /// file's and each def's, as written; every answer the protocol refuses gives the exact why:
     /// one that does not parse, that is for another path, that is an error - its text quoted, a
     /// line break or terminal escape in it escaped - that lacks a list, a
     /// def or ref outside the lines or with an empty name, a def with an empty path, an end line
-    /// outside its line and the last, or an out-of-line module field, a ref kind other than
-    /// `const`, `type` and `use`, and a cycle among the def paths through their parents.
+    /// outside its line and the last, or an out-of-line module field, a doc span, the file's or a
+    /// def's, starting outside the first line and the last or ending outside its start and the
+    /// last, a ref with an empty qualifier or a kind that is no tagged mention kind (`call`, the
+    /// empty kind, `module`), and a cycle among the def paths through their parents.
     #[test]
     fn an_answer_gives_its_symbols_or_why_the_protocol_refuses_it() {
         const TEXT: &str = "a\nb\nc\n";
@@ -287,7 +290,7 @@ mod tests {
         };
         let refused = |why: &str| Err(why.to_string());
         // (the request's text, the answer line, its symbols or why it is refused)
-        let rows: Vec<(&str, String, Result<CodeSymbols, String>)> = vec![
+        let mut rows: Vec<(&str, String, Result<CodeSymbols, String>)> = vec![
             (
                 TEXT,
                 r#"{"path":"a.zig","defs":[],"refs":[]}"#.into(),
@@ -347,7 +350,55 @@ mod tests {
                 r#"{"path":"a.zig","defs":[{"kind":"Function","name":"f","line":2,"end_line":2,"path":"f","doc":[1,1]}],"refs":[],"doc":[1,1]}"#
                     .into(),
                 Ok(CodeSymbols {
-                    defs: vec![answered_def("f", "f", (2, 2), None, false)],
+                    defs: vec![model::Def {
+                        doc: Some((1, 1)),
+                        ..answered_def("f", "f", (2, 2), None, false)
+                    }],
+                    doc: Some((1, 1)),
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"field"}"#),
+                Ok(CodeSymbols {
+                    refs: vec![answered_ref("x", 1, None, Some("field"), false)],
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"variant"}"#),
+                Ok(CodeSymbols {
+                    refs: vec![answered_ref("x", 1, None, Some("variant"), false)],
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"impl"}"#),
+                Ok(CodeSymbols {
+                    refs: vec![answered_ref("x", 1, None, Some("impl"), false)],
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"area","line":1,"qualifier":{"name":"Shape","path":true}},"#,
+                    r#"{"name":"area","line":2,"qualifier":{"name":"s","path":false}}"#
+                )),
+                Ok(CodeSymbols {
+                    refs: vec![
+                        SymRef {
+                            qualifier: Some(qualifier("Shape", true)),
+                            ..answered_ref("area", 1, None, None, false)
+                        },
+                        SymRef {
+                            qualifier: Some(qualifier("s", false)),
+                            ..answered_ref("area", 2, None, None, false)
+                        },
+                    ],
                     ..empty()
                 }),
             ),
@@ -503,12 +554,25 @@ mod tests {
             (
                 TEXT,
                 answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"call"}"#),
-                refused(r#"refs[0]: ref_kind "call" is not const, type or use"#),
+                refused(r#"refs[0]: ref_kind "call" is not a tagged mention kind"#),
             ),
             (
                 TEXT,
                 answer_with_refs(r#"{"name":"x","line":1,"ref_kind":""}"#),
-                refused(r#"refs[0]: ref_kind "" is not const, type or use"#),
+                refused(r#"refs[0]: ref_kind "" is not a tagged mention kind"#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"module"}"#),
+                refused(r#"refs[0]: ref_kind "module" is not a tagged mention kind"#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"x","line":1,"qualifier":{"name":"Q","path":true}},"#,
+                    r#"{"name":"x","line":1,"qualifier":{"name":"","path":false}}"#
+                )),
+                refused("refs[1]: the qualifier is empty"),
             ),
             (
                 TEXT,
@@ -541,6 +605,46 @@ mod tests {
                 refused(r#"the defs' parents form a cycle through "a""#),
             ),
         ];
+        // (a doc span over TEXT, why the protocol refuses it or none): each is answered as a def's
+        // span and as the file's, the def's why led by its index and the file's by "the file's".
+        let doc_spans = [
+            ((0, 1), Some("doc start 0 is outside 1..=4")),
+            ((1, 4), None),
+            ((4, 4), None),
+            ((5, 5), Some("doc start 5 is outside 1..=4")),
+            ((3, 2), Some("doc end 2 is outside 3..=4")),
+            ((3, 3), None),
+            ((2, 5), Some("doc end 5 is outside 2..=4")),
+        ];
+        for ((start, end), why) in doc_spans {
+            rows.push((
+                TEXT,
+                answer_with_defs(&format!(
+                    r#"{{"kind":"Function","name":"f","line":1,"end_line":1,"path":"f","doc":[{start},{end}]}}"#
+                )),
+                match why {
+                    Some(why) => refused(&format!("defs[0]: {why}")),
+                    None => Ok(CodeSymbols {
+                        defs: vec![model::Def {
+                            doc: Some((start, end)),
+                            ..answered_def("f", "f", (1, 1), None, false)
+                        }],
+                        ..empty()
+                    }),
+                },
+            ));
+            rows.push((
+                TEXT,
+                format!(r#"{{"path":"a.zig","defs":[],"refs":[],"doc":[{start},{end}]}}"#),
+                match why {
+                    Some(why) => refused(&format!("the file's {why}")),
+                    None => Ok(CodeSymbols {
+                        doc: Some((start, end)),
+                        ..empty()
+                    }),
+                },
+            ));
+        }
         for (text, answer, symbols) in rows {
             assert_eq!(
                 symbols_answered("a.zig", text, &answer),
