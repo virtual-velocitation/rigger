@@ -48794,11 +48794,12 @@ mod tests {
     /// the second's after a red gate), a merge of the run branch refused over an untracked file
     /// in the worktree, a commit refused over conflict-marker text or over a HEAD the implementer
     /// moved off the unit's branch, the merge's conclusion refused by a hook - the attempt is
-    /// charged (`UnitFailed`, cause `git-refused`, git's
-    /// message its evidence), a lesson names the unit and its refusal, the drive ends, and the
+    /// charged (`UnitFailed`, cause `git-refused`, git's message its refusal and no gate's
+    /// evidence), a lesson names the unit and its refusal, the drive ends, and the
     /// run is held for the orchestrator on the unit-work row, the hold's first line naming the
     /// attempt. Released, the relaunch launches the next implementer attempt (never one the log
-    /// answers) with the refusal in its prompt and the work the refused tree held, integrates the
+    /// answers) with the refusal on its own line of its prompt, never as a failed gate's or under
+    /// the failed checks' header, and the work the refused tree held, integrates the
     /// unit and holds nothing new; a further relaunch launches nothing. The landing refused over
     /// local content in the run checkout, and a plan landing's cherry-pick refused over one an
     /// earlier attempt left in progress, are no unit's attempt: no attempt is charged (a refused
@@ -49179,11 +49180,12 @@ mod tests {
                     assert!(
                         charged.len() == 1
                             && charged[0]["attempts"] == refused_attempt + 1
-                            && charged[0]["gate_evidence"][0]
+                            && charged[0]["refusal"]
                                 .as_str()
-                                .is_some_and(|e| e.contains(named)),
-                        "{step:?}: the refused attempt is charged, git's message its evidence: \
-                         {failed:?}"
+                                .is_some_and(|e| e.contains(named))
+                            && charged[0]["gate_evidence"] == json!([]),
+                        "{step:?}: the refused attempt is charged, git's message its refusal and \
+                         no gate's evidence: {failed:?}"
                     );
                     assert!(
                         err.0.starts_with(&format!(
@@ -49233,12 +49235,14 @@ mod tests {
                             .all(|id| !launched.contains(id)),
                         "{step:?}: the relaunch launches no spawn the log answers: {relaunched:?}"
                     );
+                    let retry_prompt = driver.prompts_for("worker").last().cloned();
+                    let gate_line = crate::prompt_surface::PRIOR_GATE.split('{').next().unwrap();
                     assert!(
-                        driver
-                            .prompts_for("worker")
-                            .last()
-                            .is_some_and(|p| p.contains(named)),
-                        "{step:?}: the retry's prompt carries the refusal"
+                        retry_prompt.as_deref().is_some_and(|p| p.contains(named)
+                            && !p.contains(gate_line)
+                            && !p.contains(crate::prompt_surface::PRIOR_RETRY_HEADER)),
+                        "{step:?}: the retry's prompt carries the refusal on its own line, never \
+                         as a failed gate's or under the failed checks' header: {retry_prompt:?}"
                     );
                     assert_eq!(
                         std::fs::read_to_string(repo.path().join("kept.txt")).ok(),
@@ -49265,7 +49269,7 @@ mod tests {
     /// every attempt's checkpoint commit charges each attempt and holds the run to retry the
     /// unit, each hold its own fault (its first line names the attempt), so none recurs to a
     /// person; released each time, the relaunch launches the next attempt. The attempt that
-    /// spends the unit's retry bound escalates the unit (its lesson naming the refusal,
+    /// spends the unit's retry bound escalates the unit (its lesson naming the refusal as git's,
     /// `UnitEscalated`) and holds nothing, the drive going on, and the unit's worktree keeps the
     /// work the refused trees held.
     #[test]
@@ -49369,11 +49373,12 @@ mod tests {
         assert!(
             of_type(contextgraph::TYPE_LESSON_LEARNED).iter().any(|l| {
                 l["summary"].as_str().is_some_and(|s| {
-                    s.contains("escalated after 3 attempts")
+                    s.contains("escalated after 3 attempts; git refused: ")
                         && s.contains("hook: refusing the attempt")
+                        && !s.contains("gates failed")
                 })
             }),
-            "the escalation lesson names the refusal"
+            "the escalation lesson names the refusal as git's, never as a failed gate"
         );
         assert_eq!(
             driver
