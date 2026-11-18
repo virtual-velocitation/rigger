@@ -8,6 +8,9 @@ use std::process::{Command, Stdio};
 
 use rigger::hooks;
 
+#[path = "common/product_binary.rs"]
+mod product_binary;
+
 /// The `command` and `args` of the one inner hook `settings` carries under `event`.
 fn hook_command(settings: &[u8], event: &str) -> (String, Vec<String>) {
     let settings: serde_json::Value = serde_json::from_slice(settings).unwrap();
@@ -63,7 +66,7 @@ fn a_bare_rigger_exec_form_hook_runs_the_binary_path_holds() {
     let named = bin
         .path()
         .join(format!("rigger{}", std::env::consts::EXE_SUFFIX));
-    std::fs::copy(env!("CARGO_BIN_EXE_rigger"), &named).unwrap();
+    std::fs::copy(product_binary::rigger_bin(), &named).unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let rows = [
         (
