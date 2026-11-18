@@ -2433,23 +2433,44 @@ mod tests {
             assert_eq!((read, ended), ([true, false], [true, false]));
         }
 
-        /// A running process is addressed through a handle opened on it, and one already gone,
-        /// its last handle closed, is not addressed.
+        /// A process is addressed through a handle opened on it while any handle holds it, running
+        /// or exited, and its start time is read through that handle; a pid no process holds opens
+        /// none and is not addressed. An exited process addressed this way reads as not running
+        /// ([`running`]), so an end neither reports it sent nor waits on it.
         #[test]
-        fn a_running_process_is_held_by_a_handle_and_a_gone_one_is_not_addressed() {
-            let mut running = sleeper_in(Path::new("/"));
-            let gone = {
-                let mut gone = sleeper_in(Path::new("/"));
-                cleanup(&mut gone);
-                gone.id()
-            };
-            let pids = [running.id(), gone];
+        fn a_held_process_is_addressed_through_a_handle_and_a_pid_no_process_holds_is_not() {
+            let mut live = sleeper_in(Path::new("/"));
+            // Its `Child` holds a handle on it past its exit, so its pid stays its own.
+            let mut exited = sleeper_in(Path::new("/"));
+            let pids = [live.id(), exited.id()];
+            let starts =
+                pids.map(|pid| pid_starttime(pid).expect("a running process's start time"));
+            cleanup(&mut exited);
 
-            let answers =
-                pids.map(|pid| address(pid, true).map(|to| (to.pid, to.descriptor.is_some())));
+            let addressed = [pids[0], pids[1], u32::MAX]
+                .map(|pid| address(pid, true).map(|to| (to.descriptor.is_some(), started(&to))));
+            let read_running: [bool; 2] = std::array::from_fn(|i| {
+                running(&Identity {
+                    pid: pids[i],
+                    start: starts[i],
+                })
+            });
 
-            cleanup(&mut running);
-            assert_eq!(answers, [Some((pids[0], true)), None]);
+            cleanup(&mut live);
+            assert_eq!(
+                (addressed, read_running),
+                (
+                    [
+                        Some((true, Some(starts[0]))),
+                        Some((true, Some(starts[1]))),
+                        None
+                    ],
+                    [true, false]
+                ),
+                "the running process and the exited one still held are each addressed through a \
+                 handle that reads its start time, and only the running one reads as running; the \
+                 pid no process holds is not addressed"
+            );
         }
     }
 
