@@ -159,11 +159,13 @@ jobs:
       - name: contract test (KurrentDB via testcontainers)
         run: cargo test -p rigger-store-sqlite --no-default-features eventstore::kurrentdb
 
-  # The cross-OS check (spec 125): the workspace compiles on Windows and on macOS, one leg per OS.
-  # No job runs a test there: this check is the compile of the macOS and Windows adapters. The check
-  # step runs under bash on every runner and exports an empty RUSTC_WRAPPER in its own shell, so
-  # cargo and any cargo it starts run no wrapper: .cargo/config.toml names a Unix shell script as
-  # its wrapper, and an empty environment value overrides it. The build script's version
+  # The cross-OS check (spec 125): the workspace compiles on Windows and on macOS, one leg per OS,
+  # every target included, so each test that names a macOS or Windows adapter compiles there too.
+  # Each leg then runs the process crate's own tests, which hold the rows for the macOS and Windows
+  # adapters: process tables, the Windows job a session's tree is held in, and the macOS watcher's
+  # wake. Each step runs under bash on every runner and exports an empty RUSTC_WRAPPER in its own
+  # shell, so cargo and any cargo it starts run no wrapper: .cargo/config.toml names a Unix shell
+  # script as its wrapper, and an empty environment value overrides it. The build script's version
   # derivation degrades to `+unversioned` without go-gitsemver, so the job installs nothing else.
   cross-os-check:
     strategy:
@@ -172,6 +174,9 @@ jobs:
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      # The test step compiles the dev profile; line tables keep the file:line of its panics.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
         with:
@@ -187,4 +192,9 @@ jobs:
         shell: bash
         run: |
           export RUSTC_WRAPPER=
-          cargo check --workspace
+          cargo check --workspace --all-targets
+      - name: test the process crate
+        shell: bash
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib
