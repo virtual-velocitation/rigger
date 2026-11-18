@@ -2012,10 +2012,10 @@ fn api_retry_line(v: &Value) -> String {
     format!("waiting: {category} (attempt {attempt}, retrying in {delay_ms}ms)")
 }
 
-/// The progress line an end of a session's tree records ([`crate::child_tree::EndReport`]): how
-/// many processes it signalled and could not end, and how many it found outside the tree and never
-/// signalled, each named by pid and program, a still-frozen one marked so. `None` when it left
-/// nothing.
+/// The progress line an end of a session's tree records ([`crate::child_tree::EndReport`]): each
+/// call the OS refused it, as the report says it; then how many processes it signalled and could
+/// not end, and how many it found outside the tree and never signalled, each named by pid and
+/// program, a still-frozen one marked so. `None` when it left nothing and nothing was refused.
 fn end_line(report: &crate::child_tree::EndReport) -> Option<String> {
     let named = |left: &[crate::child_tree::Leftover]| {
         left.iter()
@@ -2041,12 +2041,14 @@ fn end_line(report: &crate::child_tree::EndReport) -> Option<String> {
             named(&report.skipped)
         ));
     }
-    (!parts.is_empty()).then(|| {
+    let left = (!parts.is_empty()).then(|| {
         format!(
-            "stream: the end of the session left processes running; {}",
+            "the end of the session left processes running; {}",
             parts.join("; ")
         )
-    })
+    });
+    let said: Vec<String> = report.faults.iter().cloned().chain(left).collect();
+    (!said.is_empty()).then(|| format!("stream: {}", said.join("; ")))
 }
 
 /// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the
@@ -3851,10 +3853,11 @@ mod tests {
         );
     }
 
-    /// The line an end that answered `residue` and `skipped` is recorded as, if any.
+    /// The line an end that answered `residue`, `skipped` and `faults` is recorded as, if any.
     fn assert_end_line(
         residue: &[(u32, &str, bool)],
         skipped: &[(u32, &str, bool)],
+        faults: &[&str],
         expected: Option<&str>,
     ) {
         let left = |rows: &[(u32, &str, bool)]| {
@@ -3869,14 +3872,16 @@ mod tests {
         let report = crate::child_tree::EndReport {
             residue: left(residue),
             skipped: left(skipped),
+            faults: faults.iter().map(|fault| fault.to_string()).collect(),
         };
         assert_eq!(end_line(&report).as_deref(), expected);
     }
 
     crate::test_cases! {
-        an_end_that_left_nothing_is_no_line: assert_end_line(&[], &[], None);
+        an_end_that_left_nothing_is_no_line: assert_end_line(&[], &[], &[], None);
         an_end_that_could_not_end_a_process_names_it_and_whether_it_is_stopped: assert_end_line(
             &[(41, "sleep", false), (42, "node", true)],
+            &[],
             &[],
             Some(
                 "stream: the end of the session left processes running; 2 it signalled and \
@@ -3887,12 +3892,31 @@ mod tests {
             assert_end_line(
                 &[(41, "sleep", false)],
                 &[(77, "daemon", false)],
+                &[],
                 Some(
                     "stream: the end of the session left processes running; 1 it signalled and \
                      could not end: 41 (sleep); 1 outside the session's tree, never signalled: \
                      77 (daemon)",
                 ),
             );
+        an_end_the_os_refused_says_why: assert_end_line(
+            &[],
+            &[],
+            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
+            Some(
+                "stream: the job of session 7 could not be ended (denied), so the end did not \
+                 wait for it",
+            ),
+        );
+        an_end_that_hit_a_fault_and_left_a_process_says_both: assert_end_line(
+            &[(41, "sleep", false)],
+            &[],
+            &["the job of session 7 could not be let go (denied)"],
+            Some(
+                "stream: the job of session 7 could not be let go (denied); the end of the \
+                 session left processes running; 1 it signalled and could not end: 41 (sleep)",
+            ),
+        );
     }
 
     // ---- THE STREAM (spec 104 criterion 2): the pure per-line mappings ----

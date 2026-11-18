@@ -499,6 +499,7 @@ impl Kept {
     fn merge(&mut self, other: EndReport) {
         self.report.residue.extend(other.residue);
         self.report.skipped.extend(other.skipped);
+        self.report.faults.extend(other.faults);
     }
 
     /// The end of a tree whose keeper closed its records before it wrote that it ended the tree.

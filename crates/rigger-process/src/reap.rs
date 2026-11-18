@@ -629,15 +629,18 @@ impl Leftover {
 }
 
 /// What an end left: `residue`, the processes it signalled that are still running past
-/// [`END_BOUND`]; and `skipped`, those still running that it found but never signalled, because at
+/// [`END_BOUND`]; `skipped`, those still running that it found but never signalled, because at
 /// signal time their parent chain no longer reached the tree's root (an escape, or a stranger that
-/// took a pid), or because the walk could not tell them from strangers ([`Walk::untrusted`]).
+/// took a pid), or because the walk could not tell them from strangers ([`Walk::untrusted`]); and
+/// `faults`, what the OS refused it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndReport {
     /// Signalled, and still running past the bound.
     pub residue: Vec<Leftover>,
     /// Found, never signalled, and still running.
     pub skipped: Vec<Leftover>,
+    /// Each call the OS refused the end, said whole with what followed from it.
+    pub faults: Vec<String>,
 }
 
 impl EndReport {
@@ -1092,21 +1095,31 @@ std::cfg_select! {
         /// in it, the held child `main` among them: the job end's ONE sanctioned site
         /// (`TerminateJobObject`, the `no-os-kill` gate). The count of the job's processes still
         /// running is read until none is left or [`END_BOUND`] passes, when each process the job
-        /// still lists is reported as residue; then the main is reaped and the handle closed. The
-        /// kernel names a job's members, so no member is found by a walk, and none is signalled
-        /// one at a time.
+        /// still lists is reported as residue; then the main is reaped and the handle closed. A
+        /// job the OS will not end is reported as a fault, with no wait for it, since nothing was
+        /// sent to it. The kernel names a job's members, so no member is found by a walk, and none
+        /// is signalled one at a time.
         pub fn end_job(
             job: std::os::windows::io::OwnedHandle,
             main: &mut std::process::Child,
         ) -> EndReport {
             use std::os::windows::io::AsRawHandle;
+            use windows_sys::Win32::Foundation::FALSE;
             use windows_sys::Win32::System::JobObjects::TerminateJobObject;
             let handle = job.as_raw_handle();
             let mut report = EndReport::default();
             // SAFETY: the handle is a job this process created and still holds; the call takes
             // no pointer.
-            unsafe { TerminateJobObject(handle, 1) };
-            if poll_until(Instant::now() + END_BOUND, || job_active(handle) == Some(0)) {
+            let ended = unsafe { TerminateJobObject(handle, 1) } != FALSE;
+            if !ended {
+                let error = std::io::Error::last_os_error();
+                report.faults.push(format!(
+                    "the job of session {} could not be ended ({error}), so the end did not wait \
+                     for it",
+                    main.id()
+                ));
+                let _ = main.try_wait();
+            } else if poll_until(Instant::now() + END_BOUND, || job_active(handle) == Some(0)) {
                 let _ = main.wait();
             } else {
                 report.residue = job_pids(handle)

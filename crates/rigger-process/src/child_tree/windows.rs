@@ -287,6 +287,77 @@ mod tests {
         }
     }
 
+    /// `cmd /c <script>` created suspended, put in `job` and resumed, and the lines of its output,
+    /// a pipe every process the script starts inherits.
+    fn in_job(job: &Job, script: &str) -> (Child, Receiver<io::Result<String>>) {
+        let mut main = Command::new("cmd")
+            .raw_arg(format!("/c {script}"))
+            .creation_flags(CREATE_SUSPENDED)
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn the main");
+        job.assign(&main).expect("the main joins the job");
+        resume(main.id()).expect("the main is resumed");
+        let (lines, _reader) = line_channel(main.stdout.take().expect("the output pipe"));
+        (main, lines)
+    }
+
+    /// A second handle to `job` that may only query it, so the OS refuses any call on it that
+    /// needs another right.
+    fn query_only(job: &Job) -> OwnedHandle {
+        use windows_sys::Win32::Foundation::{DuplicateHandle, HANDLE};
+        use windows_sys::Win32::System::SystemServices::JOB_OBJECT_QUERY;
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut handle: HANDLE = std::ptr::null_mut();
+        // SAFETY: both process handles are this process's own pseudo handle, the source is the
+        // open job `job` holds, and `handle` is a writable handle the call fills.
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                job.0.as_raw_handle(),
+                GetCurrentProcess(),
+                &mut handle,
+                JOB_OBJECT_QUERY,
+                FALSE,
+                0,
+            )
+        } != FALSE;
+        assert!(
+            duplicated,
+            "a query-only handle: {}",
+            io::Error::last_os_error()
+        );
+        // SAFETY: the handle is the one the call just answered, owned by nothing else.
+        unsafe { OwnedHandle::from_raw_handle(handle) }
+    }
+
+    /// An end through a handle the OS will not end the job through reports the refusal and
+    /// returns without waiting the bound, naming no process as left running; closing the job's
+    /// own handle then ends what it holds.
+    #[test]
+    fn an_end_the_os_refuses_says_why_without_waiting_for_the_job() {
+        let job = Job::new().expect("a job");
+        let (mut main, lines) = in_job(&job, "echo up& ping -n 60 127.0.0.1 >NUL");
+        assert!(read_until(&lines, "up"), "the main is up");
+        let started = Instant::now();
+
+        let report = reap::end_job(query_only(&job), &mut main);
+
+        assert!(
+            started.elapsed() < reap::END_BOUND,
+            "the end waits for nothing"
+        );
+        assert_eq!((report.residue, report.skipped), (vec![], vec![]));
+        assert!(
+            matches!(&report.faults[..], [fault] if fault.contains("could not be ended")),
+            "the report says the job could not be ended: {:?}",
+            report.faults
+        );
+        drop(job);
+        assert!(ends(&lines), "closing the job's own handle ends the main");
+        let _ = main.wait();
+    }
+
     /// A jobbed command whose caller's own creation flags replace [`CREATE_SUSPENDED`] starts its
     /// main running before the job holds it, and its start is refused for it. The main runs a
     /// ping long enough that its thread is there to resume.
