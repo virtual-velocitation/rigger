@@ -664,8 +664,11 @@ fn validate_reports_the_session_host_version_and_warns_below_the_hooks_minimum()
             too_old(parse(printed).unwrap()).unwrap()
         )]
     };
-    let failed =
-        |why: &str| vec![format!("warning: the session host version read failed: {why}")];
+    let failed = |why: &str| {
+        vec![format!(
+            "warning: the session host version read failed: {why}"
+        )]
+    };
     let not_found = std::io::Error::from_raw_os_error(2);
     // (name, the stand-in's `--version` line, none for no `claude` on PATH, the version lines on
     // stdout, the version warnings on stderr)
@@ -742,7 +745,10 @@ fn validate_reports_the_session_host_version_and_warns_below_the_hooks_minimum()
             ],
         );
         let elapsed = started.elapsed();
-        assert!(ok, "{name}: the version read never fails validate; stderr:\n{err}");
+        assert!(
+            ok,
+            "{name}: the version read never fails validate; stderr:\n{err}"
+        );
         assert_eq!(
             lines_where(&out, |line| line.starts_with("session host version: ")),
             lines,

@@ -3853,7 +3853,11 @@ fn run_refuses_a_session_host_below_the_hooks_minimum_before_any_start_effect() 
                     "{name}: the too-old line ends what the run prints; stderr: {err}"
                 );
                 assert!(!launched, "{name}: no agent launched");
-                assert_eq!(state(), before, "{name}: no ref, store or scratch file changed");
+                assert_eq!(
+                    state(),
+                    before,
+                    "{name}: no ref, store or scratch file changed"
+                );
                 assert_eq!(
                     common::cli::current_run_id_of(root),
                     None,
