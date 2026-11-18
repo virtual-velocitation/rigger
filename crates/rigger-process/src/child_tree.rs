@@ -32,9 +32,9 @@ use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output};
-use std::sync::Once;
+use std::sync::{Mutex, Once, PoisonError};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 // The one spelling of the OS set for a watcher's wake: macOS wakes the watcher when a process it
 // watches forks or exits, and every other OS binds the inline `timed` wake in the `_` arm.
@@ -453,15 +453,36 @@ impl ReapedChild {
     /// stop ends it. A watched tree whose main has exited signals nothing, and answers what the
     /// main left running as never signalled ([`crate::reap::end_watched`]). Answers what the end
     /// signalled and what it left ([`ReapedChild::end`]).
-    pub fn finish(mut self, writer: Option<&IsWriter<'_>>) -> EndReport {
+    pub fn finish(self, writer: Option<&IsWriter<'_>>) -> EndReport {
+        self.finish_with(writer, &ARGUMENTS, reap::END_BOUND)
+    }
+
+    /// [`ReapedChild::finish`], reading the arguments of the processes its end would reach
+    /// through `reads` and waiting for a writer for at most `bound`.
+    fn finish_with(
+        mut self,
+        writer: Option<&IsWriter<'_>>,
+        reads: &ArgumentReads,
+        bound: Duration,
+    ) -> EndReport {
+        let mut unread = None;
         if let Some(writer) = writer {
             if matches!(self.try_wait(), Ok(Some(_))) {
-                reap::poll_until(std::time::Instant::now() + reap::END_BOUND, || {
-                    !runs_a_writer(&self.hold.members(&mut self.child), writer)
+                let deadline = Instant::now() + bound;
+                reap::poll_until(deadline, || {
+                    match reads.of(self.hold.members(&mut self.child), deadline) {
+                        Ok(arguments) => !arguments.iter().flatten().any(|words| writer(words)),
+                        Err(why) => {
+                            unread = Some(why);
+                            true
+                        }
+                    }
                 });
             }
         }
-        self.end()
+        let mut report = self.end();
+        report.faults.extend(unread);
+        report
     }
 
     /// Waits for the main process to exit and answers its status and all of its output, as
@@ -490,14 +511,57 @@ impl ReapedChild {
 /// waits for ([`ReapedChild::finish`]).
 pub type IsWriter<'a> = dyn Fn(&[String]) -> bool + 'a;
 
-/// Whether a process among `members` is a writer: one whose arguments, read while its pid still
-/// names it ([`os_process::arguments_of`]), `writer` accepts. Arguments that cannot be read, and a
-/// pid that names another process by now, are no writer's.
-fn runs_a_writer(members: &[Identity], writer: &IsWriter<'_>) -> bool {
-    members.iter().any(|member| {
-        os_process::arguments_of(member.pid, member.start)
-            .is_some_and(|arguments| writer(&arguments))
-    })
+/// How a finish reads the arguments of the processes its end would reach, to find a writer
+/// among them ([`ReapedChild::finish`]): each process's by `read`, and the reads a finish gave up
+/// that have not returned yet.
+struct ArgumentReads {
+    /// Reads one process's arguments; `None` where they cannot be read, which no writer's are.
+    read: fn(&Identity) -> Option<Vec<String>>,
+    /// The thread of each read a finish gave up, kept until it is seen to have returned.
+    given_up: Mutex<Vec<JoinHandle<()>>>,
+}
+
+/// The reads every finish makes: each process's arguments while its pid still names it
+/// ([`os_process::arguments_of`]), so a pid that names another process by now is no writer's.
+static ARGUMENTS: ArgumentReads = ArgumentReads {
+    read: arguments_while_named,
+    given_up: Mutex::new(Vec::new()),
+};
+
+/// `member`'s arguments while its pid still names it ([`os_process::arguments_of`]).
+fn arguments_while_named(member: &Identity) -> Option<Vec<String>> {
+    os_process::arguments_of(member.pid, member.start)
+}
+
+/// The fault a finish reports where the arguments of the processes its end would reach were not
+/// read by the end of its wait for a writer ([`ArgumentReads::of`]).
+const ARGUMENTS_GIVEN_UP: &str = "the arguments of the processes this end would reach were not \
+     read by the end of its wait for a writer, as when one of them is stuck in the kernel; it \
+     took none of them for a writer, and no end reads arguments until that read returns";
+
+/// The fault a finish reports where a read of arguments an earlier finish gave up had not
+/// returned, so it read none ([`ArgumentReads::of`]).
+const ARGUMENTS_HELD: &str = "a read of arguments an earlier end gave up has not returned, so \
+     this end read none and took none of the processes it would reach for a writer";
+
+impl ArgumentReads {
+    /// The arguments of each of `members`, in their order, read ([`ArgumentReads::read`]) by
+    /// `deadline`, the end of the finish's wait for a writer.
+    fn of(
+        &self,
+        members: Vec<Identity>,
+        _deadline: Instant,
+    ) -> Result<Vec<Option<Vec<String>>>, String> {
+        Ok(members.iter().map(self.read).collect())
+    }
+
+    /// How many reads a finish gave up have not returned yet; the threads of those that have
+    /// returned are let go.
+    fn still_given_up(&self) -> usize {
+        let mut given_up = self.given_up.lock().unwrap_or_else(PoisonError::into_inner);
+        given_up.retain(|read| !read.is_finished());
+        given_up.len()
+    }
 }
 
 /// Reads `pipe` to its end on a thread of its own.
@@ -848,6 +912,103 @@ mod tests {
             (elapsed < crate::reap::END_BOUND / 2, report),
             (true, EndReport::default()),
             "the finish took {elapsed:?}"
+        );
+    }
+
+    /// Whether a read of [`HUNG`] may return, and the wake its reads wait on.
+    static RELEASED: (Mutex<bool>, std::sync::Condvar) =
+        (Mutex::new(false), std::sync::Condvar::new());
+
+    /// Reads that do not return until [`release`]d, as a read of the arguments of a process stuck
+    /// in the kernel does not, and then answer a writer's arguments.
+    static HUNG: ArgumentReads = ArgumentReads {
+        read: hangs,
+        given_up: Mutex::new(Vec::new()),
+    };
+
+    /// [`HUNG`]'s read: waits until [`release`]d, and then answers a writer's arguments.
+    fn hangs(_member: &Identity) -> Option<Vec<String>> {
+        let (released, wake) = &RELEASED;
+        let mut released = released.lock().unwrap_or_else(PoisonError::into_inner);
+        while !*released {
+            released = wake.wait(released).unwrap_or_else(PoisonError::into_inner);
+        }
+        Some(vec!["a writer".to_string()])
+    }
+
+    /// Lets every read of [`HUNG`] return.
+    fn release() {
+        let (released, wake) = &RELEASED;
+        *released.lock().unwrap_or_else(PoisonError::into_inner) = true;
+        wake.notify_all();
+    }
+
+    /// A hold that names this process among its tree's processes and whose end only reaps the
+    /// main.
+    struct NamesThisProcess;
+
+    impl Hold for NamesThisProcess {
+        fn members(&mut self, _main: &mut Child) -> Vec<Identity> {
+            vec![Identity {
+                pid: std::process::id(),
+                start: 0,
+            }]
+        }
+
+        fn end(&mut self, main: &mut Child) -> EndReport {
+            let _ = main.wait();
+            EndReport::default()
+        }
+    }
+
+    /// A finish for any writer of a tree whose main has exited, reading through [`HUNG`] and
+    /// waiting for a writer for at most `bound`, run on a thread of its own: how long it took and
+    /// its faults, or `None` where it had not answered within `within`.
+    fn finish_hung(bound: Duration, within: Duration) -> Option<(Duration, Vec<String>)> {
+        let (answer, answered) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let main = Command::new("true").spawn().expect("spawn the main");
+            let mut tree = ReapedChild::holding(main, Box::new(NamesThisProcess));
+            assert!(
+                wait_until(|| matches!(tree.try_wait(), Ok(Some(_)))),
+                "the main exits"
+            );
+            let started = Instant::now();
+            let report = tree.finish_with(Some(&|_: &[String]| true), &HUNG, bound);
+            let _ = answer.send((started.elapsed(), report.faults));
+        });
+        answered.recv_timeout(within).ok()
+    }
+
+    /// A finish whose read of its members' arguments does not return, as a read of a process
+    /// stuck in the kernel does not, gives that read up at the end of its wait for a writer and
+    /// takes none of them for a writer; a finish while that read has not returned starts no read
+    /// and waits for no writer, so given-up reads never pile up; once the read returns, its thread
+    /// is let go.
+    #[test]
+    fn a_finish_gives_up_a_read_of_arguments_that_does_not_return_by_its_bound() {
+        let bound = Duration::from_millis(300);
+        let slack = Duration::from_secs(2);
+
+        let first = finish_hung(bound, bound + slack);
+        let second = finish_hung(bound, slack);
+        let held = HUNG.still_given_up();
+        release();
+
+        let let_go = wait_until(|| HUNG.still_given_up() == 0);
+        assert_eq!(
+            (
+                first.map(|(took, faults)| ((bound..bound + slack).contains(&took), faults)),
+                second.map(|(took, faults)| (took < bound, faults)),
+                held,
+                let_go
+            ),
+            (
+                Some((true, vec![ARGUMENTS_GIVEN_UP.to_string()])),
+                Some((true, vec![ARGUMENTS_HELD.to_string()])),
+                1,
+                true
+            )
         );
     }
 
