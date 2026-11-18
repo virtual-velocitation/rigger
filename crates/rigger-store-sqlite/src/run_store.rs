@@ -574,8 +574,8 @@ pub(crate) fn append_at_head(
 struct HoldRead {
     /// The hold open now, `None` when the run is unheld.
     open: Option<Hold>,
-    /// Every `RunHeld` of every hold the current run released, in log order, a hold one of whose
-    /// `RunHeld` events does not decode left out.
+    /// Every `RunHeld` of every hold the current run released, in log order. A `RunHeld` that does
+    /// not decode never reaches it: [`fold_holds`] answers the store's error for it first.
     released: Vec<RunHeld>,
 }
 
@@ -610,7 +610,6 @@ fn append_on_hold(
         fold_holds(&mut state, events)?;
         let released = holds(events)
             .into_iter()
-            .filter(|span| span.hold.is_some())
             .filter_map(|span| span.release.map(|release| span.first..release.revision))
             .flat_map(|span| {
                 events
