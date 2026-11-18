@@ -585,11 +585,31 @@ impl Worktree {
     /// deleted the tree's link) is a throwaway's residue holding nothing kept, so it is reaped and
     /// taken off disk, and [`prune_gone`] drops its registration while it keeps every other tree git
     /// marks `prunable` with its dir there.
+    ///
+    /// A refusal from git's remove is answered by git's list read again ([`after_refusal`] with
+    /// [`Removing::Throwaway`]): a tree git lists unmarked yet refuses to remove, its lock known
+    /// absent, is taken off disk again, with one line on stderr saying what git answered; a
+    /// `prunable` mark set since the first read is cleared in place, as above; a `locked` one, a
+    /// registration git does not list, and a list git cannot give stay errors.
     pub fn discard(
         repo: &str,
         dir: &str,
         branch: &str,
         authorized_root: &str,
+    ) -> Result<(), Error> {
+        Self::discard_logged(repo, dir, branch, authorized_root, &mut |line| {
+            rigger_process::whole_line::say(format_args!("{line}"))
+        })
+    }
+
+    /// [`Self::discard`]'s real body, the line it says routed through `log` (production wires
+    /// stderr), so what it says is a fact a test can read.
+    pub fn discard_logged(
+        repo: &str,
+        dir: &str,
+        branch: &str,
+        authorized_root: &str,
+        log: &mut dyn FnMut(&str),
     ) -> Result<(), Error> {
         // Serialize this WHOLE call - both the dir-present `clear_worktree_dir` path and the
         // dir-absent prune fallback below ([`prune_gone`]) - against every other in-process
@@ -601,12 +621,12 @@ impl Worktree {
         let _repo_guard = repo_lock.lock().unwrap();
         match occupant(dir)? {
             Some(there) if !there.file_type().is_symlink() && throwaway_unlinked(repo, dir)? => {
-                reap_dir_before_removal(dir, authorized_root);
-                std::fs::remove_dir_all(dir)
-                    .map_err(|e| step_failed(format!("removing throwaway tree {dir}"), e))?;
+                clear_throwaway(dir, authorized_root)?;
                 prune_gone(repo, authorized_root)?;
             }
-            Some(_) => clear_worktree_dir(repo, dir, authorized_root)?,
+            Some(_) => {
+                clear_worktree_dir(repo, dir, authorized_root, &mut Removing::Throwaway(log))?
+            }
             None => {
                 // No dir to clear, but a killed process may still leave a dangling admin entry,
                 // which the prune drops; a locked one it keeps, and the discard with it.
@@ -2912,7 +2932,7 @@ fn kept_by_mark(porcelain: &str, dir: &str) -> Option<String> {
 pub fn remove_worktree_at(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
     let repo_lock = repo_admin_lock(repo);
     let _repo_guard = repo_lock.lock().unwrap();
-    remove_tree_or_leftover(repo, dir, authorized_root)
+    remove_tree_or_leftover(repo, dir, authorized_root, &mut Removing::AnyTree)
 }
 
 /// Remove the worktree at `dir` with `git worktree remove --force`, which deregisters it and
@@ -2938,23 +2958,108 @@ pub fn remove_worktree_at(repo: &str, dir: &str, authorized_root: &str) -> Resul
 /// is reaped or removed.
 ///
 /// CALLER-LOCKED, as [`clear_worktree_dir`] is.
-fn remove_tree_or_leftover(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
+fn remove_tree_or_leftover(
+    repo: &str,
+    dir: &str,
+    authorized_root: &str,
+    removing: &mut Removing<'_>,
+) -> Result<(), Error> {
     refuse_marked_at(repo, dir)?;
     reap_dir_before_removal(dir, authorized_root);
     let refused = match git(repo, &["worktree", "remove", "--force", dir]) {
         Ok(_) => return Ok(()),
         Err(refused) => refused,
     };
-    match listed_at(repo, dir)? {
-        Some(Some(mark)) => Err(marked_entry(repo, &mark, dir)),
-        Some(None) => Err(refused),
-        None if occupant(dir)?.is_none() => Ok(()),
-        None => {
+    let relisted = listed_at(repo, dir)?;
+    let throwaway = matches!(removing, Removing::Throwaway(_));
+    match after_refusal(relisted.as_ref().map(Option::as_deref), throwaway) {
+        AfterRefusal::KeepMarked(mark) => Err(marked_entry(repo, mark, dir)),
+        AfterRefusal::KeepRefused => Err(refused),
+        AfterRefusal::ClearThrowaway { unmarked } => {
+            if let (true, Removing::Throwaway(log)) = (unmarked, removing) {
+                log(&refused_throwaway_line(dir, &refused));
+            }
+            clear_throwaway(dir, authorized_root)
+        }
+        AfterRefusal::Leftover if occupant(dir)?.is_none() => Ok(()),
+        AfterRefusal::Leftover => {
             unlisted_registration(dir)?;
             std::fs::remove_dir_all(dir)
                 .map_err(|e| step_failed(format!("removing leftover worktree dir {dir}"), e))
         }
     }
+}
+
+/// Whose tree a removal ([`remove_tree_or_leftover`]) clears, which decides what it does when
+/// git refuses to remove it ([`after_refusal`]).
+enum Removing<'l> {
+    /// Any tree: a person's, a unit's, an orphan's. Every refusal from git keeps it.
+    AnyTree,
+    /// A throwaway tree [`Worktree::discard`] clears, holding nothing kept; `log` takes the one
+    /// line saying what git answered when the tree is taken off disk after git refused it.
+    Throwaway(&'l mut dyn FnMut(&str)),
+}
+
+/// What a removal does once git refused `git worktree remove` at a dir, by what git's list, read
+/// again, says there (`relisted`: none listed, one unmarked, or one marked with that line) and
+/// whether the tree is a throwaway ([`Removing::Throwaway`]).
+#[derive(Debug, PartialEq, Eq)]
+enum AfterRefusal<'m> {
+    /// Keep the tree; the error names git's mark and the commands that recover it.
+    KeepMarked(&'m str),
+    /// Keep the tree; git's refusal is the error.
+    KeepRefused,
+    /// Take the throwaway off disk ([`clear_throwaway`]), saying what git answered first when
+    /// git lists it `unmarked`.
+    ClearThrowaway {
+        /// Whether git lists the tree with no mark (else it marks it `prunable`).
+        unmarked: bool,
+    },
+    /// Git lists nothing there: a leftover, off disk unless it names a registration.
+    Leftover,
+}
+
+/// [`AfterRefusal`] for what git's list, read again, says at the dir (`relisted`), for a
+/// throwaway or any tree. Every refusal keeps any tree git lists. A throwaway is kept only under
+/// a `locked` mark: it holds nothing kept, so one git lists unmarked or marks `prunable` is taken
+/// off disk.
+fn after_refusal(relisted: Option<Option<&str>>, throwaway: bool) -> AfterRefusal<'_> {
+    let _ = throwaway;
+    match relisted {
+        Some(Some(mark)) => AfterRefusal::KeepMarked(mark),
+        Some(None) => AfterRefusal::KeepRefused,
+        None => AfterRefusal::Leftover,
+    }
+}
+
+/// The one line a discard says when it takes a throwaway tree at `dir` off disk after git, listing
+/// it unmarked, `refused` to remove it: where, and git's answer on the same line.
+fn refused_throwaway_line(dir: &str, refused: &Error) -> String {
+    let answer: Vec<&str> = refused
+        .0
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    format!(
+        "rigger: git refused to remove the throwaway worktree at {dir}, which it lists unmarked, \
+         so its dir is removed: {}",
+        answer.join("; ")
+    )
+}
+
+/// Take the throwaway tree at `dir` off disk, reaping what runs in it first (under
+/// `authorized_root`, [`reap_dir_before_removal`]); nothing at `dir` is nothing to remove. The
+/// [`prune_gone`] that follows drops its registration. Only [`Worktree::discard`] clears a tree
+/// this way.
+fn clear_throwaway(dir: &str, authorized_root: &str) -> Result<(), Error> {
+    reap_dir_before_removal(dir, authorized_root);
+    if occupant(dir)?.is_none() {
+        return Ok(());
+    }
+    std::fs::remove_dir_all(dir)
+        .map_err(|e| step_failed(format!("removing throwaway tree {dir}"), e))
 }
 
 /// The spellings of the place `dir` names: `dir` as given, and `dir` resolved or, with nothing at
@@ -3095,7 +3200,12 @@ fn metadata_at(
 /// person's lock, an add or remove git did not finish, a lost link), is an error naming git's own
 /// commands that recover it ([`marked_entry`]), and nothing there is reaped, deregistered or
 /// removed: the mark says the tree is kept.
-fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
+fn clear_worktree_dir(
+    repo: &str,
+    dir: &str,
+    authorized_root: &str,
+    removing: &mut Removing<'_>,
+) -> Result<(), Error> {
     if repo.is_empty() {
         return Err(step_failed(
             format!("clearing worktree dir {dir}"),
@@ -3107,7 +3217,7 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
             .or_else(|_| std::fs::remove_dir(dir))
             .map_err(|e| step_failed(format!("removing the link at {dir}"), e))?;
     } else {
-        remove_tree_or_leftover(repo, dir, authorized_root)?;
+        remove_tree_or_leftover(repo, dir, authorized_root, removing)?;
     }
     prune_gone(repo, authorized_root)?;
     Ok(())
@@ -3119,7 +3229,7 @@ fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<()
 /// error. CALLER-LOCKED, as [`clear_worktree_dir`] is.
 fn clear_leftover_at(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
     if occupant(dir)?.is_some() {
-        clear_worktree_dir(repo, dir, authorized_root)?;
+        clear_worktree_dir(repo, dir, authorized_root, &mut Removing::AnyTree)?;
     }
     Ok(())
 }
@@ -3378,7 +3488,7 @@ pub fn reclaim_worktree_on_branch(
             Ok(Some(dir))
         }
         OnBranch::Under(dir) => {
-            clear_worktree_dir(repo, &dir, authorized_root)?;
+            clear_worktree_dir(repo, &dir, authorized_root, &mut Removing::AnyTree)?;
             reclaim_cache_sibling(&dir, authorized_root);
             Ok(Some(dir))
         }
@@ -9508,6 +9618,141 @@ mod tests {
         }
         if let Err(e) = Worktree::create(repo, at, HELD_BRANCH, h.root()) {
             violations.push(format!("a create at the same path failed: {}", e.0));
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// AFTER GIT REFUSES A REMOVE, ITS LIST READ AGAIN DECIDES: any tree git lists is kept, marked
+    /// or not; a throwaway is kept only under a `locked` mark, and one git lists unmarked or marks
+    /// `prunable` (a mark set since the first read) is taken off disk; nothing listed is a
+    /// leftover either way.
+    #[test]
+    fn a_refusal_keeps_any_tree_git_lists_and_a_throwaway_only_under_a_lock() {
+        const LOCKED: &str = "locked a person's lock";
+        const PRUNABLE: &str = "prunable gitdir file points to non-existent location";
+        // Each row: what git's list read again says, whether the tree is a throwaway, and what
+        // the removal does.
+        let rows: [(Option<Option<&str>>, bool, AfterRefusal<'_>); 8] = [
+            (Some(Some(LOCKED)), false, AfterRefusal::KeepMarked(LOCKED)),
+            (
+                Some(Some(PRUNABLE)),
+                false,
+                AfterRefusal::KeepMarked(PRUNABLE),
+            ),
+            (Some(None), false, AfterRefusal::KeepRefused),
+            (None, false, AfterRefusal::Leftover),
+            (Some(Some(LOCKED)), true, AfterRefusal::KeepMarked(LOCKED)),
+            (
+                Some(Some(PRUNABLE)),
+                true,
+                AfterRefusal::ClearThrowaway { unmarked: false },
+            ),
+            (
+                Some(None),
+                true,
+                AfterRefusal::ClearThrowaway { unmarked: true },
+            ),
+            (None, true, AfterRefusal::Leftover),
+        ];
+        let violations: Vec<String> = rows
+            .into_iter()
+            .filter_map(|(relisted, throwaway, want)| {
+                let got = after_refusal(relisted, throwaway);
+                (got != want).then(|| {
+                    format!("{relisted:?}, a throwaway: {throwaway}: {got:?}, not {want:?}")
+                })
+            })
+            .collect();
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
+    /// A DISCARD ANSWERS A REFUSAL FROM GIT BY GIT'S LIST READ AGAIN: a throwaway tree git lists
+    /// unmarked yet refuses to remove (its `.git` names another tree's registration) is taken off
+    /// disk, its registration dropped and its branch deleted, with one line saying what git
+    /// answered, and the tree beside it keeps its work; a tree another repository registers at
+    /// the same path stays, its work and registration with it, the discard is the error, and
+    /// nothing is said.
+    #[test]
+    fn a_discard_removes_a_throwaway_git_lists_but_refuses_and_keeps_another_repositorys_tree() {
+        // Each row: the case, what is done at the tree (answering the repository whose list
+        // names it while it is kept), and whether the discard takes it off disk.
+        type Row = (&'static str, fn(&HeldElsewhere) -> String, bool);
+        let rows: [Row; 2] = [
+            (
+                "a tree git lists but refuses",
+                |h| {
+                    let other = h.root.join("other");
+                    let other_dir = other.to_str().unwrap();
+                    Worktree::create(h.repo(), other_dir, "rigger/u/other", h.root()).unwrap();
+                    std::fs::write(other.join("work.txt"), "other work\n").unwrap();
+                    let admin = run_git(other_dir, &["rev-parse", "--absolute-git-dir"]).unwrap();
+                    std::fs::write(h.at.join(".git"), format!("gitdir: {}\n", admin.trim_end()))
+                        .unwrap();
+                    h.repo().to_string()
+                },
+                true,
+            ),
+            (
+                "a tree another repository registers",
+                |h| {
+                    let other = h.root.join("other-repo");
+                    std::fs::create_dir_all(&other).unwrap();
+                    let other_repo = other.to_str().unwrap();
+                    run_git(other_repo, &["init", "-q"]).unwrap();
+                    run_git(other_repo, &["commit", "-q", "--allow-empty", "-m", "seed"]).unwrap();
+                    run_git(h.repo(), &["worktree", "remove", "--force", h.at()]).unwrap();
+                    run_git(
+                        other_repo,
+                        &["worktree", "add", "-q", "-b", "theirs", h.at()],
+                    )
+                    .unwrap();
+                    std::fs::write(h.at.join("work.txt"), "work\n").unwrap();
+                    other_repo.to_string()
+                },
+                false,
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (row, plant, removed) in rows {
+            let h = held_elsewhere(Held::Under);
+            let registers = plant(&h);
+            let (repo, at) = (h.repo(), h.at());
+            let mut said = Vec::new();
+            let discarded = Worktree::discard_logged(repo, at, HELD_BRANCH, h.root(), &mut |l| {
+                said.push(l.to_string())
+            });
+            if discarded.is_ok() != removed {
+                violations.push(format!("{row}: the discard answers {discarded:?}"));
+            }
+            if h.work().is_some() == removed {
+                violations.push(format!("{row}: its work is kept: {}", !removed));
+            }
+            let listed = run_git(&registers, &["worktree", "list", "--porcelain"])
+                .unwrap_or_default()
+                .lines()
+                .any(|line| line == format!("worktree {at}"));
+            if listed == removed {
+                violations.push(format!("{row}: its registration is kept: {listed}"));
+            }
+            if removed && branch_exists(repo, HELD_BRANCH) {
+                violations.push(format!("{row}: its branch is still there"));
+            }
+            let opens = format!(
+                "rigger: git refused to remove the throwaway worktree at {at}, which it lists \
+                 unmarked, so its dir is removed: fatal: validation failed"
+            );
+            let one_line = |said: &[String]| {
+                matches!(said, [line] if line.starts_with(&opens)
+                    && line.contains("does not point back")
+                    && !line.contains('\n'))
+            };
+            if (removed && !one_line(&said)) || (!removed && !said.is_empty()) {
+                violations.push(format!("{row}: it says {said:?}"));
+            }
+            let other = h.root.join("other").join("work.txt");
+            if removed && std::fs::read_to_string(&other).ok().as_deref() != Some("other work\n") {
+                violations.push(format!("{row}: the other tree lost its work"));
+            }
         }
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
