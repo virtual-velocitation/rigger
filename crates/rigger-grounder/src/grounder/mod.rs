@@ -377,7 +377,8 @@ mod tests {
     /// does not re-enter through the link. Root confinement makes this hold BY CONSTRUCTION:
     /// the walk never follows a symlink, so `sub/loop` is simply not traversed and a cycle can
     /// never form. A hang here (a regression that started following links) fails the test by
-    /// timeout.
+    /// timeout. Unix only: the link is made with the unix symlink call.
+    #[cfg(unix)]
     #[test]
     fn grep_walk_terminates_on_a_symlink_cycle() {
         let dir = tempfile::tempdir().unwrap();
