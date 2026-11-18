@@ -4998,14 +4998,17 @@ mod tests {
         );
     }
 
-    /// ONLY A COMPLETE, ORDERED SET OF CONFLICT MARKERS IS CONFLICT-MARKER TEXT: a commit is
-    /// refused over a start line, then a separator, then an end line - a diff3 base section
-    /// between start and separator, and CRLF line ends, included - and never over a separator-
-    /// shaped line alone (a Setext heading's underline, an RST title's over- and underline), a
-    /// start with no end after it, or the three lines out of order. A set the file's committed
-    /// text already shows (a fixture, a document about conflicts) is its content, never a
-    /// conflict, so an edit elsewhere in that file is not refused; a set beside it is, and so is
-    /// one whose lines repeat the shown set's, which is one set more than HEAD carries.
+    /// A COMPLETE, ORDERED SET OF CONFLICT MARKERS, OR A START OR END LINE STANDING IN NONE, IS
+    /// CONFLICT-MARKER TEXT: a commit is refused over a start line, then a separator, then an end
+    /// line - a diff3 base section between start and separator, and CRLF line ends, included -
+    /// and over a start or end line in no such set (a start with no end after it, the three lines
+    /// out of order), but never over a separator-shaped line alone (a Setext heading's underline,
+    /// an RST title's over- and underline). Marker text the file's committed text already shows (a
+    /// fixture, a document about conflicts) is its content, never a conflict, so an edit
+    /// elsewhere in that file is not refused; a set beside it is, and so is one whose lines repeat
+    /// the shown set's, which is one set more than HEAD carries, and so is a conflict hunk git
+    /// wrote around the shown set, holding it on one side or cutting through it, whose own start
+    /// and end lines stand in no set HEAD carries.
     #[test]
     fn a_commit_is_refused_only_over_a_complete_ordered_set_of_conflict_markers() {
         // A committed file's text that shows a marker set.
@@ -5013,6 +5016,16 @@ mod tests {
         let shown_edited = format!("{SHOWN}edited\n");
         let shown_and_a_conflict = format!("{SHOWN}<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\n");
         let shown_and_its_twin = format!("{SHOWN}<<<<<<< ours\nz\n=======\nw\n>>>>>>> theirs\n");
+        // Conflict hunks git wrote over the shown set: holding it whole on the one side, then on
+        // the other, then cutting through it, its start and separator on the one side.
+        const SHOWN_ON_ONE_SIDE: &str = "Markers look like:\n<<<<<<< HEAD\n<<<<<<< ours\nx\n\
+                                         =======\ny\n>>>>>>> theirs\n=======\n>>>>>>> unit\n";
+        const SHOWN_ON_THE_OTHER: &str = "Markers look like:\n<<<<<<< HEAD\n=======\n\
+                                          <<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n\
+                                          >>>>>>> unit\n";
+        const SHOWN_CUT_THROUGH: &str = "Markers look like:\n<<<<<<< HEAD\n<<<<<<< ours\nx\n\
+                                         =======\n<<<<<<< ours\nx\n>>>>>>> unit\n=======\ny\n\
+                                         >>>>>>> theirs\n";
         // Each row: the file's committed text, its text in the commit, and whether the commit is
         // refused.
         let rows = [
@@ -5050,13 +5063,13 @@ mod tests {
                 "a start marker with no end",
                 "seed\n",
                 "<<<<<<< ours\na\n=======\nb\n",
-                false,
+                true,
             ),
             (
                 "the markers out of order",
                 "seed\n",
                 ">>>>>>> theirs\nb\n=======\na\n<<<<<<< ours\n",
-                false,
+                true,
             ),
             (
                 "another line of a file whose committed text shows a set",
@@ -5076,7 +5089,27 @@ mod tests {
                 shown_and_its_twin.as_str(),
                 true,
             ),
+            (
+                "a conflict holding the set the committed text shows on its one side",
+                SHOWN,
+                SHOWN_ON_ONE_SIDE,
+                true,
+            ),
+            (
+                "a conflict holding the set the committed text shows on its other side",
+                SHOWN,
+                SHOWN_ON_THE_OTHER,
+                true,
+            ),
+            (
+                "a conflict cutting through the set the committed text shows",
+                SHOWN,
+                SHOWN_CUT_THROUGH,
+                true,
+            ),
         ];
+        // Every row whose answer is not the one it expects, with the refusal it got.
+        let mut wrong = Vec::new();
         for (row, seed, text, refused) in rows {
             let repo = init_repo();
             let repo_path = repo.path().to_str().unwrap().to_string();
@@ -5087,9 +5120,12 @@ mod tests {
             git(dir, &["commit", "-q", "-m", "seed notes"]).unwrap();
             std::fs::write(wt_path.join("notes.txt"), text).unwrap();
             let refusal = commit_refusal(dir, "rigger/u/markers").unwrap();
-            assert_eq!(refusal.is_some(), refused, "{row}: {refusal:?}");
+            if refusal.is_some() != refused {
+                wrong.push((row, refusal));
+            }
             wt.remove().unwrap();
         }
+        assert_eq!(wrong, [], "rows refused when they should not be, or the reverse");
     }
 
     /// THE GUARD READS WHAT THE COMMIT CARRIES: a checkpoint's `git add -A` stages a new file as
@@ -5614,7 +5650,8 @@ mod tests {
     /// the unit's branch while the merge stays in progress is refused in [`commit_refusal`]'s
     /// own words; either way the merge is left in progress and nothing is committed. A
     /// resolution keeping the complete marker set both parents carry at that path (a document
-    /// showing one) finalizes clean.
+    /// showing one) finalizes clean; one staging a conflict hunk git wrote around that set is a
+    /// `Conflict`, the hunk's own start and end lines standing in no set either parent carries.
     #[test]
     fn a_merge_finalize_refuses_marker_text_the_merge_introduced_and_no_line_a_parent_carries() {
         // What every version of the file starts with: a marker set it shows, and a Setext title.
@@ -5636,6 +5673,10 @@ mod tests {
             run_git(dir, &["update-ref", "--no-deref", "HEAD", "HEAD"]).unwrap();
         }
         let resolved = format!("{SHOWN}A and B\n");
+        // A hunk git wrote with the set both parents carry on its one side, staged as resolved.
+        let hunk_around_the_set = "Markers look like:\n<<<<<<< HEAD\n<<<<<<< ours\nx\n=======\n\
+                                   y\n>>>>>>> theirs\n=======\n>>>>>>> unit\n\nTitle\n=======\n\
+                                   A and B\n";
         // (row, what the resolver stages - `None` is the file as the merge left it - what it
         // then leaves in the worktree unstaged, what is then done to the tree, the finalize's
         // answer)
@@ -5646,10 +5687,17 @@ mod tests {
             fn(&str),
             Finalize,
         );
-        let rows: [Row; 5] = [
+        let rows: [Row; 6] = [
             (
                 "a resolution still carrying the markers",
                 None,
+                None,
+                stays,
+                Finalize::Conflict,
+            ),
+            (
+                "a hunk around the marker set both parents carry, staged",
+                Some(hunk_around_the_set),
                 None,
                 stays,
                 Finalize::Conflict,
