@@ -3342,4 +3342,120 @@ mod tests {
             .to_vec();
         assert_eq!((br.precise, br.safe), (radius.clone(), radius));
     }
+
+    /// Spec 117 (CAPTURES), AN IMPLEMENTING FILE STAYS IN THE BLAST RADIUS, across the worktree a
+    /// reader's head is compared with. A file joins `Shape`'s radius by an implementation header
+    /// naming it, whether the view or the worktree's bytes serve the file, and leaves when the
+    /// worktree deletes the file or rewrites its header to name another trait. A type mention
+    /// places no file. A worktree that cannot be compared serves no implementing file, so the
+    /// precise view is empty and the safe view falls back to the text search of the disk, which
+    /// holds `circle.rs`. `Shape`'s ranked row counts `make.rs`'s call alone throughout. Each row:
+    /// the worktree, then `Shape`'s precise and safe views and its ranked rows as (file, line,
+    /// degree).
+    #[test]
+    fn an_implementing_file_joins_and_leaves_the_radius_with_the_worktree() {
+        use crate::contextgraph::{
+            CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_TRAIT, REF_KIND_IMPL, REF_KIND_TYPE,
+        };
+        use crate::graph_fixtures::{planted_file, with_tagged};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("circle.rs"), "impl Shape for Circle {}\n").unwrap();
+        // A file whose one mention is the header of the `impl` block `ty`, naming `base`.
+        let implementing = |path: &str, ty: &str, base: &str| {
+            let file = planted_file(path, &[(ty, CODE_KIND_IMPL)], &[], &[]);
+            with_tagged(file, REF_KIND_IMPL, &[(ty, base)])
+        };
+        let files = vec![
+            planted_file("shape.rs", &[("Shape", CODE_KIND_TRAIT)], &[], &[]),
+            implementing("circle.rs", "Circle", "Shape"),
+            planted_file(
+                "make.rs",
+                &[("make", CODE_KIND_FUNCTION)],
+                &[("make", "Shape")],
+                &[],
+            ),
+        ];
+        let typed = with_tagged(
+            planted_file("hold.rs", &[("hold", CODE_KIND_FUNCTION)], &[], &[]),
+            REF_KIND_TYPE,
+            &[("hold", "Shape")],
+        );
+        let shape_row = &[("shape.rs", 1, 1)][..];
+        let cases = [
+            (
+                "a worktree that agrees with the view",
+                agreeing_tree(),
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "an untracked file implementing it joins",
+                differing(
+                    Vec::new(),
+                    &[],
+                    vec![implementing("square.rs", "Square", "Shape")],
+                ),
+                &["shape.rs", "circle.rs", "make.rs", "square.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs", "square.rs"][..],
+                shape_row,
+            ),
+            (
+                "an untracked file naming it as a type alone stays out",
+                differing(Vec::new(), &[], vec![typed]),
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "the implementing file deleted leaves",
+                differing(Vec::new(), &["circle.rs"], Vec::new()),
+                &["shape.rs", "make.rs"][..],
+                &["shape.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "the implementing file rewritten to implement another trait leaves",
+                differing(
+                    vec![implementing("circle.rs", "Circle", "Area")],
+                    &[],
+                    Vec::new(),
+                ),
+                &["shape.rs", "make.rs"][..],
+                &["shape.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "a worktree that cannot be compared falls back to the text search",
+                None,
+                &[][..],
+                &["circle.rs"][..],
+                &[][..],
+            ),
+        ];
+        for (name, worktree, precise, safe, ranked) in cases {
+            let g = Symbols::over(
+                root.path().to_str().unwrap(),
+                Box::new(Fixed {
+                    files: files.clone(),
+                    worktree,
+                }),
+            );
+            let br = g.blast_radius("`Shape`", 8);
+            let ranked_rows = g.ground_ranked("Shape", 8);
+            let rows: Vec<(&str, u32, usize)> = ranked_rows
+                .iter()
+                .map(|r| (r.loc.file.as_str(), r.loc.line, r.degree))
+                .collect();
+            assert_eq!(
+                (
+                    br.precise.iter().map(String::as_str).collect::<Vec<_>>(),
+                    br.safe.iter().map(String::as_str).collect::<Vec<_>>(),
+                    rows
+                ),
+                (precise.to_vec(), safe.to_vec(), ranked.to_vec()),
+                "{name}"
+            );
+        }
+    }
 }
