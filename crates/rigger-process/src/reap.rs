@@ -1093,9 +1093,12 @@ std::cfg_select! {
     target_os = "windows" => {
         /// End the job object `job`, which this process created and alone holds, and every process
         /// in it, the held child `main` among them: the job end's ONE sanctioned site
-        /// (`TerminateJobObject`, the `no-os-kill` gate). The count of the job's processes still
-        /// running is read until none is left or [`END_BOUND`] passes, when each process the job
-        /// still lists is reported as residue; then the main is reaped and the handle closed. A
+        /// (`TerminateJobObject`, the `no-os-kill` gate). The job's members are read first
+        /// ([`job_members`]); the end then waits, for at most [`END_BOUND`], until the job counts
+        /// no active process and no member read still runs ([`running`]). The count alone answers
+        /// as soon as the OS marks each process ended, before the process has exited and closed
+        /// its handles. Past the bound, each member read that still runs and each process the job
+        /// still lists is reported as residue. Then the main is reaped and the handle closed. A
         /// job the OS will not end is reported as a fault, with no wait for it, since nothing was
         /// sent to it. The kernel names a job's members, so no member is found by a walk, and none
         /// is signalled one at a time.
@@ -1108,6 +1111,7 @@ std::cfg_select! {
             use windows_sys::Win32::System::JobObjects::TerminateJobObject;
             let handle = job.as_raw_handle();
             let mut report = EndReport::default();
+            let held = job_members(handle);
             // SAFETY: the handle is a job this process created and still holds; the call takes
             // no pointer.
             let ended = unsafe { TerminateJobObject(handle, 1) } != FALSE;
@@ -1119,11 +1123,17 @@ std::cfg_select! {
                     main.id()
                 ));
                 let _ = main.try_wait();
-            } else if poll_until(Instant::now() + END_BOUND, || job_active(handle) == Some(0)) {
+            } else if poll_until(Instant::now() + END_BOUND, || {
+                job_active(handle) == Some(0) && !held.iter().any(running)
+            }) {
                 let _ = main.wait();
             } else {
-                report.residue = job_pids(handle)
-                    .into_iter()
+                let listed = job_pids(handle);
+                report.residue = held
+                    .iter()
+                    .filter(|member| running(member) && !listed.contains(&member.pid))
+                    .map(|member| member.pid)
+                    .chain(listed.iter().copied())
                     .map(|pid| Leftover::of(pid, false))
                     .collect();
                 let _ = main.try_wait();
@@ -1155,10 +1165,19 @@ std::cfg_select! {
             read.then_some(counts.ActiveProcesses)
         }
 
+        /// Each process the job `job` holds ([`job_pids`]), with the start time it reads now; one
+        /// gone before its start time is read is not named.
+        pub(crate) fn job_members(job: windows_sys::Win32::Foundation::HANDLE) -> Vec<Identity> {
+            job_pids(job)
+                .into_iter()
+                .filter_map(|pid| pid_starttime(pid).map(|start| Identity { pid, start }))
+                .collect()
+        }
+
         /// The pid of each process the job `job` holds, its nested jobs' among them; empty when
         /// the list cannot be read. A list too short for the job is grown to the count the call
         /// reports and read again, a few times at most.
-        pub(crate) fn job_pids(job: windows_sys::Win32::Foundation::HANDLE) -> Vec<u32> {
+        fn job_pids(job: windows_sys::Win32::Foundation::HANDLE) -> Vec<u32> {
             use windows_sys::Win32::Foundation::FALSE;
             use windows_sys::Win32::System::JobObjects::{
                 JobObjectBasicProcessIdList, QueryInformationJobObject,

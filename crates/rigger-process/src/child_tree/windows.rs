@@ -414,12 +414,7 @@ mod tests {
             "start /b ping -n 60 127.0.0.1 & echo up& ping -n 60 127.0.0.1 >NUL",
         );
         assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
-        let held: Vec<reap::Identity> = reap::job_pids(job.0.as_raw_handle())
-            .into_iter()
-            .filter_map(|pid| {
-                crate::os_process::start_time(pid).map(|start| reap::Identity { pid, start })
-            })
-            .collect();
+        let held = reap::job_members(job.0.as_raw_handle());
 
         let report = reap::end_job(job.0, &mut main);
 
