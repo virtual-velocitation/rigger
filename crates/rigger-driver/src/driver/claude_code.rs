@@ -2739,11 +2739,12 @@ mod tests {
         assert_eq!(cfg["mcpServers"].as_object().unwrap().len(), 1);
     }
 
-    /// The server a launch binds to its spawn is, as the OS reports it, a writer of the spawn
-    /// that the spawn's ordinary end waits for: the launch and the end know it by the same words.
+    /// The server a launch binds to its spawn is, by the arguments the OS reports it running
+    /// with, a writer of the spawn that the spawn's ordinary end waits for: the launch and the end
+    /// know it by the same arguments, a spawn id holding a space included.
     #[test]
     fn build_args_binds_a_server_the_spawns_end_waits_for() {
-        let o = opts("u7-launch/implementer#2");
+        let o = opts("u 7-launch/implementer#2");
         let args = build_args(
             &AgentDef::default(),
             &SystemPromptFile::default(),
@@ -2756,15 +2757,14 @@ mod tests {
         let i = args.iter().position(|x| x == "--mcp-config").unwrap();
         let cfg: serde_json::Value = serde_json::from_str(&args[i + 1]).unwrap();
         let server = &cfg["mcpServers"][hooks::MCP_SERVER_NAME];
-        let line = std::iter::once(&server["command"])
+        let arguments: Vec<String> = std::iter::once(&server["command"])
             .chain(server["args"].as_array().unwrap())
-            .map(|word| word.as_str().unwrap())
-            .collect::<Vec<_>>()
-            .join(" ");
+            .map(|word| word.as_str().unwrap().to_string())
+            .collect();
 
         assert!(
-            hooks::is_spawn_writer(&line, &o.id),
-            "{line:?} is a writer of {:?}",
+            hooks::is_spawn_writer(&arguments, &o.id),
+            "{arguments:?} is a writer of {:?}",
             o.id
         );
     }

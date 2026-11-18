@@ -221,9 +221,9 @@ rigger::test_cases! {
 /// its shell's arguments: the stop-failure hook's, or the tool server's, as each does.
 const SPAWN: &str = "u-late-writer";
 
-/// Whether `line` is a writer of [`SPAWN`], one a finish for it waits for.
-fn a_writer(line: &str) -> bool {
-    rigger::hooks::is_spawn_writer(line, SPAWN)
+/// Whether `arguments` are a writer of [`SPAWN`]'s, one a finish for it waits for.
+fn a_writer(arguments: &[String]) -> bool {
+    rigger::hooks::is_spawn_writer(arguments, SPAWN)
 }
 
 /// The kept fixture `body`, with `up` of its processes up and, where `exited`, its main exited,

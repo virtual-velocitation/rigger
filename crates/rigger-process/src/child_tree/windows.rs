@@ -548,8 +548,8 @@ mod tests {
         assert!(ends(&lines), "nothing the tree started holds its output");
     }
 
-    // The writer is the process whose command line names `u-late-writer`, and it writes its line
-    // two seconds after the main has exited, once its ping ends: the line is read only if the
+    // The writer is the process one of whose arguments names `u-late-writer`, and it writes its
+    // line two seconds after the main has exited, once its ping ends: the line is read only if the
     // finish waited for it.
     #[test]
     fn a_jobbed_finish_waits_for_a_writer_its_exited_main_left() {
@@ -566,7 +566,9 @@ mod tests {
             "the main exits on its own"
         );
 
-        let report = tree.finish(Some(&|line: &str| line.contains("u-late-writer")));
+        let report = tree.finish(Some(&|arguments: &[String]| {
+            arguments.iter().any(|word| word.contains("u-late-writer"))
+        }));
 
         assert_eq!(report, EndReport::default());
         assert!(read_until(&lines, "written"), "the writer wrote its line");

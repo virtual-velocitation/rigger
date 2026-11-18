@@ -699,7 +699,7 @@ mod tests {
         body: &str,
         up: usize,
         exited: bool,
-        writer: Option<&dyn Fn(&str) -> bool>,
+        writer: Option<&dyn Fn(&[String]) -> bool>,
         left: Reading,
         sent: usize,
         skipped: usize,
@@ -748,7 +748,9 @@ mod tests {
                 "sh -c \"$witness_up; $witness_held\" u-late-writer & up; sleep 1",
                 2,
                 true,
-                Some(&|line: &str| line.contains("u-late-writer")),
+                Some(&|arguments: &[String]| {
+                    arguments.iter().any(|word| word.contains("u-late-writer"))
+                }),
                 Reading::Held,
                 0,
                 1,

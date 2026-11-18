@@ -109,7 +109,7 @@ std::cfg_select! {
                             start_time(me),
                             cwd(me),
                             command(me),
-                            command_line(me),
+                            arguments(me),
                             executable_name(me),
                             state(me),
                             open_files(me),
@@ -635,14 +635,14 @@ mod tests {
         );
     }
 
-    /// On Linux a process's command line is its arguments joined by single spaces, as its command
-    /// is; once its arguments are gone, as an exited child's are before it is reaped, its command
-    /// line answers none where its command answers its short name, and a gone process answers
-    /// none.
+    /// On Linux a process's arguments are the ones it was started with, and its command is them
+    /// joined by single spaces; once its arguments are gone, as an exited child's are before it is
+    /// reaped, it answers none where its command answers its short name, and a gone process
+    /// answers none.
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_processes_command_line_is_its_arguments_and_none_once_they_are_gone() {
-        let me = std::env::args().collect::<Vec<_>>().join(" ");
+    fn a_processes_arguments_are_its_own_and_none_once_they_are_gone() {
+        let me: Vec<String> = std::env::args().collect();
         let mut sleeper = sleeper_in(Path::new("/"));
         // `spawn` returns while the child's exec may still be laying out its arguments, when the
         // OS reports none yet, so the child is read once its exec has finished.
@@ -655,52 +655,142 @@ mod tests {
             ("an exited child not yet reaped", exited.id()),
             ("a gone process", gone_pid()),
         ];
-        let read: Vec<(&str, Option<String>, String)> = rows
+        let read: Vec<(&str, Option<Vec<String>>, String)> = rows
             .iter()
-            .map(|&(what, pid)| (what, command_line(pid), command(pid)))
+            .map(|&(what, pid)| (what, arguments(pid), command(pid)))
             .collect();
         cleanup(&mut sleeper);
         exited.wait().unwrap();
-        let sleep = "sleep 300".to_string();
+        let sleep = ["sleep", "300"].map(String::from).to_vec();
         assert_eq!(
             read,
             [
-                ("this process", Some(me.clone()), me),
-                ("a sleeping child", Some(sleep.clone()), sleep),
+                ("this process", Some(me.clone()), me.join(" ")),
+                ("a sleeping child", Some(sleep), "sleep 300".to_string()),
                 ("an exited child not yet reaped", None, "true".to_string()),
                 ("a gone process", None, String::new()),
             ]
         );
     }
 
-    /// On Windows a process's command line is the line it was created with. For a process Rust
-    /// started, that is its program in quotes and then its arguments, each quoted only where it
-    /// holds a space, so with the quotes taken out it is its program and arguments joined by single
-    /// spaces: this process's, read by the reader through its own pid, and a running child's, read
-    /// through another process's.
-    #[cfg(windows)]
+    /// A process's arguments are the ones it was created with, each one whole: this process's,
+    /// read through its own pid, and a child's created with a spawn's stop-failure hook arguments,
+    /// whose spawn id holds a space, and an empty argument after them. On Windows the creation
+    /// quotes the id and the empty argument into the command line the child is created with, as
+    /// the host's launch quotes a hook's, and each reads back as the one argument it was. The
+    /// child is a shell that reads its commands from its input and runs none of the words, so it
+    /// stays up while that input is open and exits once it closes: Unix's `sh -s`, holding them
+    /// as its positional parameters, and Windows's `cmd /d /k`, after a `rem`.
+    #[cfg(any(target_os = "linux", target_os = "android", windows))]
     #[test]
-    fn a_processes_command_line_is_the_line_it_was_created_with() {
-        let mut ping = crate::subprocess::command("ping");
-        ping.args(["-n", "3", "127.0.0.1"])
-            .stdout(std::process::Stdio::null());
-        let pinging = format!("{} -n 3 127.0.0.1", ping.get_program().to_string_lossy());
-        let mut child = ping.spawn().expect("start ping");
-        let me = std::env::args().collect::<Vec<_>>().join(" ");
-        let rows = [
-            ("this process", std::process::id(), me),
-            ("a running child", child.id(), pinging),
+    fn a_processes_arguments_are_the_ones_it_was_created_with_each_one_whole() {
+        let (shell, before) = if cfg!(windows) {
+            ("cmd", ["/d", "/k", "rem"].as_slice())
+        } else {
+            ("sh", ["-s"].as_slice())
+        };
+        let hook = [
+            "hook",
+            "stop-failure",
+            "--spawn",
+            "u 7/implementer#2",
+            "--class",
+            "x",
         ];
-        let read: Vec<(&str, Option<String>)> = rows
-            .iter()
-            .map(|(what, pid, _)| (*what, command_line(*pid).map(|line| line.replace('"', ""))))
+        let mut carrier = crate::subprocess::command(shell);
+        carrier
+            .args(before)
+            .args(hook)
+            .arg("")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null());
+        let created: Vec<String> = std::iter::once(carrier.get_program())
+            .chain(carrier.get_args())
+            .map(|word| word.to_string_lossy().into_owned())
             .collect();
-        child.wait().expect("ping ends on its own");
-        let expected: Vec<(&str, Option<String>)> = rows
+        let mut child = carrier.spawn().expect("start the shell");
+        // A Unix child reports this process's arguments until its exec has laid out its own.
+        crate::test_support::wait_until(|| arguments(child.id()).as_ref() == Some(&created));
+        let rows = [
+            (
+                "this process",
+                std::process::id(),
+                std::env::args().collect(),
+            ),
+            (
+                "a child created with a spaced spawn id",
+                child.id(),
+                created,
+            ),
+        ];
+        let read: Vec<(&str, Option<Vec<String>>)> = rows
             .iter()
-            .map(|(what, _, line)| (*what, Some(line.clone())))
+            .map(|(what, pid, _)| (*what, arguments(*pid)))
+            .collect();
+        drop(child.stdin.take());
+        child.wait().expect("the shell exits once its input closes");
+        let expected: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, _, created)| (*what, Some(created.clone())))
             .collect();
         assert_eq!(read, expected);
+    }
+
+    /// A Windows command line splits into the arguments it was quoted from, as the host's launch
+    /// quotes a hook's: an argument holding a space, or nothing, in double quotes, a quote inside
+    /// one after a backslash, and a backslash doubled before a closing quote. An empty line, which
+    /// the split would answer with this process's own path, answers none.
+    #[cfg(windows)]
+    #[test]
+    fn a_command_line_splits_into_the_arguments_it_was_quoted_from() {
+        let rows: [(&str, &str, Option<&[&str]>); 5] = [
+            (
+                "a hook for a spawn id holding a space",
+                r#""C:\Program Files\rigger\rigger.exe" hook stop-failure --spawn "u 7/implementer#2" --class rate_limit"#,
+                Some(&[
+                    r"C:\Program Files\rigger\rigger.exe",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u 7/implementer#2",
+                    "--class",
+                    "rate_limit",
+                ]),
+            ),
+            (
+                "an empty argument",
+                r#"rigger mcp --spawn """#,
+                Some(&["rigger", "mcp", "--spawn", ""]),
+            ),
+            (
+                "a quote inside an argument",
+                r#"rigger "a\"b c""#,
+                Some(&["rigger", "a\"b c"]),
+            ),
+            (
+                "a backslash before the closing quote",
+                r#"rigger "C:\dir with space\\""#,
+                Some(&["rigger", r"C:\dir with space\"]),
+            ),
+            ("an empty line", "", None),
+        ];
+        let split: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, line, _)| {
+                let units: Vec<u16> = line.encode_utf16().collect();
+                (*what, windows::split_command_line(&units))
+            })
+            .collect();
+        let expected: Vec<(&str, Option<Vec<String>>)> = rows
+            .iter()
+            .map(|(what, _, words)| {
+                (
+                    *what,
+                    words.map(|words| words.iter().map(|word| word.to_string()).collect()),
+                )
+            })
+            .collect();
+        assert_eq!(split, expected);
     }
 
     /// On macOS a process's command is the full path of its executable.
@@ -838,7 +928,7 @@ mod tests {
                 start_time(gone),
                 cwd(gone),
                 command(gone),
-                command_line(gone),
+                arguments(gone),
                 executable_name(gone),
                 state(gone),
                 open_files(gone),

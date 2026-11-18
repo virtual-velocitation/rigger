@@ -982,24 +982,34 @@ mod tests {
         }
     }
 
-    /// Each stop-failure hook a spawn's hooks install, for a bare and a hostile binary and spawn,
-    /// is the hook for its spawn as the OS reports a process running it: its program, then each of
-    /// its arguments as written, one space apart, as the host starts it with no shell, the
-    /// binary's path double-quoted as Windows shows one holding a space. A hook for a spawn whose id
-    /// merely starts with the spawn's, a hook for another spawn and the write guard are not.
+    /// The binaries and spawns the writer rows install a spawn's writers for: a bare binary and
+    /// spawn, a hostile pair, and a Windows binary in a directory holding a space with a spawn id
+    /// holding one.
+    const WRITERS_FOR: [(&str, &str); 3] = [
+        ("rigger", "u/implementer#0"),
+        ("/opt/it's here/rigger", "u/a b'c#1"),
+        (
+            r"C:\Program Files\rigger\rigger.exe",
+            "u 7-launch/implementer#2",
+        ),
+    ];
+
+    /// `words` as the arguments a process reports.
+    fn arguments(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| word.to_string()).collect()
+    }
+
+    /// Each stop-failure hook a spawn's hooks install, for each of [`WRITERS_FOR`], is the hook
+    /// for its spawn by the arguments the OS reports a process running it with: its program, then
+    /// each of its arguments whole, as the host starts it with no shell. A hook for a spawn whose
+    /// id merely starts with the spawn's, a hook for another spawn, the write guard and a hook
+    /// whose arguments split the spawn's id at its space are not.
     #[test]
     fn a_writer_an_end_waits_for_is_the_stop_failure_hook_installed_for_its_spawn() {
-        for (bin, spawn) in [
-            ("rigger", "u/implementer#0"),
-            ("/opt/it's here/rigger", "u/a b'c#1"),
-            (
-                r#""C:\Program Files\rigger\rigger.exe""#,
-                "u7-launch/implementer#2",
-            ),
-        ] {
+        for (bin, spawn) in WRITERS_FOR {
             let installed = install_spawn_hooks(b"", bin, spawn, &[], "", &TreeDuty::None);
             let settings: Value = serde_json::from_slice(&installed.unwrap()).unwrap();
-            let lines: Vec<String> = settings["hooks"]["StopFailure"]
+            let hooks: Vec<Vec<String>> = settings["hooks"]["StopFailure"]
                 .as_array()
                 .expect("the StopFailure array")
                 .iter()
@@ -1008,60 +1018,98 @@ mod tests {
                     let args = hook["args"].as_array().expect("an exec-form hook's args");
                     std::iter::once(&hook["command"])
                         .chain(args)
-                        .map(|word| word.as_str().expect("a word"))
-                        .collect::<Vec<_>>()
-                        .join(" ")
+                        .map(|word| word.as_str().expect("a word").to_string())
+                        .collect()
                 })
                 .collect();
-            assert_eq!(lines.len(), crate::agent::AgentFailure::CATEGORIES.len());
-            for line in lines {
+            assert_eq!(hooks.len(), crate::agent::AgentFailure::CATEGORIES.len());
+            for hook in hooks {
                 assert!(
-                    is_spawn_writer(&line, spawn),
-                    "{line:?} is the hook for {spawn:?}"
+                    is_spawn_writer(&hook, spawn),
+                    "{hook:?} is the hook for {spawn:?}"
                 );
             }
         }
-        for line in [
-            "rigger hook stop-failure --spawn u/implementer#01 --class rate_limit",
-            "rigger hook stop-failure --spawn u/reviewer#1 --class rate_limit",
-            "rigger guard-write --root /wt",
+        for (words, spawn) in [
+            (
+                &[
+                    "rigger",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u/implementer#01",
+                    "--class",
+                    "x",
+                ][..],
+                "u/implementer#0",
+            ),
+            (
+                &[
+                    "rigger",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u/reviewer#1",
+                    "--class",
+                    "x",
+                ],
+                "u/implementer#0",
+            ),
+            (
+                &["rigger", "guard-write", "--root", "/wt"],
+                "u/implementer#0",
+            ),
+            (
+                &[
+                    "rigger",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u/a",
+                    "b'c#1",
+                    "--class",
+                    "x",
+                ],
+                "u/a b'c#1",
+            ),
         ] {
             assert!(
-                !is_spawn_writer(line, "u/implementer#0"),
-                "{line:?} is no writer for u/implementer#0"
+                !is_spawn_writer(&arguments(words), spawn),
+                "{words:?} is no writer for {spawn:?}"
             );
         }
     }
 
-    /// The tool server bound to a spawn, for a bare and a hostile binary and spawn, is a writer of
-    /// the spawn as the OS reports it: its binary and [`tool_server_args`]'s words, the binary's
-    /// path double-quoted as Windows shows one holding a space. The spawn-less server `rigger
-    /// setup` installs, a server for a spawn whose id merely starts with the spawn's and a server
-    /// for another spawn are not.
+    /// The tool server bound to a spawn, for each of [`WRITERS_FOR`], is a writer of the spawn by
+    /// the arguments the OS reports it running with: its binary and [`tool_server_args`], each
+    /// whole. The spawn-less server `rigger setup` installs, a server for a spawn whose id merely
+    /// starts with the spawn's, a server for another spawn and a server whose arguments split the
+    /// spawn's id at its space are not.
     #[test]
     fn a_writer_an_end_waits_for_is_the_tool_server_bound_to_its_spawn() {
-        for (bin, spawn) in [
-            ("rigger", "u/implementer#0"),
-            ("/opt/it's here/rigger", "u/a b'c#1"),
-            (
-                r#""C:\Program Files\rigger\rigger.exe""#,
-                "u7-launch/implementer#2",
-            ),
-        ] {
-            let line = format!("{bin} {}", tool_server_args(spawn).join(" "));
+        for (bin, spawn) in WRITERS_FOR {
+            let mut server = arguments(&[bin]);
+            server.extend(arguments(&tool_server_args(spawn)));
             assert!(
-                is_spawn_writer(&line, spawn),
-                "{line:?} is the tool server for {spawn:?}"
+                is_spawn_writer(&server, spawn),
+                "{server:?} is the tool server for {spawn:?}"
             );
         }
-        for line in [
-            "rigger mcp",
-            "rigger mcp --spawn u/implementer#01",
-            "rigger mcp --spawn u/reviewer#1",
+        for (words, spawn) in [
+            (&["rigger", "mcp"][..], "u/implementer#0"),
+            (
+                &["rigger", "mcp", "--spawn", "u/implementer#01"],
+                "u/implementer#0",
+            ),
+            (
+                &["rigger", "mcp", "--spawn", "u/reviewer#1"],
+                "u/implementer#0",
+            ),
+            (&["rigger", "mcp", "--spawn", "u/a", "b'c#1"], "u/a b'c#1"),
         ] {
             assert!(
-                !is_spawn_writer(line, "u/implementer#0"),
-                "{line:?} is no writer for u/implementer#0"
+                !is_spawn_writer(&arguments(words), spawn),
+                "{words:?} is no writer for {spawn:?}"
             );
         }
     }
