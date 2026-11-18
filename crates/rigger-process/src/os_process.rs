@@ -637,23 +637,39 @@ mod tests {
         );
     }
 
-    /// On Linux a process's arguments are the ones it was started with, and its command is them
-    /// joined by single spaces; once its arguments are gone, as an exited child's are before it is
-    /// reaped, it answers none where its command answers its short name, and a gone process
-    /// answers none.
+    /// On Linux a process's arguments are the ones it was started with, an empty one included, and
+    /// its command is its arguments that are not empty joined by single spaces, or its short name
+    /// where none is not empty, as a process that blanked its arguments to retitle itself leaves
+    /// them; once its arguments are gone, as an exited child's are before it is reaped, it answers
+    /// none where its command answers its short name, and a gone process answers none.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_processes_arguments_are_its_own_and_none_once_they_are_gone() {
+        use std::os::unix::process::CommandExt;
         let me: Vec<String> = std::env::args().collect();
         let mut sleeper = sleeper_in(Path::new("/"));
+        let mut holding_empties = crate::subprocess::command("sh");
+        holding_empties.args(["-s", "", "a", ""]);
+        let mut all_empty = crate::subprocess::command("cat");
+        all_empty.arg0("");
+        let [holding_empties, all_empty] = [holding_empties, all_empty]
+            .map(|mut child| child.stdin(std::process::Stdio::piped()).spawn().unwrap());
+        let empties = [holding_empties.id(), all_empty.id()];
         // `spawn` returns while the child's exec may still be laying out its arguments, when the
-        // OS reports none yet, so the child is read once its exec has finished.
+        // OS reports this process's, so each child is read once its exec has finished.
         wait_until(|| command(sleeper.id()) == "sleep 300");
+        wait_until(|| {
+            empties
+                .iter()
+                .all(|&pid| arguments(pid).is_some_and(|a| a != me))
+        });
         let mut exited = crate::subprocess::command("true").spawn().unwrap();
         wait_until(|| state(exited.id()) == Some('Z'));
         let rows = [
             ("this process", std::process::id()),
             ("a sleeping child", sleeper.id()),
+            ("a child holding empty arguments", empties[0]),
+            ("a child whose one argument is empty", empties[1]),
             ("an exited child not yet reaped", exited.id()),
             ("a gone process", gone_pid()),
         ];
@@ -662,13 +678,31 @@ mod tests {
             .map(|&(what, pid)| (what, arguments(pid), command(pid)))
             .collect();
         cleanup(&mut sleeper);
+        for mut child in [holding_empties, all_empty] {
+            drop(child.stdin.take());
+            child.wait().expect("the child exits once its input closes");
+        }
         exited.wait().unwrap();
-        let sleep = ["sleep", "300"].map(String::from).to_vec();
+        let words = |words: &[&str]| words.iter().map(|word| word.to_string()).collect();
         assert_eq!(
             read,
             [
                 ("this process", Some(me.clone()), me.join(" ")),
-                ("a sleeping child", Some(sleep), "sleep 300".to_string()),
+                (
+                    "a sleeping child",
+                    Some(words(&["sleep", "300"])),
+                    "sleep 300".to_string()
+                ),
+                (
+                    "a child holding empty arguments",
+                    Some(words(&["sh", "-s", "", "a", ""])),
+                    "sh -s a".to_string()
+                ),
+                (
+                    "a child whose one argument is empty",
+                    Some(words(&[""])),
+                    "cat".to_string()
+                ),
                 ("an exited child not yet reaped", None, "true".to_string()),
                 ("a gone process", None, String::new()),
             ]
