@@ -191,12 +191,7 @@ rigger::test_cases! {
     a_kept_end_ends_a_process_started_in_another_directory:
         ends_the_tree("cd / && holder; up; held", 2, |_, _| {}, by_the_end);
     a_kept_end_ends_a_process_in_a_session_of_its_own:
-        ends_the_tree(
-            "setsid sh -c 'printf u >&9; read -r unused <&8' & up; held",
-            2,
-            |_, _| {},
-            by_the_end,
-        );
+        ends_the_tree("holder setsid; up; held", 2, |_, _| {}, by_the_end);
     a_kept_end_ends_a_process_that_ignores_the_request_to_exit:
         ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {}, by_the_end);
     a_kept_end_ends_a_main_that_ignores_the_request_to_exit:

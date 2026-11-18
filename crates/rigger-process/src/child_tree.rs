@@ -632,7 +632,7 @@ mod tests {
         // Linux only: util-linux `setsid`, which the fixture starts its process with.
         #[cfg(target_os = "linux")]
         a_watched_end_ends_a_process_in_a_session_of_its_own:
-            ends_the_tree("setsid sh -c 'printf u >&9; read -r unused <&8' & up; held", 2);
+            ends_the_tree("holder setsid; up; held", 2);
         a_watched_end_ends_a_process_started_in_another_directory:
             ends_the_tree("cd / && holder; up; held", 2);
     }
