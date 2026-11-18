@@ -30996,6 +30996,81 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
+    /// A LANE GIT REFUSED STAYS REFUSED ACROSS A PARK: a speculation lane whose checkpoint git
+    /// refused keeps its tree and branch while its group races, so a later step that re-enters
+    /// the group (another lane's review parked) answers the lane's implementer from the log, meets
+    /// the same refusal in the same tree, and never reviews the lane as a candidate. Torn down at
+    /// the refusal, the lane would re-enter on a fresh branch at the run's HEAD, its checkpoint
+    /// committing nothing, and be judged, and could win, with none of its work.
+    #[test]
+    fn a_lane_git_refused_stays_refused_across_a_park() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        let replay_step = |store: &Store| {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: repo_path.clone(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+                log: &|_| {},
+                check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
+                code_store: None,
+                context: None,
+            };
+            run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
+        };
+        let impl0 = spawn_id("s", ROLE_IMPLEMENTER, 0);
+        let impl1 = spawn_id("s", ROLE_IMPLEMENTER, 1);
+        let lens0 = spawn_id("s", &lens_role("lens"), 0);
+        let lens1 = spawn_id("s", &lens_role("lens"), 1);
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let lane0 = unit_worktree_dir(&scratch, "s");
+        let lane1 = worktree::lane_name(&lane0, 1);
+
+        // Step 1: both implementers park. Their workers write each lane's work, and lane 0's
+        // leaves its tree's HEAD off the lane's branch.
+        replay_step(&store);
+        for dir in [&lane0, &lane1] {
+            std::fs::write(Path::new(dir).join("feature.rs"), "work\n").unwrap();
+        }
+        git_out(&lane0, &["checkout", "-q", "--detach"]);
+        for id in [&impl0, &impl1] {
+            crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(id, "done"))
+                .unwrap();
+        }
+
+        // Step 2: git refuses lane 0's checkpoint, and lane 1's review lens parks.
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            crate::spawn::is_recorded(&events, &lens1),
+            "premise: lane 1 is a candidate whose review parked"
+        );
+        assert!(
+            !crate::spawn::is_recorded(&events, &lens0),
+            "premise: lane 0 lost at its checkpoint"
+        );
+
+        // Step 3: the group re-enters with lane 1's review still in flight.
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !crate::spawn::is_recorded(&events, &lens0),
+            "the lane git refused is never reviewed as a candidate"
+        );
+        assert!(
+            Path::new(&lane0).join("feature.rs").exists(),
+            "the refused lane's tree keeps its work while its group races"
+        );
+    }
+
     /// A store that fails the run's spawn read a missed handover takes
     /// ([`RunCtx::handover_miss`]), counting each failure, and forwards every other call.
     struct HandoverReadFails<'a> {
