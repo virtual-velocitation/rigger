@@ -1437,12 +1437,18 @@ mod forks_at_stop {
     rigger::test_cases! {
         // The launch fault's stop: the session is ended at once, so a process it starts as the end
         // reaches it is still the session's to end.
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
         an_init_fault_ends_what_the_sessions_term_trap_starts:
             ends_at(Window::InitFault, "term", Duration::from_secs(1), 2, Leaves::Nothing);
+        #[cfg(target_os = "linux")]
         an_init_fault_ends_what_the_sessions_term_trap_starts_as_it_exits:
             ends_at(Window::InitFault, "term-exit", Duration::from_secs(1), 2, Leaves::Nothing);
+        #[cfg(target_os = "linux")]
         an_init_fault_ends_what_the_session_starts_at_its_input_end:
             ends_at(Window::InitFault, "eof", Duration::from_secs(1), 2, Leaves::Nothing);
+        #[cfg(target_os = "linux")]
         an_init_fault_ends_what_the_session_starts_at_its_input_end_as_it_exits:
             ends_at(Window::InitFault, "eof-exit", Duration::from_secs(1), 2, Leaves::Nothing);
         // A grace of 15 s: joins that waited the stop's grace would wait it twice and break the
@@ -1453,12 +1459,19 @@ mod forks_at_stop {
         an_init_fault_ends_a_process_that_left_the_sessions_tree_without_waiting_on_its_pipes:
             ends_at(Window::InitFault, "double", Duration::from_secs(15), 2, Leaves::Nothing);
         // THE STOP: input closed, the grace waited, then the end.
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
         a_stop_ends_what_the_sessions_term_trap_starts:
             ends_at(Window::Silence(1), "term", Duration::from_secs(1), 2, Leaves::Nothing);
+        #[cfg(target_os = "linux")]
         a_stop_ends_what_the_sessions_term_trap_starts_as_it_exits:
             ends_at(Window::Silence(1), "term-exit", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_what_the_session_starts_at_its_input_end:
             ends_at(Window::Silence(1), "eof", Duration::from_secs(1), 2, Leaves::Nothing);
+        // Linux only: a process that left the session's tree is the session's to end only where
+        // the keeper adopts it, and only Linux has the keeper.
+        #[cfg(target_os = "linux")]
         a_stop_ends_what_the_session_starts_at_its_input_end_as_it_exits:
             ends_at(Window::Silence(1), "eof-exit", Duration::from_secs(1), 2, Leaves::Nothing);
         a_stop_ends_what_the_session_starts_during_the_grace:
