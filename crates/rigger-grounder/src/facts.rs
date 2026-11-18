@@ -313,68 +313,171 @@ impl Extract for FactsExtractor {
     }
 }
 
-/// The comment text of a Rust doc span's `raw` lines, split as [`str::lines`] splits them and each
-/// trimmed. A doc line gives the text after its marker, trimmed: `///` (not `////`), `//!`, and a
-/// name-value `#[doc = ..]` or `#![doc = ..]` its string literal's body ([`doc_attribute_text`]).
-/// `/**` (not `/***` nor `/**/`) and `/*!` open a doc block ([`doc_block_opened`]), closed by the
-/// first `*/` ([`until_block_closer`]), whatever follows the closer on its line dropped. Each line
-/// of the block after the opener's has one leading `*` stripped; the text inside the block on the
-/// opener's line and on the closer's line is kept when it is not blank, and each line between them
-/// is kept even when blank. Every other line outside a block - another attribute, `#[doc(..)]`
-/// included, a plain comment, a blank line - is dropped; the kept lines join by `\n`.
+/// The comment text of a Rust doc span's `raw` lines, read as Rust lexes them from the span's start
+/// to its end, a trailing newline adding no line. A `//` comment runs to its line's end, and `///`
+/// (not `////`) and `//!` give the text after their marker, trimmed. A `/*` comment runs to the
+/// `*/` that closes it ([`until_block_closer`]). `/**` (not `/***` nor `/**/`) and `/*!` open a doc
+/// block ([`opens_doc_block`]) that gives its lines ([`doc_block_lines`]); any other block comment
+/// is dropped whole, a `///` inside it included. A name-value `#[doc = ..]` or `#![doc = ..]` gives
+/// each line of its string literal's body, trimmed ([`doc_attribute_text`]). Every other token is
+/// dropped ([`after_token`]): another attribute, `#[doc(..)]` included, code and every other
+/// literal, read whole so that no comment marker or quote inside a literal is read. Whatever
+/// follows a comment or a literal is read on, and the kept lines join by `\n`.
 fn rust_doc_text(raw: &str) -> String {
     let mut text = Vec::new();
-    let mut in_block = false;
-    for line in raw.lines().map(str::trim) {
-        if in_block {
-            let (inner, closed) = until_block_closer(line);
-            let inner = inner.strip_prefix('*').unwrap_or(inner).trim();
-            if !closed || !inner.is_empty() {
-                text.push(inner);
+    let mut rest = raw.strip_suffix('\n').unwrap_or(raw);
+    while !rest.is_empty() {
+        rest = if let Some(comment) = rest.strip_prefix("//") {
+            let (comment, after) = comment.split_once('\n').unwrap_or((comment, ""));
+            if let Some(doc) = comment
+                .strip_prefix('/')
+                .filter(|doc| !doc.starts_with('/'))
+                .or_else(|| comment.strip_prefix('!'))
+            {
+                text.push(doc.trim());
             }
-            in_block = !closed;
-        } else if let Some(rest) = line
-            .strip_prefix("///")
-            .filter(|rest| !rest.starts_with('/'))
-            .or_else(|| line.strip_prefix("//!"))
-        {
-            text.push(rest.trim());
-        } else if let Some(rest) = doc_block_opened(line) {
-            let (inner, closed) = until_block_closer(rest);
-            let inner = inner.trim();
-            if !inner.is_empty() {
-                text.push(inner);
+            after
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            let (body, after) = until_block_closer(comment);
+            if opens_doc_block(comment) {
+                // The body past the `*` or `!` that marks a doc block.
+                text.extend(doc_block_lines(&body[1..], after.is_some()));
             }
-            in_block = !closed;
-        } else if let Some(body) = doc_attribute_text(line) {
-            text.push(body.trim());
-        }
+            after.unwrap_or_default()
+        } else if let Some((body, after)) = doc_attribute_text(rest) {
+            text.extend(body.split('\n').map(str::trim));
+            after
+        } else {
+            after_token(rest)
+        };
     }
     text.join("\n")
 }
 
-/// The rest of `line` after the Rust doc block opener it starts with: `/**`, but not `/***` nor
-/// the empty plain comment `/**/`, or `/*!`; none when it starts with no doc block opener.
-fn doc_block_opened(line: &str) -> Option<&str> {
-    line.strip_prefix("/**")
-        .filter(|rest| !rest.starts_with(['*', '/']))
-        .or_else(|| line.strip_prefix("/*!"))
+/// Whether the Rust block comment whose opening `/*` ends just before `comment` is a doc block:
+/// `/**`, but not `/***` nor the empty plain comment `/**/`, or `/*!`.
+fn opens_doc_block(comment: &str) -> bool {
+    comment.starts_with('!')
+        || comment
+            .strip_prefix('*')
+            .is_some_and(|rest| !rest.starts_with(['*', '/']))
 }
 
-/// `text` up to the first `*/`, which closes a block comment, and whether `text` holds one.
-fn until_block_closer(text: &str) -> (&str, bool) {
-    match text.find("*/") {
-        Some(end) => (&text[..end], true),
-        None => (text, false),
+/// The text of the Rust block comment whose opening `/*` ends just before `text`, up to the `*/`
+/// that closes it, and the text after that closer: block comments nest, each `/*` inside opening
+/// a level and each `*/` closing one, so the closer is the `*/` that returns the depth to zero,
+/// however many lines on. The comment's text runs to `text`'s end, with none after it, when it is
+/// unclosed.
+fn until_block_closer(text: &str) -> (&str, Option<&str>) {
+    let bytes = text.as_bytes();
+    let mut depth = 1_usize;
+    let mut at = 0;
+    while at + 1 < bytes.len() {
+        match (bytes[at], bytes[at + 1]) {
+            (b'/', b'*') => depth += 1,
+            (b'*', b'/') => depth -= 1,
+            _ => {
+                at += 1;
+                continue;
+            }
+        }
+        if depth == 0 {
+            return (&text[..at], Some(&text[at + 2..]));
+        }
+        at += 2;
+    }
+    (text, None)
+}
+
+/// The lines of a Rust doc block's `body`, its text between the opener and the closer (or the
+/// span's end when it is not `closed`), each trimmed. The opener's line is kept when it is not
+/// blank. Every later line has one leading `*` stripped and is trimmed again, and is kept even
+/// when blank, except the closer's line, which is kept only when it is not blank.
+fn doc_block_lines(body: &str, closed: bool) -> impl Iterator<Item = &str> + '_ {
+    let last = body.matches('\n').count();
+    body.split('\n').enumerate().filter_map(move |(at, line)| {
+        let line = line.trim();
+        if at == 0 {
+            return (!line.is_empty()).then_some(line);
+        }
+        let line = line.strip_prefix('*').unwrap_or(line).trim();
+        (at < last || !closed || !line.is_empty()).then_some(line)
+    })
+}
+
+/// The text after the Rust token `text` starts with. A string literal is read whole, to its own
+/// closer: a plain `".."`, `b".."` or `c".."` ([`plain_literal`]), or a raw `r".."`, `br#".."#` or
+/// `cr#".."#` ([`raw_literal`]). So is a char literal: `'x'`, `'"'`, or an escaped `'\''` or
+/// `'\u{..}'` up to the next quote. A word is read to its last letter, digit or `_`, and any other
+/// character, the quote of a lifetime or a label (`'a`) included, alone.
+fn after_token(text: &str) -> &str {
+    let word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut chars = text.chars();
+    match chars.next() {
+        Some('"') => plain_literal(chars.as_str()).1,
+        Some('\'') => {
+            let quoted = chars.as_str();
+            match (chars.next(), chars.next()) {
+                (Some('\\'), Some(_)) => {
+                    let escaped = chars.as_str();
+                    escaped.find('\'').map_or("", |end| &escaped[end + 1..])
+                }
+                (Some(_), Some('\'')) => chars.as_str(),
+                _ => quoted,
+            }
+        }
+        Some(c) if word_char(c) => {
+            let (word, after) = text.split_at(text.find(|c| !word_char(c)).unwrap_or(text.len()));
+            match word {
+                "r" | "br" | "cr" => raw_literal(after).map_or(after, |(_, after)| after),
+                _ => after,
+            }
+        }
+        _ => chars.as_str(),
     }
 }
 
-/// The body of the string literal of the Rust name-value doc attribute `line` starts with -
-/// `#[doc = ".."]`, `#![doc = r#".."#]`, spaces allowed between its tokens - as written, from its
-/// opening quote to the line's last quote, its escapes not decoded; none for another attribute,
-/// `#[doc(..)]` included, and for a value that is no string literal (`include_str!(..)`).
-fn doc_attribute_text(line: &str) -> Option<&str> {
-    let attribute = line.strip_prefix('#')?.trim_start();
+/// The body of the plain Rust string literal whose opening `"` ends just before `text`, as
+/// written, up to its own closer - the first `"` that no `\` escapes - and the text after that
+/// closer. The body runs to `text`'s end, with nothing after it, when the literal is unclosed.
+fn plain_literal(text: &str) -> (&str, &str) {
+    let mut chars = text.char_indices();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '"' => return (&text[..at], &text[at + 1..]),
+            _ => {}
+        }
+    }
+    (text, "")
+}
+
+/// The body of the raw Rust string literal whose `r` ends just before `text` (`r".."`,
+/// `r#".."#`), up to its own closer - the first `"` followed by as many `#` as its opener holds -
+/// and the text after that closer; none when `text` opens no raw literal (`r#type`). The body runs
+/// to `text`'s end, with nothing after it, when the literal is unclosed.
+fn raw_literal(text: &str) -> Option<(&str, &str)> {
+    let quoted = text.trim_start_matches('#');
+    let hashes = &text[..text.len() - quoted.len()];
+    let body = quoted.strip_prefix('"')?;
+    let closer = body
+        .match_indices('"')
+        .map(|(at, _)| at)
+        .find(|&at| body[at + 1..].starts_with(hashes));
+    Some(closer.map_or((body, ""), |at| {
+        (&body[..at], &body[at + 1 + hashes.len()..])
+    }))
+}
+
+/// The body of the string literal of the Rust name-value doc attribute `text` starts with -
+/// `#[doc = ".."]`, `#![doc = r#".."#]`, whitespace allowed between its tokens - as written, up to
+/// the literal's own closer ([`plain_literal`], [`raw_literal`]), its escapes not decoded, and the
+/// text after that closer; none for another attribute, `#[doc(..)]` included, and for a value that
+/// is no string literal (`include_str!(..)`).
+fn doc_attribute_text(text: &str) -> Option<(&str, &str)> {
+    let attribute = text.strip_prefix('#')?.trim_start();
     let value = attribute
         .strip_prefix('!')
         .unwrap_or(attribute)
@@ -385,11 +488,10 @@ fn doc_attribute_text(line: &str) -> Option<&str> {
         .trim_start()
         .strip_prefix('=')?
         .trim_start();
-    let body = value
-        .strip_prefix('r')
-        .map_or(value, |raw| raw.trim_start_matches('#'))
-        .strip_prefix('"')?;
-    Some(body.rfind('"').map_or(body, |end| &body[..end]))
+    match value.strip_prefix('"') {
+        Some(plain) => Some(plain_literal(plain)),
+        None => raw_literal(value.strip_prefix('r')?),
+    }
 }
 
 /// The symbols an extraction gives one code file, the bundled grammars' and a declared
