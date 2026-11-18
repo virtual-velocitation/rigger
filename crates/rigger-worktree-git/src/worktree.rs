@@ -3177,16 +3177,17 @@ fn conflict_markers_present(
         return Ok(lines);
     }
     // `-z` ends each path with a NUL, so a path is read whole whatever it spells; the
-    // line-number and column flags are pinned off so no git config adds either to a line, and
-    // the pattern syntax is pinned to basic so no git config reads the patterns as another. The
-    // separator's pattern leaves the line's end open, so a CRLF line reaches [`marker`], which
-    // reads the whole line.
+    // line-number, column and colour flags are pinned off so no git config adds any of them to a
+    // line, and the pattern syntax is pinned to basic so no git config reads the patterns as
+    // another. The separator's pattern leaves the line's end open, so a CRLF line reaches
+    // [`marker`], which reads the whole line.
     let mut args = vec![
         "grep",
         "-I",
         "-z",
         "--no-line-number",
         "--no-column",
+        "--no-color",
         "--basic-regexp",
         "-e",
         "^<<<<<<< ",
@@ -3424,18 +3425,10 @@ pub fn own_commits_refusals(dir: &str) -> Result<Vec<String>, Error> {
 pub const TREE_STATUS_LINES: usize = 40;
 
 /// `git status` in `dir` in git's own words, its first [`TREE_STATUS_LINES`] lines with the rest
-/// counted, and its hints off, so it names no command to run; what git said instead when it
-/// fails. Read with optional locks off, so it rewrites nothing, not even the index. A producer's
-/// `Stop` hook and the conductor's failure of a producer's attempt each carry it beside
-/// [`own_commits_refusals`].
+/// counted ([`long_status`]); what git said instead when it fails. A producer's `Stop` hook and
+/// the conductor's failure of a producer's attempt each carry it beside [`own_commits_refusals`].
 pub fn tree_status(dir: &str) -> String {
-    let args = [
-        "--no-optional-locks",
-        "-c",
-        "advice.statusHints=false",
-        "status",
-    ];
-    let status = git(dir, &args).unwrap_or_else(|e| e.to_string());
+    let status = long_status(dir).unwrap_or_else(|e| e.to_string());
     let lines: Vec<&str> = status.trim_end().lines().collect();
     if lines.len() <= TREE_STATUS_LINES {
         return lines.join("\n");
@@ -3480,28 +3473,49 @@ pub fn unfinished_operation(dir: &str) -> Result<Option<&'static str>, Error> {
 }
 
 /// Where the HEAD of the tree rooted at `dir` stands when it is not on `branch`, in git's own
-/// words (the first line of `git status`: `HEAD detached at ...`, `interactive rebase in
+/// words (the first line of [`long_status`]: `HEAD detached at ...`, `interactive rebase in
 /// progress; onto ...`, `On branch ...`), or `None` when it is on `branch`. A HEAD git cannot
 /// read is an error, never an answer ([`current_branch`]).
 pub fn head_off_branch(dir: &str, branch: &str) -> Result<Option<String>, Error> {
     if current_branch(dir)?.as_deref() == Some(branch) {
         return Ok(None);
     }
-    let status = git(dir, &["--no-optional-locks", "status"])?;
+    let status = long_status(dir)?;
     Ok(Some(
         status.lines().next().unwrap_or_default().trim().to_string(),
     ))
 }
 
+/// `git status` in `dir` in its long form, the one whose first line says where the HEAD stands,
+/// with its hints and colour off and its untracked files listed by directory, so no setting of
+/// the user's git configuration changes its words or names a command to run. Read with optional
+/// locks off, so it rewrites nothing, not even the index.
+fn long_status(dir: &str) -> Result<String, Error> {
+    git(
+        dir,
+        &[
+            "--no-optional-locks",
+            "-c",
+            "advice.statusHints=false",
+            "-c",
+            "color.status=false",
+            "status",
+            "--long",
+            "--untracked-files=normal",
+        ],
+    )
+}
+
 /// The unmerged paths of the tree rooted at `dir`, sorted, each once:
-/// [`Worktree::conflicting_paths`]'s read.
+/// [`Worktree::conflicting_paths`]'s read. Read from the index's entries (`git ls-files -u`,
+/// one record per conflicted stage, `<mode> <object> <stage>` and a tab before the path), which
+/// rewrites nothing, where a porcelain diff may refresh the index's stat cache.
 fn unmerged_paths(dir: &str) -> Result<Vec<String>, Error> {
-    let out = git(dir, &["diff", "--name-only", "--diff-filter=U"])?;
+    let out = git(dir, &["ls-files", "-u", "-z"])?;
     let mut paths: Vec<String> = out
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
+        .split('\0')
+        .filter_map(|record| record.split_once('\t'))
+        .map(|(_, path)| path.to_string())
         .collect();
     paths.sort();
     paths.dedup();
@@ -3545,7 +3559,7 @@ fn staged_tree(dir: &str, index: &std::path::Path) -> Result<String, Error> {
 }
 
 /// Whether the git worktree rooted at `dir` has uncommitted changes (a dirty tree) - the
-/// single `git status --porcelain -z` primitive every dirty-tree check shares (spec 89 round 3,
+/// single [`status_z`] primitive every dirty-tree check shares (spec 89 round 3,
 /// `arch-u89c1r2-dirty-check-duplicated-and-diverges-fail-direction`), so no call site grows
 /// its own inline `git status` that could diverge on which way to fail when the status read
 /// itself fails. `pub`, not `pub(crate)`, because its callers live in other crates (see
@@ -3558,13 +3572,30 @@ fn staged_tree(dir: &str, index: &std::path::Path) -> Result<String, Error> {
 /// DISCARDS A TREE" (spec 89, criterion 1) means an unreadable tree must default to "protect
 /// it", never "safe to remove".
 pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
-    Ok(!git(dir, &["status", "--porcelain", "-z"])?.is_empty())
+    Ok(!status_z(dir)?.is_empty())
 }
 
-/// The paths `git status --porcelain -z` reports changed in `dir`'s tree, untracked files
-/// included, in git's order ([`parse_status_z`]).
+/// The paths [`status_z`] reports changed in `dir`'s tree, untracked files included, in git's
+/// order ([`parse_status_z`]).
 pub fn uncommitted_paths(dir: &str) -> Result<Vec<String>, Error> {
-    Ok(parse_status_z(&git(dir, &["status", "--porcelain", "-z"])?))
+    Ok(parse_status_z(&status_z(dir)?))
+}
+
+/// `git status --porcelain -z` in `dir`, the one status read [`path_is_dirty`] and
+/// [`uncommitted_paths`] share: untracked files listed by directory whatever the user's git
+/// configuration says (`status.showUntrackedFiles` may hide them or list each file), and optional
+/// locks off, so the read rewrites nothing, not even the index's stat cache.
+fn status_z(dir: &str) -> Result<String, Error> {
+    git(
+        dir,
+        &[
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=normal",
+        ],
+    )
 }
 
 /// Every path `dir`'s tree changed since `commit`: the paths commits made after it touch, then
