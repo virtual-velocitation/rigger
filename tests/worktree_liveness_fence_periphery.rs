@@ -6,8 +6,8 @@
 //! spawns in flight, and logs each removal with its evidence. The crate's own tests drive its
 //! logging seam (`gc_integrated_branches_logged`) through an injected sink; this file proves the
 //! production wrapper is the one `rigger run` calls and that its evidence reaches real stderr. It
-//! logs a removal only for a worktree git still lists, and `registered_worktree_for` reads git's
-//! global worktree list, so a worktree outside the scratch root is reclaimed by this path alone.
+//! takes a unit's worktree only from under the run's scratch root: a worktree outside it, such as
+//! a person's tree on a handed-back unit's branch, stays with its branch, and the log says so.
 
 use crate::common;
 
@@ -16,6 +16,7 @@ use common::cli::run_stream_identity;
 use common::cli::{write_workflow_fixture, REVIEWLESS_GIT_UNIT_WORKFLOW};
 use common::git::git_answer;
 use common::git::git_ok;
+use common::git::git_ok_with_identity;
 use common::git::temp_git_project_with_commit;
 use rigger::spawn::SpawnEvent;
 use std::path::Path;
@@ -41,78 +42,117 @@ fn seed_events(root: &Path, events: Vec<rigger::eventstore::Event>) {
     }
 }
 
-/// A unit whose ledger reads `Integrated`, whose one spawn was answered, and whose worktree
-/// git still lists outside the scratch root is reclaimed by `gc_integrated_branches` when
-/// `rigger run` starts: the worktree and its branch are gone, and real stderr carries the
-/// `branch-gc` removal naming the branch and its terminal evidence.
+/// A unit whose ledger reads `Integrated` and whose one spawn was answered is reclaimed by
+/// `gc_integrated_branches` when `rigger run` starts, from a worktree under the run's scratch
+/// root only. There the worktree and its branch are gone, and real stderr carries the `branch-gc`
+/// removal naming the branch and its terminal evidence. A worktree outside the root stays with
+/// its work and its branch, and real stderr says the branch was kept and where it is checked out.
 #[test]
-fn a_run_reclaims_an_integrated_units_registered_worktree_logging_its_evidence() {
-    let dir = temp_git_project_with_commit();
-    let root = dir.path();
-    write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
-    git_ok(root, &["branch", "rigger-run"]);
+fn a_run_reclaims_an_integrated_units_worktree_only_under_its_scratch_root_logging_its_evidence() {
+    // Each row: where the unit's branch is checked out, and whether that is under the root.
+    let rows = [
+        ("under the scratch root", true),
+        ("outside the scratch root", false),
+    ];
+    for (row, under) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &REVIEWLESS_GIT_UNIT_WORKFLOW);
+        git_ok(root, &["branch", "rigger-run"]);
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch = scratch.path().canonicalize().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let place = if under {
+            scratch.clone()
+        } else {
+            outside.path().canonicalize().unwrap()
+        };
+        let settled_dir = place.join("settled");
+        let settled = settled_dir.to_str().unwrap();
+        git_ok(
+            root,
+            &[
+                "worktree",
+                "add",
+                settled,
+                "-b",
+                "rigger/u/settled",
+                "rigger-run",
+            ],
+        );
+        // Work committed on the branch, so the run's sweep of merged worktrees leaves the
+        // worktree to the collection.
+        std::fs::write(settled_dir.join("settled.rs"), "fn settled() {}\n").unwrap();
+        git_ok(&settled_dir, &["add", "settled.rs"]);
+        git_ok_with_identity(&settled_dir, &["commit", "-q", "-m", "settled work"]);
 
-    let settled_dir = root.join("settled-outside-the-scratch-root");
-    git_ok(
-        root,
-        &[
-            "worktree",
-            "add",
-            settled_dir.to_str().unwrap(),
-            "-b",
-            "rigger/u/settled",
-            "rigger-run",
-        ],
-    );
+        // Started, then integrated, as a crash before the teardown recorded the removal leaves
+        // it, with its one spawn answered ordinarily, so its evidence reads "terminal".
+        seed_events(
+            root,
+            vec![
+                rigger::eventstore::Event::new(
+                    rigger::ledger::TYPE_UNIT_STARTED,
+                    br#"{"id":"settled","branch":"rigger/u/settled"}"#.to_vec(),
+                ),
+                rigger::eventstore::Event::new(
+                    rigger::ledger::TYPE_UNIT_INTEGRATED,
+                    br#"{"id":"settled","commit":"deadbeef"}"#.to_vec(),
+                ),
+                common::spawn_request("settled", "settled", "adversary", 0, "verify")
+                    .to_event()
+                    .unwrap(),
+                rigger::spawn::SpawnResult::ok("settled/adversary#0", "approve")
+                    .to_event()
+                    .unwrap(),
+            ],
+        );
 
-    // Started, then integrated, as a crash before the teardown recorded the removal leaves it,
-    // with its one spawn answered ordinarily, so its evidence reads "terminal".
-    seed_events(
-        root,
-        vec![
-            rigger::eventstore::Event::new(
-                rigger::ledger::TYPE_UNIT_STARTED,
-                br#"{"id":"settled","branch":"rigger/u/settled"}"#.to_vec(),
-            ),
-            rigger::eventstore::Event::new(
-                rigger::ledger::TYPE_UNIT_INTEGRATED,
-                br#"{"id":"settled","commit":"deadbeef"}"#.to_vec(),
-            ),
-            common::spawn_request("settled", "settled", "adversary", 0, "verify")
-                .to_event()
-                .unwrap(),
-            rigger::spawn::SpawnResult::ok("settled/adversary#0", "approve")
-                .to_event()
-                .unwrap(),
-        ],
-    );
+        let (out, err, ok, _fake) = run_recording(root, &["run"], &scratch);
+        assert!(ok, "{row}: the run succeeds; stdout: {out}\nstderr: {err}");
 
-    let scratch = tempfile::tempdir().unwrap();
-    let (out, err, ok, _fake) = run_recording(root, &["run"], scratch.path());
-    assert!(ok, "the run succeeds; stdout: {out}\nstderr: {err}");
-
-    assert!(
-        !settled_dir.exists(),
-        "the run reclaims the integrated unit's registered worktree; stderr:\n{err}"
-    );
-    assert!(
-        err.contains("branch-gc")
-            && err.contains("removing branch")
-            && err.contains(r#""rigger/u/settled""#)
-            && err.contains("terminal"),
-        "the removal is attributable from real stderr with its evidence: {err}"
-    );
-    assert!(
-        git_answer(
+        let branch_kept = git_answer(
             root,
             &[
                 "rev-parse",
                 "--verify",
                 "--quiet",
-                "refs/heads/rigger/u/settled"
-            ]
+                "refs/heads/rigger/u/settled",
+            ],
         )
-        .is_none(),
-        "the branch ref is reclaimed with the worktree"
-    );
+        .is_some();
+        if under {
+            assert!(
+                !settled_dir.exists(),
+                "{row}: the run reclaims the integrated unit's worktree; stderr:\n{err}"
+            );
+            assert!(
+                err.contains("branch-gc")
+                    && err.contains("removing branch")
+                    && err.contains(r#""rigger/u/settled""#)
+                    && err.contains("terminal"),
+                "{row}: the removal is attributable from real stderr with its evidence: {err}"
+            );
+            assert!(
+                !branch_kept,
+                "{row}: the branch ref is reclaimed with the worktree"
+            );
+        } else {
+            assert_eq!(
+                std::fs::read_to_string(settled_dir.join("settled.rs"))
+                    .ok()
+                    .as_deref(),
+                Some("fn settled() {}\n"),
+                "{row}: the worktree and its work stay; stderr:\n{err}"
+            );
+            assert!(
+                err.contains("branch-gc")
+                    && err.contains("kept branch")
+                    && err.contains(r#""rigger/u/settled""#)
+                    && err.contains(settled),
+                "{row}: real stderr says the branch was kept and where it is checked out: {err}"
+            );
+            assert!(branch_kept, "{row}: the branch stays");
+        }
+    }
 }

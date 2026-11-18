@@ -86,7 +86,7 @@ fn the_open_hold_reads_back_from_the_log_on_disk_by_the_rules_of_the_events() {
     let open = |offset: u64, operator: bool, latest: &RunHeld, revision: i64| {
         Some(Hold {
             since: valid_at(offset),
-            operator,
+            manual: operator,
             latest: latest.clone(),
             revision,
         })

@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 pub use super::fixtures::{
     commit_at_fixed_date, git_answer, git_commit_all, git_init_quiet, git_ok, git_ok_with_identity,
-    git_out, init_repo, install_refusing_hook, run_git, temp_git_project_with_commit,
-    trimmed_stdout,
+    git_out, init_repo, install_refusing_hook, run_git, strand_worktree_at,
+    temp_git_project_with_commit, trimmed_stdout,
 };
 
 /// Write each `(path, content)` of `files` into `repo` through the shared [`write_files`], commit

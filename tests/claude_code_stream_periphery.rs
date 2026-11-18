@@ -1999,7 +1999,9 @@ impl Fixture {
 
     /// How many closes of the run the progress log counts toward `api-unstable`.
     fn failed_closes(&self) -> usize {
-        rigger::progress::failed_closes_since(&self.progress_stream(), None)
+        rigger::progress::failed_closes_since(&self.progress_stream(), None, |class| {
+            AgentFailure::from_category(class).is_rejected()
+        })
     }
 
     /// Every close of the run as `(launch, ended, class)` ([`close`]), in append order.
@@ -2070,7 +2072,7 @@ fn hold_cases() -> Vec<HoldCase> {
     let model_action =
         "fix the agent's configured model, restart rigger run with --rebase-definition, then run \
          rigger release";
-    let model_ending = host_hold("model_not_found", "", model_action, true, "");
+    let model_ending = host_hold("model_not_found", "", model_action, false, "");
     let wait_ending = host_hold("rate_limit", "", RETRIES_BY_ITSELF, false, "");
     vec![
         HoldCase {
@@ -2180,8 +2182,8 @@ fn hold_cases() -> Vec<HoldCase> {
         },
         HoldCase {
             name: "a session ending of a fault class",
-            lines: vec![init_line(), retry_line("invalid_request")],
-            close: ("fault", Some("invalid_request")),
+            lines: vec![init_line(), retry_line("max_output_tokens")],
+            close: ("fault", Some("max_output_tokens")),
             stamp: Some(1),
             ..HoldCase::default()
         },
@@ -2280,6 +2282,14 @@ fn hold_cases() -> Vec<HoldCase> {
         },
         HoldCase {
             name: "a fault-class ending on an operator hold",
+            lines: vec![init_line(), retry_line("max_output_tokens")],
+            seeded: vec![operator_hold()],
+            close: ("interrupted", Some("max_output_tokens")),
+            stamp: Some(2),
+            ..HoldCase::default()
+        },
+        HoldCase {
+            name: "a refused ending on an operator hold",
             lines: vec![init_line(), retry_line("invalid_request")],
             seeded: vec![operator_hold()],
             close: ("interrupted", Some("invalid_request")),
@@ -2296,21 +2306,21 @@ fn hold_cases() -> Vec<HoldCase> {
         },
         HoldCase {
             name: "a fault-class ending on a hold released ahead of it",
-            lines: vec![init_line(), retry_line("invalid_request")],
+            lines: vec![init_line(), retry_line("max_output_tokens")],
             seeded: vec![
                 operator_hold(),
                 common::fixtures::released_event("operator", 0),
             ],
-            close: ("fault", Some("invalid_request")),
+            close: ("fault", Some("max_output_tokens")),
             stamp: Some(3),
             ..HoldCase::default()
         },
         HoldCase {
             name: "a fault-class ending on a host with no hold sink",
-            lines: vec![init_line(), retry_line("invalid_request")],
+            lines: vec![init_line(), retry_line("max_output_tokens")],
             seeded: vec![operator_hold()],
             no_sink: true,
-            close: ("fault", Some("invalid_request")),
+            close: ("fault", Some("max_output_tokens")),
             ..HoldCase::default()
         },
         HoldCase {
@@ -2458,6 +2468,8 @@ fn a_launch_appends_the_holds_the_table_decides_and_closes_where_it_read() {
 enum Step {
     /// A launch ending with no result: a `fault` close of no class.
     Fault,
+    /// A launch the API refused: a `fault` close of the `invalid_request` class.
+    Refused,
     /// A silent launch the wall clock stops: a `stopped` close.
     Stop,
     /// A launch answering: a `completed` close.
@@ -2481,6 +2493,16 @@ impl Fixture {
                     &no_emit,
                 );
                 spawned.expect_err("a session with no result fails its spawn");
+            }
+            Step::Refused => {
+                let o = self.scripted(&spawn, &[init_line(), retry_line("invalid_request")]);
+                let spawned = scripted().spawn(
+                    &wall_clock_bounded(SCRIPTED_WALL_CLOCK_S),
+                    "do the thing",
+                    &o,
+                    &no_emit,
+                );
+                spawned.expect_err("a session the API refused fails its spawn");
             }
             Step::Stop => {
                 let driver = self.held_driver("claude-code-silent-winds-down-on-eof-agent.sh");
@@ -2509,12 +2531,13 @@ impl Fixture {
 
 /// The third consecutive fault or stream-silence stop holds the run `api-unstable`, before the
 /// host returns its error, once per hold: a `completed` close or a `RunReleased` restarts the
-/// count, and a hold released is held again by three more.
+/// count, and a hold released is held again by three more. A launch the API refused is the
+/// conductor's fault, never the API's: it neither counts nor restarts the count.
 #[cfg(unix)]
 #[test]
 fn a_third_consecutive_failed_close_holds_the_run() {
-    use Step::{Completed as C, Fault as F, Release as R, Stop as S};
-    let rows: [(&str, Vec<Step>, usize); 10] = [
+    use Step::{Completed as C, Fault as F, Refused as X, Release as R, Stop as S};
+    let rows: [(&str, Vec<Step>, usize); 13] = [
         ("two faults", vec![F, F], 0),
         ("three faults", vec![F, F, F], 1),
         ("a stop between faults", vec![F, S, F], 1),
@@ -2525,6 +2548,9 @@ fn a_third_consecutive_failed_close_holds_the_run() {
         ("a release restarts it", vec![F, F, F, R, F, F], 1),
         ("three more after a release", vec![F, F, F, R, F, F, F], 2),
         ("a completed close alone", vec![C], 0),
+        ("three refused launches", vec![X, X, X], 0),
+        ("a refused launch between faults", vec![F, X, F], 0),
+        ("a refused launch restarts nothing", vec![F, F, X, F], 1),
     ];
     for (name, steps, expected) in rows {
         let fx = Fixture::started(&[]);
@@ -3897,6 +3923,16 @@ const LOGIN_RELEASED: &str = "This session was interrupted: the run was held 42s
 const LOGIN_CLASS: &str =
     "This session was interrupted by authentication_failed. Continue where you left off.";
 
+/// What a [`relaunch_cases`] row's spawn learned since its interrupted launch began, as its
+/// options carry it, trailing blank line and all.
+const RELAUNCH_TASK: &str = "the tree you left is commit c0ffee\n\n";
+
+/// [`RELAUNCH_TASK`] as a relaunch sends it.
+const RELAUNCH_SENT: &str = "the tree you left is commit c0ffee";
+
+/// A resume task that already holds [`RELAUNCH_SENT`], as the conductor's prior-failure block does.
+const RESUME_HOLDING: &str = "the tree you left is commit c0ffee\n\nfix exactly these";
+
 /// What a [`relaunch_cases`] row's undecodable run-stream event carries.
 const UNDECODABLE: &[u8] = b"not json";
 
@@ -3935,6 +3971,10 @@ struct Relaunch {
     prior_run: bool,
     /// Whether the spawn resumes [`PRIOR_SESSION`] with [`RESUME_TASK`].
     resumed: bool,
+    /// The spawn's resume task in place of [`RESUME_TASK`], unless empty.
+    resume_task: &'static str,
+    /// The spawn's relaunch task.
+    relaunch_task: &'static str,
     /// The fixture agent's ending of a `--resume` launch, empty answering.
     resume_ending: &'static str,
     sink: Sink,
@@ -4198,6 +4238,91 @@ fn relaunch_cases() -> Vec<Relaunch> {
             ..Default::default()
         },
         Relaunch {
+            name:
+                "a fresh launch the restart interrupted, sending its relaunch task after the note",
+            seeded: vec![
+                Opened(0, INTERRUPTED, None),
+                Closed(0, INTERRUPTED, "interrupted", "", None),
+            ],
+            relaunch_task: RELAUNCH_TASK,
+            appended: relaunched(1, INTERRUPTED),
+            tasks: vec![format!("{RESTARTED}\n\n{RELAUNCH_SENT}")],
+            answered: (FORKED, INTERRUPTED),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a resume the restart interrupted, sending its relaunch task between the note \
+                and its resume task",
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+            ],
+            resumed: true,
+            relaunch_task: RELAUNCH_TASK,
+            appended: relaunched(1, PRIOR_SESSION),
+            tasks: vec![format!("{RESTARTED}\n\n{RELAUNCH_SENT}\n\n{RESUME_TASK}")],
+            answered: (FORKED, PRIOR_SESSION),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a resume whose resume task holds its relaunch task, sending it once",
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+            ],
+            resumed: true,
+            resume_task: RESUME_HOLDING,
+            relaunch_task: RELAUNCH_TASK,
+            appended: relaunched(1, PRIOR_SESSION),
+            tasks: vec![format!("{RESTARTED}\n\n{RESUME_HOLDING}")],
+            answered: (FORKED, PRIOR_SESSION),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a relaunch of a fallback the restart interrupted, sending its relaunch task \
+                and no resume task",
+            seeded: vec![
+                Opened(0, PRIOR_SESSION, Some(PRIOR_SESSION)),
+                Closed(0, PRIOR_SESSION, "interrupted", "", None),
+                Opened(1, FELL_BACK, None),
+                Closed(1, FELL_BACK, "interrupted", "", None),
+            ],
+            resumed: true,
+            relaunch_task: RELAUNCH_TASK,
+            appended: relaunched(2, FELL_BACK),
+            tasks: vec![format!("{RESTARTED}\n\n{RELAUNCH_SENT}")],
+            answered: (FORKED, FELL_BACK),
+            ..Default::default()
+        },
+        Relaunch {
+            name:
+                "a relaunch with no system/init falls back to the full prompt alone, which holds \
+                what the relaunch task says",
+            seeded: vec![
+                Opened(0, INTERRUPTED, None),
+                Closed(0, INTERRUPTED, "interrupted", "", None),
+            ],
+            relaunch_task: RELAUNCH_TASK,
+            resume_ending: "refused-result",
+            appended: vec![
+                Opened(1, FORKED, Some(INTERRUPTED)),
+                Closed(1, FORKED, "interrupted", "", None),
+                Opened(2, MINTED, None),
+                Closed(2, MINTED, "completed", "", None),
+            ],
+            tasks: vec![
+                format!("{RESTARTED}\n\n{RELAUNCH_SENT}"),
+                FULL_PROMPT.to_string(),
+            ],
+            answered: (MINTED, ""),
+            ..Default::default()
+        },
+        Relaunch {
+            name: "a launch that is no relaunch sends no relaunch task",
+            relaunch_task: RELAUNCH_TASK,
+            ..fresh_after("completed", "")
+        },
+        Relaunch {
             name: "an upgraded hold names its latest cause",
             log: vec![
                 run_held_event(&host_hold("rate_limit", "", RETRIES_BY_ITSELF, false, "")),
@@ -4395,7 +4520,8 @@ fn relaunch_cases() -> Vec<Relaunch> {
 /// `--resume`s that launch's session as a fork under a session the host mints at the next ordinal
 /// in the same directory, its first message the note the close decides (the hold the first
 /// release past the close's stamp ended, the supervisor's restart for a close of no class, the
-/// class alone otherwise), then the `resume_task` when that launch carried it, as its record says
+/// class alone otherwise), then the spawn's `relaunch_task` unless the task it carries holds it,
+/// then the `resume_task` when that launch carried it, as its record says
 /// (its session or the session it resumed is the one the spawn names), recording only its answer,
 /// so no attempt is charged. Any other latest launch, or a prior run's, launches fresh, a relaunch
 /// with no `system/init` takes the fallback, and a hold sink the host cannot read or fold launches
@@ -4431,8 +4557,14 @@ fn an_interrupted_launch_relaunches_its_session_as_its_close_decides() {
         } else {
             fx.fresh_opts("")
         };
+        let resume_task = match case.resume_task {
+            "" => base.resume_task.clone(),
+            task => task.to_string(),
+        };
         let o = SpawnOpts {
             env: fx.ending_env(case.resume_ending, "answer"),
+            resume_task,
+            relaunch_task: case.relaunch_task.to_string(),
             ..base
         };
         let root = fx.scratch_root.path().to_string_lossy().into_owned();

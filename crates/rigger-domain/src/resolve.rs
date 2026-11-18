@@ -266,7 +266,7 @@ fn one_here_else_one_anywhere<'c, 'v>(
 
 /// Whether a mention of `kind` is `impl`-tagged: it names a trait or type in an implementation's
 /// header.
-fn is_impl(kind: &MentionKind) -> bool {
+pub fn is_impl(kind: &MentionKind) -> bool {
     matches!(kind, MentionKind::Tagged(tag) if tag == REF_KIND_IMPL)
 }
 

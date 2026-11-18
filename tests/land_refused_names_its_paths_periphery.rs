@@ -17,7 +17,9 @@
 use crate::common;
 use common::git::run_git;
 
+use common::fixtures::conductor_fault_hold;
 use common::fixtures::gated_scratch_cfg;
+use common::fixtures::holds_in;
 use common::fixtures::mk_stage;
 use common::fixtures::review_or_adjudicate;
 use common::fixtures::test_spawn_host;
@@ -143,6 +145,11 @@ fn a_land_refused_for_local_changes_names_the_blocking_path_and_charges_no_attem
         lessons[0].contains("new.txt"),
         "the lesson names the blocking path: {}",
         lessons[0]
+    );
+    assert_eq!(
+        holds_in(&events),
+        [conductor_fault_hold(&err.0)],
+        "the refused landing holds the run for the orchestrator, naming the refusal"
     );
 
     // The unit's own branch keeps exactly its own real work - untouched by the refused
