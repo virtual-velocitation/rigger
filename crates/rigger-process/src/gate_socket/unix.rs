@@ -187,9 +187,11 @@ impl Drop for GateSocket {
 
 /// Ask the driver serving the socket at `path` to answer `request`: its reply, or `None` when no
 /// driver serves there (no socket file, one nothing listens on, or a connection closed before any
-/// driver read the request, [`exchange`]). A socket in a directory that
-/// is not this user's alone is refused with `PermissionDenied` ([`check_private`]), and a path
-/// longer than the OS allows a socket is `InvalidInput`.
+/// driver read the request, [`exchange`]). Off Linux a driver that took the connection and closed
+/// it with the request unread is the end-of-file error, since the OS ends that reply as it ends
+/// one a driver read and left unanswered. A socket in a directory that is not this user's alone is
+/// refused with `PermissionDenied` ([`check_private`]), and a path longer than the OS allows a
+/// socket is `InvalidInput`.
 pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         check_private(dir)?;
@@ -278,10 +280,12 @@ mod tests {
     /// A REQUEST NO DRIVER READ IS NO ANSWER: GIVEN a connection closed before any driver read the
     /// request on it - the listener closed with the connection still queued (a driver shutting
     /// down, or a listener a process forked at that moment held a little longer), so the request
-    /// meets a broken pipe, or a driver that took the connection and closed it with the request
-    /// unread, so the reply meets a reset - THEN asking answers `None`, as when nothing listens;
-    /// GIVEN a driver that read the whole request and closed without replying, THEN asking is the
-    /// end-of-file error, since a driver took that request.
+    /// meets a broken pipe, or, on Linux, a driver that took the connection and closed it with the
+    /// request unread, so the reply meets a reset - THEN asking answers `None`, as when nothing
+    /// listens; GIVEN a driver that read the whole request and closed without replying, THEN
+    /// asking is the end-of-file error, since a driver took that request. Off Linux a driver that
+    /// took the connection and closed it with the request unread is that error too: macOS meets
+    /// the close with an end of file, not a reset, so the two closes read the same there.
     #[test]
     fn a_request_no_driver_read_answers_none_and_one_read_but_unanswered_is_an_error() {
         use std::io::{BufRead, Read};
@@ -317,7 +321,11 @@ mod tests {
                         taken.read_exact(&mut [0]).unwrap();
                     })
                 },
-                Ok(()),
+                if cfg!(target_os = "linux") {
+                    Ok(())
+                } else {
+                    Err(io::ErrorKind::UnexpectedEof)
+                },
             ),
             (
                 "taken, read whole and closed unanswered",
