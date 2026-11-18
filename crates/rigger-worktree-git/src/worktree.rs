@@ -8715,6 +8715,94 @@ mod tests {
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
+    /// An add git did not finish at `at`, cut off before it checked out a branch there, whose tree
+    /// a clear then removed (a throwaway's discard, the orphan sweep): git keeps the entry locked
+    /// and naming no branch.
+    fn add_cut_off_then_cleared(h: &HeldElsewhere) {
+        run_git(h.at(), &["switch", "-q", "--detach"]).unwrap();
+        add_cut_off(h);
+        std::fs::remove_dir_all(&h.at).unwrap();
+    }
+
+    /// A HOLD ON A LOCKED ENTRY WITH NOTHING AT THE UNIT'S DIR NAMES GIT'S OWN COMMANDS THAT
+    /// RECOVER IT: a create at a dir whose tree was cleared while git still lists it locked, the
+    /// branch there or not and the dir spelled as git lists it or through a link, fails naming the
+    /// mark, the path and the commands that recover it, and once the remove it names has run, the
+    /// next create goes through.
+    #[test]
+    fn a_create_at_a_cleared_dir_git_marks_locked_names_the_commands_that_recover_it() {
+        // Each row: the case, whether the branch is kept, and how the unit's dir is spelled.
+        type Row = (&'static str, bool, fn(&HeldElsewhere) -> String);
+        #[allow(unused_mut)]
+        let mut rows: Vec<Row> = vec![
+            ("the branch kept, the dir as git lists it", true, |h| {
+                h.at().to_string()
+            }),
+            ("the branch gone, the dir as git lists it", false, |h| {
+                h.at().to_string()
+            }),
+        ];
+        #[cfg(unix)]
+        rows.push((
+            "the branch kept, the dir through a link to the root",
+            true,
+            |h| {
+                let link = h._places[1].path().join("root-link");
+                std::os::unix::fs::symlink(&h.root, &link).unwrap();
+                link.join("held").to_str().unwrap().to_string()
+            },
+        ));
+        let mut violations = Vec::new();
+        for (row, keep_branch, spell) in rows {
+            let h = held_elsewhere(Held::Under);
+            add_cut_off_then_cleared(&h);
+            if !keep_branch {
+                run_git(h.repo(), &["branch", "-q", "-D", HELD_BRANCH]).unwrap();
+            }
+            let dir = spell(&h);
+            let repo = h.repo();
+            let held = match Worktree::create(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(wt) => {
+                    violations.push(format!("{row}: the create made a tree at {}", wt.dir));
+                    continue;
+                }
+                Err(e) => e.0,
+            };
+            let (first, rest) = held.split_once('\n').unwrap_or((&held, ""));
+            let named = format!(
+                "a worktree git marks `locked initializing` is registered at {dir}: nothing there \
+                 is cleared or adopted"
+            );
+            if first != named {
+                violations.push(format!(
+                    "{row}: the first line reads {first:?}, not {named:?}"
+                ));
+            }
+            let recovery = locked_recovery(repo, &dir);
+            if rest != recovery {
+                violations.push(format!(
+                    "{row}: the recovery reads {rest:?}, not {recovery:?}"
+                ));
+            }
+            let remove = ["worktree", "remove", "--force", "--force", dir.as_str()];
+            if let Err(e) = run_git(repo, &remove) {
+                violations.push(format!("{row}: the remove failed: {e}"));
+            }
+            match Worktree::create(repo, &dir, HELD_BRANCH, h.root()) {
+                Ok(wt) if worktree_on_branch(&wt.dir, HELD_BRANCH).unwrap_or(false) => {}
+                Ok(wt) => violations.push(format!(
+                    "{row}: the recovered tree at {} is off the branch",
+                    wt.dir
+                )),
+                Err(e) => violations.push(format!(
+                    "{row}: the create after the recovery failed: {}",
+                    e.0
+                )),
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
     #[test]
     fn create_heals_a_leftover_dir_at_the_deterministic_path() {
         // Resume self-heal (Gap 12, spec 06:48): with a DETERMINISTIC dir, a POPULATED dir can
