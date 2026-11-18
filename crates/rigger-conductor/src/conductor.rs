@@ -6038,7 +6038,7 @@ impl RunCtx<'_> {
             || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &wt {
             if !parked_unwind && !kept_for_retry && !holds_work {
-                let _ = w.remove();
+                self.remove_or_say(w);
             }
             // The unit's branch is its DURABLE checkpoint (resume-continuity): it must
             // survive an interrupted unit so the next run reuses its committed work.
@@ -8395,6 +8395,26 @@ impl RunCtx<'_> {
         Ok(())
     }
 
+    /// REMOVE A TREE ITS STAGE IS DONE WITH, OR SAY WHY IT STAYS: `w`'s removal where its stage
+    /// ends, its outcome already decided. Git refusing it (a lock a person set meanwhile, which
+    /// [`Worktree::remove`] reads) or a read failing keeps the tree where it is, and the run says
+    /// so through [`Deps::log`], naming the tree, its branch and the refusal. Nothing else would:
+    /// a transient tree (a standalone review's, the plan-critique gate's, a post-merge
+    /// re-gate's) is never created again to read the lock, and a unit's tree is held only at its
+    /// next create. The error is not propagated: it would make a person's lock the failure of a
+    /// stage whose outcome is already recorded, or mask the error the stage ended on. A tree
+    /// already gone keeps nothing, so nothing is said of it.
+    fn remove_or_say(&self, w: &Worktree) {
+        if let Err(e) = w.remove() {
+            if std::path::Path::new(&w.dir).exists() {
+                (self.deps.log)(&format!(
+                    "rigger: kept the worktree at {} (branch {}): {}",
+                    w.dir, w.branch, e.0
+                ));
+            }
+        }
+    }
+
     /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
     /// the stage's own `speculation_width` when set (`> 0`), else `defaults.speculation_width`,
     /// with a floor of 1. Width 1 (the default) is speculation OFF - a single implementer
@@ -8689,7 +8709,7 @@ impl RunCtx<'_> {
                 // lane's branch kept either way.
                 Err((LaneError::Fault, e)) => {
                     if !tree_is_dirty(&dir) {
-                        let _ = wt.remove();
+                        self.remove_or_say(&wt);
                     }
                     // A store read failing before the implementer's launch carries no halt
                     // marker, so it reaches the wave as the infra halt it is. One before the sdet
@@ -8723,7 +8743,7 @@ impl RunCtx<'_> {
                     if class == LaneError::Refused {
                         self.lane_refused(st, lane, &wt, &e, &mut lost)?;
                     }
-                    let _ = wt.remove();
+                    self.remove_or_say(&wt);
                     let _ = Worktree::delete_branch(&self.deps.repo, &wt.branch);
                 }
             }
@@ -8916,7 +8936,7 @@ impl RunCtx<'_> {
             // The winner's work merged into the base: tear down its worktree and branch too,
             // exactly as the single-lane path deletes an integrated unit's branch, and the
             // unit's recorded keeps with them, the keeps of this group's refused lanes included.
-            let _ = candidates[i].wt.remove();
+            self.remove_or_say(&candidates[i].wt);
             let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
             let keeps: Vec<ledger::Kept> = self
                 .recorded_keeps(&st.name)
@@ -8934,7 +8954,7 @@ impl RunCtx<'_> {
         // on the fresh re-entry. Clean up the losing candidates' worktrees: each lane git refused
         // was kept when it was refused, and its record below names where.
         for c in &candidates {
-            let _ = c.wt.remove();
+            self.remove_or_say(&c.wt);
             let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
         }
         // Record why the group lost as the unit's failure, one past its
@@ -9200,7 +9220,7 @@ impl RunCtx<'_> {
                 }),
                 &[(META_SPEC_GROUP, group)],
             )?;
-            let _ = c.wt.remove();
+            self.remove_or_say(&c.wt);
             let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
         }
         Ok(())
@@ -9254,7 +9274,7 @@ impl RunCtx<'_> {
             // exactly as before. A PARKED (or budget-refused) unwind keeps both - the
             // out-of-process reviewer runs BETWEEN conductor processes in this exact tree.
             if !parked_unwind {
-                let _ = w.remove();
+                self.remove_or_say(w);
                 let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
             }
         }
@@ -10397,7 +10417,7 @@ impl RunCtx<'_> {
         let parked_unwind = matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &review_wt {
             if !parked_unwind {
-                let _ = w.remove();
+                self.remove_or_say(w);
                 let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
             }
         }
@@ -12115,7 +12135,7 @@ impl RunCtx<'_> {
             // exactly as this function's own doc comment and spec 103 criterion 7's
             // Design text both already (unconditionally) promise.
             let gate_result = self.run_gates(st, &pm_wt.dir, attempt, GateSelection::PostMerge);
-            let _ = pm_wt.remove();
+            self.remove_or_say(&pm_wt);
             let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             let merged = gate_result?;
             if !merged.pass {
