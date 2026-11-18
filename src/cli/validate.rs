@@ -39,6 +39,22 @@ fn print_claude_login() {
     }
 }
 
+/// The `rigger validate` SESSION HOST VERSION report: the version the one reader
+/// ([`rigger::claude_version::read`]) reads from the `claude` on PATH within its bound, on
+/// stdout; below the version the installed exec-form hooks need, the one too-old line `rigger
+/// run` refuses with ([`rigger::claude_version::too_old`]) as a warning in its place; when it
+/// read no version, one warning saying the read failed and why. None changes the exit status.
+fn print_session_host_version() {
+    use rigger::claude_version::{read, too_old, READ_BOUND};
+    match read(rigger::claude_auth::DEFAULT_BIN, READ_BOUND) {
+        Ok(version) => match too_old(version) {
+            Some(line) => eprintln!("warning: {line}"),
+            None => println!("session host version: {version}"),
+        },
+        Err(why) => eprintln!("warning: the session host version read failed: {why}"),
+    }
+}
+
 /// The `rigger validate` model-drift advisory (spec 13b, unit 1): a stderr warning naming
 /// each tier whose resolved model id re-pointed since the previous run and recommending the
 /// drift-gated canary, or `None` when nothing drifted. Pure over the [`metrics::ModelDrift`]
@@ -223,6 +239,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
         println!("{line}");
     }
     print_claude_login();
+    print_session_host_version();
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.
