@@ -13,7 +13,11 @@
 //! bundled grammar's bound; and a reference the answer qualifies by a path or a member is held as
 //! the mention named as written, of its leaf (spec 117, CAPTURES), and lands on the definition its
 //! qualifier keeps, while an answer qualifying a name that holds a separator, or that the name
-//! written after its qualifier reads back as another leaf, is a failed answer.
+//! written after its qualifier reads back as another leaf, is a failed answer; and the code store
+//! holds a declared answer's mentions, as it holds those of a file the bundled grammar reads, one
+//! tagged mention per enclosing definition, name, leaf, tag and test flag, in the first one's
+//! place at the lowest of their lines, and every call, one per site (spec 117, ONE TAGGED MENTION
+//! PER SITE KIND).
 
 use std::path::Path;
 
@@ -799,5 +803,101 @@ fn graph_build_names_a_declared_reference_by_its_qualifier_and_lands_it_where_th
         ),
         "each declared reference is named as written and lands where that name reaches; stdout: \
          {out}"
+    );
+}
+
+/// A Zig file defining `LIMIT`, `g` and `f`, in that order, whose `f`, over its lines 3 to 10,
+/// reads `LIMIT` on lines 4 and 6, calls `g` twice on line 5, then reads the constant named `a.b`
+/// on line 7 and the `b` of `a` through a member access on line 8.
+const REPEATS_ZIG: &str = concat!(
+    "const LIMIT = 3;\nfn g() void {}\npub fn f() u32 {\n",
+    "    const x = LIMIT;\n    g(); g();\n    const y = LIMIT;\n",
+    "    _ = @\"a.b\";\n    _ = a.b;\n    return x + y;\n}\n",
+);
+
+/// The answer to `src/r.zig` holding [`REPEATS_ZIG`]: the definitions `LIMIT`, `g` and `f`, then
+/// `f`'s references out of line order - the `const` read of `LIMIT` on line 6, the two calls of
+/// `g` on line 5, the `const` read of `LIMIT` on line 4 - and its `const` reads of the unqualified
+/// `a.b` on line 7 and of `b` qualified by the member `a` on line 8, both written `a.b`.
+const REPEATS_ANSWER: &str = concat!(
+    r#"{"path":"src/r.zig","defs":["#,
+    r#"{"kind":"Constant","name":"LIMIT","line":1,"end_line":1,"path":"LIMIT"},"#,
+    r#"{"kind":"Function","name":"g","line":2,"end_line":2,"path":"g"},"#,
+    r#"{"kind":"Function","name":"f","line":3,"end_line":10,"path":"f"}"#,
+    r#"],"refs":["#,
+    r#"{"name":"LIMIT","line":6,"enclosing":"f","ref_kind":"const"},"#,
+    r#"{"name":"g","line":5,"enclosing":"f"},"#,
+    r#"{"name":"g","line":5,"enclosing":"f"},"#,
+    r#"{"name":"LIMIT","line":4,"enclosing":"f","ref_kind":"const"},"#,
+    r#"{"name":"a.b","line":7,"enclosing":"f","ref_kind":"const"},"#,
+    r#"{"name":"b","line":8,"enclosing":"f","ref_kind":"const","#,
+    r#""qualifier":{"name":"a","path":false}}"#,
+    r#"]}"#
+);
+
+/// Given a committed repository whose workflow declares the stub for `zig`, holding a Rust file
+/// whose `f` reads `LIMIT` three times and calls `g` three times and the Zig file
+/// [`REPEATS_ZIG`] answered as [`REPEATS_ANSWER`], when the operator builds the graph, the code
+/// store holds each file's mentions as ONE TAGGED MENTION PER SITE KIND (spec 117) keeps them,
+/// whichever extractor read the file: the Rust file's one `const` mention of `LIMIT` at the first
+/// read's line 4 after its three calls of `g`, one per line; the Zig file's one `const` mention of
+/// `LIMIT` in the place of the answer's first, at the lower of its lines, 4, its two calls of `g`
+/// on line 5 both kept, and its two `const` mentions written `a.b` kept apart by their leaves,
+/// `a.b` and `b`. Nothing is said on stderr.
+#[test]
+fn graph_build_stores_one_tagged_mention_per_site_kind_and_every_call_of_each_extractor() {
+    use crate::symbol_index::{mention_in, THREE_READS_AND_THREE_CALLS_SOURCE};
+
+    let zig = "src/r.zig";
+    let (_dir, root) = source_repository();
+    let kept = tempfile::tempdir().expect("tempdir");
+    let stub = StubExtractor::new(kept.path());
+    declare(&root, &stub, "zig", "[zig]");
+    // (the file, its committed text, the mentions the store holds of it; `f` is the definition
+    // at index 2 of each)
+    let in_f = |name, leaf, kind, line| mention_in(Some(2), name, leaf, kind, line, false);
+    let table = [
+        (
+            "src/lib.rs",
+            THREE_READS_AND_THREE_CALLS_SOURCE,
+            vec![
+                in_f("g", "g", None, 5),
+                in_f("g", "g", None, 7),
+                in_f("g", "g", None, 9),
+                in_f("LIMIT", "LIMIT", Some("const"), 4),
+            ],
+        ),
+        (
+            zig,
+            REPEATS_ZIG,
+            vec![
+                in_f("LIMIT", "LIMIT", Some("const"), 4),
+                in_f("g", "g", None, 5),
+                in_f("g", "g", None, 5),
+                in_f("a.b", "a.b", Some("const"), 7),
+                in_f("a.b", "b", Some("const"), 8),
+            ],
+        ),
+    ];
+    let files: Vec<(&str, &str)> = table.iter().map(|&(path, text, _)| (path, text)).collect();
+    commit(&root, &files);
+    stub.answers(zig, REPEATS_ANSWER);
+    let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+    let graph = BuiltGraph::of(&root);
+    let (found, expected): (Vec<_>, Vec<_>) = table
+        .into_iter()
+        .map(|(path, _, mentions)| {
+            let held = graph
+                .view
+                .file(path)
+                .map(|facts| facts.into_owned().mentions);
+            ((path, held), (path, Some(mentions)))
+        })
+        .unzip();
+    assert_eq!(
+        (ok, err, found),
+        (true, String::new(), expected),
+        "each file's mentions are stored one tagged mention per site kind and every call; \
+         stdout: {out}"
     );
 }

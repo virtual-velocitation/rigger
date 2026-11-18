@@ -781,6 +781,7 @@ pub(crate) mod tests {
     };
     use crate::python_definition_sources::PYTHON_DEFINITIONS_SOURCE;
     use crate::rust_definition_sources::RUST_DEFINITIONS_SOURCE;
+    use crate::symbol_index::{mention_in, THREE_READS_AND_THREE_CALLS_SOURCE};
     use rigger_domain::code_view::CodeView;
     use rigger_domain::config::ExtractorDecl;
     use rigger_domain::contextgraph::{
@@ -829,29 +830,6 @@ pub(crate) mod tests {
     /// production mapping the facts are built with.
     fn kind_name(kind: crate::grounder::symbols::model::Kind) -> String {
         format!("{kind:?}").to_lowercase()
-    }
-
-    /// The mention written `name` of `leaf` on `line`, inside the definition at `enclosing`, of
-    /// the tagged mention kind `kind`, a call when it has none.
-    fn mention_in(
-        enclosing: Option<u32>,
-        name: &str,
-        leaf: &str,
-        kind: Option<&str>,
-        line: u32,
-        test: bool,
-    ) -> Mention {
-        Mention {
-            enclosing,
-            name: name.to_string(),
-            leaf: leaf.to_string(),
-            kind: match kind {
-                None => MentionKind::Call,
-                Some(kind) => MentionKind::Tagged(kind.to_string()),
-            },
-            line,
-            test,
-        }
     }
 
     /// Every definition and every call the symbol extractor finds in each language's fixture is
@@ -1158,20 +1136,7 @@ pub(crate) mod tests {
     /// function stay three call mentions, one per call's line.
     #[test]
     fn one_tagged_mention_per_site_kind() {
-        let source = "\
-const LIMIT: u32 = 3;
-fn g() {}
-fn f() -> u32 {
-    let a = LIMIT;
-    g();
-    let b = LIMIT;
-    g();
-    let c = LIMIT;
-    g();
-    a + b + c
-}
-";
-        let facts = facts_of("src/lib.rs", source.as_bytes());
+        let facts = facts_of("src/lib.rs", THREE_READS_AND_THREE_CALLS_SOURCE.as_bytes());
         assert_eq!(
             facts
                 .defs
