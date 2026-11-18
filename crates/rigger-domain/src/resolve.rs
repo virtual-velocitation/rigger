@@ -2357,8 +2357,6 @@ pub(crate) mod tests {
         ]);
     }
 
-    /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): of same-path twins of one kind the lower
-    /// line settles the id wherever it sits among them, and of twins on one line the first.
     /// A CHANGE TO WHAT A STORE SETTLES SHIPS WITH A BUMP: the test files and proof calls of
     /// [`fixture`], and of [`qualified_proof_fixture`], whose qualified test calls take each way
     /// the proof rule narrows one, are pinned by digest beside the generation the store's
@@ -4211,6 +4209,8 @@ pub(crate) mod tests {
         }
     }
 
+    /// ONE PATH IS ONE ENTITY (spec 119 criterion 10): of same-path twins of one kind the lower
+    /// line settles the id wherever it sits among them, and of twins on one line the first.
     #[test]
     fn settled_takes_the_lower_line_wherever_it_sits_then_the_first_of_a_tie() {
         fn kind_line<'d>(d: &'d (&'static str, u32, &'static str)) -> (&'d str, u32) {
