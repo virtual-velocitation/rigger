@@ -3790,6 +3790,88 @@ fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
     );
 }
 
+/// Given a project, when the operator runs `rigger run` with a stand-in `claude` first on PATH
+/// answering `--version` with each line, then below the minimum the exec-form hooks need the run
+/// refuses with the one too-old line `rigger validate` warns with, before any start effect: no
+/// launch, no run, no ref and no store or scratch file; at the minimum it runs, and on a line
+/// that names no version it runs and says nothing of the version.
+#[cfg(unix)]
+#[test]
+fn run_refuses_a_session_host_below_the_hooks_minimum_before_any_start_effect() {
+    use rigger::claude_version::{parse, too_old};
+
+    // (name, the stand-in's `--version` line, the line the run refuses with, none for a run)
+    let rows = [
+        (
+            "one below the minimum",
+            "2.1.138 (Claude Code)",
+            Some(format!(
+                "rigger: {}",
+                too_old(parse("2.1.138").unwrap()).unwrap()
+            )),
+        ),
+        ("the minimum", "2.1.139 (Claude Code)", None),
+        ("text with no version", "false (GNU coreutils) 9.4", None),
+    ];
+    for (name, answer, refusal) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let (fake, path_env) = install_fake_claude(RECORDING_WORKER_ARM);
+        let [path, tmpdir] = fake_claude_env(&path_env, scratch.path());
+        let entries = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .map(|read| {
+                    read.map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        };
+        let state = || {
+            (
+                common::git::git_out(root, &["for-each-ref", "--format=%(refname) %(objectname)"]),
+                entries(&root.join(".rigger")),
+                entries(scratch.path()),
+            )
+        };
+        let before = state();
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["run"],
+            &[path, tmpdir, ("RIGGER_TEST_HOST_VERSION", answer)],
+        );
+        let launched = fake.path().join("bin/argv").exists();
+        match refusal {
+            Some(refusal) => {
+                assert!(!ok, "{name}: the run refuses; stdout: {out}\nstderr: {err}");
+                assert_eq!(
+                    err.lines().last(),
+                    Some(refusal.as_str()),
+                    "{name}: the too-old line ends what the run prints; stderr: {err}"
+                );
+                assert!(!launched, "{name}: no agent launched");
+                assert_eq!(state(), before, "{name}: no ref, store or scratch file changed");
+                assert_eq!(
+                    common::cli::current_run_id_of(root),
+                    None,
+                    "{name}: no run started"
+                );
+            }
+            None => {
+                assert!(ok, "{name}: the run succeeds; stdout: {out}\nstderr: {err}");
+                assert!(launched, "{name}: the run launched its agent");
+                assert!(
+                    !err.contains("session host"),
+                    "{name}: the run says nothing of the version; stderr: {err}"
+                );
+            }
+        }
+    }
+}
+
 /// Spec 105's hook injection, end to end: given a project, when the operator runs `rigger run`,
 /// then the launch's `--settings` carries the write guard rooted at the session's working
 /// directory and the spawn's scratch container, an empty `dir` resolving to the session's cwd and
