@@ -641,6 +641,129 @@ fn validate_still_fails_on_a_store_it_cannot_select_whatever_the_claude_login() 
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// (f) THE SESSION HOST VERSION THE EXEC-FORM HOOKS NEED
+// ---------------------------------------------------------------------------------------
+
+/// Given a project, when the operator runs `rigger validate` with a stand-in `claude` first on
+/// PATH answering `--version` with each line, or none on it, then validate reads the version at
+/// once and on no call log, prints it on stdout, warns with the one too-old line in its place
+/// below the hooks' minimum (the line `rigger run` refuses with), says the read failed and why
+/// when it read no version, and exits 0 on every row.
+#[cfg(unix)]
+#[test]
+fn validate_reports_the_session_host_version_and_warns_below_the_hooks_minimum() {
+    use common::cli::{ambient_tools_bin, lines_where, run_rigger_envs};
+    use common::fixtures::{arms_claude, probe_arms};
+    use rigger::claude_version::{parse, too_old};
+
+    let reported = |version: &str| vec![format!("session host version: {version}")];
+    let below = |printed: &str| {
+        vec![format!(
+            "warning: {}",
+            too_old(parse(printed).unwrap()).unwrap()
+        )]
+    };
+    let failed =
+        |why: &str| vec![format!("warning: the session host version read failed: {why}")];
+    let not_found = std::io::Error::from_raw_os_error(2);
+    // (name, the stand-in's `--version` line, none for no `claude` on PATH, the version lines on
+    // stdout, the version warnings on stderr)
+    let rows = [
+        (
+            "the hooks' minimum",
+            Some("2.1.139 (Claude Code)"),
+            reported("2.1.139"),
+            vec![],
+        ),
+        (
+            "a newer host",
+            Some("2.1.325 (Claude Code)"),
+            reported("2.1.325"),
+            vec![],
+        ),
+        (
+            "one below the minimum",
+            Some("2.1.138 (Claude Code)"),
+            vec![],
+            below("2.1.138"),
+        ),
+        (
+            "below it, compared as numbers",
+            Some("2.1.99"),
+            vec![],
+            below("2.1.99"),
+        ),
+        (
+            "text with no version",
+            Some("false (GNU coreutils) 9.4"),
+            vec![],
+            failed("`claude --version` printed no version: false (GNU coreutils) 9.4"),
+        ),
+        (
+            "nothing printed",
+            Some(""),
+            vec![],
+            failed("`claude --version` printed nothing within 5 s"),
+        ),
+        (
+            "no claude on PATH",
+            None,
+            vec![],
+            failed(&format!("`claude --version` did not start: {not_found}")),
+        ),
+    ];
+    let dir = temp_rigger_project();
+    let root = dir.path();
+    let (_out, err, ok) = run_rigger(root, &["init"]);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+    for (name, answer, lines, warnings) in rows {
+        let fake = tempfile::tempdir().unwrap();
+        let path = match answer {
+            Some(_) => {
+                arms_claude(fake.path(), &probe_arms("", ""));
+                format!(
+                    "{}:{}",
+                    fake.path().display(),
+                    std::env::var("PATH").unwrap_or_default()
+                )
+            }
+            None => ambient_tools_bin(fake.path(), &["git"])
+                .display()
+                .to_string(),
+        };
+        let started = std::time::Instant::now();
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["validate"],
+            &[
+                ("PATH", &path),
+                ("RIGGER_TEST_HOST_VERSION", answer.unwrap_or_default()),
+            ],
+        );
+        let elapsed = started.elapsed();
+        assert!(ok, "{name}: the version read never fails validate; stderr:\n{err}");
+        assert_eq!(
+            lines_where(&out, |line| line.starts_with("session host version: ")),
+            lines,
+            "{name}: stdout:\n{out}"
+        );
+        assert_eq!(
+            lines_where(&err, |line| line.starts_with("warning: the session host")),
+            warnings,
+            "{name}: stderr:\n{err}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(3),
+            "{name}: validate took {elapsed:?}"
+        );
+        assert!(
+            !fake.path().join("canary-argv").exists(),
+            "{name}: the read runs no session"
+        );
+    }
+}
+
 /// GIVEN a freshly initialised project with no `graph.db`, WHEN the operator runs `rigger
 /// validate`, THEN it succeeds, prints its config summary, and leaves `graph.db` absent: a
 /// read-only check never fabricates the file it would have read.
