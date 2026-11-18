@@ -39,6 +39,8 @@ mod tests {
     use super::*;
     use crate::test_support::{release, waiting_shell};
 
+    // Unix only: Windows reports no process's working directory.
+    #[cfg(unix)]
     #[test]
     fn a_process_whose_cwd_is_inside_the_dir_holds_it() {
         let dir = tempfile::tempdir().unwrap();
@@ -59,13 +61,16 @@ mod tests {
         let child = waiting_shell(&format!("exec 3< '{}'", file.display()), elsewhere.path());
         let pid = child.id();
         assert!(processes_holding(dir.path()).contains(&pid));
-        assert!(
+        assert_eq!(
             !processes_holding(elsewhere.path()).is_empty(),
-            "its cwd holds the other dir"
+            cfg!(unix),
+            "its cwd holds the other dir, on unix: Windows reports no process's working directory"
         );
         release(child);
     }
 
+    // Unix only: Windows reports no process's open files.
+    #[cfg(unix)]
     #[test]
     fn a_processes_open_files_name_each_file_it_holds_and_a_gone_process_holds_none() {
         let dir = tempfile::tempdir().unwrap();
