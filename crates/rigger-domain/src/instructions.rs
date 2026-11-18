@@ -590,9 +590,10 @@ mod tests {
     /// A headless spawn's session ends with its turn: the discipline states that once, in a
     /// section every agent reads, as the outcome (every job waited on inside the turn) and its
     /// check, and the denied-command sentence hangs under it, then the git-refusal paragraph: a
-    /// refused git step or a held stop is fixed at its cause, never forced, reset, deleted or
-    /// discarded past, and another unit's branch or worktree is never touched. Read by its words,
-    /// so a rewrap never moves a verdict.
+    /// refused git step or a held stop is fixed at its cause, never forced past, and no work the
+    /// task produced is reset, deleted or discarded past it, while a leftover that is not the
+    /// task's output may be taken out of the tree; another unit's branch or worktree is never
+    /// touched. Read by its words, so a rewrap never moves a verdict.
     #[test]
     fn the_working_discipline_states_once_that_a_turns_end_is_the_sessions_end() {
         let body = working_discipline();
@@ -616,8 +617,10 @@ mod tests {
             "When git refuses a step, or your session's stop is held over the state of your \
              tree, your turn is not over either: read the message, find the cause and fix the \
              cause, then end as your task asks.",
-            "Never force, reset, delete or discard work to get past a refusal, and never touch \
-             another unit's branch or worktree.",
+            "Never force past a refusal, and never reset, delete or discard work your task \
+             produced to get past one; a leftover that is not your task's output, such as a \
+             scratch file, may be taken out of the tree.",
+            "Never touch another unit's branch or worktree.",
         ] {
             assert!(
                 words.contains(phrase),

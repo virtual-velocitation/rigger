@@ -34,8 +34,9 @@ turn is not over - use the alternative.
 
 When git refuses a step, or your session's stop is held over the state of your tree, your turn
 is not over either: read the message, find the cause and fix the cause, then end as your task
-asks. Never force, reset, delete or discard work to get past a refusal, and never touch another
-unit's branch or worktree.
+asks. Never force past a refusal, and never reset, delete or discard work your task produced to
+get past one; a leftover that is not your task's output, such as a scratch file, may be taken out
+of the tree. Never touch another unit's branch or worktree.
 
 ## Hand over a tree the gates only confirm
 
