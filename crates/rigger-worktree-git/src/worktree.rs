@@ -6,7 +6,6 @@
 use crate::config::RIGGER_DIR;
 use crate::eventstore::Event;
 use crate::spawn::SpawnEvent;
-use rigger_domain::agent::in_producer_output;
 
 pub use rigger_domain::worktree::{Error, StepError};
 
@@ -3559,23 +3558,30 @@ pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error
 
 /// Why a producer's tree rooted at `dir` is not ready for the conductor, which lands only the
 /// commits made there and never commits the tree itself: the changes no commit records, untracked
-/// files included ([`uncommitted_paths`]), in the stage's `output` - the one scope the plan
-/// landing carries ([`in_producer_output`]) - named in a line saying to commit them; then, beside
-/// that line, the rest named in one saying they never land, are refused in a commit, and may be
-/// taken out of the tree. Work outside the output alone is no refusal: it never lands whatever
-/// the session does, so it holds nothing up. Empty when the output holds no such work. Read-only,
-/// like [`checkpoint_refusals`]. `rigger hook stop --own-commits <output>` asks it before a
-/// producer's session may end, and the conductor asks it again once the session has ended,
-/// failing the attempt on any line, since that work would otherwise never reach the run branch.
+/// files included, in the stage's `output` - the one scope the plan landing carries
+/// ([`in_producer_output`](rigger_domain::agent::in_producer_output)) - named in a line saying to
+/// commit them; then, beside that line, the rest named in one saying they never land, are refused
+/// in a commit, and may be taken out of the tree. Work outside the output alone is no refusal: it
+/// never lands whatever the session does, so it holds nothing up. Empty when the output holds no
+/// such work. Each side is git's own status read scoped to it ([`status_z_of`]), never one read
+/// split after the fact: git names a directory it tracks nothing in by that directory alone, so
+/// a plan in a nested output (`docs/specs/`) under a parent git tracks nothing in reads, unscoped,
+/// as the parent (`docs/`), which lies outside the output. Read-only, like
+/// [`checkpoint_refusals`]. `rigger hook stop --own-commits <output>` asks it before a producer's
+/// session may end, and the conductor asks it again once the session has ended, failing the
+/// attempt on any line, since that work would otherwise never reach the run branch.
 pub fn own_commits_refusals(dir: &str, output: &str) -> Result<Vec<String>, Error> {
-    let (mut inside, mut outside): (Vec<String>, Vec<String>) = uncommitted_paths(dir)?
-        .into_iter()
-        .partition(|path| in_producer_output(path, output));
-    inside.sort();
-    outside.sort();
+    let scope = format!("{}/", output.trim_end_matches('/'));
+    let changed = |pathspec: String| -> Result<Vec<String>, Error> {
+        let mut paths = parse_status_z(&status_z_of(dir, &[&pathspec])?);
+        paths.sort();
+        Ok(paths)
+    };
+    let inside = changed(format!(":(literal){scope}"))?;
     if inside.is_empty() {
         return Ok(Vec::new());
     }
+    let outside = changed(format!(":(exclude,literal){scope}"))?;
     let mut refusals = vec![format!(
         "{dir} holds work in {output} that no commit records: {} - the conductor lands \
          only the commits made there, so commit this work for it to reach the run branch",
@@ -3752,21 +3758,31 @@ pub fn uncommitted_paths(dir: &str) -> Result<Vec<String>, Error> {
     Ok(parse_status_z(&status_z(dir)?))
 }
 
-/// `git status --porcelain -z` in `dir`, the one status read [`path_is_dirty`] and
-/// [`uncommitted_paths`] share: untracked files listed by directory whatever the user's git
+/// The arguments of `git status --porcelain -z`, the one status read [`status_z`] and
+/// [`status_z_of`] share: untracked files listed by directory whatever the user's git
 /// configuration says (`status.showUntrackedFiles` may hide them or list each file), and optional
 /// locks off, so the read rewrites nothing, not even the index's stat cache.
+const STATUS_Z: [&str; 5] = [
+    "--no-optional-locks",
+    "status",
+    "--porcelain",
+    "-z",
+    "--untracked-files=normal",
+];
+
+/// [`STATUS_Z`] in `dir`, the one status read [`path_is_dirty`] and [`uncommitted_paths`] share.
 fn status_z(dir: &str) -> Result<String, Error> {
-    git(
-        dir,
-        &[
-            "--no-optional-locks",
-            "status",
-            "--porcelain",
-            "-z",
-            "--untracked-files=normal",
-        ],
-    )
+    git(dir, &STATUS_Z)
+}
+
+/// [`STATUS_Z`] in `dir` limited to the `pathspecs` (git's pathspec magic, relative to `dir`),
+/// its standard output alone: git warns on standard error when a pathspec names a directory the
+/// tree does not hold, and that warning is no status record.
+fn status_z_of(dir: &str, pathspecs: &[&str]) -> Result<String, Error> {
+    let args: Vec<&str> = STATUS_Z.iter().chain(&["--"]).chain(pathspecs).copied().collect();
+    git_output(dir, &args, GitOutput::Stdout)
+        .map(|out| String::from_utf8_lossy(&out).into_owned())
+        .map_err(|out| git_failed(&args, String::from_utf8_lossy(&out).trim()))
 }
 
 /// Every path `dir`'s tree changed since `commit`: the paths commits made after it touch, then
