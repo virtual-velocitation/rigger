@@ -9750,12 +9750,16 @@ mod tests {
         OnTheUnitsBranch,
         /// Under the work root on another branch, the unit's own tree registered at its path.
         UnderTheRoot,
+        /// Under the work root on another branch, the unit's own tree registered at its path and
+        /// listed by git ahead of it.
+        UnderTheRootListedAfter,
     }
 
     /// A WORKTREE NO ONE CAN RESOLVE HOLDS A CREATE ONLY WHEN IT COULD BE THE UNIT'S: one naming
     /// the unit's branch, or listed under the work root, makes `create` fail naming it; any other
     /// is passed over, so the unit's own registered tree is adopted beside it, but a leftover at
-    /// the unit's path is never cleared on it. The unit's work and every registration stay.
+    /// the unit's path is never cleared on it. Which of the two git lists first decides nothing.
+    /// The unit's work and every registration stay.
     #[test]
     #[cfg(unix)]
     fn create_is_held_by_a_worktree_no_one_can_resolve_only_when_it_could_be_the_units() {
@@ -9765,6 +9769,7 @@ mod tests {
             (Unresolvable::UnrelatedBesideALeftover, false),
             (Unresolvable::OnTheUnitsBranch, false),
             (Unresolvable::UnderTheRoot, false),
+            (Unresolvable::UnderTheRootListedAfter, false),
         ];
         let mut violations = Vec::new();
         for (row, adopts) in rows {
@@ -9777,16 +9782,20 @@ mod tests {
             let root_s = root.to_str().unwrap();
             let dir = root.join(format!("{UNIT_WORKTREE_PREFIX}unit-unresolved"));
             let dir_s = dir.to_str().unwrap();
-            // Each sealed tree's path sorts before the unit's, so git lists it first.
+            // git lists linked worktrees sorted by path: each sealed tree's path sorts before the
+            // unit's, so git lists it first, but the last row's, which sorts after it.
             let (sealed, its_branch) = match row {
                 Unresolvable::Unrelated | Unresolvable::UnrelatedBesideALeftover => {
                     (place.join("a"), "other")
                 }
                 Unresolvable::OnTheUnitsBranch => (place.join("a"), BRANCH),
                 Unresolvable::UnderTheRoot => (root.join("a"), "other"),
+                Unresolvable::UnderTheRootListedAfter => (root.join("z"), "other"),
             };
             match row {
-                Unresolvable::Unrelated | Unresolvable::UnderTheRoot => {
+                Unresolvable::Unrelated
+                | Unresolvable::UnderTheRoot
+                | Unresolvable::UnderTheRootListedAfter => {
                     Worktree::create(repo_path, dir_s, BRANCH, root_s).unwrap();
                 }
                 Unresolvable::UnrelatedBesideALeftover => {
