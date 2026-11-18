@@ -8761,6 +8761,56 @@ mod tests {
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
+    /// A DISCARD KEEPS A TREE GIT MARKS LOCKED: a throwaway's tree a person locked, or whose add
+    /// git did not finish, is an error naming the mark, the path and the commands that recover it,
+    /// and nothing there is reaped or removed: the tree, its work, its registration and its branch
+    /// stay.
+    #[test]
+    fn a_discard_keeps_a_tree_git_marks_locked() {
+        type Spoil = fn(&HeldElsewhere);
+        let rows: [(&str, Spoil); 2] = [
+            ("a person's lock", HeldElsewhere::lock),
+            ("an add cut off", add_cut_off),
+        ];
+        let mut violations = Vec::new();
+        for (row, spoil) in rows {
+            let h = held_elsewhere(Held::Under);
+            spoil(&h);
+            let (repo, at) = (h.repo(), h.at());
+            match Worktree::discard(repo, at, HELD_BRANCH, h.root()) {
+                Ok(()) => violations.push(format!("{row}: the discard went through")),
+                Err(e) => {
+                    let (first, rest) = e.0.split_once('\n').unwrap_or((&e.0, ""));
+                    if !first.starts_with("a worktree git marks `locked")
+                        || !first.ends_with(&format!(
+                            "` is registered at {at}: nothing there is cleared or adopted"
+                        ))
+                    {
+                        violations.push(format!(
+                            "{row}: the first line does not name the mark and where: {first}"
+                        ));
+                    }
+                    let recovery = locked_recovery(repo, at);
+                    if rest != recovery {
+                        violations.push(format!(
+                            "{row}: the recovery reads {rest:?}, not {recovery:?}"
+                        ));
+                    }
+                }
+            }
+            if h.work().as_deref() != Some("work\n") {
+                violations.push(format!("{row}: the work at {at} is gone"));
+            }
+            if !h.listed() {
+                violations.push(format!("{row}: the registration at {at} is gone"));
+            }
+            if !branch_exists(repo, HELD_BRANCH) {
+                violations.push(format!("{row}: the branch is gone"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
     /// An add git did not finish at `at`, cut off before it checked out a branch there, whose tree
     /// a clear then removed (a throwaway's discard, the orphan sweep): git keeps the entry locked
     /// and naming no branch.
