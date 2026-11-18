@@ -129,7 +129,8 @@ rigger::test_cases! {
 }
 
 /// The kept fixture `body`, with `up` of its processes up and then `before` done to it, is ended
-/// by the handle's end, which leaves nothing running and reports nothing.
+/// by the handle's end, which leaves nothing running and reports nothing: a process that ignores
+/// the end's request to exit is ended without asking once the grace passes.
 fn ends_the_tree(body: &str, up: usize, before: fn(&mut ReapedChild, &mut Witness)) {
     let mut witness = Witness::new();
     let mut tree = kept(&witness, body);
@@ -171,6 +172,10 @@ rigger::test_cases! {
         ends_the_tree("cd / && holder; up; held", 2, |_, _| {});
     a_kept_end_ends_a_process_in_a_session_of_its_own:
         ends_the_tree("setsid sh -c 'printf u >&9; read -r unused <&8' & up; held", 2, |_, _| {});
+    a_kept_end_ends_a_process_that_ignores_the_request_to_exit:
+        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {});
+    a_kept_end_ends_a_main_that_ignores_the_request_to_exit:
+        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {});
 }
 
 #[test]
