@@ -5,17 +5,20 @@
 //! The file is a [`crate::format`] container. Its header payload is the stamp: the extractor
 //! fingerprint, the tip's head, commit and tree as strings, and the sequence number. A string is
 //! a (u32 offset, u32 length) pair into the STRINGS pool, which holds each distinct string once;
-//! an absent commit is the offset `u32::MAX`. Each other section is fixed-width rows:
+//! an absent commit is the offset `u32::MAX`. A doc span is the u32 first and last line of a doc
+//! comment; lines count from 1, so 0, 0 is no doc comment. Each other section is fixed-width rows:
 //!
 //! ```text
 //! FILES        path, blob, lang, half u8, scope u8, flags u8 (partial 1, test file 2),
-//!              then [start, end) into DEFS, MENTIONS, MODULES, DOC_CONCEPTS, DOC_LINKS,
-//!              WF_NODES, WF_RELATIONS                  (rows sorted by path; one run a file)
-//! DEFS         local, leaf, kind, line, end_line, parent (u32::MAX: none), flags (test)
+//!              doc span, then [start, end) into DEFS, MENTIONS, MODULES, DOC_CONCEPTS,
+//!              DOC_LINKS, WF_NODES, WF_RELATIONS       (rows sorted by path; one run a file)
+//! DEFS         local, leaf, kind, line, end_line, parent (u32::MAX: none), flags (test),
+//!              doc span
 //! MENTIONS     enclosing (u32::MAX: none), name, leaf, kind u8 (0 call, 1 tagged), tag,
 //!              line, flags (test)
-//! MODULES      name, def (its declaring DEFS row in the file), flags (test),
-//!              [start, end) into CANDIDATES
+//! MODULES      name, def (its declaring DEFS row in the file), flags (test 1, path
+//!              attribute 2), then start, mid, end into CANDIDATES: as_root is [start, mid),
+//!              as_child [mid, end)
 //! CANDIDATES   path
 //! DOC_*, WF_*  three strings each, as written
 //! IDX_LEAF     u32 key count, keys (leaf, [start, end) into the postings) sorted by leaf,
@@ -50,7 +53,7 @@ use std::ops::Range;
 use std::sync::OnceLock;
 
 pub(crate) const MAGIC: &[u8; 4] = b"RGCS";
-pub(crate) const VERSION: u16 = 4;
+pub(crate) const VERSION: u16 = 5;
 /// An absent index (parent, enclosing definition) or an absent string (commit).
 const NONE: u32 = u32::MAX;
 
@@ -73,11 +76,13 @@ const IDX_PROOF_FILE: u16 = 15;
 /// The width of a string reference.
 const STR: usize = 8;
 
-/// FILES row: three strings, half, scope, flags, then one [start, end) pair per list.
+/// FILES row: three strings, half, scope, flags, the doc span, then one [start, end) pair per
+/// list.
 const F_HALF: usize = 3 * STR;
 const F_SCOPE: usize = F_HALF + 1;
 const F_FLAGS: usize = F_SCOPE + 1;
-const F_LISTS: usize = F_FLAGS + 1;
+const F_DOC: usize = F_FLAGS + 1;
+const F_LISTS: usize = F_DOC + 8;
 /// The lists a file row ranges into, in row order.
 const LISTS: [u16; 7] = [
     DEFS,
@@ -100,7 +105,8 @@ const D_LINE: usize = 3 * STR;
 const D_END: usize = D_LINE + 4;
 const D_PARENT: usize = D_END + 4;
 const D_FLAGS: usize = D_PARENT + 4;
-const DEF_ROW: usize = D_FLAGS + 1;
+const D_DOC: usize = D_FLAGS + 1;
+const DEF_ROW: usize = D_DOC + 8;
 
 /// MENTIONS row.
 const M_NAME: usize = 4;
@@ -111,11 +117,11 @@ const M_LINE: usize = M_TAG + STR;
 const M_FLAGS: usize = M_LINE + 4;
 const MENTION_ROW: usize = M_FLAGS + 1;
 
-/// MODULES row.
+/// MODULES row: name, def, flags, then start, mid and end into CANDIDATES.
 const MOD_DEF: usize = STR;
 const MOD_FLAGS: usize = MOD_DEF + 4;
 const MOD_CANDS: usize = MOD_FLAGS + 1;
-const MODULE_ROW: usize = MOD_CANDS + 8;
+const MODULE_ROW: usize = MOD_CANDS + 12;
 
 /// A row of three strings (DOC_*, WF_*), and an index key (leaf, start, end).
 const TRIPLE_ROW: usize = 3 * STR;
@@ -131,6 +137,8 @@ const KIND_TAGGED: u8 = 1;
 const FLAG_SET: u8 = 1;
 /// A FILES row's flag: test code, by its scope or the test-module closure.
 const FLAG_TEST: u8 = 2;
+/// A MODULES row's flag: the declaration carries an explicit path attribute.
+const FLAG_PATH_ATTR: u8 = 2;
 
 /// The string pool being written: each distinct string once, in first-use order.
 #[derive(Default)]
@@ -170,16 +178,28 @@ impl Pool {
     }
 }
 
-fn flag(set: bool) -> u8 {
+/// The flag bit `mask` when `set`, else no bit.
+fn bit(set: bool, mask: u8) -> u8 {
     if set {
-        FLAG_SET
+        mask
     } else {
         0
     }
 }
 
+fn flag(set: bool) -> u8 {
+    bit(set, FLAG_SET)
+}
+
 fn opt_index(i: Option<u32>) -> u32 {
     i.unwrap_or(NONE)
+}
+
+/// Writes a doc span: its first and last line, or 0, 0 when there is none.
+fn put_span(out: &mut Vec<u8>, span: Option<(u32, u32)>) {
+    let (first, last) = span.unwrap_or((0, 0));
+    put_u32(out, first);
+    put_u32(out, last);
 }
 
 /// The sections being written, one byte buffer per kind.
@@ -234,6 +254,7 @@ impl Encoder {
             put_u32(&mut defs, def.end_line);
             put_u32(&mut defs, opt_index(def.parent));
             put_u8(&mut defs, flag(def.test));
+            put_span(&mut defs, def.doc);
             self.leaf_defs
                 .entry(def.leaf.clone())
                 .or_default()
@@ -264,18 +285,23 @@ impl Encoder {
         for module in &facts.modules {
             self.pool.put(&mut modules, &module.name)?;
             put_u32(&mut modules, module.def);
-            put_u8(&mut modules, flag(module.test));
+            put_u8(
+                &mut modules,
+                flag(module.test) | bit(module.path_attr, FLAG_PATH_ATTR),
+            );
             put_u32(
                 &mut modules,
                 narrow(candidates.len() / STR, "candidate row")?,
             );
-            for candidate in &module.candidates {
-                self.pool.put(&mut candidates, candidate)?;
+            for list in [&module.as_root, &module.as_child] {
+                for candidate in list {
+                    self.pool.put(&mut candidates, candidate)?;
+                }
+                put_u32(
+                    &mut modules,
+                    narrow(candidates.len() / STR, "candidate row")?,
+                );
             }
-            put_u32(
-                &mut modules,
-                narrow(candidates.len() / STR, "candidate row")?,
-            );
         }
         self.sections.insert(MODULES, modules);
         self.sections.insert(CANDIDATES, candidates);
@@ -313,10 +339,8 @@ impl Encoder {
         }
         put_u8(&mut files, facts.half as u8);
         put_u8(&mut files, facts.scope as u8);
-        put_u8(
-            &mut files,
-            flag(facts.partial) | if test { FLAG_TEST } else { 0 },
-        );
+        put_u8(&mut files, flag(facts.partial) | bit(test, FLAG_TEST));
+        put_span(&mut files, facts.doc);
         for (&kind, start) in LISTS.iter().zip(starts) {
             put_u32(&mut files, start);
             put_u32(&mut files, self.rows(kind, width_of(kind))?);
@@ -458,6 +482,18 @@ fn byte(row: &[u8], at: usize) -> u8 {
 
 fn opt(i: u32) -> Option<u32> {
     (i != NONE).then_some(i)
+}
+
+/// The doc span at `at` in `row`; none when it is 0, 0 ([`put_span`]).
+fn span(row: &[u8], at: usize) -> Option<(u32, u32)> {
+    let lines = (le32(row, at), le32(row, at + 4));
+    (lines != (0, 0)).then_some(lines)
+}
+
+/// A MODULES row's start, mid and end into CANDIDATES: its `as_root` list is [start, mid), its
+/// `as_child` list [mid, end).
+fn candidate_bounds(row: &[u8]) -> [usize; 3] {
+    [0, 4, 8].map(|at| le32(row, MOD_CANDS + at) as usize)
 }
 
 fn half_of(b: u8) -> Option<Half> {
@@ -683,12 +719,8 @@ impl Snapshot {
         let modules = self.table(MODULES);
         let mut next_candidate = 0;
         for i in 0..modules.rows {
-            let row = self.row(modules, i);
-            let (start, end) = (
-                le32(row, MOD_CANDS) as usize,
-                le32(row, MOD_CANDS + 4) as usize,
-            );
-            if start != next_candidate || end < start {
+            let [start, mid, end] = candidate_bounds(self.row(modules, i));
+            if start != next_candidate || mid < start || end < mid {
                 return Err("module candidates are not one run a module".into());
             }
             next_candidate = end;
@@ -789,6 +821,7 @@ impl Snapshot {
                         end_line: le32(r, D_END),
                         parent: opt(le32(r, D_PARENT)),
                         test: byte(r, D_FLAGS) & FLAG_SET != 0,
+                        doc: span(r, D_DOC),
                     }
                 })
                 .collect(),
@@ -815,16 +848,21 @@ impl Snapshot {
     fn modules_of(&self, row: &[u8]) -> Vec<ModuleDecl> {
         let modules = self.table(MODULES);
         let candidates = self.table(CANDIDATES);
+        let paths = |run: Range<usize>| -> Vec<String> {
+            run.map(|c| self.text(self.row(candidates, c), 0).to_owned())
+                .collect()
+        };
         self.list(row, L_MODULES)
             .map(|m| {
                 let r = self.row(modules, m);
+                let [start, mid, end] = candidate_bounds(r);
                 ModuleDecl {
                     name: self.text(r, 0).to_owned(),
                     def: le32(r, MOD_DEF),
                     test: byte(r, MOD_FLAGS) & FLAG_SET != 0,
-                    candidates: (le32(r, MOD_CANDS) as usize..le32(r, MOD_CANDS + 4) as usize)
-                        .map(|c| self.text(self.row(candidates, c), 0).to_owned())
-                        .collect(),
+                    as_root: paths(start..mid),
+                    as_child: paths(mid..end),
+                    path_attr: byte(r, MOD_FLAGS) & FLAG_PATH_ATTR != 0,
                 }
             })
             .collect()
@@ -840,6 +878,7 @@ impl Snapshot {
             half: half_of(byte(row, F_HALF)).unwrap_or_default(),
             scope: scope_of(byte(row, F_SCOPE)).unwrap_or_default(),
             partial: byte(row, F_FLAGS) & FLAG_SET != 0,
+            doc: span(row, F_DOC),
             defs: Vec::new(),
             mentions: Vec::new(),
             modules: Vec::new(),
@@ -1140,7 +1179,7 @@ impl CodeView for Snapshot {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use rigger_domain::code_facts::{
         Def, DocConcept, DocLink, Half, Mention, MentionKind, ModuleDecl, Scope, Tip, WfNode,
@@ -1148,7 +1187,25 @@ mod tests {
     };
     use rigger_domain::code_view::{Cluster, FactsView};
 
-    fn stamp(commit: Option<&str>, seq: u64) -> Stamp {
+    /// The snapshot `bytes`, at [`VERSION`], written again at format `version` with `edit` applied
+    /// to each section by its kind, every crc recomputed.
+    pub(crate) fn rewritten(
+        bytes: &[u8],
+        version: u16,
+        edit: impl Fn(u16, &mut Vec<u8>),
+    ) -> Vec<u8> {
+        let parsed = Container::parse(bytes, MAGIC, VERSION).expect("parses");
+        let sections: Vec<(u16, Vec<u8>)> = (STRINGS..=IDX_PROOF_FILE)
+            .map(|kind| {
+                let mut section = parsed.section(kind).expect("every section").to_vec();
+                edit(kind, &mut section);
+                (kind, section)
+            })
+            .collect();
+        write_container(MAGIC, version, parsed.payload, &sections).expect("writes")
+    }
+
+    pub(crate) fn stamp(commit: Option<&str>, seq: u64) -> Stamp {
         Stamp {
             tip: Tip {
                 head: "main".into(),
@@ -1160,7 +1217,11 @@ mod tests {
         }
     }
 
-    fn code_file() -> FileFacts {
+    /// A code file with a one-line file doc span, a definition with no doc span beside one whose
+    /// span covers three lines, and two module declarations: `inner`, whose `as_root` and
+    /// `as_child` lists differ, and `renamed`, with `path_attr` and lists of different lengths,
+    /// one of them empty.
+    pub(crate) fn code_file() -> FileFacts {
         FileFacts {
             path: "src/ünï.rs".into(),
             blob: "b1".into(),
@@ -1168,24 +1229,27 @@ mod tests {
             half: Half::Code,
             scope: Scope::Product,
             partial: true,
+            doc: Some((1, 1)),
             defs: vec![
                 Def {
                     local: "Outer".into(),
                     leaf: "Outer".into(),
                     kind: "struct".into(),
-                    line: 1,
-                    end_line: 9,
+                    line: 2,
+                    end_line: 11,
                     parent: None,
                     test: false,
+                    doc: None,
                 },
                 Def {
                     local: "Outer::run".into(),
                     leaf: "run".into(),
                     kind: "fn".into(),
-                    line: 3,
-                    end_line: 5,
+                    line: 6,
+                    end_line: 8,
                     parent: Some(0),
                     test: true,
+                    doc: Some((3, 5)),
                 },
             ],
             mentions: vec![
@@ -1194,7 +1258,7 @@ mod tests {
                     name: "crate::x::run".into(),
                     leaf: "run".into(),
                     kind: MentionKind::Call,
-                    line: 4,
+                    line: 7,
                     test: true,
                 },
                 Mention {
@@ -1202,16 +1266,28 @@ mod tests {
                     name: "Outer".into(),
                     leaf: "Outer".into(),
                     kind: MentionKind::Tagged("type".into()),
-                    line: 11,
+                    line: 13,
                     test: false,
                 },
             ],
-            modules: vec![ModuleDecl {
-                name: "inner".into(),
-                def: 1,
-                test: true,
-                candidates: vec!["src/inner.rs".into(), "src/inner/mod.rs".into()],
-            }],
+            modules: vec![
+                ModuleDecl {
+                    name: "inner".into(),
+                    def: 1,
+                    test: true,
+                    as_root: vec!["src/inner.rs".into(), "src/inner/mod.rs".into()],
+                    as_child: vec!["src/ünï/inner.rs".into(), "src/ünï/inner/mod.rs".into()],
+                    path_attr: false,
+                },
+                ModuleDecl {
+                    name: "renamed".into(),
+                    def: 0,
+                    test: false,
+                    as_root: vec!["src/p/y.rs".into()],
+                    as_child: Vec::new(),
+                    path_attr: true,
+                },
+            ],
             ..Default::default()
         }
     }
@@ -1287,8 +1363,8 @@ mod tests {
 
     /// A code file of `path` and `scope` holding `defs` (local = leaf, a function each), the
     /// calls `calls` (leaf, enclosing def, line) and the module declarations `modules` (name,
-    /// declaring def, test, candidates).
-    fn proving_file(
+    /// declaring def, test, and the one path its `as_root` and `as_child` lists both hold).
+    pub(crate) fn proving_file(
         path: &str,
         scope: Scope,
         defs: &[&str],
@@ -1311,6 +1387,7 @@ mod tests {
                     end_line: i as u32 + 1,
                     parent: None,
                     test: false,
+                    doc: None,
                 })
                 .collect(),
             mentions: (calls.iter())
@@ -1324,11 +1401,13 @@ mod tests {
                 })
                 .collect(),
             modules: (modules.iter())
-                .map(|&(name, def, test, candidate)| ModuleDecl {
+                .map(|&(name, def, test, path)| ModuleDecl {
                     name: name.into(),
                     def,
                     test,
-                    candidates: vec![candidate.into()],
+                    as_root: vec![path.into()],
+                    as_child: vec![path.into()],
+                    path_attr: false,
                 })
                 .collect(),
             ..empty_file(path)
@@ -1395,6 +1474,97 @@ mod tests {
             );
         }
         assert_eq!(snap.def_leaves(), view.def_leaves(), "definition leaves");
+    }
+
+    /// DOC SPANS AND MODULE LISTS SURVIVE A SNAPSHOT: a code file whose facts carry a file doc
+    /// span, a definition's doc span beside an absent one, and module declarations whose
+    /// `as_root` and `as_child` lists differ, one with `path_attr`, and a design file with no
+    /// doc span, encoded at format version 5, read back with each span, list and flag as written.
+    #[test]
+    fn doc_spans_and_module_lists_survive_a_snapshot() {
+        let view = FactsView::new(stamp(None, 1), vec![code_file(), design_file()]);
+        let bytes = encode(&view, &Groupings::default()).expect("encodes");
+        assert_eq!(
+            bytes[4..6],
+            5u16.to_le_bytes(),
+            "the header's format version"
+        );
+        let snap = Snapshot::decode(bytes).expect("decodes");
+        let code = snap.file("src/ünï.rs").expect("the code file");
+        let design = snap.file("docs/a.md").expect("the design file");
+        assert_eq!(
+            (code.doc, design.doc),
+            (Some((1, 1)), None),
+            "file doc spans"
+        );
+        let def_docs: Vec<Option<(u32, u32)>> = code.defs.iter().map(|d| d.doc).collect();
+        assert_eq!(def_docs, [None, Some((3, 5))], "definition doc spans");
+        fn strs(list: &[String]) -> Vec<&str> {
+            list.iter().map(String::as_str).collect()
+        }
+        let modules: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (code.modules.iter())
+            .map(|m| {
+                (
+                    m.name.as_str(),
+                    m.path_attr,
+                    strs(&m.as_root),
+                    strs(&m.as_child),
+                )
+            })
+            .collect();
+        assert_eq!(
+            modules,
+            [
+                (
+                    "inner",
+                    false,
+                    vec!["src/inner.rs", "src/inner/mod.rs"],
+                    vec!["src/ünï/inner.rs", "src/ünï/inner/mod.rs"],
+                ),
+                ("renamed", true, vec!["src/p/y.rs"], vec![]),
+            ],
+            "module declarations: name, path_attr, as_root, as_child"
+        );
+    }
+
+    /// Each row: the bounds into CANDIDATES of the second module of [`code_file`]'s snapshot,
+    /// written over its MODULES row with every crc recomputed, and what decoding gives: that
+    /// module's `as_root` [start, mid) and `as_child` [mid, end) lists, or the refusal of a run
+    /// that does not start where the first module's [0, 4) ends or whose mid lies outside it.
+    #[test]
+    fn a_module_decodes_only_as_one_run_of_candidates() {
+        let view = FactsView::new(stamp(None, 1), vec![code_file()]);
+        let bytes = encode(&view, &Groupings::default()).expect("encodes");
+        let rewrite = |bounds: [u32; 3]| {
+            rewritten(&bytes, VERSION, |kind, section| {
+                if kind == MODULES {
+                    let at = MODULE_ROW + MOD_CANDS;
+                    let row: Vec<u8> = bounds.iter().flat_map(|b| b.to_le_bytes()).collect();
+                    section[at..at + 12].copy_from_slice(&row);
+                }
+            })
+        };
+        assert_eq!(rewrite([4, 5, 5]), bytes, "the bounds as encoded");
+        const REFUSED: &str = "module candidates are not one run a module";
+        /// The module's `as_root` and `as_child` lists, or the decode's refusal.
+        type Decoded = Result<[&'static [&'static str]; 2], &'static str>;
+        let cases: [(&str, [u32; 3], Decoded); 5] = [
+            ("as encoded", [4, 5, 5], Ok([&["src/p/y.rs"], &[]])),
+            ("an empty as_root", [4, 4, 5], Ok([&[], &["src/p/y.rs"]])),
+            ("a gap before the run", [5, 5, 5], Err(REFUSED)),
+            ("mid before start", [4, 3, 5], Err(REFUSED)),
+            ("end before mid", [4, 5, 4], Err(REFUSED)),
+        ];
+        for (name, bounds, want) in cases {
+            let got = Snapshot::decode(rewrite(bounds)).map(|snap| {
+                let modules = snap.modules("src/ünï.rs").expect("the code file");
+                [modules[1].as_root.clone(), modules[1].as_child.clone()]
+            });
+            let want = want
+                .map(|lists| lists.map(|list| list.iter().map(|p| p.to_string()).collect()))
+                .map_err(String::from);
+            assert_eq!(got, want, "{name}");
+        }
     }
 
     /// Each row: a stamp, the files and the groupings a view holds. Every section must read back

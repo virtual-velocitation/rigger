@@ -15,7 +15,10 @@
 //!    rewritten to a `use` that nothing defines keeps its file node and loses every edge, and a
 //!    new `use`-only file gains its file node; and the tagged
 //!    references of a test file, of a `#[cfg(test)]` module or under their own `#[cfg(test)]`
-//!    fold no edge and prove no definition, while their call proves one.
+//!    fold no edge and prove no definition, while their call proves one;
+//!  - and, through CAPTURES, a type that the Go, TypeScript, TSX or C# tags query captures as a
+//!    reference folds no placeholder and no `CALLS` edge, landing instead as one `REFERENCES`
+//!    edge onto its one same-file definition, and nowhere when nothing defines it.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -309,6 +312,93 @@ fn graph_build_lands_a_staged_reference_on_its_same_file_definition_extracted() 
         ]),
         "a same-file candidate is taken before a project one"
     );
+}
+
+/// The TypeScript row's source of [`TYPE_USERS`], the TSX row's too.
+#[cfg(feature = "symbols")]
+const TS_TYPE_USER: &str =
+    "class Kestrel {}\nfunction draw() {}\nfunction paint(k: Kestrel, w: Wren) { draw(); }\n";
+
+/// One file per language whose registered tags query captures a type in type position as a
+/// `@reference.<kind>` reference (spec 117, CAPTURES), each defining a type `Kestrel` and a
+/// function `draw` and, in a function `paint`, calling `draw` and naming a `Kestrel` and a `Wren`,
+/// a type nothing defines, at a site its query captures: a parameter's type in Go, TypeScript and
+/// TSX, a local's in C#, where `draw` and `paint` are the methods `Draw` and `Paint` of a class
+/// `Shop` and the call is `this.Draw()`. Each row is `(file, source, the id paths of its definitions, sorted,
+/// paint's id path, draw's id path)`.
+#[cfg(feature = "symbols")]
+const TYPE_USERS: [(&str, &str, &[&str], &str, &str); 4] = [
+    (
+        "f.go",
+        "package p\n\ntype Kestrel struct{}\n\nfunc draw() {}\n\nfunc paint(k Kestrel, w Wren) { draw() }\n",
+        &["Kestrel", "draw", "paint"],
+        "paint",
+        "draw",
+    ),
+    (
+        "f.ts",
+        TS_TYPE_USER,
+        &["Kestrel", "draw", "paint"],
+        "paint",
+        "draw",
+    ),
+    (
+        "f.tsx",
+        TS_TYPE_USER,
+        &["Kestrel", "draw", "paint"],
+        "paint",
+        "draw",
+    ),
+    (
+        "f.cs",
+        "class Kestrel { }\nclass Shop\n{\n    void Draw() { }\n    void Paint() { Kestrel k = null; Wren w = null; this.Draw(); }\n}\n",
+        &["Kestrel", "Shop", "Shop::Draw", "Shop::Paint"],
+        "Shop::Paint",
+        "Shop::Draw",
+    ),
+];
+
+/// GIVEN a project whose one file, in Go, TypeScript, TSX or C# ([`TYPE_USERS`]), defines `Kestrel`
+/// and `draw` and, in `paint`, calls `draw` and names a `Kestrel` and an undefined `Wren` where its
+/// query captures a type (in C#, `Shop`'s methods `Draw` and `Paint`),
+/// WHEN the operator runs `rigger graph build`,
+/// THEN the graph's `REFERENCES` and `CALLS` edges are the call's two onto `draw` and one
+/// `REFERENCES` edge from `paint` onto `Kestrel`, each `extracted`: the type reference its query's
+/// capture tags lands as a staged reference on its one same-file definition, never as a call, and
+/// its code entities are the definitions alone, no placeholder standing for `Kestrel` or `Wren`.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_lands_another_language_s_type_reference_as_a_staged_edge_never_a_call() {
+    use rigger::contextgraph::query::entity_id;
+    use rigger::contextgraph::TIER_EXTRACTED;
+
+    for (file, source, definitions, paint, draw) in TYPE_USERS {
+        let (_project, graph) = common::cli::built_graph(&[(file, source)]);
+
+        let mut edges =
+            common::fixtures::a_call_from(file, paint, &entity_id(file, draw), TIER_EXTRACTED);
+        edges.push(common::fixtures::reference(
+            &entity_id(file, paint),
+            &entity_id(file, "Kestrel"),
+            TIER_EXTRACTED,
+        ));
+        edges.sort();
+        assert_eq!(
+            common::fixtures::landed(&graph),
+            edges,
+            "{file}: the call lands as a call, and the type reference on its one same-file \
+             definition as no call"
+        );
+        let ids: Vec<String> = definitions
+            .iter()
+            .map(|path| entity_id(file, path))
+            .collect();
+        assert_eq!(
+            common::fixtures::live_file_and_entity_ids(&graph.whole().unwrap()),
+            [vec![file.to_string()], ids],
+            "{file}: no placeholder stands for `Kestrel` or the undefined `Wren`"
+        );
+    }
 }
 
 /// A production file whose `#[cfg(test)]` module imports `Kestrel` and, in `fn check`, takes it

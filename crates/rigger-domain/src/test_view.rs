@@ -139,6 +139,7 @@ mod tests {
             end_line: 1,
             parent: None,
             test,
+            doc: None,
         }
     }
 

@@ -9,8 +9,9 @@
 //! `use crate::symbol_index;`) and included by the grounder crate for its unit tests; a suite uses
 //! the subset it needs (hence the module-wide `dead_code` allowance, the same convention
 //! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
-//! `assert_definitions_fixture` and `assert_callers` through it, alone reach a grammar and are held
-//! by the `symbols` lane only, as is `extracted_rust_index`, which calls `extracted`.
+//! `assert_definitions_fixture`, `assert_callers` and `assert_tagged_refs` through it, alone reach
+//! a grammar and are held by the `symbols` lane only, as is `extracted_rust_index`, which calls
+//! `extracted`.
 
 #![allow(dead_code)]
 
@@ -18,9 +19,9 @@
 use rigger::grounder::symbols::model::SymbolIndex;
 use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
 
-/// A line-1 file-level definition of `kind` named `name` with every optional field unset,
-/// `end_line` 0 and `path` its name - the shape a product-only definition takes; a caller sets the
-/// one field its case is about with struct-update syntax.
+/// A line-1 file-level definition of `kind` named `name` with every optional field unset, its doc
+/// span included, `end_line` 0 and `path` its name - the shape a product-only definition takes;
+/// a caller sets the one field its case is about with struct-update syntax.
 pub fn def(kind: Kind, name: &str) -> Def {
     Def {
         kind,
@@ -33,6 +34,7 @@ pub fn def(kind: Kind, name: &str) -> Def {
         is_out_of_line_module: false,
         path_override: None,
         enclosing_inline_module_path: None,
+        doc: None,
     }
 }
 
@@ -47,13 +49,14 @@ pub fn sym_ref(name: &str, line: u32, enclosing: Option<&str>, is_test: bool) ->
     }
 }
 
-/// A fully-parsed Rust file holding `defs` and `refs`.
+/// A fully-parsed Rust file holding `defs` and `refs`, with no doc span.
 pub fn rust_file(defs: Vec<Def>, refs: Vec<SymRef>) -> FileSymbols {
     FileSymbols {
         lang: Lang::Rust,
         defs,
         refs,
         partial: false,
+        doc: None,
     }
 }
 
@@ -169,9 +172,9 @@ pub fn assert_one_def_per_row(fs: &FileSymbols, rows: &[(&str, Kind, &str)]) {
 }
 
 /// A language's definitions fixture `src`, read through the grammar and query registered for
-/// `ext`, parses whole and holds exactly the definitions `defs` and the call references `refs`,
-/// each with its caller, and each row of `rows`, the language's DEFINITION TYPES, names exactly one
-/// of those definitions.
+/// `ext`, parses whole and holds exactly the definitions `defs`, the call references `refs` and
+/// the tagged references `tagged` ([`tagged_refs`]), each with its caller, and each row of `rows`,
+/// the language's DEFINITION TYPES, names exactly one of those definitions.
 #[cfg(feature = "symbols")]
 pub fn assert_definitions_fixture(
     ext: &str,
@@ -179,12 +182,14 @@ pub fn assert_definitions_fixture(
     rows: &[(&str, Kind, &str)],
     defs: &[(u32, &str, Kind)],
     refs: &[(u32, &str, Option<&str>)],
+    tagged: &str,
 ) {
     let fs = extracted(ext, src);
     assert_eq!(defs_by_line(&fs), defs);
     assert!(!fs.partial, "the fixture parses whole");
     assert_one_def_per_row(&fs, rows);
     assert_callers(ext, src, refs);
+    assert_tagged_refs(ext, src, tagged, "the fixture's tagged references");
 }
 
 /// The call references the registered query for `ext` extracts from `src`, each with its caller,
@@ -233,7 +238,7 @@ pub fn refs_with_callers(fs: &FileSymbols) -> Vec<(u32, &str, Option<&str>)> {
 /// Every tagged reference of `fs` (spec 117: one carrying a `ref_kind`), one line each,
 /// `<line> <ref kind> <name> <caller>`, the caller `-` for a top-level one, sorted by line, then
 /// name, then kind, then caller and joined by `\n`: the one rendering the reference-kind tests
-/// of the extractor compare whole.
+/// of the extractor and of the registry compare whole.
 pub fn tagged_refs(fs: &FileSymbols) -> String {
     let mut tagged: Vec<_> = fs
         .refs

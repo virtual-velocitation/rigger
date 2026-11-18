@@ -2457,6 +2457,7 @@ mod tests {
             end_line: 2,
             parent: None,
             test: false,
+            doc: None,
         }
     }
 

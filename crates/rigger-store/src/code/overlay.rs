@@ -442,7 +442,7 @@ impl CodeView for Merged {
 mod tests {
     use super::*;
     use crate::code::doubles::{CountingGroup, MemSource, ToyExtract};
-    use crate::code::Store;
+    use crate::code::{encode, Snapshot, Store};
     use rigger_domain::code_view::{Tests, ViewFilter};
     use rigger_domain::composed::{Composed, Honesty, Indexed, WholeMemo};
     use rigger_domain::contextgraph::{ContextGraph, Graph};
@@ -549,13 +549,17 @@ mod tests {
         let store = Store::new(root.path());
         let group = CountingGroup::default();
         let snap = store.advance(&source, &ToyExtract::new(1), &group, &tip);
-        let head = Head {
-            view: Box::new(snap.unwrap()),
+        (root, matched(snap.unwrap()))
+    }
+
+    /// The head a reader in the worktree `W` reads when `W` matches the snapshot `snap`.
+    fn matched(snap: Snapshot) -> Head {
+        Head {
+            view: Box::new(snap),
             compared: Compared::Overlaid(0),
             behind: None,
             worktree: "W".into(),
-        };
-        (root, head)
+        }
     }
 
     /// The filter a read of `head` shows every test under, and the label of its worktree `W`.
@@ -1238,6 +1242,230 @@ mod tests {
             assert!(label.starts_with(&want), "{case}: {label}");
             let code = ids(&graph).into_iter().filter(|id| id.starts_with("src/"));
             assert_eq!(code.count(), 0, "{case}: {:?}", ids(&graph));
+        }
+    }
+
+    /// A MODULE ROOT IS DECIDED AT READ through the store: GIVEN facts whose module declarations
+    /// place a module apart as a root (`as_root`) and as a child (`as_child`), with a code file at
+    /// the first path of both lists where they differ, WHEN they are encoded to a snapshot and the
+    /// head over it is read whole and near with every test shown, THEN the CONTAINS edges into each
+    /// file come from exactly the declarations that reach it: those of a root (`src/bin/tool.rs`,
+    /// `src/lib.rs`, and `src/p/y.rs`, which `src/lib.rs` loads by `#[path]`) read `as_root`, and
+    /// those of a file a plain declaration reaches (`src/code/mod.rs`, `src/a.rs`) read `as_child`;
+    /// and the snapshot settled as test files exactly the files its test-only declarations reach.
+    #[test]
+    fn a_module_root_is_decided_at_read_through_the_store() {
+        use crate::code::snapshot::tests::{proving_file, stamp};
+        use rigger_domain::code_facts::Scope;
+        use rigger_domain::contextgraph::REL_CONTAINS;
+        // A module declaration: its name, test mark, `as_root` and `as_child` lists, and whether
+        // it carries a `#[path]` attribute.
+        type Decl<'a> = (&'a str, bool, &'a [&'a str], &'a [&'a str], bool);
+        // A code file at `path` declaring each of `decls` by a definition of its name.
+        let declaring = |path: &str, decls: &[Decl]| {
+            let names: Vec<&str> = decls.iter().map(|d| d.0).collect();
+            let list = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect();
+            FileFacts {
+                modules: (decls.iter().enumerate())
+                    .map(
+                        |(def, &(name, test, as_root, as_child, path_attr))| ModuleDecl {
+                            name: name.into(),
+                            def: def as u32,
+                            test,
+                            as_root: list(as_root),
+                            as_child: list(as_child),
+                            path_attr,
+                        },
+                    )
+                    .collect(),
+                ..proving_file(path, Scope::Product, &names, &[], &[])
+            }
+        };
+        let declarations = [
+            declaring(
+                "src/bin/tool.rs",
+                &[
+                    (
+                        "x",
+                        false,
+                        &["src/bin/x.rs", "src/bin/x/mod.rs"],
+                        &["src/bin/tool/x.rs", "src/bin/tool/x/mod.rs"],
+                        false,
+                    ),
+                    (
+                        "tests",
+                        true,
+                        &["src/bin/tests.rs", "src/bin/tests/mod.rs"],
+                        &["src/bin/tool/tests.rs", "src/bin/tool/tests/mod.rs"],
+                        false,
+                    ),
+                ],
+            ),
+            declaring(
+                "src/lib.rs",
+                &[
+                    ("y", false, &["src/p/y.rs"], &["src/p/y.rs"], true),
+                    (
+                        "code",
+                        false,
+                        &["src/code.rs", "src/code/mod.rs"],
+                        &["src/code.rs", "src/code/mod.rs"],
+                        false,
+                    ),
+                    (
+                        "a",
+                        false,
+                        &["src/a.rs", "src/a/mod.rs"],
+                        &["src/a.rs", "src/a/mod.rs"],
+                        false,
+                    ),
+                ],
+            ),
+            declaring(
+                "src/p/y.rs",
+                &[(
+                    "z",
+                    false,
+                    &["src/p/z.rs", "src/p/z/mod.rs"],
+                    &["src/p/y/z.rs", "src/p/y/z/mod.rs"],
+                    false,
+                )],
+            ),
+            declaring(
+                "src/code/mod.rs",
+                &[(
+                    "advance",
+                    false,
+                    &["src/code/advance.rs", "src/code/advance/mod.rs"],
+                    &["src/code/advance.rs", "src/code/advance/mod.rs"],
+                    false,
+                )],
+            ),
+            declaring(
+                "src/a.rs",
+                &[
+                    (
+                        "b",
+                        false,
+                        &["src/b.rs", "src/b/mod.rs"],
+                        &["src/a/b.rs", "src/a/b/mod.rs"],
+                        false,
+                    ),
+                    (
+                        "tests",
+                        true,
+                        &["src/tests.rs", "src/tests/mod.rs"],
+                        &["src/a/tests.rs", "src/a/tests/mod.rs"],
+                        false,
+                    ),
+                ],
+            ),
+        ];
+        // (the case, a file, the definitions whose CONTAINS edges reach it); a file no row of
+        // `declarations` holds is a code file that declares nothing.
+        let cases: [(&str, &str, &[&str]); 14] = [
+            (
+                "a root's declaration reaches its `as_root` file",
+                "src/bin/x.rs",
+                &["src/bin/tool.rs::x"],
+            ),
+            (
+                "a root's declaration reaches no file at its `as_child` path",
+                "src/bin/tool/x.rs",
+                &[],
+            ),
+            (
+                "a root's test-only declaration reaches its `as_root` file",
+                "src/bin/tests.rs",
+                &["src/bin/tool.rs::tests"],
+            ),
+            (
+                "a root's test-only declaration reaches no file at its `as_child` path",
+                "src/bin/tool/tests.rs",
+                &[],
+            ),
+            (
+                "the library root's `#[path]` declaration reaches its file",
+                "src/p/y.rs",
+                &["src/lib.rs::y"],
+            ),
+            (
+                "a file the library root loads by `#[path]` declares as a root",
+                "src/p/z.rs",
+                &["src/p/y.rs::z"],
+            ),
+            (
+                "a file the library root loads by `#[path]` reaches no file at its `as_child` path",
+                "src/p/y/z.rs",
+                &[],
+            ),
+            (
+                "the library root reaches a `mod.rs` file plain",
+                "src/code/mod.rs",
+                &["src/lib.rs::code"],
+            ),
+            (
+                "a reached `mod.rs` file declares",
+                "src/code/advance.rs",
+                &["src/code/mod.rs::advance"],
+            ),
+            (
+                "the library root reaches a file plain",
+                "src/a.rs",
+                &["src/lib.rs::a"],
+            ),
+            (
+                "a file reached plain declares as a child",
+                "src/a/b.rs",
+                &["src/a.rs::b"],
+            ),
+            (
+                "a file reached plain reaches no file at its `as_root` path",
+                "src/b.rs",
+                &[],
+            ),
+            (
+                "a child's test-only declaration reaches its `as_child` file",
+                "src/a/tests.rs",
+                &["src/a.rs::tests"],
+            ),
+            (
+                "a child's test-only declaration reaches no file at its `as_root` path",
+                "src/tests.rs",
+                &[],
+            ),
+        ];
+        let leaves = (cases.iter())
+            .filter(|(_, file, _)| declarations.iter().all(|d| d.path != *file))
+            .map(|(_, file, _)| declaring(file, &[]));
+        let files = declarations.iter().cloned().chain(leaves).collect();
+        let view = FactsView::new(stamp(None, 1), files);
+        let bytes = encode(&view, &Groupings::default()).expect("encodes");
+        let head = matched(Snapshot::decode(bytes).expect("decodes"));
+        let settled = head.view.settled().expect("a snapshot settles");
+        assert_eq!(
+            settled.test_files(),
+            ["src/a/tests.rs", "src/bin/tests.rs"],
+            "the test files a test-only declaration reaches"
+        );
+        let whole = answer(&head).0;
+        let (filter, honesty) = shown(&head);
+        let records = Indexed::default();
+        let near = Composed::near(&records, &*head.view, filter, honesty).unwrap();
+        // The definitions whose CONTAINS edges in `graph` reach `file`, sorted.
+        let into = |graph: &Graph, file: &str| {
+            let mut from: Vec<String> = (graph.edges.iter())
+                .filter(|e| e.to == file && e.rel.as_str() == REL_CONTAINS)
+                .map(|e| e.from.clone())
+                .collect();
+            from.sort();
+            from
+        };
+        for (case, file, want) in cases {
+            let seen = near.subgraph(&[file.to_string()], 1).unwrap();
+            for (read, graph) in [("whole", &whole), ("near", &seen)] {
+                assert_eq!(into(graph, file), want, "{case}: {file} read {read}");
+            }
         }
     }
 }

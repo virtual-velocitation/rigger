@@ -2,8 +2,9 @@
 //! its [`FileFacts`]. They re-shape what the per-language symbol extractors, the design-document
 //! extractor and the workflow-definition extractor already find, and what an extractor the
 //! project's workflow declares answers over THE EXTRACTOR PROTOCOL (spec 125), whose client is
-//! [`extractor_protocol`]; this module is no extractor of its own, and holds no language
-//! knowledge. Every name is kept as written and
+//! [`extractor_protocol`]; this module is no extractor of its own, and its one language knowledge
+//! is the doc rule [`FactsExtractor`]'s [`Extract::doc_text`] strips a Rust doc span's lines to
+//! their comment text by. Every name is kept as written and
 //! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
@@ -21,7 +22,7 @@ use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
     WfRelation,
 };
-use rigger_domain::code_view::{Entry, Extract, Head, OpenCodeView, TreeSource};
+use rigger_domain::code_view::{trimmed_lines, Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
@@ -33,20 +34,22 @@ use crate::config::{check_extractors, ExtractorDecl, RIGGER_DIR, WORKFLOW_FILE};
 use crate::config_store;
 use crate::grounder::design::extract::{extract_concepts, extract_links};
 use crate::grounder::symbols::extract::{kind_str, lang_str};
-use crate::grounder::symbols::model::{self, SymRef, GRAMMAR_TAGS_VERSION};
+use crate::grounder::symbols::model::{self, Lang, SymRef, GRAMMAR_TAGS_VERSION};
 use crate::grounder::symbols::paths::{is_dev_only, module_candidates};
 use crate::grounder::symbols::{content_hash, extracted, registry};
 use crate::grounder::workflowdef;
 
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
-/// it whenever any of them can give a file other facts than before, as the symbol extractors'
-/// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the extractor's fingerprint,
-/// with the digest of the project's declared extractors when it declares any ([`ProjectExtractor`]),
-/// which the store's fingerprint ([`store_fingerprint`]) folds with the grouper's generation. A golden
-/// test pins it beside the digest of the facts read over a fixture set, so a change that is not
-/// bumped fails there.
-const FACTS_GENERATION: &str = "facts-v2";
+/// it whenever any of them can give a file other facts than before, as each symbol extractor's
+/// tags generation, joined in [`GRAMMAR_TAGS_VERSION`], is bumped for its own; the two together make
+/// the extractor's fingerprint, with the digest of the project's declared extractors when it
+/// declares any ([`ProjectExtractor`]), which the store's fingerprint ([`store_fingerprint`]) folds
+/// with the grouper's generation. A golden test pins it beside the digest of the facts read over a
+/// design, a rationale and a workflow fixture, so a change that is not bumped fails there; a
+/// conversion change that moves a language's facts re-pins that language's row of the same golden
+/// with the bump.
+const FACTS_GENERATION: &str = "facts-v3";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
 /// stores it and a later process compares against it.
@@ -256,6 +259,13 @@ impl Extract for ProjectExtractor {
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
         file_facts(entry, bytes, |path, text| self.code(path, text))
     }
+
+    /// [`FactsExtractor`]'s: a declared file's language is its declaration's name, so a
+    /// declaration named as a bundled language (`rust`) reads that language's doc rule and any
+    /// other name the lines trimmed.
+    fn doc_text(&self, lang: &str, raw: &str) -> String {
+        FactsExtractor.doc_text(lang, raw)
+    }
 }
 
 /// The code store of a project with no git, read from the directory at its root.
@@ -291,15 +301,208 @@ impl Extract for FactsExtractor {
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts {
         file_facts(entry, bytes, bundled_code)
     }
+
+    /// The doc rule of the language `lang` names: Rust's ([`rust_doc_text`]), and the lines
+    /// trimmed ([`trimmed_lines`]) for a language with no rule.
+    fn doc_text(&self, lang: &str, raw: &str) -> String {
+        if lang == lang_str(Lang::Rust) {
+            rust_doc_text(raw)
+        } else {
+            trimmed_lines(raw)
+        }
+    }
+}
+
+/// The comment text of a Rust doc span's `raw` lines, read as Rust lexes them from the span's start
+/// to its end, a trailing newline adding no line. A `//` comment runs to its line's end, and `///`
+/// (not `////`) and `//!` give the text after their marker, trimmed. A `/*` comment runs to the
+/// `*/` that closes it ([`until_block_closer`]). `/**` (not `/***` nor `/**/`) and `/*!` open a doc
+/// block ([`opens_doc_block`]) that gives its lines ([`doc_block_lines`]); any other block comment
+/// is dropped whole, a `///` inside it included. A name-value `#[doc = ..]` or `#![doc = ..]` gives
+/// each line of its string literal's body, trimmed ([`doc_attribute_text`]). Every other token is
+/// dropped ([`after_token`]): another attribute, `#[doc(..)]` included, code and every other
+/// literal, read whole so that no comment marker or quote inside a literal is read. Whatever
+/// follows a comment or a literal is read on, and the kept lines join by `\n`.
+fn rust_doc_text(raw: &str) -> String {
+    let mut text = Vec::new();
+    let mut rest = raw.strip_suffix('\n').unwrap_or(raw);
+    while !rest.is_empty() {
+        rest = if let Some(comment) = rest.strip_prefix("//") {
+            let (comment, after) = comment.split_once('\n').unwrap_or((comment, ""));
+            if let Some(doc) = comment
+                .strip_prefix('/')
+                .filter(|doc| !doc.starts_with('/'))
+                .or_else(|| comment.strip_prefix('!'))
+            {
+                text.push(doc.trim());
+            }
+            after
+        } else if let Some(comment) = rest.strip_prefix("/*") {
+            let (body, after) = until_block_closer(comment);
+            if opens_doc_block(comment) {
+                // The body past the `*` or `!` that marks a doc block.
+                text.extend(doc_block_lines(&body[1..], after.is_some()));
+            }
+            after.unwrap_or_default()
+        } else if let Some((body, after)) = doc_attribute_text(rest) {
+            text.extend(body.split('\n').map(str::trim));
+            after
+        } else {
+            after_token(rest)
+        };
+    }
+    text.join("\n")
+}
+
+/// Whether the Rust block comment whose opening `/*` ends just before `comment` is a doc block:
+/// `/**`, but not `/***` nor the empty plain comment `/**/`, or `/*!`.
+fn opens_doc_block(comment: &str) -> bool {
+    comment.starts_with('!')
+        || comment
+            .strip_prefix('*')
+            .is_some_and(|rest| !rest.starts_with(['*', '/']))
+}
+
+/// The text of the Rust block comment whose opening `/*` ends just before `text`, up to the `*/`
+/// that closes it, and the text after that closer: block comments nest, each `/*` inside opening
+/// a level and each `*/` closing one, so the closer is the `*/` that returns the depth to zero,
+/// however many lines on. The comment's text runs to `text`'s end, with none after it, when it is
+/// unclosed.
+fn until_block_closer(text: &str) -> (&str, Option<&str>) {
+    let bytes = text.as_bytes();
+    let mut depth = 1_usize;
+    let mut at = 0;
+    while at + 1 < bytes.len() {
+        match (bytes[at], bytes[at + 1]) {
+            (b'/', b'*') => depth += 1,
+            (b'*', b'/') => depth -= 1,
+            _ => {
+                at += 1;
+                continue;
+            }
+        }
+        if depth == 0 {
+            return (&text[..at], Some(&text[at + 2..]));
+        }
+        at += 2;
+    }
+    (text, None)
+}
+
+/// The lines of a Rust doc block's `body`, its text between the opener and the closer (or the
+/// span's end when it is not `closed`), each trimmed. The opener's line is kept when it is not
+/// blank. Every later line has one leading `*` stripped and is trimmed again, and is kept even
+/// when blank, except the closer's line, which is kept only when it is not blank.
+fn doc_block_lines(body: &str, closed: bool) -> impl Iterator<Item = &str> + '_ {
+    let last = body.matches('\n').count();
+    body.split('\n').enumerate().filter_map(move |(at, line)| {
+        let line = line.trim();
+        if at == 0 {
+            return (!line.is_empty()).then_some(line);
+        }
+        let line = line.strip_prefix('*').unwrap_or(line).trim();
+        (at < last || !closed || !line.is_empty()).then_some(line)
+    })
+}
+
+/// The text after the Rust token `text` starts with. A string literal is read whole, to its own
+/// closer: a plain `".."`, `b".."` or `c".."` ([`plain_literal`]), or a raw `r".."`, `br#".."#` or
+/// `cr#".."#` ([`raw_literal`]). So is a char literal: `'x'`, `'"'`, or an escaped `'\''` or
+/// `'\u{..}'` up to the next quote. A word is read to its last letter, digit or `_`, and any other
+/// character, the quote of a lifetime or a label (`'a`) included, alone.
+fn after_token(text: &str) -> &str {
+    let word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let mut chars = text.chars();
+    match chars.next() {
+        Some('"') => plain_literal(chars.as_str()).1,
+        Some('\'') => {
+            let quoted = chars.as_str();
+            match (chars.next(), chars.next()) {
+                (Some('\\'), Some(_)) => {
+                    let escaped = chars.as_str();
+                    escaped.find('\'').map_or("", |end| &escaped[end + 1..])
+                }
+                (Some(_), Some('\'')) => chars.as_str(),
+                _ => quoted,
+            }
+        }
+        Some(c) if word_char(c) => {
+            let (word, after) = text.split_at(text.find(|c| !word_char(c)).unwrap_or(text.len()));
+            match word {
+                "r" | "br" | "cr" => raw_literal(after).map_or(after, |(_, after)| after),
+                _ => after,
+            }
+        }
+        _ => chars.as_str(),
+    }
+}
+
+/// The body of the plain Rust string literal whose opening `"` ends just before `text`, as
+/// written, up to its own closer - the first `"` that no `\` escapes - and the text after that
+/// closer. The body runs to `text`'s end, with nothing after it, when the literal is unclosed.
+fn plain_literal(text: &str) -> (&str, &str) {
+    let mut chars = text.char_indices();
+    while let Some((at, c)) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '"' => return (&text[..at], &text[at + 1..]),
+            _ => {}
+        }
+    }
+    (text, "")
+}
+
+/// The body of the raw Rust string literal whose `r` ends just before `text` (`r".."`,
+/// `r#".."#`), up to its own closer - the first `"` followed by as many `#` as its opener holds -
+/// and the text after that closer; none when `text` opens no raw literal (`r#type`). The body runs
+/// to `text`'s end, with nothing after it, when the literal is unclosed.
+fn raw_literal(text: &str) -> Option<(&str, &str)> {
+    let quoted = text.trim_start_matches('#');
+    let hashes = &text[..text.len() - quoted.len()];
+    let body = quoted.strip_prefix('"')?;
+    let closer = body
+        .match_indices('"')
+        .map(|(at, _)| at)
+        .find(|&at| body[at + 1..].starts_with(hashes));
+    Some(closer.map_or((body, ""), |at| {
+        (&body[..at], &body[at + 1 + hashes.len()..])
+    }))
+}
+
+/// The body of the string literal of the Rust name-value doc attribute `text` starts with -
+/// `#[doc = ".."]`, `#![doc = r#".."#]`, whitespace allowed between its tokens - as written, up to
+/// the literal's own closer ([`plain_literal`], [`raw_literal`]), its escapes not decoded, and the
+/// text after that closer; none for another attribute, `#[doc(..)]` included, and for a value that
+/// is no string literal (`include_str!(..)`).
+fn doc_attribute_text(text: &str) -> Option<(&str, &str)> {
+    let attribute = text.strip_prefix('#')?.trim_start();
+    let value = attribute
+        .strip_prefix('!')
+        .unwrap_or(attribute)
+        .trim_start()
+        .strip_prefix('[')?
+        .trim_start()
+        .strip_prefix("doc")?
+        .trim_start()
+        .strip_prefix('=')?
+        .trim_start();
+    match value.strip_prefix('"') {
+        Some(plain) => Some(plain_literal(plain)),
+        None => raw_literal(value.strip_prefix('r')?),
+    }
 }
 
 /// The symbols an extraction gives one code file, the bundled grammars' and a declared
-/// extractor's alike: its definitions, its references and whether they cover only part of it.
+/// extractor's alike: its definitions, its references, whether they cover only part of it and
+/// the file's doc span (spec 117, DOC FACTS).
 #[derive(Debug, PartialEq, Eq)]
 struct CodeSymbols {
     defs: Vec<model::Def>,
     refs: Vec<SymRef>,
     partial: bool,
+    doc: Option<(u32, u32)>,
 }
 
 /// A code file as an extraction reads it: the language it is read as and its symbols, none when
@@ -346,13 +549,7 @@ fn file_facts(
             facts.half = Half::Code;
             facts.lang = file.lang;
             if let Some(Ok(symbols)) = file.symbols {
-                code_facts(
-                    path,
-                    &symbols.defs,
-                    &symbols.refs,
-                    symbols.partial,
-                    &mut facts,
-                );
+                code_facts(path, &symbols, &mut facts);
             }
         }
         None => facts.half = Half::Design,
@@ -377,22 +574,24 @@ fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
                     defs: symbols.defs,
                     refs: symbols.refs,
                     partial: symbols.partial,
+                    doc: symbols.doc,
                 })
             }),
     })
 }
 
-/// Fills the definitions, mentions, module declarations and parse-error marker of `facts` from
-/// the definitions `defs`, the references `refs` and the `partial` flag an extraction gave the
-/// file at `path`.
-fn code_facts(
-    path: &str,
-    defs: &[model::Def],
-    refs: &[SymRef],
-    partial: bool,
-    facts: &mut FileFacts,
-) {
-    facts.partial = partial;
+/// Fills the definitions, mentions, module declarations, parse-error marker and doc span of
+/// `facts` from the `symbols` an extraction gave the file at `path`, each definition keeping its
+/// own doc span.
+fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
+    let CodeSymbols {
+        defs,
+        refs,
+        partial,
+        doc,
+    } = symbols;
+    facts.partial = *partial;
+    facts.doc = *doc;
     let by_path = def_indices_by_path(defs);
     let index_of = |def_path: &str| by_path.get(def_path).copied();
     facts.defs = defs
@@ -405,6 +604,7 @@ fn code_facts(
             end_line: d.end_line,
             parent: d.parent.as_deref().and_then(index_of),
             test: d.is_test,
+            doc: d.doc,
         })
         .collect();
     facts.mentions = refs
@@ -426,11 +626,18 @@ fn code_facts(
     facts.modules = defs
         .iter()
         .filter(|d| d.is_out_of_line_module)
-        .map(|d| ModuleDecl {
-            name: d.name.clone(),
-            def: by_path[d.path.as_str()],
-            test: d.is_test,
-            candidates: module_candidates(path, d),
+        .map(|d| {
+            // `module_candidates` gives one list, placed by the declaring file's own module
+            // directory, and both lists hold it.
+            let candidates = module_candidates(path, d);
+            ModuleDecl {
+                name: d.name.clone(),
+                def: by_path[d.path.as_str()],
+                test: d.is_test,
+                as_root: candidates.clone(),
+                as_child: candidates,
+                path_attr: false,
+            }
         })
         .collect();
 }
@@ -650,6 +857,76 @@ mod tests {
         }
     }
 
+    /// Spec 117 (CAPTURES): each `@reference.<suffix>` capture of one fixture query keeps its
+    /// suffix in the mention it yields: `class`, `type` and `interface` a `type` mention,
+    /// `implementation` an `impl`, `constant` a `const`, `field` a `field` and `import` a `use`,
+    /// while `call`, `send` and a suffix the design does not list yield a call.
+    #[test]
+    fn every_capture_keeps_its_suffix() {
+        let tagged = |kind: &str| MentionKind::Tagged(kind.to_string());
+        // (the capture's suffix, the kind of the mention it yields)
+        let table = [
+            ("class", tagged("type")),
+            ("type", tagged("type")),
+            ("interface", tagged("type")),
+            ("implementation", tagged("impl")),
+            ("constant", tagged("const")),
+            ("field", tagged("field")),
+            ("import", tagged("use")),
+            ("call", MentionKind::Call),
+            ("send", MentionKind::Call),
+            ("unlisted", MentionKind::Call),
+        ];
+        // One call per row, `of_<suffix>()` on its own line, and one query pattern per row
+        // capturing that call alone under the row's suffix.
+        let leaf = |suffix: &str| format!("of_{suffix}");
+        let source: String = table
+            .iter()
+            .map(|(suffix, _)| format!("{}()\n", leaf(suffix)))
+            .collect();
+        let query: String = table
+            .iter()
+            .map(|(suffix, _)| {
+                format!(
+                    "((call function: (identifier) @name) @reference.{suffix} \
+                     (#eq? @name \"{}\"))\n",
+                    leaf(suffix)
+                )
+            })
+            .collect();
+        let fixture = crate::grounder::symbols::extract::CompiledTags::compile(
+            &tree_sitter_python::LANGUAGE.into(),
+            &query,
+        )
+        .expect("the fixture query compiles");
+        let symbols = crate::grounder::symbols::extract::extract(&source, Lang::Python, &fixture)
+            .expect("the fixture source extracts");
+        let mut facts = FileFacts::default();
+        code_facts(
+            "tool/run.py",
+            &CodeSymbols {
+                defs: symbols.defs,
+                refs: symbols.refs,
+                partial: symbols.partial,
+                doc: symbols.doc,
+            },
+            &mut facts,
+        );
+        let expected: Vec<Mention> = table
+            .into_iter()
+            .zip(1..)
+            .map(|((suffix, kind), line)| Mention {
+                enclosing: None,
+                name: leaf(suffix),
+                leaf: leaf(suffix),
+                kind,
+                line,
+                test: false,
+            })
+            .collect();
+        assert_eq!(facts.mentions, expected);
+    }
+
     #[test]
     fn a_path_two_definitions_share_names_the_precedence_winner() {
         // (source, the kind and line of the definition the mention's enclosing path names)
@@ -835,6 +1112,41 @@ mod tests {
         }
     }
 
+    /// Spec 117 (DOC FACTS): the doc spans the bundled extraction gives a code file reach its
+    /// facts, the file's as the file's doc span and each definition's as that definition's: a Rust
+    /// file's by the Rust rule, a Go file's through its query's `@doc` capture, and a file with no
+    /// doc line has none.
+    #[test]
+    fn a_files_doc_spans_reach_its_facts() {
+        // (path, source, the file's doc span, the (leaf, doc span) of each definition)
+        type Spans = &'static [(&'static str, Option<(u32, u32)>)];
+        type Row = (&'static str, &'static str, Option<(u32, u32)>, Spans);
+        let table: [Row; 3] = [
+            (
+                "src/lib.rs",
+                "//! The crate.\n\n/// F.\nfn f() {}\nfn g() {}\n",
+                Some((1, 1)),
+                &[("f", Some((3, 3))), ("g", None)],
+            ),
+            ("src/lib.rs", "fn plain() {}\n", None, &[("plain", None)]),
+            (
+                "p.go",
+                "package p\n\n// F reads.\n// It reads.\nfunc F() {}\n",
+                None,
+                &[("F", Some((3, 4)))],
+            ),
+        ];
+        for (path, source, doc, defs) in table {
+            let facts = facts_of(path, source.as_bytes());
+            let held: Vec<_> = facts
+                .defs
+                .iter()
+                .map(|d| (d.leaf.as_str(), d.doc))
+                .collect();
+            assert_eq!((facts.doc, held.as_slice()), (doc, defs), "{path}");
+        }
+    }
+
     #[test]
     fn a_file_the_parser_cannot_fully_read_is_partial() {
         let table = [
@@ -946,7 +1258,8 @@ mod tests {
 
     #[test]
     fn module_candidates_come_from_the_declaring_file_alone() {
-        // (declaring path, source, the (name, test, candidates) of each declaration)
+        // (declaring path, source, the (name, test, candidates) of each declaration, the
+        // candidates both its `as_root` and its `as_child` list hold)
         type Row = (
             &'static str,
             &'static str,
@@ -1002,20 +1315,18 @@ mod tests {
         ];
         for (path, source, modules) in table {
             let facts = facts_of(path, source.as_bytes());
-            let held: Vec<(&str, bool, Vec<&str>)> = facts
-                .modules
-                .iter()
+            let held: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (facts.modules.iter())
                 .map(|m| {
                     (
                         m.name.as_str(),
                         m.test,
-                        m.candidates.iter().map(String::as_str).collect(),
+                        m.as_root.iter().map(String::as_str).collect(),
+                        m.as_child.iter().map(String::as_str).collect(),
                     )
                 })
                 .collect();
-            let expected: Vec<(&str, bool, Vec<&str>)> = modules
-                .iter()
-                .map(|(name, test, candidates)| (*name, *test, candidates.to_vec()))
+            let expected: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (modules.iter())
+                .map(|(name, test, paths)| (*name, *test, paths.to_vec(), paths.to_vec()))
                 .collect();
             assert_eq!(held, expected, "{path}: {source:?}");
         }
@@ -1213,40 +1524,68 @@ mod tests {
         }
     }
 
-    /// A CHANGE TO THE FACTS SHIPS WITH A BUMP: the golden fixtures - the symbol golden's source
-    /// for each registered grammar, a design document, a source file's rationale and a workflow
-    /// definition - read into facts whose digest is pinned beside the two generations the
-    /// fingerprint is made of, so a change to the design extractor, the workflow extractor or the
-    /// conversion fails here until the generation is bumped and the triple re-pinned.
+    /// A CHANGE TO THE FACTS SHIPS WITH A BUMP, and EACH LANGUAGE PINS ITS OWN ROWS (spec 117):
+    /// the golden fixtures read into facts. Each registry entry's code fixtures - the symbol
+    /// golden's sources keyed by that entry's extension, and for Rust a test file - are digested
+    /// in one row beside that entry's tags generation; a design document, a source file's
+    /// rationale and a workflow definition are digested in one row beside `FACTS_GENERATION`. So
+    /// a change to one language's extraction fails that language's row until its generation is
+    /// bumped, and a change to the design extractor, the workflow extractor or the conversion
+    /// fails until `FACTS_GENERATION` is bumped and every row it moves re-pinned with it.
     #[test]
     fn a_change_to_the_facts_ships_with_a_generation_bump() {
-        use crate::grounder::symbols::registry::tests::GOLDEN_SOURCES;
-        const PINNED: (&str, &str, &str) = ("ts-tags-v5", "facts-v2", "ec3d0eb0685882b8");
-        let mut fixtures: Vec<(String, &str)> = GOLDEN_SOURCES
-            .iter()
-            .enumerate()
-            .map(|(i, (ext, source))| (format!("golden/{i}.{ext}"), *source))
-            .collect();
-        fixtures.extend(
-            [
-                ("tests/it.rs", "fn works() { helper(); }\n"),
-                (
-                    "docs/widget-design.md",
-                    "# Widget design\n\nThe code is `src/widget.rs`, see [notes](docs/notes.md).\n\n## Parts\n",
-                ),
-                ("scripts/build.sh", "# WHY: keep the cache warm\nmake\n"),
-                (
-                    ".rigger/workflow.yml",
-                    "stages:\n  plan:\n    agent: planner\n  implement:\n    needs: [plan]\n    agent: worker\n    gates: [fmt]\n",
-                ),
-            ]
-            .map(|(path, source)| (path.to_string(), source)),
-        );
-        let facts: Vec<FileFacts> = fixtures
-            .iter()
-            .map(|(path, source)| facts_of(path, source.as_bytes()))
-            .collect();
-        let any = |held: &dyn Fn(&FileFacts) -> bool| facts.iter().any(held);
+        use crate::grounder::symbols::registry::tests::{
+            generation_rows, pinned_rows, GOLDEN_SOURCES,
+        };
+        // One row per line with a comment line between rows, so units re-pinning different
+        // languages' rows merge clean.
+        const PINNED: [(&str, &str, &str); 7] = [
+            // Rust
+            ("rs", "rust-tags-v2", "7ffb605da6fb93dd"),
+            // C#
+            ("cs", "csharp-tags-v2", "5061538299850c9d"),
+            // TypeScript
+            ("ts", "typescript-tags-v3", "5a7985e0a054c684"),
+            // TSX
+            ("tsx", "tsx-tags-v3", "1f323d01dd355695"),
+            // JavaScript
+            ("js", "javascript-tags-v3", "b064975fe77ab41b"),
+            // Go
+            ("go", "go-tags-v3", "f9d10fb20ec8989c"),
+            // Python
+            ("py", "python-tags-v1", "4c940d044409c6d8"),
+        ];
+        const PINNED_FACTS: (&str, &str) = ("facts-v3", "006133eb2aae6c76");
+        fn digest(facts: &impl std::fmt::Debug) -> String {
+            format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()))
+        }
+        // A code fixture's path counts its index among its own extension's fixtures, so a fixture
+        // added for one language moves no other language's paths.
+        let mut code: Vec<(&str, FileFacts)> = Vec::new();
+        for (ext, source) in GOLDEN_SOURCES {
+            let i = code.iter().filter(|(keyed, _)| *keyed == ext).count();
+            code.push((
+                ext,
+                facts_of(&format!("golden/{i}.{ext}"), source.as_bytes()),
+            ));
+        }
+        code.push(("rs", facts_of("tests/it.rs", b"fn works() { helper(); }\n")));
+        let rest: Vec<FileFacts> = [
+            (
+                "docs/widget-design.md",
+                "# Widget design\n\nThe code is `src/widget.rs`, see [notes](docs/notes.md).\n\n## Parts\n",
+            ),
+            ("scripts/build.sh", "# WHY: keep the cache warm\nmake\n"),
+            (
+                ".rigger/workflow.yml",
+                "stages:\n  plan:\n    agent: planner\n  implement:\n    needs: [plan]\n    agent: worker\n    gates: [fmt]\n",
+            ),
+        ]
+        .iter()
+        .map(|(path, source)| facts_of(path, source.as_bytes()))
+        .collect();
+        let facts: Vec<&FileFacts> = code.iter().map(|(_, facts)| facts).chain(&rest).collect();
+        let any = |held: &dyn Fn(&FileFacts) -> bool| facts.iter().any(|f| held(f));
         for (part, covered) in [
             (
                 "every half",
@@ -1284,6 +1623,11 @@ mod tests {
                 any(&|f| f.mentions.iter().any(|m| m.enclosing.is_some())),
             ),
             ("a module declaration", any(&|f| !f.modules.is_empty())),
+            (
+                "a definition's doc span",
+                any(&|f| f.defs.iter().any(|d| d.doc.is_some())),
+            ),
+            ("a file's doc span", any(&|f| f.doc.is_some())),
             ("a design concept", any(&|f| !f.doc_concepts.is_empty())),
             ("a design link", any(&|f| !f.doc_links.is_empty())),
             ("a workflow node", any(&|f| !f.wf_nodes.is_empty())),
@@ -1291,14 +1635,24 @@ mod tests {
         ] {
             assert!(covered, "the golden fixtures hold {part}");
         }
-        let digest = format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()));
         assert_eq!(
-            (GRAMMAR_TAGS_VERSION, FACTS_GENERATION, digest.as_str()),
-            PINNED,
-            "this build's generations and the digest of the golden facts (left) differ from the \
-             pinned triple: a change to what the facts hold ships with a bump, so bump \
-             `FACTS_GENERATION` (or `GRAMMAR_TAGS_VERSION` for a symbol extraction change) and \
-             re-pin the triple to this build's values together"
+            generation_rows(&code, |keyed| digest(&keyed)),
+            pinned_rows(&PINNED),
+            "each entry's tags generation and the digest of its code fixtures' facts (left) differ \
+             from the pinned rows: a change to one language's extraction ships with a bump of \
+             that language's generation macro in model.rs, re-pinning its row here and in the \
+             registry golden; a change to the conversion ships with a bump of \
+             `FACTS_GENERATION`, re-pinning its row below and each language row it moves; either \
+             re-pins to this build's values together"
+        );
+        assert_eq!(
+            (FACTS_GENERATION, digest(&rest).as_str()),
+            PINNED_FACTS,
+            "this build's `FACTS_GENERATION` and the digest of the design, rationale and workflow \
+             facts (left) differ from the pinned row: a change to the design extractor, the \
+             workflow extractor or the conversion ships with a bump of `FACTS_GENERATION`, so \
+             bump it and re-pin this row, and each language row it moves, to this build's values \
+             together"
         );
     }
 
@@ -1595,6 +1949,7 @@ mod tests {
                         end_line: 4,
                         parent: None,
                         test: false,
+                        doc: None,
                     },
                     Def {
                         local: "T::new".into(),
@@ -1604,6 +1959,7 @@ mod tests {
                         end_line: 4,
                         parent: Some(0),
                         test: true,
+                        doc: None,
                     },
                 ],
                 mentions: vec![
@@ -1716,6 +2072,7 @@ mod tests {
                         end_line: 2,
                         parent: None,
                         test: false,
+                        doc: None,
                     }],
                     mentions: vec![Mention {
                         enclosing: Some(0),
@@ -1923,5 +2280,173 @@ mod tests {
             (vec![root_dir_of(project.path())], 2),
             "the `.rs` files were asked of one session, no other file of any"
         );
+    }
+
+    /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust
+    /// spans, `\r\n` endings, `#[doc(hidden)]` lines, nested block comments and literals holding
+    /// a comment marker or a quote among them, and the lines of a language with no doc rule.
+    const DOC_TEXT_ROWS: &[(&str, &str, &str)] = &[
+        (
+            "rust",
+            "/// Reads the file.\r\n#[doc(hidden)]\r\n///\r\n/// Then answers it.\r\n",
+            "Reads the file.\n\nThen answers it.",
+        ),
+        (
+            "rust",
+            "    /// First.\n    // a plain comment\n    //// four slashes\n\n    #[must_use]\n    ///tight\n",
+            "First.\ntight",
+        ),
+        (
+            "rust",
+            "//! The module.\n//!\n//! Its parts.",
+            "The module.\n\nIts parts.",
+        ),
+        (
+            "rust",
+            "/**\r\n * Block first.\r\n *\r\n * Block second.\r\n */\r\n",
+            "Block first.\n\nBlock second.",
+        ),
+        ("rust", "/** One line. */", "One line."),
+        (
+            "rust",
+            "/*! Opens here\n   no star\n ** two stars\n closes here */",
+            "Opens here\nno star\n* two stars\ncloses here",
+        ),
+        (
+            "rust",
+            "/*** not a doc ***/\n/**/\n/** Kept. */ fn f() {}\n/// After.",
+            "Kept.\nAfter.",
+        ),
+        ("rust", "/** Open\n * still open", "Open\nstill open"),
+        (
+            "rust",
+            "/**\n * Block.\n */\n// plain after\n/// After.",
+            "Block.\nAfter.",
+        ),
+        (
+            "rust",
+            "#[doc = \"Value doc.\"]\n#![doc = \"Inner doc.\"]\n# [ doc = \"Spaced.\" ]\n#[doc=\"  Tight.  \"]",
+            "Value doc.\nInner doc.\nSpaced.\nTight.",
+        ),
+        (
+            "rust",
+            r##"#[doc = r#"Raw "quoted"."#]
+#[doc = r"Raw plain."]
+#[doc = "Escaped \"as written\"."]
+#[doc = "Unclosed"##,
+            r#"Raw "quoted".
+Raw plain.
+Escaped \"as written\".
+Unclosed"#,
+        ),
+        (
+            "rust",
+            "#[doc = include_str!(\"README.md\")]\n#[doc = raw_text!()]\n#[doc(alias = \"x\")]\n#[docs = \"no\"]\n#[cfg_attr(test, doc = \"conditional\")]\n/// Only this.",
+            "Only this.",
+        ),
+        ("rust", "#doc = \"No bracket.\"\n/// Only this.", "Only this."),
+        ("rust", "/// Last.\r", "Last."),
+        ("rust", "#[doc(hidden)]\n// plain\n", ""),
+        ("rust", "", ""),
+        (
+            "go",
+            "  // A Go doc.\r\n\t// Its second line.  \r\n\n",
+            "// A Go doc.\n// Its second line.\n",
+        ),
+        (
+            "zig",
+            "/// Not read as Rust.\n #[doc(hidden)] ",
+            "/// Not read as Rust.\n#[doc(hidden)]",
+        ),
+        (
+            "rust",
+            "/**\n * ```\n * /* set up */\n * let x = 1;\n * ```\n */",
+            "```\n/* set up */\nlet x = 1;\n```",
+        ),
+        ("rust", "/** a /* b */ c */", "a /* b */ c"),
+        (
+            "rust",
+            "/// a\n/* commented out\n/// not doc\n*/\n/// b",
+            "a\nb",
+        ),
+        ("rust", "#[doc = \"Doc.\"] // see \"x\"", "Doc."),
+        ("rust", "#[doc = \"a\"] #[cfg(feature = \"y\")]", "a"),
+        (
+            "rust",
+            r###"#[doc = r##"Holds "# inside."##]"###,
+            r##"Holds "# inside."##,
+        ),
+        ("rust", "#[doc = \"a\"] /* x\n/// y\n*/ /// b", "a\nb"),
+        ("rust", "/* a /* b */ /// c */\n/// d", "d"),
+        ("rust", "/// a // b /* c\n/// d", "a // b /* c\nd"),
+        ("rust", "#[cfg(feature = \"/*\")]\n/// After.", "After."),
+        ("rust", "#[attr('\"', '\\\"')]\n/// After.", "After."),
+        ("rust", "#[attr(&'a str)]\n/// After.", "After."),
+        (
+            "rust",
+            "#[attr(r#type, r#\"a\" /*\"#, br#\"b\" /*\"#, cr#\"c\" /*\"#)]\n/// After.",
+            "After.",
+        ),
+        ("rust", "#[doc = r#\"Raw \"open", "Raw \"open"),
+        ("rust", "#[doc = \"a\n  b\"]\n/// c", "a\nb\nc"),
+        ("rust", "/** Unclosed\n", "Unclosed"),
+        ("rust", "/** Open\n *", "Open\n"),
+    ];
+
+    /// `extractor`'s doc text of each [`DOC_TEXT_ROWS`] span is the row's, `name` naming the
+    /// extractor in a failure.
+    fn assert_doc_texts(name: &str, extractor: &dyn Extract) {
+        for &(lang, raw, text) in DOC_TEXT_ROWS {
+            assert_eq!(
+                extractor.doc_text(lang, raw),
+                text,
+                "{name} {lang}: {raw:?}"
+            );
+        }
+    }
+
+    /// THE DOC TEXT IS STRIPPED: `doc_text` turns a Rust span's raw lines, `\r\n` endings and a
+    /// `#[doc(hidden)]` line included, into the comment text alone - the text of each doc comment
+    /// and each doc attribute's literal, every comment and literal bounded as Rust lexes it,
+    /// everything else dropped, a doc block's opener, closer and one leading `*` stripped - and
+    /// gives a language with no rule its lines trimmed. The project's extractor with no
+    /// declaration answers as the bundled one.
+    #[test]
+    fn the_doc_text_is_the_comment_text_alone() {
+        let project = project_declaring(None);
+        let extractors: [(&str, &dyn Extract); 2] = [
+            ("bundled", &FactsExtractor),
+            ("project", &ProjectExtractor::of(project.path())),
+        ];
+        for (name, extractor) in extractors {
+            assert_doc_texts(name, extractor);
+        }
+    }
+
+    /// THE DOC TEXT IS STRIPPED, under a declaration: a declared file's language is its
+    /// declaration's name, and the project's extractor under a declaration in force, named `rust`
+    /// or `zig`, gives each row's span the rule of the row's language as the bundled extractor
+    /// does - a `rust` span Rust's doc rule, a `zig` span its lines trimmed.
+    #[test]
+    fn a_declared_language_reads_the_doc_rule_of_its_name() {
+        // (the declaration's name, the `extractors:` mapping declaring it)
+        let rows = [
+            ("rust", "{ rust: { extensions: [rs], run: rust-tags } }"),
+            ("zig", "{ zig: { extensions: [zig], run: zig-tags } }"),
+        ];
+        for (name, mapping) in rows {
+            let project = project_declaring(Some(&workflow_declaring_extractors(mapping)));
+            assert_eq!(
+                declared_extractors(project.path())
+                    .into_keys()
+                    .collect::<Vec<_>>(),
+                [name],
+                "{mapping} is in force"
+            );
+            assert_doc_texts(
+                &format!("declaring {name}"),
+                &ProjectExtractor::of(project.path()),
+            );
+        }
     }
 }

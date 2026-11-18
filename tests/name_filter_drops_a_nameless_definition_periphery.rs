@@ -13,10 +13,12 @@ use crate::common;
 /// `_` and a Python file binding a module-level `_`,
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the graph's code entities are exactly the Go file's named type and function, the JS and
-/// the Python `_`, and one placeholder per name a Go reference reaches that no definition gives
-/// (`int`, `other`, `probe`, `reach`); no entity is `main.go::_`. Its `CALLS` edges are exactly the named
-/// function's call and the file's: the references inside the Go `func _()` and `func (T) _()`
-/// have the file as caller, so the file calls what they reach.
+/// the Python `_`, and one placeholder per name a Go call reaches that no definition gives
+/// (`other`, `probe`, `reach`); no entity is `main.go::_`. Its `CALLS` edges are exactly the
+/// named function's call and the file's: the calls inside the Go `func _()` and `func (T) _()`
+/// have the file as caller, so the file calls what they reach. The receiver type `T` and the
+/// underlying type `int` are type references, no call, and make neither a placeholder nor a
+/// `CALLS` edge (spec 117, CAPTURES).
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_makes_no_node_of_a_go_blank_definition_and_keeps_a_js_and_python_underscore() {
@@ -31,7 +33,6 @@ fn graph_build_makes_no_node_of_a_go_blank_definition_and_keeps_a_js_and_python_
     let entities: Vec<String> = [
         "a.js::_",
         "b.py::_",
-        "main.go::%int",
         "main.go::%other",
         "main.go::%probe",
         "main.go::%reach",
@@ -46,10 +47,8 @@ fn graph_build_makes_no_node_of_a_go_blank_definition_and_keeps_a_js_and_python_
         "every code entity of the built graph: none for a Go `_`, one for a JS and a Python `_`"
     );
     let calls: Vec<(String, String)> = [
-        ("main.go", "main.go::%int"),
         ("main.go", "main.go::%probe"),
         ("main.go", "main.go::%reach"),
-        ("main.go", "main.go::T"),
         ("main.go::named", "main.go::%other"),
     ]
     .map(|(from, to)| (from.to_string(), to.to_string()))

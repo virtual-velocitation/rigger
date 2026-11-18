@@ -525,6 +525,7 @@ fn diverged() -> (
         end_line: 1,
         parent: None,
         test: false,
+        doc: None,
     };
     let file = |path: &str, name: &str, mentions: Vec<Mention>| FileFacts {
         path: path.to_string(),
@@ -714,6 +715,7 @@ fn named_tree() -> (
         end_line: 1,
         parent: None,
         test: false,
+        doc: None,
     };
     let call = |from: u32, to: &str| Mention {
         enclosing: Some(from),
