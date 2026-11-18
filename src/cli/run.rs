@@ -1478,7 +1478,13 @@ fn refuse_an_adoption_it_cannot_make(
     command: &str,
 ) -> Res {
     if !at.repo.is_empty() {
-        let on = rigger::worktree::current_branch(at.repo);
+        let on = rigger::worktree::current_branch(at.repo).map_err(|e| {
+            format!(
+                "{command}: --adopt {wanted}: read the branch the checkout is on, so it refuses \
+                 and changed nothing: {}",
+                e.0
+            )
+        })?;
         if on.as_deref() != Some(RUN_BRANCH) {
             let on = on.map_or_else(
                 || "a detached HEAD".to_string(),

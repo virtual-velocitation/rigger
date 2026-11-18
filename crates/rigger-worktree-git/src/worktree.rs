@@ -240,7 +240,7 @@ impl Worktree {
                 // [`Self::ensure_present`]'s OWN repeat calls on the SAME instance are a
                 // different shape - N threads that already share one `&Worktree` - and that one
                 // IS serialized, by `reassert_mu`.)
-                if registered && worktree_on_branch(dir, branch) {
+                if registered && worktree_on_branch(dir, branch)? {
                     return Ok(Worktree {
                         dir: dir.to_string(),
                         branch: branch.to_string(),
@@ -616,7 +616,7 @@ impl Worktree {
         // Classify once (the single authority), then apply only the matching checkout.
         match Self::planned_run_branch_setup(repo, branch, base) {
             RunBranchSetup::Reused => {
-                if current_branch(repo).as_deref() != Some(branch) {
+                if current_branch(repo)?.as_deref() != Some(branch) {
                     git(repo, &["checkout", branch])?;
                 }
                 Ok(RunBranchSetup::Reused)
@@ -1473,8 +1473,9 @@ impl Worktree {
         // itself attests to, independent of where the dir physically sits - so it authorizes
         // the reap without caring about relocation. A dir that fails this check (already
         // removed, or somehow not on the expected branch) skips the reap: best-effort, never
-        // fails the removal below.
-        if worktree_on_branch(&self.dir, &self.branch) {
+        // fails the removal below. A dir or HEAD that cannot be read fails the removal instead,
+        // so nothing is removed on a read that answered nothing.
+        if worktree_on_branch(&self.dir, &self.branch)? {
             if let Ok(base) = std::path::Path::new(&self.dir).canonicalize() {
                 crate::reap::reap_authorized(base);
             }
@@ -1803,14 +1804,25 @@ pub fn unit_branches(repo: impl AsRef<std::ffi::OsStr>) -> Vec<String> {
     branches
 }
 
-/// The name of the branch currently checked out in `repo`, or None on a detached
-/// HEAD. An unborn HEAD (a fresh repo with no commit) still reports its default
-/// branch name, so this only returns None for a genuinely detached HEAD.
-pub fn current_branch(repo: &str) -> Option<String> {
-    run_git(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
+/// The name of the branch checked out in the tree or repository at `dir`, or `None` on a
+/// detached HEAD. An unborn HEAD (a fresh repo with no commit) still names its branch. A HEAD git
+/// cannot read is an error naming `dir`, never a detached HEAD.
+pub fn current_branch(dir: &str) -> Result<Option<String>, Error> {
+    let args = ["symbolic-ref", "-q", "HEAD"];
+    match run_git_with_status(dir, &args) {
+        Ok(head) => {
+            let head = head.trim();
+            Ok(Some(
+                head.strip_prefix("refs/heads/").unwrap_or(head).to_string(),
+            ))
+        }
+        // `symbolic-ref -q` exits 1, saying nothing, exactly when HEAD is detached.
+        Err((Some(1), _)) => Ok(None),
+        Err((_, out)) => Err(Error(format!(
+            "read the branch checked out at {dir}: {}",
+            git_failed(&args, out).0
+        ))),
+    }
 }
 
 // UNIT_WORKTREE_PREFIX, UNIT_CACHE_PREFIX, unit_cache_sibling, UNIT_GATE_SCRATCH_PREFIX,
@@ -2245,11 +2257,21 @@ pub fn sweep_terminal_logged(
 /// repo-wide `git worktree list`. Because unit and review worktree dirs are now
 /// DETERMINISTIC (derived from the id / stage+attempt, no per-process uuid, Gap 12), a
 /// resume or concurrent process derives the same `dir`, and [`Worktree::create`] uses
-/// this to ADOPT it without the porcelain adopt-or-prune scan. A dir that is absent, is
-/// not a git worktree, or is checked out to a different branch yields false, so the
-/// caller falls back to the porcelain adopt-or-prune path.
-pub fn worktree_on_branch(dir: &str, branch: &str) -> bool {
-    std::path::Path::new(dir).is_dir() && current_branch(dir).as_deref() == Some(branch)
+/// this to ADOPT it without the porcelain adopt-or-prune scan. A dir that is absent, holds
+/// no `.git` (so is no git worktree, whatever repository encloses it), or is checked out to a
+/// different branch yields false, so the caller falls back to the porcelain adopt-or-prune
+/// path. A dir the filesystem cannot read, or a HEAD git cannot read there
+/// ([`current_branch`]), is an error, never a no.
+pub fn worktree_on_branch(dir: &str, branch: &str) -> Result<bool, Error> {
+    if !metadata_at(dir, std::fs::metadata(dir))?.is_some_and(|m| m.is_dir()) {
+        return Ok(false);
+    }
+    let link = std::path::Path::new(dir).join(".git");
+    let link_s = link.to_string_lossy();
+    if metadata_at(&link_s, std::fs::symlink_metadata(&link))?.is_none() {
+        return Ok(false);
+    }
+    Ok(current_branch(dir)?.as_deref() == Some(branch))
 }
 
 /// The dir of the worktree that already has `branch` checked out, if any - parsed
@@ -3028,15 +3050,9 @@ pub fn unfinished_operation(dir: &str) -> Result<Option<&'static str>, Error> {
 /// Where the HEAD of the tree rooted at `dir` stands when it is not on `branch`, in git's own
 /// words (the first line of `git status`: `HEAD detached at ...`, `interactive rebase in
 /// progress; onto ...`, `On branch ...`), or `None` when it is on `branch`. A HEAD git cannot
-/// read is an error, never an answer.
+/// read is an error, never an answer ([`current_branch`]).
 pub fn head_off_branch(dir: &str, branch: &str) -> Result<Option<String>, Error> {
-    let on = match run_git_with_status(dir, &["symbolic-ref", "-q", "HEAD"]) {
-        Ok(head) => head.trim().strip_prefix("refs/heads/") == Some(branch),
-        // `symbolic-ref -q` exits 1, saying nothing, exactly when HEAD is detached.
-        Err((Some(1), _)) => false,
-        Err((_, out)) => return Err(git_failed(&["symbolic-ref", "-q", "HEAD"], out)),
-    };
-    if on {
+    if current_branch(dir)?.as_deref() == Some(branch) {
         return Ok(None);
     }
     let status = git(dir, &["--no-optional-locks", "status"])?;
@@ -7619,7 +7635,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(std::path::Path::new(&dir).join("leftover.txt"), "torn\n").unwrap();
         assert!(
-            !worktree_on_branch(&dir, branch),
+            !worktree_on_branch(&dir, branch).unwrap(),
             "precondition: the leftover is not this branch's registered worktree (fast path can't adopt)"
         );
         assert!(
@@ -7669,7 +7685,7 @@ mod tests {
              `git worktree add -b` on it",
         );
         assert!(
-            worktree_on_branch(&dir, branch),
+            worktree_on_branch(&dir, branch).unwrap(),
             "the unit's worktree is checked out on its branch at its deterministic path"
         );
         assert!(
@@ -8478,7 +8494,7 @@ mod tests {
             );
             if registered {
                 assert!(
-                    worktree_on_branch(&dir, branch),
+                    worktree_on_branch(&dir, branch).unwrap(),
                     "{why:?}: the registered worktree is still checked out on its branch"
                 );
             }
@@ -8584,7 +8600,7 @@ mod tests {
                     "{link:?}, {step:?}: a directory, not the link, stands at the path"
                 );
                 assert!(
-                    worktree_on_branch(&dir, branch),
+                    worktree_on_branch(&dir, branch).unwrap(),
                     "{link:?}, {step:?}: the worktree at the path is on its branch"
                 );
             }
@@ -8678,7 +8694,7 @@ mod tests {
                 .unwrap()
                 .unwrap_or_else(|e| panic!("branch kept {kept}: create fails: {}", e.0));
             assert!(
-                worktree_on_branch(&dir, branch),
+                worktree_on_branch(&dir, branch).unwrap(),
                 "branch kept {kept}: the worktree is made on its branch at the cleared path"
             );
             wt.remove().unwrap();
@@ -8808,25 +8824,25 @@ mod tests {
 
         // Absent dir: no worktree to adopt.
         assert!(
-            !worktree_on_branch(&dir, branch),
+            !worktree_on_branch(&dir, branch).unwrap(),
             "an absent dir is not a worktree on the branch"
         );
 
-        // A bare, populated NON-worktree dir under the repo: its HEAD walks UP to the parent
-        // repo's branch (rigger-run), not `branch`, so the fast path must NOT adopt it - this
-        // is exactly the leftover the fallback must defend against.
+        // A bare, populated NON-worktree dir: it holds no `.git`, so it is no worktree whatever
+        // repository encloses it, and the fast path must NOT adopt it - this is exactly the
+        // leftover the fallback must defend against.
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(std::path::Path::new(&dir).join("x.txt"), "y\n").unwrap();
         assert!(
-            !worktree_on_branch(&dir, branch),
-            "a bare leftover dir (HEAD resolves to the parent repo) is not this branch's worktree"
+            !worktree_on_branch(&dir, branch).unwrap(),
+            "a bare leftover dir (no `.git`) is not this branch's worktree"
         );
         std::fs::remove_dir_all(&dir).unwrap();
 
         // The real worktree on the branch: matched by path lookup.
         let wt = Worktree::create(&repo_path, &dir, branch, "").unwrap();
         assert!(
-            worktree_on_branch(&dir, branch),
+            worktree_on_branch(&dir, branch).unwrap(),
             "the dir that IS this branch's worktree matches by its own HEAD"
         );
 
@@ -8834,9 +8850,25 @@ mod tests {
         let other_dir = format!("{root}/rigger-wt-other");
         let other = Worktree::create(&repo_path, &other_dir, "rigger/u/other", "").unwrap();
         assert!(
-            !worktree_on_branch(&other_dir, branch),
+            !worktree_on_branch(&other_dir, branch).unwrap(),
             "a worktree on another branch does not match this branch's path lookup"
         );
+
+        // A tree whose registration is gone: git cannot read its HEAD, so the lookup fails
+        // rather than answer that it is not this branch's worktree.
+        let gone_dir = format!("{root}/rigger-wt-gone");
+        run_git(
+            &repo_path,
+            &["worktree", "add", "-q", "--detach", &gone_dir],
+        )
+        .unwrap();
+        let admin = std::path::Path::new(&repo_path).join(".git/worktrees/rigger-wt-gone");
+        std::fs::remove_dir_all(admin).unwrap();
+        assert!(
+            worktree_on_branch(&gone_dir, branch).is_err(),
+            "a tree whose HEAD git cannot read fails the lookup"
+        );
+        std::fs::remove_dir_all(&gone_dir).unwrap();
         wt.remove().unwrap();
         other.remove().unwrap();
     }
@@ -8933,18 +8965,84 @@ mod tests {
         );
     }
 
+    /// THE BRANCH A HEAD IS ON IS READ OR FAILS: [`current_branch`] names the branch a tree's
+    /// HEAD is on (an unborn one included), answers none for a detached HEAD, and is an error -
+    /// never a detached HEAD - when git cannot read the HEAD.
+    #[test]
+    fn the_branch_a_head_is_on_is_read_or_fails() {
+        #[derive(Debug, PartialEq)]
+        enum Read {
+            Branch(String),
+            Detached,
+            Failed,
+        }
+        // Each row: the HEAD's state, what puts a fresh repository's tree in it (returning the
+        // path read), and the read wanted.
+        type Row = (&'static str, fn(&str) -> String, Read);
+        let rows: &[Row] = &[
+            (
+                "on a branch",
+                |repo| {
+                    run_git(repo, &["checkout", "-q", "-b", "topic"]).unwrap();
+                    repo.to_string()
+                },
+                Read::Branch("topic".into()),
+            ),
+            (
+                "on a branch with no commit yet",
+                |repo| {
+                    run_git(repo, &["checkout", "-q", "--orphan", "unborn"]).unwrap();
+                    repo.to_string()
+                },
+                Read::Branch("unborn".into()),
+            ),
+            (
+                "detached",
+                |repo| {
+                    run_git(repo, &["checkout", "-q", "--detach"]).unwrap();
+                    repo.to_string()
+                },
+                Read::Detached,
+            ),
+            (
+                "a tree whose registration is gone",
+                |repo| {
+                    let dir = format!("{repo}/wt");
+                    run_git(repo, &["worktree", "add", "-q", "--detach", &dir]).unwrap();
+                    let admin = std::path::Path::new(repo).join(".git/worktrees/wt");
+                    std::fs::remove_dir_all(admin).unwrap();
+                    dir
+                },
+                Read::Failed,
+            ),
+            ("no repository path", |_| String::new(), Read::Failed),
+        ];
+        for (state, put, want) in rows {
+            let repo = init_repo();
+            let at = put(repo.path().to_str().unwrap());
+            let read = match current_branch(&at) {
+                Ok(Some(branch)) => Read::Branch(branch),
+                Ok(None) => Read::Detached,
+                Err(_) => Read::Failed,
+            };
+            assert_eq!(read, *want, "{state}");
+        }
+    }
+
     #[test]
     fn ensure_run_branch_creates_off_base_and_checks_it_out() {
         // Absent run branch + a base that resolves: create the run branch off the base,
         // check it out, and report CreatedFromBase.
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
-        let default = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        let default = current_branch(&p)
+            .unwrap()
+            .expect("init_repo leaves a named branch checked out");
 
         let setup = Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
         assert_eq!(setup, RunBranchSetup::CreatedFromBase);
         assert_eq!(
-            current_branch(&p).as_deref(),
+            current_branch(&p).unwrap().as_deref(),
             Some("rigger-run"),
             "ensure_run_branch must check out the run branch it creates"
         );
@@ -8965,7 +9063,9 @@ mod tests {
         // re-anchor to a new base (which would orphan the integrated units).
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
-        let default = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        let default = current_branch(&p)
+            .unwrap()
+            .expect("init_repo leaves a named branch checked out");
         Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
 
         // A prior step integrates a unit onto the run branch.
@@ -8986,7 +9086,7 @@ mod tests {
         let setup = Worktree::ensure_run_branch(&p, "rigger-run", &default).unwrap();
         assert_eq!(setup, RunBranchSetup::Reused);
         assert_eq!(
-            current_branch(&p).as_deref(),
+            current_branch(&p).unwrap().as_deref(),
             Some("rigger-run"),
             "a re-ensure checks the existing run branch back out"
         );
@@ -9024,7 +9124,7 @@ mod tests {
             "an unresolvable base must still create the run branch (off HEAD), not no-op"
         );
         assert_eq!(
-            current_branch(&p).as_deref(),
+            current_branch(&p).unwrap().as_deref(),
             Some("rigger-run"),
             "the HEAD-anchored run branch must be checked out so units branch off it"
         );
@@ -9043,7 +9143,9 @@ mod tests {
         // history disjoint from the base that a PR refuses to apply.
         let repo = init_repo();
         let p = repo.path().to_str().unwrap().to_string();
-        let base = current_branch(&p).expect("init_repo leaves a named branch checked out");
+        let base = current_branch(&p)
+            .unwrap()
+            .expect("init_repo leaves a named branch checked out");
         let base_tip = run_git(&p, &["rev-parse", &base])
             .unwrap()
             .trim()
@@ -9429,7 +9531,7 @@ mod tests {
             "the worktree must exist after the concurrent re-assert: {dir}"
         );
         assert!(
-            worktree_on_branch(&dir, "rigger/u/racer"),
+            worktree_on_branch(&dir, "rigger/u/racer").unwrap(),
             "the restored worktree must be checked out on its own branch, not left in a \
              half-recreated state"
         );
