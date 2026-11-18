@@ -1705,8 +1705,9 @@ struct SpecCandidate {
 }
 
 /// What a speculation group's losing lanes failed with, gathered in lane order: each red gate's
-/// evidence, each review's rejection and each refusal git made of a lane's work, with the first
-/// loss's cause. A group with no winner records it as the unit's failure. A loss to infrastructure
+/// evidence, each review's rejection and each refusal git made of a lane's work, with where that
+/// lane's tree is kept, and the first loss's cause. A group with no winner records it as the
+/// unit's failure; a lane that wins drops the keeps. A loss to infrastructure
 /// ([`is_infra_cause`]) is left out, as the single lane charges an outage no `UnitFailed`.
 ///
 /// A group writes its lanes' failures only once its outcome is known, so one loss is one
@@ -1762,12 +1763,19 @@ impl LostLanes {
     }
 
     /// A lane lost on git refusing a content step on its own work (`e`, a [`refused_unit_work`]
-    /// error), cause [`CAUSE_GIT_REFUSED`]: git's refusal joins the failure's refusal, so a
-    /// re-entered lane's prompt carries it on its own line.
-    fn refused(&mut self, e: &Error) {
+    /// error), cause [`CAUSE_GIT_REFUSED`], its tree kept as `kept`: git's refusal joins the
+    /// failure's refusal, so a re-entered lane's prompt carries it on its own line, and the keep
+    /// joins the failure's keeps.
+    fn refused(&mut self, e: &Error, kept: Vec<ledger::Kept>) {
         self.cause
             .get_or_insert_with(|| CAUSE_GIT_REFUSED.to_string());
         push_paragraph(&mut self.failure.refusal, &refusal_text(e));
+        self.failure.kept.extend(kept);
+    }
+
+    /// Where the trees of the lanes git refused are kept, in lane order.
+    fn kept(&self) -> &[ledger::Kept] {
+        &self.failure.kept
     }
 
     /// The first loss's cause and the gathered failure, or none when no lane lost on its gates,
@@ -2370,8 +2378,13 @@ impl PriorFailure {
                 .iter()
                 .map(|k| format!("commit {} on {}", k.commit, k.reference))
                 .collect();
+            let trees = if kept.len() == 1 {
+                "the tree it left is"
+            } else {
+                "the trees it left are"
+            };
             parts.push(format!(
-                "the tree it left is kept as {}, off the unit's branch",
+                "{trees} kept as {}, off the unit's branch",
                 kept.join(", ")
             ));
         }
@@ -8357,6 +8370,31 @@ impl RunCtx<'_> {
         Ok(kept.into_iter().collect())
     }
 
+    /// A SPECULATION LANE GIT REFUSED: lane `lane` of unit `st`'s group, its tree `w`, lost on
+    /// git refusing a content step on its work (`e`). The lane's tree and branch go with the lane,
+    /// and a group with no winner escalates, as the attempt that spends a single lane's bound
+    /// does ([`Self::kept_at_the_bound`]), so the lane's work is kept first on the lane's own
+    /// kept ref ([`Worktree::keep_lane_aside`]): `rigger/kept/<unit>` for lane 0 and
+    /// `rigger/kept/<unit>-spec<lane>` for lane `lane`, as its branch is named. The refusal and
+    /// the keep join the group's loss ([`LostLanes::refused`]): a group with no winner records
+    /// and names each keep, and a lane that wins drops them. A keep git cannot make ends the drive
+    /// on that fault, uncharged, the lane's tree and branch kept.
+    fn lane_refused(
+        &self,
+        st: &Stage,
+        lane: u32,
+        w: &Worktree,
+        e: &Error,
+        lost: &mut LostLanes,
+    ) -> Result<(), Error> {
+        let kept = git_step(w.keep_lane_aside(&format!(
+            "wip({}): tree of speculation lane {lane}, which git refused",
+            st.name
+        )))?;
+        lost.refused(e, kept.into_iter().collect());
+        Ok(())
+    }
+
     /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
     /// the stage's own `speculation_width` when set (`> 0`), else `defaults.speculation_width`,
     /// with a floor of 1. Width 1 (the default) is speculation OFF - a single implementer
@@ -8673,16 +8711,17 @@ impl RunCtx<'_> {
                 // sdet crash, or an sdet record refused past its re-run): it is simply absent
                 // from the group - a losing candidate whose diff never commits. The remaining
                 // candidates still race; if none survives, the escalation tail fires, its
-                // failure carrying each refusal (a crash is no feedback for the author). Its
-                // lane worktree AND branch were already created (above), and NO terminal path
-                // below tears them down - winner cleanup, `cancel_speculation_candidates`, and
-                // the escalation tail all iterate `candidates`, which EXCLUDES this never-pushed
-                // lane, and `Worktree` has no `Drop`. So remove them HERE, or the conductor
+                // failure carrying each refusal and where each refused tree is kept (a crash is
+                // no feedback for the author). Its lane worktree AND branch were already created
+                // (above), and NO terminal path below tears them down - winner cleanup,
+                // `cancel_speculation_candidates`, and the escalation tail all iterate
+                // `candidates`, which EXCLUDES this never-pushed lane, and `Worktree` has no
+                // `Drop`. So remove them HERE, a refused lane's work kept first, or the conductor
                 // leaks a durable dir + branch, breaking the "conductor owns the K worktrees'
                 // whole lifecycle" invariant (spec 13, unit 3).
                 Err((class, e)) => {
                     if class == LaneError::Refused {
-                        lost.refused(&e);
+                        self.lane_refused(st, lane, &wt, &e, &mut lost)?;
                     }
                     let _ = wt.remove();
                     let _ = Worktree::delete_branch(&self.deps.repo, &wt.branch);
@@ -8801,6 +8840,9 @@ impl RunCtx<'_> {
                     &review,
                 )?;
                 self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
+                // The refused lanes' keeps go with the group; the unit's own recorded keeps wait
+                // for its landing.
+                let _ = worktree::drop_keeps(&self.deps.repo, lost.kept());
                 return Ok(false);
             }
             let integration = match self.integrate_and_emit(
@@ -8811,9 +8853,11 @@ impl RunCtx<'_> {
             ) {
                 Ok(integration) => integration,
                 // Git refused the merge on the candidate's own work before any of it landed:
-                // the run branch is as it was, so the candidate loses and the next is tried.
+                // the run branch is as it was, so the candidate loses, its work kept, and the
+                // next is tried.
                 Err(e) if self.lane_error(&st.name, attempt, &e) == LaneError::Refused => {
-                    lost.refused(&e);
+                    let wt = &candidates[i].wt;
+                    self.lane_refused(st, attempt - base, wt, &e, &mut lost)?;
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -8871,18 +8915,24 @@ impl RunCtx<'_> {
             self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
             // The winner's work merged into the base: tear down its worktree and branch too,
             // exactly as the single-lane path deletes an integrated unit's branch, and the
-            // unit's recorded keeps with them.
+            // unit's recorded keeps with them, the keeps of this group's refused lanes included.
             let _ = candidates[i].wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
-            let keeps = self.recorded_keeps(&st.name);
-            let _ = worktree::reap_keeps(&self.deps.repo, &unit_branch(&st.name), keeps);
+            let keeps: Vec<ledger::Kept> = self
+                .recorded_keeps(&st.name)
+                .iter()
+                .chain(lost.kept())
+                .cloned()
+                .collect();
+            let _ = worktree::reap_keeps(&self.deps.repo, &unit_branch(&st.name), &keeps);
             return Ok(true);
         }
 
         // NO candidate won: every candidate was gate-red, review-rejected, crashed, refused by
         // git, or its winning merge broke post-merge (its evidence held in `lost` above). The K candidates
         // were the unit's parallel attempts, so it ESCALATES rather than re-fanning out forever
-        // on the fresh re-entry. Clean up the losing candidates' worktrees.
+        // on the fresh re-entry. Clean up the losing candidates' worktrees: each lane git refused
+        // was kept when it was refused, and its record below names where.
         for c in &candidates {
             let _ = c.wt.remove();
             let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
@@ -30779,9 +30829,10 @@ stage "implement" adjudicator "adj" failed
     /// Lane `lane`'s adjudicator leaves the candidate's tree HEAD off the lane's branch, so git
     /// refuses the approved lane's merge.
     fn refuse_merge(driver: &mut Stub, lane: u32) {
-        driver
-            .git_by_spawn_id
-            .insert(spawn_retry_id("s", ROLE_ADJUDICATOR, lane, 0), detach_head());
+        driver.git_by_spawn_id.insert(
+            spawn_retry_id("s", ROLE_ADJUDICATOR, lane, 0),
+            detach_head(),
+        );
     }
 
     /// A SPECULATION GROUP WITH NO WINNER KEEPS EACH TREE GIT REFUSED: every lane git refused, at
@@ -30871,7 +30922,11 @@ stage "implement" adjudicator "adj" failed
                 "merge",
                 refuse_checkpoint,
             ),
-            ("lane 0's merge refused, lane 1 lands", "merge", refuse_merge),
+            (
+                "lane 0's merge refused, lane 1 lands",
+                "merge",
+                refuse_merge,
+            ),
             (
                 "lane 0's checkpoint refused, lane 1 settles without landing",
                 "none",
