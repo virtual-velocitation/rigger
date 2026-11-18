@@ -839,9 +839,9 @@ fn end_watched_with(
 /// keeps reparents to it, so every descendant's parent chain reaches it. `graceful` first asks
 /// each to exit and waits up to [`GRACE`] for them; then each one a walk finds is ended, walking
 /// again until `children_left` answers that no child is left, or [`END_BOUND`] passes, when what
-/// is still running is reported as residue. Every signal passes [`Tree::send`]'s checks, made
-/// afresh at every walk; a process they refuse at every walk is reported skipped and never
-/// signalled.
+/// the last walk ended is given up to [`FLOOR`] to be gone and what is still running is reported
+/// as residue. Every signal passes [`Tree::send`]'s checks, made afresh at every walk; a process
+/// they refuse at every walk is reported skipped and never signalled.
 pub fn end_own_descendants(graceful: bool, children_left: impl FnMut() -> bool) -> EndReport {
     end_descendants_with(
         &mut LiveOs,
@@ -871,10 +871,13 @@ fn end_descendants_with(
     while children_left() {
         let walk = tree.signal_walk(os, &mut report, Signal::Hard);
         if Instant::now() >= deadline {
-            for target in walk.iter().filter(|target| running(target)) {
-                if !report.skipped.iter().any(|left| left.pid == target.pid) {
-                    report.residue.push(Leftover::of(target.pid, false));
-                }
+            let ended: Vec<Identity> = walk
+                .into_iter()
+                .filter(|target| !report.skipped.iter().any(|left| left.pid == target.pid))
+                .collect();
+            poll_until(Instant::now() + FLOOR, || !ended.iter().any(running));
+            for target in ended.iter().filter(|target| running(target)) {
+                report.residue.push(Leftover::of(target.pid, false));
             }
             break;
         }
