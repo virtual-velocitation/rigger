@@ -693,28 +693,36 @@ fn graph_show_bounds_a_declared_definitions_body_by_its_extractors_end_line() {
     }
 }
 
-/// A Zig file whose `main`, over its lines 7 to 11, calls the `area` of `Shape` through a path,
-/// the `area` of `Disk` through a member access and an `area` by its name alone.
+/// A Zig file whose `main`, over its lines 7 to 14, calls the `area` of `Shape` through a path,
+/// the `area` of `Disk` through a member access and an `area` by its name alone, then the `:b` of
+/// `Disk` through a member access, the `a:b` of `Shape` through a path and an `x.y` by its name
+/// alone.
 const AREAS_ZIG: &str = concat!(
     "const Shape = struct {\n    fn area() void {}\n};\n",
     "const Disk = struct {\n    fn area() void {}\n};\n",
-    "pub fn main() void {\n    Shape::area();\n    Disk.area();\n    area();\n}\n",
+    "pub fn main() void {\n    Shape::area();\n    Disk.area();\n    area();\n",
+    "    Disk.@\":b\"();\n    Shape::@\"a:b\"();\n    @\"x.y\"();\n}\n",
 );
 
 /// The answer to `src/q.zig` holding [`AREAS_ZIG`]: the definitions `Shape`, `Shape::area`,
 /// `Disk`, `Disk::area` and `main`, and `main`'s three calls of `area` on lines 8 to 10, the first
-/// qualified by the path `Shape`, the second by the member `Disk`, the third carrying no qualifier.
+/// qualified by the path `Shape`, the second by the member `Disk`, the third carrying no qualifier,
+/// then its calls on lines 11 to 13 of names just inside what the protocol accepts: `:b` qualified
+/// by the member `Disk`, `a:b` by the path `Shape`, and `x.y`, holding a separator, by nothing.
 const AREAS_ANSWER: &str = concat!(
     r#"{"path":"src/q.zig","defs":["#,
     r#"{"kind":"Type","name":"Shape","line":1,"end_line":3,"path":"Shape"},"#,
     r#"{"kind":"Method","name":"area","line":2,"end_line":2,"path":"Shape::area","parent":"Shape"},"#,
     r#"{"kind":"Type","name":"Disk","line":4,"end_line":6,"path":"Disk"},"#,
     r#"{"kind":"Method","name":"area","line":5,"end_line":5,"path":"Disk::area","parent":"Disk"},"#,
-    r#"{"kind":"Function","name":"main","line":7,"end_line":11,"path":"main"}"#,
+    r#"{"kind":"Function","name":"main","line":7,"end_line":14,"path":"main"}"#,
     r#"],"refs":["#,
     r#"{"name":"area","line":8,"enclosing":"main","qualifier":{"name":"Shape","path":true}},"#,
     r#"{"name":"area","line":9,"enclosing":"main","qualifier":{"name":"Disk","path":false}},"#,
-    r#"{"name":"area","line":10,"enclosing":"main"}"#,
+    r#"{"name":"area","line":10,"enclosing":"main"},"#,
+    r#"{"name":":b","line":11,"enclosing":"main","qualifier":{"name":"Disk","path":false}},"#,
+    r#"{"name":"a:b","line":12,"enclosing":"main","qualifier":{"name":"Shape","path":true}},"#,
+    r#"{"name":"x.y","line":13,"enclosing":"main"}"#,
     r#"]}"#
 );
 
@@ -724,12 +732,16 @@ const AREAS_ANSWER: &str = concat!(
 /// THE MENTION (spec 117, CAPTURES) through THE EXTRACTOR PROTOCOL: the store holds the mentions
 /// `Shape::area`, `Disk.area` and `area`, each of the leaf `area`, and the graph lands the first
 /// two, `extracted`, on the `area` their qualifier keeps, while the third, which neither of its
-/// same-file candidates takes alone, lands `inferred` on its placeholder; nothing is said on
-/// stderr.
+/// same-file candidates takes alone, lands `inferred` on its placeholder. The answer's calls of
+/// names just inside what the protocol accepts are held too, so the answer is no failed one: `:b`
+/// after the member `Disk` as `Disk.:b`, `a:b` after the path `Shape` as `Shape::a:b`, and the
+/// unqualified `x.y` as itself, each of the leaf answered, and with no definition of its leaf each
+/// lands `ambiguous` on its leaf's placeholder - neither qualifier keeps a target, and `x.y`,
+/// written as its leaf, has none to read. Nothing is said on stderr.
 #[test]
 fn graph_build_names_a_declared_reference_by_its_qualifier_and_lands_it_where_that_reaches() {
     use rigger::contextgraph::query::{entity_id, placeholder_id};
-    use rigger::contextgraph::{TIER_EXTRACTED, TIER_INFERRED};
+    use rigger::contextgraph::{TIER_AMBIGUOUS, TIER_EXTRACTED, TIER_INFERRED};
 
     let path = "src/q.zig";
     let (_dir, root) = source_repository();
@@ -750,10 +762,10 @@ fn graph_build_names_a_declared_reference_by_its_qualifier_and_lands_it_where_th
         common::fixtures::landed(&graph),
     );
 
-    let in_main = |name: &str, line| Mention {
+    let in_main = |name: &str, leaf: &str, line| Mention {
         enclosing: Some(4),
         name: name.to_string(),
-        leaf: "area".to_string(),
+        leaf: leaf.to_string(),
         kind: MentionKind::Call,
         line,
         test: false,
@@ -762,6 +774,9 @@ fn graph_build_names_a_declared_reference_by_its_qualifier_and_lands_it_where_th
         (entity_id(path, "Shape::area"), TIER_EXTRACTED),
         (entity_id(path, "Disk::area"), TIER_EXTRACTED),
         (placeholder_id(path, "area"), TIER_INFERRED),
+        (placeholder_id(path, ":b"), TIER_AMBIGUOUS),
+        (placeholder_id(path, "a:b"), TIER_AMBIGUOUS),
+        (placeholder_id(path, "x.y"), TIER_AMBIGUOUS),
     ]
     .iter()
     .flat_map(|(to, tier)| common::fixtures::a_call_from(path, "main", to, tier))
@@ -773,9 +788,12 @@ fn graph_build_names_a_declared_reference_by_its_qualifier_and_lands_it_where_th
             true,
             String::new(),
             Some(vec![
-                in_main("Shape::area", 8),
-                in_main("Disk.area", 9),
-                in_main("area", 10),
+                in_main("Shape::area", "area", 8),
+                in_main("Disk.area", "area", 9),
+                in_main("area", "area", 10),
+                in_main("Disk.:b", ":b", 11),
+                in_main("Shape::a:b", "a:b", 12),
+                in_main("x.y", "x.y", 13),
             ]),
             edges,
         ),
