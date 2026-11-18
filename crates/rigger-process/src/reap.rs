@@ -376,11 +376,18 @@ fn signal_if_unchanged(
 }
 
 /// The fault an end reports when a freeze it sent to `pid` by the pid alone reached another
-/// process than the one its checks passed ([`Tree::send`]).
-fn freeze_reached_another(pid: u32) -> String {
+/// process than the one its checks passed ([`Tree::send`]): that process was `resumed` once a
+/// second read confirmed it still held the pid, and was sent nothing more where none did.
+fn freeze_reached_another(pid: u32, resumed: bool) -> String {
+    let undo = if resumed {
+        "it was resumed at once"
+    } else {
+        "its pid did not read as that process again, so it was sent nothing more and may stay \
+         frozen"
+    };
     format!(
         "a freeze sent to pid {pid} by the pid alone reached another process, one that took the \
-         pid after the freeze's checks; it was resumed at once"
+         pid after the freeze's checks; {undo}"
     )
 }
 
@@ -945,7 +952,7 @@ impl Tree {
             let reached = os.start_after_freeze(&to);
             if reached.is_some_and(|start| start != target.start) {
                 os.send(Signal::Resume, &to);
-                report.faults.push(freeze_reached_another(target.pid));
+                report.faults.push(freeze_reached_another(target.pid, true));
                 return false;
             }
         }
@@ -2937,8 +2944,8 @@ mod tests {
         /// of each read of the table or each hard end, as its [`ForkAt`] says. `tied`'s parent's
         /// record reads `tied`'s start, and `ties`, where some, is the tie rule a walk reads the
         /// table by. Every process is addressed by its pid alone where `by_pid` holds, as on an OS
-        /// without process descriptors, and the first freeze sent to `misfire_once` by its pid is
-        /// read, right after, as having reached another process. Where `no_freeze` holds, the OS
+        /// without process descriptors, and the next reads, as many as `misfires` names, of where a
+        /// freeze sent to its pid by the pid alone landed read another process's start. Where `no_freeze` holds, the OS
         /// has no freeze, as on Windows: every freeze and resume is dropped. Every signal the end sends is
         /// recorded, dropped or not, and so is each process sent a freeze while its parent did not
         /// read frozen, and each address and parent read, in order.
@@ -2955,7 +2962,7 @@ mod tests {
             swallowed: Option<u32>,
             forker: Option<Forker>,
             by_pid: bool,
-            misfire_once: Option<u32>,
+            misfires: Option<(u32, usize)>,
             no_freeze: bool,
             sent: Vec<(Signal, u32)>,
             frozen_under_a_running_parent: Vec<u32>,
@@ -3094,11 +3101,13 @@ mod tests {
 
             fn start_after_freeze(&mut self, to: &Addressee) -> Option<u64> {
                 let start = started(to);
-                if self.misfire_once == Some(to.pid) {
-                    self.misfire_once = None;
-                    return start.map(|start| start + 1);
+                match &mut self.misfires {
+                    Some((pid, left)) if *pid == to.pid && *left > 0 => {
+                        *left -= 1;
+                        start.map(|start| start + 1)
+                    }
+                    _ => start,
                 }
-                start
             }
 
             fn ties(&self) -> Ties {
@@ -3148,18 +3157,24 @@ mod tests {
 
         /// The watched end of a tree whose one member's first freeze is read, right after, as having
         /// reached another process, as when one took the member's pid between the freeze's checks
-        /// and the freeze, addressed `by_pid` alone or through a process descriptor: by the pid,
-        /// the process the freeze reached is resumed at once (`resumed`) and the end says so;
-        /// through a descriptor, which reaches the member or none, nothing is read again. The tree
-        /// is ended either way.
-        fn a_freeze_read_as_reaching_another_process(by_pid: bool, resumed: bool) {
+        /// and the freeze, with the next of `misfires` reads reading that process again,
+        /// addressed `by_pid` alone or through a process descriptor. By the pid, the process the
+        /// freeze reached is resumed at once only where a second read confirms it still holds the
+        /// pid, and is sent nothing more where none does (`resumed`), and the end says which;
+        /// through a descriptor, which reaches the member or none, nothing is read again
+        /// (`resumed` is `None`). The tree is ended either way.
+        fn a_freeze_read_as_reaching_another_process(
+            by_pid: bool,
+            misfires: usize,
+            resumed: Option<bool>,
+        ) {
             let mut witness = Witness::new();
             let mut main = tree(&witness, "holder; up; held");
             assert!(witness.wait_up(2), "the fixture's two processes are up");
             let holder = only_child(main.id());
             let mut os = Rigged {
                 by_pid,
-                misfire_once: Some(holder),
+                misfires: Some((holder, misfires)),
                 ..Rigged::default()
             };
 
@@ -3167,11 +3182,10 @@ mod tests {
 
             let freeze = position(&os.sent, (Signal::Stop, holder));
             let next = os.sent.get(freeze + 1).copied();
-            let faults = if resumed {
-                vec![freeze_reached_another(holder)]
-            } else {
-                Vec::new()
-            };
+            let faults: Vec<String> = resumed
+                .map(|resumed| freeze_reached_another(holder, resumed))
+                .into_iter()
+                .collect();
             assert_eq!(
                 (
                     next == Some((Signal::Resume, holder)),
@@ -3179,7 +3193,7 @@ mod tests {
                     witness.read()
                 ),
                 (
-                    resumed,
+                    resumed == Some(true),
                     EndReport {
                         faults,
                         ..EndReport::default()
@@ -3192,11 +3206,13 @@ mod tests {
         }
 
         crate::test_cases! {
-            a_freeze_by_pid_that_reached_another_process_resumes_it_at_once_and_says_so:
-                a_freeze_read_as_reaching_another_process(true, true);
+            a_freeze_by_pid_that_reached_another_process_resumes_it_once_confirmed:
+                a_freeze_read_as_reaching_another_process(true, 2, Some(true));
+            a_freeze_by_pid_that_reached_another_process_unconfirmed_sends_nothing_more:
+                a_freeze_read_as_reaching_another_process(true, 1, Some(false));
             #[cfg(target_os = "linux")]
             a_freeze_through_a_descriptor_is_never_read_again:
-                a_freeze_read_as_reaching_another_process(false, false);
+                a_freeze_read_as_reaching_another_process(false, 2, None);
         }
 
         /// Process descriptors, on the one OS that has them.
