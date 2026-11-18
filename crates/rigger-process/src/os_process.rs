@@ -101,36 +101,42 @@ std::cfg_select! {
                     let me = std::process::id();
                     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
                     let port = listener.local_addr().unwrap().port();
+                    // Two tuples, each within the twelve items a tuple compares and prints.
                     assert_eq!(
                         (
-                            pids(),
-                            table(),
-                            parent(me),
-                            start_time(me),
-                            cwd(me),
-                            command(me),
-                            arguments(me),
-                            executable_name(me),
-                            state(me),
-                            open_files(me),
-                            is_unexeced_fork_of(me, me),
-                            listening_pid(port),
-                            holders(std::path::Path::new("/")),
+                            (
+                                pids(),
+                                table(),
+                                listening_pid(port),
+                                holders(std::path::Path::new("/")),
+                            ),
+                            (
+                                parent(me),
+                                start_time(me),
+                                cwd(me),
+                                command(me),
+                                arguments(me),
+                                arguments_of(me, 0),
+                                executable_name(me),
+                                state(me),
+                                open_files(me),
+                                is_unexeced_fork_of(me, me),
+                            ),
                         ),
                         (
-                            Vec::new(),
-                            Vec::new(),
-                            None,
-                            None,
-                            None,
-                            String::new(),
-                            None,
-                            String::new(),
-                            None,
-                            Vec::new(),
-                            false,
-                            None,
-                            Vec::new()
+                            (Vec::new(), Vec::new(), None, Vec::new()),
+                            (
+                                None,
+                                None,
+                                None,
+                                String::new(),
+                                None,
+                                None,
+                                String::new(),
+                                None,
+                                Vec::new(),
+                                false
+                            ),
                         )
                     );
                 }
@@ -235,6 +241,17 @@ fn command_file_name(pid: u32) -> String {
 /// answers a process's name in place of its arguments.
 pub fn arguments(pid: u32) -> Option<Vec<String>> {
     native::arguments(pid)
+}
+
+/// The arguments ([`arguments`]) of the process that started at `started` ([`start_time`]) and
+/// holds `pid`, read only while `pid` names it, so a process that took the pid after that one
+/// exited is never read in its place: Windows reads them through one handle it first reads the
+/// start of, and a handle keeps its process's pid that process's own while it is open; every
+/// other OS reads them by the pid and keeps them only where the pid still reads `started` after
+/// the read, since a pid that names one process before and after a read named it throughout.
+/// `None` where `pid` names no process that started at `started`, or its arguments cannot be read.
+pub fn arguments_of(pid: u32, _started: u64) -> Option<Vec<String>> {
+    arguments(pid)
 }
 
 /// Process `pid`'s run state as one letter: `R` running, `S` sleeping, `T` stopped, `Z` a zombie
@@ -741,7 +758,9 @@ mod tests {
     /// read through its own pid, and a child's created with a spawn's stop-failure hook arguments,
     /// whose spawn id holds a space, and an empty argument after them. On Windows the creation
     /// quotes the id and the empty argument into the command line the child is created with, as
-    /// the host's launch quotes a hook's, and each reads back as the one argument it was. The
+    /// the host's launch quotes a hook's, and each reads back as the one argument it was. They
+    /// read the same by the pid alone and by the pid with the start time it reads, and as none by
+    /// the pid with a start time it does not read, as when another process took the pid. The
     /// child is a shell that reads its commands from its input and runs none of the words, so it
     /// stays up while that input is open and exits once it closes: Unix's `sh -s`, holding them
     /// as its positional parameters, and Windows's `cmd /d /k`, after a `rem`.
@@ -792,15 +811,25 @@ mod tests {
                 created,
             ),
         ];
-        let read: Vec<(&str, Option<Vec<String>>)> = rows
+        let read: Vec<(&str, [Option<Vec<String>>; 3])> = rows
             .iter()
-            .map(|(what, pid, _)| (*what, arguments(*pid)))
+            .map(|(what, pid, _)| {
+                let start = start_time(*pid).expect("the process is up");
+                (
+                    *what,
+                    [
+                        arguments(*pid),
+                        arguments_of(*pid, start),
+                        arguments_of(*pid, start + 1),
+                    ],
+                )
+            })
             .collect();
         drop(child.stdin.take());
         child.wait().expect("the shell exits once its input closes");
-        let expected: Vec<(&str, Option<Vec<String>>)> = rows
+        let expected: Vec<(&str, [Option<Vec<String>>; 3])> = rows
             .iter()
-            .map(|(what, _, created)| (*what, Some(created.clone())))
+            .map(|(what, _, created)| (*what, [Some(created.clone()), Some(created.clone()), None]))
             .collect();
         assert_eq!(read, expected);
     }
@@ -1057,6 +1086,7 @@ mod tests {
                 cwd(gone),
                 command(gone),
                 arguments(gone),
+                arguments_of(gone, 0),
                 executable_name(gone),
                 state(gone),
                 open_files(gone),
@@ -1068,6 +1098,7 @@ mod tests {
                 None,
                 None,
                 String::new(),
+                None,
                 None,
                 String::new(),
                 None,

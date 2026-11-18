@@ -760,19 +760,24 @@ mod tests {
             );
     }
 
-    /// A hold that names `member` among its tree's processes and whose end signals nothing: the
-    /// end closes the member's input and waits for it, so the member exits on its own while the
-    /// end runs, and then reaps the main.
+    /// A hold that names `member` among its tree's processes, by a start time one later than its
+    /// own where `reused`, as a hold that read the member before another process took its pid
+    /// would name it, and whose end signals nothing: the end closes the member's input and waits
+    /// for it, so the member exits on its own while the end runs, and then reaps the main.
     struct EndsBySelf {
         member: Child,
         input: Option<ChildStdin>,
+        reused: bool,
     }
 
     impl Hold for EndsBySelf {
         fn members(&mut self, _main: &mut Child) -> Vec<Identity> {
             let pid = self.member.id();
             os_process::start_time(pid)
-                .map(|start| Identity { pid, start })
+                .map(|start| Identity {
+                    pid,
+                    start: start + u64::from(self.reused),
+                })
                 .into_iter()
                 .collect()
         }
@@ -795,11 +800,53 @@ mod tests {
             .expect("spawn a member that exits at its input's end");
         let input = member.stdin.take();
         let main = Command::new("true").spawn().expect("spawn the main");
-        let tree = ReapedChild::holding(main, Box::new(EndsBySelf { member, input }));
+        let tree = ReapedChild::holding(
+            main,
+            Box::new(EndsBySelf {
+                member,
+                input,
+                reused: false,
+            }),
+        );
 
         let report = tree.finish(None);
 
         assert_eq!(report, EndReport::default());
+    }
+
+    /// A finish for a writer reads a process its tree held only while the process's pid still
+    /// names it: a member named by a start time its pid does not read, as when another process
+    /// took the pid, is no writer whatever its pid's process runs, so the finish waits for none.
+    #[test]
+    fn a_finish_reads_no_writer_through_a_pid_its_member_no_longer_holds() {
+        let mut member = Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn a member that exits at its input's end");
+        let input = member.stdin.take();
+        let main = Command::new("true").spawn().expect("spawn the main");
+        let mut tree = ReapedChild::holding(
+            main,
+            Box::new(EndsBySelf {
+                member,
+                input,
+                reused: true,
+            }),
+        );
+        assert!(
+            wait_until(|| matches!(tree.try_wait(), Ok(Some(_)))),
+            "the main exits"
+        );
+        let started = std::time::Instant::now();
+
+        let report = tree.finish(Some(&|_: &[String]| true));
+
+        let elapsed = started.elapsed();
+        assert_eq!(
+            (elapsed < crate::reap::END_BOUND / 2, report),
+            (true, EndReport::default()),
+            "the finish took {elapsed:?}"
+        );
     }
 
     #[test]
