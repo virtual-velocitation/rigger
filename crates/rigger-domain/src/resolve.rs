@@ -266,7 +266,7 @@ fn is_impl(kind: &MentionKind) -> bool {
 
 /// The qualifier of a mention written `name` whose leaf is `leaf`: the text before its last
 /// `::` or `.` ([`split_path`]); none when it is written as its leaf alone.
-fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
+pub(crate) fn qualifier<'n>(name: &'n str, leaf: &str) -> Option<&'n str> {
     if name == leaf {
         return None;
     }
@@ -2525,19 +2525,15 @@ pub(crate) mod tests {
         );
     }
 
-    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ): a call or a tagged
-    /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates its rule reads whose parent
-    /// is a definition named `Q` or an implementation enclosing an `impl` mention of `Q`, else,
-    /// when none is, those whose parent is a trait such an implementation names (`FactsView`'s
-    /// `stamp`). One kept candidate takes the edge EXTRACTED in any file, over a
-    /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
-    /// none, under a `Q` that names a type, leave the unqualified rule. A class whose base is `Q`
-    /// is no implementation of `Q`.
-    /// A call's placeholder for several kept candidates is keyed by its qualified name, and the
-    /// placeholder readers file a test call under each candidate it keeps, so two calls of one
-    /// leaf that land apart are read apart.
-    #[test]
-    fn a_qualified_call_narrows_its_candidates() {
+    /// A tree of qualified mentions narrowing their candidates: `FactsView`'s inherent `new` and
+    /// the `files` its `CodeView` implementation defines, beside `Snapshot`'s and `Composed`'s
+    /// `files`; `src/composed.rs`'s `Composed::open`, calling `FactsView::new` (one candidate, in
+    /// another file), `FactsView::stamp` (the trait's), `CodeView::files` (several) and
+    /// `Composed::decode` (none under `Composed`), and referencing `Located::Many`,
+    /// `Located::One` and `Composed::MAX`; a Python class whose base is the qualifier
+    /// (`Base.area` from `main`); and the test function `tests/open.rs::opens`, calling
+    /// `FactsView::files` and `CodeView::files`.
+    pub(crate) fn narrowing_fixture() -> FactsView {
         let qualified_call = |name: &str, enclosing, line, test| {
             qualified(MentionKind::Call, name, enclosing, line, test)
         };
@@ -2635,7 +2631,23 @@ pub(crate) mod tests {
                 qualified_call("CodeView::files", Some(0), 3, true),
             ],
         );
-        let view = FactsView::new(stamp(), vec![code_view, snapshot, composed, shapes, open]);
+        FactsView::new(stamp(), vec![code_view, snapshot, composed, shapes, open])
+    }
+
+    /// A QUALIFIED CALL NARROWS ITS CANDIDATES (spec 117, RESOLVER AT READ): a call or a tagged
+    /// reference written `Q::leaf` (or `Q.leaf`) keeps the candidates its rule reads whose parent
+    /// is a definition named `Q` or an implementation enclosing an `impl` mention of `Q`, else,
+    /// when none is, those whose parent is a trait such an implementation names (`FactsView`'s
+    /// `stamp`). One kept candidate takes the edge EXTRACTED in any file, over a
+    /// same-file definition of the leaf; several make a call's placeholder and no tagged edge;
+    /// none, under a `Q` that names a type, leave the unqualified rule. A class whose base is `Q`
+    /// is no implementation of `Q`.
+    /// A call's placeholder for several kept candidates is keyed by its qualified name, and the
+    /// placeholder readers file a test call under each candidate it keeps, so two calls of one
+    /// leaf that land apart are read apart.
+    #[test]
+    fn a_qualified_call_narrows_its_candidates() {
+        let view = narrowing_fixture();
         let r = Resolver::new(&view);
         // (what the answer shows, the question, the whole answer)
         let cases: [(&str, Ask, &[&str]); 6] = [

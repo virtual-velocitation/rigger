@@ -18,17 +18,16 @@
 use crate::common;
 
 use common::fixtures::{
-    call_edge_pairs, call_frontiers, call_node_ids, call_walk, define_member, facts_view,
-    matching_honesty, one_community_graph, owned_ids, planted_file, with_calls, with_tagged,
-    ONE_COMMUNITY,
+    call_edge_pairs, call_frontiers, call_node_ids, call_walk, define_member, facts_view, halves,
+    one_community_graph, owned_ids, planted_file, with_calls, with_tagged, ONE_COMMUNITY,
 };
 use common::lens::files_lens_rows;
 use rigger::code_facts::FileFacts;
-use rigger::code_view::{FactsView, Tests, ViewFilter};
-use rigger::composed::{Composed, Indexed};
+use rigger::code_view::{FactsView, Tests};
+use rigger::composed::Indexed;
 use rigger::contextgraph::{
-    ContextGraph, Direction, Graph, Node, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD,
-    CODE_KIND_TRAIT, CODE_KIND_TYPE, REF_KIND_IMPL,
+    Direction, Graph, Node, CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_METHOD, CODE_KIND_TRAIT,
+    CODE_KIND_TYPE, REF_KIND_IMPL,
 };
 
 /// `CodeView`'s default method, which calls `CodeView.file`.
@@ -206,19 +205,6 @@ fn several_traits_sharing_a_leaf() -> FactsView {
     facts_view(vec![
         code_view, snapshot, archive, store, mirror, report, checks, audit,
     ])
-}
-
-/// `records` composed with `view` under `tests` by each code half the composition root wires,
-/// named: the whole one, and the one resolved only near the ids it is asked about.
-fn halves<'r>(
-    records: &'r Indexed,
-    view: &'r FactsView,
-    tests: Tests,
-) -> [(&'static str, Box<dyn ContextGraph + 'r>); 2] {
-    let filter = ViewFilter { tests };
-    let whole = Composed::new(records, view, filter, matching_honesty()).unwrap();
-    let near = Composed::near(records, view, filter, matching_honesty()).unwrap();
-    [("whole", Box::new(whole)), ("near", Box::new(near))]
 }
 
 /// One call walk and what it reaches: what the walk shows, the tests shown, the seed, the

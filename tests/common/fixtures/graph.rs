@@ -248,6 +248,20 @@ pub fn view_graph<'r>(
     .expect("a view composes")
 }
 
+/// `records` composed with `view` under `tests` by each code half the composition root wires,
+/// named: the whole one, and the one resolved only near the ids it is asked about.
+pub fn halves<'r>(
+    records: &'r rigger::composed::Indexed,
+    view: &'r rigger::code_view::FactsView,
+    tests: rigger::code_view::Tests,
+) -> [(&'static str, Box<dyn ContextGraph + 'r>); 2] {
+    use rigger::composed::Composed;
+    let filter = rigger::code_view::ViewFilter { tests };
+    let whole = Composed::new(records, view, filter, matching_honesty()).unwrap();
+    let near = Composed::near(records, view, filter, matching_honesty()).unwrap();
+    [("whole", Box::new(whole)), ("near", Box::new(near))]
+}
+
 /// The code view of a tree holding exactly `files`, each `(path, source text)` pair read into its
 /// facts by `extract` as the code store reads a file.
 pub fn files_view(
