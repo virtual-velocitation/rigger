@@ -821,6 +821,8 @@ trait EndOs {
     /// How a walk of [`EndOs::table`] reads a child started in its parent's own tick
     /// ([`os_process::TIES`]).
     fn ties(&self) -> Ties;
+    /// Whether this OS freezes a process ([`FREEZES`]).
+    fn freezes(&self) -> bool;
 }
 
 /// The live OS, and why it addresses a process by its pid rather than through a process
@@ -869,6 +871,10 @@ impl EndOs for LiveOs {
 
     fn ties(&self) -> Ties {
         os_process::TIES
+    }
+
+    fn freezes(&self) -> bool {
+        FREEZES
     }
 }
 
@@ -1131,7 +1137,7 @@ fn freeze_walk(
                     .find(|entry| entry.pid == target.pid)
                     .is_some_and(|entry| frozen(entry.parent))
             };
-            if !FREEZES || found.stopped.contains(target) || !parent_frozen() {
+            if !os.freezes() || found.stopped.contains(target) || !parent_frozen() {
                 continue;
             }
             if tree.send(os, report, Signal::Stop, target) {
@@ -1168,7 +1174,7 @@ fn end_watched_with(
     let main_at = Addressee::by_pid(main_pid);
     let tree = Tree::rooted_at(main_pid);
     os.send(Signal::Stop, &main_at);
-    if FREEZES {
+    if os.freezes() {
         poll_until(deadline, || frozen_or_gone(main_pid));
     }
     let mut found = Found::default();
@@ -2865,11 +2871,12 @@ mod tests {
         /// the parent of `unreadable_once` unreadable at its first read, the parent of `stranded`'s
         /// pid unreadable once that pid was sent its signal, every freeze of `unstoppable` and
         /// every hard end of `swallowed` dropped, and `forker` started on one more process ahead
-        /// of each read of the table. `tied`'s parent's record reads `tied`'s start, and `ties`,
-        /// where some, is the tie rule a walk reads the table by. Every process is addressed by its
-        /// pid alone where `by_pid` holds, as on an OS without process descriptors, and the first
-        /// freeze sent to `misfire_once` by its pid is read, right after, as having reached
-        /// another process. Every signal the end sends is
+        /// of each read of the table or each hard end, as its [`ForkAt`] says. `tied`'s parent's
+        /// record reads `tied`'s start, and `ties`, where some, is the tie rule a walk reads the
+        /// table by. Every process is addressed by its pid alone where `by_pid` holds, as on an OS
+        /// without process descriptors, and the first freeze sent to `misfire_once` by its pid is
+        /// read, right after, as having reached another process. Where `no_freeze` holds, the OS
+        /// has no freeze, as on Windows: every freeze and resume is dropped. Every signal the end sends is
         /// recorded, dropped or not, and so is each process sent a freeze while its parent did not
         /// read frozen, and each address and parent read, in order.
         #[derive(Default)]
@@ -2886,6 +2893,7 @@ mod tests {
             forker: Option<Forker>,
             by_pid: bool,
             misfire_once: Option<u32>,
+            no_freeze: bool,
             sent: Vec<(Signal, u32)>,
             frozen_under_a_running_parent: Vec<u32>,
             steps: Vec<Step>,
@@ -2900,11 +2908,21 @@ mod tests {
         }
 
         /// A tree member that starts a process each time a line reaches its `input`, `left` times
-        /// more.
+        /// more, `at` each read of the table or each hard end.
         struct Forker {
             pid: u32,
             input: std::process::ChildStdin,
             left: usize,
+            at: ForkAt,
+        }
+
+        /// When a [`Forker`] is asked for its next process.
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        enum ForkAt {
+            /// Ahead of each read of the table.
+            Read,
+            /// Ahead of each hard end sent to a process other than the forker.
+            HardEnd,
         }
 
         impl Forker {
@@ -2937,7 +2955,7 @@ mod tests {
 
         impl EndOs for Rigged {
             fn table(&mut self) -> Vec<os_process::Entry> {
-                if let Some(forker) = &mut self.forker {
+                if let Some(forker) = self.forker.as_mut().filter(|f| f.at == ForkAt::Read) {
                     forker.fork();
                 }
                 let mut table = os_process::table();
@@ -2990,14 +3008,21 @@ mod tests {
 
             fn send(&mut self, signal: Signal, to: &Addressee) {
                 let pid = to.pid;
+                if signal == Signal::Hard {
+                    let ending = |f: &&mut Forker| f.at == ForkAt::HardEnd && f.pid != pid;
+                    if let Some(forker) = self.forker.as_mut().filter(ending) {
+                        forker.fork();
+                    }
+                }
                 self.sent.push((signal, pid));
                 if signal == Signal::Stop && !os_process::parent(pid).is_some_and(frozen) {
                     self.frozen_under_a_running_parent.push(pid);
                 }
                 let dropped = match signal {
                     Signal::Hard => self.swallowed == Some(pid),
-                    Signal::Stop => self.unstoppable == Some(pid),
-                    Signal::Term | Signal::Resume => false,
+                    Signal::Stop => self.no_freeze || self.unstoppable == Some(pid),
+                    Signal::Resume => self.no_freeze,
+                    Signal::Term => false,
                 };
                 if !dropped {
                     send_signal(signal, to);
@@ -3015,6 +3040,10 @@ mod tests {
 
             fn ties(&self) -> Ties {
                 self.ties.unwrap_or(os_process::TIES)
+            }
+
+            fn freezes(&self) -> bool {
+                FREEZES && !self.no_freeze
             }
         }
 
@@ -3583,6 +3612,7 @@ mod tests {
                     pid: main.id(),
                     input,
                     left: FORKS,
+                    at: ForkAt::Read,
                 }),
                 unstoppable: Some(main.id()),
                 ..Rigged::default()
@@ -3614,6 +3644,42 @@ mod tests {
                 status.and_then(|status| status.signal()),
                 Some(9),
                 "the main is ended hard"
+            );
+        }
+
+        /// A tree on an OS with no freeze whose main starts a process each time the end ends one
+        /// of the tree's other processes, twice: the end walks the tree again after it ends what it
+        /// found, and ends what the main started meanwhile, until a walk finds nothing new, so
+        /// nothing the main started is left running once the main is ended.
+        #[test]
+        fn the_watched_end_walks_again_until_it_finds_nothing_the_tree_started_while_it_ended() {
+            const FORKS: usize = 2;
+            let mut witness = Witness::new();
+            let mut main = tree(
+                &witness,
+                "holder; up; while read -r unused; do holder; done; held",
+            );
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let input = main.stdin.take().expect("the main's input");
+            let mut os = Rigged {
+                forker: Some(Forker {
+                    pid: main.id(),
+                    input,
+                    left: FORKS,
+                    at: ForkAt::HardEnd,
+                }),
+                no_freeze: true,
+                ..Rigged::default()
+            };
+
+            let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
+
+            let forks_left = os.forker.as_ref().map_or(0, |forker| forker.left);
+            assert_eq!(
+                (report, forks_left, witness.read()),
+                (EndReport::default(), 0, Reading::Ended),
+                "every process the main started while the end ran is ended: {:?}",
+                os.sent
             );
         }
 
@@ -3860,6 +3926,7 @@ mod tests {
                     pid: member,
                     input,
                     left: FORKS,
+                    at: ForkAt::Read,
                 }),
                 swallowed: Some(member),
                 ..Rigged::default()
