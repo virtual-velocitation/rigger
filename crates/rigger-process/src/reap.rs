@@ -500,6 +500,11 @@ impl EndReport {
             self.skipped.push(Leftover::of(target.pid, false));
         }
     }
+
+    /// Stop reporting `target` as never signalled: a later check passed and it was signalled.
+    fn unskip(&mut self, target: &Identity) {
+        self.skipped.retain(|leftover| leftover.pid != target.pid);
+    }
 }
 
 /// The three OS facilities an end uses, so a test can add a stranger to the table it walks, fail
@@ -584,8 +589,10 @@ impl Tree {
     }
 
     /// Walk the root's descendants in `os`'s table and send `signal` to each through
-    /// [`Tree::send`], reporting skipped each one it refuses, once, and never sending again to one
-    /// already reported. Answers the walk.
+    /// [`Tree::send`], checking each one afresh at every walk: one the checks refuse is reported
+    /// skipped, once, and one a later walk's checks pass is signalled and no longer reported, since
+    /// a check can fail for a moment, as when a parent exits and is reaped while it is read.
+    /// Answers the walk.
     fn signal_walk(
         &self,
         os: &mut impl EndOs,
@@ -594,8 +601,9 @@ impl Tree {
     ) -> Vec<Identity> {
         let walk = descendants_in(&os.table(), self.root);
         for target in &walk {
-            let skipped = report.skipped.iter().any(|left| left.pid == target.pid);
-            if !skipped && !self.send(os, signal, target) {
+            if self.send(os, signal, target) {
+                report.unskip(target);
+            } else {
                 report.skip(target);
             }
         }
@@ -658,8 +666,10 @@ pub fn left_running(main: &Identity) -> Vec<Leftover> {
 /// its children to an ancestor outside the tree, where no chain reaches them.
 ///
 /// Every signal to a process other than the main passes [`Tree::send`]'s checks; the main is
-/// signalled through the pid its unreaped handle keeps its own. A process the checks refuse, and
-/// a remembered one still running outside the tree, is reported skipped and never signalled. A
+/// signalled through the pid its unreaped handle keeps its own. Each walk checks every process it
+/// lists afresh, and one that refuses a process no walk refused before is followed by another: a
+/// process the checks refuse at every walk, and a remembered one still running outside the tree, is
+/// reported skipped and never signalled. A
 /// process still running past [`END_BOUND`] is resumed and reported as residue. One the checks
 /// refuse once frozen, whose parent exited unfrozen and left it outside the tree, is reported
 /// still frozen: no signal leaves the tree, a resume among them. A main that has already exited
@@ -691,16 +701,18 @@ fn end_watched_with(
         poll_until(deadline, || frozen_or_gone(main_pid));
     }
     let mut frozen: HashSet<Identity> = HashSet::new();
+    let mut refused: HashSet<Identity> = HashSet::new();
     let mut by_depth: Vec<Vec<Identity>> = Vec::new();
     loop {
         let mut new = Vec::new();
+        let mut newly_refused = false;
         for (depth, generation) in generations_in(&os.table(), main_pid).iter().enumerate() {
             for target in generation {
-                let skipped = report.skipped.iter().any(|left| left.pid == target.pid);
-                if frozen.contains(target) || skipped {
+                if frozen.contains(target) {
                     continue;
                 }
                 if tree.send(os, Signal::Stop, target) {
+                    report.unskip(target);
                     frozen.insert(*target);
                     if by_depth.len() <= depth {
                         by_depth.resize_with(depth + 1, Vec::new);
@@ -709,10 +721,11 @@ fn end_watched_with(
                     new.push(target.pid);
                 } else {
                     report.skip(target);
+                    newly_refused |= refused.insert(*target);
                 }
             }
         }
-        if new.is_empty() || Instant::now() >= deadline {
+        if (new.is_empty() && !newly_refused) || Instant::now() >= deadline {
             break;
         }
         if FREEZES {
@@ -755,8 +768,9 @@ fn end_watched_with(
 /// keeps reparents to it, so every descendant's parent chain reaches it. `graceful` first asks
 /// each to exit and waits up to [`GRACE`] for them; then each one a walk finds is ended, walking
 /// again until `children_left` answers that no child is left, or [`END_BOUND`] passes, when what
-/// is still running is reported as residue. Every signal passes [`Tree::send`]'s checks; a process
-/// they refuse is reported skipped and never signalled.
+/// is still running is reported as residue. Every signal passes [`Tree::send`]'s checks, made
+/// afresh at every walk; a process they refuse at every walk is reported skipped and never
+/// signalled.
 pub fn end_own_descendants(graceful: bool, children_left: impl FnMut() -> bool) -> EndReport {
     end_descendants_with(
         &mut LiveOs,
