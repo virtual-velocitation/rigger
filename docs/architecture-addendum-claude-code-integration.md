@@ -162,6 +162,11 @@ grace period, then ends the session's process tree through the handle the driver
 (`crates/rigger-process/src/child_tree.rs`): the child it spawned and the containment it
 created for that child. Never a pid read from elsewhere, a group or a shell-out.
 
+An ordinary end, once the session's main has exited, ends the same tree through the same
+handle, so on Linux and Windows nothing a session starts outlives it. A watched tree (macOS, or
+a launch whose containment degraded to a watch) signals nothing once its main has exited: what
+the main left running is reported, never signalled.
+
 ---
 
 ## 5. The hold

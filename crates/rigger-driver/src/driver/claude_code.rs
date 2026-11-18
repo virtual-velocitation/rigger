@@ -556,9 +556,9 @@ impl Driver<'_> {
     /// shape (`ended_via_break` below) and, on a clean EOF ONLY, blocks on the main's own
     /// status (`reaper.wait()`, no signal) BEFORE it finishes with the tree, so that teardown
     /// always finishes on its own first. Every exit that leaves the loop finishes with the tree
-    /// the one way ([`crate::child_tree::ReapedChild::finish`]): a session whose main has exited
-    /// is let go, what it left running running on, and one whose main still runs (the
-    /// post-result silence or read-error `break` below) is ended with its whole tree.
+    /// the one way ([`crate::child_tree::ReapedChild::finish`]), which ends the whole tree: what a
+    /// main that has exited left running, and a main that still runs (the post-result silence or
+    /// read-error `break` below) with it.
     ///
     /// A read error AFTER a result is already captured (adj-u104-stream round-2 REQUIRED
     /// FIX) is handled the same uniform way: the loop below just stops reading (`break`)
@@ -993,12 +993,12 @@ impl Driver<'_> {
         // `try_wait` treated "not yet known to have exited" the same as "gone missing",
         // so a child still finishing that teardown got force-ended mid-flight.
         // A direct BLOCKING wait - no signal - here on the clean-EOF path ONLY lets that
-        // teardown finish on its own first; the finish just below then finds the main exited
-        // and lets the tree go, ending nothing.
+        // teardown finish on its own first; the finish just below then ends what the main
+        // left running.
         //
         // The `break` path (a read error, or post-result silence) is neither evidence of
-        // in-progress teardown nor of an exit: the finish just below ends the tree of a main
-        // still running, and lets go of one whose main has exited.
+        // in-progress teardown nor of an exit: the finish just below ends the tree, its main
+        // with it where the main still runs.
         if !ended_via_break {
             // Its input closes first, so a session still reading it sees the end and exits.
             pipes.close_input();
@@ -1009,8 +1009,8 @@ impl Driver<'_> {
         // right here rather than at the function's end: the join just below depends on the
         // child's stderr pipe having already closed. An end reports what it left.
         self.record_end(opts, &reaper.finish());
-        // A session let go leaves what its main started running: a descendant that inherited
-        // a copy of either pipe's write end keeps it open regardless, so both joins below are
+        // A process the end left running, or one that left the tree before a watch saw it,
+        // can hold a copy of either pipe's write end open regardless, so both joins below are
         // bounded ([`Driver::join_within`]) rather than a bare `join()` that could wait on such a
         // stranger forever - never a caller-visible wait for its own sake in the ordinary
         // case, where the thread has already hit EOF or is about to. Bounded by
@@ -1579,11 +1579,11 @@ impl Driver<'_> {
     /// (spec 104 criterion 6 round-4 fix, decision
     /// `op-104-stop-end-the-tree-and-bound-the-joins`): a process the driven child forked
     /// but never `exec`'d can inherit a copy of the stdout/stderr pipe's write end, and once
-    /// that process runs on past the session's end - let go at an ordinary end, or escaped a
-    /// watched tree before its end - nothing this function does closes it: the thread blocked
-    /// reading that pipe would otherwise never see EOF, and neither [`Driver::read_stream`]
-    /// nor [`Driver::stop_for_wall_clock_silence`] would ever return. Polling
-    /// `JoinHandle::is_finished` against a deadline, rather than calling `join()` directly,
+    /// that process runs on past the session's end - left by a watched tree whose main has
+    /// exited, or escaped a watched tree before its end - nothing this function does closes it:
+    /// the thread blocked reading that pipe would otherwise never see EOF, and neither
+    /// [`Driver::read_stream`] nor [`Driver::stop_for_wall_clock_silence`] would ever return.
+    /// Polling `JoinHandle::is_finished` against a deadline, rather than calling `join()` directly,
     /// bounds the CALLER's own return time regardless of what such a stranger does with the
     /// pipe - the SAME seam every join of a reader or drain thread in this file goes
     /// through, so a stop (and an ordinary stream end) both return on a bounded clock no
@@ -1840,8 +1840,8 @@ impl HoldProbe for Driver<'_> {
                 }
                 std::ops::ControlFlow::Continue(())
             });
-            // A canary that has exited is let go, and one still running is ended with its tree.
-            // It writes no store, so what an end left is said on stderr ([`canary_end_line`]).
+            // The canary's tree is ended, its main with it where the main still runs. It writes
+            // no store, so what the end left is said on stderr ([`canary_end_line`]).
             if let Some(line) = canary_end_line(&canary.finish()) {
                 rigger_process::whole_line::say(format_args!("{line}"));
             }

@@ -449,14 +449,11 @@ impl ReapedChild {
         self.hold.release(&mut self.child)
     }
 
-    /// Finishes with a tree its host is done reading: one whose main has exited is let go
-    /// ([`ReapedChild::release`]), what the main left running running on, and one whose main still
-    /// runs is ended ([`ReapedChild::end`]). Answers what an end left, or what the OS refused a
-    /// release.
+    /// Finishes with a tree its host is done reading by ending it ([`ReapedChild::end`]), whether
+    /// its main has exited or still runs, so nothing the session started outlives it. A watched
+    /// tree whose main has exited signals nothing, and answers what the main left running as
+    /// never signalled ([`crate::reap::end_watched`]). Answers what the end left.
     pub fn finish(mut self) -> EndReport {
-        if matches!(self.try_wait(), Ok(Some(_))) {
-            return self.release();
-        }
         self.end()
     }
 
