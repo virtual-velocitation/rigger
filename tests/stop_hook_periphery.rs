@@ -242,14 +242,15 @@ fn each_refusal_holds_the_stop_with_gits_words_and_an_accepted_tree_allows_it() 
     }
 }
 
-/// A PRODUCER'S STOP IS HELD WHILE ITS TREE HOLDS WORK OUTSIDE A COMMIT: with `--own-commits`
-/// (a stage the conductor lands only the commits of), a changed file and an untracked one outside
-/// the stage's output `specs/`, and an untracked plan in it, each hold the session once, the
-/// reason naming the tree, sorting the paths by the output and carrying `git status` as git
-/// prints it; a clean tree and one whose work is committed each allow the stop. Each check records its
+/// A PRODUCER'S STOP IS HELD WHILE ITS TREE HOLDS WORK OF ITS OUTPUT OUTSIDE A COMMIT: with
+/// `--own-commits` (a stage the conductor lands only the commits of), an untracked plan in the
+/// stage's output `specs/`, alone or beside a changed file outside it, holds the session once, the
+/// reason naming the tree and the paths sorted by the output and carrying `git status` as git
+/// prints it; a changed file or an untracked one outside the output alone never lands, so it
+/// allows the stop, as a clean tree and one whose work is committed do. Each check records its
 /// line, then the hold or the allowance, and leaves the index as it was.
 #[test]
-fn a_producers_stop_is_held_while_its_tree_holds_work_outside_a_commit() {
+fn a_producers_stop_is_held_while_its_tree_holds_work_of_its_output_outside_a_commit() {
     // Each row: what leaves the tree so, then the refusal's words after the tree and the git
     // status words the reason carries (`None` for a stop allowed).
     type Row = (
@@ -257,21 +258,27 @@ fn a_producers_stop_is_held_while_its_tree_holds_work_outside_a_commit() {
         fn(&Path),
         Option<(&'static str, &'static str)>,
     );
-    let rows: [Row; 5] = [
+    let rows: [Row; 6] = [
         (
             "a changed file outside the stage's output",
             |dir| std::fs::write(dir.join("unit.txt"), "edited\n").unwrap(),
-            Some((
-                "holds work outside specs/ that no commit records: unit.txt - ",
-                "modified:   unit.txt",
-            )),
+            None,
         ),
         (
             "an untracked file outside the stage's output",
             |dir| std::fs::write(dir.join("plan.md"), "planned\n").unwrap(),
+            None,
+        ),
+        (
+            "an untracked plan beside a changed file outside the stage's output",
+            |dir| {
+                std::fs::create_dir(dir.join("specs")).unwrap();
+                std::fs::write(dir.join("specs/plan.md"), "planned\n").unwrap();
+                std::fs::write(dir.join("unit.txt"), "edited\n").unwrap();
+            },
             Some((
-                "holds work outside specs/ that no commit records: plan.md - ",
-                "Untracked files:",
+                "holds work in specs/ that no commit records: specs/ - ",
+                "modified:   unit.txt",
             )),
         ),
         (
@@ -325,7 +332,8 @@ fn a_producers_stop_is_held_while_its_tree_holds_work_outside_a_commit() {
                 assert_lines(case, &spawn_lines(project.path()), &[check, hold]);
             }
             (None, None) => {
-                let allowed = "stop allowed: no work is left outside a commit".to_string();
+                let allowed =
+                    "stop allowed: no work in specs/ is left outside a commit".to_string();
                 assert_lines(case, &spawn_lines(project.path()), &[check, allowed]);
             }
             (refused, reason) => panic!("{case}: expected {refused:?}, held {reason:?}"),

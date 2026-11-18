@@ -70,20 +70,20 @@ pub const STOP_HOOK_HELD: &str = "This session cannot end yet. Once it ends, the
      conflict-marker line; then end as your task asks.";
 
 /// FRAMING: `rigger hook stop`'s reason for holding a producer's session from stopping, handed to
-/// the session as the reason to continue: in `{refusals}` the lines saying the session's tree at
-/// `{dir}` holds work no commit records, which the conductor never lands, sorted into the work in
-/// the stage's output, to commit, and the rest, which a commit would carry out of scope, to take
-/// out of the tree; then in `{status}` git's own account of that tree, and last the one sentence
-/// of what must be true before the session stops and the two moves that make it so.
+/// the session as the reason to continue: in `{refusals}` the line saying the session's tree at
+/// `{dir}` holds work in the stage's output that no commit records, which the conductor never
+/// lands, to commit, and beside it any line naming work outside that output, which never lands,
+/// to leave out of the commit and which may be taken out of the tree; then in `{status}` git's own
+/// account of that tree, and last the one sentence of what must be true before the session stops.
 pub const STOP_HOOK_UNCOMMITTED: &str = "This session cannot end yet. Once it ends, the \
-     conductor lands only the commits this session made in {dir}, and work there is in no \
-     commit:\n\
+     conductor lands only the commits this session made in {dir}, and work of the stage's output \
+     there is in no commit:\n\
      {refusals}\n\n\
      git status in {dir} reads:\n\
      {status}\n\n\
-     Before this session stops, the tree at {dir} must hold no change outside a commit: commit \
-     the work in the stage's output and take the rest out of the tree, as each line above says; \
-     then end as your task asks.";
+     Before this session stops, commit the work in the stage's output at {dir}; work outside that \
+     output never lands, so leave it out of the commit - it may be taken out of the tree; then end \
+     as your task asks.";
 
 /// FRAMING: the instructions-in-force line after the domain's `INSTRUCTIONS_HEADING`: the
 /// built-ins in force in `{builtin}`, and in `{extra}` the operator file count

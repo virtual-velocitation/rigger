@@ -5,6 +5,7 @@ use rigger::prompt_surface::{
     GUARD_WRITE_ROOT_MISSING, GUARD_WRITE_ROOT_RELATIVE, GUARD_WRITE_STDERR_PREFIX,
     GUARD_WRITE_UNKNOWN_ARG, STOP_HOOK_HELD, STOP_HOOK_UNCOMMITTED,
 };
+use rigger_domain::agent::PRODUCER_OUTPUT;
 use rigger_domain::prompt_surface::{debug_escaped, fill};
 
 /// A `rigger grep-guard` decision: pass the tool call through untouched, or block it with the
@@ -719,9 +720,10 @@ const STOP_ARGS_REQUIRED: &str =
 /// with `--branch`, whether committing it onto that branch, or the merge after, would be refused
 /// ([`rigger::worktree::checkpoint_refusals`], the reads the conductor's own commit and merge
 /// refuse on); with `--own-commits`, a producer's tree the conductor lands only the commits of,
-/// whether it holds work outside a commit ([`rigger::worktree::own_commits_refusals`], which
-/// sorts that work by the stage's output and which the conductor asks again once the session has
-/// ended). When it is not, the hook holds the session from stopping by
+/// whether it holds work of the stage's output outside a commit
+/// ([`rigger::worktree::own_commits_refusals`], the plan landing's own scope, which the conductor
+/// asks again once the session has ended; work outside the output never lands, so it holds
+/// nothing up alone). When it is not, the hook holds the session from stopping by
 /// printing Claude Code's `{"decision": "block", "reason": ...}` with the reason
 /// [`stop_hook_reason`] gives, so the session that left the tree so fixes it before it ends. It
 /// changes nothing in the tree: git runs with optional locks off, so not even a status read
@@ -733,8 +735,8 @@ const STOP_ARGS_REQUIRED: &str =
 /// `stop_hook_active` says only that the session is already continuing after a hold, so the count
 /// is read from the record and `stop_hook_active` is recorded beside it. Past the bound the stop is
 /// allowed and a progress line records that the refusal stands, for the conductor's own handling
-/// to meet: a checkpoint's refusal, or a producer's work outside a commit, which fails its
-/// attempt. Every
+/// to meet: a checkpoint's refusal, or a producer's work of its output outside a commit, which
+/// fails its attempt. Every
 /// other way it can end allows the stop with exit 0: an argument it does not know,
 /// a store or tree it cannot read (each written to stderr, and to a progress line where the store
 /// opened). It writes a `stop check` line before it reads the tree, so a check that ran out of
@@ -808,13 +810,13 @@ fn hold_the_stop(
         TreeDuty::None => return Ok(None),
         TreeDuty::Checkpoint { branch } => (
             format!("on {branch}"),
-            "nothing refuses the checkpoint",
+            "nothing refuses the checkpoint".to_string(),
             STOP_HOOK_HELD,
             branch.as_str(),
         ),
         TreeDuty::OwnCommits => (
             "for its own commits".to_string(),
-            "no work is left outside a commit",
+            format!("no work in {PRODUCER_OUTPUT} is left outside a commit"),
             STOP_HOOK_UNCOMMITTED,
             "",
         ),
@@ -1925,13 +1927,13 @@ mod tests {
                 STOP_HOOK_UNCOMMITTED,
                 &[
                     "/wt holds work in specs/ that no commit records",
-                    "/wt holds work outside specs/ that no commit records",
+                    "/wt also holds work outside specs/ that no commit records",
                 ],
                 ["/wt", "On branch main", ""],
                 filled(
                     &uncommitted,
-                    "/wt holds work in specs/ that no commit records\n/wt holds work outside \
-                     specs/ that no commit records",
+                    "/wt holds work in specs/ that no commit records\n/wt also holds work \
+                     outside specs/ that no commit records",
                 ),
             ),
         ];

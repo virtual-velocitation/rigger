@@ -1536,10 +1536,10 @@ enum PlanCommitOutcome {
     /// A commit touched a path outside `specs/` - the offending paths (sorted,
     /// deduplicated) named in the failure fed back to the planner.
     OutOfScope(Vec<String>),
-    /// The session ended with work in the tree no commit records, which no landing carries:
+    /// The session ended with work in `specs/` no commit records, which no landing carries:
     /// [`worktree::own_commits_refusals`]'s lines, the same its `Stop` hook holds the session
     /// on, and [`worktree::tree_status`], both fed back to the planner, whose retry finds the
-    /// work still in the same tree.
+    /// work still in the same tree. Work outside `specs/` alone never lands and is no refusal.
     Uncommitted {
         refusals: Vec<String>,
         status: String,
@@ -2860,7 +2860,8 @@ const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
 /// ([`Worktree::create_branch_at`], [`Worktree::reset_branch_to`],
 /// [`Worktree::restore_reviewed_sha`], [`Worktree::delete_branch`]); reading what a unit changed
 /// ([`Worktree::changed_files`], [`Worktree::changed_since_base`],
-/// [`Worktree::commits_since_base`], [`Worktree::files_touched_by_commit`],
+/// [`Worktree::committed_since_base`], [`Worktree::commits_since_base`],
+/// [`Worktree::files_touched_by_commit`],
 /// [`Worktree::diff_names`], [`Worktree::find_landed_by_patch_id`]); and the run branch's own
 /// moves through [`RunCtx::moving_the_run_branch`] ([`Worktree::land`],
 /// [`Worktree::revert_on_base`], [`Worktree::reset_to`]).
@@ -7474,8 +7475,8 @@ impl RunCtx<'_> {
                     // The attempt's checkpoint commits this tree onto the unit's branch once
                     // the session ends, so the session is asked before it stops whether that
                     // commit would be refused. A producer's work is integrated from its own
-                    // commits alone, never a checkpoint, so it is asked instead whether work is
-                    // left outside a commit.
+                    // commits alone, never a checkpoint, so it is asked instead whether work of
+                    // its output is left outside a commit.
                     tree_duty: match wt {
                         Some(_) if is_producer(st) => TreeDuty::OwnCommits,
                         Some(w) => TreeDuty::Checkpoint {
@@ -7689,10 +7690,11 @@ impl RunCtx<'_> {
                             );
                         }
                         PlanCommitOutcome::Uncommitted { refusals, status } => {
-                            // The planner's session ended with work outside a commit - past
-                            // its `Stop` hook's bound, or on a host that runs no hook - which
-                            // nothing would land: the same refusal of its output as a scope
-                            // violation, retried in this same tree, where the work still is.
+                            // The planner's session ended with work of its output outside a
+                            // commit - past its `Stop` hook's bound, or on a host that runs no
+                            // hook - which nothing would land: the same refusal of its output as
+                            // a scope violation, retried in this same tree, where the work still
+                            // is.
                             cause = CAUSE_REJECT.to_string();
                             next.review_reason = format!(
                                 "{}\n\ngit status in {} reads:\n{status}",
@@ -11861,8 +11863,9 @@ impl RunCtx<'_> {
         let Some(w) = wt else {
             return Ok(PlanCommitOutcome::None);
         };
-        // Work the session left outside a commit fails the stage before anything lands, so
-        // the retry commits it beside whatever it already committed and all of it lands once.
+        // Work of the stage's output the session left outside a commit fails the stage before
+        // anything lands, so the retry commits it beside whatever it already committed and all
+        // of it lands once. Work outside the output never lands, so it fails nothing alone.
         let refusals = git_step(worktree::own_commits_refusals(&w.dir))?;
         if !refusals.is_empty() {
             return Ok(PlanCommitOutcome::Uncommitted {
@@ -11875,7 +11878,7 @@ impl RunCtx<'_> {
             return Ok(PlanCommitOutcome::None);
         }
         // Validate scope BEFORE landing anything, at TWO granularities: the aggregate
-        // three-dot diff (`changed_since_base`) catches the common case, but nets a
+        // three-dot diff (`committed_since_base`) catches the common case, but nets a
         // path to NOTHING when a LATER commit in this SAME sequence reverts an EARLIER
         // commit's own non-specs touch to it - so also walk every commit in `shas`
         // INDIVIDUALLY (`adv-u88c4-scope-check-nets-the-diff-not-each-commit`). A
@@ -11883,7 +11886,10 @@ impl RunCtx<'_> {
         // run branch just because a later commit in the same batch undid it - either
         // source flags a violation, and both feed the SAME offending-paths list so the
         // remediation feedback names every path either check caught.
-        let touched = git_step(w.changed_since_base())?;
+        // Only the commits land, so only they are judged: work the tree holds outside a
+        // commit and outside the output never lands (the one predicate the `Stop` hook and the
+        // refusals above share, `in_producer_output`).
+        let touched = git_step(w.committed_since_base())?;
         let mut offending: Vec<String> = touched
             .into_iter()
             .filter(|p| !in_producer_output(p))
@@ -40855,12 +40861,7 @@ mod tests {
                     ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
                     ("adversary".to_string(), "reviewed the dag".to_string()),
                 ]),
-                // Only the unit's worker writes code: a planner leaving a file outside a
-                // commit fails its stage, which this row does not exercise.
-                write_file_by_agent: HashMap::from([(
-                    "worker".to_string(),
-                    "feature.rs".to_string(),
-                )]),
+                write_file: Some("feature.rs".into()),
                 ..Stub::new()
             };
             (critique_cfg(), driver)

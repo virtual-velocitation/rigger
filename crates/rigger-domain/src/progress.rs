@@ -447,9 +447,10 @@ pub fn latest_stop_failure_class(progress_events: &[Event], spawn_id: &str) -> O
 }
 
 /// How many times `rigger hook stop` may hold one session of a writing spawn from stopping on a
-/// tree its checkpoint would refuse, or a producer's tree holding work outside a commit, after
-/// which it lets the session stop with the refusal standing: a checkpoint's refusal for the
-/// conductor's own handling to meet, a producer's uncommitted work left out of what lands. Three, as the conductor's bound on
+/// tree its checkpoint would refuse, or a producer's tree holding work of its output outside a
+/// commit, after which it lets the session stop with the refusal standing, for the conductor's
+/// own handling to meet: a checkpoint's refusal, or a producer's uncommitted output, which fails
+/// the stage's attempt. Three, as the conductor's bound on
 /// conflict-resolution rounds (`CONFLICT_RESOLVE_BOUND`) is: room for a session to fix a cause
 /// and take a second look, while a refusal no session can clear costs at most three turns.
 /// Below Claude Code's own cap on consecutive stop-hook continuations, so the hook's bound is

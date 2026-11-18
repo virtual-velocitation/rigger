@@ -222,7 +222,8 @@ pub enum TreeDuty {
     /// commit, or the merge before it, would be refused.
     Checkpoint { branch: String },
     /// The conductor lands only the commits the session made in the tree - a producer's - and
-    /// never commits the tree itself, so the hook asks whether work is left outside a commit.
+    /// never commits the tree itself, so the hook asks whether work of the producer's output,
+    /// the only work that lands, is left outside a commit.
     OwnCommits,
 }
 
@@ -231,8 +232,8 @@ pub enum TreeDuty {
 pub const PRODUCER_OUTPUT: &str = "specs/";
 
 /// Whether `path`, relative to the tree's root, lies in [`PRODUCER_OUTPUT`]: the scope decision
-/// the conductor refuses a producer's commits on, and the one a producer's `Stop` hook sorts its
-/// uncommitted work by.
+/// the conductor refuses a producer's commits on, and the one a producer's `Stop` hook holds its
+/// session on: only uncommitted work in the output, the only work that lands, holds it.
 pub fn in_producer_output(path: &str) -> bool {
     path.starts_with(PRODUCER_OUTPUT)
 }

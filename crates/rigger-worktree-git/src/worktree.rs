@@ -742,25 +742,31 @@ impl Worktree {
     }
 
     /// Every path this unit changed relative to the base the worktree branched
-    /// from - the COMMITTED diff (`git diff --name-only <base>..HEAD`) UNIONED with
+    /// from - the COMMITTED diff ([`Self::committed_since_base`]) UNIONED with
     /// any still-uncommitted changes (`git status`).
     ///
     /// [`Self::changed_files`] alone reports only the dirty worktree, which goes
     /// EMPTY once the conductor commits before gating (§3.2); this method spans the
-    /// commit, so a landing's decisions and a unit's lessons still see the unit's
-    /// real artifact set whether or not it was committed first. Paths are sorted and
-    /// de-duplicated.
+    /// commit, so a unit's lessons still see the unit's real artifact set whether or
+    /// not it was committed first. Paths are sorted and de-duplicated.
     pub fn changed_since_base(&self) -> Result<Vec<String>, Error> {
+        let mut paths = self.committed_since_base()?;
+        paths.extend(self.changed_files()?);
+        paths.sort();
+        paths.dedup();
+        Ok(paths)
+    }
+
+    /// Every path this branch's commits changed relative to the base the worktree branched
+    /// from (`git diff --name-only <base>...HEAD`), sorted and de-duplicated: what a landing of
+    /// those commits carries, and nothing the tree holds outside a commit.
+    pub fn committed_since_base(&self) -> Result<Vec<String>, Error> {
         // Anchor on the branch's merge-base with the repo HEAD, not the repo HEAD
         // itself: other units may have merged into base since this worktree branched,
         // and a three-dot diff from the merge-base reports only THIS branch's own
         // changes, never the unrelated commits that landed meanwhile.
         let base = git(&self.repo, &["rev-parse", "HEAD"])?.trim().to_string();
-        let mut paths = self.diff_names(&base, DiffMode::MergeBase)?;
-        paths.extend(self.changed_files()?);
-        paths.sort();
-        paths.dedup();
-        Ok(paths)
+        self.diff_names(&base, DiffMode::MergeBase)
     }
 
     /// The diff between `from` and this worktree's current `HEAD`, name-only, sorted and
@@ -2776,32 +2782,33 @@ pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error
 
 /// Why a producer's tree rooted at `dir` is not ready for the conductor, which lands only the
 /// commits made there and never commits the tree itself: the changes no commit records, untracked
-/// files included ([`uncommitted_paths`]), sorted by the conductor's own scope decision
-/// ([`in_producer_output`]) into a line naming those in [`PRODUCER_OUTPUT`], which are to be
-/// committed, then one naming the rest, which a commit would carry outside the stage's output and
-/// the conductor refuses, so are to be taken out of the tree; empty when it holds none.
-/// Read-only, like [`checkpoint_refusals`]. `rigger hook stop --own-commits` asks it before a
-/// producer's session may end, and the conductor asks it again once the session has ended,
-/// failing the attempt on any line, since that work would otherwise never reach the run branch.
+/// files included ([`uncommitted_paths`]), in [`PRODUCER_OUTPUT`] - the one scope the plan landing
+/// carries ([`in_producer_output`]) - named in a line saying to commit them; then, beside that
+/// line, the rest named in one saying they never land, are refused in a commit, and may be taken
+/// out of the tree. Work outside the output alone is no refusal: it never lands whatever the
+/// session does, so it holds nothing up. Empty when the output holds no such work. Read-only,
+/// like [`checkpoint_refusals`]. `rigger hook stop --own-commits` asks it before a producer's
+/// session may end, and the conductor asks it again once the session has ended, failing the
+/// attempt on any line, since that work would otherwise never reach the run branch.
 pub fn own_commits_refusals(dir: &str) -> Result<Vec<String>, Error> {
     let (mut inside, mut outside): (Vec<String>, Vec<String>) = uncommitted_paths(dir)?
         .into_iter()
         .partition(|path| in_producer_output(path));
     inside.sort();
     outside.sort();
-    let mut refusals = Vec::new();
-    if !inside.is_empty() {
-        refusals.push(format!(
-            "{dir} holds work in {PRODUCER_OUTPUT} that no commit records: {} - the conductor \
-             lands only the commits made there, so commit this work for it to reach the run branch",
-            inside.join(", ")
-        ));
+    if inside.is_empty() {
+        return Ok(Vec::new());
     }
+    let mut refusals = vec![format!(
+        "{dir} holds work in {PRODUCER_OUTPUT} that no commit records: {} - the conductor lands \
+         only the commits made there, so commit this work for it to reach the run branch",
+        inside.join(", ")
+    )];
     if !outside.is_empty() {
         refusals.push(format!(
-            "{dir} holds work outside {PRODUCER_OUTPUT} that no commit records: {} - a commit \
-             touching it is refused as outside the stage's output, so take it out of the tree: \
-             delete what was created there and restore what was changed",
+            "{dir} also holds work outside {PRODUCER_OUTPUT} that no commit records: {} - it \
+             never lands, and a commit touching it is refused as outside the stage's output, so \
+             leave it out of the commit; it may be taken out of the tree",
             outside.join(", ")
         ));
     }
@@ -5857,6 +5864,39 @@ mod tests {
         );
     }
 
+    /// What a unit's tree carries since its base is read two ways: its commits alone, what a
+    /// landing of its commits carries, and those commits with the work no commit records beside
+    /// them, what the unit changed. A committed file and an untracked one beside it each read so.
+    #[test]
+    fn a_trees_commits_since_base_leave_out_the_work_no_commit_records() {
+        let repo = init_repo();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
+        let wt =
+            Worktree::create(&repo_path, wt_path.to_str().unwrap(), "rigger/since", "").unwrap();
+        std::fs::write(wt_path.join("committed.txt"), "work\n").unwrap();
+        wt.commit("rigger: committed").unwrap();
+        std::fs::write(wt_path.join("leftover.txt"), "scratch\n").unwrap();
+
+        type Read = fn(&Worktree) -> Result<Vec<String>, Error>;
+        let rows: [(&str, Read, &[&str]); 2] = [
+            (
+                "its commits alone",
+                Worktree::committed_since_base,
+                &["committed.txt"],
+            ),
+            (
+                "its commits and the work beside them",
+                Worktree::changed_since_base,
+                &["committed.txt", "leftover.txt"],
+            ),
+        ];
+        for (read, since, expected) in rows {
+            assert_eq!(since(&wt).unwrap(), expected, "{read}");
+        }
+        wt.remove().unwrap();
+    }
+
     #[test]
     fn commit_cleans_the_tree_so_a_gate_sees_the_committed_artifact() {
         // FIX 2: the conductor commits the worktree BEFORE gating, so a gate runs
@@ -7668,14 +7708,15 @@ mod tests {
         }
     }
 
-    /// A PRODUCER'S TREE IS READY ONLY WITH NO WORK OUTSIDE A COMMIT, SORTED BY THE STAGE'S
-    /// OUTPUT: work under `specs/` no commit records is one refusal naming its paths and saying to
-    /// commit it; work outside `specs/` - a changed tracked file, a staged or untracked one - is
-    /// another, naming its paths and saying to take it out of the tree, since a commit touching it
-    /// is refused as out of scope. A clean tree, one whose work is committed and one holding only
-    /// a file git ignores are none. The read leaves the index's bytes as they were.
+    /// A PRODUCER'S TREE IS READY ONLY WITH NO WORK OF ITS OUTPUT OUTSIDE A COMMIT, by the scope
+    /// the plan landing takes: work under `specs/` no commit records is one refusal naming its
+    /// paths and saying to commit it; work outside `specs/` - a changed tracked file, a staged or
+    /// untracked one - never lands, so alone it is no refusal, and beside work in `specs/` a
+    /// second line names its paths and says it never lands, stays out of the commit and may be
+    /// taken out of the tree. A clean tree, one whose work is committed and one holding only a
+    /// file git ignores are none. The read leaves the index's bytes as they were.
     #[test]
-    fn a_producers_tree_is_ready_only_with_no_work_outside_a_commit() {
+    fn a_producers_tree_is_ready_only_with_no_output_work_outside_a_commit() {
         fn write(dir: &str, file: &str, text: &str) {
             let path = std::path::Path::new(dir).join(file);
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -7768,14 +7809,14 @@ mod tests {
                      branch",
                     inside.join(", ")
                 ));
-            }
-            if !outside.is_empty() {
-                expected.push(format!(
-                    "{dir} holds work outside specs/ that no commit records: {} - a commit \
-                     touching it is refused as outside the stage's output, so take it out of the \
-                     tree: delete what was created there and restore what was changed",
-                    outside.join(", ")
-                ));
+                if !outside.is_empty() {
+                    expected.push(format!(
+                        "{dir} also holds work outside specs/ that no commit records: {} - it \
+                         never lands, and a commit touching it is refused as outside the stage's \
+                         output, so leave it out of the commit; it may be taken out of the tree",
+                        outside.join(", ")
+                    ));
+                }
             }
             assert_eq!(refusals, expected, "{row}");
             assert_eq!(

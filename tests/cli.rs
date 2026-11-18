@@ -4369,22 +4369,25 @@ stages:
 "#,
 };
 
-/// One way a producer's session leaves its tree before its first stop, which its `Stop` hook
-/// holds it on, and how the session settles the tree once held.
+/// One way a producer's session leaves its tree before its first stop, and, when its `Stop` hook
+/// holds it there, how the session settles the tree.
 struct ProducerLeaves {
     name: &'static str,
     /// The shell leaving the tree, in the session's working directory.
     leaves: &'static str,
     /// The shell settling it once the hook holds the session.
     settles: &'static str,
-    /// What the hold's reason says of each path, and what it must not say.
+    /// What the hold's reason says of each path, none when the first stop is allowed, and what
+    /// it must not say.
     says: &'static [&'static str],
     never_says: &'static [&'static str],
 }
 
 /// The producer trees [`a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands`]
-/// walks: its plan alone outside a commit, which the hold says to commit, and its plan beside a
-/// leftover outside the stage's output, which the hold says to take out of the tree.
+/// walks: its plan alone outside a commit, which the hold says to commit; its plan beside a
+/// leftover outside the stage's output, which the hold says never lands and may be taken out of
+/// the tree, and which the session leaves where it is; and its committed plan beside such a
+/// leftover, which the hook never holds.
 const PRODUCER_LEAVES: &[ProducerLeaves] = &[
     ProducerLeaves {
         name: "its plan outside a commit",
@@ -4396,48 +4399,83 @@ const PRODUCER_LEAVES: &[ProducerLeaves] = &[
     ProducerLeaves {
         name: "its plan and a leftover outside its output",
         leaves: "mkdir -p specs && echo planned > specs/plan.md && echo scratch > notes.txt",
-        settles: "git add specs/plan.md && git commit -q -m plan && rm notes.txt",
+        settles: "git add specs/plan.md && git commit -q -m plan",
         says: &[
             "holds work in specs/ that no commit records: specs/ - ",
-            "holds work outside specs/ that no commit records: notes.txt - ",
-            "take it out of the tree",
+            "also holds work outside specs/ that no commit records: notes.txt - it never lands",
+            "leave it out of the commit; it may be taken out of the tree",
         ],
+        never_says: &[],
+    },
+    ProducerLeaves {
+        name: "its committed plan beside a leftover outside its output",
+        leaves: "mkdir -p specs && echo planned > specs/plan.md && git add specs/plan.md && \
+                 git commit -q -m plan && echo scratch > notes.txt",
+        settles: "",
+        says: &[],
         never_says: &[],
     },
 ];
 
+/// The shell running, from the session's working directory, every command the launch's
+/// `--settings` names but its `Stop` and `StopFailure` hooks - the SessionStart prime, the
+/// status line, the write guard - each through a shell with the rigger [`READ_LAUNCH_CONFIG`]
+/// read from `--mcp-config` first on `PATH` and one payload carrying what each reads, then asking
+/// that server for the spawn's scratch: everything rigger's tooling does in a session's tree
+/// before it stops. Each command run is left in `$here/tooling-ran` after its exit status, the
+/// server's reply in `$here/scratch-reply`, and git's porcelain status of the tree after them all,
+/// untracked files listed one by one, in `$here/fresh-status`.
+const RUN_THE_SESSIONS_TOOLING: &str = r#"    server=$(printf '%s\n' "$config" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p')
+    payload='{"hook_event_name":"PreToolUse","source":"startup","session_id":"fresh","cwd":"'"$PWD"'","workspace":{"current_dir":"'"$PWD"'"},"tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/specs/plan.md","content":"planned"}}'
+    printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p' |
+        while IFS= read -r command; do
+            case "$command" in *"hook stop "*|*stop-failure*) continue ;; esac
+            printf '%s' "$payload" | PATH="$(dirname "$server"):$PATH" sh -c "$command" > /dev/null 2>&1
+            printf '%s %s\n' "$?" "$command" >> "$here/tooling-ran"
+        done
+    printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"rigger_scratch","arguments":{}}}' |
+        "$server" mcp --spawn "$RIGGER_SPAWN" > "$here/scratch-reply" 2> /dev/null
+    git status --porcelain --untracked-files=all > "$here/fresh-status"
+"#;
+
 /// An arm of [`install_fake_claude`] standing in for the real host's `Stop` contract over a
-/// producer's session that leaves its tree as `case` says: the session leaves it and finishes;
-/// the host runs through a shell the `Stop` command the launch's `--settings` names,
-/// `stop_hook_active` false, and on its `"decision":"block"` the session settles the tree as
-/// `case` says and finishes again, and the host runs the hook again, `stop_hook_active` true. The
-/// launch stays on record and the hook's two answers are left in the fake's directory.
+/// producer's session that leaves its tree as `case` says: the session first runs rigger's tooling
+/// in its fresh tree ([`RUN_THE_SESSIONS_TOOLING`]), then leaves the tree and finishes; the host
+/// runs through a shell the `Stop` command the launch's `--settings` names, `stop_hook_active`
+/// false, and only on its `"decision":"block"` the session settles the tree as `case` says and
+/// finishes again, and the host runs the hook again, `stop_hook_active` true. The launch stays on
+/// record and the hook's answers are left in the fake's directory.
 fn producer_held_until_its_tree_is_settled_arm(case: &ProducerLeaves) -> String {
     let ProducerLeaves {
         leaves, settles, ..
     } = case;
     format!(
         r#"  *"Do the unit."*)
-{RECORD_EACH_LAUNCH}    {leaves}
-{READ_LAUNCH_CONFIG}    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+{RECORD_EACH_LAUNCH}{READ_LAUNCH_CONFIG}{RUN_THE_SESSIONS_TOOLING}    {leaves}
+    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
     printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
-        sh -c "$hook" > "$here/stop-held"
-    case "$(cat "$here/stop-held")" in
-        *'"decision":"block"'*) {settles} ;;
+        sh -c "$hook" > "$here/stop-first"
+    case "$(cat "$here/stop-first")" in
+        *'"decision":"block"'*)
+            {settles}
+            printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":true}}' |
+                sh -c "$hook" > "$here/stop-after"
+            ;;
     esac
-    printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":true}}' |
-        sh -c "$hook" > "$here/stop-allowed"
     ;;
 "#
     )
 }
 
-/// A PRODUCER IS HELD UNTIL ITS TREE HOLDS NOTHING OUTSIDE A COMMIT, end to end: given a producer
-/// stage whose launch carries the `Stop` hook asking of its tree for its own commits, when its
-/// session leaves its plan outside a commit, alone or beside a leftover outside the stage's
-/// output, then the hook holds it once, saying of the plan to commit it and of the leftover to
-/// take it out of the tree, the session does so, the hook allows the next stop, and the conductor
-/// lands the plan's commit on the run branch with no hold and no attempt charged.
+/// A PRODUCER IS HELD ONLY ON WORK OF ITS OUTPUT OUTSIDE A COMMIT, end to end: given a producer
+/// stage whose launch carries the `Stop` hook asking of its tree for its own commits, in a
+/// repository with no `.gitignore`, when its session runs rigger's tooling in its fresh tree, then
+/// the tree reads clean; and when the session leaves its plan outside a commit, alone or beside a
+/// leftover outside the stage's output, then the hook holds it once, saying of the plan to commit
+/// it and of the leftover that it never lands and may be taken out of the tree, the session
+/// commits the plan alone, and the hook allows the next stop; when it leaves only such a leftover
+/// beside its committed plan, the hook allows its first stop. Each time the conductor lands the
+/// plan's commit on the run branch with no hold and no attempt charged.
 #[cfg(unix)]
 #[test]
 fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
@@ -4445,6 +4483,10 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
         let name = case.name;
         let dir = temp_git_project_with_commit();
         let root = std::fs::canonicalize(dir.path()).unwrap();
+        assert!(
+            !root.join(".gitignore").exists(),
+            "{name}: precondition: the repository ignores nothing"
+        );
         write_workflow_fixture(&root, &PRODUCER_WORKFLOW);
         let held = tempfile::tempdir().unwrap();
         let scratch = std::fs::canonicalize(held.path()).unwrap();
@@ -4463,7 +4505,12 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
         assert_eq!(
             spawns,
             ["plan/implementer#0"],
-            "{name}: the producer launches once"
+            "{name}: the producer launches once; the run: {:#?}",
+            common::cli::read_run_events(&root)
+                .into_iter()
+                .filter(|event| event.type_ != "AgentProgress")
+                .map(|event| format!("{} {}", event.type_, String::from_utf8_lossy(&event.data)))
+                .collect::<Vec<_>>()
         );
         let launch = &launches[0];
         let container = rigger::driver::replay::spawn_scratch_path(
@@ -4488,27 +4535,53 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
             std::fs::read_to_string(fake.path().join("bin").join(file))
                 .unwrap_or_else(|e| panic!("{name}: the session left {file}: {e}\nstderr: {err}"))
         };
-        let held: serde_json::Value = serde_json::from_str(read("stop-held").trim())
-            .unwrap_or_else(|e| panic!("{name}: the first stop is held ({e}): stderr: {err}"));
-        assert_eq!(held["decision"], "block", "{name}: {held}");
-        let reason = held["reason"].as_str().unwrap();
-        for words in case.says {
+        let ran = read("tooling-ran");
+        for tool in ["prime", "guard-write", "status"] {
             assert!(
-                reason.contains(words),
-                "{name}: the hold says {words:?}: {reason}"
+                ran.lines().any(|command| command.contains(tool)),
+                "{name}: the session ran rigger's {tool}: {ran}"
             );
         }
-        for words in case.never_says {
-            assert!(
-                !reason.contains(words),
-                "{name}: the hold never says {words:?}: {reason}"
-            );
-        }
-        assert_eq!(
-            read("stop-allowed"),
-            "",
-            "{name}: the stop after the tree is settled is allowed"
+        assert!(
+            ran.lines().all(|command| command.starts_with("0 ")),
+            "{name}: each of rigger's tools exits 0: {ran}"
         );
+        let reply = read("scratch-reply");
+        assert!(
+            reply.contains("\"result\"") && reply.contains(container.to_str().unwrap()),
+            "{name}: the server answers with the spawn's scratch {}: {reply}",
+            container.display()
+        );
+        assert_eq!(
+            read("fresh-status"),
+            "",
+            "{name}: after rigger's tooling the fresh tree holds nothing git does not ignore"
+        );
+        if case.says.is_empty() {
+            assert_eq!(read("stop-first"), "", "{name}: the first stop is allowed");
+        } else {
+            let held: serde_json::Value = serde_json::from_str(read("stop-first").trim())
+                .unwrap_or_else(|e| panic!("{name}: the first stop is held ({e}): stderr: {err}"));
+            assert_eq!(held["decision"], "block", "{name}: {held}");
+            let reason = held["reason"].as_str().unwrap();
+            for words in case.says {
+                assert!(
+                    reason.contains(words),
+                    "{name}: the hold says {words:?}: {reason}"
+                );
+            }
+            for words in case.never_says {
+                assert!(
+                    !reason.contains(words),
+                    "{name}: the hold never says {words:?}: {reason}"
+                );
+            }
+            assert_eq!(
+                read("stop-after"),
+                "",
+                "{name}: the stop after the tree is settled is allowed"
+            );
+        }
 
         let lines: Vec<String> =
             common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
@@ -4518,12 +4591,12 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
                 })
                 .map(|line| line.activity)
                 .collect();
-        let starts = [
-            "stop check: ",
-            "stop held (1 of 3): ",
-            "stop check: ",
-            "stop allowed: no work is left outside a commit",
-        ];
+        let allowed = "stop allowed: no work in specs/ is left outside a commit";
+        let starts: &[&str] = if case.says.is_empty() {
+            &["stop check: ", allowed]
+        } else {
+            &["stop check: ", "stop held (1 of 3): ", "stop check: ", allowed]
+        };
         assert_eq!(lines.len(), starts.len(), "{name}: {lines:#?}");
         for (line, start) in lines.iter().zip(starts) {
             assert!(line.starts_with(start), "{name}: {line:?} begins {start:?}");

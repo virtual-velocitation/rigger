@@ -158,14 +158,16 @@ Per-spawn, through `--settings`:
   `git status` in git's words, so the session that left the tree so fixes it before it ends.
   A producer's implementer, whose tree the conductor lands only the commits of, runs
   `rigger hook stop --spawn <id> --dir <dir> --own-commits` instead: it is held while its
-  tree holds work outside a commit, which would otherwise never land. Its reason sorts that
-  work by the conductor's own scope check: work in the stage's output is to be committed, and
-  the rest taken out of the tree, since a commit touching it would be refused as out of scope.
-  It holds a launch at most three times, counted from its own progress lines; past that, and
-  on any error, it allows the stop and records why, and the conductor's own handling meets the
-  tree: a checkpoint's refusal fails the unit's attempt, and a producer's work outside a commit
-  fails the stage's attempt, whose retry finds that work in the same tree. Reviewers get no
-  `Stop` hook: the conductor takes nothing from their tree.
+  tree holds work in the stage's output outside a commit, which would otherwise never land. It
+  asks the plan landing's own scope check, so it holds only on work that landing would carry;
+  work outside the output never lands whatever the session does, so it holds nothing up alone.
+  Beside held work, the reason names that other work too: it never lands, a commit touching
+  it would be refused as out of scope, so it stays out of the commit and may be taken out of
+  the tree. It holds a launch at most three times, counted from its own progress lines; past
+  that, and on any error, it allows the stop and records why, and the conductor's own handling
+  meets the tree: a checkpoint's refusal fails the unit's attempt, and a producer's work in its
+  output outside a commit fails the stage's attempt, whose retry finds that work in the same
+  tree. Reviewers get no `Stop` hook: the conductor takes nothing from their tree.
 
 ### 4.5 Verdicts are data
 
