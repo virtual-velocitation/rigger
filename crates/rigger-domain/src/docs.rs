@@ -1167,12 +1167,19 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
                 "Apply EXACTLY that remedy on the unit's durable branch (`rigger/u/<unit-id>`, the \
              branch rigger itself created and kept for this unit's committed work across every \
              attempt) - nothing more, nothing less. When the last attempt left work outside a \
-             commit - work git refused a step on, or a plan its planner did not commit - the \
-             tree that attempt left is committed onto that branch too, the escalation lesson \
-             naming the commit, and the tree itself is removed: the commit carries the tree \
-             exactly as that attempt left it, so the remedy starts from it (a run of \
-             another spec that plans a unit of the same name moves the branch aside to \
-             `rigger/orphaned/<unit-id>-<sha>`, where the commit stays). Then relaunch the run \
+             commit - work git refused a step on, or a plan its planner did not commit - the tree \
+             that attempt left is kept as one commit on the unit's kept ref \
+             (`rigger/kept/<unit-id>`), the escalation lesson naming the commit and the ref, and \
+             the tree itself is removed. That commit carries the tree exactly as the attempt left \
+             it, refused content and conflict markers included, and it is never on the unit's \
+             branch: read it (`git show rigger/kept/<unit-id>`, or a worktree of your own on it) \
+             and bring onto the unit's branch only what the remedy keeps, as a commit git's own \
+             checks accept (`git checkout rigger/kept/<unit-id> -- <path>` in a tree on \
+             `rigger/u/<unit-id>`, then commit). The kept ref goes when the unit integrates. A run \
+             of another spec that plans a unit of the same name first sets it aside to \
+             `rigger/orphaned/<unit-id>-<sha>`, where the commit stays, and while a worktree has \
+             it checked out rigger never moves or deletes it, a later keep standing under \
+             `rigger/orphaned/` instead. Then relaunch the run \
              fresh - `rigger run \
              <spec> --base <ref> --fresh` - against the same, otherwise-unchanged spec: the \
              conductor mints a new run boundary, and the loop picks the escalated unit back up \
