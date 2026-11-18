@@ -31799,6 +31799,16 @@ stage "implement" adjudicator "adj" failed
         EVERY_LANE_GATE_RED
     }
 
+    /// Every lane's implementer leaves its tree's HEAD off the lane's branch, so git refuses every
+    /// lane's checkpoint. Returns what each re-entered lane is told: git's refusal.
+    fn every_lane_git_refused(cfg: &mut Config, driver: &mut Stub) -> &'static str {
+        driver.git_by_spawn_id = (0..2)
+            .map(|lane| (spawn_id("s", ROLE_IMPLEMENTER, lane), detach_head()))
+            .collect();
+        let _ = cfg;
+        "HEAD is not on the unit's branch"
+    }
+
     /// A group whose every lane loses before any merge (`lose` sets up
     /// how) escalates with the loss recorded and its lesson naming it, so an operator's grant
     /// re-drives its lanes as fresh sessions told why the group lost, exactly as a single lane
@@ -31883,6 +31893,11 @@ stage "implement" adjudicator "adj" failed
             assert_a_group_whose_lanes_all_lose_re_enters_told_why(
                 every_lane_gate_red,
                 "every lane gate-red",
+            );
+        a_group_whose_lanes_git_refused_re_enters_told_the_refusal:
+            assert_a_group_whose_lanes_all_lose_re_enters_told_why(
+                every_lane_git_refused,
+                "every lane git-refused",
             );
     }
 
