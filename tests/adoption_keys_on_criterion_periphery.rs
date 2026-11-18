@@ -2158,6 +2158,105 @@ fn a_quarantine_record_whose_ref_was_since_deleted_hard_errors_instead_of_silent
     );
 }
 
+/// A TREE LEFT AT A UNIT'S PATH OUTLIVES THE DELETE OF THE BRANCH: when a run's unit reuses a
+/// prior run's slug for another criterion and spec, the adoption deletes the prior unit's
+/// branch (moving its commits aside first when HEAD lacks them, deleting it outright when HEAD
+/// holds them). A prior run's tree still registered at the unit's path, detached and holding
+/// uncommitted work, is then no leftover of the branch: the unit's worktree is not made over
+/// it, the tree, its work and its registration stay, and the run is held for the orchestrator
+/// on the halt's text, which names the tree's path.
+#[test]
+fn a_registered_tree_at_a_units_path_survives_the_delete_of_its_branch() {
+    // Each row: how the adoption deletes the prior branch, and whether HEAD is moved onto
+    // the prior branch's tip first, which leaves the adoption nothing to move aside.
+    let rows = [("moved aside first", false), ("nothing to move", true)];
+    for (how, nothing_to_move) in rows {
+        let repo = tempfile::tempdir().unwrap();
+        init_repo(repo.path());
+        let repo_s = repo.path().to_str().unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let slug = "tree-outlives-branch-slug";
+        let branch = format!("rigger/u/{slug}");
+
+        // RUN 1 (spec A, criterion X): escalates with committed work on the slug's branch.
+        let criterion_x = "the kiln reports its own chamber temperature continuously";
+        let spec_a = "specs/88-a-unit-lineage-is-durable.md";
+        start_fresh(&store, &[criterion_x.to_string()], "", "", "", spec_a).unwrap();
+        let driver1 = ProposesSlugDriver {
+            proposed_id: slug.to_string(),
+            criterion: criterion_x.to_string(),
+            worker_write: Some(("run1-work.txt".into(), "run 1's work\n".into())),
+            gates: vec!["gate".to_string()],
+        };
+        escalate_proposed(&store, &driver1, repo.path(), criterion_x, slug);
+        if nothing_to_move {
+            git_ok(repo.path(), &["branch", "-f", &branch, "HEAD"]);
+        }
+
+        // A prior run's tree, detached, holding uncommitted work, at the unit's path.
+        let cfg2 = fresh_run_cfg("true", repo.path());
+        let scratch = worktree::scratch_root_from_env(repo_s, &cfg2.workflow.defaults.workdir);
+        let dir = rigger::conductor::unit_worktree_dir(&scratch, slug);
+        assert!(
+            !Path::new(&dir).exists(),
+            "{how}: nothing sits at the unit's path before the tree is planted"
+        );
+        git_ok(
+            repo.path(),
+            &["worktree", "add", "-q", "--detach", &dir, "HEAD"],
+        );
+        let held = Path::new(&dir).join("held.txt");
+        std::fs::write(&held, "uncommitted work\n").unwrap();
+
+        // RUN 2 (spec B, criterion Y) reuses the slug: the adoption deletes the branch.
+        let criterion_y = "the blower independently reports its own fan speed on every poll";
+        let spec_b = "specs/90-hermetic-test-git-and-merge-friendly-audit-artifacts.md";
+        start_fresh(&store, &[criterion_y.to_string()], "", "", "", spec_b).unwrap();
+        let driver2 = ProposesSlugDriver {
+            proposed_id: slug.to_string(),
+            criterion: criterion_y.to_string(),
+            worker_write: Some(("run2-work.txt".into(), "run 2's work\n".into())),
+            gates: vec!["gate".to_string()],
+        };
+        let deps2 = deps(&store, &driver2, repo.path(), criterion_y);
+        let outcome = run(&cfg2, &deps2);
+
+        assert!(
+            !worktree::branch_exists(repo_s, &branch),
+            "{how}: the adoption deleted the prior branch"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&held).ok().as_deref(),
+            Some("uncommitted work\n"),
+            "{how}: the tree's uncommitted work stays"
+        );
+        let listed = git_answer(repo.path(), &["worktree", "list", "--porcelain"]).unwrap();
+        assert!(
+            listed.lines().any(|line| line == format!("worktree {dir}")),
+            "{how}: the tree stays registered: {listed}"
+        );
+        let err = match outcome {
+            Err(err) => err,
+            Ok(_) => panic!("{how}: the run halts instead of making the unit's tree over it"),
+        };
+        assert!(
+            err.0.contains(&dir),
+            "{how}: the halt names the tree's path: {}",
+            err.0
+        );
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            holds_in(&events),
+            [conductor_fault_hold(&err.0)],
+            "{how}: the run is held for the orchestrator on the halt's text"
+        );
+        assert!(
+            !Path::new(&dir).join("run2-work.txt").exists(),
+            "{how}: the unit's implementer never spawns into the tree"
+        );
+    }
+}
+
 /// A wrapping `EventStore` double that fails, with a real backend `StoreError`, the FIRST
 /// append batch matching `matches` - then delegates that same call, and every other call
 /// (every other append included), straight through to the real store underneath. This

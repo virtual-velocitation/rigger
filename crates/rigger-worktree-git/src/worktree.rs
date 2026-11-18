@@ -303,6 +303,16 @@ impl Worktree {
                 // worktree dir, no `-b` (which would refuse, the ref already exists).
                 git(repo, &["worktree", "add", dir, branch])?;
             } else {
+                // With the branch gone, a tree still registered at `dir` is no leftover of it:
+                // it was moved off the branch before the branch was deleted (an adoption deletes
+                // the branch it moves aside), and it can hold work nothing else does, committed
+                // there or not. Nothing there is cleared or adopted, and the error names it.
+                if registered {
+                    return Err(Error(format!(
+                        "a worktree is registered at {dir}, the path of branch {branch}, which \
+                         does not exist: nothing there is cleared or adopted"
+                    )));
+                }
                 // The same wedge with the branch gone too (a branch reclaim deleted both): no
                 // worktree of this branch can sit at `dir`, so whatever does is a leftover.
                 clear_leftover_at(repo, dir, authorized_root)?;
@@ -8036,6 +8046,13 @@ mod tests {
                     std::fs::write(p.admin.join("locked"), "initializing").unwrap();
                     None
                 },
+            ),
+            // With the branch gone, a tree registered at the path is no leftover of it.
+            (
+                "a registered tree, its unit's branch gone",
+                false,
+                false,
+                |_| None,
             ),
         ];
         let mut violations = Vec::new();
