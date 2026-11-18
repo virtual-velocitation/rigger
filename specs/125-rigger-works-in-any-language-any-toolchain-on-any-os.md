@@ -573,8 +573,10 @@ criterion 11's (`tests/os_home_boundary.rs`) finds `"HOME"` outside
 **THE CROSS-OS CHECK, decided here (criterion 12).** `.github/workflows/rust.yml` gains a job
 `cross-os-check` over a matrix `os: [windows-latest, macos-latest]`, `runs-on: ${{ matrix.os }}`:
 checkout with `fetch-depth: 0`, the toolchain step with the `wasm32-unknown-unknown` target (the
-dash's build script builds its console for it), and a check step under `shell: bash` running
-`export RUSTC_WRAPPER=` and then `cargo check --workspace` (an empty value, set in the step's own
+dash's build script builds its console for it), then a test step and a check step under
+`shell: bash`, each running `export RUSTC_WRAPPER=` and then its command, the test step's
+`cargo test -p rigger-process --lib` and the check step's
+`cargo check --workspace --all-targets --keep-going` (an empty value, set in each step's own
 shell so every nested cargo inherits it, overrides `.cargo/config.toml`'s Unix wrapper script).
 The version derivation degrades without the version tool, so the job installs nothing else.
 `tests/ci_lanes.rs`' `every_job_that_builds_dash_installs_the_console_core_wasm_target` (:616)
