@@ -1170,7 +1170,10 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
              commit - work git refused a step on, or a plan its planner did not commit - the tree \
              that attempt left is kept as one commit on the unit's kept ref \
              (`rigger/kept/<unit-id>`), the escalation lesson naming the commit and the ref, and \
-             the tree itself is removed. That commit carries the tree exactly as the attempt left \
+             the tree itself is removed. A unit whose speculation lanes all lost keeps each lane \
+             git refused the same way, lane 0 on `rigger/kept/<unit-id>` and lane n on \
+             `rigger/kept/<unit-id>-spec<n>`, the lesson naming each. That commit carries the \
+             tree exactly as the attempt left \
              it, refused content and conflict markers included, and it is never on the unit's \
              branch: read it (`git show rigger/kept/<unit-id>`, or a worktree of your own on it) \
              and bring onto the unit's branch only what the remedy keeps, as a commit git's own \
@@ -1178,7 +1181,7 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
              `rigger/u/<unit-id>`, then commit). Free the branch from that tree before the \
              relaunch (`git -C <tree> switch --detach`, or remove the tree), since a run that \
              finds the unit's branch checked out outside rigger's work root holds and names the \
-             tree. The kept ref goes when the unit integrates. A run \
+             tree. The kept refs go when the unit integrates. A run \
              of another spec that plans a unit of the same name first sets it aside to \
              `rigger/orphaned/<unit-id>-<sha>`, where the commit stays, and while a worktree has \
              it checked out rigger never moves or deletes it, a later keep standing under \
