@@ -897,6 +897,7 @@ mod tests {
         let fixture = crate::grounder::symbols::extract::CompiledTags::compile(
             &tree_sitter_python::LANGUAGE.into(),
             &query,
+            &[],
         )
         .expect("the fixture query compiles");
         let symbols = crate::grounder::symbols::extract::extract(&source, Lang::Python, &fixture)
@@ -1582,13 +1583,13 @@ mod tests {
             // Rust
             ("rs", "rust-tags-v2", "7ffb605da6fb93dd"),
             // C#
-            ("cs", "csharp-tags-v2", "5061538299850c9d"),
+            ("cs", "csharp-tags-v3", "1219fbe9ccd55d87"),
             // TypeScript
-            ("ts", "typescript-tags-v3", "5a7985e0a054c684"),
+            ("ts", "typescript-tags-v4", "d1fdef8457b78129"),
             // TSX
-            ("tsx", "tsx-tags-v3", "1f323d01dd355695"),
+            ("tsx", "tsx-tags-v4", "01ba0329c337ba1f"),
             // JavaScript
-            ("js", "javascript-tags-v3", "b064975fe77ab41b"),
+            ("js", "javascript-tags-v4", "0b4c01075a5c5218"),
             // Go
             ("go", "go-tags-v3", "f9d10fb20ec8989c"),
             // Python

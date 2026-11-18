@@ -1,7 +1,8 @@
 //! The grammar registry (architecture 5.5.3): the `extension -> (grammar, tag query)` table
 //! that decides WHICH grammar a file is parsed under. It supplies the injected pair unit 1's
 //! `extract` consumes; it never parses anything itself. Adding a language is adding one match
-//! arm here and a tags generation for its entry in the model, and a language whose query cannot
+//! arm here, naming its grammar, its query and the node kinds that construct an object in it,
+//! and a tags generation for its entry in the model, and a language whose query cannot
 //! tag a definition (its grammar gives it no name node, or the upstream query already holds that
 //! node as a reference) also adds a read-off in `extract`. Confined to the `symbols` feature
 //! because it names `tree_sitter::Language`; the parser-free model stays in the light lane.
@@ -264,27 +265,41 @@ const PYTHON_TAGS: &str = r#"
   ]) @reference.call
 "#;
 
-/// A registered language: the rigger `Lang`, its tree-sitter grammar, and the `tags` query the
-/// extractor runs over a file in that language, resolved together so a file maps to exactly one
-/// grammar+query pair, with that pair's one compilation ([`LanguageEntry::tags`]).
+/// A registered language: the rigger `Lang`, its tree-sitter grammar, the `tags` query the
+/// extractor runs over a file in that language and the grammar's node kinds that construct an
+/// object, resolved together so a file maps to exactly one grammar+query pair, with that pair's
+/// one compilation ([`LanguageEntry::tags`]).
 pub struct LanguageEntry {
     pub lang: Lang,
     pub language: tree_sitter::Language,
     pub tags_query: &'static str,
+    /// The node kinds on which the query's `@reference.class` capture is a call, not a type
+    /// reference (spec 117, CAPTURES): [`JS_CONSTRUCTORS`] for TypeScript, TSX and JavaScript,
+    /// [`CSHARP_CONSTRUCTORS`] for C#, none for the rest.
+    constructors: &'static [&'static str],
     compiled: &'static Compiled,
 }
+
+/// The node kind constructing an object in the JavaScript, TypeScript and TSX grammars, `new T()`.
+const JS_CONSTRUCTORS: &[&str] = &["new_expression"];
+
+/// The node kind constructing an object in the C# grammar, `new T()`.
+const CSHARP_CONSTRUCTORS: &[&str] = &["object_creation_expression"];
 
 /// The process's one compilation of a grammar+query pair, made at its first use.
 type Compiled = OnceLock<Result<CompiledTags, String>>;
 
 impl LanguageEntry {
-    /// The entry's `tags` query compiled against its grammar: compiled at the first call in the
-    /// process, and that compilation every later call for the same grammar+query pair returns, so
-    /// the extractor matches each file against an already compiled query and an entry looked up for
-    /// its `lang` alone compiles nothing. An `Err` is a query that does not compile.
+    /// The entry's `tags` query compiled against its grammar, with its `constructors`: compiled at
+    /// the first call in the process, and that compilation every later call for the same
+    /// grammar+query pair returns, so the extractor matches each file against an already compiled
+    /// query and an entry looked up for its `lang` alone compiles nothing. An `Err` is a query
+    /// that does not compile.
     pub fn tags(&self) -> Result<&'static CompiledTags, String> {
         self.compiled
-            .get_or_init(|| CompiledTags::compile(&self.language, self.tags_query))
+            .get_or_init(|| {
+                CompiledTags::compile(&self.language, self.tags_query, self.constructors)
+            })
             .as_ref()
             .map_err(Clone::clone)
     }
@@ -323,22 +338,25 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     static JS: Compiled = OnceLock::new();
     static GO: Compiled = OnceLock::new();
     static PYTHON: Compiled = OnceLock::new();
-    let (lang, language, tags_query, compiled): (
+    let (lang, language, tags_query, constructors, compiled): (
         Lang,
         tree_sitter::Language,
         &'static str,
+        &'static [&'static str],
         &'static Compiled,
     ) = match ext {
         "rs" => (
             Lang::Rust,
             tree_sitter_rust::LANGUAGE.into(),
             RUST_TAGS,
+            &[],
             &RUST,
         ),
         "cs" => (
             Lang::CSharp,
             tree_sitter_c_sharp::LANGUAGE.into(),
             CSHARP_TAGS,
+            CSHARP_CONSTRUCTORS,
             &CSHARP,
         ),
         "ts" => (
@@ -358,6 +376,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            JS_CONSTRUCTORS,
             &TS,
         ),
         "tsx" => (
@@ -377,6 +396,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            JS_CONSTRUCTORS,
             &TSX,
         ),
         "js" | "mjs" | "cjs" | "jsx" => (
@@ -393,18 +413,21 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     CONSTANT_TAGS_CLOSE,
                 ],
             ),
+            JS_CONSTRUCTORS,
             &JS,
         ),
         "go" => (
             Lang::Go,
             tree_sitter_go::LANGUAGE.into(),
             composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
+            &[],
             &GO,
         ),
         "py" => (
             Lang::Python,
             tree_sitter_python::LANGUAGE.into(),
             PYTHON_TAGS,
+            &[],
             &PYTHON,
         ),
         _ => return None,
@@ -413,6 +436,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         lang,
         language,
         tags_query,
+        constructors,
         compiled,
     })
 }
@@ -1175,6 +1199,7 @@ class Box {
     static int Calc(int n) { return n; }
 }
 class Lid : Box { }
+class Tray { object made = new Box(); }
 ",
         ),
         (
@@ -1188,6 +1213,7 @@ function calc(n: number): number { return n; }
 /** Zero is nothing. */
 function zero(): number { return 0; }
 function same(b: Box): Box { return b; }
+const made = new Box();
 ",
         ),
         (
@@ -1199,6 +1225,7 @@ function label(s: string) { return s; }
 /** Blank is no label. */
 function blank() { return \"\"; }
 function keep(s: Label): Label { return s; }
+const made = new Label();
 ",
         ),
         (
@@ -1396,13 +1423,13 @@ def calc(n):
             // Rust
             ("rs", "rust-tags-v2", "cf79ba29624d68ed"),
             // C#
-            ("cs", "csharp-tags-v2", "c7ad641dd604e539"),
+            ("cs", "csharp-tags-v3", "0f7eae63e5337fed"),
             // TypeScript
-            ("ts", "typescript-tags-v3", "ab9e2e816bdf895b"),
+            ("ts", "typescript-tags-v4", "f6f3255db8983a6b"),
             // TSX
-            ("tsx", "tsx-tags-v3", "b372b90559326adc"),
+            ("tsx", "tsx-tags-v4", "09c3a95feee0c5f9"),
             // JavaScript
-            ("js", "javascript-tags-v3", "456ab8736fefa1e4"),
+            ("js", "javascript-tags-v4", "93e654df71c8f486"),
             // Go
             ("go", "go-tags-v3", "40f80b41e4a13f29"),
             // Python
@@ -1644,9 +1671,8 @@ def calc(n):
         /// event's and in a property's value the property's; that in a constructor body is named by
         /// the leaf its class shares; those in a destructor, an operator, a conversion operator and
         /// an indexer are each named by that member's leaf; and that in a local function is the
-        /// local function's, the method keeping its own. Each reference to `Probe`, a field's type
-        /// and a `new Probe()` alike, is a type reference and `Go` alone a call (spec 117,
-        /// CAPTURES).
+        /// local function's, the method keeping its own. Each `new Probe()` is a call, as is `Go`,
+        /// and each field's declared type `Probe` a type reference (spec 117, CAPTURES).
         every_csharp_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "cs",
@@ -1691,19 +1717,21 @@ def calc(n):
                     (19, "explicit operator Ext", Kind::Declaration),
                     (19, "~Ext", Kind::Declaration),
                 ],
-                &[(14, "Go", Some("S.T::Foo::+"))],
+                &[
+                    (7, "Probe", Some("S.T::Cell.made")),
+                    (10, "Probe", Some("S.T::Foo.Moved")),
+                    (11, "Probe", Some("S.T::Foo.Size")),
+                    (12, "Probe", Some("S.T::Foo::Foo")),
+                    (13, "Probe", Some("S.T::Foo::~Foo")),
+                    (14, "Go", Some("S.T::Foo::+")),
+                    (14, "Probe", Some("S.T::Foo::+")),
+                    (15, "Probe", Some("S.T::Foo::implicit operator int")),
+                    (16, "Probe", Some("S.T::Foo::this")),
+                    (17, "Probe", Some("S.T::Foo::Run")),
+                    (17, "Probe", Some("S.T::Foo::Run::Inner")),
+                ],
                 "7 type Probe S.T::Cell\n\
-                 7 type Probe S.T::Cell\n\
-                 7 type Probe S.T::Cell.made\n\
-                 10 type Probe S.T::Foo.Moved\n\
-                 11 type Probe S.T::Foo.Size\n\
-                 12 type Probe S.T::Foo::Foo\n\
-                 13 type Probe S.T::Foo::~Foo\n\
-                 14 type Probe S.T::Foo::+\n\
-                 15 type Probe S.T::Foo::implicit operator int\n\
-                 16 type Probe S.T::Foo::this\n\
-                 17 type Probe S.T::Foo::Run\n\
-                 17 type Probe S.T::Foo::Run::Inner",
+                 7 type Probe S.T::Cell",
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered JS
         /// query: the fixture yields every definition it holds at its own kind and leaf. A

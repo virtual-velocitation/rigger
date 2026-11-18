@@ -16,8 +16,8 @@ rigger::test_cases! {
     /// WHEN the operator runs `rigger graph build`,
     /// THEN the graph's definitions are exactly one node per definition, at its `<file>::<path>` id
     /// (spec 119, IDS FOLLOW THE LANGUAGE'S PATH), each carrying exactly its leaf, kind and line,
-    /// and no placeholder, the one name a call reaches (`Go`) being defined; the file-scoped
-    /// namespace `S.T` holds every declaration after it, so each path begins `S.T`:
+    /// and no placeholder, every name a call reaches (`Probe`, `Go`) being defined; the
+    /// file-scoped namespace `S.T` holds every declaration after it, so each path begins `S.T`:
     ///
     ///  - a class, a struct, a record, an interface, an enum and a delegate are each a `type`, and
     ///    each enum member a `variant`;
@@ -41,11 +41,16 @@ rigger::test_cases! {
     ///    `constructor` four lines below its class, and `S.T::Ext::Ext`, a `declaration` on its
     ///    class's line.
     ///
-    /// Its one `CALLS` edge is the operator's call of `Go`, from the operator: it lands on the one
-    /// same-file definition of its leaf (`S.T::A.B.C::Probe::Go`) and hangs off the node of its
-    /// caller's path, `<file>::<path>` (spec 119 criterion 8). Each reference to `Probe`, a
-    /// field's type and a `new Probe()` alike, is a type reference, no call, and makes no `CALLS`
-    /// edge (spec 117, CAPTURES).
+    /// Its `CALLS` edges are exactly its calls, each `new Probe()` one of them (spec 117,
+    /// CAPTURES): the field initializer's from the field (`made`); the event accessor's from the
+    /// event and the property value's from the property; the constructor body's from the
+    /// constructor; the destructor's, the operator's two (`new Probe()` and `Go`), the conversion
+    /// operator's and the indexer's each from that member; and the local function's from the
+    /// local function, the method keeping its own. Each lands on the one same-file definition of
+    /// its leaf (`S.T::A.B.C::Probe`, `S.T::A.B.C::Probe::Go`) and hangs off the node of its
+    /// caller's path, `<file>::<path>` (spec 119 criterion 8). The struct's two field types
+    /// (`owner`'s and `made`'s `Probe`) are each a type reference, no call, and make no `CALLS`
+    /// edge.
     #[cfg(feature = "symbols")]
     graph_build_makes_each_csharp_definition_a_node_of_its_kind_and_none_of_a_method_local_variable:
         common::cli::assert_built_graph_holds(
@@ -90,7 +95,19 @@ rigger::test_cases! {
                 ("S.T::Rec", "Rec", "type", 5),
             ],
             &[],
-            &[("f.cs::S.T::Foo::+", "f.cs::S.T::A.B.C::Probe::Go")],
+            &[
+                ("f.cs::S.T::Cell.made", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo.Moved", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo.Size", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::+", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::+", "f.cs::S.T::A.B.C::Probe::Go"),
+                ("f.cs::S.T::Foo::Foo", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::Run", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::Run::Inner", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::implicit operator int", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::this", "f.cs::S.T::A.B.C::Probe"),
+                ("f.cs::S.T::Foo::~Foo", "f.cs::S.T::A.B.C::Probe"),
+            ],
             "every definition of the built graph at its path, none for a method-local variable or \
              const, and no placeholder",
         );
