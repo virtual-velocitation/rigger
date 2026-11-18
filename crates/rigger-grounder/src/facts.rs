@@ -927,6 +927,45 @@ mod tests {
         assert_eq!(facts.mentions, expected);
     }
 
+    /// A CONSTRUCTOR STAYS A CALL (spec 117, CAPTURES): a `@reference.class` capture on one of
+    /// its registry entry's `constructors` node kinds yields a call mention, so a TypeScript, a
+    /// TSX, a JavaScript and a C# `new Square()` each credit `Square` as called, while the C#
+    /// local's declared type, a `@reference.class` capture on no constructor, stays a `type`
+    /// mention.
+    #[test]
+    fn a_constructor_stays_a_call() {
+        let square = |kind: MentionKind| Mention {
+            enclosing: None,
+            name: "Square".to_string(),
+            leaf: "Square".to_string(),
+            kind,
+            line: 1,
+            test: false,
+        };
+        let call = || square(MentionKind::Call);
+        // (path, source, the mentions its facts hold)
+        let table = [
+            ("web/shape.ts", "new Square();\n", vec![call()]),
+            ("web/shape.tsx", "new Square();\n", vec![call()]),
+            ("web/shape.js", "new Square();\n", vec![call()]),
+            (
+                "App/Shape.cs",
+                "Square s = new Square();\n",
+                vec![square(MentionKind::Tagged("type".to_string())), call()],
+            ),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(path, source, mentions)| {
+                (
+                    (path, facts_of(path, source.as_bytes()).mentions),
+                    (path, mentions),
+                )
+            })
+            .unzip();
+        assert_eq!(found, expected);
+    }
+
     #[test]
     fn a_path_two_definitions_share_names_the_precedence_winner() {
         // (source, the kind and line of the definition the mention's enclosing path names)
