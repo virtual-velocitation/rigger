@@ -513,6 +513,12 @@ pub fn spawn_mcp_config(command: &str, args: &[&str]) -> Result<Vec<u8>, Error> 
     install_mcp_server(b"", MCP_SERVER_NAME, command, args)
 }
 
+/// The arguments a spawn's own tool server runs rigger's binary with, the server the stream-json
+/// host binds to `spawn` ([`spawn_mcp_config`]). The spawn's id is their last word.
+pub fn tool_server_args(spawn: &str) -> [&str; 3] {
+    ["mcp", "--spawn", spawn]
+}
+
 /// Merge `entry` under `name` into `existing`'s `mcpServers` object, replacing whatever was there
 /// under that name and preserving every other key; see [`install_mcp_server`].
 fn merge_mcp_server(existing: &[u8], name: &str, entry: Value) -> Result<Vec<u8>, Error> {
