@@ -7104,7 +7104,9 @@ mod tests {
 
     /// The escalation skill names the refs a keep writes by the names the code writes them
     /// under ([`rigger::worktree::kept_ref`], [`rigger::worktree::orphaned_ref`]) and the unit
-    /// branch it never moves, so a person sent to the kept tree reads the ref that holds it.
+    /// branch it never moves, so a person sent to the kept tree reads the ref that holds it, and
+    /// tells that person to free the branch from their own tree before the relaunch, since a run
+    /// finding it checked out outside rigger's work root holds.
     #[test]
     fn the_escalation_skill_names_the_refs_a_keep_writes() {
         let registry = rigger::docs::skill_registry();
@@ -7124,6 +7126,10 @@ mod tests {
                 "the escalation skill names `{name}`"
             );
         }
+        assert!(
+            rendered.contains("`git -C <tree> switch --detach`"),
+            "the escalation skill frees the unit's branch from the person's tree before the relaunch"
+        );
     }
 
     rigger::test_cases! {
