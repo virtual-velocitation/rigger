@@ -125,14 +125,9 @@ pub const ORPHANED_REFS: &str = "rigger/orphaned/";
 /// through.
 const KEPT_INDEX: &str = "rigger-kept-index";
 
-/// A tree kept aside ([`Worktree::keep_tree_aside`]).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Kept {
-    /// The ref that holds it, short form ([`kept_ref`]).
-    pub reference: String,
-    /// The commit the ref holds.
-    pub commit: String,
-}
+/// A tree kept aside ([`Worktree::keep_tree_aside`]): the ref that holds it, short form
+/// ([`kept_ref`]), and its commit, the one type the unit's record carries.
+pub use rigger_domain::ledger::Kept;
 
 /// The outcome of [`Worktree::merge_into_worktree`] (spec 88, criterion 1 round 4, TABLE row
 /// 1: "conflict detection"). This is the FRONT HALF of what a single pre-round-4 `integrate`

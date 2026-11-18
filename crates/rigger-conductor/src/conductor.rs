@@ -2285,10 +2285,11 @@ struct PriorFailure {
     /// that found the freshly adopted worktree genuinely dirty.
     halted_commit: String,
     /// Where the tree of the attempt that spent the unit's retry bound with work outside a
-    /// commit is kept, `commit <sha> on <kept ref>` ([`RunCtx::kept_at_the_bound`]): work git
-    /// refused a step on ([`RunCtx::charge_refused_work`]) or a plan its planner left
-    /// uncommitted. Read by the escalation lesson alone, so no record or prompt carries it.
-    kept: String,
+    /// commit is kept ([`RunCtx::kept_at_the_bound`]): work git refused a step on
+    /// ([`RunCtx::charge_refused_work`]) or a plan its planner left uncommitted. The escalation
+    /// lesson names each, and the attempt's `UnitFailed` records each ([`ledger::Unit::keeps`]),
+    /// so the unit's integration removes it by its commit; no prompt carries it.
+    kept: Vec<ledger::Kept>,
 }
 
 impl PriorFailure {
@@ -2305,7 +2306,7 @@ impl PriorFailure {
             required: u.required.clone(),
             contradiction: String::new(),
             halted_commit: String::new(),
-            kept: String::new(),
+            kept: Vec::new(),
         }
     }
 
@@ -2314,8 +2315,9 @@ impl PriorFailure {
     /// own stage): this failure's gate evidence, refusal and review reason ride on it, so the next
     /// attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
     /// re-enters the unit, and the bound rides on it so an operator surface holding only the
-    /// log and the run's defaults shows the bound the unit escalates at. The one body every
-    /// `UnitFailed` writes, whichever path failed.
+    /// log and the run's defaults shows the bound the unit escalates at, and the trees kept for
+    /// it ride on it so its integration removes them ([`ledger::Unit::keeps`]). The one body
+    /// every `UnitFailed` writes, whichever path failed.
     fn failed_body(&self, unit: &str, attempts: u32, max_retries: u32, cause: &str) -> Value {
         json!({
             "id": unit,
@@ -2326,6 +2328,7 @@ impl PriorFailure {
             "refusal": self.refusal,
             "review_reason": self.review_reason,
             "required": self.required,
+            "kept": self.kept,
         })
     }
 
@@ -2336,7 +2339,7 @@ impl PriorFailure {
             && self.required.is_empty()
             && self.contradiction.trim().is_empty()
             && self.halted_commit.trim().is_empty()
-            && self.kept.trim().is_empty()
+            && self.kept.is_empty()
     }
 
     /// A one-line summary of the failure, for the escalation lesson (spec 02: the
@@ -2361,10 +2364,15 @@ impl PriorFailure {
                 self.halted_commit.trim()
             ));
         }
-        if !self.kept.trim().is_empty() {
+        if !self.kept.is_empty() {
+            let kept: Vec<String> = self
+                .kept
+                .iter()
+                .map(|k| format!("commit {} on {}", k.commit, k.reference))
+                .collect();
             parts.push(format!(
                 "the tree it left is kept as {}, off the unit's branch",
-                self.kept.trim()
+                kept.join(", ")
             ));
         }
         parts.join("; ")
@@ -8305,28 +8313,26 @@ impl RunCtx<'_> {
     /// bound, no next attempt continues the tree and the escalation removes it, so its work is
     /// kept first on the unit's kept ref ([`Worktree::keep_tree_aside`]), exactly as the attempt
     /// left it, the unit's branch left at its last guarded tip so nothing git refused enters the
-    /// history a later attempt builds on or lands. Returns where, `commit <sha> on <kept ref>`,
-    /// for the escalation lesson ([`PriorFailure::kept`]); empty when the attempt does not spend
-    /// the bound, the unit has no tree, or the tree holds nothing its branch lacks. A keep git
-    /// cannot make ends the drive on that fault, uncharged, the tree kept.
+    /// history a later attempt builds on or lands. Returns where, for the escalation lesson and
+    /// the attempt's record ([`PriorFailure::kept`]); empty when the attempt does not spend the
+    /// bound, the unit has no tree, or the tree holds nothing its branch lacks. A keep git cannot
+    /// make ends the drive on that fault, uncharged, the tree kept.
     fn kept_at_the_bound(
         &self,
         st: &Stage,
         wt: Option<&Worktree>,
         attempts: u32,
         what: &str,
-    ) -> Result<String, Error> {
+    ) -> Result<Vec<ledger::Kept>, Error> {
         let next = self.remediation(st, attempts);
         let (safety::Decision::Escalate, Some(w)) = (next.decision, wt) else {
-            return Ok(String::new());
+            return Ok(Vec::new());
         };
         let kept = git_step(w.keep_tree_aside(&format!(
             "wip({}): tree of attempt {}, {what}",
             st.name, next.attempts
         )))?;
-        Ok(kept
-            .map(|kept| format!("commit {} on {}", kept.commit, kept.reference))
-            .unwrap_or_default())
+        Ok(kept.into_iter().collect())
     }
 
     /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
@@ -58714,7 +58720,10 @@ stage "implement" adjudicator "adj" failed
                     required: vec![required("{shape}")],
                     contradiction: "{contradiction}".to_string(),
                     halted_commit: "{commit}".to_string(),
-                    kept: "{kept}".to_string(),
+                    kept: vec![ledger::Kept {
+                        reference: "{reference}".to_string(),
+                        commit: "{kept}".to_string(),
+                    }],
                 }),
                 format!(
                     "{}{item_line}{pattern}{}\n",
