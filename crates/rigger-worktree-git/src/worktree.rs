@@ -2368,6 +2368,15 @@ pub fn sweep_terminal_logged(
         {
             continue;
         }
+        // A tree git marks (after the prune above, only `locked`: an add git did not finish, or a
+        // lock a person set) is not the sweep's to take: nothing in it is reaped or removed, and
+        // the trees after it are still swept.
+        if let Some(mark) = entry.mark {
+            log(&format!(
+                "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - git marks it `{mark}`"
+            ));
+            continue;
+        }
         // A HALT NEVER DISCARDS A TREE (spec 89, criterion 1), the ordering contract
         // between this sweep and `run_single_stage`'s halted-commit recovery
         // (src/conductor.rs): that recovery captures a prior incarnation's abandoned
