@@ -1536,6 +1536,14 @@ enum PlanCommitOutcome {
     /// A commit touched a path outside `specs/` - the offending paths (sorted,
     /// deduplicated) named in the failure fed back to the planner.
     OutOfScope(Vec<String>),
+    /// The session ended with work in the tree no commit records, which no landing carries:
+    /// [`worktree::own_commits_refusals`]'s lines, the same its `Stop` hook holds the session
+    /// on, and [`worktree::tree_status`], both fed back to the planner, whose retry finds the
+    /// work still in the same tree.
+    Uncommitted {
+        refusals: Vec<String>,
+        status: String,
+    },
     /// The cherry-pick conflicted with a concurrent operator commit under `specs/` and
     /// was aborted; the run branch is untouched. Carries the conflict detail.
     Conflict(String),
@@ -7680,6 +7688,18 @@ impl RunCtx<'_> {
                                 paths.join(", ")
                             );
                         }
+                        PlanCommitOutcome::Uncommitted { refusals, status } => {
+                            // The planner's session ended with work outside a commit - past
+                            // its `Stop` hook's bound, or on a host that runs no hook - which
+                            // nothing would land: the same refusal of its output as a scope
+                            // violation, retried in this same tree, where the work still is.
+                            cause = CAUSE_REJECT.to_string();
+                            next.review_reason = format!(
+                                "{}\n\ngit status in {} reads:\n{status}",
+                                refusals.join("\n"),
+                                wt.map(|w| w.dir.as_str()).unwrap_or_default()
+                            );
+                        }
                         PlanCommitOutcome::Conflict(detail) => {
                             // CONSTRAINTS WALK (spec 88 c4): a plan amendment that
                             // conflicts with a concurrent operator commit under
@@ -11841,6 +11861,15 @@ impl RunCtx<'_> {
         let Some(w) = wt else {
             return Ok(PlanCommitOutcome::None);
         };
+        // Work the session left outside a commit fails the stage before anything lands, so
+        // the retry commits it beside whatever it already committed and all of it lands once.
+        let refusals = git_step(worktree::own_commits_refusals(&w.dir))?;
+        if !refusals.is_empty() {
+            return Ok(PlanCommitOutcome::Uncommitted {
+                refusals,
+                status: worktree::tree_status(&w.dir),
+            });
+        }
         let shas = git_step(w.commits_since_base())?;
         if shas.is_empty() {
             return Ok(PlanCommitOutcome::None);
@@ -31737,6 +31766,9 @@ mod tests {
             PlanCommitOutcome::OutOfScope(paths) => {
                 panic!("expected a fresh landing, got OutOfScope({paths:?})")
             }
+            PlanCommitOutcome::Uncommitted { refusals, .. } => {
+                panic!("a committed plan must never read as Uncommitted({refusals:?})")
+            }
             PlanCommitOutcome::Conflict(detail) => {
                 panic!("expected a fresh landing, got Conflict({detail})")
             }
@@ -31766,6 +31798,9 @@ mod tests {
             PlanCommitOutcome::OutOfScope(paths) => {
                 panic!("an already-landed resume must never read as OutOfScope({paths:?})")
             }
+            PlanCommitOutcome::Uncommitted { refusals, .. } => {
+                panic!("a committed plan must never read as Uncommitted({refusals:?})")
+            }
             PlanCommitOutcome::Conflict(detail) => {
                 panic!("an already-landed resume must never read as a Conflict({detail})")
             }
@@ -31790,6 +31825,9 @@ mod tests {
             }
             PlanCommitOutcome::OutOfScope(paths) => {
                 panic!("a third, post-emit call must still resolve to Landed, got OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Uncommitted { refusals, .. } => {
+                panic!("a committed plan must never read as Uncommitted({refusals:?})")
             }
             PlanCommitOutcome::Conflict(detail) => {
                 panic!(
@@ -31851,6 +31889,9 @@ mod tests {
             }
             PlanCommitOutcome::OutOfScope(paths) => {
                 panic!("expected a fresh landing, got OutOfScope({paths:?})")
+            }
+            PlanCommitOutcome::Uncommitted { refusals, .. } => {
+                panic!("a committed plan must never read as Uncommitted({refusals:?})")
             }
             PlanCommitOutcome::Conflict(detail) => {
                 panic!("expected a fresh landing, got Conflict({detail})")
@@ -40814,7 +40855,12 @@ mod tests {
                     ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
                     ("adversary".to_string(), "reviewed the dag".to_string()),
                 ]),
-                write_file: Some("feature.rs".into()),
+                // Only the unit's worker writes code: a planner leaving a file outside a
+                // commit fails its stage, which this row does not exercise.
+                write_file_by_agent: HashMap::from([(
+                    "worker".to_string(),
+                    "feature.rs".to_string(),
+                )]),
                 ..Stub::new()
             };
             (critique_cfg(), driver)

@@ -4552,6 +4552,170 @@ fn a_producer_held_by_its_stop_hook_settles_its_tree_and_the_plan_lands() {
     }
 }
 
+/// What a producer's first session, having left its plan outside a commit, does about the `Stop`
+/// hook its launch's `--settings` names.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum FirstStop {
+    /// It runs no hook, as a host that installs no per-spawn hooks.
+    NoHook,
+    /// It runs the hook at each stop the host would make, fixing nothing, until the hook allows
+    /// the stop past its bound.
+    PastTheBound,
+}
+
+/// An arm of [`install_fake_claude`] for [`PRODUCER_WORKFLOW`]: the producer's first session
+/// writes `specs/plan.md`, commits nothing, and meets its `Stop` hook as `first` says, its
+/// answers left in the fake's directory; the next session leaves `git status --porcelain` of the
+/// tree it finds in the fake's directory, then commits the plan. Every launch stays on record.
+fn producer_ends_with_its_plan_outside_a_commit_arm(first: FirstStop) -> String {
+    let stops = match first {
+        FirstStop::NoHook => String::new(),
+        FirstStop::PastTheBound => format!(
+            r#"{READ_LAUNCH_CONFIG}        hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+        for active in false true true true; do
+            answer=$(printf '{{"hook_event_name":"Stop","stop_hook_active":%s}}' "$active" |
+                sh -c "$hook")
+            printf '%s\n' "$answer" >> "$here/stop-answers"
+        done
+"#
+        ),
+    };
+    format!(
+        r##"  *"Do the unit."*)
+{RECORD_EACH_LAUNCH}    case "$RIGGER_SPAWN" in
+      *"#0")
+        mkdir -p specs
+        echo planned > specs/plan.md
+{stops}        ;;
+      *)
+        git status --porcelain > "$here/retry-found"
+        git add specs/plan.md && git commit -q -m plan
+        ;;
+    esac
+    ;;
+"##
+    )
+}
+
+/// A PRODUCER'S WORK PAST ITS STOP HOOK IS RETRIED, NEVER DROPPED, end to end: given a producer
+/// whose session ends with its plan outside a commit - on a host that runs no `Stop` hook, or with
+/// the hook allowing the stop past its bound - then the conductor fails the attempt as a reject
+/// carrying the hook's refusal line and git's status, the retry is served that reason and finds
+/// the plan still uncommitted in its tree, commits it, and the plan lands on the run branch with
+/// no hold and no escalation.
+#[cfg(unix)]
+#[test]
+fn a_producers_work_left_outside_a_commit_fails_the_attempt_and_the_retry_lands_it() {
+    for first in [FirstStop::NoHook, FirstStop::PastTheBound] {
+        let dir = temp_git_project_with_commit();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        write_workflow_fixture(&root, &PRODUCER_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let (out, err, ok, fake) = common::cli::run_on_arms(
+            &root,
+            &["run"],
+            scratch.path(),
+            &producer_ends_with_its_plan_outside_a_commit_arm(first),
+        );
+        assert!(
+            ok,
+            "{first:?}: the run succeeds; stderr: {err}\nstdout: {out}"
+        );
+        let bin = fake.path().join("bin");
+        let launches = stand_in_launches(&bin.join("launches"));
+        let spawns: Vec<&str> = launches.iter().map(|l| l.spawn.as_str()).collect();
+        assert_eq!(
+            spawns,
+            ["plan/implementer#0", "plan/implementer#1"],
+            "{first:?}: the producer is launched again once; stderr: {err}"
+        );
+
+        let failed = common::cli::run_payloads(&root, "UnitFailed");
+        assert_eq!(
+            failed.len(),
+            1,
+            "{first:?}: one attempt is charged: {failed:#?}"
+        );
+        assert_eq!(failed[0]["cause"], "reject", "{first:?}: {failed:#?}");
+        assert_eq!(failed[0]["attempts"], 1, "{first:?}: {failed:#?}");
+        let reason = failed[0]["review_reason"].as_str().unwrap();
+        for words in ["no commit records", "git status in ", "specs/"] {
+            assert!(
+                reason.contains(words),
+                "{first:?}: the reason carries {words:?}: {reason}"
+            );
+        }
+        let task = common::fixtures::served_task(&bin.join("launches"), "plan/implementer#1");
+        assert!(
+            task.contains("no commit records"),
+            "{first:?}: the retry is served the reason: {task}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bin.join("retry-found")).unwrap(),
+            "?? specs/\n",
+            "{first:?}: the retry's tree still holds the uncommitted plan"
+        );
+
+        let stops: Vec<String> =
+            common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
+                .into_iter()
+                .filter(|line| {
+                    line.id == "plan/implementer#0" && line.activity.starts_with("stop ")
+                })
+                .map(|line| line.activity)
+                .collect();
+        let (starts, answers): (&[&str], &[bool]) = match first {
+            FirstStop::NoHook => (&[], &[]),
+            FirstStop::PastTheBound => (
+                &[
+                    "stop check: ",
+                    "stop held (1 of 3): ",
+                    "stop check: ",
+                    "stop held (2 of 3): ",
+                    "stop check: ",
+                    "stop held (3 of 3): ",
+                    "stop check: ",
+                    "stop allowed with the refusal standing after 3 holds: ",
+                ],
+                &[true, true, true, false],
+            ),
+        };
+        assert_eq!(stops.len(), starts.len(), "{first:?}: {stops:#?}");
+        for (line, start) in stops.iter().zip(starts) {
+            assert!(
+                line.starts_with(start),
+                "{first:?}: {line:?} begins {start:?}"
+            );
+        }
+        let held: Vec<bool> = std::fs::read_to_string(bin.join("stop-answers"))
+            .unwrap_or_default()
+            .lines()
+            .map(|answer| answer.contains(r#""decision":"block""#))
+            .collect();
+        assert_eq!(
+            held, answers,
+            "{first:?}: the hook's answers, held or allowed"
+        );
+
+        assert_eq!(
+            String::from_utf8(run_git(&root, &["show", "rigger-run:specs/plan.md"]).stdout)
+                .unwrap(),
+            "planned\n",
+            "{first:?}: the retry's commit landed on the run branch"
+        );
+        let types: Vec<String> = common::cli::read_run_events(&root)
+            .into_iter()
+            .map(|event| event.type_)
+            .collect();
+        for absent in ["RunHeld", "UnitEscalated"] {
+            assert!(
+                !types.iter().any(|t| t == absent),
+                "{first:?}: no {absent} in the run: {types:?}"
+            );
+        }
+    }
+}
+
 /// Seed `root`'s run stream with a run the workflow's own launch adopts and, when `by` names one, a
 /// hold by that writer, the state a run adopts or a mint finds.
 fn seed_a_run_held_by(root: &Path, by: Option<&str>) {

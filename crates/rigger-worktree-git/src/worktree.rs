@@ -7786,6 +7786,38 @@ mod tests {
         }
     }
 
+    /// The status a producer's hold or failure carries is git's own, its hints off, and at most
+    /// [`TREE_STATUS_LINES`] lines with the rest counted.
+    #[test]
+    fn a_trees_status_is_gits_own_in_at_most_its_lines() {
+        for (case, files, cut) in [("a short status", 3, false), ("a long status", 60, true)] {
+            let repo = init_repo();
+            let dir = repo.path().to_str().unwrap();
+            for n in 0..files {
+                std::fs::write(repo.path().join(format!("f{n:02}.txt")), "x").unwrap();
+            }
+            let status = tree_status(dir);
+            let lines: Vec<&str> = status.lines().collect();
+            assert!(lines[0].starts_with("On branch "), "{case}: {status}");
+            assert!(
+                !status.contains("(use \""),
+                "{case}: no hint names a command: {status}"
+            );
+            if cut {
+                assert_eq!(lines.len(), TREE_STATUS_LINES + 1, "{case}: {status}");
+                let last = lines[TREE_STATUS_LINES];
+                assert!(
+                    last.starts_with('(') && last.ends_with(" more lines)"),
+                    "{case}: {status}"
+                );
+            } else {
+                for n in 0..files {
+                    assert!(status.contains(&format!("f{n:02}.txt")), "{case}: {status}");
+                }
+            }
+        }
+    }
+
     /// A READ DECIDING THE CLEAR THAT GOES UNANSWERED CLEARS NOTHING: when git cannot say whether
     /// the unit's branch exists (no repository path, a path that is not there, a configuration git
     /// refuses), or where the existing branch is checked out (a registration list git refuses),

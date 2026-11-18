@@ -713,17 +713,15 @@ struct StopCheck {
 const STOP_ARGS_REQUIRED: &str =
     "--spawn and --dir are required, with exactly one of --branch <branch> and --own-commits";
 
-/// The most lines of `git status` a stop hook's reason carries; the rest are counted.
-const STOP_STATUS_LINES: usize = 40;
-
 /// `rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | --own-commits)`: a writing
 /// session's `Stop` hook, which Claude Code runs when the session's agent has finished
 /// responding. It asks, read-only, whether the tree is one the conductor's next step on it takes:
 /// with `--branch`, whether committing it onto that branch, or the merge after, would be refused
 /// ([`rigger::worktree::checkpoint_refusals`], the reads the conductor's own commit and merge
 /// refuse on); with `--own-commits`, a producer's tree the conductor lands only the commits of,
-/// whether it holds work outside a commit ([`rigger::worktree::own_commits_refusals`], the
-/// conductor's own dirty-tree read). When it is not, the hook holds the session from stopping by
+/// whether it holds work outside a commit ([`rigger::worktree::own_commits_refusals`], which
+/// sorts that work by the stage's output and which the conductor asks again once the session has
+/// ended). When it is not, the hook holds the session from stopping by
 /// printing Claude Code's `{"decision": "block", "reason": ...}` with the reason
 /// [`stop_hook_reason`] gives, so the session that left the tree so fixes it before it ends. It
 /// changes nothing in the tree: git runs with optional locks off, so not even a status read
@@ -734,8 +732,9 @@ const STOP_STATUS_LINES: usize = 40;
 /// spawn's latest launch ([`rigger::progress_store::stop_holds`]) - Claude Code's
 /// `stop_hook_active` says only that the session is already continuing after a hold, so the count
 /// is read from the record and `stop_hook_active` is recorded beside it. Past the bound the stop is
-/// allowed and a progress line records that the refusal stands: a checkpoint's refusal for the
-/// conductor's own handling to meet, a producer's uncommitted work left out of what lands. Every
+/// allowed and a progress line records that the refusal stands, for the conductor's own handling
+/// to meet: a checkpoint's refusal, or a producer's work outside a commit, which fails its
+/// attempt. Every
 /// other way it can end allows the stop with exit 0: an argument it does not know,
 /// a store or tree it cannot read (each written to stderr, and to a progress line where the store
 /// opened). It writes a `stop check` line before it reads the tree, so a check that ran out of
@@ -879,7 +878,7 @@ fn hold_the_stop(
         template,
         &refusals,
         &check.dir,
-        &tree_status(&check.dir),
+        &rigger::worktree::tree_status(&check.dir),
         branch,
     )))
 }
@@ -902,28 +901,6 @@ fn stop_hook_reason(
             ("status", status),
             ("branch", branch),
         ],
-    )
-}
-
-/// `git status` in `dir` in git's own words, its first [`STOP_STATUS_LINES`] lines with the rest
-/// counted, and its hints off, so it names no command to run; what git said instead when it
-/// fails.
-fn tree_status(dir: &str) -> String {
-    let args = [
-        "--no-optional-locks",
-        "-c",
-        "advice.statusHints=false",
-        "status",
-    ];
-    let status = rigger::worktree::git(dir, &args).unwrap_or_else(|e| e.to_string());
-    let lines: Vec<&str> = status.trim_end().lines().collect();
-    if lines.len() <= STOP_STATUS_LINES {
-        return lines.join("\n");
-    }
-    let rest = lines.len() - STOP_STATUS_LINES;
-    format!(
-        "{}\n({rest} more lines)",
-        lines[..STOP_STATUS_LINES].join("\n")
     )
 }
 
@@ -2070,37 +2047,6 @@ mod tests {
             match expected {
                 Ok(check) => assert_eq!(parsed.as_ref(), Ok(check), "{case}"),
                 Err(message) => assert_eq!(parsed, Err(message.to_string()), "{case}"),
-            }
-        }
-    }
-
-    /// The status a stop hook's reason carries is git's own, its hints off, and at most
-    /// [`STOP_STATUS_LINES`] lines with the rest counted.
-    #[test]
-    fn the_stop_hook_carries_at_most_its_lines_of_git_status() {
-        for (case, files, cut) in [("a short status", 3, false), ("a long status", 60, true)] {
-            let repo = crate::test_support::temp_git_project_with_commit();
-            for n in 0..files {
-                std::fs::write(repo.path().join(format!("f{n:02}.txt")), "x").unwrap();
-            }
-            let status = tree_status(repo.path().to_str().unwrap());
-            let lines: Vec<&str> = status.lines().collect();
-            assert!(lines[0].starts_with("On branch "), "{case}: {status}");
-            assert!(
-                !status.contains("(use \""),
-                "{case}: no hint names a command: {status}"
-            );
-            if cut {
-                assert_eq!(lines.len(), STOP_STATUS_LINES + 1, "{case}: {status}");
-                let last = lines[STOP_STATUS_LINES];
-                assert!(
-                    last.starts_with('(') && last.ends_with(" more lines)"),
-                    "{case}: {status}"
-                );
-            } else {
-                for n in 0..files {
-                    assert!(status.contains(&format!("f{n:02}.txt")), "{case}: {status}");
-                }
             }
         }
     }
