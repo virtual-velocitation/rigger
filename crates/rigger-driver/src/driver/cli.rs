@@ -49,7 +49,9 @@ impl Default for Driver {
 
 impl Driver {
     /// Launch `agent` on the task `framed` and wait for it to exit, returning its captured
-    /// output whatever its exit status.
+    /// output whatever its exit status. Its exit finishes its process tree for the spawn
+    /// ([`crate::child_tree::ReapedChild::wait_with_output`]): what it left running is ended once a
+    /// hook still writing the spawn's record has finished, and the end's lines are said on stderr.
     ///
     /// Neither prompt travels as an argv string, because Linux caps one argument at
     /// `MAX_ARG_STRLEN` (131072 bytes) and a plan-critique task or a full persona crosses it:

@@ -505,21 +505,23 @@ impl ReapedChild {
 
     /// Waits for the main process to exit and answers its status and all of its output, as
     /// [`Child::wait_with_output`] does: its input is closed first, and each output pipe is read
-    /// to its end on a thread of its own. The tree is then let go ([`ReapedChild::release`]), so a
-    /// process the main left running runs on, and one holding an output pipe holds this read until
-    /// it exits, as it holds `Child::wait_with_output`'s. A wait that fails ends the tree.
+    /// to its end on a thread of its own. Once the main exits the tree is finished for the spawn
+    /// `writing` ([`ReapedChild::finish`]) before the pipes are read to their end, so a process
+    /// the main left holding an output pipe is ended rather than waited for; one the finish never
+    /// signalled, or could not end, holds this read until it exits, as it holds
+    /// `Child::wait_with_output`'s. Answers the output and what the finish ended and left. A wait
+    /// that fails ends the tree.
     pub fn wait_with_output(mut self, writing: Option<&str>) -> io::Result<(Output, EndReport)> {
-        let _ = writing;
         let stdout = self.take_stdout().map(read_to_end);
         let stderr = self.take_stderr().map(read_to_end);
         let status = self.wait()?;
-        self.release();
+        let report = self.finish(writing);
         let output = Output {
             status,
             stdout: joined(stdout)?,
             stderr: joined(stderr)?,
         };
-        Ok((output, EndReport::default()))
+        Ok((output, report))
     }
 }
 
