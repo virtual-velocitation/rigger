@@ -294,7 +294,7 @@ mod tests {
 
     /// An answer for `a.zig` carrying no defs and the refs `refs` (JSON objects, comma-separated).
     fn answer_with_refs(refs: &str) -> String {
-        format!(r#"{{"path":"a.zig","defs":[],"refs":[{refs}]}}"#)
+        crate::extractor_stub::answer_with_refs("a.zig", refs)
     }
 
     /// THE EXTRACTOR PROTOCOL, the answer: over a request for `a.zig`, an answer holding defs and

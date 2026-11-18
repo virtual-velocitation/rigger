@@ -20,8 +20,8 @@ use std::path::Path;
 use crate::common;
 use common::cli::{past_label, run_rigger, source_repository, write_scaffold, BuiltGraph, SOURCE};
 use common::fixtures::{
-    answer_defining, answer_defining_at, declared_identity, git_ok, git_out, request_for,
-    root_dir_of, workflow_declaring_extractors, write_files, StubExtractor,
+    answer_defining, answer_defining_at, answer_with_refs, declared_identity, git_ok, git_out,
+    request_for, root_dir_of, workflow_declaring_extractors, write_files, StubExtractor,
 };
 use common::git::linked_worktree;
 use rigger_domain::code_facts::{Def, FileFacts, Mention, MentionKind};
@@ -217,8 +217,11 @@ fn a_failed_answer_is_said_and_asked_again_only_when_its_file_or_the_declaration
     // The answer to `path` referring on its first line to `name` qualified by `qualifier`, a path
     // when `is_path`, a member access otherwise.
     let qualifying = |path: &str, name: &str, qualifier: &str, is_path: bool| {
-        format!(
-            r#"{{"path":"{path}","defs":[],"refs":[{{"name":"{name}","line":1,"qualifier":{{"name":"{qualifier}","path":{is_path}}}}}]}}"#
+        answer_with_refs(
+            path,
+            &format!(
+                r#"{{"name":"{name}","line":1,"qualifier":{{"name":"{qualifier}","path":{is_path}}}}}"#
+            ),
         )
     };
     // (the file, its committed text, the stub's first answer, why that answer fails)
