@@ -280,7 +280,7 @@ fn store_advisories(
     // degrading to a wrong-store read that would misreport live worktrees/branches as residue
     // (d-u2rr-observer-selection-loud). The residue FINDINGS themselves stay warning-only below;
     // this only makes an inability to even resolve the run store loud, never silent.
-    for advisory in residue_advisories(loc, selection, cfg)? {
+    for advisory in residue_advisories(site, loc, selection, cfg)? {
         eprintln!("{advisory}");
     }
     // Model-drift advisory (spec 13b, unit 1): warn when a tier's resolved model id
@@ -688,6 +688,7 @@ fn dirty_tracked_paths(porcelain: &str) -> Vec<String> {
 /// SAME `<repo>/.rigger/tmp` the run uses; the path is resolved WITHOUT creating it, so
 /// validate stays read-only.
 fn residue_advisories(
+    site: &Site,
     loc: &StoreLocation,
     selection: &StoreSelection,
     cfg: &config::Config,
@@ -717,14 +718,20 @@ fn residue_advisories(
         &run_units.live_branches,
     );
     // Every ref rigger holds aside, a kept tree or one set aside, live or not: only a person
-    // or the run-start reaper removes one. A read that fails lists none and says so on its own
-    // line, naming git's error, so an empty list is never read as none held.
-    let unread = match rigger::worktree::held_refs(&repo) {
-        Ok(held) => {
-            report.held = held;
-            None
+    // or the run-start reaper removes one. Outside any repository no ref is held, so none is read
+    // (the site's own discovery answers where `repo` lies, and git refusing inside a repository
+    // fails validate, as the identity read below does). A read inside one that fails lists none
+    // and says so on its own line, naming git's error, so an empty list is never read as none held.
+    let unread = if site.toplevel_of(Path::new(&repo))?.is_empty() {
+        None
+    } else {
+        match rigger::worktree::held_refs(&repo) {
+            Ok(held) => {
+                report.held = held;
+                None
+            }
+            Err(e) => Some(held_refs_unread(&e.0)),
         }
-        Err(e) => Some(held_refs_unread(&e.0)),
     };
     let mut advisories = format_residue(&report);
     advisories.extend(unread);
