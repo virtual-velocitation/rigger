@@ -833,12 +833,10 @@ impl Worktree {
     }
 
     /// The staged paths whose index content carries conflict-marker text the in-progress merge
-    /// introduced, sorted (op-105-merge-finalize-refuses-markers): a marker line
-    /// [`conflict_markers_present`] reads in the index at a staged path counts unless
-    /// either parent - `HEAD`, the unit's own side, or `MERGE_HEAD`, the run branch's tip -
-    /// already carries that same line in a marker set at that path, so a set a parent holds (a
-    /// document showing one) never refuses while a resolution staged with the merge's markers
-    /// still in it does. The index
+    /// introduced, sorted (op-105-merge-finalize-refuses-markers), by [`markers_introduced`]'s
+    /// rule with either parent - `HEAD`, the unit's own side, or `MERGE_HEAD`, the run branch's
+    /// tip - as what is already carried: a set a parent holds (a document showing one) never
+    /// refuses while a resolution staged with the merge's markers still in it does. The index
     /// is read, not the worktree, because it is what the finalize commit takes.
     fn markers_the_merge_introduced(&self) -> Result<Vec<String>, Error> {
         let staged: Vec<String> = git(&self.dir, &["diff", "--cached", "--name-only", "-z"])?
@@ -846,21 +844,7 @@ impl Worktree {
             .filter(|path| !path.is_empty())
             .map(str::to_string)
             .collect();
-        let in_index = conflict_markers_present(&self.dir, ScanAt::Index, &staged)?;
-        let mut hit: Vec<String> = in_index.iter().map(|(path, _)| path.clone()).collect();
-        hit.dedup();
-        let mut carried = conflict_markers_present(&self.dir, ScanAt::Commit("HEAD"), &hit)?;
-        carried.extend(conflict_markers_present(
-            &self.dir,
-            ScanAt::Commit("MERGE_HEAD"),
-            &hit,
-        )?);
-        let mut introduced: Vec<String> = in_index
-            .difference(&carried)
-            .map(|(path, _)| path.clone())
-            .collect();
-        introduced.dedup();
-        Ok(introduced)
+        markers_introduced(&self.dir, ScanAt::Index, &staged, &["HEAD", "MERGE_HEAD"])
     }
 
     /// Every path this unit changed relative to the base the worktree branched
@@ -3156,9 +3140,10 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
 /// underline), a start with no end after it and the three out of order are no conflict, so the
 /// scan answers none of their lines. [`ScanAt::Worktree`] reads the worktree copy (staged or
 /// not), [`ScanAt::Index`] what the next `git commit` takes, and [`ScanAt::Commit`] a commit's
-/// tree. Read at the
-/// worktree, a non-empty answer is [`commit_refusal`]'s; read at the index and at
-/// both parents, it is [`Worktree::merge_into_worktree`]'s finalize refusal, through
+/// tree. Each line is answered with the number of complete sets it stands in at that path, which
+/// [`markers_introduced`] compares with what a commit already carries: read at the worktree
+/// against `HEAD`, it is [`commit_refusal`]'s; read at the index against both parents, it is
+/// [`Worktree::merge_into_worktree`]'s finalize refusal, through
 /// [`Worktree::markers_the_merge_introduced`].
 ///
 /// At the worktree this is [`commit_refusal`]'s half-merge guard (spec 89, criterion 1: A
@@ -3186,8 +3171,8 @@ fn conflict_markers_present(
     dir: &str,
     at: ScanAt<'_>,
     scope: &[String],
-) -> Result<std::collections::BTreeSet<(String, String)>, Error> {
-    let mut lines = std::collections::BTreeSet::new();
+) -> Result<MarkerLines, Error> {
+    let mut lines = MarkerLines::new();
     if scope.is_empty() {
         return Ok(lines);
     }
@@ -3261,13 +3246,50 @@ fn conflict_markers_present(
             (Some(Marker::Separator), Marker::End) => {
                 open.push(line);
                 for line in open.drain(..) {
-                    lines.insert((path.to_string(), line.to_string()));
+                    *lines
+                        .entry((path.to_string(), line.to_string()))
+                        .or_default() += 1;
                 }
             }
             _ => {}
         }
     }
     Ok(lines)
+}
+
+/// Each conflict-marker line [`conflict_markers_present`] reads in a complete set, by path and
+/// line text, with the number of complete sets it stands in at that path.
+type MarkerLines = std::collections::BTreeMap<(String, String), usize>;
+
+/// The paths in `scope` where the content read `at` holds a conflict-marker line in more complete
+/// sets ([`conflict_markers_present`]) than any one commit of `carriers` holds it in at that path,
+/// sorted. A set a commit already carries (a fixture, a document showing one) is that file's
+/// content, never a conflict; a conflict beside it is a set more than the commit carries, even
+/// one whose lines repeat the carried set's. The one rule of [`commit_refusal`] (`HEAD` carries)
+/// and of the merge finalize ([`Worktree::markers_the_merge_introduced`], either parent carries).
+fn markers_introduced(
+    dir: &str,
+    at: ScanAt<'_>,
+    scope: &[String],
+    carriers: &[&str],
+) -> Result<Vec<String>, Error> {
+    let found = conflict_markers_present(dir, at, scope)?;
+    let mut hit: Vec<String> = found.keys().map(|(path, _)| path.clone()).collect();
+    hit.dedup();
+    let mut carried = MarkerLines::new();
+    for rev in carriers {
+        for (line, sets) in conflict_markers_present(dir, ScanAt::Commit(rev), &hit)? {
+            let most = carried.entry(line).or_default();
+            *most = (*most).max(sets);
+        }
+    }
+    let mut introduced: Vec<String> = found
+        .into_iter()
+        .filter(|(line, sets)| *sets > carried.get(line).copied().unwrap_or_default())
+        .map(|((path, _), _)| path)
+        .collect();
+    introduced.dedup();
+    Ok(introduced)
 }
 
 /// The three lines of a git conflict-marker set, in the order [`conflict_markers_present`]
@@ -3316,9 +3338,9 @@ fn off_branch_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> 
 
 /// Why a commit of the tree rooted at `dir` for the unit's `branch` would be refused before it
 /// runs, in words naming the cause, or `None` when nothing would refuse it: the HEAD is off
-/// `branch` ([`off_branch_refusal`]), or conflict-marker text sits in a changed or
-/// unmerged path ([`conflict_markers_present`], spec 89 criterion 1: A CHECKPOINT NEVER COMMITS
-/// A HALF-MERGE). Read-only: it changes nothing in the tree. [`Worktree::commit`] and
+/// `branch` ([`off_branch_refusal`]), or conflict-marker text `HEAD` does not already carry sits
+/// in a changed or unmerged path ([`markers_introduced`], spec 89 criterion 1: A CHECKPOINT NEVER
+/// COMMITS A HALF-MERGE). Read-only: it changes nothing in the tree. [`Worktree::commit`] and
 /// [`Worktree::commit_checkpoint`] refuse on it, and a writing session's Stop hook asks it before
 /// the session may end.
 ///
@@ -3336,7 +3358,7 @@ pub fn commit_refusal(dir: &str, branch: &str) -> Result<Option<String>, Error> 
     scope.extend(unmerged_paths(dir)?);
     scope.sort();
     scope.dedup();
-    if !conflict_markers_present(dir, ScanAt::Worktree, &scope)?.is_empty() {
+    if !markers_introduced(dir, ScanAt::Worktree, &scope, &["HEAD"])?.is_empty() {
         return Ok(Some(format!(
             "refusing to commit in {dir}: conflict-marker text is present in tracked file \
              content - resolve it before committing"
@@ -5431,8 +5453,7 @@ mod tests {
             std::fs::write(repo.path().join("notes.md"), format!("{SHOWN}base\n")).unwrap();
             run_git(&repo_path, &["add", "notes.md"]).unwrap();
             run_git(&repo_path, &["commit", "-q", "-m", "seed notes"]).unwrap();
-            // Each side commits its edit directly: `Worktree::commit`'s own marker scan reads
-            // the marker set the file shows, in a touched file, as marker text.
+            // Each side commits its edit with git itself, as a person's commit on the branch.
             let edit = |dir: &std::path::Path, body: &str| {
                 std::fs::write(dir.join("notes.md"), format!("{SHOWN}{body}\n")).unwrap();
                 git(dir.to_str().unwrap(), &["commit", "-q", "-am", body]).unwrap();
