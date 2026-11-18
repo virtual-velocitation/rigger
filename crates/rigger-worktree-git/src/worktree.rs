@@ -9263,6 +9263,64 @@ mod tests {
         assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
+    /// EVERY PRUNE READS GIT'S MARKS FIRST: a discard, a create over a tree whose dir is gone and a
+    /// reclaim of such a tree's branch each drop the registration they prune, and keep the
+    /// registration and work of another tree git marks `prunable` while its dir is still there.
+    #[test]
+    fn every_prune_keeps_a_tree_git_marks_prunable_with_its_dir_there() {
+        // Each row: the case, whether the other tree's dir is deleted first, and the call on it.
+        type Row = (
+            &'static str,
+            bool,
+            fn(&str, &str, &str) -> Result<(), Error>,
+        );
+        const OTHER: &str = "rigger/u/other";
+        let rows: [Row; 4] = [
+            ("a discard of another tree", false, |repo, dir, root| {
+                Worktree::discard(repo, dir, OTHER, root)
+            }),
+            (
+                "a discard of a tree whose dir is gone",
+                true,
+                |repo, dir, root| Worktree::discard(repo, dir, OTHER, root),
+            ),
+            (
+                "a create over a tree whose dir is gone",
+                true,
+                |repo, dir, root| Worktree::create(repo, dir, OTHER, root).map(drop),
+            ),
+            (
+                "a reclaim of a branch whose tree is gone",
+                true,
+                |repo, _, root| reclaim_worktree_on_branch(repo, OTHER, root).map(drop),
+            ),
+        ];
+        let mut violations = Vec::new();
+        for (row, gone, call) in rows {
+            let h = held_elsewhere(Held::Under);
+            unlink(&h);
+            let other = h.root.join("other");
+            let dir = other.to_str().unwrap();
+            Worktree::create(h.repo(), dir, OTHER, h.root()).unwrap();
+            if gone {
+                std::fs::remove_dir_all(&other).unwrap();
+            }
+            if let Err(e) = call(h.repo(), dir, h.root()) {
+                violations.push(format!("{row}: the call failed: {}", e.0));
+            }
+            let listed = run_git(h.repo(), &["worktree", "list", "--porcelain"]).unwrap();
+            if !gone && listed.lines().any(|line| line == format!("worktree {dir}")) {
+                violations.push(format!("{row}: the discarded tree is still registered"));
+            }
+            if !h.listed() || h.work().as_deref() != Some("work\n") {
+                violations.push(format!(
+                    "{row}: the prunable tree lost its registration or its work:\n{listed}"
+                ));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
+    }
+
     /// A DISCARD KEEPS A TREE GIT MARKS LOCKED OR PRUNABLE: a throwaway's tree a person locked, or
     /// whose add git did not finish, its tree there or gone and its path spelled as git lists it or
     /// as it resolves through a link git lists, or one whose remove git did not finish after it
