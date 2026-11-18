@@ -499,8 +499,12 @@ impl Addressee {
 /// process descriptors (`by_descriptor`, [`descriptors_here`]), through one opened on the process
 /// that holds `pid` now, so the signal sent after the checks reaches that process or none; by the
 /// pid alone otherwise. `None` when the descriptor does not open, since the process is gone: it is
-/// sent nothing.
+/// sent nothing. `None` for pid 0 and init (pid 1) on every OS, whatever the checks after would
+/// answer, so neither is ever addressed.
 fn address(pid: u32, by_descriptor: bool) -> Option<Addressee> {
+    if pid <= 1 {
+        return None;
+    }
     std::cfg_select! {
         target_os = "linux" => {
             if !by_descriptor {
