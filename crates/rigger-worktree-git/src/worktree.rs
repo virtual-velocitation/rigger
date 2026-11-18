@@ -3840,7 +3840,8 @@ mod tests {
         let repo = init_repo();
         let p = repo.path().to_str().unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
-        let outside = elsewhere.path().to_str().unwrap();
+        let gone = elsewhere.path().join("gone");
+        let gone = gone.to_str().unwrap();
         let merge = |branch: &str| git(p, &["merge", "--ff-only", branch]).unwrap_err();
         let unread = |path: &str, kind: std::io::ErrorKind, words: &str| {
             metadata_at(path, Err(std::io::Error::new(kind, words))).unwrap_err()
@@ -3868,9 +3869,9 @@ mod tests {
                 false,
             ),
             (
-                "a branch tip read in and out of a repository",
+                "a branch tip read in a repository and in a directory that is gone",
                 branch_tip(p, "gone").unwrap_err(),
-                branch_tip(outside, "gone").unwrap_err(),
+                branch_tip(gone, "gone").unwrap_err(),
                 true,
             ),
             (
