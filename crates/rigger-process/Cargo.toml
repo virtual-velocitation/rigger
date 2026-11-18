@@ -62,13 +62,15 @@ tokio = { version = "1", features = ["rt", "time"] }
 # connected and waited for through Pipes, read and written overlapped through FileSystem and IO with
 # its event from Threading, and held to its owner by a descriptor from Security and Authorization.
 # The macOS adapters declare no crate: the keep-awake adapter reaches IOKit and CoreFoundation
-# through `extern` declarations, and the process interface reads libproc through the libc below.
+# through `extern` declarations, and the process interface reads libproc and the argument-area
+# sysctl through the libc below.
 [target.'cfg(unix)'.dependencies]
 # The unix interrupt trigger's `SIGINT` handler: `signal`, and the async-signal-safe `ftruncate`
 # and `_exit` it calls; the Linux keeper's signal dispositions (`sigaction`, `signal`), its wait on
 # its control pipe (`poll`), and its standard streams put over by `/dev/null` (`open`, `dup2`,
 # `close`) and its descriptors' close-on-exec (`fcntl`); and the macOS process adapter's libproc
-# reads, from the libc the lock already resolves for rustix's dependents.
+# reads and its argument read (`sysctl`), from the libc the lock already resolves for rustix's
+# dependents.
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]

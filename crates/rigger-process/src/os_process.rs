@@ -9,15 +9,15 @@
 //! Every reader is best-effort: a process that is gone, or one this process may not read,
 //! answers absent (`None`, an empty list, an empty command), never an error, and on an OS with
 //! no native adapter every reader answers absent. The native adapters are Linux's (`/proc`),
-//! which Android, running the same kernel, binds too, macOS's (libproc) and Windows's (the
-//! Win32 process, IP Helper and Restart Manager calls);
+//! which Android, running the same kernel, binds too, macOS's (libproc and the kernel's
+//! argument-area sysctl) and Windows's (the Win32 process, IP Helper and Restart Manager calls);
 //! Windows reports no other process's working directory or open files, so there those two readers
 //! answer absent, and of a process's run state it reports only that the process has exited.
 //!
 //! The rules the macOS and Windows adapters apply to what their OS's calls answer - which parent a
-//! record is trusted to name, how a table's rows, a socket's port and a start time read, whether a
-//! socket listens, how files are batched for registration - are plain functions here, compiled on
-//! every host so every lane's tests drive them.
+//! record is trusted to name, how a table's rows, a socket's port, a start time and an argument
+//! area read, whether a socket listens, how files are batched for registration - are plain
+//! functions here, compiled on every host so every lane's tests drive them.
 
 use std::path::{Path, PathBuf};
 
@@ -230,9 +230,9 @@ fn command_file_name(pid: u32) -> String {
 /// Process `pid`'s arguments, its program first: the ones it was started with, each one whole as
 /// the OS holds it, so an argument holding a space stays one argument. Linux reads the vector its
 /// exec laid out, and Windows splits the command line the process was created with by the split it
-/// documents for one (`CommandLineToArgvW`). `None` when `pid` is gone or its arguments cannot be
-/// read, so unlike [`command`] it never answers a process's name in place of its arguments; and
-/// `None` on macOS, whose adapter reads no arguments (its doc says why).
+/// documents for one (`CommandLineToArgvW`), and macOS reads the argument area its exec laid
+/// out. `None` when `pid` is gone or its arguments cannot be read, so unlike [`command`] it never
+/// answers a process's name in place of its arguments.
 pub fn arguments(pid: u32) -> Option<Vec<String>> {
     native::arguments(pid)
 }
@@ -455,6 +455,33 @@ fn listens_over_ipv4(
     port: u16,
 ) -> bool {
     state == TSI_S_LISTEN && vflag & INI_IPV4 != 0 && port_of(raw_port as u32) == port
+}
+
+/// The arguments a macOS `KERN_PROCARGS2` read answered in `answer`: the argument count as a
+/// native `int`, then the executable's path ended by a NUL and padded with NULs, then that many
+/// arguments, each ended by a NUL, the environment after them. The padding is read past up to the
+/// first argument, as xnu lays it out (`bsd/kern/kern_sysctl.c`, `sysctl_procargsx`), so an empty
+/// first argument cannot be told from the padding; an empty later argument stays one. `None` when
+/// the answer is shorter than its count, the count is not positive, or the path or an argument
+/// runs to the answer's end without its NUL: an answer the call filled otherwise is never read
+/// past.
+#[cfg(any(target_os = "macos", test))]
+fn procargs_arguments(answer: &[u8]) -> Option<Vec<String>> {
+    let (count, area) = answer.split_first_chunk::<4>()?;
+    let count = usize::try_from(i32::from_ne_bytes(*count))
+        .ok()
+        .filter(|&count| count > 0)?;
+    let path_end = area.iter().position(|&byte| byte == 0)?;
+    let first = path_end + area[path_end..].iter().position(|&byte| byte != 0)?;
+    let mut rest = &area[first..];
+    (0..count)
+        .map(|_| {
+            let end = rest.iter().position(|&byte| byte == 0)?;
+            let argument = String::from_utf8_lossy(&rest[..end]).into_owned();
+            rest = &rest[end + 1..];
+            Some(argument)
+        })
+        .collect()
 }
 
 #[cfg(test)]
