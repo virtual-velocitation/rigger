@@ -7246,6 +7246,60 @@ mod tests {
         wt.remove().unwrap();
     }
 
+    /// A WARNING IS NO STATUS RECORD: git warns on standard error when it cannot open a directory
+    /// in the tree, and that warning names no path the tree changed, so the changed-path reads
+    /// name only git's records. The tree still reads dirty, since git could not vouch for all of
+    /// it ([`path_is_dirty`]).
+    #[cfg(unix)]
+    #[test]
+    fn a_git_warning_beside_the_status_names_no_path_and_reads_dirty() {
+        // Each row: what the tree holds beside a directory git cannot open, the work that puts
+        // it there, and the paths the reads name.
+        type Row = (&'static str, fn(&std::path::Path), &'static [&'static str]);
+        fn nothing(_: &std::path::Path) {}
+        fn a_new_file(dir: &std::path::Path) {
+            std::fs::write(dir.join("work.txt"), "work\n").unwrap();
+        }
+        let rows: [Row; 2] = [
+            ("a clean tree", nothing, &[]),
+            ("a new file", a_new_file, &["work.txt"]),
+        ];
+        let mut violations = Vec::new();
+        for (holds, work, expected) in rows {
+            let repo = init_repo();
+            let dir = repo.path().to_str().unwrap().to_string();
+            let head = head_sha_of(&dir);
+            let sealed = repo.path().join("sealed");
+            std::fs::create_dir(&sealed).unwrap();
+            std::fs::write(sealed.join("inside.txt"), "unseen\n").unwrap();
+            work(repo.path());
+            unreadable(&sealed);
+            assert!(
+                std::fs::read_dir(&sealed).is_err(),
+                "premise ({holds}): the directory is closed to this user, so git warns on it"
+            );
+            let dirty = path_is_dirty(&dir);
+            let uncommitted = uncommitted_paths(&dir);
+            let since = paths_changed_since(&dir, &head);
+            full_access(&sealed);
+            if !matches!(dirty, Ok(true)) {
+                violations.push(format!("{holds}: path_is_dirty is {dirty:?}, not dirty"));
+            }
+            for (read, paths) in [
+                ("uncommitted_paths", uncommitted),
+                ("paths_changed_since", since),
+            ] {
+                match paths {
+                    Ok(paths) if paths == expected => {}
+                    other => {
+                        violations.push(format!("{holds}: {read} is {other:?}, not {expected:?}"))
+                    }
+                }
+            }
+        }
+        assert!(violations.is_empty(), "{violations:#?}");
+    }
+
     /// `changed_files` on a temp worktree on `branch`, after `work` edits its checkout.
     fn assert_changed_files(branch: &str, work: impl FnOnce(&std::path::Path), expected: &[&str]) {
         let repo = init_repo();
