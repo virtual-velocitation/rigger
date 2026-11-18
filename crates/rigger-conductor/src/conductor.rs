@@ -306,6 +306,11 @@ pub const META_SPEC_WINNER: &str = "speculation_winner";
 /// implementer spawn ids - every parked candidate the winner displaced.
 pub const META_SPEC_LOSERS: &str = "speculation_losers";
 
+/// The metadata key on a speculation group's `UnitEscalated` carrying why the group escalated,
+/// one line: the escalation lesson's reason when a lane lost on its work, else the outage every
+/// lane lost to, which teaches no lesson and records no failure.
+pub const META_ESCALATION_REASON: &str = "escalation_reason";
+
 /// The `UnitStatus.status` token a CANCELLED speculation candidate carries (spec 13, unit 3).
 /// Like [`STATUS_COMPENSATION_QUEUED`] it is deliberately NOT a [`ledger::Status`] variant, so
 /// the ledger fold leaves the unit's real status (driven by the WINNER's lifecycle) untouched
@@ -30926,6 +30931,12 @@ stage "implement" adjudicator "adj" failed
                     "{row}: the lesson names {}: {lesson}",
                     k.reference
                 );
+                let reason = escalation_reason_of(&events, "s");
+                assert!(
+                    reason.contains(&format!("commit {} on {}", k.commit, k.reference)),
+                    "{row}: the escalation's reason line names {}: {reason:?}",
+                    k.reference
+                );
             }
         }
     }
@@ -32268,43 +32279,89 @@ stage "implement" adjudicator "adj" failed
 
     /// A lane lost to an outage is no feedback for the author, exactly as the single lane
     /// charges an infra cause no `UnitFailed`: a group whose every lane's review blamed
-    /// infrastructure escalates with no group-loss failure recorded.
+    /// infrastructure, or whose every lane crashed, escalates with no group-loss failure recorded
+    /// and no lesson taught. Its escalation still says why, in one reason line naming the outage
+    /// and neither gates nor review, which judged nothing.
     #[test]
     fn a_group_whose_lanes_lost_to_infrastructure_records_no_failure_for_the_author() {
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: format!(
+        /// Every lane's review blames infrastructure.
+        fn review_blames_infrastructure(driver: &mut Stub) {
+            driver.output = format!(
                 r#"{{"verdict":"reject","cause":"{}","issues":["the build host was down"]}}"#,
                 spawn::CAUSE_INFRA_FAULT
+            );
+        }
+        /// Every lane's implementer crashes.
+        fn every_implementer_crashes(driver: &mut Stub) {
+            driver.fail_spawn_ids = (0..2)
+                .map(|lane| spawn_id("s", ROLE_IMPLEMENTER, lane))
+                .collect();
+        }
+        let cases: [(&str, fn(&mut Stub)); 2] = [
+            (
+                "every lane's review blamed infrastructure",
+                review_blames_infrastructure,
             ),
-            ..approving_speculation_stub()
-        };
-        let deps = Deps {
-            repo: repo_path,
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Escalated,
-            "premise: a group whose lanes all lose escalates"
-        );
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
-            "an outage records no failure for the author; events: {events:?}"
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-                .map(|e| String::from_utf8_lossy(&e.data).to_string())
-                .collect::<Vec<_>>(),
-            Vec::<String>::new(),
-            "an outage teaches the unit no lesson"
-        );
+            (
+                "every lane's implementer crashed",
+                every_implementer_crashes,
+            ),
+        ];
+        for (row, outage) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let mut driver = approving_speculation_stub();
+            outage(&mut driver);
+            let deps = Deps {
+                repo: repo_path,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+            assert_eq!(
+                rs.units["s"].status,
+                ledger::Status::Escalated,
+                "{row}: premise: a group whose lanes all lose escalates"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert!(
+                !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+                "{row}: an outage records no failure for the author; events: {events:?}"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+                    .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                    .collect::<Vec<_>>(),
+                Vec::<String>::new(),
+                "{row}: an outage teaches the unit no lesson"
+            );
+            let reason = escalation_reason_of(&events, "s");
+            assert!(
+                reason.contains("crashed or lost to infrastructure")
+                    && !reason.contains("gates")
+                    && !reason.contains("review"),
+                "{row}: the escalation names the outage alone: {reason:?}"
+            );
+        }
+    }
+
+    /// The reason line unit `unit`'s one `UnitEscalated` in `events` carries in its meta.
+    fn escalation_reason_of(events: &[Event], unit: &str) -> String {
+        let escalated: Vec<&Event> = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_ESCALATED
+                    && serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == unit
+            })
+            .collect();
+        assert_eq!(escalated.len(), 1, "{unit} escalates once: {events:?}");
+        escalated[0]
+            .meta
+            .get(META_ESCALATION_REASON)
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[test]
