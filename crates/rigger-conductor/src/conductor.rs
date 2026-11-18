@@ -1792,9 +1792,10 @@ enum LaneError {
     /// A driver's park ([`is_parked`]): the lane is collected and the group unwinds once every
     /// lane has been asked.
     Parked,
-    /// A fault of the run's infrastructure ([`INFRA_MARKER`]) or git not answering a step
-    /// ([`GIT_STEP_MARKER`]): the drive ends on it, after the lane's cleanup, and the run is held
-    /// for the orchestrator with no attempt charged.
+    /// A fault of the run's infrastructure ([`INFRA_MARKER`]), a store read failing before the
+    /// lane's launch ([`is_store_fault`]) or git not answering a step ([`GIT_STEP_MARKER`]): the
+    /// drive ends on it, after the lane's cleanup, and the run is held for the orchestrator with
+    /// no attempt charged.
     Fault,
     /// Git refused a content step on the lane's own work ([`refused_unit_work`]): a lost
     /// candidate whose refusal the group's failure carries ([`LostLanes::refused`]).
@@ -1809,9 +1810,10 @@ impl LaneError {
     fn of(e: &Error) -> Self {
         if is_parked(e) {
             Self::Parked
-        } else if [INFRA_MARKER, GIT_STEP_MARKER]
-            .iter()
-            .any(|m| carries_marker(e, m))
+        } else if is_store_fault(e)
+            || [INFRA_MARKER, GIT_STEP_MARKER]
+                .iter()
+                .any(|m| carries_marker(e, m))
         {
             Self::Fault
         } else if refused_unit_work(e) {
@@ -8574,7 +8576,17 @@ impl RunCtx<'_> {
                     if !tree_is_dirty(&dir) {
                         let _ = wt.remove();
                     }
-                    return Err(e);
+                    // A store read failing before the implementer's launch carries no halt
+                    // marker, so it reaches the wave as the infra halt it is.
+                    return Err(if is_store_fault(&e) {
+                        infra_fault(spawn_failed(
+                            &st.name,
+                            &format!("speculation lane {lane}'s implementer"),
+                            &e,
+                        ))
+                    } else {
+                        e
+                    });
                 }
                 // A candidate git REFUSED, or one that CRASHED (usage limit, non-zero exit, an
                 // sdet crash, or an sdet record refused past its re-run): it is simply absent
