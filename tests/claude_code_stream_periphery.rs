@@ -1307,7 +1307,8 @@ mod forks_at_stop {
     /// What a row's ending leaves running.
     #[derive(Clone, Copy, Debug)]
     enum Leaves {
-        /// Nothing the session started.
+        /// Nothing the session started; an ordinary end names in its progress line the holder it
+        /// ended.
         Nothing,
         /// The process the session started before its result, which a watched tree's ordinary
         /// end leaves alone (its main has exited), or one that left a watched tree before the
@@ -1415,6 +1416,17 @@ mod forks_at_stop {
             assert!(
                 named,
                 "{mode}: the end names the escapee: {:?}",
+                fx.activities()
+            );
+        }
+        if let (Window::Result, Leaves::Nothing) = (window, leaves) {
+            let named = fx.activities().into_iter().any(|line| {
+                line.contains("the end of the session ended 1 process besides its main: ")
+                    && line.ends_with(" (sh -c printf u >&9; read -r unused <&8)")
+            });
+            assert!(
+                named,
+                "{mode}: the ordinary end names the holder it ended: {:?}",
                 fx.activities()
             );
         }
