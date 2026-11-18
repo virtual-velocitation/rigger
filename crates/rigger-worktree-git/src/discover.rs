@@ -1391,7 +1391,11 @@ mod tests {
             prefix: PathBuf::new(),
             file: true,
         };
-        let failure = |why: &str| Err(format!("git rev-parse --git-common-dir in /r: {why}"));
+        let failure = |why: &str| {
+            Err(format!(
+                "git rev-parse --git-common-dir in /r failed\n{why}"
+            ))
+        };
         type Ran = Result<Vec<u8>, Vec<u8>>;
         type Answer = Result<Option<Vec<u8>>, String>;
         let cases: [(Ran, Met, Answer); 5] = [

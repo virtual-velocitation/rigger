@@ -453,7 +453,7 @@ impl Worktree {
             // A conflicting revert leaves partial changes staged; abort so the run branch is
             // untouched and the failure is not silently half-applied.
             let _ = run_git(repo, &["revert", "--abort"]);
-            return Err(Error(format!("revert {commit}: {out}")));
+            return Err(step_failed(format!("revert {commit}"), out));
         }
         // Rigger's own compensation-revert commit (d-checkin-rigger-own-commits-bypass-
         // hooks): the same class as the merge-into-worktree bookkeeping commits above -
@@ -464,7 +464,7 @@ impl Worktree {
             // The commit's effect was already absent, so there is nothing to revert: leave
             // HEAD where it is (idempotent), never an error.
             Err(out) if out.contains("nothing to commit") => {}
-            Err(out) => return Err(Error(format!("commit revert of {commit}: {out}"))),
+            Err(out) => return Err(step_failed(format!("commit revert of {commit}"), out)),
         }
         Ok(git(repo, &["rev-parse", "HEAD"])?.trim().to_string())
     }
@@ -721,7 +721,9 @@ impl Worktree {
         match run_git_with_status(&self.dir, args) {
             Ok(_) => {}
             Err((_, out)) if out.contains("nothing to commit") => return Ok(String::new()),
-            Err((status, out)) => return Err(content_failure(status, format!("commit: {out}"))),
+            Err((status, out)) => {
+                return Err(content_failure(status, step_failed("commit", out).0))
+            }
         }
         Ok(git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string())
     }
@@ -1050,7 +1052,7 @@ impl Worktree {
                 Ok(_) => {}
                 Err((_, out)) if out.contains("nothing to commit") => {}
                 Err((status, out)) => {
-                    return Err(content_failure(status, format!("commit merge: {out}")))
+                    return Err(content_failure(status, step_failed("commit merge", out).0))
                 }
             }
         } else if let Some((status, out)) = merge_attempt {
@@ -1060,7 +1062,7 @@ impl Worktree {
             // error (spec 88 criterion 1, operator ruling point (e)), never a silent no-op.
             return Err(content_failure(
                 status,
-                format!("worktree merge --no-commit --no-ff: {out}"),
+                step_failed("worktree merge --no-commit --no-ff", out).0,
             ));
         }
         let commit = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
@@ -1101,7 +1103,10 @@ impl Worktree {
             Err(out) if out.contains("would be overwritten by merge") => {
                 Ok(LandOutcome::Blocked(parse_blocking_paths(&out)))
             }
-            Err(out) => Err(Error(format!("git merge --ff-only {}: {out}", self.branch))),
+            Err(out) => Err(step_failed(
+                format!("git merge --ff-only {}", self.branch),
+                out,
+            )),
         }
     }
 
@@ -1184,7 +1189,7 @@ impl Worktree {
                 })
                 .count()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(1),
-            Err(e) => Err(Error(format!("reading {}: {e}", todo_path.display()))),
+            Err(e) => Err(step_failed(format!("reading {}", todo_path.display()), e)),
         }
     }
 
@@ -1337,7 +1342,7 @@ impl Worktree {
                 if conflicted {
                     Ok(CherryPickOutcome::Conflict(out))
                 } else {
-                    Err(Error(format!("git cherry-pick {}: {out}", shas.join(" "))).into())
+                    Err(step_failed(format!("git cherry-pick {}", shas.join(" ")), out).into())
                 }
             }
         }
@@ -1366,33 +1371,36 @@ impl Worktree {
                     .stdout(Stdio::piped())
                     .spawn()
             })
-            .map_err(|e| Error(format!("git show {sha}: {e}")))?;
+            .map_err(|e| step_failed(format!("git show {sha}"), e))?;
         let show_stdout = show
             .stdout
             .take()
-            .ok_or_else(|| Error(format!("git show {sha}: no stdout pipe")))?;
+            .ok_or_else(|| step_failed(format!("git show {sha}"), "no stdout pipe"))?;
         let patch_id = crate::subprocess::git_in(dir)
             .and_then(|mut git| {
                 git.args(["patch-id", "--stable"])
                     .stdin(Stdio::from(show_stdout))
                     .output()
             })
-            .map_err(|e| Error(format!("git patch-id {sha}: {e}")))?;
+            .map_err(|e| step_failed(format!("git patch-id {sha}"), e))?;
         // The Child handle that spawned `show` is waited on directly, never signalled -
         // this crate's handle-bound process lifecycle discipline (spec 78): a process
         // this crate starts is ended only through its own spawning handle, never a
         // shell-out or a computed-pid signal.
         let show_status = show
             .wait()
-            .map_err(|e| Error(format!("git show {sha} wait: {e}")))?;
+            .map_err(|e| step_failed(format!("waiting on git show {sha}"), e))?;
         if !show_status.success() {
-            return Err(Error(format!("git show {sha}: exited {show_status}")));
+            return Err(step_failed(
+                format!("git show {sha}"),
+                format!("exited {show_status}"),
+            ));
         }
         if !patch_id.status.success() {
-            return Err(Error(format!(
-                "git patch-id {sha}: {}",
-                String::from_utf8_lossy(&patch_id.stderr)
-            )));
+            return Err(step_failed(
+                format!("git patch-id {sha}"),
+                String::from_utf8_lossy(&patch_id.stderr),
+            ));
         }
         // A content-FREE commit (`git commit --allow-empty`, e.g. this crate's own
         // `init_repo` test seed) has no diff at all, so `git patch-id` legitimately
@@ -1555,9 +1563,7 @@ pub fn branch_present(repo: &str, branch: &str) -> Result<bool, Error> {
 /// the two agree by construction rather than by re-resolving the (possibly since-moved)
 /// branch name a second time.
 pub fn branch_tip(repo: &str, branch: &str) -> Result<String, Error> {
-    run_git(repo, &["rev-parse", &format!("refs/heads/{branch}")])
-        .map(|s| s.trim().to_string())
-        .map_err(Error)
+    git(repo, &["rev-parse", &format!("refs/heads/{branch}")]).map(|s| s.trim().to_string())
 }
 
 /// The tip of local branch `branch` when its work is LANDED on `run_branch`: the tip is an
@@ -1662,14 +1668,10 @@ pub fn blob_at(repo: &str, git_ref: &str, path: &str) -> Option<Vec<u8>> {
 }
 
 /// The failure of the git command whose arguments are `args`, run under `root`, for the cause
-/// `why`: `git <args> in <root>: <why>`, spelled from the argument vector the process ran or could
-/// not start with, so the text names the command that failed.
+/// `why`: `git <args> in <root> failed`, then `why` ([`step_failed`]), spelled from the argument
+/// vector the process ran or could not start with, so the text names the command that failed.
 pub(crate) fn git_failure(args: &[&str], root: &std::path::Path, why: &str) -> Error {
-    Error(format!(
-        "git {} in {}: {why}",
-        args.join(" "),
-        root.display()
-    ))
+    step_failed(format!("git {} in {}", args.join(" "), root.display()), why)
 }
 
 /// The one `git cat-file --batch` process the code store's tree source reads its blobs from:
@@ -1825,10 +1827,10 @@ pub fn current_branch(dir: &str) -> Result<Option<String>, Error> {
         }
         // `symbolic-ref -q` exits 1, saying nothing, exactly when HEAD is detached.
         Err((Some(1), _)) => Ok(None),
-        Err((_, out)) => Err(Error(format!(
-            "read the branch checked out at {dir}: {}",
-            git_failed(&args, out).0
-        ))),
+        Err((_, out)) => Err(step_failed(
+            format!("reading the branch checked out at {dir}"),
+            git_failed(&args, out).0,
+        )),
     }
 }
 
@@ -2167,7 +2169,7 @@ pub fn sweep_terminal_logged(
     let repo_lock = repo_admin_lock(repo);
     let _repo_guard = repo_lock.lock().unwrap();
     git(repo, &["worktree", "prune"])?;
-    let out = run_git(repo, &["worktree", "list", "--porcelain"]).map_err(Error)?;
+    let out = git(repo, &["worktree", "list", "--porcelain"])?;
     let mut removed = 0;
     let mut dir: Option<String> = None;
     for line in out.lines() {
@@ -2300,12 +2302,8 @@ pub fn registered_worktree_for(repo: &str, branch: &str) -> Option<String> {
 /// The dir of the worktree that has `branch` checked out, read fail-closed: `None` when the
 /// registrations name no such worktree, and an error naming the branch when git cannot list them.
 fn registration_for(repo: &str, branch: &str) -> Result<Option<String>, Error> {
-    let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
-        Error(format!(
-            "read where branch {branch} is checked out: {}",
-            e.0
-        ))
-    })?;
+    let out = git(repo, &["worktree", "list", "--porcelain"])
+        .map_err(|e| step_failed(format!("reading where branch {branch} is checked out"), e.0))?;
     let want = format!("branch refs/heads/{branch}");
     let mut dir: Option<&str> = None;
     for line in out.lines() {
@@ -2340,12 +2338,13 @@ fn registered_at(repo: &str, dir: &str) -> Result<bool, Error> {
         Some(found) if !found.file_type().is_symlink() => {}
         _ => return Ok(false),
     }
-    let want = std::fs::canonicalize(dir).map_err(|e| Error(format!("resolve {dir}: {e}")))?;
+    let want =
+        std::fs::canonicalize(dir).map_err(|e| step_failed(format!("resolving {dir}"), e))?;
     let out = git(repo, &["worktree", "list", "--porcelain"]).map_err(|e| {
-        Error(format!(
-            "read whether a worktree is registered at {dir}: {}",
-            e.0
-        ))
+        step_failed(
+            format!("reading whether a worktree is registered at {dir}"),
+            e.0,
+        )
     })?;
     for entry in out.split("\n\n") {
         let mut lines = entry.lines();
@@ -2383,9 +2382,10 @@ fn names_dir(path: &str, dir: &str, want: &std::path::Path) -> Result<bool, Erro
     match std::fs::canonicalize(path) {
         Ok(resolved) => Ok(resolved == want),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(Error(format!(
-            "resolve {path}, a worktree git lists, to tell whether it is {dir}: {e}"
-        ))),
+        Err(e) => Err(step_failed(
+            format!("resolving {path}, a worktree git lists, to tell whether it is {dir}"),
+            e,
+        )),
     }
 }
 
@@ -2401,7 +2401,7 @@ fn unlisted_registration(dir: &str) -> Result<bool, Error> {
         return Ok(false);
     }
     let named = std::fs::read_to_string(&gitfile)
-        .map_err(|e| Error(format!("read the worktree link {gitfile_s}: {e}")))?;
+        .map_err(|e| step_failed(format!("reading the worktree link {gitfile_s}"), e))?;
     let Some(admin) = named.trim_end().strip_prefix("gitdir: ") else {
         return Ok(false);
     };
@@ -2433,7 +2433,7 @@ fn metadata_at(
     match read {
         Ok(found) => Ok(Some(found)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(Error(format!("read what sits at {path}: {e}"))),
+        Err(e) => Err(step_failed(format!("reading what sits at {path}"), e)),
     }
 }
 
@@ -2471,22 +2471,22 @@ fn metadata_at(
 /// directory entry, which removes the link alone.
 fn clear_worktree_dir(repo: &str, dir: &str, authorized_root: &str) -> Result<(), Error> {
     if repo.is_empty() {
-        return Err(Error(format!(
-            "clear worktree dir {dir}: {}",
-            crate::subprocess::NO_REPOSITORY
-        )));
+        return Err(step_failed(
+            format!("clearing worktree dir {dir}"),
+            crate::subprocess::NO_REPOSITORY,
+        ));
     }
     if occupant(dir)?.is_some_and(|m| m.file_type().is_symlink()) {
         std::fs::remove_file(dir)
             .or_else(|_| std::fs::remove_dir(dir))
-            .map_err(|e| Error(format!("remove the link at {dir}: {e}")))?;
+            .map_err(|e| step_failed(format!("removing the link at {dir}"), e))?;
     } else {
         reap_dir_before_removal(dir, authorized_root);
         if run_git(repo, &["worktree", "remove", "--force", dir]).is_err()
             && std::path::Path::new(dir).exists()
         {
             std::fs::remove_dir_all(dir)
-                .map_err(|e| Error(format!("remove leftover worktree dir {dir}: {e}")))?;
+                .map_err(|e| step_failed(format!("removing leftover worktree dir {dir}"), e))?;
         }
     }
     git(repo, &["worktree", "prune"])?;
@@ -2797,7 +2797,7 @@ fn refresh_checked_out_index(dir: &str) -> Result<(), Error> {
         Ok(written) => written,
         // A checkout that writes no index has no entry to re-hash.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(Error(format!("read {}: {e}", index.display()))),
+        Err(e) => return Err(step_failed(format!("reading {}", index.display()), e)),
     };
     // Nor has one of an empty tree, whose index lists no file: it needs no wait.
     if git(dir, &["ls-files", "-z"])?.is_empty() {
@@ -2887,15 +2887,15 @@ fn conflict_markers_present(
     args.push("--");
     let out = crate::subprocess::git_in(dir)
         .and_then(|mut git| git.args(&args).args(scope).output())
-        .map_err(|e| Error(format!("git grep conflict markers: {e}")))?;
+        .map_err(|e| step_failed("git grep conflict markers", e))?;
     match out.status.code() {
         Some(0) => {}
         Some(1) => return Ok(lines),
         _ => {
-            return Err(Error(format!(
-                "git grep conflict markers: {}",
-                String::from_utf8_lossy(&out.stderr)
-            )));
+            return Err(step_failed(
+                "git grep conflict markers",
+                String::from_utf8_lossy(&out.stderr),
+            ));
         }
     }
     // A commit's hits name `<rev>:<path>`; the worktree's and the index's name the path.
@@ -3115,7 +3115,7 @@ pub fn unfinished_operation(dir: &str) -> Result<Option<&'static str>, Error> {
         let at = std::path::Path::new(dir).join(String::from_utf8_lossy(&at).trim());
         if at
             .try_exists()
-            .map_err(|e| Error(format!("read {}: {e}", at.display())))?
+            .map_err(|e| step_failed(format!("reading {}", at.display()), e))?
         {
             return Ok(Some("a rebase"));
         }
@@ -3156,9 +3156,21 @@ pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
     run_git(dir, args).map_err(|out| git_failed(args, out))
 }
 
-/// The error of a `git <args>` run that failed, naming the command and what git said.
+/// The error of a `git <args>` run that failed: `git <args> failed`, then what git said
+/// ([`step_failed`]).
 fn git_failed(args: &[&str], out: impl std::fmt::Display) -> Error {
-    Error(format!("git {}: {out}", args.join(" ")))
+    step_failed(format!("git {}", args.join(" ")), out)
+}
+
+/// The error of a `step` that failed: `<step> failed` on the first line, which reads the same each
+/// time the step fails, and what git or the filesystem `answer`ed that time on the lines below
+/// ([`fault_text`](rigger_domain::run::fault_text)), so the same step failing again is the same
+/// fault to a hold, however the answer's words differ.
+fn step_failed(step: impl std::fmt::Display, answer: impl std::fmt::Display) -> Error {
+    Error(rigger_domain::run::fault_text(
+        format!("{step} failed"),
+        answer,
+    ))
 }
 
 /// The tree `git add -A` stages over HEAD in the tree rooted at `dir`, written through the index
@@ -3818,6 +3830,81 @@ mod tests {
         }
     }
 
+    /// A STEP FAILING AGAIN READS THE SAME FIRST LINE: a failed git or filesystem step's error
+    /// names the step on its first line and what git or the OS answered that time on the lines
+    /// below. So the same step failing again, however git's or the OS's words differ, is the same
+    /// fault to a hold ([`crate::run::RunHeld::same_fault`]), and another step's failure is
+    /// another fault.
+    #[test]
+    fn a_step_failing_again_reads_the_same_first_line() {
+        let repo = init_repo();
+        let p = repo.path().to_str().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().to_str().unwrap();
+        let merge = |branch: &str| git(p, &["merge", "--ff-only", branch]).unwrap_err();
+        let unread = |path: &str, kind: std::io::ErrorKind, words: &str| {
+            metadata_at(path, Err(std::io::Error::new(kind, words))).unwrap_err()
+        };
+        // `side` names no branch, then one the checked-out branch cannot fast-forward to.
+        let unknown = merge("side");
+        for args in [
+            &["checkout", "-q", "-b", "side"][..],
+            &["commit", "--allow-empty", "-q", "-m", "side"],
+            &["checkout", "-q", "-"],
+            &["commit", "--allow-empty", "-q", "-m", "ahead"],
+        ] {
+            run_git(p, args).unwrap();
+        }
+        let diverged = merge("side");
+        let denied = std::io::ErrorKind::PermissionDenied;
+        let other = std::io::ErrorKind::Other;
+        // Each row: the step, its first failure, its next, and whether the two are the same step.
+        let rows: Vec<(&str, Error, Error, bool)> = vec![
+            ("a merge refused in other words", unknown, diverged, true),
+            (
+                "a merge of another branch",
+                merge("side"),
+                merge("other"),
+                false,
+            ),
+            (
+                "a branch tip read in and out of a repository",
+                branch_tip(p, "gone").unwrap_err(),
+                branch_tip(outside, "gone").unwrap_err(),
+                true,
+            ),
+            (
+                "another branch's tip",
+                branch_tip(p, "gone").unwrap_err(),
+                branch_tip(p, "lost").unwrap_err(),
+                false,
+            ),
+            (
+                "a path the filesystem answers in other words",
+                unread("/w/x", denied, "denied"),
+                unread("/w/x", other, "the device is gone"),
+                true,
+            ),
+            (
+                "another path",
+                unread("/w/x", denied, "denied"),
+                unread("/w/y", denied, "denied"),
+                false,
+            ),
+        ];
+        let first_line = |e: &Error| e.0.lines().next().unwrap_or_default().to_string();
+        let mismatched: Vec<String> = rows
+            .into_iter()
+            .filter(|(_, first, next, same)| {
+                first.0 == next.0 || (first_line(first) == first_line(next)) != *same
+            })
+            .map(|(step, first, next, same)| {
+                format!("{step}: the same step {same}, the errors {first:?} and {next:?}")
+            })
+            .collect();
+        assert!(mismatched.is_empty(), "{mismatched:#?}");
+    }
+
     #[test]
     fn git_output_answers_the_streams_its_mode_names() {
         // `--version` prints to stdout; an unknown `git var` fails with usage on stderr.
@@ -3936,7 +4023,7 @@ mod tests {
             (
                 Err(could_not_start()),
                 Err(format!(
-                    "git cat-file --batch in {}: {}",
+                    "git cat-file --batch in {} failed\n{}",
                     root.display(),
                     could_not_start()
                 )),
