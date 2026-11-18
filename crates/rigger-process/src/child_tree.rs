@@ -293,8 +293,9 @@ trait Hold: Send {
     }
     /// Ends the tree, answering what the end left running and what it never signalled.
     fn end(&mut self, child: &mut Child) -> EndReport;
-    /// Lets the tree go, ending nothing.
-    fn release(&mut self, child: &mut Child);
+    /// Lets the tree go, ending nothing, and answers what the OS refused the release
+    /// ([`EndReport::faults`]).
+    fn release(&mut self, child: &mut Child) -> EndReport;
 }
 
 /// A watched tree, held through its main process, and its watcher where it has one.
@@ -309,11 +310,12 @@ impl Hold for Watched {
     }
 
     /// Stops the watcher and reaps the main if it has exited.
-    fn release(&mut self, main: &mut Child) {
+    fn release(&mut self, main: &mut Child) -> EndReport {
         if let Some(watcher) = self.0.take() {
             watcher.stop();
         }
         let _ = main.try_wait();
+        EndReport::default()
     }
 }
 
@@ -447,19 +449,21 @@ impl ReapedChild {
         self.hold.end(&mut self.child)
     }
 
-    /// Lets the tree go: ends nothing, and reaps the main if it has exited.
-    pub fn release(mut self) {
+    /// Lets the tree go: ends nothing, and reaps the main if it has exited. Answers what the OS
+    /// refused the release ([`EndReport::faults`]), as when a Windows job cannot be let go and
+    /// closing it ends what still runs in it.
+    pub fn release(mut self) -> EndReport {
         self.released = true;
-        self.hold.release(&mut self.child);
+        self.hold.release(&mut self.child)
     }
 
     /// Finishes with a tree its host is done reading: one whose main has exited is let go
     /// ([`ReapedChild::release`]), what the main left running running on, and one whose main still
-    /// runs is ended ([`ReapedChild::end`]). Answers what an end left, nothing on a release.
+    /// runs is ended ([`ReapedChild::end`]). Answers what an end left, or what the OS refused a
+    /// release.
     pub fn finish(mut self) -> EndReport {
         if matches!(self.try_wait(), Ok(Some(_))) {
-            self.release();
-            return EndReport::default();
+            return self.release();
         }
         self.end()
     }
@@ -468,12 +472,15 @@ impl ReapedChild {
     /// [`Child::wait_with_output`] does: its input is closed first, and each output pipe is read
     /// to its end on a thread of its own. The tree is then let go ([`ReapedChild::release`]), so a
     /// process the main left running runs on, and one holding an output pipe holds this read until
-    /// it exits, as it holds `Child::wait_with_output`'s. A wait that fails ends the tree.
+    /// it exits, as it holds `Child::wait_with_output`'s; what the OS refused the release is said,
+    /// since no report carries it from here. A wait that fails ends the tree.
     pub fn wait_with_output(mut self) -> io::Result<Output> {
         let stdout = self.take_stdout().map(read_to_end);
         let stderr = self.take_stderr().map(read_to_end);
         let status = self.wait()?;
-        self.release();
+        for fault in self.release().faults {
+            whole_line::say(format_args!("rigger: {fault}"));
+        }
         Ok(Output {
             status,
             stdout: joined(stdout)?,
@@ -714,6 +721,39 @@ mod tests {
             finishes("holder; up", 2, true, Reading::Held);
         a_finished_tree_whose_main_runs_is_ended:
             finishes("holder; up; held", 2, false, Reading::Ended);
+    }
+
+    /// A hold the OS will not let go, as a Windows job whose limit cannot be cleared is: its
+    /// release answers the refusal.
+    struct Refused;
+
+    impl Hold for Refused {
+        fn end(&mut self, _main: &mut Child) -> EndReport {
+            EndReport::default()
+        }
+
+        fn release(&mut self, _main: &mut Child) -> EndReport {
+            EndReport {
+                faults: vec!["refused".to_string()],
+                ..EndReport::default()
+            }
+        }
+    }
+
+    /// A finish that lets its tree go answers what the OS refused the release.
+    #[test]
+    fn a_finish_answers_what_the_os_refused_its_release() {
+        let mut main = Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn the main");
+        main.wait().expect("the main exits");
+        let tree = ReapedChild::holding(main, Box::new(Refused));
+
+        let report = tree.finish();
+
+        assert_eq!(report.faults, vec!["refused".to_string()]);
     }
 
     #[test]

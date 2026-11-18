@@ -7,7 +7,7 @@
 //! of the tree running. The main is created suspended, joins the job, and is then resumed, so it
 //! starts nothing before it is in the job. The handle's end ends the job
 //! ([`crate::reap::end_job`]); its release clears the limit, then closes the handle, ending
-//! nothing.
+//! nothing, or says in its report that the limit could not be cleared.
 //!
 //! A job that cannot be created, or a main that cannot join one, leaves that launch watched, and
 //! the handle says why ([`ReapedChild::degraded`]): the main is still suspended, so its watcher
@@ -15,7 +15,7 @@
 
 use super::{Contain, Containment, Hold, ReapedChild, Why};
 use crate::reap::{self, EndReport};
-use crate::{subprocess, whole_line};
+use crate::subprocess;
 use std::ffi::OsStr;
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
@@ -144,15 +144,17 @@ impl Job {
     }
 
     /// Lets the job go: clears its limit, so closing its handle ends nothing, then closes it. A
-    /// limit that cannot be cleared is said, since the close then ends what still runs in the
-    /// job.
-    fn release(self, main: u32) {
+    /// limit that cannot be cleared is the report's fault, since the close then ends what still
+    /// runs in the job.
+    fn release(self, main: u32) -> EndReport {
+        let mut report = EndReport::default();
         if let Err(error) = self.limit(0) {
-            whole_line::say(format_args!(
-                "rigger: the job of session {main} could not be let go ({error}); closing it ends \
-                 what still runs in it"
+            report.faults.push(format!(
+                "the job of session {main} could not be let go ({error}); closing it ends what \
+                 still runs in it"
             ));
         }
+        report
     }
 }
 
@@ -228,11 +230,14 @@ impl Hold for Jobbed {
     }
 
     /// Lets the job go ([`Job::release`]) and reaps the main if it has exited.
-    fn release(&mut self, main: &mut Child) {
-        if let Some(job) = self.0.take() {
-            job.release(main.id());
-        }
+    fn release(&mut self, main: &mut Child) -> EndReport {
+        let report = self
+            .0
+            .take()
+            .map(|job| job.release(main.id()))
+            .unwrap_or_default();
         let _ = main.try_wait();
+        report
     }
 }
 
@@ -329,6 +334,28 @@ mod tests {
         );
         // SAFETY: the handle is the one the call just answered, owned by nothing else.
         unsafe { OwnedHandle::from_raw_handle(handle) }
+    }
+
+    /// A release through a handle the OS will not clear the job's limit through answers the
+    /// refusal and that closing the handle ends what still runs in the job; the job's own handle
+    /// still holds the main until it closes.
+    #[test]
+    fn a_job_the_os_will_not_let_go_says_so_in_the_report() {
+        let job = Job::new().expect("a job");
+        let (mut main, lines) = in_job(&job, "echo up& ping -n 60 127.0.0.1 >NUL");
+        assert!(read_until(&lines, "up"), "the main is up");
+
+        let report = Job(query_only(&job)).release(main.id());
+
+        assert_eq!((report.residue, report.skipped), (vec![], vec![]));
+        assert!(
+            matches!(&report.faults[..], [fault] if fault.contains("could not be let go")),
+            "the report says the job could not be let go: {:?}",
+            report.faults
+        );
+        drop(job);
+        assert!(ends(&lines), "closing the job's own handle ends the main");
+        let _ = main.wait();
     }
 
     /// An end through a handle the OS will not end the job through reports the refusal and

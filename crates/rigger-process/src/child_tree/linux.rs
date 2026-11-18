@@ -607,7 +607,7 @@ impl Hold for Kept {
     /// Writes the release on the control pipe and closes it, so the keeper exits once the main
     /// has, ending nothing, and reaps the keeper when the main's status is already read. A keeper
     /// released before the main's exit is left to exit on its own.
-    fn release(&mut self, keeper: &mut Child) {
+    fn release(&mut self, keeper: &mut Child) -> EndReport {
         while let Ok(line) = self.records.try_recv() {
             self.take(line);
         }
@@ -620,6 +620,7 @@ impl Hold for Kept {
                 self.main
             ));
         }
+        EndReport::default()
     }
 }
 
