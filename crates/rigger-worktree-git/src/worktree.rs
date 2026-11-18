@@ -812,12 +812,14 @@ impl Worktree {
 
     /// Keep a speculation lane's tree for the group that lost it: [`Self::keep_tree_aside`], with
     /// a clean tree at the branch's tip kept as that tip, since the lane's branch goes with its
-    /// tree.
+    /// tree. For the same reason, a tip HEAD's history lacks (HEAD left the branch) is the keep's
+    /// second parent, the tree clean or not, so no commit the lane made is lost with its branch.
     pub fn keep_lane_aside(&self, message: &str) -> Result<Option<Kept>, Error> {
         self.keep_aside(message, true)
     }
 
-    /// [`Self::keep_tree_aside`], the branch's tip kept too when `whole_branch`.
+    /// [`Self::keep_tree_aside`], the branch's tip kept too when `whole_branch`
+    /// ([`Self::keep_lane_aside`]).
     fn keep_aside(&self, message: &str, whole_branch: bool) -> Result<Option<Kept>, Error> {
         let reference = kept_ref(&self.branch);
         self.keep_on(&reference, message, whole_branch)
@@ -838,6 +840,10 @@ impl Worktree {
     ) -> Result<Option<Kept>, Error> {
         let tip = branch_tip(&self.repo, &self.branch)?;
         let head = git(&self.dir, &["rev-parse", "HEAD"])?.trim().to_string();
+        let mut parents = vec![head.as_str()];
+        if whole_branch && !in_history(&self.repo, &tip, &head)? {
+            parents.push(&tip);
+        }
         let index = git(&self.dir, &["rev-parse", "--git-path", KEPT_INDEX])?;
         let index = std::path::Path::new(&self.dir).join(index.trim());
         let lock = index.with_file_name(format!("{KEPT_INDEX}.lock"));
@@ -849,20 +855,23 @@ impl Worktree {
         let tree = staged?;
         let full = format!("refs/heads/{reference}");
         let held = ref_commit(&self.repo, &full)?;
-        let commit = if git(&self.dir, &["rev-parse", "HEAD^{tree}"])?.trim() == tree {
+        let clean = git(&self.dir, &["rev-parse", "HEAD^{tree}"])?.trim() == tree;
+        let commit = if clean && parents.len() == 1 {
             if head == tip && !whole_branch {
                 return Ok(None);
             }
-            head
+            head.clone()
         } else {
             match held.as_deref() {
-                Some(prior) if keeps(&self.repo, prior, &tree, &head)? => prior.to_string(),
-                _ => git(
-                    &self.dir,
-                    &["commit-tree", &tree, "-p", &head, "-m", message],
-                )?
-                .trim()
-                .to_string(),
+                Some(prior) if keeps(&self.repo, prior, &tree, &parents)? => prior.to_string(),
+                _ => {
+                    let mut args = vec!["commit-tree", tree.as_str()];
+                    for parent in &parents {
+                        args.extend(["-p", parent]);
+                    }
+                    args.extend(["-m", message]);
+                    git(&self.dir, &args)?.trim().to_string()
+                }
             }
         };
         let kept = |reference: String| {
@@ -1733,11 +1742,11 @@ fn held_unit(reference: &str) -> &str {
     reference.strip_prefix(KEPT_REFS).unwrap_or(reference)
 }
 
-/// Whether `commit` is a keep of `tree` on `head`: it holds that tree, and `head` is its one
-/// parent.
-fn keeps(repo: &str, commit: &str, tree: &str, head: &str) -> Result<bool, Error> {
-    let parents = git(repo, &["rev-list", "--parents", "-n1", commit])?;
-    if parents.split_whitespace().skip(1).ne([head]) {
+/// Whether `commit` is a keep of `tree` on `parents`: it holds that tree, and its parents are
+/// `parents`, in that order.
+fn keeps(repo: &str, commit: &str, tree: &str, parents: &[&str]) -> Result<bool, Error> {
+    let line = git(repo, &["rev-list", "--parents", "-n1", commit])?;
+    if line.split_whitespace().skip(1).ne(parents.iter().copied()) {
         return Ok(false);
     }
     Ok(git(repo, &["rev-parse", &format!("{commit}^{{tree}}")])?.trim() == tree)

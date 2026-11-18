@@ -1172,7 +1172,9 @@ fn render_handle_an_escalation_skill(ctx: &DocsContext) -> String {
              (`rigger/kept/<unit-id>`), the escalation lesson naming the commit and the ref, and \
              the tree itself is removed. A unit whose speculation lanes all lost keeps each lane \
              git refused the same way, lane 0 on `rigger/kept/<unit-id>` and lane n on \
-             `rigger/kept/<unit-id>-spec<n>`, the lesson naming each. That commit carries the \
+             `rigger/kept/<unit-id>-spec<n>`, the lesson naming each; a lane whose HEAD had \
+             left its branch keeps that branch's commits too, as the keep's second parent. That \
+             commit carries the \
              tree exactly as the attempt left \
              it, refused content and conflict markers included, and it is never on the unit's \
              branch: read it (`git show rigger/kept/<unit-id>`, or a worktree of your own on it) \
