@@ -11047,7 +11047,8 @@ mod tests {
     /// A PRODUCER'S OUTPUT IS THE SPECS LOCATION THE PROJECT DECLARES: the spawn host every
     /// command resolves carries the overlay's `specs_location`, spelled relative to the root with
     /// `/` between its parts and one closing `/`, and `specs/` when the project declares none; a
-    /// location naming no directory inside the project fails the resolution, naming the overlay.
+    /// location naming no directory inside the project fails the resolution, naming the overlay,
+    /// and fails `rigger setup`'s skill install the same way.
     #[test]
     fn a_producers_output_is_the_specs_location_the_project_declares() {
         // Each row: the case, the overlay (none for no file), and the output the host carries or
@@ -11119,6 +11120,12 @@ mod tests {
                     .map_err(|e| e.to_string()),
                 expected,
                 "{case}"
+            );
+            assert_eq!(
+                install_skills(root).map(|_| ()).map_err(|e| e.to_string()),
+                expected.map(|_| ()),
+                "{case}: rigger setup installs no skill naming a location every later command \
+                 refuses"
             );
         }
     }
