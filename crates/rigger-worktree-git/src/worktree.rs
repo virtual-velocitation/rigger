@@ -4814,50 +4814,89 @@ mod tests {
     /// refused over a start line, then a separator, then an end line - a diff3 base section
     /// between start and separator, and CRLF line ends, included - and never over a separator-
     /// shaped line alone (a Setext heading's underline, an RST title's over- and underline), a
-    /// start with no end after it, or the three lines out of order.
+    /// start with no end after it, or the three lines out of order. A set the file's committed
+    /// text already shows (a fixture, a document about conflicts) is its content, never a
+    /// conflict, so an edit elsewhere in that file is not refused; a set beside it is, and so is
+    /// one whose lines repeat the shown set's, which is one set more than HEAD carries.
     #[test]
     fn a_commit_is_refused_only_over_a_complete_ordered_set_of_conflict_markers() {
-        // Each row: the file's text in the commit, and whether the commit is refused.
+        // A committed file's text that shows a marker set.
+        const SHOWN: &str = "Markers look like:\n<<<<<<< ours\nx\n=======\ny\n>>>>>>> theirs\n";
+        let shown_edited = format!("{SHOWN}edited\n");
+        let shown_and_a_conflict = format!("{SHOWN}<<<<<<< HEAD\na\n=======\nb\n>>>>>>> other\n");
+        let shown_and_its_twin = format!("{SHOWN}<<<<<<< ours\nz\n=======\nw\n>>>>>>> theirs\n");
+        // Each row: the file's committed text, its text in the commit, and whether the commit is
+        // refused.
         let rows = [
-            ("a Setext heading", "Title\n=======\nbody\n", false),
+            (
+                "a Setext heading",
+                "seed\n",
+                "Title\n=======\nbody\n",
+                false,
+            ),
             (
                 "an RST title, over- and underlined",
+                "seed\n",
                 "=======\nTitle\n=======\nbody\n",
                 false,
             ),
             (
                 "a conflict",
+                "seed\n",
                 "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n",
                 true,
             ),
             (
                 "a diff3 conflict",
+                "seed\n",
                 "<<<<<<< ours\na\n||||||| base\no\n=======\nb\n>>>>>>> theirs\n",
                 true,
             ),
             (
                 "a conflict with CRLF line ends",
+                "seed\n",
                 "<<<<<<< ours\r\na\r\n=======\r\nb\r\n>>>>>>> theirs\r\n",
                 true,
             ),
             (
                 "a start marker with no end",
+                "seed\n",
                 "<<<<<<< ours\na\n=======\nb\n",
                 false,
             ),
             (
                 "the markers out of order",
+                "seed\n",
                 ">>>>>>> theirs\nb\n=======\na\n<<<<<<< ours\n",
                 false,
             ),
+            (
+                "another line of a file whose committed text shows a set",
+                SHOWN,
+                shown_edited.as_str(),
+                false,
+            ),
+            (
+                "a conflict beside the set the committed text shows",
+                SHOWN,
+                shown_and_a_conflict.as_str(),
+                true,
+            ),
+            (
+                "a conflict whose lines repeat the set the committed text shows",
+                SHOWN,
+                shown_and_its_twin.as_str(),
+                true,
+            ),
         ];
-        for (row, text, refused) in rows {
+        for (row, seed, text, refused) in rows {
             let repo = init_repo();
             let repo_path = repo.path().to_str().unwrap().to_string();
             let (wt_path, wt) = temp_wt(&repo_path, "rigger/u/markers");
             let dir = wt_path.to_str().unwrap();
-            std::fs::write(wt_path.join("notes.txt"), "seed\n").unwrap();
-            wt.commit("seed notes").unwrap();
+            std::fs::write(wt_path.join("notes.txt"), seed).unwrap();
+            git(dir, &["add", "notes.txt"]).unwrap();
+            git(dir, &["commit", "-q", "-m", "seed notes"]).unwrap();
             std::fs::write(wt_path.join("notes.txt"), text).unwrap();
             let refusal = commit_refusal(dir, "rigger/u/markers").unwrap();
             assert_eq!(refusal.is_some(), refused, "{row}: {refusal:?}");
