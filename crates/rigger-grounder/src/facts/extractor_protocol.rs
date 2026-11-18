@@ -272,15 +272,18 @@ mod tests {
 
     /// THE EXTRACTOR PROTOCOL, the answer: over a request for `a.zig`, an answer holding defs and
     /// refs within the text's lines - the last one more than the `\n` the text holds - gives them,
-    /// each ref's tagged mention kind and qualifier, its partial flag and the doc spans, the
-    /// file's and each def's, as written; every answer the protocol refuses gives the exact why:
+    /// each ref's tagged mention kind and qualifier, an unqualified ref's name holding `::` or `.`,
+    /// a qualified one's holding a lone `:`, its partial flag and the doc spans, the file's and each
+    /// def's, as written; every answer the protocol refuses gives the exact why:
     /// one that does not parse, that is for another path, that is an error - its text quoted, a
     /// line break or terminal escape in it escaped - that lacks a list, a
     /// def or ref outside the lines or with an empty name, a def with an empty path, an end line
     /// outside its line and the last, or an out-of-line module field, a doc span, the file's or a
     /// def's, starting outside the first line and the last or ending outside its start and the
-    /// last, a ref with an empty qualifier or a kind that is no tagged mention kind (`call`, the
-    /// empty kind, `module`), and a cycle among the def paths through their parents.
+    /// last, a ref with an empty qualifier (checked before its name), a qualifier beside a name
+    /// holding `::` or `.`, which a read of the written name would cut inside the leaf, or a kind
+    /// that is no tagged mention kind (`call`, the empty kind, `module`), and a cycle among the def
+    /// paths through their parents.
     #[test]
     fn an_answer_gives_its_symbols_or_why_the_protocol_refuses_it() {
         const TEXT: &str = "a\nb\nc\n";
@@ -588,6 +591,43 @@ mod tests {
                     r#"{"name":"x","line":1,"qualifier":{"name":"","path":false}}"#
                 )),
                 refused("refs[1]: the qualifier is empty"),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"a.b","line":1,"qualifier":{"name":"","path":true}}"#),
+                refused("refs[0]: the qualifier is empty"),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"a.b","line":1,"qualifier":{"name":"Q","path":true}}"#),
+                refused(r#"refs[0]: a qualified ref's name "a.b" holds "::" or ".""#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"x","line":1},"#,
+                    r#"{"name":"a::b","line":1,"qualifier":{"name":"Q","path":false}}"#
+                )),
+                refused(r#"refs[1]: a qualified ref's name "a::b" holds "::" or ".""#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"a.b","line":1},"#,
+                    r#"{"name":"a::b","line":2},"#,
+                    r#"{"name":"a:b","line":3,"qualifier":{"name":"Q","path":true}}"#
+                )),
+                Ok(CodeSymbols {
+                    refs: vec![
+                        answered_ref("a.b", 1, None, None, false),
+                        answered_ref("a::b", 2, None, None, false),
+                        SymRef {
+                            qualifier: Some(qualifier("Q", true)),
+                            ..answered_ref("a:b", 3, None, None, false)
+                        },
+                    ],
+                    ..empty()
+                }),
             ),
             (
                 TEXT,
