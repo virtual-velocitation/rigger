@@ -8769,35 +8769,65 @@ mod tests {
     }
 
     /// A DISCARD KEEPS A TREE GIT MARKS LOCKED: a throwaway's tree a person locked, or whose add
-    /// git did not finish, is an error naming the mark, the path and the commands that recover it,
-    /// and nothing there is reaped or removed: the tree, its work, its registration and its branch
-    /// stay.
+    /// git did not finish, its tree there or gone and its path spelled as git lists it or as it
+    /// resolves through a link git lists, is an error naming the mark, the path as the discard was
+    /// given it and the commands that recover it, and nothing there is reaped or removed: the tree
+    /// and its work when there, its registration and its branch stay.
     #[test]
     fn a_discard_keeps_a_tree_git_marks_locked() {
-        type Spoil = fn(&HeldElsewhere);
-        let rows: [(&str, Spoil); 2] = [
-            ("a person's lock", HeldElsewhere::lock),
-            ("an add cut off", add_cut_off),
+        // Each row: the case, and what is done to the tree, answering the path the discard is at.
+        type Row = (&'static str, fn(&HeldElsewhere) -> String);
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut rows: Vec<Row> = vec![
+            ("a person's lock", |h| {
+                h.lock();
+                h.at().to_string()
+            }),
+            ("an add cut off", |h| {
+                add_cut_off(h);
+                h.at().to_string()
+            }),
+            ("a person's lock, its tree deleted", |h| {
+                h.lock();
+                std::fs::remove_dir_all(&h.at).unwrap();
+                h.at().to_string()
+            }),
+            ("an add cut off, its tree cleared", |h| {
+                add_cut_off_then_cleared(h);
+                h.at().to_string()
+            }),
         ];
+        #[cfg(unix)]
+        rows.push((
+            "a person's lock, the tree moved behind a link git lists",
+            |h| {
+                h.lock();
+                let moved = h.root.join("held-moved");
+                std::fs::rename(&h.at, &moved).unwrap();
+                std::os::unix::fs::symlink(&moved, &h.at).unwrap();
+                moved.to_str().unwrap().to_string()
+            },
+        ));
         let mut violations = Vec::new();
         for (row, spoil) in rows {
             let h = held_elsewhere(Held::Under);
-            spoil(&h);
+            let dir = spoil(&h);
+            let present = std::path::Path::new(&dir).exists();
             let (repo, at) = (h.repo(), h.at());
-            match Worktree::discard(repo, at, HELD_BRANCH, h.root()) {
+            match Worktree::discard(repo, &dir, HELD_BRANCH, h.root()) {
                 Ok(()) => violations.push(format!("{row}: the discard went through")),
                 Err(e) => {
                     let (first, rest) = e.0.split_once('\n').unwrap_or((&e.0, ""));
                     if !first.starts_with("a worktree git marks `locked")
                         || !first.ends_with(&format!(
-                            "` is registered at {at}: nothing there is cleared or adopted"
+                            "` is registered at {dir}: nothing there is cleared or adopted"
                         ))
                     {
                         violations.push(format!(
                             "{row}: the first line does not name the mark and where: {first}"
                         ));
                     }
-                    let recovery = locked_recovery(repo, at);
+                    let recovery = locked_recovery(repo, &dir);
                     if rest != recovery {
                         violations.push(format!(
                             "{row}: the recovery reads {rest:?}, not {recovery:?}"
@@ -8805,8 +8835,9 @@ mod tests {
                     }
                 }
             }
-            if h.work().as_deref() != Some("work\n") {
-                violations.push(format!("{row}: the work at {at} is gone"));
+            let work = std::fs::read_to_string(std::path::Path::new(&dir).join("work.txt"));
+            if present && work.ok().as_deref() != Some("work\n") {
+                violations.push(format!("{row}: the work at {dir} is gone"));
             }
             if !h.listed() {
                 violations.push(format!("{row}: the registration at {at} is gone"));
