@@ -336,6 +336,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "result: {refusal}; pass --supersede to replace it",
             "{STEP_BUSY_TOKEN} in this repo (lock {}). Refusing to run co",
             "rigger run: scratch sweep skipped (liveness unreadable): {e}",
+            "removing leftover worktree dir {} failed: {e}",
             "rigger run: orphan sweep: kept {path:?} - {why}",
             "{cmd}: no reachable base for the run branch {RUN_BRANCH:?}:",
             "{cmd}: the spec's criteria reference {n} path(s) - e.g. {fir",

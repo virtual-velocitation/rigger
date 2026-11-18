@@ -2399,6 +2399,13 @@ fn reap_then_remove_worktree(
     .map_err(|e| e.0)
 }
 
+/// The one line the orphan sweep says of an entry it kept: `path`, and `why` it stays.
+fn say_orphan_kept(path: &std::path::Path, why: &str) {
+    rigger::whole_line::say(format_args!(
+        "rigger run: orphan sweep: kept {path:?} - {why}"
+    ));
+}
+
 /// Run `run_id`'s progress reports out of `project`'s namespace of the progress store
 /// `backend` - its own per-run stream alone ([`progress::read_run`], spec 101), the one progress
 /// read `rigger status` and the dash snapshot fold. An unreadable stream is no progress.
@@ -4099,9 +4106,7 @@ fn reclaim_orphan_scratch(
                 };
                 match kept {
                     None => removed += 1,
-                    Some(why) => rigger::whole_line::say(format_args!(
-                        "rigger run: orphan sweep: kept {path:?} - {why}"
-                    )),
+                    Some(why) => say_orphan_kept(&path, &why),
                 }
             }
         } else if let Some(slug) = rigger::worktree::unit_scratch_slug(&name) {
@@ -4121,9 +4126,7 @@ fn reclaim_orphan_scratch(
                         reap_then_remove_dir(&path, root_path);
                         removed += 1;
                     }
-                    Some(why) => rigger::whole_line::say(format_args!(
-                        "rigger run: orphan sweep: kept {path:?} - {why}"
-                    )),
+                    Some(why) => say_orphan_kept(&path, &why),
                 }
             }
         } else if is_build_cache_tombstone(&name) {
