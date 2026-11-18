@@ -2249,11 +2249,11 @@ rigger::test_cases! {
     /// #[path = "foo.rs"] mod inner; } }` in a leaf file `src/parent.rs` resolves `foo.rs` against
     /// `src/parent/outer/middle/foo.rs` - `outer` THEN `middle`, matching the nesting order in
     /// source, never `middle` then `outer`; here `src/lib.rs`'s `mod parent;` declares that leaf,
-    /// so it is a child (spec 117, MODULE ROOTS AT READ). This fixture proves both halves at once, mirroring the
-    /// single-level fixture's own technique: the real target sits at the CORRECT outermost-first
-    /// path (`src/parent/outer/middle/actual.rs`) and must resolve and exclude, while a decoy at
-    /// the REVERSED (innermost-first) path (`src/parent/middle/outer/actual.rs`) a backwards
-    /// `reverse()` would compute instead must stay graphed as ordinary product code.
+    /// so it is a child (spec 117, MODULE ROOTS AT READ). This fixture proves both halves at once,
+    /// mirroring the single-level fixture's own technique: the real target sits at the CORRECT
+    /// outermost-first path (`src/parent/outer/middle/actual.rs`) and must resolve and exclude,
+    /// while a decoy at the REVERSED (innermost-first) path (`src/parent/middle/outer/actual.rs`)
+    /// a backwards `reverse()` would compute instead must stay graphed as ordinary product code.
     #[cfg(feature = "symbols")]
     a_path_attribute_override_nested_inside_chained_inline_modules_resolves_under_every_enclosing_modules_directory_in_outermost_first_order: assert_ingested_graph(
 &[
@@ -2289,8 +2289,8 @@ CodeEntity("src/parent/middle/outer/actual.rs::reversed_order_decoy_product", "t
 }
 
 rigger::test_cases! {
-    /// Spec 117, MODULE ROOTS AT READ, a dev-only inline mod's target is dev-only, through the public
-    /// ingest path: a `#[cfg(test)] mod x;` with no `#[path]` override inside the inline
+    /// Spec 117, MODULE ROOTS AT READ, a dev-only inline mod's target is dev-only, through the
+    /// public ingest path: a `#[cfg(test)] mod x;` with no `#[path]` override inside the inline
     /// `mod outer` of `src/lib.rs` names `src/outer/x.rs`, the convention's file under the
     /// declaring file's module directory plus the inline chain, so that file and its definition
     /// never reach the graph, while `src/x.rs` - the file a resolver ignoring the inline chain

@@ -147,11 +147,10 @@ fn module_dir(path: &str) -> String {
 /// rustc on some declarations. Among them: a submodule file named `lib.rs` or `main.rs`, whose
 /// `as_child` list [`module_dir`] places in its own directory where rustc uses its stem; an
 /// enclosing inline mod carrying its own `#[path]`, which contributes its name to the chain, not
-/// its path; a raw-identifier
-/// declaration (`mod r#match;` names `r#match.rs` where rustc reads `match.rs`); a path given
-/// through `#[cfg_attr(.., path = "..")]`, which is not taken as an override; and both
-/// `<name>.rs` and `<name>/mod.rs` present, which rustc rejects (E0761) and where the first
-/// candidate wins here. Round 9
+/// its path; a raw-identifier declaration (`mod r#match;` names `r#match.rs` where rustc reads
+/// `match.rs`); a path given through `#[cfg_attr(.., path = "..")]`, which is not taken as an
+/// override; and both `<name>.rs` and `<name>/mod.rs` present, which rustc rejects (E0761) and
+/// where the first candidate wins here. Round 9
 /// (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`) sets out the
 /// `#[path]`-override rules this code applies as one enumerated list:
 /// 1. A `#[path = ".."]` override on the declaration ([`Def::path_override`], captured
@@ -164,10 +163,10 @@ fn module_dir(path: &str) -> String {
 ///    directory-style module. When the declaration is instead nested inside one or more INLINE
 ///    `mod outer { .. }` blocks ([`Def::enclosing_inline_module_path`]), the base is the list's
 ///    module directory (the file's own directory for `as_root`, its [`module_dir`] for
-///    `as_child`) with the enclosing inline chain
-///    appended - one directory component per inline module, outermost first - verified against
-///    real rustc for a plain inline parent such as `mod outer`
-///    (`Def::enclosing_inline_module_path`'s doc gives examples where the chain departs).
+///    `as_child`) with the enclosing inline chain appended - one directory component per inline
+///    module, outermost first - verified against real rustc for a plain inline parent such as
+///    `mod outer` (`Def::enclosing_inline_module_path`'s doc gives examples where the chain
+///    departs).
 ///    ABSOLUTE / SCHEME REJECTION: an override that is itself an OS-absolute path, a URI scheme,
 ///    or a Windows drive letter
 ///    ([`path_override_names_an_unresolvable_shape`]) names no file, joined onto nothing - rustc
