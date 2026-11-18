@@ -3396,8 +3396,9 @@ pub fn run(cfg: &Config, deps: &Deps) -> Result<RunState, Error> {
 /// made when it started (signed verdicts), and, when `channel` is given, answering each
 /// `rigger gate <id>` request it carries for as long as the run drives, spawns included
 /// ([`RunCtx::answer_gate_request`]). The channel is closed when the run returns, however it
-/// returns. A drive of a begun run that ends on any error but a park holds the run first
-/// ([`held_on_a_fault`]), for the orchestrator to resolve.
+/// returns. A run that ends on any error but a park after its workflow validates, a fault
+/// beginning or adopting the run included, holds the run first ([`held_on_a_fault`]), for the
+/// orchestrator to resolve.
 pub fn run_serving(
     cfg: &Config,
     deps: &Deps,
@@ -3411,13 +3412,16 @@ pub fn run_serving(
     // in the log and every fold below scopes to it. A fresh campaign mints a new
     // `RunStarted`; a resume/idle/replay over the same criteria adopts the existing run
     // and appends nothing. The run id then rides every event this process emits. A minted
-    // boundary is folded like every other event the run appends.
-    let run_id = crate::run_store::ensure_started(&deps.folding(), &deps.criteria)?;
-    drive(cfg, deps, verdict_key, channel, run_id).map_err(|e| held_on_a_fault(deps, e))
+    // boundary is folded like every other event the run appends. A store fault that stops the
+    // run's start is held like a fault of its drive.
+    crate::run_store::ensure_started(&deps.folding(), &deps.criteria)
+        .map_err(Error::from)
+        .and_then(|run_id| drive(cfg, deps, verdict_key, channel, run_id))
+        .map_err(|e| held_on_a_fault(deps, e))
 }
 
 /// THE CONDUCTOR'S FAULT HOLD: hold the run on `e`, a fault of the conductor's own that ended the
-/// run's drive, before the drive returns it ([`crate::run_store::hold_on_a_fault`], the fault's
+/// run's start or its drive, before the run returns it ([`crate::run_store::hold_on_a_fault`], the fault's
 /// text with its class marker stripped): for the orchestrator first, for a person when the same
 /// fault recurs after a release in the same run. `rigger status` and `rigger watch` name it with
 /// whoever resolves it, no probe ends it, and `rigger release` continues the run. It is the one home of every error a begun run's drive returns: each
@@ -3427,10 +3431,11 @@ pub fn run_serving(
 /// a spawn left its own hold standing: a drive that ends on an error and is neither held nor
 /// relaunched reaches nobody. A unit charged for git refusing its own work
 /// ([`UNIT_RETRY_MARKER`]) is held on [`UNIT_WORK_REFUSED`](rigger_domain::agent::UNIT_WORK_REFUSED)
-/// instead, whose release retries it. A hold it cannot write is said through
-/// [`Deps::log`]; `e` is returned either way, with every [`HALT_MARKERS`] sentinel stripped
-/// ([`without_halt_markers`]), so neither the hold nor the operator's message carries one,
-/// whichever path the halt reached here by.
+/// instead, whose release retries it. A hold it cannot write is said through [`Deps::log`] in
+/// one line: the run stopped, and its hold could not be recorded. Either way it returns the text
+/// it holds: `e` with every [`HALT_MARKERS`] sentinel stripped ([`without_halt_markers`]) and its
+/// class marker after them ([`strip_failure_marker`]), so neither the hold nor the operator's
+/// message carries one, whichever path the halt reached here by.
 fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
     if is_parked(&e) {
         return e;
@@ -3445,10 +3450,11 @@ fn held_on_a_fault(deps: &Deps, e: Error) -> Error {
     };
     if let Err(write) = held {
         (deps.log)(&format!(
-            "rigger run: the run was not held on its fault ({write}): {fault}"
+            "rigger run: the run stopped, and its hold could not be recorded ({write}). \
+             The fault: {fault}"
         ));
     }
-    e
+    Error(fault)
 }
 
 /// [`run_serving`]'s drive of `run_id`, the run it began or adopted: the resume by replay, the
