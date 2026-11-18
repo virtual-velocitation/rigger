@@ -323,8 +323,9 @@ Stamp                                (a Tip plus what only advance knows)
               rows settled at advance can change (the symbol extractors' tag version, the facts
               generation, the digest of the extractors the project's workflow declares, when it
               declares any, the grouping generation and the settled generation; golden tests pin
-              them to digests of the facts, the groupings and the settled rows over fixtures, so
-              a change that moves a digest fails until its pair is bumped and re-pinned)
+              the generations and the tag version beside digests of the facts, the groupings and
+              the settled rows over fixtures, so a change that moves one of those digests fails
+              until a version pinned beside it is bumped and the digest re-pinned)
   seq         the snapshot's sequence number
 ```
 
