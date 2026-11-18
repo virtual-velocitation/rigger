@@ -313,17 +313,17 @@ impl Worktree {
                         reassert_mu: std::sync::Mutex::new(()),
                     });
                 }
-                // DEFEND THE DETERMINISTIC DIR before re-adding. Because the path no longer
-                // carries a per-process uuid, a SIGKILL mid `git worktree add` (dir populated,
-                // registration not finalized) - or any crash that leaves a populated dir at
-                // this fixed path that is NOT a registered worktree on the branch - would make
-                // the `add` below hard-fail (`fatal: <dir> already exists`, exit 128), and
-                // every subsequent resume re-derives the SAME path and re-hits the SAME failure:
-                // a NON-SELF-HEALING PERMANENT WEDGE on the very resume path this unit hardens.
-                // Clear the unregistered leftover (deregister it if git still tracks it, else
-                // remove the bare dir) so the branch's committed checkpoint is checked out
-                // afresh (adv-u4det-leftover-hardfail-confirmed-nonselfhealing). Only the dir is
-                // cleared, never the durable branch - the branch's work is exactly what we reuse.
+                // CLEAR A LEFTOVER AT THE DETERMINISTIC DIR before re-adding. The path carries
+                // no per-process part, so anything left at it would make the `add` below fail
+                // (`already exists`) on every resume that derives the same path. `registered`
+                // answered a plain no, so no tree git registers is there: what is there is a
+                // plain directory, or a tree whose registration git's prune or the heal removed.
+                // A `git worktree add` cut off leaves its entry locked, and a `git worktree
+                // remove` cut off after it deleted the tree's link leaves it prunable;
+                // [`registered_at`] refuses both, so the run holds naming git's own commands that
+                // recover that path ([`marked_entry`]), and nothing git still registers is
+                // cleared here. Only the dir is cleared, never the branch, whose committed work
+                // is checked out afresh.
                 clear_leftover_at(repo, dir, authorized_root)?;
                 // Reuse the existing branch's committed work: check it out into the fresh
                 // worktree dir, no `-b` (which would refuse, the ref already exists).
@@ -2545,13 +2545,13 @@ fn registration_on(repo: &str, branch: &str, authorized_root: &str) -> Result<On
     };
     let at = entry.path;
     if let Some(mark) = entry.mark.filter(|mark| mark_word(mark) == "locked") {
-        return Err(marked_entry(mark, at));
+        return Err(marked_entry(repo, mark, at));
     }
     let Some(found) = metadata_at(at, std::fs::metadata(at))? else {
         return Ok(OnBranch::Gone(at.to_string()));
     };
     if let Some(mark) = entry.mark {
-        return Err(marked_entry(mark, at));
+        return Err(marked_entry(repo, mark, at));
     }
     let root = std::path::Path::new(authorized_root);
     if found.is_dir() && crate::reap::strictly_under(std::path::Path::new(at), root).is_some() {
@@ -2560,11 +2560,34 @@ fn registration_on(repo: &str, branch: &str, authorized_root: &str) -> Result<On
     Err(checked_out_elsewhere(branch, at, authorized_root))
 }
 
-/// The error for an entry git marks `mark` (its `locked` or `prunable` line) registered at `at`:
-/// nothing there is cleared or adopted.
-fn marked_entry(mark: &str, at: &str) -> Error {
+/// The error for an entry of `repo` git marks `mark` (its `locked` or `prunable` line) registered
+/// at `at`: nothing there is cleared or adopted, and the lines after the first name git's own
+/// commands that recover that path, for whoever the run's hold reaches. A `locked` entry is an add
+/// git did not finish, which git locks before it writes anything else, or a lock a person set; a
+/// `prunable` one with its dir there is a remove git did not finish after it deleted the tree's
+/// link, or a tree whose link was lost.
+fn marked_entry(repo: &str, mark: &str, at: &str) -> Error {
+    let recovery = if mark_word(mark) == "locked" {
+        let link = std::path::Path::new(at).join(".git");
+        format!(
+            "if git's add there was cut off, `git -C {repo} worktree remove --force --force {at}` \
+             removes that tree and its registration; when git answers that {} does not exist, \
+             `git -C {repo} worktree unlock {at}` and then `git -C {repo} worktree prune` remove \
+             the registration and keep the files, which rigger may then clear as a leftover\n\
+             if a person locked it, `git -C {repo} worktree unlock {at}` lifts the lock and keeps \
+             the tree and its work",
+            link.display()
+        )
+    } else {
+        format!(
+            "`git -C {repo} worktree prune` removes that registration and keeps the files at {at} \
+             (it removes every registration git marks prunable); rigger may then clear what is \
+             left there as a leftover, so copy out anything worth keeping first"
+        )
+    };
     Error(format!(
-        "a worktree git marks `{mark}` is registered at {at}: nothing there is cleared or adopted"
+        "a worktree git marks `{mark}` is registered at {at}: nothing there is cleared or \
+         adopted\n{recovery}"
     ))
 }
 
@@ -2623,7 +2646,7 @@ fn registered_at(
             Ok(false) => {}
             Ok(true) => {
                 return match entry.mark {
-                    Some(mark) => Err(marked_entry(mark, dir)),
+                    Some(mark) => Err(marked_entry(repo, mark, dir)),
                     None => Ok(true),
                 };
             }
@@ -8540,9 +8563,9 @@ mod tests {
 
     #[test]
     fn create_heals_a_leftover_dir_at_the_deterministic_path() {
-        // Resume self-heal (Gap 12, spec 06:48): with a DETERMINISTIC dir, a SIGKILL mid
-        // `git worktree add` can leave a POPULATED dir at the fixed path that is NOT a
-        // registered worktree, while the unit's durable BRANCH survives as a checkpoint.
+        // Resume self-heal (Gap 12, spec 06:48): with a DETERMINISTIC dir, a POPULATED dir can
+        // sit at the fixed path that is NOT a registered worktree (a plain directory, or a tree
+        // whose registration git's prune removed), while the unit's durable BRANCH survives.
         // The old per-process-uuid design made this collision IMPOSSIBLE; determinism must
         // not trade self-healing for a permanent wedge. `create` must REMOVE the
         // unregistered leftover and check the branch out afresh - never hard-fail
@@ -8575,7 +8598,7 @@ mod tests {
         );
 
         // Plant a POPULATED leftover at the deterministic path that is NOT a registered
-        // worktree - exactly the residue a SIGKILL mid `worktree add` leaves behind.
+        // worktree.
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(std::path::Path::new(&dir).join("leftover.txt"), "torn\n").unwrap();
         assert!(

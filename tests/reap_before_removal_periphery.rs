@@ -296,10 +296,9 @@ fn create_reaps_a_process_rooted_in_a_leftover_dir_at_the_deterministic_path_bef
     // reap-gated removal.
     //
     // `create`'s doc comment (spec 79 round-2 fix) is explicit: `authorized_root` "gates the
-    // self-heal reap below via reap_dir_before_removal" in the "DEFEND THE DETERMINISTIC DIR"
-    // branch - a populated, UNREGISTERED leftover at the deterministic path (the residue a
-    // SIGKILL mid `git worktree add` leaves) is cleared via `clear_worktree_dir` before the
-    // branch is checked out afresh. `src/worktree.rs`'s own `create_heals_a_leftover_dir_at_
+    // self-heal reap below via reap_dir_before_removal" in the "CLEAR A LEFTOVER AT THE
+    // DETERMINISTIC DIR" branch - a populated, UNREGISTERED leftover at the deterministic path
+    // is cleared via `clear_worktree_dir` before the branch is checked out afresh. `src/worktree.rs`'s own `create_heals_a_leftover_dir_at_
     // the_deterministic_path` unit test drives this exact branch but passes an EMPTY
     // `authorized_root`, which `reap_dir_before_removal`'s own doc comment defines as a no-op
     // ("nothing to authorize") - so that test proves the FILE healing, structurally blind to
