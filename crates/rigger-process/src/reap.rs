@@ -913,18 +913,37 @@ impl Tree {
     /// Address `target` through `os` ([`EndOs::address`]), then send `signal` to it through that
     /// address, only if, read right now, `target`'s parent chain in `os` still reaches the root
     /// ([`chain_reaches`]) and its pid still names the process the walk found
-    /// ([`toctou_still_same_process`]). Answers whether it was sent: a process that cannot be
-    /// addressed, or fails either check, is never signalled.
-    fn send(&self, os: &mut impl EndOs, signal: Signal, target: &Identity) -> bool {
+    /// ([`toctou_still_same_process`]). A freeze sent by the pid alone, with no descriptor to keep
+    /// the pid its process's, is confirmed by reading the start time again
+    /// ([`EndOs::start_after_freeze`]): one that reached another process, which took the pid
+    /// between the checks and the freeze, is resumed at once, reported in `report`'s faults, and
+    /// counts as not sent. Answers whether it was sent: a process that cannot be addressed, or
+    /// fails either check, is never signalled.
+    fn send(
+        &self,
+        os: &mut impl EndOs,
+        report: &mut EndReport,
+        signal: Signal,
+        target: &Identity,
+    ) -> bool {
         let Some(to) = os.address(target.pid) else {
             return false;
         };
         let holds = chain_reaches(target.pid, self.root, |pid| os.parent(pid))
             && toctou_still_same_process(target, &to, self.self_pid, &self.self_ancestors);
-        if holds {
-            os.send(signal, &to);
+        if !holds {
+            return false;
         }
-        holds
+        os.send(signal, &to);
+        if signal == Signal::Stop && to.descriptor.is_none() {
+            let reached = os.start_after_freeze(&to);
+            if reached.is_some_and(|start| start != target.start) {
+                os.send(Signal::Resume, &to);
+                report.faults.push(freeze_reached_another(target.pid));
+                return false;
+            }
+        }
+        true
     }
 
     /// The root's descendants in `table`, one list per generation, read by `os`'s tie rule
@@ -957,7 +976,7 @@ impl Tree {
         let table = os.table();
         let walk = self.walk(os, &table, report).concat();
         for target in &walk {
-            if self.send(os, signal, target) {
+            if self.send(os, report, signal, target) {
                 report.unskip(target);
             } else {
                 report.skip(target);
@@ -1115,7 +1134,7 @@ fn freeze_walk(
             if !FREEZES || found.stopped.contains(target) || !parent_frozen() {
                 continue;
             }
-            if tree.send(os, Signal::Stop, target) {
+            if tree.send(os, report, Signal::Stop, target) {
                 report.unskip(target);
                 found.stopped.insert(*target);
                 new.push(target.pid);
@@ -1158,7 +1177,7 @@ fn end_watched_with(
         let mut ended = Vec::new();
         for target in generation {
             let stopped = found.stopped.contains(target);
-            if tree.send(os, Signal::Hard, target) {
+            if tree.send(os, &mut report, Signal::Hard, target) {
                 report.unskip(target);
                 ended.push(*target);
             } else if !stopped {
@@ -1171,7 +1190,7 @@ fn end_watched_with(
         poll_until(generation_deadline, || !ended.iter().any(running));
         for target in ended.iter().filter(|target| running(target)) {
             let stopped = found.stopped.contains(target);
-            let resumed = stopped && tree.send(os, Signal::Resume, target);
+            let resumed = stopped && tree.send(os, &mut report, Signal::Resume, target);
             report
                 .residue
                 .push(Leftover::of(target.pid, stopped && !resumed));
@@ -3013,7 +3032,12 @@ mod tests {
             };
             let mut os = Rigged::default();
 
-            let sent = Tree::rooted_at(root.id()).send(&mut os, Signal::Hard, &target);
+            let sent = Tree::rooted_at(root.id()).send(
+                &mut os,
+                &mut EndReport::default(),
+                Signal::Hard,
+                &target,
+            );
 
             assert_eq!(
                 (sent, os.steps, os.sent),
