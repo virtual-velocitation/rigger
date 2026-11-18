@@ -1970,6 +1970,59 @@ mod tests {
         init_is_never_addressed: never_addressed(1);
     }
 
+    /// A job's process list, read by [`whole_list`] from a fake job that counts `counts[i]`
+    /// processes at its `i`-th read: a read into room for fewer lists only those that fit, and
+    /// then succeeds where `short_reads_succeed` and fails otherwise, since the OS is documented
+    /// to answer either way. Answers how many pids the list holds, whether it is whole, and the
+    /// room each read was given.
+    fn listed_from(counts: &[usize], short_reads_succeed: bool) -> (usize, bool, Vec<usize>) {
+        let mut rooms = Vec::new();
+        let mut reads = counts.iter();
+        let (pids, whole) = whole_list(|room| {
+            rooms.push(room);
+            let assigned = *reads.next().expect("no more reads than the job's counts");
+            let fits = assigned.min(room);
+            let read = fits == assigned || short_reads_succeed;
+            ListRead {
+                read,
+                pids: if read {
+                    (0..fits as u32).collect()
+                } else {
+                    Vec::new()
+                },
+                assigned,
+            }
+        });
+        (pids.len(), whole, rooms)
+    }
+
+    // Pure rows: the fake job stands in for the OS's list call, which only Windows has.
+    crate::test_cases! {
+        a_job_the_first_read_has_room_for_is_read_once:
+            assert_eq!(listed_from(&[3], false), (3, true, vec![64]));
+        a_job_longer_than_the_first_read_is_read_again_into_room_for_all_when_the_short_read_fails:
+            assert_eq!(listed_from(&[100, 100], false), (100, true, vec![64, 100]));
+        a_job_longer_than_the_first_read_is_read_again_into_room_for_all_when_the_short_read_lists_part:
+            assert_eq!(listed_from(&[100, 100], true), (100, true, vec![64, 100]));
+        a_job_that_grows_at_every_read_answers_its_longest_list_as_not_whole:
+            assert_eq!(
+                listed_from(&[100, 200, 300, 400], true),
+                (300, false, vec![64, 100, 200, 300])
+            );
+        a_read_that_fails_with_room_to_spare_is_not_read_again_and_lists_nothing: {
+            let mut reads = 0;
+            let listed = whole_list(|_| {
+                reads += 1;
+                ListRead {
+                    read: false,
+                    pids: Vec::new(),
+                    assigned: 0,
+                }
+            });
+            assert_eq!((listed, reads), ((Vec::new(), false), 1));
+        };
+    }
+
     /// Process handles, this OS's process descriptors: a handle opened on a process keeps that
     /// process's pid its own until the handle closes, so what is read and sent through it reaches
     /// that process or none.
