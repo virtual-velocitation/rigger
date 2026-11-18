@@ -50611,30 +50611,14 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
-    /// A UNIT GIT REFUSES ON EVERY ATTEMPT ESCALATES WHEN ITS BOUND IS SPENT: a hook refusing
-    /// every attempt's checkpoint commit charges each attempt and holds the run to retry the
-    /// unit, each hold its own fault (its first line names the attempt), so none recurs to a
-    /// person; released each time, the relaunch launches the next attempt. The attempt that
-    /// spends the unit's retry bound escalates the unit (its lesson naming the refusal as git's,
-    /// `UnitEscalated`) and holds nothing, the drive going on. The work the refused trees held
-    /// is committed onto the unit's branch, the lesson naming the commit and the branch, and the
-    /// tree is removed as an escalated unit's tree is; a run of another spec that plans a unit
-    /// of the same name moves the branch aside, and the commit the lesson names is still
-    /// reachable from the ref that run records.
-    #[test]
+    /// In `repo`, a `prepare-commit-msg` hook refusing every checkpoint commit of unit-a's
+    /// attempts, and the config and driver the rows below drive it with: unit-a serves `c1`
+    /// under a gate that passes, its retry bound three attempts, and every attempt writes
+    /// `f.txt`, the first `kept.txt` too. Answers the hook's path, the config and the driver.
     #[cfg(unix)]
-    fn a_unit_git_refuses_on_every_attempt_escalates_when_its_bound_is_spent() {
+    fn refusing_every_attempt(repo: &Path) -> (std::path::PathBuf, Config, Stub) {
         use std::os::unix::fs::PermissionsExt;
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let store = Store::open(":memory:").unwrap();
-        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
-        let unit_dir = unit_worktree_dir(&scratch, "unit-a");
-        let hook = repo
-            .path()
-            .join(".git")
-            .join("hooks")
-            .join("prepare-commit-msg");
+        let hook = repo.join(".git").join("hooks").join("prepare-commit-msg");
         std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
         std::fs::write(
             &hook,
@@ -50666,6 +50650,39 @@ stage "implement" adjudicator "adj" failed
             )]),
             ..Stub::new()
         };
+        (hook, cfg, driver)
+    }
+
+    /// Release the hold on the run `deps` drives, as an operator does.
+    fn release_the_hold(deps: &Deps) -> bool {
+        crate::run_store::release_hold(
+            &deps.folding(),
+            crate::run::HOLD_BY_OPERATOR,
+            std::time::SystemTime::now(),
+        )
+        .unwrap_or(false)
+    }
+
+    /// A UNIT GIT REFUSES ON EVERY ATTEMPT ESCALATES WHEN ITS BOUND IS SPENT: a hook refusing
+    /// every attempt's checkpoint commit charges each attempt and holds the run to retry the
+    /// unit, each hold its own fault (its first line names the attempt), so none recurs to a
+    /// person; released each time, the relaunch launches the next attempt. The attempt that
+    /// spends the unit's retry bound escalates the unit (its lesson naming the refusal as git's,
+    /// `UnitEscalated`) and holds nothing, the drive going on. The work the refused trees held
+    /// is kept on the unit's kept ref, one commit whose one parent is the branch's tip, the
+    /// lesson naming the commit and the ref; the unit's branch does not move, and the tree is
+    /// removed as an escalated unit's tree is. A run of another spec that plans a unit of the
+    /// same name sets the kept ref aside, under the quarantine namespace, where the commit the
+    /// lesson names still holds the work.
+    #[test]
+    #[cfg(unix)]
+    fn a_unit_git_refuses_on_every_attempt_escalates_when_its_bound_is_spent() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let unit_dir = unit_worktree_dir(&scratch, "unit-a");
+        let (hook, cfg, driver) = refusing_every_attempt(repo.path());
         let deps = Deps {
             repo: repo_path.clone(),
             ..stub_deps(&store, &driver, Vec::new())
@@ -50688,13 +50705,9 @@ stage "implement" adjudicator "adj" failed
                 holds,
                 "attempt {attempt}: held to retry the unit, never for a person"
             );
-            let released = crate::run_store::release_hold(
-                &deps.folding(),
-                crate::run::HOLD_BY_OPERATOR,
-                std::time::SystemTime::now(),
-            );
-            assert_eq!(released.ok(), Some(true), "attempt {attempt}: released");
+            assert!(release_the_hold(&deps), "attempt {attempt}: released");
         }
+        let tip = git_out(&repo_path, &["rev-parse", "rigger/u/unit-a"]);
         let Ok(state) = run_isolated(&cfg, &deps) else {
             panic!("the attempt that spends the bound escalates the unit, the drive going on");
         };
@@ -50749,9 +50762,11 @@ stage "implement" adjudicator "adj" failed
             .expect("the escalation lesson");
         let kept = lesson
             .split_once("; the tree it left is kept as commit ")
-            .and_then(|(_, rest)| rest.strip_suffix(" on rigger/u/unit-a"))
+            .and_then(|(_, rest)| {
+                rest.strip_suffix(" on rigger/kept/unit-a, off the unit's branch")
+            })
             .unwrap_or_else(|| {
-                panic!("the lesson names the commit and the branch the tree is kept on: {lesson}")
+                panic!("the lesson names the commit and the ref the tree is kept on: {lesson}")
             })
             .to_string();
         assert!(
@@ -50759,9 +50774,19 @@ stage "implement" adjudicator "adj" failed
             "the escalated unit's tree is removed, as an escalated unit's tree is"
         );
         assert_eq!(
-            git_out(&repo_path, &["rev-parse", "rigger/u/unit-a"]),
+            git_out(&repo_path, &["rev-parse", "rigger/kept/unit-a"]),
             kept,
-            "the unit's branch names the commit"
+            "the unit's kept ref names the commit"
+        );
+        assert_eq!(
+            git_out(&repo_path, &["rev-parse", "rigger/u/unit-a"]),
+            tip,
+            "the unit's branch does not move"
+        );
+        assert_eq!(
+            git_out(&repo_path, &["rev-parse", &format!("{kept}^@")]),
+            tip,
+            "the kept commit's one parent is the branch's tip"
         );
         let work = |rev: &str| git_out(&repo_path, &["show", &format!("{rev}:kept.txt")]);
         assert_eq!(
@@ -50783,25 +50808,208 @@ stage "implement" adjudicator "adj" failed
             run_isolated(&cfg, &deps).is_ok(),
             "a run of another spec plans unit-a again"
         );
-        let moved_to = store
-            .read_stream(STREAM, 0, Direction::Forward)
-            .unwrap()
-            .iter()
-            .filter(|e| e.type_ == ledger::TYPE_UNIT_STATUS)
-            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
-            .find(|v| v["status"] == STATUS_BRANCH_QUARANTINED)
-            .and_then(|v| v["quarantined_to"]["branch"].as_str().map(str::to_string))
-            .expect("the run of another spec moves the escalated unit's branch aside");
-        assert!(
-            run_git(
-                &repo_path,
-                &["merge-base", "--is-ancestor", &kept, &moved_to]
-            )
-            .status
-            .success(),
-            "the commit the lesson names is reachable from {moved_to}"
+        let aside = format!("rigger/orphaned/unit-a-{}", &kept[..12]);
+        assert_eq!(
+            git_out(&repo_path, &["rev-parse", &aside]),
+            kept,
+            "the run of another spec sets the escalated unit's kept ref aside, at {aside}"
         );
-        assert_eq!(work(&kept), "work", "and still holds the work");
+        assert!(
+            !branch_present(&repo_path, "rigger/kept/unit-a"),
+            "the kept ref itself is gone, so the new unit's keep never meets it"
+        );
+        assert_eq!(work(&aside), "work", "and the commit still holds the work");
+    }
+
+    /// NOTHING GIT REFUSED LANDS PAST A FAULT BETWEEN THE KEEP AND THE CHARGE: the attempt that
+    /// spends the unit's retry bound keeps its tree and then fails to record its charge on a
+    /// store fault, which holds the run uncharged. Released and relaunched with the hook still
+    /// refusing, the attempt runs again from the unit's branch, which the keep never moved, so
+    /// git's refusal is met again: the work git refused never reaches the run branch.
+    #[test]
+    #[cfg(unix)]
+    fn a_fault_between_the_keep_and_the_charge_lands_nothing_git_refused() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let (_hook, cfg, driver) = refusing_every_attempt(repo.path());
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        for attempt in 1..=2 {
+            assert!(
+                run_isolated(&cfg, &deps).is_err(),
+                "attempt {attempt}: the refusal ends the drive"
+            );
+            assert!(release_the_hold(&deps), "attempt {attempt}: released");
+        }
+        let failing = FailingStore {
+            inner: &store,
+            fail_containing: "\"cause\":\"git-refused\"",
+        };
+        let faulty = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&failing, &driver, Vec::new())
+        };
+        assert!(
+            run_isolated(&cfg, &faulty).is_err(),
+            "the store fault recording the bound's charge ends the drive"
+        );
+        assert!(
+            release_the_hold(&deps),
+            "the store fault's hold is released"
+        );
+
+        let relaunched = run_isolated(&cfg, &deps);
+
+        let events = run_log(&store);
+        assert_eq!(
+            payloads_of_type(&events, ledger::TYPE_UNIT_INTEGRATED),
+            Vec::<Value>::new(),
+            "the unit never lands: {:?}",
+            relaunched.err()
+        );
+        assert!(
+            !repo.path().join("kept.txt").exists(),
+            "the work git refused never reaches the repository's checkout"
+        );
+        assert_eq!(
+            trimmed_stdout(&run_git(
+                &repo_path,
+                &["log", "HEAD", "--format=%H", "--", "kept.txt"]
+            )),
+            "",
+            "nor any commit the run branch holds"
+        );
+    }
+
+    /// BRANCH COLLECTION REAPS THE REFS RIGGER HOLDS ASIDE ONCE THEY HOLD NOTHING HEAD LACKS:
+    /// an integrated unit's kept ref goes with its branch, whatever it holds; a kept or
+    /// orphaned ref whose tip HEAD's history holds is removed and the removal logged; an
+    /// orphaned ref holding a commit HEAD lacks stays for a person, unlogged.
+    #[test]
+    fn branch_collection_reaps_the_held_refs_head_holds_and_keeps_the_rest() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        seed_unit_branches(&repo_path, &["done"]);
+        let head = git_out(&repo_path, &["rev-parse", "HEAD"]);
+        let ahead = git_out(
+            &repo_path,
+            &["commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "aside"],
+        );
+        let stale_aside = format!("rigger/orphaned/stale-{}", &head[..12]);
+        let live_aside = format!("rigger/orphaned/live-{}", &ahead[..12]);
+        for (name, commit) in [
+            ("rigger/kept/done", &ahead),
+            ("rigger/kept/stale", &head),
+            (stale_aside.as_str(), &head),
+            (live_aside.as_str(), &ahead),
+        ] {
+            git_out(
+                &repo_path,
+                &["update-ref", &format!("refs/heads/{name}"), commit],
+            );
+        }
+
+        let lines = gc_logged(&repo_path, &[started_on_branch("done"), integrated("done")]);
+
+        for gone in [
+            "rigger/u/done",
+            "rigger/kept/done",
+            "rigger/kept/stale",
+            stale_aside.as_str(),
+        ] {
+            assert!(
+                !branch_present(&repo_path, gone),
+                "{gone} is reaped: {lines:?}"
+            );
+        }
+        for reaped in ["rigger/kept/stale", stale_aside.as_str()] {
+            let line =
+                format!("rigger: branch-gc: removed {reaped:?} - HEAD's history holds its tip");
+            assert!(
+                lines.contains(&line),
+                "the reap is logged, {line:?}: {lines:?}"
+            );
+        }
+        assert!(
+            branch_present(&repo_path, &live_aside),
+            "a ref holding a commit HEAD lacks stays"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains(&live_aside)),
+            "and nothing claims it went: {lines:?}"
+        );
+    }
+
+    /// A QUARANTINE REF REAPED IS ADOPTED AT THE TIP ITS RECORD NAMES: branch collection reaps
+    /// a quarantine ref once HEAD's history holds its tip, so a later unit serving that
+    /// criterion adopts the tip the quarantine record names, which HEAD holds, and the run
+    /// goes on rather than holding on the ref's absence.
+    #[test]
+    fn a_reaped_quarantine_is_adopted_at_the_tip_its_record_names() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let head = git_out(&repo_path, &["rev-parse", "HEAD"]);
+        let store = Store::open(":memory:").unwrap();
+        let quarantined = Event::new(
+            ledger::TYPE_UNIT_STATUS,
+            serde_json::to_vec(&json!({
+                "id": "unit-old",
+                "status": STATUS_BRANCH_QUARANTINED,
+                "criterion_id": "c1",
+                "spec": "",
+                "quarantined_to": {
+                    "branch": format!("rigger/orphaned/unit-old-{}", &head[..12]),
+                    "tip": head,
+                },
+            }))
+            .unwrap(),
+        );
+        seed_events_in_run(
+            &store,
+            &["prior"],
+            &[started_with_criterion("unit-old", "c1"), quarantined],
+        );
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            Stage {
+                name: "unit-a".into(),
+                agent: "worker".into(),
+                criterion_id: "c1".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                ..Default::default()
+            },
+        );
+        let driver = Stub {
+            write_file: Some("f.txt".into()),
+            ..Stub::new()
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+
+        let state = match run_isolated(&cfg, &deps) {
+            Ok(state) => state,
+            Err(e) => panic!("the reaped quarantine is adopted, never held on: {}", e.0),
+        };
+        let events = run_log(&store);
+        let adopted = payloads_of_type(&events, ledger::TYPE_UNIT_STATUS)
+            .into_iter()
+            .find(|v| v["id"] == "unit-a" && v["status"] == STATUS_ADOPTION_RECORDED)
+            .expect("the adoption is recorded");
+        assert_eq!(
+            adopted["adopted_from"],
+            json!({"unit": "unit-old", "tip": head, "spec": ""}),
+            "adopted at the tip the quarantine record names"
+        );
+        assert_eq!(state.units["unit-a"].status, ledger::Status::Integrated);
     }
 
     #[test]
@@ -56486,17 +56694,22 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
-    /// A PRODUCER'S PLAN OUTLIVES ITS ESCALATION: a producer that leaves its plan outside a
-    /// commit on every attempt is charged each one as a reject, and the attempt that spends its
-    /// retry bound escalates the unit with the plan committed onto the unit's branch, the
-    /// escalation lesson naming the commit and the branch; the tree is removed as an escalated
-    /// unit's tree is, the plan on the branch.
+    /// A PRODUCER'S PLAN OUTLIVES ITS ESCALATION OFF ITS BRANCH: a producer that leaves its
+    /// plan outside a commit on every attempt, a leftover outside the stage's output beside it,
+    /// is charged each one as a reject, and the attempt that spends its retry bound escalates
+    /// the unit with its tree kept on the unit's kept ref, the escalation lesson naming the
+    /// commit and the ref; the unit's branch does not move and the tree is removed as an
+    /// escalated unit's tree is. Granted an attempt, the producer commits its plan on the
+    /// branch, which carries no leftover, so the attempt is never rejected as out of scope:
+    /// the plan lands, the leftover reaches no landed commit, and the kept ref goes with the
+    /// unit's branch.
     #[test]
-    fn a_producer_escalating_with_its_plan_outside_a_commit_keeps_the_plan_on_its_branch() {
+    fn a_producer_escalating_with_its_plan_outside_a_commit_keeps_its_tree_off_its_branch() {
         let repo = temp_git_project_with_commit();
         let repo_path = repo.path().to_str().unwrap().to_string();
         let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
         let unit_dir = unit_worktree_dir(&scratch, "plan");
+        let base = git_out(&repo_path, &["rev-parse", "HEAD"]);
         let mut cfg = Config::default();
         cfg.agents.insert("planner".into(), agent("planner"));
         cfg.workflow.defaults.max_retries = 2;
@@ -56509,13 +56722,24 @@ stage "implement" adjudicator "adj" failed
                 ..Default::default()
             },
         );
+        let granted = spawn_id("plan", ROLE_IMPLEMENTER, 2);
+        let git = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let mut write_files_by_spawn_id: HashMap<String, Vec<String>> = (0..2)
+            .map(|n| {
+                let left = vec!["specs/90-foo.md".to_string(), "notes.txt".to_string()];
+                (spawn_id("plan", ROLE_IMPLEMENTER, n), left)
+            })
+            .collect();
+        write_files_by_spawn_id.insert(granted.clone(), vec!["specs/90-foo.md".to_string()]);
         let driver = Stub {
-            write_files_by_spawn_id: (0..2)
-                .map(|n| {
-                    let plan = vec!["specs/90-foo.md".to_string()];
-                    (spawn_id("plan", ROLE_IMPLEMENTER, n), plan)
-                })
-                .collect(),
+            write_files_by_spawn_id,
+            git_by_spawn_id: HashMap::from([(
+                granted,
+                vec![
+                    git(&["add", "specs/90-foo.md"]),
+                    git(&["commit", "-q", "-m", "plan"]),
+                ],
+            )]),
             ..Stub::new()
         };
         let st = Store::open(":memory:").unwrap();
@@ -56528,12 +56752,24 @@ stage "implement" adjudicator "adj" failed
 
         assert_eq!(rs.units["plan"].status, ledger::Status::Escalated);
         let events = run_log(&st);
-        assert_eq!(
-            payloads_of_type(&events, ledger::TYPE_UNIT_FAILED)
+        let charged = |events: &[Event]| {
+            payloads_of_type(events, ledger::TYPE_UNIT_FAILED)
                 .iter()
-                .map(|f| (f["attempts"].as_u64(), f["cause"].as_str()))
-                .collect::<Vec<_>>(),
-            [(Some(1), Some("reject")), (Some(2), Some("reject"))],
+                .map(|f| {
+                    (
+                        f["attempts"].as_u64(),
+                        f["cause"].as_str().map(str::to_string),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let rejects = vec![
+            (Some(1), Some("reject".to_string())),
+            (Some(2), Some("reject".to_string())),
+        ];
+        assert_eq!(
+            charged(&events),
+            rejects,
             "each attempt that left its plan outside a commit is charged as a reject"
         );
         let lesson = payloads_of_type(&events, contextgraph::TYPE_LESSON_LEARNED)
@@ -56543,9 +56779,9 @@ stage "implement" adjudicator "adj" failed
             .expect("the escalation lesson");
         let kept = lesson
             .split_once("; the tree it left is kept as commit ")
-            .and_then(|(_, rest)| rest.strip_suffix(" on rigger/u/plan"))
+            .and_then(|(_, rest)| rest.strip_suffix(" on rigger/kept/plan, off the unit's branch"))
             .unwrap_or_else(|| {
-                panic!("the lesson names the commit and the branch the plan is kept on: {lesson}")
+                panic!("the lesson names the commit and the ref the plan is kept on: {lesson}")
             })
             .to_string();
         assert!(
@@ -56553,14 +56789,49 @@ stage "implement" adjudicator "adj" failed
             "the escalated unit's tree is removed, as an escalated unit's tree is"
         );
         assert_eq!(
-            git_out(&repo_path, &["rev-parse", "rigger/u/plan"]),
+            git_out(&repo_path, &["rev-parse", "rigger/kept/plan"]),
             kept,
-            "the unit's branch names the commit"
+            "the unit's kept ref names the commit"
         );
         assert_eq!(
-            git_out(&repo_path, &["show", &format!("{kept}:specs/90-foo.md")]),
-            "work",
-            "the commit holds the plan the producer left outside a commit"
+            git_out(&repo_path, &["rev-parse", "rigger/u/plan"]),
+            base,
+            "the unit's branch does not move"
+        );
+        for (path, text) in [("specs/90-foo.md", "work"), ("notes.txt", "work")] {
+            assert_eq!(
+                git_out(&repo_path, &["show", &format!("{kept}:{path}")]),
+                text,
+                "the commit holds {path} as the producer left it"
+            );
+        }
+
+        grant_resume(&st, "plan", 1);
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        let events = run_log(&st);
+        assert_eq!(
+            charged(&events),
+            rejects,
+            "the granted attempt is never rejected, as out of scope or otherwise"
+        );
+        assert_eq!(rs.units["plan"].status, ledger::Status::Integrated);
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join("specs").join("90-foo.md")).unwrap(),
+            "work\n",
+            "the granted attempt's plan reached the run branch"
+        );
+        assert_eq!(
+            trimmed_stdout(&run_git(
+                &repo_path,
+                &["log", "HEAD", "--format=%H", "--", "notes.txt"]
+            )),
+            "",
+            "the leftover reaches no commit the run branch holds"
+        );
+        assert!(
+            !branch_present(&repo_path, "rigger/kept/plan"),
+            "the kept ref goes with the unit's branch once its work lands"
         );
     }
 
