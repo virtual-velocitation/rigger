@@ -48815,15 +48815,16 @@ mod tests {
     /// A CONTENT STEP GIT REFUSES ON A UNIT'S OWN WORK IS THE UNIT'S FAILED ATTEMPT, AND ITS
     /// RELEASE RETRIES THE UNIT: when git refuses a step on the unit's own work after its
     /// session ended - a hook refusing the attempt's checkpoint commit (the first attempt's, or
-    /// the second's after a red gate), a merge of the run branch refused over an untracked file
+    /// the second's after a red gate or after a review that required two items), a merge of the run branch refused over an untracked file
     /// in the worktree, a commit refused over conflict-marker text or over a HEAD the implementer
     /// moved off the unit's branch, the merge's conclusion refused by a hook - the attempt is
-    /// charged (`UnitFailed`, cause `git-refused`, git's message its refusal and no gate's
-    /// evidence), a lesson names the unit and its refusal, the drive ends, and the
+    /// charged (`UnitFailed`, cause `git-refused`, git's message its refusal, no gate's evidence
+    /// and the REQUIRED items the attempt owed), a lesson names the unit and its refusal, the drive ends, and the
     /// run is held for the orchestrator on the unit-work row, the hold's first line naming the
     /// attempt. Released, the relaunch launches the next implementer attempt (never one the log
     /// answers) with the refusal on its own line of its prompt, never as a failed gate's or under
-    /// the failed checks' header, and the work the refused tree held, integrates the
+    /// the failed checks' header, still owing the REQUIRED items the refused attempt owed, and
+    /// the work the refused tree held, integrates the
     /// unit and holds nothing new; a further relaunch launches nothing. The landing refused over
     /// local content in the run checkout, and a plan landing's cherry-pick refused over one an
     /// earlier attempt left in progress, are no unit's attempt: no attempt is charged (a refused
@@ -48858,6 +48859,10 @@ mod tests {
             /// The gate fails once, so the second attempt runs inside the drive, and a
             /// prepare-commit-msg hook refuses that attempt's checkpoint commit.
             CheckpointAfterRed,
+            /// The judge rejects the first attempt requiring two items, so the second attempt
+            /// runs inside the drive owing both, and a prepare-commit-msg hook refuses that
+            /// attempt's checkpoint commit.
+            CheckpointAfterReject,
             /// The gate leaves an untracked f.txt in the run checkout, so the landing's
             /// `git merge --ff-only` is refused over local content at the unit's own path.
             LandRefused,
@@ -48910,6 +48915,12 @@ mod tests {
                 true,
                 Drive::Retries,
             ),
+            (
+                Step::CheckpointAfterReject,
+                "hook: refusing the attempt",
+                true,
+                Drive::Retries,
+            ),
             (Step::LandRefused, "f.txt", true, Drive::Ends),
             (
                 Step::PlanCherryPick,
@@ -48958,8 +48969,16 @@ mod tests {
             // The checkpoint a hook refuses, and the attempt it ends (its implementer spawn's
             // index).
             let (refused_checkpoint, refused_attempt) = match step {
-                Step::CheckpointAfterRed => ("rigger: unit-a attempt 2", 1),
+                Step::CheckpointAfterRed | Step::CheckpointAfterReject => {
+                    ("rigger: unit-a attempt 2", 1)
+                }
                 _ => ("rigger: unit-a attempt 1", 0),
+            };
+            // The REQUIRED items the first attempt's review leaves open, which the refused
+            // attempt owes and its retry still owes.
+            let owed: &[&str] = match step {
+                Step::CheckpointAfterReject => &["close the unscoped read", "bound the retry"],
+                _ => &[],
             };
             let gate = match step {
                 Step::MergeRefused => format!("{} && echo note > note.txt", lands("op.txt", "op")),
@@ -48972,12 +48991,13 @@ mod tests {
                     format!("[ -e '{mark}' ] || {{ touch '{mark}' && echo stray > '{repo_path}/f.txt'; }}")
                 }
                 Step::CheckpointHook
+                | Step::CheckpointAfterReject
                 | Step::ConflictMarkers
                 | Step::PlanCherryPick
                 | Step::HeadOffBranch => "true".to_string(),
             };
             match step {
-                Step::CheckpointHook | Step::CheckpointAfterRed => hook(
+                Step::CheckpointHook | Step::CheckpointAfterRed | Step::CheckpointAfterReject => hook(
                     "prepare-commit-msg",
                     format!(
                         "if grep -qx '{refused_checkpoint}' \"$1\" && [ ! -e '{mark}.hook' ]; \
@@ -49082,6 +49102,19 @@ mod tests {
                     HashMap::new()
                 },
                 commits_by_agent,
+                output_by_spawn_id: (!owed.is_empty())
+                    .then(|| {
+                        let required = owed
+                            .iter()
+                            .map(|f| json!({"finding": f, "path": "f.txt", "correctness": true}))
+                            .collect::<Vec<_>>();
+                        (
+                            spawn_retry_id(unit, ROLE_ADJUDICATOR, 0, 0),
+                            json!({"verdict": "reject", "required": required}).to_string(),
+                        )
+                    })
+                    .into_iter()
+                    .collect(),
                 output_by_agent: HashMap::from([
                     ("judge".to_string(), r#"{"verdict":"approve"}"#.to_string()),
                     ("lens".to_string(), "reviewed: no blocker".to_string()),
@@ -49201,15 +49234,25 @@ mod tests {
                         .map(|f| serde_json::from_str::<Value>(f).unwrap())
                         .filter(|f| f["cause"] == CAUSE_GIT_REFUSED)
                         .collect::<Vec<_>>();
+                    let findings = |failed: &Value| {
+                        failed["required"].as_array().map(|items| {
+                            items
+                                .iter()
+                                .map(|i| i["finding"].clone())
+                                .collect::<Vec<_>>()
+                        })
+                    };
                     assert!(
                         charged.len() == 1
                             && charged[0]["attempts"] == refused_attempt + 1
                             && charged[0]["refusal"]
                                 .as_str()
                                 .is_some_and(|e| e.contains(named))
-                            && charged[0]["gate_evidence"] == json!([]),
-                        "{step:?}: the refused attempt is charged, git's message its refusal and \
-                         no gate's evidence: {failed:?}"
+                            && charged[0]["gate_evidence"] == json!([])
+                            && findings(&charged[0])
+                                == Some(owed.iter().map(|f| json!(f)).collect()),
+                        "{step:?}: the refused attempt is charged, git's message its refusal, no \
+                         gate's evidence and the REQUIRED items it owed {owed:?}: {failed:?}"
                     );
                     assert!(
                         err.0.starts_with(&format!(
@@ -49265,13 +49308,21 @@ mod tests {
                         .split('{')
                         .next()
                         .unwrap();
+                    let header = crate::prompt_surface::PRIOR_RETRY_HEADER;
                     assert!(
-                        retry_prompt.as_deref().is_some_and(|p| p.contains(named)
-                            && p.contains(refused_line)
-                            && !p.contains(gate_line)
-                            && !p.contains(crate::prompt_surface::PRIOR_RETRY_HEADER)),
+                        retry_prompt.as_deref().is_some_and(|p| {
+                            let (before, checks) = p.split_once(header).unwrap_or((p, ""));
+                            before.contains(named)
+                                && before.contains(refused_line)
+                                && !p.contains(gate_line)
+                                && p.contains(header) == !owed.is_empty()
+                                && owed
+                                    .iter()
+                                    .all(|f| checks.contains(&format!("- f.txt: {f}")))
+                        }),
                         "{step:?}: the retry's prompt carries the refusal on its own line, never \
-                         as a failed gate's or under the failed checks' header: {retry_prompt:?}"
+                         as a failed gate's or under the failed checks' header, and still owes \
+                         {owed:?}: {retry_prompt:?}"
                     );
                     assert_eq!(
                         std::fs::read_to_string(repo.path().join("kept.txt")).ok(),
