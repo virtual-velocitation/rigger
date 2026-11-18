@@ -1007,8 +1007,10 @@ impl Driver<'_> {
 
         // Finish with the tree through the ONE canonical mechanism, on every exit path alike,
         // right here rather than at the function's end: the join just below depends on the
-        // child's stderr pipe having already closed. An end reports what it left.
-        self.record_end(opts, &reaper.finish());
+        // child's stderr pipe having already closed. An end reports what it left. A process
+        // still writing this spawn's record past the main's exit, a StopFailure hook, finishes
+        // its write first (`ReapedChild::finish`).
+        self.record_end(opts, &reaper.finish(Some(&opts.id)));
         // A process the end left running, or one that left the tree before a watch saw it,
         // can hold a copy of either pipe's write end open regardless, so both joins below are
         // bounded ([`Driver::join_within`]) rather than a bare `join()` that could wait on such a
@@ -1840,9 +1842,10 @@ impl HoldProbe for Driver<'_> {
                 }
                 std::ops::ControlFlow::Continue(())
             });
-            // The canary's tree is ended, its main with it where the main still runs. It writes
+            // The canary's tree is ended, its main with it where the main still runs. It runs
+            // with every hook off and no server, so the end waits for no writer, and it writes
             // no store, so what the end left is said on stderr ([`canary_end_line`]).
-            if let Some(line) = canary_end_line(&canary.finish()) {
+            if let Some(line) = canary_end_line(&canary.finish(None)) {
                 rigger_process::whole_line::say(format_args!("{line}"));
             }
         }

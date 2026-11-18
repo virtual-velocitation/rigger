@@ -450,10 +450,15 @@ impl ReapedChild {
     }
 
     /// Finishes with a tree its host is done reading by ending it ([`ReapedChild::end`]), whether
-    /// its main has exited or still runs, so nothing the session started outlives it. A watched
-    /// tree whose main has exited signals nothing, and answers what the main left running as
-    /// never signalled ([`crate::reap::end_watched`]). Answers what the end left.
-    pub fn finish(mut self) -> EndReport {
+    /// its main has exited or still runs, so nothing the session started outlives it. Where the
+    /// main has exited and `writing` names the session's spawn, the end first waits, for at most
+    /// [`crate::reap::END_BOUND`], while a process it would reach names that spawn on its command
+    /// line, so a hook still writing the spawn's record finishes before the end; a main that
+    /// still runs is ended at once with all it started, as a stop ends it. A watched tree whose
+    /// main has exited signals nothing, and answers what the main left running as never
+    /// signalled ([`crate::reap::end_watched`]). Answers what the end left.
+    pub fn finish(mut self, writing: Option<&str>) -> EndReport {
+        let _ = writing;
         self.end()
     }
 
@@ -678,10 +683,18 @@ mod tests {
         assert_eq!(witness.release(), Reading::Ended);
     }
 
-    /// A watched tree running `body`, finished once `up` of its processes are up and, where
-    /// `exited`, once its main has exited, leaves the witness reading `left`, reports `skipped`
-    /// processes it found and never signalled, and leaves nothing it signalled running.
-    fn finishes(body: &str, up: usize, exited: bool, left: Reading, skipped: usize) {
+    /// A watched tree running `body`, finished for the spawn `writing` once `up` of its
+    /// processes are up and, where `exited`, once its main has exited, leaves the witness reading
+    /// `left`, reports `skipped` processes it found and never signalled, leaves nothing it
+    /// signalled running, and never waits out the writers' bound.
+    fn finishes(
+        body: &str,
+        up: usize,
+        exited: bool,
+        writing: Option<&str>,
+        left: Reading,
+        skipped: usize,
+    ) {
         let mut witness = Witness::new();
         let mut tree = watched(&witness, body);
         assert!(witness.wait_up(up), "the fixture's {up} processes are up");
@@ -692,8 +705,15 @@ mod tests {
             );
         }
 
-        let report = tree.finish();
+        let started = std::time::Instant::now();
 
+        let report = tree.finish(writing);
+
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < crate::reap::END_BOUND,
+            "the finish took {elapsed:?}"
+        );
         assert_eq!(
             (witness.read(), report.residue, report.skipped.len()),
             (left, vec![], skipped)
@@ -705,9 +725,19 @@ mod tests {
         // The main outlives the holder's start by a second, four of the watch's walks, so the
         // watch has seen the holder before the main exits; the end then signals nothing.
         a_finished_tree_whose_main_exited_reports_what_it_left_and_signals_nothing:
-            finishes("holder; up; sleep 1", 2, true, Reading::Held, 1);
+            finishes("holder; up; sleep 1", 2, true, None, Reading::Held, 1);
         a_finished_tree_whose_main_runs_is_ended:
-            finishes("holder; up; held", 2, false, Reading::Ended, 0);
+            finishes("holder; up; held", 2, false, None, Reading::Ended, 0);
+        // A watched end signals nothing once the main has exited, so it waits for no writer.
+        a_finished_tree_whose_main_exited_waits_for_no_process_naming_its_spawn:
+            finishes(
+                "sh -c \"$witness_up; $witness_held\" u-late-writer & up; sleep 1",
+                2,
+                true,
+                Some("u-late-writer"),
+                Reading::Held,
+                1,
+            );
     }
 
     /// A hold the OS will not let go, as a Windows job whose limit cannot be cleared is: its

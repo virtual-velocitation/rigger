@@ -1,7 +1,8 @@
 //! Table B2: a tree held by the Linux keeper, the built binary re-run as `rigger-keeper`
 //! (`crates/rigger-process/src/child_tree/linux.rs`). The handle answers the main's pid and its
 //! exact status; an end, a finish, a drop and a TERM to the keeper each leave nothing the tree
-//! started running; a release, before the main's exit or after it, leaves what the main left
+//! started running; a finish after the main's exit first waits, to a bound, for a process naming
+//! the session's spawn; a release, before the main's exit or after it, leaves what the main left
 //! running; the keeper holds none of the session's streams; and a keeper that is gone or deaf is
 //! reported, never trusted, and a main a gone keeper left is reported, never signalled.
 //! Every process a row starts is read through the FIFO witness (`common::witness`), and the test
@@ -15,6 +16,7 @@ use rigger::child_tree::{line_channel, Containment, EndReport, ReapedChild, Tree
 use rigger::os_process;
 use rigger::reap::END_BOUND;
 use std::io::{self, BufRead, BufReader};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::process::{ExitStatus, Stdio};
 use std::sync::mpsc::RecvTimeoutError;
@@ -133,9 +135,9 @@ fn by_the_end(mut tree: ReapedChild) -> EndReport {
     tree.end()
 }
 
-/// Ends a tree through the host's ordinary-end call.
+/// Ends a tree through the host's ordinary-end call, for no spawn.
 fn by_the_finish(tree: ReapedChild) -> EndReport {
-    tree.finish()
+    tree.finish(None)
 }
 
 /// The kept fixture `body`, with `up` of its processes up and then `before` done to it, is ended
@@ -200,6 +202,69 @@ rigger::test_cases! {
         ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_finish);
     a_kept_finish_ends_what_an_exited_main_left:
         ends_the_tree("holder; up", 2, after_the_main_exits, by_the_finish);
+}
+
+/// The spawn the writer rows finish their tree for. A writer names it on its command line as its
+/// shell's `$0`, as a hook names its spawn in its arguments.
+const SPAWN: &str = "u-late-writer";
+
+/// The kept fixture `body`, with `up` of its processes up and, where `exited`, its main exited,
+/// finished for [`SPAWN`]: once the finish answers, `ups` of the fixture's processes have written
+/// their up byte, the finish took a time within `took`, and nothing is left running or reported.
+fn finishes_for_the_spawn(body: &str, up: usize, exited: bool, ups: usize, took: Range<Duration>) {
+    let mut witness = Witness::new();
+    let mut tree = kept(&witness, body);
+    assert!(witness.wait_up(up), "the fixture's {up} processes are up");
+    if exited {
+        tree.wait().expect("wait on the main");
+    }
+    let started = Instant::now();
+
+    let report = tree.finish(Some(SPAWN));
+
+    let elapsed = started.elapsed();
+    assert_eq!(
+        (witness.read(), report, witness.up()),
+        (Reading::Ended, EndReport::default(), ups)
+    );
+    assert!(took.contains(&elapsed), "the finish took {elapsed:?}");
+}
+
+rigger::test_cases! {
+    // The writer writes its up byte a second after it starts, then exits: the byte is read only
+    // if the finish waited for it.
+    a_kept_finish_waits_for_a_writer_its_exited_main_left:
+        finishes_for_the_spawn(
+            "sh -c 'sleep 1; printf u >&9' u-late-writer & up",
+            1,
+            true,
+            2,
+            Duration::ZERO..END_BOUND,
+        );
+    a_kept_finish_ends_a_writer_still_running_at_its_bound:
+        finishes_for_the_spawn(
+            "sh -c \"$witness_up; $witness_held\" u-late-writer & up",
+            2,
+            true,
+            2,
+            END_BOUND..END_BOUND * 2,
+        );
+    a_kept_finish_waits_for_no_writer_while_its_main_runs:
+        finishes_for_the_spawn(
+            "sh -c 'sleep 1; printf u >&9' u-late-writer & up; held",
+            1,
+            false,
+            1,
+            Duration::ZERO..END_BOUND,
+        );
+    a_kept_finish_waits_for_no_process_naming_another_spawn:
+        finishes_for_the_spawn(
+            "sh -c 'sleep 1; printf u >&9' u-other & up",
+            1,
+            true,
+            1,
+            Duration::ZERO..END_BOUND,
+        );
 }
 
 #[test]

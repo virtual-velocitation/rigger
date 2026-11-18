@@ -551,6 +551,30 @@ mod tests {
         assert!(ends(&lines), "nothing the tree started holds its output");
     }
 
+    // The writer names the spawn on its command line and writes its line two seconds after the
+    // main has exited, once its ping ends: the line is read only if the finish waited for it.
+    #[test]
+    fn a_jobbed_finish_waits_for_a_writer_its_exited_main_left() {
+        let (mut tree, lines) = jobbed(
+            "start /b cmd /c \"ping -n 3 127.0.0.1 >NUL & echo written u-late-writer\" & echo up",
+        );
+        assert!(read_until(&lines, "up"), "the main is up");
+        let deadline = Instant::now() + BOUND;
+        while matches!(tree.try_wait(), Ok(None)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            matches!(tree.try_wait(), Ok(Some(_))),
+            "the main exits on its own"
+        );
+
+        let report = tree.finish(Some("u-late-writer"));
+
+        assert_eq!(report, EndReport::default());
+        assert!(read_until(&lines, "written"), "the writer wrote its line");
+        assert!(ends(&lines), "nothing the tree started holds its output");
+    }
+
     // The ping replies once a second, so two replies read after the lines already sent are drained
     // were written after the release, by a ping the release left running.
     #[test]
