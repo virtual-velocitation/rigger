@@ -4487,10 +4487,12 @@ pub(crate) mod tests {
         }
     }
 
-    /// A tree whose declarations place a module apart as a root and as a child, with a code file
-    /// at the first path of each list: crate roots and the `#[path]` declarations under them,
-    /// files reached through a plain declaration, a `mod.rs` file, one file two roots reach and
-    /// one a root and a deeper file reach, a test-only declaration, and a cycle no root reaches.
+    /// A tree whose declarations place a module apart as a root and as a child, most with a code
+    /// file at the first path of both lists, so the list read decides the file reached: crate
+    /// roots, `#[path]` declarations in a root and in a child, files a root or a child reaches
+    /// through a plain declaration, a file only an `as_child` list names, a `mod.rs` file, one
+    /// file two roots reach and one a root and a deeper file reach, a test-only declaration, and
+    /// a cycle no root reaches.
     pub(crate) fn module_root_fixture() -> FactsView {
         let file = |path: &str, modules: Vec<ModuleDecl>| FileFacts {
             modules,
@@ -4572,6 +4574,29 @@ pub(crate) mod tests {
                 ],
             ),
             file(
+                "src/a/b.rs",
+                vec![
+                    placed(
+                        "c",
+                        false,
+                        &["src/a/c.rs", "src/a/c/mod.rs"],
+                        &["src/a/b/c.rs", "src/a/b/c/mod.rs"],
+                        false,
+                    ),
+                    placed("q", false, &["src/a/b/q.rs"], &["src/a/b/q.rs"], true),
+                ],
+            ),
+            file(
+                "src/a/b/q.rs",
+                vec![placed(
+                    "r",
+                    false,
+                    &["src/a/b/r.rs", "src/a/b/r/mod.rs"],
+                    &["src/a/b/q/r.rs", "src/a/b/q/r/mod.rs"],
+                    false,
+                )],
+            ),
+            file(
                 "src/deep.rs",
                 vec![placed(
                     "leaf",
@@ -4642,8 +4667,9 @@ pub(crate) mod tests {
                 )],
             ),
         ];
-        // Each file reached that declares nothing, and beside it, where a declaration's lists
-        // differ, the file its other list would reach: `src/p/y/z.rs` is `src/p/z.rs`'s.
+        // Each file reached that declares nothing, and, where a declaration's lists differ, the
+        // file its other list would reach, the cycle's and `src/bin/alpha.rs`'s aside:
+        // `src/p/y/z.rs` is `src/p/z.rs`'s.
         let declared = [
             "src/bin/x.rs",
             "src/bin/tool/x.rs",
@@ -4653,8 +4679,11 @@ pub(crate) mod tests {
             "src/p/z/w.rs",
             "src/p/w.rs",
             "src/code/advance.rs",
-            "src/a/b.rs",
             "src/b.rs",
+            "src/a/b/c.rs",
+            "src/a/c.rs",
+            "src/a/b/r.rs",
+            "src/a/b/q/r.rs",
             "src/deep/leaf.rs",
             "src/leaf.rs",
             "src/n.rs",
@@ -4753,6 +4782,16 @@ pub(crate) mod tests {
                 "the rest of the cycle is reached plain, and no file is at its `as_child` path",
                 "src/s.rs",
                 &[None],
+            ),
+            (
+                "a file only an `as_child` list names, reached plain from a child, is a child",
+                "src/a/b.rs",
+                &[Some("src/a/b/c.rs"), Some("src/a/b/q.rs")],
+            ),
+            (
+                "a file a `#[path]` declaration in a child reaches is placed as a root",
+                "src/a/b/q.rs",
+                &[Some("src/a/b/r.rs")],
             ),
         ];
         let view = module_root_fixture();
