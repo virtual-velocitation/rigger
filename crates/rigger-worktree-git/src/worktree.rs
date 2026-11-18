@@ -9625,7 +9625,8 @@ mod tests {
     /// REFUSES: an unfinished merge, cherry-pick (an empty one git stopped on included), revert or
     /// rebase is a refusal, as is conflict-marker text the commit would carry; a clean tree, and
     /// one with uncommitted work the checkpoint sweeps, is none. Each refusal names the tree, and
-    /// the read leaves the index's bytes as they were.
+    /// the read leaves the index's bytes as they were, even over a tracked file whose stat git
+    /// would refresh in the index.
     #[test]
     fn a_tree_is_ready_for_the_checkpoint_only_with_nothing_unfinished_and_nothing_refused() {
         const BRANCH: &str = "rigger/u/unit-stop";
@@ -9639,8 +9640,13 @@ mod tests {
         // Each row: what leaves the unit's tree in its state, and the start of every refusal
         // expected, in order.
         type Row = (&'static str, fn(&str), &'static [&'static str]);
-        let cases: [Row; 7] = [
+        let cases: [Row; 8] = [
             ("clean", |_| {}, &[]),
+            (
+                "a tracked file touched, its text unchanged",
+                |dir| backdate(&std::path::Path::new(dir).join("unit.txt"), 3600),
+                &[],
+            ),
             (
                 "uncommitted work",
                 |dir| {
@@ -9870,6 +9876,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// THE CHECKS READ A TREE THE SAME WHATEVER ITS USER'S GIT CONFIGURATION SAYS: under each
+    /// setting below, an untracked file is uncommitted work naming its directory and makes the
+    /// tree dirty, a conflict is refused in a commit, and a detached HEAD is named in git's own
+    /// first line of a long status, which carries no colour codes.
+    #[test]
+    fn the_checks_read_a_tree_the_same_under_any_git_configuration() {
+        const BRANCH: &str = "rigger/u/unit-config";
+        const ESCAPE: char = '\u{1b}';
+        let settings = [
+            ("status.showUntrackedFiles", "no"),
+            ("status.showUntrackedFiles", "all"),
+            ("status.short", "true"),
+            ("color.ui", "always"),
+            ("color.status", "always"),
+            ("color.grep", "always"),
+            ("grep.lineNumber", "true"),
+            ("grep.column", "true"),
+            ("grep.patternType", "perl"),
+        ];
+        let mut violations = Vec::new();
+        for (key, value) in settings {
+            let row = format!("{key}={value}");
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-config");
+            std::fs::write(std::path::Path::new(&dir).join("unit.txt"), "committed\n").unwrap();
+            wt.commit("unit work").unwrap();
+            run_git(&repo_path, &["config", key, value]).unwrap();
+
+            std::fs::create_dir_all(std::path::Path::new(&dir).join("specs")).unwrap();
+            std::fs::write(
+                std::path::Path::new(&dir).join("specs/plan.md"),
+                "planned\n",
+            )
+            .unwrap();
+            let uncommitted = uncommitted_paths(&dir).unwrap();
+            if uncommitted != ["specs/"] {
+                violations.push(format!("{row}: the uncommitted paths read {uncommitted:?}"));
+            }
+            if !path_is_dirty(&dir).unwrap() {
+                violations.push(format!(
+                    "{row}: a tree holding an untracked file reads clean"
+                ));
+            }
+
+            std::fs::write(
+                std::path::Path::new(&dir).join("unit.txt"),
+                "<<<<<<< ours\na\n=======\nb\n>>>>>>> theirs\n",
+            )
+            .unwrap();
+            if commit_refusal(&dir, BRANCH).unwrap().is_none() {
+                violations.push(format!("{row}: a commit of a conflict is not refused"));
+            }
+
+            run_git(&dir, &["checkout", "-q", "--detach"]).unwrap();
+            match head_off_branch(&dir, BRANCH).unwrap() {
+                Some(on) if on.starts_with("HEAD detached at ") => {}
+                on => violations.push(format!("{row}: a detached HEAD is read as {on:?}")),
+            }
+            let status = tree_status(&dir);
+            if !status.starts_with("HEAD detached at ") || status.contains(ESCAPE) {
+                violations.push(format!("{row}: the tree's status reads {status:?}"));
+            }
+        }
+        assert!(violations.is_empty(), "{}", violations.join("\n"));
     }
 
     /// A READ DECIDING THE CLEAR THAT GOES UNANSWERED CLEARS NOTHING: when git cannot say whether
