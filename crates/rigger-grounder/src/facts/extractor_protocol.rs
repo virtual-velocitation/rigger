@@ -287,17 +287,19 @@ mod tests {
     /// THE EXTRACTOR PROTOCOL, the answer: over a request for `a.zig`, an answer holding defs and
     /// refs within the text's lines - the last one more than the `\n` the text holds - gives them,
     /// each ref's tagged mention kind and qualifier, an unqualified ref's name holding `::` or `.`,
-    /// a qualified one's holding a lone `:`, its partial flag and the doc spans, the file's and each
-    /// def's, as written; every answer the protocol refuses gives the exact why:
+    /// a qualified one's holding a lone `:` (`a:b`; `b:` after the path qualifier `Q`, `b` after
+    /// `Q:`, and `:b` after the member qualifier `Q`), its partial flag and the doc spans, the
+    /// file's and each def's, as written; every answer the protocol refuses gives the exact why:
     /// one that does not parse, that is for another path, that is an error - its text quoted, a
     /// line break or terminal escape in it escaped - that lacks a list, a
     /// def or ref outside the lines or with an empty name, a def with an empty path, an end line
     /// outside its line and the last, or an out-of-line module field, a doc span, the file's or a
     /// def's, starting outside the first line and the last or ending outside its start and the
     /// last, a ref with an empty qualifier (checked before its name), a qualifier beside a name
-    /// holding `::` or `.`, which a read of the written name would cut inside the leaf, or a kind
-    /// that is no tagged mention kind (`call`, the empty kind, `module`), and a cycle among the def
-    /// paths through their parents.
+    /// holding `::` or `.`, which a read of the written name would cut inside the leaf, or beside
+    /// any other name a read of the written name cuts elsewhere (`:b` after the path qualifier
+    /// `Q`, written `Q:::b`), or a kind that is no tagged mention kind (`call`, the empty kind,
+    /// `module`), and a cycle among the def paths through their parents.
     #[test]
     fn an_answer_gives_its_symbols_or_why_the_protocol_refuses_it() {
         const TEXT: &str = "a\nb\nc\n";
@@ -638,6 +640,39 @@ mod tests {
                         SymRef {
                             qualifier: Some(qualifier("Q", true)),
                             ..answered_ref("a:b", 3, None, None, false)
+                        },
+                    ],
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"x","line":1},"#,
+                    r#"{"name":":b","line":1,"qualifier":{"name":"Q","path":true}}"#
+                )),
+                refused(r#"refs[1]: a qualified ref's name ":b" reads back from "Q:::b" as "b""#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":":b","line":1,"qualifier":{"name":"Q","path":false}},"#,
+                    r#"{"name":"b:","line":2,"qualifier":{"name":"Q","path":true}},"#,
+                    r#"{"name":"b","line":3,"qualifier":{"name":"Q:","path":true}}"#
+                )),
+                Ok(CodeSymbols {
+                    refs: vec![
+                        SymRef {
+                            qualifier: Some(qualifier("Q", false)),
+                            ..answered_ref(":b", 1, None, None, false)
+                        },
+                        SymRef {
+                            qualifier: Some(qualifier("Q", true)),
+                            ..answered_ref("b:", 2, None, None, false)
+                        },
+                        SymRef {
+                            qualifier: Some(qualifier("Q:", true)),
+                            ..answered_ref("b", 3, None, None, false)
                         },
                     ],
                     ..empty()
