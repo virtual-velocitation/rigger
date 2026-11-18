@@ -10478,12 +10478,15 @@ mod tests {
     }
 
     /// A PRODUCER'S TREE IS READY ONLY WITH NO WORK OF ITS OUTPUT OUTSIDE A COMMIT, by the scope
-    /// the plan landing takes: work under `specs/` no commit records is one refusal naming its
-    /// paths and saying to commit it; work outside `specs/` - a changed tracked file, a staged or
-    /// untracked one - never lands, so alone it is no refusal, and beside work in `specs/` a
+    /// the plan landing takes: work under its output no commit records is one refusal naming its
+    /// paths and saying to commit it; work outside it - a changed tracked file, a staged or
+    /// untracked one - never lands, so alone it is no refusal, and beside work in the output a
     /// second line names its paths and says it never lands, stays out of the commit and may be
     /// taken out of the tree. A clean tree, one whose work is committed and one holding only a
-    /// file git ignores are none. The read leaves the index's bytes as they were.
+    /// file git ignores are none. A nested output (`docs/specs/`) under a parent git tracks
+    /// nothing in is read by its own scope, never by the parent git's status names alone: a plan
+    /// in it is work in the output, named by the output, and work beside it in that parent is
+    /// work outside it. The read leaves the index's bytes as they were.
     #[test]
     fn a_producers_tree_is_ready_only_with_no_output_work_outside_a_commit() {
         fn write(dir: &str, file: &str, text: &str) {
@@ -10491,18 +10494,19 @@ mod tests {
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(path, text).unwrap();
         }
-        // Each row: what leaves the producer's tree in its state, then the uncommitted paths
-        // under `specs/` and outside it the refusals name.
+        // Each row: the stage's output, what leaves the producer's tree in its state, then the
+        // uncommitted paths in that output and outside it the refusals name.
         type Row = (
+            &'static str,
             &'static str,
             fn(&str),
             &'static [&'static str],
             &'static [&'static str],
         );
-        let cases: [Row; 8] = [
-            ("clean", |_| {}, &[], &[]),
+        let cases: [Row; 11] = [
+            ("clean", "specs/", |_| {}, &[], &[]),
             (
-                "committed work",
+                "committed work", "specs/",
                 |dir| {
                     write(dir, "specs/plan.md", "planned\n");
                     run_git(dir, &["add", "specs/plan.md"]).unwrap();
@@ -10512,13 +10516,13 @@ mod tests {
                 &[],
             ),
             (
-                "an ignored file",
+                "an ignored file", "specs/",
                 |dir| write(dir, "scratch.log", "noise\n"),
                 &[],
                 &[],
             ),
             (
-                "a staged plan",
+                "a staged plan", "specs/",
                 |dir| {
                     write(dir, "specs/plan.md", "planned\n");
                     run_git(dir, &["add", "specs/plan.md"]).unwrap();
@@ -10527,19 +10531,19 @@ mod tests {
                 &[],
             ),
             (
-                "an untracked plan",
+                "an untracked plan", "specs/",
                 |dir| write(dir, "specs/plan.md", "planned\n"),
                 &["specs/"],
                 &[],
             ),
             (
-                "a changed file outside the output",
+                "a changed file outside the output", "specs/",
                 |dir| write(dir, "unit.txt", "edited\n"),
                 &[],
                 &["unit.txt"],
             ),
             (
-                "a staged file outside the output",
+                "a staged file outside the output", "specs/",
                 |dir| {
                     write(dir, "spec.md", "planned\n");
                     run_git(dir, &["add", "spec.md"]).unwrap();
@@ -10548,7 +10552,7 @@ mod tests {
                 &["spec.md"],
             ),
             (
-                "a plan beside leftovers",
+                "a plan beside leftovers", "specs/",
                 |dir| {
                     write(dir, "specs/plan.md", "planned\n");
                     write(dir, "unit.txt", "edited\n");
@@ -10557,8 +10561,32 @@ mod tests {
                 &["specs/"],
                 &["notes.txt", "unit.txt"],
             ),
+            (
+                "a plan in a nested output whose parent is wholly untracked",
+                "docs/specs/",
+                |dir| write(dir, "docs/specs/plan.md", "planned\n"),
+                &["docs/specs/"],
+                &[],
+            ),
+            (
+                "work beside a nested output in its wholly untracked parent",
+                "docs/specs/",
+                |dir| write(dir, "docs/scratch.md", "scratch\n"),
+                &[],
+                &["docs/"],
+            ),
+            (
+                "a plan beside work in a nested output's wholly untracked parent",
+                "docs/specs/",
+                |dir| {
+                    write(dir, "docs/specs/plan.md", "planned\n");
+                    write(dir, "docs/scratch.md", "scratch\n");
+                },
+                &["docs/specs/"],
+                &["docs/"],
+            ),
         ];
-        for (row, leave, inside, outside) in cases {
+        for (row, output, leave, inside, outside) in cases {
             let (_repo, repo_path, root) = scratch_repo(true);
             let (dir, wt) = unit_wt(&repo_path, &root, "unit-plan");
             write(&dir, "unit.txt", "committed\n");
@@ -10569,18 +10597,18 @@ mod tests {
             let index = std::path::Path::new(&dir).join(index.trim());
             let before = std::fs::read(&index).unwrap();
 
-            let refusals = own_commits_refusals(&dir, "specs/").unwrap();
+            let refusals = own_commits_refusals(&dir, output).unwrap();
             let mut expected = Vec::new();
             if !inside.is_empty() {
                 expected.push(format!(
-                    "{dir} holds work in specs/ that no commit records: {} - the conductor lands \
+                    "{dir} holds work in {output} that no commit records: {} - the conductor lands \
                      only the commits made there, so commit this work for it to reach the run \
                      branch",
                     inside.join(", ")
                 ));
                 if !outside.is_empty() {
                     expected.push(format!(
-                        "{dir} also holds work outside specs/ that no commit records: {} - it \
+                        "{dir} also holds work outside {output} that no commit records: {} - it \
                          never lands, and a commit touching it is refused as outside the stage's \
                          output, so leave it out of the commit; it may be taken out of the tree",
                         outside.join(", ")
