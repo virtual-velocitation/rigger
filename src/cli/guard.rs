@@ -618,6 +618,14 @@ pub(crate) fn cmd_hook(args: &[String]) -> Res {
     }
 }
 
+/// The run a hook records under, read from `run_store`: the current run's id, empty when no run
+/// has started. It reads the run's `RunStarted` alone ([`runscope::read::read_current_run_id`]),
+/// never the run's events or the knowledge carried into it, since the stop hook runs at every
+/// stop of every writer under a timeout.
+fn hook_run_id(run_store: &dyn EventStore) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(runscope::read::read_current_run_id(run_store, conductor::STREAM)?.unwrap_or_default())
+}
+
 /// `rigger hook stop-failure --spawn <id> --class <category>`: THE HOOKS' `StopFailure`
 /// family - command AND record halves both (spec 104 criterion 5, Design: "criterion 5's,
 /// command, record and injection both"). The installed hook runs
@@ -681,12 +689,7 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
 
     let (loc, selection) = require_store_dir()?;
     refresh_registry_entry(&loc, &selection);
-    let (_, run_id) = over_the_run_store_at(&loc, &selection, |run_store| {
-        Ok(runscope::read::read_current_run(
-            run_store,
-            conductor::STREAM,
-        )?)
-    })?;
+    let run_id = over_the_run_store_at(&loc, &selection, hook_run_id)?;
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity()?);
     let pos = rigger::progress_store::record_stop_failure(
@@ -823,12 +826,7 @@ fn hold_the_stop(
     };
     let (loc, selection) = require_store_dir()?;
     refresh_registry_entry(&loc, &selection);
-    let (_, run_id) = over_the_run_store_at(&loc, &selection, |run_store| {
-        Ok(runscope::read::read_current_run(
-            run_store,
-            conductor::STREAM,
-        )?)
-    })?;
+    let run_id = over_the_run_store_at(&loc, &selection, hook_run_id)?;
     let prog_backend = Store::open(&loc.file("progress.db"))?;
     let prog_store = Namespaced::new(&prog_backend, &loc.identity()?);
     let record = |activity: String| {
@@ -2050,6 +2048,51 @@ mod tests {
                 Ok(check) => assert_eq!(parsed.as_ref(), Ok(check), "{case}"),
                 Err(message) => assert_eq!(parsed, Err(message.to_string()), "{case}"),
             }
+        }
+    }
+
+    /// A hook names its run by the latest `RunStarted` alone: over a log holding a superseded
+    /// run, the knowledge carried out of it and the current run's own events, it reads that one
+    /// event, asserted through the counting store double, since the stop hook runs at every stop
+    /// of every writer under a timeout. With no run started it names none.
+    #[test]
+    fn a_hook_reads_the_current_run_id_alone() {
+        use crate::test_support::{ev, run_started, ReadCountingStore};
+
+        let rows: [(&str, Vec<Event>, &str, usize); 2] = [
+            (
+                "a run after a superseded one",
+                vec![
+                    run_started("run-a", &["a prior campaign"]),
+                    ev(
+                        "DecisionMade",
+                        r#"{"id":"d-a","summary":"chose a","governs":["a.rs"]}"#,
+                    ),
+                    ev("RunNote", "{}"),
+                    run_started("run-b", &["this campaign"]),
+                    ev("UnitStarted", r#"{"id":"ub","unit":"ub","agent":"impl"}"#),
+                    ev("RunNote", "{}"),
+                ],
+                "run-b",
+                1,
+            ),
+            ("no run started", Vec::new(), "", 0),
+        ];
+        for (case, seeded, run_id, materialized) in rows {
+            let inner = Store::open(":memory:").unwrap();
+            if !seeded.is_empty() {
+                inner
+                    .append(conductor::STREAM, ExpectedRevision::Any, &seeded)
+                    .unwrap();
+            }
+            let store = ReadCountingStore::new(&inner);
+            assert_eq!(hook_run_id(&store).unwrap(), run_id, "{case}");
+            assert_eq!(
+                store.materialized(),
+                materialized,
+                "{case}: {:?}",
+                store.reads()
+            );
         }
     }
 }
