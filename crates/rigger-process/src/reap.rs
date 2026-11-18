@@ -1057,9 +1057,13 @@ pub fn left_running(main: &Identity) -> Vec<Leftover> {
 /// walk freezes nothing, so a member that never freezes (an OS with no freeze, or a process that
 /// cannot stop) cannot keep the end walking. Every process the end found is then ended one
 /// generation at a time, by its depth when first found, the deepest first, each confirmed gone
-/// before its parents are ended, and the main last, reaped through its handle. No process is asked
-/// to exit first: one that exited on asking would leave its children to an ancestor outside the
-/// tree, where no chain reaches them.
+/// before its parents are ended ([`end_found`]). The tree is then walked again, and what the walks
+/// find that no end pass took, as a process a member that never froze started meanwhile, is frozen
+/// and ended the same way, round after round, until a round ends nothing new or the bound passes.
+/// The main is ended last, reaped through its handle. A process started meanwhile by a member an
+/// end pass already ended has left the tree with its parent's end, where no chain reaches it, and
+/// is neither signalled nor reported. No process is asked to exit first: one that exited on asking
+/// would leave its children to an ancestor outside the tree, where no chain reaches them.
 ///
 /// Every signal to a process other than the main passes [`Tree::send`]'s checks; the main is
 /// signalled through the pid its unreaped handle keeps its own. Each walk checks every process it
@@ -1077,13 +1081,15 @@ pub fn end_watched(main: &mut std::process::Child, remembered: &[Identity]) -> E
 }
 
 /// What a watched end found of the tree under its main: each process at its depth when first
-/// found, those it froze, and those whose checks refused a freeze.
+/// found, those it froze, those whose checks refused a freeze, and those an end pass took
+/// ([`end_found`]).
 #[derive(Default)]
 struct Found {
     by_depth: Vec<Vec<Identity>>,
     listed: HashSet<Identity>,
     stopped: HashSet<Identity>,
     refused: HashSet<Identity>,
+    taken: HashSet<Identity>,
 }
 
 impl Found {
@@ -1104,8 +1110,9 @@ impl Found {
 /// generation is read from a fresh table and every member recorded in `found`; each member not yet
 /// frozen is frozen while its parent reads frozen, and the generation is confirmed frozen, until
 /// `deadline`, before the next is read. Once `deadline` has passed, every generation left is
-/// recorded and none frozen. Answers whether the walk found a process, froze one, or had one
-/// refused, that no walk had before.
+/// recorded and none frozen. A member an end pass already took ([`Found::taken`]) is not frozen
+/// again. Answers whether the walk found a process, froze one, or had one refused, that no walk had
+/// before.
 fn freeze_walk(
     os: &mut impl EndOs,
     tree: &Tree,
@@ -1137,7 +1144,8 @@ fn freeze_walk(
                     .find(|entry| entry.pid == target.pid)
                     .is_some_and(|entry| frozen(entry.parent))
             };
-            if !os.freezes() || found.stopped.contains(target) || !parent_frozen() {
+            let settled = found.stopped.contains(target) || found.taken.contains(target);
+            if !os.freezes() || settled || !parent_frozen() {
                 continue;
             }
             if tree.send(os, report, Signal::Stop, target) {
@@ -1178,28 +1186,12 @@ fn end_watched_with(
         poll_until(deadline, || frozen_or_gone(main_pid));
     }
     let mut found = Found::default();
-    while freeze_walk(os, &tree, &mut found, &mut report, deadline) && Instant::now() < deadline {}
-    for generation in found.by_depth.iter().rev() {
-        let mut ended = Vec::new();
-        for target in generation {
-            let stopped = found.stopped.contains(target);
-            if tree.send(os, &mut report, Signal::Hard, target) {
-                report.unskip(target);
-                ended.push(*target);
-            } else if !stopped {
-                report.skip(target);
-            } else if running(target) {
-                report.residue.push(Leftover::of(target.pid, true));
-            }
+    loop {
+        while freeze_walk(os, &tree, &mut found, &mut report, deadline) && Instant::now() < deadline
+        {
         }
-        let generation_deadline = deadline.max(Instant::now() + FLOOR);
-        poll_until(generation_deadline, || !ended.iter().any(running));
-        for target in ended.iter().filter(|target| running(target)) {
-            let stopped = found.stopped.contains(target);
-            let resumed = stopped && tree.send(os, &mut report, Signal::Resume, target);
-            report
-                .residue
-                .push(Leftover::of(target.pid, stopped && !resumed));
+        if !end_found(os, &tree, &mut found, &mut report, deadline) || Instant::now() >= deadline {
+            break;
         }
     }
     if matches!(main.try_wait(), Ok(None)) {
@@ -1217,6 +1209,51 @@ fn end_watched_with(
         report.skip(target);
     }
     report
+}
+
+/// One end pass of [`end_watched`]: each process in `found` that no pass took yet
+/// ([`Found::taken`]) is taken, one generation at a time, by its depth when first found, the
+/// deepest first. Each is sent a hard end through [`Tree::send`], and the generation is confirmed
+/// gone, until `deadline` or for [`FLOOR`] at least, before its parents are ended. One still
+/// running then is resumed if the end froze it, and reported as residue; one the checks refuse is
+/// reported skipped, or, where the end froze it and it still runs, as residue. Answers whether it
+/// took any.
+fn end_found(
+    os: &mut impl EndOs,
+    tree: &Tree,
+    found: &mut Found,
+    report: &mut EndReport,
+    deadline: Instant,
+) -> bool {
+    let mut took = false;
+    for generation in found.by_depth.iter().rev() {
+        let mut ended = Vec::new();
+        for target in generation {
+            if !found.taken.insert(*target) {
+                continue;
+            }
+            took = true;
+            let stopped = found.stopped.contains(target);
+            if tree.send(os, report, Signal::Hard, target) {
+                report.unskip(target);
+                ended.push(*target);
+            } else if !stopped {
+                report.skip(target);
+            } else if running(target) {
+                report.residue.push(Leftover::of(target.pid, true));
+            }
+        }
+        let generation_deadline = deadline.max(Instant::now() + FLOOR);
+        poll_until(generation_deadline, || !ended.iter().any(running));
+        for target in ended.iter().filter(|target| running(target)) {
+            let stopped = found.stopped.contains(target);
+            let resumed = stopped && tree.send(os, report, Signal::Resume, target);
+            report
+                .residue
+                .push(Leftover::of(target.pid, stopped && !resumed));
+        }
+    }
+    took
 }
 
 /// End every descendant of this process: the keeper's end, where every orphan of the tree it
