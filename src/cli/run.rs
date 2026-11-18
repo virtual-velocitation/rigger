@@ -970,6 +970,18 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(&project.to_string_lossy())?;
+    // THE SESSION HOST RUNS THE HOOKS: a host below the version the exec-form hooks need fails
+    // closed on every one of them with no word why, so the run refuses on one here, before any
+    // start effect, with the line `rigger validate` warns with; a version it cannot read refuses
+    // nothing.
+    if let Ok(version) = rigger::claude_version::read(
+        rigger::claude_auth::DEFAULT_BIN,
+        rigger::claude_version::READ_BOUND,
+    ) {
+        if let Some(line) = rigger::claude_version::too_old(version) {
+            return Err(line.into());
+        }
+    }
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);
