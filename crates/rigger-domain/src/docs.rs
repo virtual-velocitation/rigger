@@ -177,11 +177,10 @@ fn discipline_body(ctx: &DocsContext) -> String {
     let _ = writeln!(
         s,
         "Everything an agent's session starts ends with the session, and an agent cannot keep a \
-         process running past its own session. Each ordinary end names, by pid and executable, \
-         every process besides the session's main process that the end was sent to, in a \
-         progress line of the agent's (on the run's log, for a host that keeps no progress), so \
-         the operator reads which processes ended with the session, a daemon among them. On \
-         macOS, and wherever the containment is degraded, what the main process leaves running \
+         process running past its own session. Each end of a session names, by pid and \
+         executable, every process besides the session's main process that the end was sent to, \
+         in a progress line of the agent's (on the run's log, for a host that keeps no \
+         progress). On macOS, and wherever the containment is degraded, what the main process leaves running \
          past its exit is named in a progress line as left running, not ended. On Windows a \
          process the session creates the ordinary way cannot leave the session's job. So a daemon \
          other sessions share, such as a shared build server, is started by the operator at user \
@@ -1697,9 +1696,9 @@ mod tests {
                     "an agent cannot keep a process running past its own session",
                 ),
                 (
-                    "say each ordinary end names what it was sent to",
-                    "Each ordinary end names, by pid and executable, every process besides the \
-                     session's main process that the end was sent to",
+                    "say each end names what it was sent to",
+                    "Each end of a session names, by pid and executable, every process besides \
+                     the session's main process that the end was sent to",
                 ),
                 (
                     "say where the operator reads it",

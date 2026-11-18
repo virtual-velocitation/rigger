@@ -169,9 +169,10 @@ its command line through the one predicate the hook's command is built with, so 
 writing its record finishes before the end. No other process is waited for: the spawn's MCP
 server names the spawn too, and is ended at once. A watched tree (macOS, or
 a launch whose containment degraded to a watch) signals nothing once its main has exited: what
-the main left running is reported, never signalled. Each ordinary end names, in a progress
-line, every process besides the main that it was sent to; who starts a daemon other sessions
-share, and when, is the handbook's rule (`docs/handbook/using-rigger.md`).
+the main left running is reported, never signalled. Each end, a stop's too, names in a progress
+line every process besides the main that it was sent to, each running just before its signal;
+who starts a daemon other sessions share, and when, is the handbook's rule
+(`docs/handbook/using-rigger.md`).
 
 ---
 

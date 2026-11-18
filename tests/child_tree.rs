@@ -142,15 +142,15 @@ fn by_the_finish(tree: ReapedChild) -> EndReport {
 }
 
 /// The kept fixture `body`, with `up` of its processes up and then `before` done to it, is ended
-/// by `ending`, which leaves nothing running, reports `ended` processes it ended besides the main,
-/// and reports nothing left: a process that ignores the end's request to exit is ended without
+/// by `ending`, which leaves nothing running, reports `sent` processes besides the main it sent its
+/// end to, and reports nothing left: a process that ignores the end's request to exit is ended without
 /// asking once the grace passes.
 fn ends_the_tree(
     body: &str,
     up: usize,
     before: fn(&mut ReapedChild, &mut Witness),
     ending: fn(ReapedChild) -> EndReport,
-    ended: usize,
+    sent: usize,
 ) {
     let mut witness = Witness::new();
     let mut tree = kept(&witness, body);
@@ -162,12 +162,12 @@ fn ends_the_tree(
     assert_eq!(
         (
             witness.read(),
-            report.ended.len(),
+            report.sent.len(),
             report.residue,
             report.skipped,
             report.faults
         ),
-        (Reading::Ended, ended, vec![], vec![], vec![]),
+        (Reading::Ended, sent, vec![], vec![], vec![]),
     );
 }
 
@@ -182,33 +182,35 @@ fn after_the_main_exits(tree: &mut ReapedChild, witness: &mut Witness) {
     );
 }
 
-/// Closes the main's input.
-fn after_the_input_closes(tree: &mut ReapedChild, _witness: &mut Witness) {
+/// Closes the main's input, and waits for the process the main starts at its input's end to be
+/// up, so the end that follows has it to end.
+fn after_the_input_closes(tree: &mut ReapedChild, witness: &mut Witness) {
     drop(tree.take_stdin());
+    assert!(witness.wait_up(2), "the main starts its holder");
 }
 
-// A stop's end counts nothing it ended; an ordinary end counts the holder, the main aside.
+// Each end names the one process besides the main it was sent to.
 rigger::test_cases! {
     a_kept_end_ends_a_running_tree:
-        ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_end, 0);
+        ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_end, 1);
     a_kept_end_ends_what_an_exited_main_left:
-        ends_the_tree("holder; up", 2, after_the_main_exits, by_the_end, 0);
+        ends_the_tree("holder; up", 2, after_the_main_exits, by_the_end, 1);
     a_kept_end_ends_what_the_main_starts_as_it_exits_at_the_end_of_its_input:
         ends_the_tree(
             "up; read -r unused; holder; exit 0",
             1,
             after_the_input_closes,
             by_the_end,
-            0,
+            1,
         );
     a_kept_end_ends_a_process_started_in_another_directory:
-        ends_the_tree("cd / && holder; up; held", 2, |_, _| {}, by_the_end, 0);
+        ends_the_tree("cd / && holder; up; held", 2, |_, _| {}, by_the_end, 1);
     a_kept_end_ends_a_process_in_a_session_of_its_own:
-        ends_the_tree("holder setsid; up; held", 2, |_, _| {}, by_the_end, 0);
+        ends_the_tree("holder setsid; up; held", 2, |_, _| {}, by_the_end, 1);
     a_kept_end_ends_a_process_that_ignores_the_request_to_exit:
-        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {}, by_the_end, 0);
+        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {}, by_the_end, 1);
     a_kept_end_ends_a_main_that_ignores_the_request_to_exit:
-        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {}, by_the_end, 0);
+        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {}, by_the_end, 1);
     a_kept_finish_ends_a_running_tree:
         ends_the_tree("holder; up; held", 2, |_, _| {}, by_the_finish, 1);
     a_kept_finish_ends_what_an_exited_main_left:
@@ -226,15 +228,15 @@ fn the_hook(line: &str) -> bool {
 
 /// The kept fixture `body`, with `up` of its processes up and, where `exited`, its main exited,
 /// finished for [`SPAWN`]: once the finish answers, `ups` of the fixture's processes have written
-/// their up byte, the finish took a time within `took` and reports `ended` processes it ended, and
-/// nothing is left running or reported left.
+/// their up byte, the finish took a time within `took` and reports `sent` processes it sent its end
+/// to, and nothing is left running or reported left.
 fn finishes_for_the_spawn(
     body: &str,
     up: usize,
     exited: bool,
     ups: usize,
     took: Range<Duration>,
-    ended: usize,
+    sent: usize,
 ) {
     let mut witness = Witness::new();
     let mut tree = kept(&witness, body);
@@ -251,12 +253,12 @@ fn finishes_for_the_spawn(
         (
             witness.read(),
             witness.up(),
-            report.ended.len(),
+            report.sent.len(),
             report.residue,
             report.skipped,
             report.faults
         ),
-        (Reading::Ended, ups, ended, vec![], vec![], vec![])
+        (Reading::Ended, ups, sent, vec![], vec![], vec![])
     );
     assert!(took.contains(&elapsed), "the finish took {elapsed:?}");
 }
@@ -338,7 +340,7 @@ fn a_kept_wait_for_the_output_ends_what_the_main_left_holding_it() {
         (
             output.status.code(),
             String::from_utf8_lossy(&output.stdout).into_owned(),
-            report.ended.len(),
+            report.sent.len(),
             report.residue,
             report.skipped
         ),
@@ -358,12 +360,12 @@ fn lines_until_quiet(lines: &std::sync::mpsc::Receiver<io::Result<String>>) -> V
 /// Session A, contained as `how`, starts the stand-in daemon (`daemon` in
 /// `tests/fixtures/witness.sh`) and exits a second later; session B, kept, uses it as `client`,
 /// and is waiting on an answer when A finishes. B then says `seen` and runs on, never signalled;
-/// A's finish reports `ended` processes it ended and `skipped` it never signalled, and leaves A's
+/// A's finish reports `sent` processes it sent its end to and `skipped` it never signalled, and leaves A's
 /// witness reading `left`.
 fn a_sibling_using_a_daemon_the_session_started(
     how: Containment,
     seen: &[&str],
-    ended: usize,
+    sent: usize,
     skipped: usize,
     left: Reading,
 ) {
@@ -398,14 +400,14 @@ fn a_sibling_using_a_daemon_the_session_started(
     assert_eq!(
         (
             lines_until_quiet(&lines),
-            report.ended.len(),
+            report.sent.len(),
             report.residue,
             report.skipped.len(),
             witness_a.read()
         ),
         (
             seen.iter().map(|line| line.to_string()).collect::<Vec<_>>(),
-            ended,
+            sent,
             vec![],
             skipped,
             left

@@ -2019,7 +2019,8 @@ fn api_retry_line(v: &Value) -> String {
 }
 
 /// The lines the hold probe says on stderr for its canary's end ([`super::end_lines`]), since the
-/// probe writes no store. Empty when the end left nothing and nothing was refused.
+/// probe writes no store. Empty when the end was sent to nothing besides the canary's main, left
+/// nothing and nothing was refused.
 fn canary_end_lines(report: &crate::child_tree::EndReport) -> Vec<String> {
     super::end_lines(report, "rigger: the hold probe's canary")
 }

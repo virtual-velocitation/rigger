@@ -279,7 +279,8 @@ trait Hold: Send {
     }
     /// The processes the tree's end would reach now that are still running, its main aside.
     fn members(&mut self, child: &mut Child) -> Vec<Identity>;
-    /// Ends the tree, answering what the end left running and what it never signalled.
+    /// Ends the tree, answering what the end signalled, what it left running and what it never
+    /// signalled.
     fn end(&mut self, child: &mut Child) -> EndReport;
 }
 
@@ -428,8 +429,9 @@ impl ReapedChild {
         }
     }
 
-    /// Ends the tree and reaps its main, answering what the end left running and what it found
-    /// outside the tree and never signalled. A watched tree's watcher stops first, and the
+    /// Ends the tree and reaps its main, answering what the end signalled besides the main
+    /// ([`EndReport::sent`]), what it left running and what it found outside the tree and never
+    /// signalled. A watched tree's watcher stops first, and the
     /// processes it remembered are the end's own ([`crate::reap::end_watched`]). An end that
     /// signalled by pid, in this process or in the tree's keeper, says why once for each reason
     /// ([`reap::say_signalled_by_pid`]).
@@ -449,9 +451,8 @@ impl ReapedChild {
     /// spawn's record is, so that write finishes before the end; a main that
     /// still runs is ended at once with all it started, as a stop ends it. A watched tree whose
     /// main has exited signals nothing, and answers what the main left running as never
-    /// signalled ([`crate::reap::end_watched`]). Answers what the end left, and in
-    /// [`EndReport::ended`] each process it found running besides the main, named before the end,
-    /// that is gone after it and that the end neither left as residue nor skipped.
+    /// signalled ([`crate::reap::end_watched`]). Answers what the end signalled and what it left
+    /// ([`ReapedChild::end`]).
     pub fn finish(mut self, writer: Option<&dyn Fn(&str) -> bool>) -> EndReport {
         if let Some(writer) = writer {
             if matches!(self.try_wait(), Ok(Some(_))) {
@@ -460,26 +461,7 @@ impl ReapedChild {
                 });
             }
         }
-        let found: Vec<(Identity, Leftover)> = self
-            .hold
-            .members(&mut self.child)
-            .into_iter()
-            .map(|member| (member, Leftover::of(member.pid, false)))
-            .collect();
-        let mut report = self.end();
-        let left: Vec<u32> = report
-            .residue
-            .iter()
-            .chain(&report.skipped)
-            .map(|left| left.pid)
-            .collect();
-        let ended = found
-            .into_iter()
-            .filter(|(member, _)| !reap::running(member) && !left.contains(&member.pid))
-            .map(|(_, named)| named)
-            .collect();
-        report.ended = ended;
-        report
+        self.end()
     }
 
     /// Waits for the main process to exit and answers its status and all of its output, as
@@ -640,18 +622,35 @@ mod tests {
         command.spawn().expect("spawn the watched tree")
     }
 
+    /// The pids `report` names as sent the end, none of them the main's `main`, and the rest of
+    /// the report.
+    fn sent_besides(main: u32, report: EndReport) -> (Vec<u32>, EndReport) {
+        let sent: Vec<u32> = report.sent.iter().map(|left| left.pid).collect();
+        assert!(
+            !sent.contains(&main),
+            "the main is never named as sent the end"
+        );
+        let rest = EndReport {
+            sent: Vec::new(),
+            ..report
+        };
+        (sent, rest)
+    }
+
     /// A watched tree running `body`, ended once `up` of its processes are up, leaves nothing
-    /// running and reports nothing.
+    /// running and reports only the processes besides the main it sent its end to.
     fn ends_the_tree(body: &str, up: usize) {
         let mut witness = Witness::new();
         let mut tree = watched(&witness, body);
         assert!(witness.wait_up(up), "the fixture's {up} processes are up");
+        let main = tree.id();
 
         let report = tree.end();
 
+        let (sent, rest) = sent_besides(main, report);
         assert_eq!(
-            (witness.read(), report),
-            (Reading::Ended, EndReport::default())
+            (witness.read(), sent.is_empty(), rest),
+            (Reading::Ended, false, EndReport::default())
         );
     }
 
@@ -693,8 +692,8 @@ mod tests {
 
     /// A watched tree running `body`, finished for the `writer` given once `up` of its
     /// processes are up and, where `exited`, once its main has exited, leaves the witness reading
-    /// `left`, reports `ended` processes it ended besides the main and `skipped` it found and
-    /// never signalled, leaves nothing it signalled running, and never waits out the writers'
+    /// `left`, reports `sent` processes besides the main it sent its end to and `skipped` it found
+    /// and never signalled, leaves nothing it signalled running, and never waits out the writers'
     /// bound.
     fn finishes(
         body: &str,
@@ -702,7 +701,7 @@ mod tests {
         exited: bool,
         writer: Option<&dyn Fn(&str) -> bool>,
         left: Reading,
-        ended: usize,
+        sent: usize,
         skipped: usize,
     ) {
         let mut witness = Witness::new();
@@ -727,11 +726,11 @@ mod tests {
         assert_eq!(
             (
                 witness.read(),
-                report.ended.len(),
+                report.sent.len(),
                 report.residue,
                 report.skipped.len()
             ),
-            (left, ended, vec![], skipped)
+            (left, sent, vec![], skipped)
         );
         assert_eq!(witness.release(), Reading::Ended);
     }
@@ -820,12 +819,14 @@ mod tests {
             .expect("spawn the fixture shell");
         let mut tree = ReapedChild::new(child);
         assert!(witness.wait_up(2), "the holder and the main are up");
+        let main = tree.id();
 
         let report = tree.end();
 
+        let (sent, rest) = sent_besides(main, report);
         assert_eq!(
-            (witness.read(), report),
-            (Reading::Ended, EndReport::default())
+            (witness.read(), sent.len(), rest),
+            (Reading::Ended, 1, EndReport::default())
         );
         let status = tree.try_wait().expect("read the main's status");
         assert_eq!(

@@ -1308,7 +1308,7 @@ mod forks_at_stop {
     #[derive(Clone, Copy, Debug)]
     enum Leaves {
         /// Nothing the session started; an ordinary end names in its progress line the holder it
-        /// ended.
+        /// was sent to.
         Nothing,
         /// The process the session started before its result, which a watched tree's ordinary
         /// end leaves alone (its main has exited), or one that left a watched tree before the

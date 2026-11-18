@@ -302,13 +302,14 @@ impl Keeper {
 
     /// Ends the tree ([`crate::reap::end_own_descendants`]), asking each member to exit first when
     /// `graceful` and reaping as it walks, then writes why it signalled by pid if it did, what the
-    /// end left running and what it never signalled, then that it ended.
+    /// end was sent to, what it left running and what it never signalled, then that it ended.
     fn end(mut self, graceful: bool) -> i32 {
         let report = reap::end_own_descendants(graceful, || self.reap_ready());
         let records = report
             .by_pid_because
             .map(Record::ByPid)
             .into_iter()
+            .chain(report.sent.into_iter().map(Record::Sent))
             .chain(report.residue.into_iter().map(Record::Residue))
             .chain(report.skipped.into_iter().map(Record::Skipped))
             .chain([Record::Ended]);
@@ -472,10 +473,12 @@ impl Kept {
     }
 
     /// Takes in one line the keeper wrote after its spawn record: the main's status, why its end
-    /// signalled by pid, a leftover of its end, or its end. Any other line is said and ignored.
+    /// signalled by pid, a process its end was sent to or left, or its end. Any other line is said
+    /// and ignored.
     fn take(&mut self, line: io::Result<String>) {
         match line.as_deref().ok().and_then(Record::decode) {
             Some(Record::Exited(raw)) => self.status = Some(ExitStatus::from_raw(raw)),
+            Some(Record::Sent(left)) => self.report.add_sent(left),
             Some(Record::Residue(left)) => self.report.residue.push(left),
             Some(Record::Skipped(left)) => self.report.skipped.push(left),
             Some(Record::ByPid(reason)) => self.report.by_pid_because = Some(reason),
@@ -490,10 +493,21 @@ impl Kept {
 
     /// Adds `other` to what the end reports.
     fn merge(&mut self, other: EndReport) {
+        for left in other.sent {
+            self.report.add_sent(left);
+        }
         self.report.residue.extend(other.residue);
         self.report.skipped.extend(other.skipped);
         self.report.faults.extend(other.faults);
         self.report.by_pid_because = self.report.by_pid_because.take().or(other.by_pid_because);
+    }
+
+    /// What the end reports, taken: every process besides the main it was sent to, as no end names
+    /// its main, though the keeper's end, and an end of the keeper, signal it among the tree.
+    fn taken_report(&mut self) -> EndReport {
+        let mut report = std::mem::take(&mut self.report);
+        report.sent.retain(|left| left.pid != self.main);
+        report
     }
 
     /// The end of a tree whose keeper closed its records before it wrote that it ended the tree.
@@ -581,7 +595,7 @@ impl Hold for Kept {
                 Ok(line) => self.take(line),
                 Err(RecvTimeoutError::Disconnected) => {
                     self.lost(keeper);
-                    return std::mem::take(&mut self.report);
+                    return self.taken_report();
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     whole_line::say(format_args!(
@@ -592,7 +606,7 @@ impl Hold for Kept {
                     ));
                     let report = reap::end_watched(keeper, &[]);
                     self.merge(report);
-                    return std::mem::take(&mut self.report);
+                    return self.taken_report();
                 }
             }
         }
@@ -603,7 +617,7 @@ impl Hold for Kept {
             ));
             self.merge(report);
         }
-        std::mem::take(&mut self.report)
+        self.taken_report()
     }
 }
 
@@ -645,6 +659,8 @@ pub(super) enum Record {
     Probed,
     /// The main exited, with this raw wait status.
     Exited(i32),
+    /// A process the keeper's end was sent to, running just before its signal.
+    Sent(Leftover),
     /// A process the keeper's end signalled is still running past its bound.
     Residue(Leftover),
     /// A process the keeper's end found and never signalled.
@@ -668,6 +684,7 @@ impl Record {
             Record::Unavailable(errno) => format!("unavailable {errno}"),
             Record::Probed => "ok".to_string(),
             Record::Exited(raw) => format!("exited {raw}"),
+            Record::Sent(left) => format!("sent {}", Record::fields(left)),
             Record::Residue(left) => format!("residue {}", Record::fields(left)),
             Record::Skipped(left) => format!("skipped {}", Record::fields(left)),
             Record::ByPid(reason) => format!("bypid {}", reason.replace(['\n', '\r'], " ")),
@@ -688,6 +705,7 @@ impl Record {
             ("failed", Some(errno)) => errno.parse().ok().map(Record::Failed),
             ("unavailable", Some(errno)) => errno.parse().ok().map(Record::Unavailable),
             ("exited", Some(raw)) => raw.parse().ok().map(Record::Exited),
+            ("sent", Some(rest)) => Record::leftover(rest).map(Record::Sent),
             ("residue", Some(rest)) => Record::leftover(rest).map(Record::Residue),
             ("skipped", Some(rest)) => Record::leftover(rest).map(Record::Skipped),
             ("bypid", Some(reason)) => Some(Record::ByPid(reason.to_string())),
@@ -744,6 +762,7 @@ mod tests {
         an_unavailable_record_round_trips: round_trips(Record::Unavailable(1));
         a_probe_answer_round_trips: round_trips(Record::Probed);
         an_exit_status_round_trips: round_trips(Record::Exited(15));
+        a_sent_record_round_trips: round_trips(Record::Sent(leftover(5, "sh -c sleep 30")));
         a_residue_record_round_trips: round_trips(Record::Residue(leftover(7, "sh -c sleep 30")));
         a_skipped_record_round_trips: round_trips(Record::Skipped(leftover(9, " sh  -c x ")));
         a_leftover_with_no_program_round_trips: round_trips(Record::Residue(leftover(11, "")));
@@ -764,7 +783,8 @@ mod tests {
         );
     }
 
-    /// A kept tree whose keeper wrote `lines` after its spawn record, and `merged` added.
+    /// What the end of a kept tree whose main is this process answers, its keeper having
+    /// written `lines` after its spawn record and `merged` added.
     fn kept_report(lines: &[String], merged: EndReport) -> EndReport {
         let (_keeper, records) = std::sync::mpsc::channel();
         let (_read, control) = std::io::pipe().expect("a control pipe");
@@ -773,7 +793,27 @@ mod tests {
             kept.take(Ok(line.clone()));
         }
         kept.merge(merged);
-        kept.report
+        kept.taken_report()
+    }
+
+    /// The keeper's end and an end merged after it each signal the main among the tree, and may
+    /// both signal one process: the kept end names each process besides the main it was sent to,
+    /// once.
+    #[test]
+    fn a_kept_end_names_each_process_sent_its_end_once_and_never_the_main() {
+        let lines = [
+            Record::Sent(leftover(std::process::id(), "main")),
+            Record::Sent(leftover(7, "sh")),
+        ]
+        .map(|record| record.encode());
+        let merged = EndReport {
+            sent: vec![leftover(7, "sh"), leftover(8, "cat")],
+            ..EndReport::default()
+        };
+
+        let report = kept_report(&lines, merged);
+
+        assert_eq!(report.sent, vec![leftover(7, "sh"), leftover(8, "cat")]);
     }
 
     /// Why the end that a kept tree's keeper relayed, or one merged into it, signalled by pid.
