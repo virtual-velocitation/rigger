@@ -221,9 +221,9 @@ rigger::test_cases! {
 /// for it as its shell's arguments, as the hook does.
 const SPAWN: &str = "u-late-writer";
 
-/// Whether `line` is the stop-failure hook of [`SPAWN`], the one writer a finish for it waits for.
-fn the_hook(line: &str) -> bool {
-    rigger::hooks::is_stop_failure_hook(line, SPAWN)
+/// Whether `line` is a writer of [`SPAWN`], one a finish for it waits for.
+fn a_writer(line: &str) -> bool {
+    rigger::hooks::is_spawn_writer(line, SPAWN)
 }
 
 /// The kept fixture `body`, with `up` of its processes up and, where `exited`, its main exited,
@@ -246,7 +246,7 @@ fn finishes_for_the_spawn(
     }
     let started = Instant::now();
 
-    let report = tree.finish(Some(&the_hook));
+    let report = tree.finish(Some(&a_writer));
 
     let elapsed = started.elapsed();
     assert_eq!(
@@ -395,7 +395,7 @@ fn a_sibling_using_a_daemon_the_session_started(
     );
     a.wait().expect("wait on A's main");
 
-    let report = a.finish(Some(&the_hook));
+    let report = a.finish(Some(&a_writer));
 
     assert_eq!(
         (

@@ -293,17 +293,23 @@ pub fn install_spawn_hooks(
 
 /// The stop-failure hook's command after its binary, for the spawn written as `spawn_word` and
 /// the class `class`: the command [`install_spawn_hooks`] installs and the writer an ordinary end
-/// waits for ([`is_stop_failure_hook`]) are both built here, so the two cannot drift.
+/// waits for ([`is_spawn_writer`]) are both built here, so the two cannot drift.
 fn stop_failure_hook_words(spawn_word: &str, class: &str) -> String {
     format!("hook stop-failure --spawn {spawn_word} --class {class}")
 }
 
-/// Whether `command_line`, a process's command line as the OS reports it, is the stop-failure
-/// hook [`install_spawn_hooks`] installs for `spawn`, of any class: the one process that can still
-/// be writing the spawn's record once its session's main has exited. It reads the command as
-/// built, which a shell running the hook carries as its argument, and as that shell hands it on,
-/// each word unquoted. The spawn's MCP server, which names the spawn too, is no writer.
-pub fn is_stop_failure_hook(command_line: &str, spawn: &str) -> bool {
+/// Whether `command_line`, a process's command line as the OS reports it, is one of rigger's own
+/// writers for `spawn`: a process that can still be writing the spawn's record once its
+/// session's main has exited, which an ordinary end waits for. That is the stop-failure hook
+/// [`install_spawn_hooks`] installs for `spawn`.
+pub fn is_spawn_writer(command_line: &str, spawn: &str) -> bool {
+    is_stop_failure_hook(command_line, spawn)
+}
+
+/// Whether `command_line` is the stop-failure hook [`install_spawn_hooks`] installs for `spawn`,
+/// of any class. It reads the command as built, which a shell running the hook carries as its
+/// argument, and as that shell hands it on, each word unquoted.
+fn is_stop_failure_hook(command_line: &str, spawn: &str) -> bool {
     [shell_quote(spawn), spawn.to_string()]
         .iter()
         .any(|word| command_line.contains(&stop_failure_hook_words(word, "")))
@@ -747,7 +753,7 @@ mod tests {
                     .replace('\0', "'");
                 for line in [format!("/bin/sh -c {command}"), unquoted] {
                     assert!(
-                        is_stop_failure_hook(&line, spawn),
+                        is_spawn_writer(&line, spawn),
                         "{line:?} is the hook for {spawn:?}"
                     );
                 }
@@ -760,8 +766,8 @@ mod tests {
             "rigger guard-write --root /wt",
         ] {
             assert!(
-                !is_stop_failure_hook(line, "u/implementer#0"),
-                "{line:?} is no hook for u/implementer#0"
+                !is_spawn_writer(line, "u/implementer#0"),
+                "{line:?} is no writer for u/implementer#0"
             );
         }
     }
