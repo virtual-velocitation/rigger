@@ -49526,6 +49526,209 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
+    /// The reason a person gives git for the lock [`LocksItsTree`] sets.
+    const A_PERSONS_LOCK: &str = "a person's lock";
+
+    /// Lock the worktree at `dir` as a person would, with [`A_PERSONS_LOCK`].
+    fn lock_tree(dir: &str) {
+        let locked = std::process::Command::new("git")
+            .args([
+                "-C",
+                dir,
+                "worktree",
+                "lock",
+                "--reason",
+                A_PERSONS_LOCK,
+                ".",
+            ])
+            .output()
+            .unwrap();
+        assert!(locked.status.success(), "locking {dir}: {locked:?}");
+    }
+
+    /// A driver that locks the worktree spawn `id` runs in, as a person would mid-stage, and
+    /// otherwise answers as `inner` does. `locked` records that it did.
+    struct LocksItsTree<'a> {
+        inner: &'a dyn AgentDriver,
+        id: String,
+        locked: std::sync::atomic::AtomicBool,
+    }
+    impl<'a> LocksItsTree<'a> {
+        fn new(inner: &'a dyn AgentDriver, id: String) -> Self {
+            LocksItsTree {
+                inner,
+                id,
+                locked: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+    impl AgentDriver for LocksItsTree<'_> {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if opts.id == self.id && !opts.dir.is_empty() {
+                lock_tree(&opts.dir);
+                self.locked.store(true, Ordering::SeqCst);
+            }
+            self.inner.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    /// A TRANSIENT TREE A PERSON LOCKED IS KEPT WITH A WORD: a standalone review stage's tree,
+    /// the plan-critique gate's and a post-merge re-gate's are removed when their stage ends, and
+    /// git refuses to remove one a person locked meanwhile. The tree stays, and the run says so
+    /// in a progress line naming the tree and git's refusal, since no later create of that tree
+    /// reads the lock and nothing else would.
+    #[test]
+    fn a_transient_tree_a_person_locked_is_kept_with_a_line_naming_it() {
+        type Log<'l> = &'l (dyn Fn(&str) + Sync);
+        /// A standalone review stage whose lens locks its tree.
+        fn review_stage(log: Log<'_>) -> (tempfile::TempDir, Vec<String>) {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let mut cfg = Config::default();
+            cfg.agents.insert("lens".into(), agent("lens"));
+            cfg.workflow.stages.insert(
+                "review".into(),
+                Stage {
+                    name: "review".into(),
+                    agents: vec!["lens".into()],
+                    ..Default::default()
+                },
+            );
+            let inner = Stub::answering(r#"{"verdict":"approve"}"#);
+            let driver = LocksItsTree::new(&inner, review_lens_ids::<Vec<_>>(&["lens"]).remove(0));
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                log,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let _ = run_isolated(&cfg, &deps);
+            assert!(
+                driver.locked.load(Ordering::SeqCst),
+                "premise: the lens locked its tree"
+            );
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let (dir, _) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
+            (repo, vec![dir])
+        }
+        /// The plan-critique gate, whose adversary locks its tree.
+        fn plan_critique(log: Log<'_>) -> (tempfile::TempDir, Vec<String>) {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let source = tempfile::tempdir().unwrap();
+            std::fs::write(
+                source.path().join("feature.rs"),
+                format!("// {WIDGET_CRITERION}\nfn render() {{}}\n"),
+            )
+            .unwrap();
+            let grep = crate::grounder::Grep {
+                root: source.path().to_string_lossy().into_owned(),
+            };
+            let inner = CritiqueDriver::new(widget_split());
+            let driver = LocksItsTree::new(&inner, spawn_id("plan-critique", ROLE_ADVERSARY, 0));
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                grounder: Some(&grep),
+                log,
+                ..stub_deps(&store, &driver, vec![WIDGET_CRITERION.to_string()])
+            };
+            let _ = run_isolated(&critique_cfg(), &deps);
+            assert!(
+                driver.locked.load(Ordering::SeqCst),
+                "premise: the adversary locked its tree"
+            );
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let (dir, _) = Throwaway::REVIEW.dir_and_branch(&scratch, "plan-critique", 0);
+            (repo, vec![dir])
+        }
+        /// Two units writing apart, so the second lands on a tree its own gate never saw and its
+        /// post-merge re-gate runs, its gate locking the re-gate's tree.
+        fn post_merge(log: Log<'_>) -> (tempfile::TempDir, Vec<String>) {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let mut cfg = Config::default();
+            cfg.workflow.gates.insert(
+                "g".into(),
+                gate_def(&format!(
+                    "case \"$(pwd -P)\" in */rigger-postmerge-*) git worktree lock --reason \
+                     \"{A_PERSONS_LOCK}\" . ;; esac"
+                )),
+            );
+            for (unit, worker) in [("unit-a", "wa"), ("unit-b", "wb")] {
+                cfg.agents.insert(worker.into(), agent(worker));
+                cfg.workflow.stages.insert(
+                    unit.into(),
+                    Stage {
+                        name: unit.into(),
+                        agent: worker.into(),
+                        gates: vec!["g".into()],
+                        on_pass: "merge".into(),
+                        ..Default::default()
+                    },
+                );
+            }
+            let driver = Stub {
+                write_file_by_agent: HashMap::from([
+                    ("wa".to_string(), "a.txt".to_string()),
+                    ("wb".to_string(), "b.txt".to_string()),
+                ]),
+                ..Stub::new()
+            };
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                log,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let _ = run_isolated(&cfg, &deps);
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let left: Vec<String> = std::fs::read_dir(&scratch)
+                .unwrap()
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|name| name.starts_with("rigger-postmerge-"))
+                .map(|name| format!("{scratch}/{name}"))
+                .collect();
+            assert!(
+                !left.is_empty(),
+                "premise: a post-merge re-gate ran and locked its tree"
+            );
+            (repo, left)
+        }
+        // (the transient tree, the run that locks it)
+        let rows: [(&str, fn(Log<'_>) -> (tempfile::TempDir, Vec<String>)); 3] = [
+            ("the standalone review stage", review_stage),
+            ("the plan-critique gate", plan_critique),
+            ("the post-merge re-gate", post_merge),
+        ];
+        for (row, run) in rows {
+            let said = Mutex::new(Vec::<String>::new());
+            let log = |line: &str| said.lock().unwrap().push(line.to_string());
+            let (repo, kept) = run(&log);
+            let said = said.into_inner().unwrap();
+            for dir in &kept {
+                assert!(
+                    Path::new(dir).is_dir(),
+                    "{row}: the locked tree {dir} is kept"
+                );
+                assert!(
+                    said.iter()
+                        .any(|l| l.contains(dir.as_str()) && l.contains("locked")),
+                    "{row}: a progress line names the kept tree {dir} and why: {said:?}"
+                );
+                let repo_path = repo.path().to_str().unwrap();
+                run_git(repo_path, &["worktree", "unlock", dir]);
+                run_git(repo_path, &["worktree", "remove", "--force", dir]);
+            }
+        }
+    }
+
     #[test]
     fn postmerge_worktree_create_err_still_reaps_the_just_created_branch() {
         // adv-u103c7-r3-createbranch-then-create-leaks-branch: `integrate_and_emit` used to
