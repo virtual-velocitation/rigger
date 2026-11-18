@@ -278,8 +278,8 @@ pub struct LanguageEntry {
     /// [`CSHARP_CONSTRUCTORS`] for C#, none for the rest.
     constructors: &'static [&'static str],
     /// The node kinds a reference's name is split around, left out with all they hold, so
-    /// `List<IShape>` is named `List` (spec 117, CAPTURES): [`TYPE_ARGUMENTS`] for TypeScript,
-    /// TSX and Go, [`CSHARP_TYPE_ARGUMENTS`] for C#, none for the rest.
+    /// `List<IShape>` is named `List` (spec 117, CAPTURES): [`TS_GO_TYPE_ARGUMENTS`] for
+    /// TypeScript, TSX and Go, [`CSHARP_TYPE_ARGUMENTS`] for C#, none for the rest.
     type_arguments: &'static [&'static str],
     compiled: &'static Compiled,
 }
@@ -292,7 +292,7 @@ const CSHARP_CONSTRUCTORS: &[&str] = &["object_creation_expression"];
 
 /// The node kind holding a generic's type arguments in the TypeScript, TSX and Go grammars,
 /// `<IShape>` of `List<IShape>` and `[T]` of `Set[T]`.
-const TYPE_ARGUMENTS: &[&str] = &["type_arguments"];
+const TS_GO_TYPE_ARGUMENTS: &[&str] = &["type_arguments"];
 
 /// The node kind holding a generic's type arguments in the C# grammar, `<IShape>` of
 /// `List<IShape>`.
@@ -397,7 +397,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                 ],
             ),
             JS_CONSTRUCTORS,
-            TYPE_ARGUMENTS,
+            TS_GO_TYPE_ARGUMENTS,
             &TS,
         ),
         "tsx" => (
@@ -418,7 +418,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                 ],
             ),
             JS_CONSTRUCTORS,
-            TYPE_ARGUMENTS,
+            TS_GO_TYPE_ARGUMENTS,
             &TSX,
         ),
         "js" | "mjs" | "cjs" | "jsx" => (
@@ -444,7 +444,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             tree_sitter_go::LANGUAGE.into(),
             composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
             &[],
-            TYPE_ARGUMENTS,
+            TS_GO_TYPE_ARGUMENTS,
             &GO,
         ),
         "py" => (
