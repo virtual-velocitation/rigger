@@ -232,27 +232,13 @@ impl TreeCommand {
 
     /// Starts the tree, contained as the command was made. Where this process signals a
     /// session's processes by pid because process descriptors are unavailable, it says so once
-    /// ([`signalled_by_pid`]).
+    /// for each reason ([`reap::say_signalled_by_pid`]).
     pub fn spawn(self) -> io::Result<ReapedChild> {
-        static CHECKED: Once = Once::new();
-        CHECKED.call_once(|| {
-            if let Some(reason) = reap::no_process_descriptors() {
-                whole_line::say(format_args!("{}", signalled_by_pid(&reason)));
-            }
-        });
+        if let Some(reason) = reap::no_process_descriptors() {
+            reap::say_signalled_by_pid(&reason);
+        }
         self.contain.spawn(self.command)
     }
-}
-
-/// The line this process says once on its error output when it signals a session's processes by
-/// pid, because process descriptors are unavailable for `reason`
-/// ([`crate::reap::no_process_descriptors`]).
-fn signalled_by_pid(reason: &str) -> String {
-    format!(
-        "rigger: process descriptors unavailable: {reason}; a session's processes are signalled \
-         by pid after a check, and a process that takes a checked pid before the signal lands \
-         can receive it"
-    )
 }
 
 /// How a tree is started: a containment spawns the command it was made with and answers the
@@ -444,9 +430,15 @@ impl ReapedChild {
 
     /// Ends the tree and reaps its main, answering what the end left running and what it found
     /// outside the tree and never signalled. A watched tree's watcher stops first, and the
-    /// processes it remembered are the end's own ([`crate::reap::end_watched`]).
+    /// processes it remembered are the end's own ([`crate::reap::end_watched`]). An end that
+    /// signalled by pid, in this process or in the tree's keeper, says why once for each reason
+    /// ([`reap::say_signalled_by_pid`]).
     pub fn end(&mut self) -> EndReport {
-        self.hold.end(&mut self.child)
+        let report = self.hold.end(&mut self.child);
+        if let Some(reason) = &report.by_pid_because {
+            reap::say_signalled_by_pid(reason);
+        }
+        report
     }
 
     /// Lets the tree go: ends nothing, and reaps the main if it has exited. Answers what the OS

@@ -3887,6 +3887,7 @@ mod tests {
             residue: left(residue),
             skipped: left(skipped),
             faults: faults.iter().map(|fault| fault.to_string()).collect(),
+            by_pid_because: None,
         };
         assert_eq!(end_line(&report).as_deref(), expected);
     }

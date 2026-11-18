@@ -515,9 +515,9 @@ impl Addressee {
 }
 
 /// `pid` addressed for a signal, ahead of every check the signal passes: where this host opens
-/// process descriptors (`by_descriptor`, [`descriptors_here`]), through one opened on the process
-/// that holds `pid` now (a pidfd on Linux, a process handle on Windows), so the signal sent after
-/// the checks reaches that process or none; by the pid alone otherwise. `None` when the
+/// process descriptors (`by_descriptor`, [`no_process_descriptors`]), through one opened on the
+/// process that holds `pid` now (a pidfd on Linux, a process handle on Windows), so the signal
+/// sent after the checks reaches that process or none; by the pid alone otherwise. `None` when the
 /// descriptor does not open, since the process is gone: it is sent nothing. `None` for pid 0 and
 /// init (pid 1) on every OS, whatever the checks after would answer, so neither is ever
 /// addressed.
@@ -585,15 +585,21 @@ fn started(to: &Addressee) -> Option<u64> {
 }
 
 /// Why this process cannot address a process through a process descriptor here, where its OS has
-/// them: on Linux, the error that opening one on this process answers ([`unavailable_because`]).
-/// `None` where one opens; on Windows, where a process handle opens on any process this process
-/// may end; and on every other OS, which addresses a process by its pid alone.
+/// them: on Linux, the error that opening one on this process answers ([`unavailable_because`]),
+/// probed once for this process while the answer lasts ([`probed`], [`lasting`]) and again at each
+/// call while it may pass. Any error falls back to the pid, with every check kept. `None` where
+/// one opens; on Windows, where a process handle opens on any process this process may end; and
+/// on every other OS, which addresses a process by its pid alone.
 pub fn no_process_descriptors() -> Option<String> {
     std::cfg_select! {
         target_os = "linux" => {
-            let me = rustix::process::getpid();
-            rustix::process::pidfd_open(me, rustix::process::PidfdFlags::empty())
-                .err()
+            static PROBED: std::sync::OnceLock<Option<rustix::io::Errno>> =
+                std::sync::OnceLock::new();
+            let opened = || {
+                let me = rustix::process::getpid();
+                rustix::process::pidfd_open(me, rustix::process::PidfdFlags::empty()).err()
+            };
+            probed(&PROBED, opened, |error| error.is_none_or(lasting))
                 .map(unavailable_because)
         }
         _ => {
@@ -602,10 +608,62 @@ pub fn no_process_descriptors() -> Option<String> {
     }
 }
 
-/// Whether this host addresses a process through a process descriptor
-/// ([`no_process_descriptors`]).
-fn descriptors_here() -> bool {
-    no_process_descriptors().is_none()
+/// The answer `probe` gives, kept in `cache` once `lasts` says it will not change: a kept answer
+/// is answered again without probing, and one that may change is probed again at the next read.
+#[cfg(any(target_os = "linux", test))]
+fn probed<T: Clone>(
+    cache: &std::sync::OnceLock<T>,
+    probe: impl FnOnce() -> T,
+    lasts: impl FnOnce(&T) -> bool,
+) -> T {
+    if let Some(kept) = cache.get() {
+        return kept.clone();
+    }
+    let answer = probe();
+    if lasts(&answer) {
+        let _ = cache.set(answer.clone());
+    }
+    answer
+}
+
+/// Whether opening a process descriptor that failed with `error` fails for the life of this
+/// process: a kernel with none (`ENOSYS`), or a process refused them (`EPERM`, as a seccomp
+/// filter answers). Any other error, such as running out of descriptors or memory, may pass.
+#[cfg(target_os = "linux")]
+fn lasting(error: rustix::io::Errno) -> bool {
+    matches!(error, rustix::io::Errno::NOSYS | rustix::io::Errno::PERM)
+}
+
+/// The line this process says on its error output when it signals a session's processes by pid,
+/// because process descriptors are unavailable for `reason` ([`no_process_descriptors`]).
+fn signalled_by_pid(reason: &str) -> String {
+    format!(
+        "rigger: process descriptors unavailable: {reason}; a session's processes are signalled \
+         by pid after a check, and a process that takes a checked pid before the signal lands \
+         can receive it"
+    )
+}
+
+/// Say why this process signals a session's processes by pid ([`signalled_by_pid`]), once for
+/// each `reason`, however many spawns, ends and sweeps fall back for it, the keeper's ends
+/// ([`EndReport::by_pid_because`]) among them.
+pub fn say_signalled_by_pid(reason: &str) {
+    static SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut said = SAID
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if first_said(&mut said, reason) {
+        crate::whole_line::say(format_args!("{}", signalled_by_pid(reason)));
+    }
+}
+
+/// Whether `reason` is not yet in `said`, adding it.
+fn first_said(said: &mut Vec<String>, reason: &str) -> bool {
+    if said.iter().any(|known| known == reason) {
+        return false;
+    }
+    said.push(reason.to_string());
+    true
 }
 
 /// Send `signal` to `to` - the reaper's ONE sanctioned signalling call (the `no-os-kill`
@@ -697,7 +755,7 @@ impl Leftover {
 /// [`END_BOUND`]; `skipped`, those still running that it found but never signalled, because at
 /// signal time their parent chain no longer reached the tree's root (an escape, or a stranger that
 /// took a pid), or because the walk could not tell them from strangers ([`Walk::untrusted`]); and
-/// `faults`, what the OS refused it.
+/// `faults`, what the OS refused it; and `by_pid_because`, why it signalled by pid.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndReport {
     /// Signalled, and still running past the bound.
@@ -706,6 +764,11 @@ pub struct EndReport {
     pub skipped: Vec<Leftover>,
     /// Each call the OS refused the end, said whole with what followed from it.
     pub faults: Vec<String>,
+    /// Why the end addressed each process by its pid, with every check kept, where this host has
+    /// process descriptors and the process that ended the tree could not open one
+    /// ([`no_process_descriptors`]); `None` where it addressed each through one, or the OS has
+    /// none. The holder says it once ([`say_signalled_by_pid`]).
+    pub by_pid_because: Option<String>,
 }
 
 impl EndReport {
@@ -746,17 +809,25 @@ trait EndOs {
     fn ties(&self) -> Ties;
 }
 
-/// The live OS, and whether it addresses a process through a process descriptor
-/// ([`descriptors_here`]), read once when it is made.
+/// The live OS, and why it addresses a process by its pid rather than through a process
+/// descriptor ([`no_process_descriptors`]), read once when it is made.
 struct LiveOs {
-    by_descriptor: bool,
+    by_pid_because: Option<String>,
 }
 
 impl LiveOs {
     /// The live OS as this host addresses a process now.
     fn new() -> LiveOs {
         LiveOs {
-            by_descriptor: descriptors_here(),
+            by_pid_because: no_process_descriptors(),
+        }
+    }
+
+    /// `report`, an end's over this OS, with why the end addressed each process by its pid.
+    fn reporting(self, report: EndReport) -> EndReport {
+        EndReport {
+            by_pid_because: self.by_pid_because,
+            ..report
         }
     }
 }
@@ -771,7 +842,7 @@ impl EndOs for LiveOs {
     }
 
     fn address(&mut self, pid: u32) -> Option<Addressee> {
-        address(pid, self.by_descriptor)
+        address(pid, self.by_pid_because.is_none())
     }
 
     fn send(&mut self, signal: Signal, to: &Addressee) {
@@ -957,7 +1028,9 @@ pub fn left_running(main: &Identity) -> Vec<Leftover> {
 /// tree, a resume among them. A main that has already exited is reaped and nothing is signalled:
 /// what it left has a parent outside the tree, and its pid may name another process.
 pub fn end_watched(main: &mut std::process::Child, remembered: &[Identity]) -> EndReport {
-    end_watched_with(&mut LiveOs::new(), main, remembered, END_BOUND)
+    let mut os = LiveOs::new();
+    let report = end_watched_with(&mut os, main, remembered, END_BOUND);
+    os.reporting(report)
 }
 
 /// What a watched end found of the tree under its main: each process at its depth when first
@@ -1111,13 +1184,15 @@ fn end_watched_with(
 /// as residue. Every signal passes [`Tree::send`]'s checks, made afresh at every walk; a process
 /// they refuse at every walk is reported skipped and never signalled.
 pub fn end_own_descendants(graceful: bool, children_left: impl FnMut() -> bool) -> EndReport {
-    end_descendants_with(
-        &mut LiveOs::new(),
+    let mut os = LiveOs::new();
+    let report = end_descendants_with(
+        &mut os,
         std::process::id(),
         graceful,
         children_left,
         END_BOUND,
-    )
+    );
+    os.reporting(report)
 }
 
 /// [`end_own_descendants`] over `os`, from `root`, bounded by `bound`.
@@ -1583,6 +1658,9 @@ pub fn reap_authorized(base: PathBuf) {
         return;
     }
     let os = &mut LiveOs::new();
+    if let Some(reason) = &os.by_pid_because {
+        say_signalled_by_pid(reason);
+    }
     for target in &term_targets {
         signal_if_unchanged(os, target, &base, self_pid, &self_ancestors, Signal::Term);
     }
@@ -2865,7 +2943,7 @@ mod tests {
 
             fn address(&mut self, pid: u32) -> Option<Addressee> {
                 self.steps.push(Step::Addressed(pid));
-                address(pid, descriptors_here())
+                address(pid, no_process_descriptors().is_none())
             }
 
             fn send(&mut self, signal: Signal, to: &Addressee) {
@@ -2999,7 +3077,7 @@ mod tests {
 
             #[test]
             fn this_kernel_opens_process_descriptors() {
-                assert_eq!((no_process_descriptors(), descriptors_here()), (None, true));
+                assert_eq!(no_process_descriptors(), None);
             }
 
             crate::test_cases! {

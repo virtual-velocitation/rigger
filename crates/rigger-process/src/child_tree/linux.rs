@@ -310,14 +310,15 @@ impl Keeper {
     }
 
     /// Ends the tree ([`crate::reap::end_own_descendants`]), asking each member to exit first when
-    /// `graceful` and reaping as it walks, then writes what the end left running and what it never
-    /// signalled, then that it ended.
+    /// `graceful` and reaping as it walks, then writes why it signalled by pid if it did, what the
+    /// end left running and what it never signalled, then that it ended.
     fn end(mut self, graceful: bool) -> i32 {
         let report = reap::end_own_descendants(graceful, || self.reap_ready());
         let records = report
-            .residue
+            .by_pid_because
+            .map(Record::ByPid)
             .into_iter()
-            .map(Record::Residue)
+            .chain(report.residue.into_iter().map(Record::Residue))
             .chain(report.skipped.into_iter().map(Record::Skipped))
             .chain([Record::Ended]);
         for record in records {
@@ -479,13 +480,14 @@ impl Kept {
         }
     }
 
-    /// Takes in one line the keeper wrote after its spawn record: the main's status, a leftover of
-    /// its end, or its end. Any other line is said and ignored.
+    /// Takes in one line the keeper wrote after its spawn record: the main's status, why its end
+    /// signalled by pid, a leftover of its end, or its end. Any other line is said and ignored.
     fn take(&mut self, line: io::Result<String>) {
         match line.as_deref().ok().and_then(Record::decode) {
             Some(Record::Exited(raw)) => self.status = Some(ExitStatus::from_raw(raw)),
             Some(Record::Residue(left)) => self.report.residue.push(left),
             Some(Record::Skipped(left)) => self.report.skipped.push(left),
+            Some(Record::ByPid(reason)) => self.report.by_pid_because = Some(reason),
             Some(Record::Ended) => self.ended = true,
             _ => whole_line::say(format_args!(
                 "rigger: the keeper of session {} wrote {line:?}, which is no record it writes \
@@ -500,6 +502,7 @@ impl Kept {
         self.report.residue.extend(other.residue);
         self.report.skipped.extend(other.skipped);
         self.report.faults.extend(other.faults);
+        self.report.by_pid_because = self.report.by_pid_because.take().or(other.by_pid_because);
     }
 
     /// The end of a tree whose keeper closed its records before it wrote that it ended the tree.
@@ -666,6 +669,9 @@ pub(super) enum Record {
     Residue(Leftover),
     /// A process the keeper's end found and never signalled.
     Skipped(Leftover),
+    /// The keeper's end addressed each process by its pid, for this reason
+    /// ([`crate::reap::EndReport::by_pid_because`]).
+    ByPid(String),
     /// The keeper's end left no process of the tree running but those its residue and skipped
     /// records named.
     Ended,
@@ -673,8 +679,8 @@ pub(super) enum Record {
 
 impl Record {
     /// The record as one line, without its line end: its tag, then its fields, each after one
-    /// space. A leftover's program is its last field, everything after its pid's space, with each
-    /// line end in it written as a space.
+    /// space. A leftover's program is its last field, everything after its pid's space, and a
+    /// reason is all after its tag's space, each line end in either written as a space.
     pub(super) fn encode(&self) -> String {
         match self {
             Record::Spawned(pid) => format!("spawned {pid}"),
@@ -684,6 +690,7 @@ impl Record {
             Record::Exited(raw) => format!("exited {raw}"),
             Record::Residue(left) => format!("residue {}", Record::fields(left)),
             Record::Skipped(left) => format!("skipped {}", Record::fields(left)),
+            Record::ByPid(reason) => format!("bypid {}", reason.replace(['\n', '\r'], " ")),
             Record::Ended => "ended".to_string(),
         }
     }
@@ -703,6 +710,7 @@ impl Record {
             ("exited", Some(raw)) => raw.parse().ok().map(Record::Exited),
             ("residue", Some(rest)) => Record::leftover(rest).map(Record::Residue),
             ("skipped", Some(rest)) => Record::leftover(rest).map(Record::Skipped),
+            ("bypid", Some(reason)) => Some(Record::ByPid(reason.to_string())),
             _ => None,
         }
     }
