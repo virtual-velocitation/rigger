@@ -40,12 +40,14 @@ use crate::grounder::workflowdef;
 
 /// The generation of everything this module adds to the extractors it re-shapes: the design and
 /// workflow extractors, which carry no generation of their own, and the shape of the facts. Bump
-/// it whenever any of them can give a file other facts than before, as the symbol extractors'
-/// [`GRAMMAR_TAGS_VERSION`] is bumped for theirs; the two together make the extractor's fingerprint,
-/// with the digest of the project's declared extractors when it declares any ([`ProjectExtractor`]),
-/// which the store's fingerprint ([`store_fingerprint`]) folds with the grouper's generation. A golden
-/// test pins it beside the digest of the facts read over a fixture set, so a change that is not
-/// bumped fails there.
+/// it whenever any of them can give a file other facts than before, as each symbol extractor's
+/// tags generation, joined in [`GRAMMAR_TAGS_VERSION`], is bumped for its own; the two together make
+/// the extractor's fingerprint, with the digest of the project's declared extractors when it
+/// declares any ([`ProjectExtractor`]), which the store's fingerprint ([`store_fingerprint`]) folds
+/// with the grouper's generation. A golden test pins it beside the digest of the facts read over a
+/// design, a rationale and a workflow fixture, so a change that is not bumped fails there; a
+/// conversion change that moves a language's facts re-pins that language's row of the same golden
+/// with the bump.
 const FACTS_GENERATION: &str = "facts-v3";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
@@ -1220,40 +1222,68 @@ mod tests {
         }
     }
 
-    /// A CHANGE TO THE FACTS SHIPS WITH A BUMP: the golden fixtures - the symbol golden's source
-    /// for each registered grammar, a design document, a source file's rationale and a workflow
-    /// definition - read into facts whose digest is pinned beside the two generations the
-    /// fingerprint is made of, so a change to the design extractor, the workflow extractor or the
-    /// conversion fails here until the generation is bumped and the triple re-pinned.
+    /// A CHANGE TO THE FACTS SHIPS WITH A BUMP, and EACH LANGUAGE PINS ITS OWN ROWS (spec 117):
+    /// the golden fixtures read into facts. Each registry entry's code fixtures - the symbol
+    /// golden's sources keyed by that entry's extension, and for Rust a test file - are digested
+    /// in one row beside that entry's tags generation; a design document, a source file's
+    /// rationale and a workflow definition are digested in one row beside `FACTS_GENERATION`. So
+    /// a change to one language's extraction fails that language's row until its generation is
+    /// bumped, and a change to the design extractor, the workflow extractor or the conversion
+    /// fails until `FACTS_GENERATION` is bumped and every row it moves re-pinned with it.
     #[test]
     fn a_change_to_the_facts_ships_with_a_generation_bump() {
-        use crate::grounder::symbols::registry::tests::GOLDEN_SOURCES;
-        const PINNED: (&str, &str, &str) = ("ts-tags-v5", "facts-v3", "e00fa4d014412262");
-        let mut fixtures: Vec<(String, &str)> = GOLDEN_SOURCES
-            .iter()
-            .enumerate()
-            .map(|(i, (ext, source))| (format!("golden/{i}.{ext}"), *source))
-            .collect();
-        fixtures.extend(
-            [
-                ("tests/it.rs", "fn works() { helper(); }\n"),
-                (
-                    "docs/widget-design.md",
-                    "# Widget design\n\nThe code is `src/widget.rs`, see [notes](docs/notes.md).\n\n## Parts\n",
-                ),
-                ("scripts/build.sh", "# WHY: keep the cache warm\nmake\n"),
-                (
-                    ".rigger/workflow.yml",
-                    "stages:\n  plan:\n    agent: planner\n  implement:\n    needs: [plan]\n    agent: worker\n    gates: [fmt]\n",
-                ),
-            ]
-            .map(|(path, source)| (path.to_string(), source)),
-        );
-        let facts: Vec<FileFacts> = fixtures
-            .iter()
-            .map(|(path, source)| facts_of(path, source.as_bytes()))
-            .collect();
-        let any = |held: &dyn Fn(&FileFacts) -> bool| facts.iter().any(held);
+        use crate::grounder::symbols::registry::tests::{
+            generation_rows, pinned_rows, GOLDEN_SOURCES,
+        };
+        // One row per line with a comment line between rows, so units re-pinning different
+        // languages' rows merge clean.
+        const PINNED: [(&str, &str, &str); 7] = [
+            // Rust
+            ("rs", "rust-tags-v1", "bd83e25bdc6d2797"),
+            // C#
+            ("cs", "csharp-tags-v1", "4e1cc38ed5920418"),
+            // TypeScript
+            ("ts", "typescript-tags-v1", "3ad97b84c7f3bdde"),
+            // TSX
+            ("tsx", "tsx-tags-v1", "f070070173508769"),
+            // JavaScript
+            ("js", "javascript-tags-v1", "e6c505f276d7c688"),
+            // Go
+            ("go", "go-tags-v1", "c4f9869c6f7288cf"),
+            // Python
+            ("py", "python-tags-v1", "4c940d044409c6d8"),
+        ];
+        const PINNED_FACTS: (&str, &str) = ("facts-v3", "006133eb2aae6c76");
+        fn digest(facts: &impl std::fmt::Debug) -> String {
+            format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()))
+        }
+        // A code fixture's path counts its index among its own extension's fixtures, so a fixture
+        // added for one language moves no other language's paths.
+        let mut code: Vec<(&str, FileFacts)> = Vec::new();
+        for (ext, source) in GOLDEN_SOURCES {
+            let i = code.iter().filter(|(keyed, _)| *keyed == ext).count();
+            code.push((
+                ext,
+                facts_of(&format!("golden/{i}.{ext}"), source.as_bytes()),
+            ));
+        }
+        code.push(("rs", facts_of("tests/it.rs", b"fn works() { helper(); }\n")));
+        let rest: Vec<FileFacts> = [
+            (
+                "docs/widget-design.md",
+                "# Widget design\n\nThe code is `src/widget.rs`, see [notes](docs/notes.md).\n\n## Parts\n",
+            ),
+            ("scripts/build.sh", "# WHY: keep the cache warm\nmake\n"),
+            (
+                ".rigger/workflow.yml",
+                "stages:\n  plan:\n    agent: planner\n  implement:\n    needs: [plan]\n    agent: worker\n    gates: [fmt]\n",
+            ),
+        ]
+        .iter()
+        .map(|(path, source)| facts_of(path, source.as_bytes()))
+        .collect();
+        let facts: Vec<&FileFacts> = code.iter().map(|(_, facts)| facts).chain(&rest).collect();
+        let any = |held: &dyn Fn(&FileFacts) -> bool| facts.iter().any(|f| held(f));
         for (part, covered) in [
             (
                 "every half",
@@ -1298,14 +1328,24 @@ mod tests {
         ] {
             assert!(covered, "the golden fixtures hold {part}");
         }
-        let digest = format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()));
         assert_eq!(
-            (GRAMMAR_TAGS_VERSION, FACTS_GENERATION, digest.as_str()),
-            PINNED,
-            "this build's generations and the digest of the golden facts (left) differ from the \
-             pinned triple: a change to what the facts hold ships with a bump, so bump \
-             `FACTS_GENERATION` (or `GRAMMAR_TAGS_VERSION` for a symbol extraction change) and \
-             re-pin the triple to this build's values together"
+            generation_rows(&code, |keyed| digest(&keyed)),
+            pinned_rows(&PINNED),
+            "each entry's tags generation and the digest of its code fixtures' facts (left) differ \
+             from the pinned rows: a change to one language's extraction ships with a bump of \
+             that language's generation macro in model.rs, re-pinning its row here and in the \
+             registry golden; a change to the conversion ships with a bump of \
+             `FACTS_GENERATION`, re-pinning its row below and each language row it moves; either \
+             re-pins to this build's values together"
+        );
+        assert_eq!(
+            (FACTS_GENERATION, digest(&rest).as_str()),
+            PINNED_FACTS,
+            "this build's `FACTS_GENERATION` and the digest of the design, rationale and workflow \
+             facts (left) differ from the pinned row: a change to the design extractor, the \
+             workflow extractor or the conversion ships with a bump of `FACTS_GENERATION`, so \
+             bump it and re-pin this row, and each language row it moves, to this build's values \
+             together"
         );
     }
 

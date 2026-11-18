@@ -1023,7 +1023,8 @@ mod tests {
     /// they were and every crc recomputed, and whether the snapshot reads back. Only the current
     /// [`VERSION`](crate::code::snapshot::VERSION) does, and the next advance to the same commit
     /// extracts nothing; a snapshot of the version before or after it reads as absent, and the
-    /// next advance extracts every file again.
+    /// next advance extracts every file again. Either way the snapshot the pointer names after
+    /// that advance is at the current version.
     #[test]
     fn a_whole_snapshot_of_another_format_version_is_treated_as_absent() {
         use crate::code::snapshot::{tests::rewritten, VERSION};
@@ -1058,6 +1059,13 @@ mod tests {
                 extract.calls(),
                 if reads { 0 } else { A.len() },
                 "{name}: the files the next advance extracts"
+            );
+            let (named, _) = store.named(stamped(FP)).unwrap().unwrap();
+            let published = std::fs::read(named).unwrap();
+            assert_eq!(
+                published[4..6],
+                VERSION.to_le_bytes(),
+                "{name}: the format version of the snapshot in force after that advance"
             );
         }
     }
