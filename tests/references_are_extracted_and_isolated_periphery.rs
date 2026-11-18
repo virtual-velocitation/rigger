@@ -410,7 +410,7 @@ const JS_CONSTRUCTING_SOURCE: &str = "class Square {}\nfunction make() { return 
 /// One file per language whose registry entry names a node kind that constructs an object (spec
 /// 117, CAPTURES): TypeScript, TSX, JavaScript and C#. Each defines a class `Square` with no
 /// constructor of its own and constructs it, `new Square()`, in `make` (in C#, `Shop`'s method
-/// `Make`, into a local declared `object`, so no type the file names is `Square`). Each row is
+/// `Make`, into a local declared `object`, so `Square` is named in no type position). Each row is
 /// `(file, source, the id paths of its definitions, sorted, the constructing definition's id
 /// path)`.
 #[cfg(feature = "symbols")]
