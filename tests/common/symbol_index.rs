@@ -1,8 +1,9 @@
 //! Shared fixtures for the symbol extraction suites: building a one-file set of symbols, building
 //! them from Rust sources, a reference's qualifier, a tree whose inline mod declares a
 //! `#[cfg(test)]` mod out of line, the `mod x;` declaration sources, the one-fn source the
-//! module-row tests extract and the one-`use` source, projecting a file's definitions, its test-marked definitions and references and its call
-//! references with their callers, checking a language's definition types against a file's
+//! module-row tests extract and the one-`use` source, projecting a file's definitions, its
+//! test-marked definitions and references and its call references with their callers, checking
+//! a language's definition types against a file's
 //! definitions, checking a language's definitions fixture whole and a source's callers whole,
 //! projecting a file's definition extents, rendering and checking a file's tagged references, and
 //! looking up a registered language. Mounted once by `tests/all.rs` (a suite reaches it with
