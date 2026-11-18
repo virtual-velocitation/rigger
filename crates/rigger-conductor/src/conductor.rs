@@ -30878,6 +30878,55 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
+    /// A store read that fails before a speculation lane's sdet author launches is a fault no
+    /// lane made, as one before its implementer's launch is: the lane's implementer ran, its sdet
+    /// author never launched, and the drive ends at that lane, held for the orchestrator with no
+    /// lesson and no attempt charged, the hold naming the sdet author and the store's fault, and
+    /// no later lane is asked. Lost as a crashed candidate, it would let a later lane win or
+    /// escalate the unit on a loss no lane made.
+    #[test]
+    fn a_store_fault_before_a_speculation_lanes_sdet_author_launch_holds_the_run() {
+        let repo = temp_git_project_with_commit();
+        let store = Store::open(":memory:").unwrap();
+        let mut cfg = spec_cfg(2);
+        declare_test_author(&mut cfg, ROLE_SDET_AUTHOR);
+        let stub = Stub {
+            write_file: Some("feature.rs".into()),
+            output: r#"{"verdict":"approve"}"#.into(),
+            ..Stub::new()
+        };
+        let sdet = spawn_id("s", ROLE_SDET_AUTHOR, 0);
+        let driver = StoreFaultsBeforeLaunch {
+            inner: &stub,
+            faulted: vec![sdet.clone()],
+            asked: Mutex::new(Vec::new()),
+        };
+        let deps = Deps {
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let halted = run_isolated(&cfg, &deps);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let err = assert_held_with_no_lesson("an sdet author's store fault", halted, &events);
+        assert!(
+            err.contains(STORE_REFUSED_THE_HOLD_READ) && err.contains("sdet author"),
+            "the hold names the sdet author and the store's fault: {err}"
+        );
+        assert!(
+            !err.contains(ROLE_IMPLEMENTER),
+            "the hold names no implementer, whose launch met no fault: {err}"
+        );
+        assert_eq!(
+            stub.spawn_ids(),
+            [spawn_id("s", ROLE_IMPLEMENTER, 0)],
+            "lane 0's implementer launched, its sdet author did not, and no later lane is asked"
+        );
+        assert!(
+            driver.asked.lock().unwrap().contains(&sdet),
+            "the sdet author's spawn was asked for"
+        );
+    }
+
     /// A speculation lane whose request the run recorded before the
     /// handover contract existed, answered with a result that names no line, keeps its candidate:
     /// it races in the group (the winner or a recorded loser), never lost and torn down.
@@ -31930,6 +31979,15 @@ stage "implement" adjudicator "adj" failed
         assert!(
             !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
             "an outage records no failure for the author; events: {events:?}"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+                .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                .collect::<Vec<_>>(),
+            Vec::<String>::new(),
+            "an outage teaches the unit no lesson"
         );
     }
 
