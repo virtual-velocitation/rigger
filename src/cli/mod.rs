@@ -2361,21 +2361,6 @@ fn live_branches_for_sweep(
     }
 }
 
-/// Why git's registry keeps the unit worktree `dir` out of the orphan sweep: git lists a worktree
-/// there it marks `locked` or `prunable` ([`rigger::worktree::git_mark_at`]), or the list cannot
-/// be read, so nothing there is reaped or removed on a guess. `None` lets the sweep reclaim `dir`.
-/// An empty `repo` names no registry to read, so `dir` is reclaimed as any leftover dir is.
-fn kept_by_git(repo: &str, dir: &std::path::Path) -> Option<String> {
-    if repo.is_empty() {
-        return None;
-    }
-    match rigger::worktree::git_mark_at(repo, &dir.to_string_lossy()) {
-        Ok(None) => None,
-        Ok(Some(mark)) => Some(format!("git marks it `{mark}`")),
-        Err(e) => Some(e.0),
-    }
-}
-
 /// Reap any process rooted in a leftover unit worktree `dir` (spec 23), then reclaim the dir -
 /// the worktree half of the spec-34 orphan-sweep, the analog of [`reap_then_remove_dir`] for a
 /// scratch entry git may still track. A killed run can leave a `rigger-wt-<slug>` worktree
@@ -2389,9 +2374,9 @@ fn kept_by_git(repo: &str, dir: &std::path::Path) -> Option<String> {
 /// error: a tree git marks `locked`, or `prunable` with its dir there; a tree git lists unmarked
 /// yet refuses to remove; a tree whose registration git does not list; a list git cannot give,
 /// including git failing to spawn. An empty `repo` names no repository a tree could be registered
-/// with (a run always passes its own, [`kept_by_git`] reads none), so `dir` is reaped and goes off
-/// disk as any leftover dir does. `Ok` means `dir` is gone. `authorized_root` is the resolved
-/// scratch root `dir` was enumerated from (spec 78 round 2).
+/// with (a run always passes its own, [`rigger::worktree::kept_by_git`] reads none), so `dir` is
+/// reaped and goes off disk as any leftover dir does. `Ok` means `dir` is gone. `authorized_root`
+/// is the resolved scratch root `dir` was enumerated from (spec 78 round 2).
 fn reap_then_remove_worktree(
     repo: &str,
     dir: &std::path::Path,
@@ -4036,9 +4021,11 @@ fn live_slugs(
 /// once no spawn is live, never by this run-start backstop, so it can never delete a target a
 /// running build is writing. Best-effort per entry: a failed reclaim never aborts the sweep.
 ///
-/// A unit worktree git marks `locked` or `prunable` (a person's lock, an add or remove git did not
-/// finish) is kept and named on stderr, as [`rigger::worktree::sweep_terminal`] keeps it: nothing
-/// in it is reaped or removed ([`kept_by_git`]).
+/// A unit worktree git marks `locked`, or `prunable` with its dir there (a person's lock, an add
+/// or remove git did not finish, a lost link), and the scratch beside it that serves it (its build
+/// caches, store fence and gate scratch root), are kept and named on stderr by the one rule
+/// [`rigger::worktree::sweep_terminal`] keeps them by ([`rigger::worktree::kept_by_git`]): nothing
+/// in or beside the tree is reaped or removed.
 ///
 /// `declared_units` (spec 89, criterion 1, round 2 fix) is the CURRENTLY loaded workflow's own
 /// `rigger/u/<slug>` stages - config, never the event log, the SAME set `run_cli` also hands
@@ -4106,7 +4093,7 @@ fn reclaim_orphan_scratch(
                 && path.join(".git").exists()
                 && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
-                let kept = match kept_by_git(repo, &path) {
+                let kept = match rigger::worktree::kept_by_git(repo, &path.to_string_lossy()) {
                     None => reap_then_remove_worktree(repo, &path, root_path).err(),
                     why => why,
                 };
@@ -4124,10 +4111,20 @@ fn reclaim_orphan_scratch(
             // reconstructed `rigger-wt-<slug>` name so either stays in lockstep with its unit's
             // liveness (a live unit's is in use, not residue). A bare `cargo-target` (no
             // `-<slug>` tail) never matches and is spared.
+            //
+            // A sibling of a tree git marks is kept as the tree is, by the one rule both sweeps
+            // keep by ([`rigger::worktree::kept_by_git`]).
             let wt = format!("{}{slug}", rigger::worktree::UNIT_WORKTREE_PREFIX);
             if !worktree_belongs_to_live(&wt, &live, &run_units.dead_slugs) {
-                reap_then_remove_dir(&path, root_path);
-                removed += 1;
+                match rigger::worktree::kept_by_git(repo, &path.to_string_lossy()) {
+                    None => {
+                        reap_then_remove_dir(&path, root_path);
+                        removed += 1;
+                    }
+                    Some(why) => rigger::whole_line::say(format_args!(
+                        "rigger run: orphan sweep: kept {path:?} - {why}"
+                    )),
+                }
             }
         } else if is_build_cache_tombstone(&name) {
             // A stray shared-build-cache tombstone (spec 77 criterion 5): the enumerable

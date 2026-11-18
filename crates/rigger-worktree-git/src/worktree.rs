@@ -2178,42 +2178,54 @@ pub fn review_fence_sibling(worktree_dir: &str) -> Option<String> {
 /// [`reclaim_worktree_on_branch`]'s caller resolves it the same way `Worktree::create`'s
 /// callers do).
 fn reclaim_cache_sibling(worktree_dir: &str, authorized_root: &str) {
-    if let Some(cache) = unit_cache_sibling(worktree_dir) {
-        let fence = format!("{cache}{}", crate::gate::STORE_FENCE_SUFFIX);
-        reap_dir_before_removal(&fence, authorized_root);
-        let _ = std::fs::remove_dir_all(&fence);
-        reap_dir_before_removal(&cache, authorized_root);
-        let _ = std::fs::remove_dir_all(&cache);
+    for sibling in scratch_siblings(worktree_dir) {
+        reap_then_remove_scratch(&sibling, authorized_root);
     }
-    if let Some(fence) = review_fence_sibling(worktree_dir) {
-        reap_dir_before_removal(&fence, authorized_root);
-        let _ = std::fs::remove_dir_all(&fence);
-    }
-    // The unit's review build cache: the sibling every review tier of the unit builds into, on
-    // the identical coordinate, so it goes with the unit's worktree on every removal path.
-    if let Some(review) = unit_sibling(worktree_dir, UNIT_REVIEW_CACHE_PREFIX) {
-        reap_dir_before_removal(&review, authorized_root);
-        let _ = std::fs::remove_dir_all(&review);
-    }
-    // The unit's gate scratch root (spec 113): a further sibling of the unit worktree, on the
-    // identical coordinate the cache sibling above already reclaims, so every removal path
-    // inherits it from this one authority. A no-op for anything that owns no such root.
-    reclaim_gate_scratch_sibling(worktree_dir, authorized_root);
+}
+
+/// The scratch dirs that serve the worktree at `worktree_dir` beside it, in the order
+/// [`reclaim_cache_sibling`] reclaims them: a unit worktree's store fence and build cache
+/// (`cargo-target-<slug>{gate::STORE_FENCE_SUFFIX}`, `cargo-target-<slug>`), a review worktree's
+/// store fence ([`review_fence_sibling`]), a unit's review build cache (`review-target-<slug>`,
+/// the sibling every review tier of the unit builds into) and its gate scratch root
+/// (`rigger-gate-<slug>`, spec 113). The one derivation of what goes with a worktree, read by
+/// every removal path and by the sweeps' rule for what a tree git marks keeps ([`kept_by_git`]).
+fn scratch_siblings(worktree_dir: &str) -> Vec<String> {
+    let cache = unit_cache_sibling(worktree_dir);
+    let unit_fence = cache
+        .as_ref()
+        .map(|cache| format!("{cache}{}", crate::gate::STORE_FENCE_SUFFIX));
+    [
+        unit_fence,
+        cache,
+        review_fence_sibling(worktree_dir),
+        unit_sibling(worktree_dir, UNIT_REVIEW_CACHE_PREFIX),
+        unit_sibling(worktree_dir, UNIT_GATE_SCRATCH_PREFIX),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+/// Reap any process rooted in the scratch dir `dir` through [`reap_dir_before_removal`], under
+/// the caller's independently resolved `authorized_root`, then remove it. Best-effort: a failed
+/// removal of throwaway scratch never fails the caller.
+fn reap_then_remove_scratch(dir: &str, authorized_root: &str) {
+    reap_dir_before_removal(dir, authorized_root);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Reclaim the gate scratch root (`rigger-gate-<slug>`) that is a SIBLING of the unit worktree
 /// at `worktree_dir` (spec 113, THE GATE SCRATCH ROOT HAS ONE LIFECYCLE): reap any process
-/// still rooted in it through [`reap_dir_before_removal`], under the caller's independently
-/// resolved `authorized_root`, then remove it. The one home of that derivation and that
-/// reap-then-remove pair, serving both [`reclaim_cache_sibling`] (the root goes with the unit's
-/// worktree) and the conductor's post-merge reclaim (the root a passing post-merge re-gate was
-/// handed goes at the landing, even when the worktree at that path was already removed). A
-/// no-op for any dir that is not a unit worktree, and for a root already gone. Best-effort: a
-/// failed removal of a throwaway root never fails the caller.
+/// still rooted in it, under the caller's independently resolved `authorized_root`, then remove
+/// it ([`reap_then_remove_scratch`]). [`reclaim_cache_sibling`] reclaims it with the unit's
+/// other siblings; this serves the conductor's post-merge reclaim (the root a passing post-merge
+/// re-gate was handed goes at the landing, even when the worktree at that path was already
+/// removed). A no-op for any dir that is not a unit worktree, and for a root already gone.
+/// Best-effort: a failed removal of a throwaway root never fails the caller.
 pub fn reclaim_gate_scratch_sibling(worktree_dir: &str, authorized_root: &str) {
     if let Some(root) = unit_sibling(worktree_dir, UNIT_GATE_SCRATCH_PREFIX) {
-        reap_dir_before_removal(&root, authorized_root);
-        let _ = std::fs::remove_dir_all(&root);
+        reap_then_remove_scratch(&root, authorized_root);
     }
 }
 
@@ -2432,12 +2444,13 @@ pub fn sweep_terminal_logged(
         {
             continue;
         }
-        // A tree git marks (after the prune above, only `locked`: an add git did not finish, or a
-        // lock a person set) is not the sweep's to take: nothing in it is reaped or removed, and
-        // the trees after it are still swept.
-        if let Some(mark) = entry.mark {
+        // A tree git marks (`locked`: an add git did not finish, or a lock a person set;
+        // `prunable` with its dir there: a remove git did not finish, or a lost link) is not the
+        // sweep's to take: nothing in it or beside it is reaped or removed ([`kept_by_git`]'s
+        // rule, the one the orphan sweep keeps by), and the trees after it are still swept.
+        if let Some(why) = kept_by_mark(&out, d) {
             log(&format!(
-                "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - git marks it `{mark}`"
+                "rigger run: worktree sweep: kept {d:?} (branch {branch:?}) - {why}"
             ));
             continue;
         }
@@ -2747,7 +2760,7 @@ fn registered_at(
 /// included), when git lists one there that it marks: a tree a person locked, or one whose add or
 /// remove git did not finish ([`marked_entry`] names how each is recovered). The entry is matched
 /// as [`listed_at`] matches it. A list git refuses is an error.
-pub fn git_mark_at(repo: &str, dir: &str) -> Result<Option<String>, Error> {
+fn git_mark_at(repo: &str, dir: &str) -> Result<Option<String>, Error> {
     Ok(listed_at(repo, dir)?.flatten())
 }
 
@@ -2784,11 +2797,57 @@ fn listed_at(repo: &str, dir: &str) -> Result<Option<Option<String>>, Error> {
 /// the tree ([`marked_entry`]).
 fn refuse_marked_at(repo: &str, dir: &str) -> Result<(), Error> {
     match git_mark_at(repo, dir)? {
-        Some(mark) if mark_word(&mark) == "locked" || occupant(dir)?.is_some() => {
-            Err(marked_entry(repo, &mark, dir))
-        }
+        Some(mark) if mark_keeps(&mark, dir) => Err(marked_entry(repo, &mark, dir)),
         _ => Ok(()),
     }
+}
+
+/// Whether git's `mark` (a `locked` or `prunable` line) on the worktree at `at` keeps what is
+/// there and beside it: `locked` always (a person's lock, or an add git did not finish), and
+/// `prunable` while something is at `at` (a remove git did not finish after it deleted the tree's
+/// link, or a link that was lost), or the filesystem cannot say whether it is. A `prunable` entry
+/// with nothing at `at` is git's own leftover, which a prune or a remove drops.
+fn mark_keeps(mark: &str, at: &str) -> bool {
+    mark_word(mark) == "locked" || !matches!(occupant(at), Ok(None))
+}
+
+/// Why git keeps the scratch at `dir` out of a sweep: `dir` is a worktree git marks, or one of
+/// the scratch dirs beside such a tree that serve it ([`scratch_siblings`]), and the mark keeps
+/// what is there ([`mark_keeps`]), so nothing at `dir` is reaped or removed. A list git cannot
+/// give keeps `dir` too, its error the reason. `None` lets a sweep reclaim `dir`. The one rule
+/// both the terminal sweep ([`sweep_terminal`]) and the run-start orphan sweep keep a tree and
+/// its siblings by. An empty `repo` names no registry to read, so nothing is kept by it.
+pub fn kept_by_git(repo: &str, dir: &str) -> Option<String> {
+    if repo.is_empty() {
+        return None;
+    }
+    match git(repo, &["worktree", "list", "--porcelain"]) {
+        Ok(out) => kept_by_mark(&out, dir),
+        Err(e) => Some(
+            step_failed(
+                format!("reading whether git marks a worktree at or beside {dir}"),
+                e.0,
+            )
+            .0,
+        ),
+    }
+}
+
+/// [`kept_by_git`]'s rule read over `porcelain`, the output of `git worktree list --porcelain`.
+/// A path is matched as [`listed_at`] matches it ([`spellings`]).
+fn kept_by_mark(porcelain: &str, dir: &str) -> Option<String> {
+    let spelled = spellings(dir);
+    let is_dir = |path: &str| spellings(path).iter().any(|s| spelled.contains(s));
+    listed(porcelain).find_map(|entry| {
+        let mark = entry.mark.filter(|mark| mark_keeps(mark, entry.path))?;
+        if is_dir(entry.path) {
+            return Some(format!("git marks it `{mark}`"));
+        }
+        scratch_siblings(entry.path)
+            .iter()
+            .any(|sibling| is_dir(sibling))
+            .then(|| format!("git marks its worktree {} `{mark}`", entry.path))
+    })
 }
 
 /// Remove the worktree at `dir`, as [`remove_tree_or_leftover`] does, holding the repository's
