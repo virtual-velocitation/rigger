@@ -3893,6 +3893,69 @@ mod tests {
                 an_end_never_reports_a_process_gone_before_its_signal(Ending::Descendants);
         }
 
+        /// `ending` over a tree whose member has a child that exited and is left unreaped, since
+        /// the member never waits for it: the end names the member as one it was sent to, by the
+        /// executable read before its signal, and never the child, which the table still lists
+        /// but which had exited before the end reached it.
+        fn an_end_names_what_it_signalled_and_no_process_that_had_exited(ending: Ending) {
+            let mut witness = Witness::new();
+            let mut root = tree(
+                &witness,
+                "sh -c 'true & exec sh -c \"$1\"' sh \"$witness_held\" & up; wait",
+            );
+            assert!(witness.wait_up(1), "the fixture's root is up");
+            let member = only_child(root.id());
+            let exited = || {
+                os_process::table()
+                    .into_iter()
+                    .find(|entry| {
+                        entry.parent == member && os_process::state(entry.pid) == Some('Z')
+                    })
+                    .map(|entry| entry.pid)
+            };
+            assert!(
+                crate::test_support::wait_until(|| exited().is_some()),
+                "the member's child has exited and is left unreaped"
+            );
+            let program = os_process::executable_name(member);
+            let mut os = Rigged::default();
+
+            let report = end(ending, &mut os, &mut root, END_BOUND);
+
+            let root_exited =
+                crate::test_support::wait_until(|| matches!(root.try_wait(), Ok(Some(_))));
+            let named: Vec<(u32, String)> = report
+                .ended
+                .iter()
+                .map(|leftover| (leftover.pid, leftover.program.clone()))
+                .collect();
+            assert_eq!(
+                (
+                    named,
+                    report.residue,
+                    report.skipped,
+                    root_exited,
+                    witness.read()
+                ),
+                (
+                    vec![(member, program)],
+                    vec![],
+                    vec![],
+                    true,
+                    Reading::Ended
+                ),
+                "{ending:?}: the member alone is named as one the end was sent to: {:?}",
+                os.sent
+            );
+        }
+
+        crate::test_cases! {
+            the_watched_end_names_what_it_signalled_and_no_process_that_had_exited:
+                an_end_names_what_it_signalled_and_no_process_that_had_exited(Ending::Watched);
+            the_descendant_end_names_what_it_signalled_and_no_process_that_had_exited:
+                an_end_names_what_it_signalled_and_no_process_that_had_exited(Ending::Descendants);
+        }
+
         /// `ending` over a tree whose one descendant fails its chain check once, its parent
         /// unreadable at that read and readable at the next, as when its parent exits and is
         /// reaped mid-check: a later check passes, so the end signals it, ends it, and reports

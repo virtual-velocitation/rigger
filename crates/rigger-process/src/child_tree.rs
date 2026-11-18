@@ -756,6 +756,48 @@ mod tests {
             );
     }
 
+    /// A hold that names `member` among its tree's processes and whose end signals nothing: the
+    /// end closes the member's input and waits for it, so the member exits on its own while the
+    /// end runs, and then reaps the main.
+    struct EndsBySelf {
+        member: Child,
+        input: Option<ChildStdin>,
+    }
+
+    impl Hold for EndsBySelf {
+        fn members(&mut self, _main: &mut Child) -> Vec<Identity> {
+            let pid = self.member.id();
+            os_process::start_time(pid)
+                .map(|start| Identity { pid, start })
+                .into_iter()
+                .collect()
+        }
+
+        fn end(&mut self, main: &mut Child) -> EndReport {
+            drop(self.input.take());
+            let _ = self.member.wait();
+            let _ = main.wait();
+            EndReport::default()
+        }
+    }
+
+    /// A process the tree held when the finish began, that exits on its own while the end runs
+    /// and is never signalled by it, is not named as one the end was sent to.
+    #[test]
+    fn a_finish_names_no_process_its_end_did_not_signal() {
+        let mut member = Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn a member that exits at its input's end");
+        let input = member.stdin.take();
+        let main = Command::new("true").spawn().expect("spawn the main");
+        let tree = ReapedChild::holding(main, Box::new(EndsBySelf { member, input }));
+
+        let report = tree.finish(None);
+
+        assert_eq!(report, EndReport::default());
+    }
+
     #[test]
     fn a_dropped_tree_is_ended() {
         let mut witness = Witness::new();
