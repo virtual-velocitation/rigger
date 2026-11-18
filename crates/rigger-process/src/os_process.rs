@@ -104,6 +104,7 @@ std::cfg_select! {
                             start_time(me),
                             cwd(me),
                             command(me),
+                            command_line(me),
                             state(me),
                             open_files(me),
                             is_unexeced_fork_of(me, me),
@@ -117,6 +118,7 @@ std::cfg_select! {
                             None,
                             None,
                             String::new(),
+                            None,
                             None,
                             Vec::new(),
                             false,
@@ -192,6 +194,13 @@ pub(crate) fn cwd_lies_in(pid: u32, dir: &Path) -> bool {
 /// gone.
 pub fn command(pid: u32) -> String {
     native::command(pid)
+}
+
+/// Process `pid`'s command line: the arguments it was started with, joined by single spaces.
+/// `None` when `pid` is gone or its arguments cannot be read, so unlike [`command`] it never
+/// answers a process's name in place of its arguments.
+pub fn command_line(_pid: u32) -> Option<String> {
+    None
 }
 
 /// Process `pid`'s run state as one letter: `R` running, `S` sleeping, `T` stopped, `Z` a zombie
@@ -347,6 +356,22 @@ fn trusts_parent(ties: Ties, parent_started: Option<u64>, started: u64) -> bool 
 #[cfg(any(target_os = "windows", test))]
 fn whole_rows(claimed: u32, words: usize, row_words: usize) -> usize {
     (claimed as usize).min(words / row_words)
+}
+
+/// Where a Windows process's command line lies in the buffer a `ProcessCommandLineInformation`
+/// read answered into: the buffer starts at address `start` and is `size` bytes long, and the
+/// `header`-byte `UNICODE_STRING` at its start names `length` bytes at address `text`. The span is
+/// those bytes' offsets in the buffer, and `None` unless they lie wholly inside it, after the
+/// structure, as whole UTF-16 units: a structure the call filled otherwise is never read past.
+#[cfg(any(target_os = "windows", test))]
+fn command_line_span(
+    _start: usize,
+    _size: usize,
+    _header: usize,
+    _text: usize,
+    _length: usize,
+) -> Option<std::ops::Range<usize>> {
+    None
 }
 
 /// The port a socket record holds in network byte order in the low 16 bits of a wider field
@@ -575,6 +600,44 @@ mod tests {
         );
     }
 
+    /// On Linux a process's command line is its arguments joined by single spaces, as its command
+    /// is; once its arguments are gone, as an exited child's are before it is reaped, its command
+    /// line answers none where its command answers its short name, and a gone process answers
+    /// none.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_processes_command_line_is_its_arguments_and_none_once_they_are_gone() {
+        let me = std::env::args().collect::<Vec<_>>().join(" ");
+        let mut sleeper = sleeper_in(Path::new("/"));
+        // `spawn` returns while the child's exec may still be laying out its arguments, when the
+        // OS reports none yet, so the child is read once its exec has finished.
+        wait_until(|| command(sleeper.id()) == "sleep 300");
+        let mut exited = crate::subprocess::command("true").spawn().unwrap();
+        wait_until(|| state(exited.id()) == Some('Z'));
+        let rows = [
+            ("this process", std::process::id()),
+            ("a sleeping child", sleeper.id()),
+            ("an exited child not yet reaped", exited.id()),
+            ("a gone process", gone_pid()),
+        ];
+        let read: Vec<(&str, Option<String>, String)> = rows
+            .iter()
+            .map(|&(what, pid)| (what, command_line(pid), command(pid)))
+            .collect();
+        cleanup(&mut sleeper);
+        exited.wait().unwrap();
+        let sleep = "sleep 300".to_string();
+        assert_eq!(
+            read,
+            [
+                ("this process", Some(me.clone()), me),
+                ("a sleeping child", Some(sleep.clone()), sleep),
+                ("an exited child not yet reaped", None, "true".to_string()),
+                ("a gone process", None, String::new()),
+            ]
+        );
+    }
+
     /// On macOS a process's command is the full path of its executable.
     #[cfg(target_os = "macos")]
     #[test]
@@ -674,6 +737,7 @@ mod tests {
                 start_time(gone),
                 cwd(gone),
                 command(gone),
+                command_line(gone),
                 state(gone),
                 open_files(gone),
                 is_unexeced_fork_of(gone, std::process::id()),
@@ -684,6 +748,7 @@ mod tests {
                 None,
                 None,
                 String::new(),
+                None,
                 None,
                 Vec::new(),
                 false
@@ -845,6 +910,40 @@ mod tests {
             .map(|&(what, _, _, held)| (what, held))
             .collect();
         assert_eq!(held, expected);
+    }
+
+    /// A Windows command line's span is the bytes its structure names only where they lie wholly
+    /// in the buffer the read filled, after the structure, as whole UTF-16 units.
+    #[test]
+    fn a_command_lines_span_is_its_bytes_only_inside_the_buffer_after_its_header() {
+        // A 100-byte buffer at address 1000 that opens with a 16-byte structure.
+        let (start, size, header) = (1000, 100, 16);
+        let rows = [
+            ("right after the header", 1016, 20, Some(16..36)),
+            ("to the buffer's end", 1016, 84, Some(16..100)),
+            ("empty", 1016, 0, Some(16..16)),
+            ("at no address", 0, 20, None),
+            ("over the header", 1008, 20, None),
+            ("past the buffer's end", 1090, 20, None),
+            ("before the buffer", 900, 20, None),
+            ("longer than the address space", 1016, usize::MAX, None),
+            ("at an odd offset", 1017, 20, None),
+            ("of an odd length", 1016, 21, None),
+        ];
+        let spans: Vec<(&str, Option<std::ops::Range<usize>>)> = rows
+            .iter()
+            .map(|(what, text, length, _)| {
+                (
+                    *what,
+                    command_line_span(start, size, header, *text, *length),
+                )
+            })
+            .collect();
+        let expected: Vec<(&str, Option<std::ops::Range<usize>>)> = rows
+            .iter()
+            .map(|(what, _, _, span)| (*what, span.clone()))
+            .collect();
+        assert_eq!(spans, expected);
     }
 
     /// A port held in network byte order in a wider field's low 16 bits reads as that port,
