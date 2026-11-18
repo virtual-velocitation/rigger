@@ -69,6 +69,9 @@ pub struct Def {
     pub parent: Option<u32>,
     /// Whether the language marks this definition test-only (a test function, a test module).
     pub test: bool,
+    /// The 1-based, inclusive lines of the definition's doc comment, from its first doc line to
+    /// its last; none when it has no doc comment. The text is never kept.
+    pub doc: Option<(u32, u32)>,
 }
 
 /// A definition as its graph node records it, the one [`Recorded::widest_end`] bounds.
@@ -148,7 +151,9 @@ pub struct Mention {
     pub test: bool,
 }
 
-/// One module declared in a file (Rust's `mod foo;`).
+/// One module declared in a file (Rust's `mod foo;`). Its two lists depend on the declaring file
+/// alone; which list the view tries, and the first path in it that is a file in the tree, are
+/// picked at read ([`crate::resolve::module_target`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleDecl {
     pub name: String,
@@ -156,10 +161,14 @@ pub struct ModuleDecl {
     pub def: u32,
     /// Whether the declaration is test-only.
     pub test: bool,
-    /// The paths the module's file can have, from the declaring file's path and any explicit path
-    /// attribute. They depend on the declaring file alone; the view picks the first one that is
-    /// a file in the tree.
-    pub candidates: Vec<String>,
+    /// The paths the module's file can have when the declaring file is a crate root or a
+    /// `mod.rs` file, in the order they are tried.
+    pub as_root: Vec<String>,
+    /// The paths the module's file can have when the declaring file is any other file, in the
+    /// order they are tried.
+    pub as_child: Vec<String>,
+    /// Whether the declaration carries an explicit path attribute (Rust's `#[path = ".."]`).
+    pub path_attr: bool,
 }
 
 /// One design-intent concept a document yields, as written.
@@ -215,6 +224,9 @@ pub struct FileFacts {
     /// Whether the extraction covered only part of the file - the parse held an error, or the
     /// declared extractor said so - so its defs and mentions cover only as far as it reached.
     pub partial: bool,
+    /// The 1-based, inclusive lines of the file's own doc comment, from its first doc line to its
+    /// last; none when it has none. The text is never kept.
+    pub doc: Option<(u32, u32)>,
     /// In the extractor's order.
     pub defs: Vec<Def>,
     /// In the extractor's order.

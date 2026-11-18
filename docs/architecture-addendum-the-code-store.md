@@ -253,10 +253,11 @@ FileFacts
   scope       Product | Test               (path rule, see section 8)
   partial     true when the parse held an error or the declared extractor said so, so defs
               and mentions cover only as far as the extraction reached
+  doc         the doc span of the file's own doc comment (//! in Rust), or none
   defs        [Def]                        (in the extractor's order)
   mentions    [Mention]                    (in the extractor's order)
   modules     [ModuleDecl]
-  doc         [DocConcept], [DocLink]      (design half; names and targets as written. A code
+  doc_*       [DocConcept], [DocLink]      (design half; names and targets as written. A code
                                             file also holds the rationale concepts and links
                                             found in its source)
   workflow    [WfNode], [WfRelation]       (workflow half; names as written)
@@ -268,6 +269,7 @@ Def
   line, end_line
   parent      index of the enclosing Def, or none
   test        true when the language marks it test-only (a #[test] fn, a #[cfg(test)] module, ...)
+  doc         the doc span of its doc comment, or none
 
 Mention
   enclosing   index of the enclosing Def, or the file
@@ -281,13 +283,19 @@ ModuleDecl
   name        "foo"
   def         the index in this file's defs of the module definition that declares it
   test        true for a test-only module
-  candidates  ["crates/x/src/foo.rs", "crates/x/src/foo/mod.rs"]   (from this file's path and
-                                                                   any explicit path attribute)
+  as_root     ["crates/x/src/foo.rs", "crates/x/src/foo/mod.rs"]   (the module's file when this
+                                                                   file is a crate root or a
+                                                                   mod.rs, in the order tried)
+  as_child    ["crates/x/src/a/foo.rs", "crates/x/src/a/foo/mod.rs"]   (when it is any other
+                                                                   file, in the order tried)
+  path_attr   true when the declaration carries an explicit path attribute (#[path = ".."])
 ```
 
-A module's candidate paths depend only on the declaring file, so they are computed at
-extraction. Picking the first candidate that is a file in the tree is a cross-file question, so
-it happens at read (section 6).
+A doc span is the 1-based, inclusive first and last line of a doc comment; the comment's text is
+never stored. A module's two lists depend only on the declaring file, so they are computed at
+extraction, an explicit path attribute placed by the same two rules. Which list applies, and the
+first path in it that is a file in the tree, are cross-file questions, so they are answered at
+read (section 6).
 
 ### 4.2 How a name-reference is stored
 
@@ -320,12 +328,14 @@ Stamp                                (a Tip plus what only advance knows)
   tip         the Tip the snapshot describes
   fingerprint the extractor's fingerprint folded with the grouper's generation and the
               settled generation: changes when any extractor's output, the groupings or the
-              rows settled at advance can change (the symbol extractors' tag version, the facts
-              generation, the digest of the extractors the project's workflow declares, when it
-              declares any, the grouping generation and the settled generation; golden tests pin
-              the generations and the tag version beside digests of the facts, the groupings and
-              the settled rows over fixtures, so a change that moves one of those digests fails
-              until a version pinned beside it is bumped and the digest re-pinned)
+              rows settled at advance can change (the symbol extractors' tag version, which
+              joins each bundled language's tags generation, the facts generation, the digest
+              of the extractors the project's workflow declares, when it declares any, the
+              grouping generation and the settled generation; golden tests pin each language's
+              tags generation beside digests of its fixtures' symbols and facts, and the other
+              generations beside digests of the other facts, the groupings and the settled rows
+              over fixtures, so a change that moves one of those digests fails until a version
+              pinned beside it is bumped and the digest re-pinned)
   seq         the snapshot's sequence number
 ```
 
@@ -347,12 +357,13 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
  | section table: [u16 kind | u64 offset | u64 length | u32 crc32] x count       |
  +-------------------------------------------------------------------------------+
  | STRINGS    the pool                                                           |
- | FILES      path, blob, lang, half, scope, flags (partial, test file), then    |
- |            [start, end) into each of                                          |
+ | FILES      path, blob, lang, half, scope, flags (partial, test file), doc     |
+ |            span, then [start, end) into each of                               |
  |            DEFS, MENTIONS, MODULES, DOC, WORKFLOW        (rows sorted by path) |
- | DEFS       local, leaf, kind, line, end_line, parent, flags   (one run a file) |
+ | DEFS       local, leaf, kind, line, end_line, parent, flags, doc span         |
+ |                                                              (one run a file) |
  | MENTIONS   enclosing, name, leaf, kind, line, flags            (one run a file) |
- | MODULES    name, flags, candidates                                            |
+ | MODULES    name, flags (test, path attribute), as_root, as_child              |
  | DOC        concepts and links as written                                      |
  | WORKFLOW   nodes and relations as written                                     |
  | IDX_LEAF   leaf -> [def row]       (sorted by leaf; binary search)            |
@@ -368,12 +379,13 @@ a (u32 offset, u32 length) pair into one pool, and each distinct string is store
 - A reader parses the file from a byte slice it owns. Reading the whole file into memory is
   the access path. A memory mapping is a different owner of the same slice, so the format needs
   no change for one.
+- A doc span is two u32 lines; lines count from 1, so 0, 0 is no doc comment.
 - **Size.** The tree holds 18,202 definitions and 164,734 mentions.
 
   | Section | Estimate |
   |---|---|
   | mentions | ~4.0 MB |
-  | definitions | ~0.6 MB |
+  | definitions | ~0.8 MB |
   | string pool | ~0.6 MB |
   | indexes | ~0.7 MB |
   | **total** | **~6 MB** |
@@ -614,7 +626,7 @@ so it runs once per advance and is stored in the snapshot:
   - **definition leaves:** the keys of `IDX_LEAF`, which a lookup's name index reads.
 
   Their generation (`SETTLED_GENERATION`) is folded into the fingerprint like the grouping
-  generation, and a golden test pins it beside a digest of the rows over two fixtures. A view
+  generation, and a golden test pins it beside a digest of the rows over three fixtures. A view
   that holds no settled rows (an in-memory view) has the resolver compute them, and the two
   are tested to answer alike.
 - A grain other than the default is computed at read, on each open that asks for it, and is
@@ -822,7 +834,7 @@ call), and REFERENCES from F. A call the qualified-mention rule gives no edge yi
 | | | else | no edge; counted as unresolved |
 | | | for `k` = `field`, the same-file step skipped and a constant, static or variant left to the qualified-mention rule: exactly one `field` or `property` definition in the project, in F or not | INFERRED |
 | | | else | no edge; counted as unresolved |
-| module | ModuleDecl in F | the first of its candidates that is a file in the view | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
+| module | ModuleDecl in F | F is a child when the first declaration reaching it carries no path attribute, the walk starting at the files no declaration's list names and going down a depth at a time, each depth in path order, the first declaring file in path order the walk has not visited when a depth runs out starting the next as a root: the first path that is a file in the view of its `as_child` list when F is a child, else of its `as_root` list | CONTAINS edge to that file, marked `test` when the declaration, F or that file is test code |
 | proof | Mention `Call` that is test code: its `test` mark, a Test-scope file, or a file in the out-of-line test-module closure | written `Q::leaf` or `Q.leaf`, the qualified-mention rule over every candidate, product and test: exactly one kept, that definition when it is product, none when it is test; none for several kept, or for a call that rule gives no edge; otherwise exactly one same-file candidate: that definition when it is product, none when it is test; else exactly one same-file product candidate; else exactly one product candidate in the project | +1 to that definition's `proven_by`, and `file:line` added to its `proof_evidence` |
 | duplicate id | two definitions with one id | `definition_precedence(kind, line)` | one node |
 | kind precedence | several kinds for one id | `CODE_KIND_PRECEDENCE` | one kind |
@@ -926,6 +938,8 @@ pub trait TreeSource {
 pub trait Extract: Send + Sync {
     fn fingerprint(&self) -> u64;
     fn extract(&self, entry: &Entry, bytes: &[u8]) -> FileFacts;   // path and blob set from the entry
+    fn doc_text(&self, lang: &str, raw: &str) -> String;           // a doc span's text, never stored
+                                                                   // (by default the lines trimmed)
 }
 pub trait Group {
     fn generation(&self) -> u64;                                   // folded into the fingerprint
@@ -940,7 +954,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 |---|---|
 | `CodeView` | `Snapshot` (rigger-store); `FactsView` (in memory: used by advance, the overlay and tests); `Overlay` (section 13) |
 | `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --raw` over a copy of the worktree's index (6.1), whose modes class each path as a regular file or not, so a symlink or submodule, which a tree's listing never holds, is no difference; `ls-files --others --exclude-standard -- :/`, the whole worktree's untracked files from any directory of it; `cat-file --batch` through the existing `BlobBatch`; a worktree file's bytes read as a regular file, never through a symlink); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
-| `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors); `ProjectExtractor` (beside it, the one the store's openers compose: `FactsExtractor` under the extractors the project's workflow declares, its fingerprint `FactsExtractor`'s with none and carrying the declaration's digest with any; each declared extractor's command runs as one session, started at the project's root on the first file it reads and closed when a file's answer fails, the next file starting a new one, or when the `ProjectExtractor` is dropped) |
+| `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors; its `doc_text` strips a Rust doc span's lines to their comment text and gives any other language the lines trimmed); `ProjectExtractor` (beside it, the one the store's openers compose: `FactsExtractor` under the extractors the project's workflow declares, its fingerprint `FactsExtractor`'s with none and carrying the declaration's digest with any, its `doc_text` `FactsExtractor`'s; each declared extractor's command runs as one session, started at the project's root on the first file it reads and closed when a file's answer fails, the next file starting a new one, or when the `ProjectExtractor` is dropped) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
 
 The store crate depends only on `rigger-domain`, std and the `ignore` gitignore engine.
@@ -1046,8 +1060,9 @@ items in product files. An entity counts as a test entity when any of these hold
    The rule stays, unchanged, with the per-language extractor registry. It is applied once, at
    extraction, and stored as `FileFacts.scope`; or
 3. its file is in the out-of-line test-module closure: files reached only through test-only
-   module declarations. This is computed per view open from the MODULES section, using the same
-   `module_target` function the module rule uses, so the two cannot disagree.
+   module declarations. This is computed per view open from the MODULES section, over the same
+   walk that places each declaring file and the same `module_target` function the module rule
+   uses, so the two cannot disagree.
 
 A fixture is a test entity like any other: a definition these rules mark test is held, proved
 through and filtered the same way, with no fixture kind of its own.
@@ -1476,8 +1491,9 @@ a reader holding one open (or mapped) never blocks a writer.
   on a branch one commit ahead: the stamp stays on the operator checkout's HEAD, and the reader's
   label counts the differing file.
 - `a_fingerprint_change_advances_from_empty`.
-- `a_change_to_the_facts_ships_with_a_generation_bump`: the facts generation is pinned to a digest
-  of the facts read over the golden fixtures.
+- `a_change_to_the_facts_ships_with_a_generation_bump`: each bundled language's tags generation
+  is pinned to a digest of the facts read over that language's golden fixtures, and the facts
+  generation to a digest of the facts read over the design, rationale and workflow fixtures.
 - `a_corrupt_snapshot_is_treated_as_absent`.
 - `a_reader_never_sees_a_partial_snapshot`, and
   `a_crash_between_renames_leaves_the_old_stamp_current`, both using a fault-injecting publish.

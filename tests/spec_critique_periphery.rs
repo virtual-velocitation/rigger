@@ -230,7 +230,14 @@ fn a_critique_launch_carries_the_spawn_hooks_on_its_own_settings() {
             "the critic's spawn-bound server runs the running executable, its tools loaded up front"
         );
         let settings: Value = serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
-        assert_carries_spawn_hooks(&settings, bin.to_str().unwrap(), &spawn, &roots, grep_guard);
+        assert_carries_spawn_hooks(
+            &settings,
+            bin.to_str().unwrap(),
+            &spawn,
+            &roots,
+            grep_guard,
+            None,
+        );
         assert_eq!(
             settings["permissions"]["deny"].as_array().map(Vec::len),
             Some(CRITIC_DENIED_TOOLS.len()),

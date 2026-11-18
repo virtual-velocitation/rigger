@@ -19,6 +19,7 @@ use rigger_domain::code_view::{
 };
 use rigger_domain::composed::Label;
 use rigger_domain::contextgraph::query::path_leaf;
+use rigger_domain::resolve::is_impl;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
@@ -210,12 +211,18 @@ impl<'v> Sight<'v> {
         view.defs_named(leaf).filter(move |d| self.serves(&d.file))
     }
 
-    /// The served call references to `leaf`: no tagged reference (spec 117) counts, ranks or
-    /// places a file.
-    fn calls_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
+    /// The served references to `leaf`, of every kind.
+    fn mentions_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
         let view = self.view;
         view.mentions_named(leaf)
-            .filter(move |m| m.kind == MentionKind::Call && self.serves(&m.file))
+            .filter(move |m| self.serves(&m.file))
+    }
+
+    /// The served call references to `leaf`: no tagged reference (spec 117, CAPTURES) counts or
+    /// ranks.
+    fn calls_named(&self, leaf: &str) -> impl Iterator<Item = MentionRef<'v>> + '_ {
+        self.mentions_named(leaf)
+            .filter(|m| m.kind == MentionKind::Call)
     }
 
     /// How many definitions named `name` the served files of `lang` hold, and with `count_refs`
@@ -714,8 +721,9 @@ impl Grounder for Symbols {
     ///
     /// - `precise` (the grounding contract) is the STRUCTURAL view - the files that DEFINE the
     ///   queried symbols (and any file the tree holds that a path term names) ranked ABOVE the
-    ///   files whose call references name them (spec 117: a tagged reference places no file) -
-    ///   capped at `k`. It is what seeds an agent's prompt, so it favors precision.
+    ///   files whose call references or implementation headers name them (spec 117, CAPTURES: an
+    ///   implementing file stays in a trait's radius, and no other tagged reference places a
+    ///   file) - capped at `k`. It is what seeds an agent's prompt, so it favors precision.
     /// - `safe` (the safety contract) is the structural view UNIONed, UNCAPPED, with a
     ///   whole-identifier text search (the EXISTING [`Grep`] walk) for each named symbol the view
     ///   does NOT define - the fallback for references a name index never sees (a string-literal
@@ -724,9 +732,10 @@ impl Grounder for Symbols {
     ///   worktree that cannot be compared withholds every code file from the structural view, so a
     ///   text hit is added for every named symbol: a missed reference is the unsafe error.
     /// - A HUB term (a name referenced across much of the tree) fails SAFE through `safe` itself:
-    ///   every file that defines it or holds a call reference to it is in the view, never
-    ///   truncated, so the partitioning consumer's overlap test keeps the unit apart from exactly
-    ///   the units that share one of those files - and pairs it with every unit that shares none.
+    ///   every file that defines it, calls it or names it in an implementation header is in the
+    ///   view, never truncated, so the partitioning consumer's overlap test keeps the unit apart
+    ///   from exactly the units that share one of those files - and pairs it with every unit that
+    ///   shares none.
     ///
     /// Determinism is by construction: the served files come in path order, so both structural
     /// passes are sorted, and the grep-recovered tail of `safe` is explicitly SORTED before it is
@@ -1048,9 +1057,15 @@ impl Symbols {
                 definers.insert(d.file.path);
             }
         }
+        // A referencer file holds a call to a named symbol or an implementation header naming
+        // it, so an implementing file stays in a trait's radius (spec 117, CAPTURES); no other
+        // tagged reference places a file.
         let referencers: BTreeSet<&str> = names
             .iter()
-            .flat_map(|name| sight.calls_named(name))
+            .flat_map(|name| {
+                let impls = sight.mentions_named(name).filter(|m| is_impl(&m.kind));
+                sight.calls_named(name).chain(impls)
+            })
             .map(|m| m.file.path)
             .collect();
         // A named path the view holds no facts for (`.gitignore`) still grounds on its own file
@@ -2439,6 +2454,7 @@ mod tests {
             end_line: line,
             parent: None,
             test: false,
+            doc: None,
         }
     }
 
@@ -3190,12 +3206,13 @@ mod tests {
         }
     }
 
-    /// Spec 117 criterion 6: a type reference, a const read and a `use` move no count, rank or
-    /// radius - [`Sight::reference_degree`], [`Sight::occurrences`], [`scored_hits`],
-    /// [`Symbols::ground_ranked`] and [`Symbols::blast_radius`] count call references alone - over
-    /// a view holding one of each beside a call.
+    /// Spec 117 (CAPTURES): a type reference, a const read and a `use` move no count, rank or
+    /// radius - [`Sight::reference_degree`], [`Sight::occurrences`], [`scored_hits`] and
+    /// [`Symbols::ground_ranked`] count call references alone, and [`Symbols::blast_radius`]
+    /// places a file by a call or an implementation header alone - over a view holding one of
+    /// each beside a call.
     #[test]
-    fn tagged_references_move_no_degree_commonness_rank_or_radius() {
+    fn type_const_and_use_references_move_no_degree_commonness_rank_or_radius() {
         use crate::rust_definition_sources::{
             REFERENCE_KINDS_DEFINER as DEFINER, REFERENCE_KINDS_TREE, REFERENCE_KINDS_USER as USER,
         };
@@ -3273,6 +3290,172 @@ mod tests {
             let br = g.blast_radius(query, 8);
             let radius: Vec<String> = radius.iter().map(|f| f.to_string()).collect();
             assert_eq!((br.precise, br.safe), (radius.clone(), radius), "{query}");
+        }
+    }
+
+    /// Spec 117 (CAPTURES), AN IMPLEMENTING FILE STAYS IN THE BLAST RADIUS: under a fixture tags
+    /// query staging a Python class's base as an `impl` mention, `circle.py`, which names `Shape`
+    /// as its base and nothing else of it, is among `Shape`'s radius referencer files beside
+    /// `make.py`, which calls it, while `Shape`'s reference degree counts the call alone.
+    #[test]
+    fn an_implementing_file_stays_in_the_blast_radius() {
+        use crate::facts::tests::facts_under;
+        use crate::grounder::symbols::extract::CompiledTags;
+        use crate::grounder::symbols::model::Lang;
+        let query = "(class_definition name: (identifier) @name) @definition.class\n\
+                     (class_definition superclasses: \
+                     (argument_list (identifier) @name) @reference.implementation)\n\
+                     (call function: (identifier) @name) @reference.call\n";
+        let tags = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), query, &[])
+            .expect("the fixture query compiles");
+        let files: Vec<FileFacts> = [
+            ("shapes.py", "class Shape:\n    pass\n"),
+            ("circle.py", "class Circle(Shape):\n    pass\n"),
+            ("make.py", "shape = Shape()\n"),
+        ]
+        .into_iter()
+        .map(|(path, source)| facts_under(path, source, Lang::Python, &tags))
+        .collect();
+        let circle: Vec<(&str, &MentionKind, u32)> = files[1]
+            .mentions
+            .iter()
+            .map(|m| (m.name.as_str(), &m.kind, m.line))
+            .collect();
+        let implementing = MentionKind::Tagged("impl".to_string());
+        assert_eq!(
+            circle,
+            [("Shape", &implementing, 1)],
+            "circle.py's mentions"
+        );
+        let view = view_of(files.clone());
+        assert_eq!(agreeing(&view).reference_degree("Shape", "python"), 1);
+        let g = Symbols::over(
+            "",
+            Box::new(Fixed {
+                files,
+                worktree: agreeing_tree(),
+            }),
+        );
+        let br = g.blast_radius("`Shape`", 8);
+        let radius: Vec<String> = ["shapes.py", "circle.py", "make.py"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!((br.precise, br.safe), (radius.clone(), radius));
+    }
+
+    /// Spec 117 (CAPTURES), AN IMPLEMENTING FILE STAYS IN THE BLAST RADIUS, across the worktree a
+    /// reader's head is compared with. A file joins `Shape`'s radius by an implementation header
+    /// naming it, whether the view or the worktree's bytes serve the file, and leaves when the
+    /// worktree deletes the file or rewrites its header to name another trait. A type mention
+    /// places no file. A worktree that cannot be compared serves no code file, so the precise view
+    /// is empty, the safe view falls back to the text search of the disk, which holds
+    /// `circle.rs`, and no row is ranked. Wherever the worktree can be compared, `Shape`'s one
+    /// ranked row counts `make.rs`'s call alone. Each row: the worktree, then `Shape`'s precise and
+    /// safe views and its ranked rows as (file, line, degree).
+    #[test]
+    fn an_implementing_file_joins_and_leaves_the_radius_with_the_worktree() {
+        use crate::contextgraph::{
+            CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_TRAIT, REF_KIND_IMPL, REF_KIND_TYPE,
+        };
+        use crate::graph_fixtures::{planted_file, with_tagged};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("circle.rs"), "impl Shape for Circle {}\n").unwrap();
+        // A file whose one mention is the header of the `impl` block `ty`, naming `base`.
+        let implementing = |path: &str, ty: &str, base: &str| {
+            let file = planted_file(path, &[(ty, CODE_KIND_IMPL)], &[], &[]);
+            with_tagged(file, REF_KIND_IMPL, &[(ty, base)])
+        };
+        let files = vec![
+            planted_file("shape.rs", &[("Shape", CODE_KIND_TRAIT)], &[], &[]),
+            implementing("circle.rs", "Circle", "Shape"),
+            planted_file(
+                "make.rs",
+                &[("make", CODE_KIND_FUNCTION)],
+                &[("make", "Shape")],
+                &[],
+            ),
+        ];
+        let typed = with_tagged(
+            planted_file("hold.rs", &[("hold", CODE_KIND_FUNCTION)], &[], &[]),
+            REF_KIND_TYPE,
+            &[("hold", "Shape")],
+        );
+        let shape_row = &[("shape.rs", 1, 1)][..];
+        let cases = [
+            (
+                "a worktree that agrees with the view",
+                agreeing_tree(),
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "an untracked file implementing it joins",
+                differing(
+                    Vec::new(),
+                    &[],
+                    vec![implementing("square.rs", "Square", "Shape")],
+                ),
+                &["shape.rs", "circle.rs", "make.rs", "square.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs", "square.rs"][..],
+                shape_row,
+            ),
+            (
+                "an untracked file naming it as a type alone stays out",
+                differing(Vec::new(), &[], vec![typed]),
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                &["shape.rs", "circle.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "the implementing file deleted leaves",
+                differing(Vec::new(), &["circle.rs"], Vec::new()),
+                &["shape.rs", "make.rs"][..],
+                &["shape.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "the implementing file rewritten to implement another trait leaves",
+                differing(
+                    vec![implementing("circle.rs", "Circle", "Area")],
+                    &[],
+                    Vec::new(),
+                ),
+                &["shape.rs", "make.rs"][..],
+                &["shape.rs", "make.rs"][..],
+                shape_row,
+            ),
+            (
+                "a worktree that cannot be compared falls back to the text search",
+                None,
+                &[][..],
+                &["circle.rs"][..],
+                &[][..],
+            ),
+        ];
+        for (name, worktree, precise, safe, ranked) in cases {
+            let g = Symbols::over(
+                root.path().to_str().unwrap(),
+                Box::new(Fixed {
+                    files: files.clone(),
+                    worktree,
+                }),
+            );
+            let br = g.blast_radius("`Shape`", 8);
+            let ranked_rows = g.ground_ranked("Shape", 8);
+            let rows: Vec<(&str, u32, usize)> = ranked_rows
+                .iter()
+                .map(|r| (r.loc.file.as_str(), r.loc.line, r.degree))
+                .collect();
+            assert_eq!(
+                (
+                    br.precise.iter().map(String::as_str).collect::<Vec<_>>(),
+                    br.safe.iter().map(String::as_str).collect::<Vec<_>>(),
+                    rows
+                ),
+                (precise.to_vec(), safe.to_vec(), ranked.to_vec()),
+                "{name}"
+            );
         }
     }
 }

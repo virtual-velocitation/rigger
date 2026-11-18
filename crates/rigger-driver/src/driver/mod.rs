@@ -267,8 +267,8 @@ impl LaunchSession {
 
     /// What the launch sends of the spawn's task: the full `prompt` when it starts fresh,
     /// [`SpawnOpts::resume_task`] when it continues a session that carried it (the session
-    /// already holds the rest), and nothing otherwise. A relaunch puts its interruption note in
-    /// front of it.
+    /// already holds the rest), and nothing otherwise. A relaunch puts its interruption note and
+    /// the [`SpawnOpts::relaunch_task`] this task does not already hold in front of it.
     pub fn task<'a>(&self, prompt: &'a str, opts: &'a SpawnOpts) -> &'a str {
         if !self.resumed() {
             prompt

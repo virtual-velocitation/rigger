@@ -2,8 +2,8 @@
 //! root through the one resolver, never from the directory it happens to run in. The resolver
 //! reads the working directory once, in `Site::of`, and resolves every root from that site; the
 //! writer resolver alone spells the root's store relative to the working directory, at the root
-//! itself, and discovery alone takes an empty start as the working directory, as git does. Two
-//! shapes in production code under `src/` and `crates/` fail the suite, naming file and line:
+//! itself. Two shapes in production code under `src/` and `crates/` fail the suite, naming file
+//! and line:
 //!
 //! 1. A WORKING DIRECTORY READ: a call to `current_dir` as a free function (`std::env::current_dir()`)
 //!    or to the `cwd()` helper, so a command anchors at the directory it runs in.
@@ -16,9 +16,7 @@
 //! `.current_dir(root)` sets a child's directory and reads nothing, so it is never flagged.
 
 use crate::common;
-use common::repo::collect_rs_files;
 
-use std::fs;
 use std::path::Path;
 
 use crate::source_audit;
@@ -41,13 +39,6 @@ const RESOLVER: &[(&str, &str, &str)] = &[
         "the writer resolver, run at the root it resolved, spells the root's store relative to \
          the working directory, so the files of a root whose path is not UTF-8 are still named; \
          the location it returns carries that root",
-    ),
-    (
-        "crates/rigger-worktree-git/src/discover.rs",
-        "as_git_takes",
-        "discovery's own contract takes an empty start as the working directory, as `git -C \"\"` \
-         does, pinned beside git by its parity rows; no rigger command hands it one, since \
-         Site::of resolves an empty directory itself",
     ),
 ];
 
@@ -163,23 +154,10 @@ fn scan_file(rel: &str, content: &str) -> Vec<Finding> {
 
 /// Every audited shape under `root`'s `src/` and `crates/`.
 fn scan_tree(root: &Path) -> Vec<Finding> {
-    let mut files = Vec::new();
-    for top in ["src", "crates"] {
-        collect_rs_files(&root.join(top), &mut files);
-    }
-    let mut findings = Vec::new();
-    for path in &files {
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let Ok(content) = fs::read_to_string(path) else {
-            continue;
-        };
-        findings.extend(scan_file(&rel, &content));
-    }
-    findings
+    common::repo::rs_sources_under(root, &["src", "crates"])
+        .iter()
+        .flat_map(|(rel, content)| scan_file(rel, content))
+        .collect()
 }
 
 #[cfg(test)]
@@ -288,11 +266,6 @@ mod tests {
             "src/cli/mod.rs",
             "fn store_to_write_with() -> PathBuf {\n    let dir = PathBuf::from(RIGGER_DIR);\n    \
              std::fs::create_dir_all(&dir).unwrap();\n    dir\n}\n",
-        );
-        the_empty_start_discovery_takes_as_git_does_is_never_flagged: never_flagged(
-            "crates/rigger-worktree-git/src/discover.rs",
-            "fn as_git_takes(start: &Path) -> &Path {\n    \
-             if start.as_os_str().is_empty() { Path::new(\".\") } else { start }\n}\n",
         );
         a_store_spelled_by_a_writer_outside_the_resolver_is_caught: caught_as(
             "src/cli/mod.rs",

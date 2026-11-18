@@ -133,12 +133,14 @@ pub fn positioned(mut events: Vec<Event>) -> Vec<Event> {
 
 /// The read, subscribe and boundary-lookup methods of an `EventStore` decorator that intercepts only
 /// `append`, each forwarded unchanged to the decorator's `inner` store - expanded inside that
-/// decorator's `impl EventStore` block. `(stream)` expands every one of them but the group lookup,
-/// for a decorator that also intercepts `latest_in_group`, and `(group)` that lookup alone;
-/// `(rest)` expands every one of `(stream)`'s but the stream read, for a decorator that intercepts
-/// `read_stream`; `(append)` expands the append alone, forwarded the same way, for a decorator that
-/// intercepts reads instead; `(typed)` expands the typed stream read alone, for a decorator that
-/// intercepts the boundary lookup ahead of it; and `(record)` expands the record-id read alone.
+/// decorator's `impl EventStore` block. `(untyped)` expands every one of them but the typed stream
+/// read, for a decorator that intercepts that read; `(stream)` expands every one of them but the
+/// typed stream read and the group lookup, for a decorator that also intercepts
+/// `latest_in_group`, and `(group)` that lookup alone; `(rest)` expands every one of `(stream)`'s
+/// but the stream read, for a decorator that intercepts `read_stream`; `(append)` expands the
+/// append alone, forwarded the same way, for a decorator that intercepts reads instead; `(typed)`
+/// expands the typed stream read alone, for a decorator that intercepts the boundary lookup ahead
+/// of it; and `(record)` expands the record-id read alone.
 #[macro_export]
 macro_rules! delegate_event_store_reads {
     (append) => {
@@ -152,6 +154,10 @@ macro_rules! delegate_event_store_reads {
         }
     };
     () => {
+        $crate::delegate_event_store_reads!(untyped);
+        $crate::delegate_event_store_reads!(typed);
+    };
+    (untyped) => {
         $crate::delegate_event_store_reads!(stream);
         $crate::delegate_event_store_reads!(group);
     };
@@ -238,7 +244,6 @@ macro_rules! delegate_event_store_reads {
         ) -> Result<Option<rigger::eventstore::Revision>, rigger::eventstore::Error> {
             self.inner.last_position(stream, event_type)
         }
-        $crate::delegate_event_store_reads!(typed);
         $crate::delegate_event_store_reads!(record);
         fn read_stream_positions(
             &self,

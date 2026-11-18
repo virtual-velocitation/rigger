@@ -3,7 +3,7 @@
 //! heartbeat staleness vs live agent processes, dash liveness, reject-recurrence
 //! trend, and frontier progress - into one line per anomaly, naming signal, subject,
 //! and response, PLUS four checks the automated command runs beyond the skill's
-//! five-point human skim: a gate stopped on a spec defect, a run an operator hold stops, store
+//! five-point human skim: a gate stopped on a spec defect, a hold no probe ends, store
 //! integrity, and a red CI check on the run branch's tip.
 //! "Covers every signal the watch skill names" (spec 69, Done-when) is a superset
 //! relation, not equality - both are the automation's own additions, not look-signals a
@@ -31,7 +31,7 @@ use serde::Deserialize;
 
 use crate::eventstore::{Event, Position, Revision, NO_STREAM};
 use crate::spawn::SpawnEvent;
-use crate::{blocker, ledger, spawn};
+use crate::{blocker, hold_probe, ledger, spawn};
 
 /// The doc location a STORE INTEGRITY anomaly names for the documented repair
 /// procedure (spec 71: "repair stays a documented operator procedure, not a
@@ -134,11 +134,6 @@ pub const DEAD_DRIVER_QUIET_BOUND: Duration = Duration::from_secs(3600);
 pub const DRIVER_RECORD_LEFT: &str = "its driver died and left its record in the step lock; \
      `rigger status` relaunches it";
 
-/// What `rigger watch` says of a run an operator hold stands on while no driver holds the step
-/// lock: its driver parked on the hold and ended, or ended while it stood, a stop on purpose.
-pub const OPERATOR_HELD: &str = "held by the operator, and no driver runs it; `rigger release` \
-     relaunches it";
-
 /// The dead-driver conjunction's HEARTBEAT-STALE bound (spec 69 Design: "every
 /// heartbeat stale >30 min").
 pub const DEAD_DRIVER_HEARTBEAT_BOUND: Duration = Duration::from_secs(30 * 60);
@@ -149,7 +144,7 @@ pub const DEFAULT_INTERVAL_SECS: u64 = 180;
 
 /// The closed set of anomaly signals the watchdog reports. The five [`SKILL_SIGNAL_NAMES`]
 /// signals are named BY THE SAME STRING `rigger-watch-a-run` uses (see [`Signal::name`]);
-/// [`Signal::SpecDefect`], [`Signal::OperatorHold`], [`Signal::StoreIntegrity`] and
+/// [`Signal::SpecDefect`], the two holds, [`Signal::StoreIntegrity`] and
 /// [`Signal::CiRed`] are the automation's own additions beyond the skill's five-signal human skim (module doc).
 /// Declared in the spec's own listed order, a stopped gate directly after the escalated
 /// blockers as the attention wire ranks it, so a derived [`Ord`] sorts anomalies in that order.
@@ -161,9 +156,13 @@ pub enum Signal {
     /// [`Signal::Escalated`].
     SpecDefect,
     DeadDriver,
-    /// An operator hold stands on the run and no driver runs it, reported in place of
-    /// [`Signal::DeadDriver`]: the hold is the run's stop.
-    OperatorHold,
+    /// An open hold no probe ends ([`hold_probe::is_probed`]) whose latest `RunHeld` needs no
+    /// person: the conductor's on a fault of its own or a `model_not_found` hold, held for the
+    /// orchestrator to resolve.
+    OrchestratorHold,
+    /// An open hold no probe ends whose latest `RunHeld` needs a person: the operator's, or a hold
+    /// for the orchestrator whose fault recurred after a release or that landed on a person's hold.
+    PersonHold,
     DashNotServing,
     RejectRecurrence,
     FrontierStall,
@@ -191,7 +190,8 @@ impl Signal {
             Signal::Escalated => SKILL_SIGNAL_NAMES[0],
             Signal::SpecDefect => "spec defect",
             Signal::DeadDriver => SKILL_SIGNAL_NAMES[1],
-            Signal::OperatorHold => "operator hold",
+            Signal::OrchestratorHold => "hold for the orchestrator",
+            Signal::PersonHold => "hold for a person",
             Signal::DashNotServing => SKILL_SIGNAL_NAMES[2],
             Signal::RejectRecurrence => SKILL_SIGNAL_NAMES[3],
             Signal::FrontierStall => SKILL_SIGNAL_NAMES[4],
@@ -214,7 +214,8 @@ impl Signal {
             Signal::Escalated => "rigger-handle-an-escalation",
             Signal::SpecDefect => "amend the spec and relaunch",
             Signal::DeadDriver => "rigger-resume-a-run",
-            Signal::OperatorHold => "rigger release",
+            Signal::OrchestratorHold => "rigger-resume-a-run",
+            Signal::PersonHold => "a person decides, then runs rigger release",
             Signal::DashNotServing => "rigger-restore-the-dash",
             Signal::RejectRecurrence => "rigger-diagnose-churn",
             Signal::FrontierStall => {
@@ -350,10 +351,8 @@ pub struct WatchInputs<'a> {
     /// its whole life, so a hung run keeps the alert silent.
     pub step_lock_free: bool,
     /// Whether the step lock holds a driver's record: with the lock free, a driver that died and
-    /// left it, which `rigger status` relaunches (or `rigger release`, under an operator hold).
+    /// left it, which `rigger status` relaunches (or `rigger release`, under a hold no probe ends).
     pub driver_record_left: bool,
-    /// Whether an operator hold (`rigger hold`) stands on the run.
-    pub operator_held: bool,
     /// Heartbeat-marker AGE in seconds, keyed by spawn id, for the run's CURRENTLY PARKED
     /// frontier, on wall clock: unlike `rigger status`'s, no open hold is subtracted. Empty when
     /// nothing is parked, which reads as "every heartbeat stale" vacuously.
@@ -491,6 +490,28 @@ fn out_of_order_streams(events: &[Event]) -> Vec<(String, usize)> {
         .collect()
 }
 
+/// The anomaly an open hold no probe ends reports: for the orchestrator or for a person as its
+/// latest `RunHeld` needs one, the hold told as its cause, its detail's first line and its action
+/// ([`ledger::Hold::told`]), and its magnitude the run's `RunHeld` count, so each hold the run
+/// takes re-alerts.
+fn held(hold: &ledger::Hold, run_events: &[Event]) -> Anomaly {
+    let signal = if hold.latest.needs_person {
+        Signal::PersonHold
+    } else {
+        Signal::OrchestratorHold
+    };
+    let taken = run_events
+        .iter()
+        .filter(|e| e.type_ == crate::run::TYPE_RUN_HELD)
+        .count();
+    Anomaly {
+        signal,
+        subject: "run".to_string(),
+        magnitude: u32::try_from(taken).unwrap_or(u32::MAX),
+        detail: hold.told(),
+    }
+}
+
 /// Fold [`WatchInputs`] into the anomalies to report - `rigger watch`'s whole domain
 /// core, PURE and store/process/status-only (never the driver). One [`Anomaly`] per
 /// condition found; an empty vec on a clean run. Deterministically sorted by
@@ -546,7 +567,10 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
 
     // Signal 2: heartbeat staleness vs live agent processes (the dead-driver
     // conjunction). Never fires on a DONE run - a finished run's quiet store is
-    // success, not a dead driver.
+    // success, not a dead driver. Every open hold no probe ends is reported, whoever resolves
+    // it, with or without a driver: nothing retries by itself into it, so its line is the push
+    // that tells the orchestrator, and it stands in for a dead driver, `rigger release`
+    // relaunching the run it stops.
     if !run.done() {
         let quiet = inputs
             .last_event_at
@@ -556,31 +580,28 @@ pub fn detect(inputs: &WatchInputs) -> Vec<Anomaly> {
             .wave_liveness_ages
             .values()
             .all(|age| Duration::from_secs(*age) > DEAD_DRIVER_HEARTBEAT_BOUND);
-        let dead = (inputs.step_lock_free && inputs.driver_record_left)
-            || (quiet && inputs.step_lock_free && every_heartbeat_stale);
-        if dead && inputs.operator_held {
-            out.push(Anomaly {
-                signal: Signal::OperatorHold,
-                subject: "run".to_string(),
-                magnitude: 0,
-                detail: OPERATOR_HELD.to_string(),
-            });
-        } else if inputs.step_lock_free && inputs.driver_record_left {
-            out.push(Anomaly {
-                signal: Signal::DeadDriver,
-                subject: "run".to_string(),
-                magnitude: 0,
-                detail: DRIVER_RECORD_LEFT.to_string(),
-            });
+        let dead = if inputs.step_lock_free && inputs.driver_record_left {
+            Some(DRIVER_RECORD_LEFT)
         } else if quiet && inputs.step_lock_free && every_heartbeat_stale {
-            out.push(Anomaly {
+            Some(
+                "store quiet an hour, no step or run holds the step lock, every heartbeat stale \
+                 past 30m",
+            )
+        } else {
+            None
+        };
+        match run
+            .hold
+            .as_ref()
+            .filter(|hold| !hold_probe::is_probed(hold))
+        {
+            Some(hold) => out.push(held(hold, inputs.run_events)),
+            None => out.extend(dead.map(|detail| Anomaly {
                 signal: Signal::DeadDriver,
                 subject: "run".to_string(),
                 magnitude: 0,
-                detail: "store quiet an hour, no step or run holds the step lock, every \
-                         heartbeat stale past 30m"
-                    .to_string(),
-            });
+                detail: detail.to_string(),
+            })),
         }
     }
 
@@ -753,7 +774,6 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: ages,
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -761,6 +781,170 @@ mod tests {
             dash_attempted_this_run: false,
             ci: CiProbe::NoRunTip,
         }
+    }
+
+    /// A `RunHeld` of `cause` by `by`, its detail, action and need for a person as given.
+    fn run_held(cause: &str, detail: &str, action: &str, needs_person: bool, by: &str) -> Event {
+        let body = crate::run::RunHeld {
+            cause: cause.to_string(),
+            detail: detail.to_string(),
+            action: action.to_string(),
+            needs_person,
+            by: by.to_string(),
+            model: String::new(),
+        };
+        body.to_event().unwrap()
+    }
+
+    /// The `RunHeld` `rigger hold --reason <reason>` appends.
+    fn operator_hold(reason: &str) -> Event {
+        let by = crate::run::HOLD_BY_OPERATOR;
+        run_held(crate::agent::OPERATOR, "", reason, true, by)
+    }
+
+    /// EVERY OPEN HOLD NO PROBE ENDS IS PUSHED TO THE ORCHESTRATOR (spec 105): a conductor fault's
+    /// and a `model_not_found` hold are reported for the orchestrator, naming the cause, the
+    /// detail's first line and the action, the response `rigger-resume-a-run`; a recurred fault's
+    /// and an operator's hold for a person; a hold a probe ends, a released hold and an unheld run
+    /// report none. Each hold the run takes re-alerts, a release then a different fault
+    /// included, while one standing hold alerts once.
+    #[test]
+    fn every_open_hold_no_probe_ends_is_reported_for_whoever_resolves_it() {
+        use crate::agent::{cause_row, CONDUCTOR_FAULT, FAULT_RECURRED};
+        use crate::run::{RunReleased, HOLD_BY_CONDUCTOR, HOLD_BY_HOST};
+        const DETAIL: &str = "worktree: git worktree add failed\nfatal: locked";
+        let row = cause_row(CONDUCTOR_FAULT);
+        let fault = |detail| {
+            run_held(
+                CONDUCTOR_FAULT,
+                detail,
+                row.action,
+                false,
+                HOLD_BY_CONDUCTOR,
+            )
+        };
+        let recurred = run_held(
+            CONDUCTOR_FAULT,
+            DETAIL,
+            FAULT_RECURRED.action,
+            true,
+            HOLD_BY_CONDUCTOR,
+        );
+        let host =
+            |cause, needs_person| run_held(cause, "the line", "act", needs_person, HOLD_BY_HOST);
+        let released = || {
+            let body = RunReleased {
+                by: crate::run::HOLD_BY_OPERATOR.to_string(),
+                held_for_s: 0,
+            };
+            body.to_event().unwrap()
+        };
+        let orchestrator_line = format!(
+            "hold for the orchestrator: run - conductor-fault: worktree: git worktree add failed \
+             - {} (respond: rigger-resume-a-run)",
+            row.action
+        );
+        let person_line = |told: &str| {
+            format!("hold for a person: run - {told} (respond: a person decides, then runs rigger release)")
+        };
+        let rows: [(&str, Vec<Event>, Vec<String>); 9] = [
+            (
+                "a conductor fault",
+                vec![fault(DETAIL)],
+                vec![orchestrator_line.clone()],
+            ),
+            (
+                "a conductor fault that recurred",
+                vec![fault(DETAIL), released(), recurred.clone()],
+                vec![person_line(&format!(
+                    "conductor-fault: worktree: git worktree add failed - {}",
+                    FAULT_RECURRED.action
+                ))],
+            ),
+            (
+                "an operator hold",
+                vec![operator_hold("moving quota")],
+                vec![person_line("operator - moving quota")],
+            ),
+            (
+                "a model_not_found hold",
+                vec![host("model_not_found", false)],
+                vec![
+                    "hold for the orchestrator: run - model_not_found: the line - act (respond: \
+                     rigger-resume-a-run)"
+                        .to_string(),
+                ],
+            ),
+            (
+                "a model_not_found hold that recurred",
+                vec![host("model_not_found", true)],
+                vec![person_line("model_not_found: the line - act")],
+            ),
+            (
+                "an api-unstable hold",
+                vec![host("api-unstable", false)],
+                vec![],
+            ),
+            (
+                "a credential hold",
+                vec![host("authentication_failed", true)],
+                vec![],
+            ),
+            (
+                "a released conductor fault",
+                vec![fault(DETAIL), released()],
+                vec![],
+            ),
+            ("an unheld run", vec![], vec![]),
+        ];
+        let ages = BTreeMap::new();
+        for (name, log, lines) in rows {
+            let events = positioned(log);
+            let found = detect(&empty_inputs(&events, &ages))
+                .iter()
+                .filter(|a| a.signal != Signal::DeadDriver)
+                .map(Anomaly::line)
+                .collect::<Vec<_>>();
+            assert_eq!(found, lines, "{name}");
+        }
+
+        // A first fault, the same hold polled again, a second fault landing on it, its release,
+        // then a third fault.
+        let polls = [
+            vec![fault(DETAIL)],
+            vec![fault(DETAIL)],
+            vec![fault(DETAIL), fault("plan landing failed")],
+            vec![fault(DETAIL), fault("plan landing failed"), released()],
+            vec![
+                fault(DETAIL),
+                fault("plan landing failed"),
+                released(),
+                fault("probe failed"),
+            ],
+        ];
+        let mut dedup = Dedup::new();
+        let alerted = polls
+            .into_iter()
+            .map(|log| {
+                let events = positioned(log);
+                let found = detect(&empty_inputs(&events, &ages));
+                let held = found.into_iter().filter(|a| a.signal != Signal::DeadDriver);
+                let printed = dedup.step(held.collect());
+                printed.iter().map(|a| a.detail.clone()).collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let told = |first: &str| format!("conductor-fault: {first} - {}", row.action);
+        assert_eq!(
+            alerted,
+            [
+                vec![told("worktree: git worktree add failed")],
+                vec![],
+                vec![told("plan landing failed")],
+                vec![],
+                vec![told("probe failed")],
+            ],
+            "each hold alerts once"
+        );
     }
 
     // --- Signal::name() is pinned verbatim against rigger-watch-a-run ---
@@ -970,7 +1154,6 @@ mod tests {
             last_event_at: Some(now - Duration::from_secs(4000)),
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &ages,
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -991,15 +1174,18 @@ mod tests {
     /// A driver's record left in the step lock is a dead driver at once, whatever the store's
     /// quiet, while no driver holds the lock and the run is not done: `watch` names what brings it
     /// back. A held lock is a live driver, and a done run has nothing to bring back. Under an
-    /// operator hold the record is the driver that parked on it, a stop on purpose: the run is
-    /// reported held, naming `rigger release`, and no dead driver is raised, the hour's quiet
-    /// included.
+    /// operator hold, one no probe ends, the hold is reported in place of a dead driver, the
+    /// record and the hour's quiet included, and with a live driver too: `rigger release`
+    /// relaunches the run it stops.
     #[test]
     fn a_driver_record_left_in_a_free_step_lock_is_a_dead_driver_at_once() {
-        let open = positioned(vec![ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#)]);
+        let started = || ev(ledger::TYPE_UNIT_STARTED, r#"{"id":"u"}"#);
+        let open = positioned(vec![started()]);
+        let held = positioned(vec![started(), operator_hold("moving quota")]);
         let ages = BTreeMap::new();
         let now = SystemTime::now();
         let hour_quiet = now - Duration::from_secs(4000);
+        const HELD: &str = "operator - moving quota";
         // Each row: whether the lock is free, whether a record is left, whether an operator hold
         // stands, when the run last wrote, and the signal and detail raised.
         let rows = [
@@ -1012,33 +1198,27 @@ mod tests {
             ),
             (false, true, false, now, None),
             (true, false, false, now, None),
-            (
-                true,
-                true,
-                true,
-                now,
-                Some((Signal::OperatorHold, OPERATOR_HELD)),
-            ),
+            (true, true, true, now, Some((Signal::PersonHold, HELD))),
             (
                 true,
                 false,
                 true,
                 hour_quiet,
-                Some((Signal::OperatorHold, OPERATOR_HELD)),
+                Some((Signal::PersonHold, HELD)),
             ),
-            (false, true, true, now, None),
+            (false, true, true, now, Some((Signal::PersonHold, HELD))),
         ];
-        for (free, left, held, last, raised) in rows {
+        for (free, left, is_held, last, raised) in rows {
+            let events = if is_held { &held } else { &open };
             let inputs = WatchInputs {
                 last_event_at: Some(last),
                 step_lock_free: free,
                 driver_record_left: left,
-                operator_held: held,
-                ..empty_inputs(&open, &ages)
+                ..empty_inputs(events, &ages)
             };
             let detail: Vec<(Signal, String)> = detect(&inputs)
                 .into_iter()
-                .filter(|a| matches!(a.signal, Signal::DeadDriver | Signal::OperatorHold))
+                .filter(|a| matches!(a.signal, Signal::DeadDriver | Signal::PersonHold))
                 .map(|a| (a.signal, a.detail))
                 .collect();
             assert_eq!(
@@ -1047,7 +1227,7 @@ mod tests {
                     .map(|(signal, detail)| (signal, detail.to_string()))
                     .into_iter()
                     .collect::<Vec<_>>(),
-                "lock free {free}, record left {left}, operator hold {held}"
+                "lock free {free}, record left {left}, operator hold {is_held}"
             );
         }
         let done = positioned(vec![
@@ -1077,7 +1257,6 @@ mod tests {
             // A step or a run holds the lock - not dead, just slow.
             step_lock_free: false,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1148,7 +1327,6 @@ mod tests {
             last_event_at: Some(now - Duration::from_secs(999_999)),
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1176,13 +1354,12 @@ mod tests {
             ev(ledger::TYPE_UNIT_INTEGRATED, r#"{"id":"b","commit":"d"}"#),
         ];
         let landed_all = [&landed_a[..], &landed_b[..]].concat();
-        // (case, the events, whether a driver record is left, whether an operator hold stands,
-        // the signals detected)
+        let held = |events: &[Event]| [events, &[operator_hold("moving quota")]].concat();
+        // (case, the events, whether a driver record is left, the signals detected)
         let rows = [
             (
                 "an owed unit not yet started",
                 landed_a.to_vec(),
-                false,
                 false,
                 vec![Signal::DeadDriver],
             ),
@@ -1190,47 +1367,36 @@ mod tests {
                 "an owed unit not yet started, its driver record left",
                 landed_a.to_vec(),
                 true,
-                false,
                 vec![Signal::DeadDriver],
             ),
             (
                 "an owed unit not yet started, under an operator hold",
-                landed_a.to_vec(),
+                held(&landed_a),
                 false,
-                true,
-                vec![Signal::OperatorHold],
+                vec![Signal::PersonHold],
             ),
             (
                 "an owed unit not yet started, its driver record left, under an operator hold",
-                landed_a.to_vec(),
+                held(&landed_a),
                 true,
-                true,
-                vec![Signal::OperatorHold],
+                vec![Signal::PersonHold],
             ),
-            (
-                "every owed unit landed",
-                landed_all.clone(),
-                false,
-                false,
-                vec![],
-            ),
+            ("every owed unit landed", landed_all.clone(), false, vec![]),
             (
                 "every owed unit landed, its driver record left, under an operator hold",
-                landed_all,
-                true,
+                held(&landed_all),
                 true,
                 vec![],
             ),
         ];
         let ages = BTreeMap::new();
-        for (case, events, left, held, signals) in rows {
+        for (case, events, left, signals) in rows {
             let events = positioned(events);
             let now = SystemTime::now();
             let inputs = WatchInputs {
                 last_event_at: Some(now - Duration::from_secs(999_999)),
                 now,
                 driver_record_left: left,
-                operator_held: held,
                 ..empty_inputs(&events, &ages)
             };
             assert_eq!(
@@ -1260,7 +1426,6 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotServing {
                 pid: None,
@@ -1451,7 +1616,6 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash,
             run_started_at: None,
@@ -1483,7 +1647,6 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotServing {
                 pid: Some(424_242),
@@ -1534,7 +1697,6 @@ mod tests {
                 last_event_at: None,
                 step_lock_free: true,
                 driver_record_left: false,
-                operator_held: false,
                 wave_liveness_ages: &ages,
                 dash: DashProbe::NotServing {
                     pid: Some(424_242),
@@ -1634,7 +1796,6 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1668,7 +1829,6 @@ mod tests {
             last_event_at: None,
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,
@@ -1783,7 +1943,6 @@ mod tests {
             last_event_at: run_events.last().map(|e| e.recorded_at),
             step_lock_free: true,
             driver_record_left: false,
-            operator_held: false,
             wave_liveness_ages: &BTreeMap::new(),
             dash: DashProbe::NotRecorded,
             run_started_at: None,

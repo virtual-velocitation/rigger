@@ -19,25 +19,36 @@ and a keep-awake port.
 
 DISPOSITIONS, decided, one table in code, `AgentFailure`'s disposition beside the enum
 (`crates/rigger-domain/src/agent.rs`), read by the host and the conductor; each row gives its
-disposition, its action text, whether it needs a person and whether it is a credential category:
+disposition, its action text, whether it needs a person, whether it is a credential category and
+whether a probe ends its hold:
 `authentication_failed`, `oauth_org_not_allowed`, `cloud_credential_error`, `billing_error`,
-`account_on_hold`, `verification_required`, `model_not_found` - HOLD on the first `api_retry` or
-`StopFailure` that
+`account_on_hold`, `verification_required` - HOLD on the first `api_retry` or `StopFailure` that
 carries the category; each needs a person, and `authentication_failed` and
-`oauth_org_not_allowed` are the credential categories. `rate_limit`, `overloaded`,
+`oauth_org_not_allowed` are the credential categories. `model_not_found` - HOLD likewise, for the
+orchestrator, needing no person, since the agent's configured model is the orchestrator's to fix,
+and for a person as ESCALATION decides. `rate_limit`, `overloaded`,
 `server_error` - WAIT while the session retries; HOLD when a session ends of it.
-`invalid_request`, `max_output_tokens`, `unknown` - FAULT: the error takes its spawn site's
-existing error path unchanged, so at the implementer it reruns uncharged under
-`retry_infra_failure` and a spawn past the infra limit halts the run naming its class. The
+`invalid_request` - REJECTED: the API refused the request as the conductor built it, the
+conductor's fault, so on first sight the run holds `conductor-fault` as ESCALATION decides, its
+detail's first line naming the spawn and its unit and its next line its prompt's size, and the
+spawn parks with nothing recorded and no attempt charged. `max_output_tokens`, `unknown` - FAULT: the error takes its spawn site's existing error
+path unchanged, so at the implementer it reruns uncharged under `retry_infra_failure` and a
+spawn past the infra limit halts the run naming its class. The
 action texts: the credential categories `run claude auth login`; `cloud_credential_error`
 `refresh the cloud provider's credentials`; `billing_error` `fix the account's billing`;
 `account_on_hold` `resolve the account's hold`; `verification_required` `complete the account's
 verification`; `model_not_found` `fix the agent's configured
 model, restart rigger run with --rebase-definition, then run rigger release`; the WAIT
-categories `none, the run retries by itself`; the FAULT categories none, since they never hold.
-Two causes outside the categories have rows: `api-unstable`, action `none, the run retries by
-itself`, needing no person, and `operator`, whose action is the hold's `--reason` text, needing
-a person. A `RunHeld`'s `detail` is the error text of the line that sighted it, else empty. The
+categories `none, the run retries by itself`; the FAULT and REJECTED categories none, since a
+FAULT never holds and a REJECTED one holds as `conductor-fault`. Three causes outside the
+categories have rows: `api-unstable`, action `none, the run retries by itself`, needing no
+person; `operator`, whose action is the hold's `--reason` text, needing a person; and
+`conductor-fault`, the conductor's hold on a fault of its own that ends the run's drive (any
+error but a park, a halt, a REJECTED spawn and a step git refused over a unit's work included), whose action is `read the fault rigger
+status prints under this hold, fix its cause at the root, then run rigger release`, needing no
+person, and which only `rigger release` ends; ESCALATION names its two rows for a person. A
+`RunHeld`'s `detail` is the error text of the line that sighted it, the fault for a
+`conductor-fault` hold, else empty. The
 host records no `SpawnResult` for a `result` with `is_error: true` and closes the session's
 input at it, as at any first `result` (`crates/rigger-driver/src/driver/claude_code.rs:570`), so
 its launch takes its class after the child exits from the same sources in the same order as a
@@ -47,7 +58,8 @@ the `error` of its last assistant line, else a `StopFailure` that follows its la
 seconds, else its last `api_retry`'s category. The host closes a launch `completed` at its first
 non-error `result`. A host appends its `fault` or `stopped` launch close first, then re-reads
 the count of such closes across the run in the progress store since the later of the last
-`completed` close and the last `RunReleased`, and a count of at least three HOLDs with cause
+`completed` close and the last `RunReleased`, a REJECTED category's close counting toward
+none, and a count of at least three HOLDs with cause
 `api-unstable` before the host returns its error, which the decorator then waits on as an error
 while held. The host appends every `RunHeld {by: host}`, naming the model its launch ran on. A
 spawn error that carries no class keeps its spawn site's error path unchanged while the run is
@@ -107,8 +119,8 @@ criterion 8. `rigger step` (`ReplayDriver`, `src/cli/run.rs:828`), `rigger serve
 
 THE EVENTS, decided: `RunHeld {cause, detail, action, needs_person, by, model}` and `RunReleased
 {by, held_for_s}` are the two new run-stream event types, beside `RunStarted`; `ledger::project`
-carries the open hold on `RunState`. `by` is `host`, `probe` or `operator`; `cause` is a
-category, `api-unstable` or `operator`. Its writer sets `action` and `needs_person` from the
+carries the open hold on `RunState`. `by` is `host`, `probe`, `operator` or `conductor`;
+`cause` is a category, `api-unstable`, `operator` or `conductor-fault`. Its writer sets `action` and `needs_person` from the
 cause's row, so the fold and the console, which the core lane builds without `agent`, read them
 without the table. The hold folds over the current run's slice, as `ledger::project` does, and a
 mint over an open hold first appends `RunReleased {by: host}`, before its `RunStarted`, so a new
@@ -121,7 +133,8 @@ which it read the hold state (`ExpectedRevision::Exact`); on a conflict it reads
 revision, the `record_result_if_absent` idiom
 (`crates/rigger-store-sqlite/src/spawn_store.rs:114`), so repeated and concurrent appends land
 once: a second sighting appends nothing, except that a sighting or failed probe whose category
-needs a person and differs from the hold's cause appends one `RunHeld` with the new cause, and
+asks someone (needs a person, or is the orchestrator's) and differs from the hold's cause appends
+one `RunHeld` with the new cause, its row as ESCALATION decides, and
 `rigger hold` on a held run appends one with cause `operator`. A probe's or operator's `RunHeld`
 carries the prior `RunHeld`'s `model` forward, empty when none. When the conductor loop returns
 with `RunState::done()` true and a hold open, an operator hold included, the supervisor appends
@@ -135,11 +148,48 @@ a hold's probes by inside its chain's revisions; the order is by revision, never
 record stamped with an event's revision is after that event, since its writer read it, and
 records sharing a stamp keep their progress-stream order.
 
+ESCALATION, decided: a `conductor-fault` hold is for the orchestrator first, the session that
+launched the run and is armed on `rigger watch` (spec 69), and for a person by one deterministic
+rule. Its writer (`run_store::hold_on_a_fault`) records the fault as the `detail` through
+`run::fault_detail`, each line's runs of whitespace collapsed to one space and its blank lines
+dropped, so the first line names what failed and what varies between occurrences, a prompt's
+size or the API's words, sits on a later line. THE SAME FAULT is `RunHeld::same_fault`: the
+`cause` and the `detail` up to its first line feed, compared byte for byte as recorded; the
+`action`, `needs_person`, `by`, `model` and every later line are not compared. Deciding inside
+its compare-and-append over the current run's hold events, the writer appends nothing when the
+open hold's latest `RunHeld` is the same fault; else `FAULT_RECURRED`, needing a person, action
+`the orchestrator's fix did not hold: a person decides, then runs rigger release`, when any
+`RunHeld` of any hold the run released is the same fault, however many holds of other faults it
+released since or later `RunHeld` events that hold took; else
+`FAULT_ON_A_PERSONS_HOLD`, needing a person, action `a person holds this run: they read the
+fault, decide, then run rigger release`, when the open hold's latest `RunHeld` needs a person;
+else the `conductor-fault` row. A fault no hold the run released named is the orchestrator's
+again.
+A step git refused over a unit's own work after its session ended (a checkpoint commit, the
+merge of the run branch into its worktree, or the conflict-marker guard's refusal of the commit)
+charges the attempt it ended, a `UnitFailed` of cause `git-refused` whose evidence is the
+refusal, keeps the unit's worktree, and holds `conductor-fault` through
+`run_store::hold_on_refused_unit_work` under the action `git refused a unit's own work, the
+refusal in the fault rigger status prints under this hold: rigger release retries the unit with
+it; fix the tree first only if the fault shows no agent session can change it`. Its first line
+names the attempt, so each attempt's refusal is a different fault and the unit's retry bound,
+not FAULT_RECURRED, decides when the unit escalates; a release relaunches the run, which
+launches the unit's next attempt with the refusal in its prompt. A refusal on the operator's
+regenerable paths, a landing's and a plan landing's are no attempt of a unit's and hold the
+`conductor-fault` row.
+A `model_not_found` sighting or failed probe takes the same rows (`run_store::sighted`), the same
+fault for it being the same `cause`, since its `detail` is whichever line sighted it.
+No probe ends any of them. A `conductor-fault` `RunHeld` recorded before this rule, its fault in
+its `action` and needing a person, folds and reads as recorded, and its empty `detail` names no
+fault a later one can repeat.
+
 HELD, decided: `rigger run` and `rigger serve` wrap their driver in one new `AgentDriver`
 decorator in `rigger-conductor`, so no spawn site changes for the hold: before each launch it
 waits while the run is held, and on an error of a HOLD or WAIT class, or any other error while
 the run is held, it waits for the release and launches the same spawn id again, with no infra
-mark, up to the bound of DISPOSITIONS. Two other errors pass to the conductor unchanged: one
+mark, up to the bound of DISPOSITIONS. On an error of a REJECTED class it holds the run
+`conductor-fault` as ESCALATION decides, naming the spawn, its unit and its prompt's size, and parks the spawn,
+recording nothing. Two other errors pass to the conductor unchanged: one
 carrying a conductor marker (`is_parked`, or `EMIT_REFUSED_MARKER`, which arises only under a
 driver that calls the emit callback, `crates/rigger-conductor/src/conductor.rs:3413`), and one
 for a spawn the current run's slice has ended (`spawn::ended_by`, read as RESUME reads it).
@@ -273,11 +323,13 @@ session (the `resumed_from` path, `SpawnOpts`, `crates/rigger-domain/src/agent.r
 `--fork-session --session-id` of an id it mints, so an orphan of a supervisor that died without
 unwinding keeps that transcript to itself, its record carrying the minted id with `resumed_from`
 naming the interrupted session, in the same `dir`, its first user message stating the hold's
-cause and duration, or the supervisor's restart, followed by the `resume_task` when the
-interrupted launch carried it, read from the spawn's launch records in the run: a record carried
-it when its session or its `resumed_from` is the spawn's non-empty `resumed_from`, or when its
-`resumed_from` names another session whose record carried it, so the task keeps travelling along
-a chain of relaunches, and a fresh launch's record, the fallback's among them, did not; a
+cause and duration, or the supervisor's restart, followed by the spawn's `relaunch_task`, what
+the conductor learned since that launch began (a halted implementer's captured tree, or git's
+refusal to capture it), unless the `resume_task` it sends already holds that text, then the
+`resume_task` when the interrupted launch carried it, read from the spawn's launch records in
+the run: a record carried it when its session or its `resumed_from` is the spawn's non-empty
+`resumed_from`, or when its `resumed_from` names another session whose record carried it, so the
+task keeps travelling along a chain of relaunches, and a fresh launch's record, the fallback's among them, did not; a
 `continue_prior_session` launch does not fork. Every relaunch of a spawn id, by this path, the
 decorator of HELD or the fallback, takes the ordinal after the highest the progress store
 records for that id, never `opts.launch`. When `read_stream`
@@ -296,11 +348,19 @@ session that is gone takes the fallback.
 
 WHAT A PERSON SEES, decided: `rigger status` opens with `HELD <duration> - <cause> - <action>`,
 ending `; the run resumes by itself` while the latest `SupervisorBeat` is no older than the 90 s
-of LIVENESS and the hold is neither an operator hold nor a `model_not_found` hold, else `;
-rigger release ends it`. The dock (`crates/rigger-console/src/console/mod.rs:98`) lists the kind
-`held` for a hold whose latest `RunHeld` carries `needs_person`, as an operator hold's does,
-first in `attention_kind_rank` (`crates/rigger-domain/src/ledger.rs:243`); a hold that needs no
-person shows on the HELD line and the statusline only. The statusline (`console/mod.rs:139`)
+of LIVENESS and a probe can end the hold (`hold_probe::is_probed`: neither an operator hold, a
+`conductor-fault` hold nor a `model_not_found` hold), else `; rigger release ends it`, and each
+line of the hold's `detail` follows it, indented. The dock
+(`crates/rigger-console/src/console/mod.rs:98`) lists the kind `held` for a hold whose latest
+`RunHeld` carries `needs_person`, as an operator hold's does, first in `attention_kind_rank`
+(`crates/rigger-domain/src/ledger.rs:243`); a hold that needs no person shows on the HELD line and
+the statusline only. `rigger watch` reports every open hold no probe ends, on a run not done,
+driver or no driver, in place of a dead driver: `hold for the orchestrator` when its latest
+`RunHeld` needs no person, responding `rigger-resume-a-run`, else `hold for a person`, responding
+`a person decides, then runs rigger release`, its detail `<cause>: <first line> - <action>`
+(`ledger::Hold::told`) and its magnitude the run's `RunHeld` count, so each hold re-alerts; a
+driver that ends on such a hold prints one stderr line naming whom it is held for and the same
+text. The statusline (`console/mod.rs:139`)
 reads `needs-you` for a dock entry other than `held`, else `held` while held, else `working`,
 `done` or `healthy` as today. `CONSOLE_EVENT_TYPES` (`crates/rigger-dash/src/dash.rs:2781`)
 gains `RunHeld` and `RunReleased`, so the page's fold sees the hold. Attention gains `held`,
@@ -419,9 +479,10 @@ beat gap and the resume carry the run.
   composition-root swap, the hook injection, the tool grant, the store hand-off, the run
   teardown with its root check, the fixture migration with the bridged-record tests' move, the
   resume fallback and the ordinal rule; the hold rules are criterion 2's, NOT this one's.
-- [ ] a test proves THE DISPOSITION TABLE: each category maps to hold, wait or fault as decided;
+- [ ] a test proves THE DISPOSITION TABLE: each category maps to hold, wait, fault or rejected as
+  decided;
   through `rigger run`, the first hold-class sighting appends `RunHeld` with its cause, action
-  and model, a repeated or concurrent one appends nothing, one whose person-needing category
+  and model, a repeated or concurrent one appends nothing, one whose category asks someone and
   differs from the hold's cause appends one, and none appends on an operator hold; a done run or
   a mint with a hold open, an operator hold included, appends `RunReleased {by: host}`; a
   session ending of a wait-class category and a third consecutive fault or stream-silence stop,
@@ -430,9 +491,15 @@ beat gap and the resume carry the run.
   `claude` that exits only on that close, and a non-error one closes its launch `completed`; a
   `StopFailure` of an earlier launch never classes a later one; a classed fault at the
   implementer reruns uncharged under the infra limit; a host built with no hold sink appends
-  nothing. This criterion OWNS the table, `RunHeld`, `RunReleased`, the hold fold, the revision
-  stamp, the `completed` close, the sightings' transitions into the hold, the done run's and the
-  mint's releases and the hold sink's `run_cli` wire; a failed probe's upgrade and `rigger
+  nothing; through `rigger run`, a conductor fault or a REJECTED spawn first holds the run for the
+  orchestrator, the same fault as any hold the run released holds it for a person, holds of other
+  faults released since included, one no released hold named for the orchestrator, one landing on
+  a hold that needs a person holds for a person, and no probe ends
+  any of them; two holds name the same fault exactly when their causes and their details' first
+  lines are the same bytes; and a log recorded before ESCALATION folds and reads as recorded.
+  This criterion OWNS the table, `RunHeld`, `RunReleased`, the hold fold, the revision
+  stamp, the `completed` close, the sightings' transitions into the hold, ESCALATION, the done
+  run's and the mint's releases and the hold sink's `run_cli` wire; a failed probe's upgrade and `rigger
   hold`'s append are criterion 5's and behavior while held criterion 3's, NOT this one's.
 - [ ] a test proves HELD MEANS NO LAUNCH AND NO CHARGE: through `rigger run`, while held the
   driver decorator launches nothing, and on a hold- or wait-class error it waits for the release
@@ -460,7 +527,7 @@ beat gap and the resume carry the run.
 - [ ] a test proves RELEASE BY PROBE: through `rigger run` against a fake `claude`, a logged-out
   status runs no canary and a `model_not_found` hold runs no probe; a logged-in status plus an
   `is_error: false` canary result on the hold's model appends `RunReleased`, and an error result
-  does not; a failed canary's person-needing category upgrades the cause; the canary writes no
+  does not; a failed canary's category that asks someone upgrades the cause; the canary writes no
   launch record; a hold re-declared during a probe is not released by it; the delay, a pure
   function proved by a table and through `rigger run` on backdated records, doubles per probe
   from 60 s to 900 s and carries over a quick re-hold but not an operator hold; `rigger hold`
@@ -479,13 +546,16 @@ beat gap and the resume carry the run.
   it from the log, and a conflict resolver's error, live or answered, spends a round with no
   attempt charged; after a release or that restart, an `interrupted` launch relaunches at the
   next ordinal with `--resume <session-id>` in the same cwd and a first message naming the hold
-  or the restart, then its `resume_task` when it carried one, and charges no attempt. This
+  or the restart, then its `relaunch_task` once, then its `resume_task` when it carried one, and
+  charges no attempt. This
   criterion OWNS start-up reconciliation, the answer from the log, the host's park and
   real-result write, the decorator's error write, the conflict site's read of an error and the
   host's relaunch of an `interrupted` launch only.
 - [ ] a test proves A PERSON SEES THE HOLD: `rigger status` opens with the HELD line, whose
-  suffix names `rigger release` for an operator hold, a `model_not_found` hold or a hold with no
-  beat in the last 90 s; the dock lists `held` first for a hold whose latest `RunHeld` carries
+  suffix names `rigger release` for an operator hold, a `conductor-fault` hold, a
+  `model_not_found` hold or a hold with no beat in the last 90 s, and the hold's detail lines
+  under it; `rigger watch` reports each open hold no probe ends, for the orchestrator or a person
+  as its latest `RunHeld` needs one; the dock lists `held` first for a hold whose latest `RunHeld` carries
   `needs_person` and omits it otherwise; the statusline reads `held` when no other dock entry
   stands; the page's console stream carries the hold; the attention fold yields one `held` and
   one `released` per hold; and `rigger validate` reports the auth method, no warning

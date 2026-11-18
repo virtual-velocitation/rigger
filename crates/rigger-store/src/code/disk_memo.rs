@@ -200,6 +200,7 @@ mod tests {
                 end_line: at as u32 + 1,
                 parent: None,
                 test: false,
+                doc: None,
             })
             .collect();
         FileFacts {
@@ -278,6 +279,27 @@ mod tests {
         let entry = memo.name("src/a.rs", bytes);
         assert_eq!(names(&root.path().join(DIR)), vec![entry]);
         assert_eq!(memo.get("src/a.rs", bytes), Some(facts));
+    }
+
+    /// DOC SPANS AND MODULE LISTS SURVIVE THE MEMO: GIVEN
+    /// [`code_file`](crate::code::snapshot::tests::code_file)'s facts for the file holding some
+    /// bytes, which carry a file doc span, a definition's doc span beside an absent one and module
+    /// declarations with distinct `as_root` and `as_child` lists, one with `path_attr`, WHEN they
+    /// are put and a memo opened afresh on the same directory and fingerprint reads that file,
+    /// THEN the put succeeds and the read answers the facts as put.
+    #[test]
+    fn doc_spans_and_module_lists_survive_the_memo() {
+        use crate::code::snapshot::tests::code_file;
+        let root = tempfile::tempdir().unwrap();
+        let bytes = b"//! a module\npub struct Outer;\n";
+        let facts = FileFacts {
+            blob: content_id(bytes),
+            ..code_file()
+        };
+        let put = DiskMemo::new(root.path().join(DIR), 7).put(bytes, &facts);
+        assert_eq!(put, Ok(()), "the put");
+        let read = DiskMemo::new(root.path().join(DIR), 7).get(&facts.path, bytes);
+        assert_eq!(read, Some(facts), "the read of a memo opened afresh");
     }
 
     /// The block the reap counts an entry's bytes in.

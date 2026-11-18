@@ -152,6 +152,12 @@ pub struct Def {
     /// out-of-line fields; omitted from the wire form when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enclosing_inline_module_path: Option<String>,
+    /// Spec 117 (DOC FACTS): the definition's doc span, the 1-based inclusive lines from its first
+    /// doc line to its last - the lines a `@doc` capture in its query match covers, else, in
+    /// Rust, its outer doc lines' ([`crate::grounder::symbols::extract::extract`] sets it); `None`
+    /// when it has none. Serde-defaulted and omitted when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<(u32, u32)>,
 }
 
 /// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
@@ -179,11 +185,13 @@ pub struct SymRef {
     /// byte-identical-wire-form reason as `Def::is_test`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
-    /// Spec 117 (REFERENCES): what kind of non-call reference this is - a const read, a type
-    /// reference or an imported leaf of a `use`, the `EdgeInferred` payload's own spelling
-    /// (`contextgraph::REF_KIND_CONST`, `REF_KIND_TYPE`, `REF_KIND_USE`) - extracted for Rust
-    /// only; `None` for a call, every other language's reference included, which folds and counts
-    /// as before the field existed. A calls-only consumer reads [`FileSymbols::calls`].
+    /// Spec 117 (REFERENCES, CAPTURES): what kind of non-call reference this is, in the
+    /// `EdgeInferred` payload's own spelling (`contextgraph::REF_KIND_*`): in every language, the
+    /// kind a tags query's `@reference.<kind>` suffix names (a type, an impl, a const read, a field
+    /// or a use), and in Rust also a const read, a type reference or an imported leaf of a `use`
+    /// read off the tree. `None` for a call, a constructed `new T()` included, which folds and
+    /// counts as before the field existed.
+    /// A calls-only consumer reads [`FileSymbols::calls`].
     /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
@@ -209,6 +217,12 @@ pub struct FileSymbols {
     /// before this field existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// Spec 117 (DOC FACTS): the file's doc span, the 1-based inclusive lines from the first to
+    /// the last of the inner doc lines a Rust file opens with
+    /// ([`crate::grounder::symbols::extract::extract`] sets it); `None` for a file opening with
+    /// none and for every other language. Serde-defaulted and omitted when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc: Option<(u32, u32)>,
 }
 
 impl FileSymbols {
@@ -221,22 +235,103 @@ impl FileSymbols {
     }
 }
 
-/// The version of the grammar / tag-query set this build extracts with (architecture 5.5.3),
-/// stamped into unit 3's `BlastRadiusComputed` audit event (via `Symbols::blast_radius_stamped`) so a
-/// recorded radius names the tag-query generation that produced it, and part of the code store's
-/// extractor fingerprint, so a snapshot written under another set is not trusted. Bump it when a
-/// shipped grammar or an authored tags query changes, so a radius computed under an older grammar
-/// set is distinguishable on replay from one the current set would produce (gap 104); so does a
-/// change to what extraction records under an unchanged query, the caller a reference carries
-/// (`SymRef::enclosing`) and a definition's parent (`Def::parent`) included: `ts-tags-v4` is
-/// spec 119's one bump, and `ts-tags-v5` is spec 117's, at the tagged references
-/// (`SymRef::ref_kind`: const reads, type references and the leaves a `use` imports) and the
-/// test regions and impl-header callers they take. The registry's golden test
-/// `an_extraction_change_ships_with_a_grammar_tags_version_bump` pins this tag beside the digest
-/// of a fixed extraction, so a change to what extraction records fails it until the tag is bumped
-/// and the pair re-pinned together. Parser-free, so it lives in the model both feature lanes
-/// compile.
-pub const GRAMMAR_TAGS_VERSION: &str = "ts-tags-v5";
+// Each registry entry's tags generation, a literal its own macro names. The entry's const and
+// `GRAMMAR_TAGS_VERSION`'s `concat!` both expand the macro, since `concat!` takes literals alone,
+// so the literal is spelled once; `GRAMMAR_TAGS_VERSION`'s doc says when one is bumped.
+
+macro_rules! rust_tags_generation {
+    () => {
+        "rust-tags-v2"
+    };
+}
+
+macro_rules! csharp_tags_generation {
+    () => {
+        "csharp-tags-v3"
+    };
+}
+
+macro_rules! ts_tags_generation {
+    () => {
+        "typescript-tags-v4"
+    };
+}
+
+macro_rules! tsx_tags_generation {
+    () => {
+        "tsx-tags-v4"
+    };
+}
+
+macro_rules! js_tags_generation {
+    () => {
+        "javascript-tags-v4"
+    };
+}
+
+macro_rules! go_tags_generation {
+    () => {
+        "go-tags-v3"
+    };
+}
+
+macro_rules! python_tags_generation {
+    () => {
+        "python-tags-v1"
+    };
+}
+
+/// The tags generation of the Rust registry entry (`.rs`).
+pub const RUST_TAGS_GENERATION: &str = rust_tags_generation!();
+
+/// The tags generation of the C# registry entry (`.cs`).
+pub const CSHARP_TAGS_GENERATION: &str = csharp_tags_generation!();
+
+/// The tags generation of the TypeScript registry entry (`.ts`).
+pub const TS_TAGS_GENERATION: &str = ts_tags_generation!();
+
+/// The tags generation of the TSX registry entry (`.tsx`).
+pub const TSX_TAGS_GENERATION: &str = tsx_tags_generation!();
+
+/// The tags generation of the JavaScript registry entry (`.js`, `.mjs`, `.cjs`, `.jsx`).
+pub const JS_TAGS_GENERATION: &str = js_tags_generation!();
+
+/// The tags generation of the Go registry entry (`.go`).
+pub const GO_TAGS_GENERATION: &str = go_tags_generation!();
+
+/// The tags generation of the Python registry entry (`.py`).
+pub const PYTHON_TAGS_GENERATION: &str = python_tags_generation!();
+
+/// The version of the grammar / tag-query set this build extracts with (architecture 5.5.3):
+/// every registry entry's tags generation, joined by `,` in the registry's order, so a bump of
+/// any one entry's generation moves it. Stamped into unit 3's `BlastRadiusComputed` audit event
+/// (via `Symbols::blast_radius_stamped`) so a recorded radius names the tag-query generations
+/// that produced it, and part of the code store's extractor fingerprint, so a snapshot written
+/// under another set is not trusted. An entry's generation is bumped when its shipped grammar,
+/// its authored tags query or what extraction records from its files under an unchanged query
+/// changes, the caller a reference carries (`SymRef::enclosing`) and a definition's parent
+/// (`Def::parent`) included, so a radius computed under an older grammar set is distinguishable
+/// on replay from one the current set would produce (gap 104). The registry's golden test
+/// `an_extraction_change_ships_with_a_grammar_tags_version_bump` pins each entry's generation
+/// beside the digest of its fixtures' extraction, so a change to what one language's extraction
+/// records fails that language's row until its generation is bumped and the row re-pinned
+/// together, and holds this value equal to its table's generations joined in order. Parser-free,
+/// so it lives in the model both feature lanes compile.
+pub const GRAMMAR_TAGS_VERSION: &str = concat!(
+    rust_tags_generation!(),
+    ",",
+    csharp_tags_generation!(),
+    ",",
+    ts_tags_generation!(),
+    ",",
+    tsx_tags_generation!(),
+    ",",
+    js_tags_generation!(),
+    ",",
+    go_tags_generation!(),
+    ",",
+    python_tags_generation!(),
+);
 
 /// The whole-project index, held in memory while an emit pass lowers it. Deterministic containers
 /// only (`BTreeMap`): iterating it is stable across processes, unlike a `HashMap` whose
@@ -308,6 +403,7 @@ mod tests {
                 is_out_of_line_module: false,
                 path_override: None,
                 enclosing_inline_module_path: None,
+                doc: Some((5, 6)),
             }],
             refs: vec![SymRef {
                 name: "clamp".into(),
@@ -317,9 +413,61 @@ mod tests {
                 ref_kind: None,
             }],
             partial: false,
+            doc: Some((1, 2)),
         };
         let json = serde_json::to_string(&file).expect("model serializes with plain serde");
         let back: FileSymbols = serde_json::from_str(&json).expect("model round-trips");
         assert_eq!(back, file);
+    }
+
+    /// Spec 117 (DOC FACTS): a definition's and a file's doc span serialize as the `[first, last]`
+    /// line pair, are omitted when there is none, and read back from that wire form, a record
+    /// with no `doc` key reading as no span.
+    #[test]
+    fn a_doc_span_is_its_line_pair_on_the_wire_and_omitted_when_none() {
+        // (the file's span, the definition's span, the file's wire form)
+        let rows = [
+            (
+                None,
+                None,
+                r#"{"lang":"Rust","defs":[{"kind":"Function","name":"f","line":3,"end_line":4,"path":"f"}],"refs":[]}"#,
+            ),
+            (
+                Some((1, 1)),
+                Some((2, 2)),
+                r#"{"lang":"Rust","defs":[{"kind":"Function","name":"f","line":3,"end_line":4,"path":"f","doc":[2,2]}],"refs":[],"doc":[1,1]}"#,
+            ),
+        ];
+        for (file_doc, def_doc, json) in rows {
+            let file = FileSymbols {
+                lang: Lang::Rust,
+                defs: vec![Def {
+                    kind: Kind::Function,
+                    name: "f".into(),
+                    line: 3,
+                    end_line: 4,
+                    path: "f".into(),
+                    parent: None,
+                    is_test: false,
+                    is_out_of_line_module: false,
+                    path_override: None,
+                    enclosing_inline_module_path: None,
+                    doc: def_doc,
+                }],
+                refs: Vec::new(),
+                partial: false,
+                doc: file_doc,
+            };
+            assert_eq!(
+                serde_json::to_string(&file).expect("the file serializes"),
+                json,
+                "{file_doc:?} {def_doc:?}"
+            );
+            assert_eq!(
+                serde_json::from_str::<FileSymbols>(json).expect("the wire form reads back"),
+                file,
+                "{file_doc:?} {def_doc:?}"
+            );
+        }
     }
 }

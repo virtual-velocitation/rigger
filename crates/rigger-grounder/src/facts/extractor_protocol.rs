@@ -114,6 +114,8 @@ struct Answer {
 /// quotes each text the extractor wrote into it - the answer's path, its error, a ref's kind, the
 /// def path a cycle runs through - so
 /// a line break or terminal escape there is escaped and the line saying the why stays one line.
+/// The protocol carries no doc span (spec 117, DOC FACTS), so the symbols hold none, the file's
+/// or a def's, whatever the answer writes.
 pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, String> {
     let answer: Answer =
         serde_json::from_str(line).map_err(|e| format!("the answer does not parse: {e}"))?;
@@ -123,7 +125,7 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
     if let Some(error) = answer.error {
         return Err(format!("the answer is an error: {error:?}"));
     }
-    let (Some(defs), Some(refs)) = (answer.defs, answer.refs) else {
+    let (Some(mut defs), Some(refs)) = (answer.defs, answer.refs) else {
         return Err("the answer holds no error and lacks defs or refs".to_string());
     };
     let last = text.matches('\n').count() as u32 + 1;
@@ -176,10 +178,16 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
             "the defs' parents form a cycle through {through:?}"
         ));
     }
+    // Spec 117 (DOC FACTS): the protocol carries no doc span yet, so a def's span the answer
+    // writes is dropped, and the file has none.
+    for def in &mut defs {
+        def.doc = None;
+    }
     Ok(CodeSymbols {
         defs,
         refs,
         partial: answer.partial,
+        doc: None,
     })
 }
 
@@ -248,7 +256,8 @@ mod tests {
 
     /// THE EXTRACTOR PROTOCOL, the answer: over a request for `a.zig`, an answer holding defs and
     /// refs within the text's lines - the last one more than the `\n` the text holds - gives them
-    /// and its partial flag as written; every answer the protocol refuses gives the exact why:
+    /// and its partial flag as written, and no doc span, the file's or a def's, whatever it
+    /// writes; every answer the protocol refuses gives the exact why:
     /// one that does not parse, that is for another path, that is an error - its text quoted, a
     /// line break or terminal escape in it escaped - that lacks a list, a
     /// def or ref outside the lines or with an empty name, a def with an empty path, an end line
@@ -274,6 +283,7 @@ mod tests {
             defs: Vec::new(),
             refs: Vec::new(),
             partial: false,
+            doc: None,
         };
         let refused = |why: &str| Err(why.to_string());
         // (the request's text, the answer line, its symbols or why it is refused)
@@ -323,6 +333,7 @@ mod tests {
                         answered_ref("u", 4, None, Some("use"), false),
                     ],
                     partial: false,
+                    doc: None,
                 }),
             ),
             ("", answer_with_defs(&def_on(1, 1)), {
@@ -331,6 +342,15 @@ mod tests {
                     ..empty()
                 })
             }),
+            (
+                TEXT,
+                r#"{"path":"a.zig","defs":[{"kind":"Function","name":"f","line":2,"end_line":2,"path":"f","doc":[1,1]}],"refs":[],"doc":[1,1]}"#
+                    .into(),
+                Ok(CodeSymbols {
+                    defs: vec![answered_def("f", "f", (2, 2), None, false)],
+                    ..empty()
+                }),
+            ),
             (
                 "",
                 answer_with_defs(&def_on(2, 2)),
