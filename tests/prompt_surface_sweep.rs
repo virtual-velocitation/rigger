@@ -212,6 +212,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "driver: write the spawn's system prompt under {}: {e}",
             "{} outside the session's tree, never signalled: {}",
             "the end of the session left processes running; {}",
+            "{host}: the end of the session ended {} {noun} besides its m",
         ],
     ),
     (

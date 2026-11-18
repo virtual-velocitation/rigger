@@ -470,7 +470,9 @@ impl ReapedChild {
     /// line, so a hook still writing the spawn's record finishes before the end; a main that
     /// still runs is ended at once with all it started, as a stop ends it. A watched tree whose
     /// main has exited signals nothing, and answers what the main left running as never
-    /// signalled ([`crate::reap::end_watched`]). Answers what the end left.
+    /// signalled ([`crate::reap::end_watched`]). Answers what the end left, and in
+    /// [`EndReport::ended`] each process it found running besides the main, named before the end,
+    /// that is gone after it and that the end neither left as residue nor skipped.
     pub fn finish(mut self, writing: Option<&str>) -> EndReport {
         if let Some(spawn) = writing {
             if matches!(self.try_wait(), Ok(Some(_))) {
@@ -479,7 +481,26 @@ impl ReapedChild {
                 });
             }
         }
-        self.end()
+        let found: Vec<(Identity, Leftover)> = self
+            .hold
+            .members(&mut self.child)
+            .into_iter()
+            .map(|member| (member, Leftover::of(member.pid, false)))
+            .collect();
+        let mut report = self.end();
+        let left: Vec<u32> = report
+            .residue
+            .iter()
+            .chain(&report.skipped)
+            .map(|left| left.pid)
+            .collect();
+        let ended = found
+            .into_iter()
+            .filter(|(member, _)| !reap::running(member) && !left.contains(&member.pid))
+            .map(|(_, named)| named)
+            .collect();
+        report.ended = ended;
+        report
     }
 
     /// Waits for the main process to exit and answers its status and all of its output, as

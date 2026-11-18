@@ -429,10 +429,12 @@ pub(crate) fn spawn_config_args(
 }
 
 /// The lines an end of a session's tree is said in ([`crate::child_tree::EndReport`]), each led
-/// by `host`, the host that says it: each call the OS refused the end, as the report says it;
-/// then how many processes the end signalled and could not end, and how many it found outside
-/// the tree and never signalled, each named by pid and program, a still-frozen one marked so.
-/// Empty when the end left nothing and nothing was refused.
+/// by `host`, the host that says it: first how many processes an ordinary end ended besides the
+/// main, so a daemon ended with its session shows in the log; then, in a line of its own, each
+/// call the OS refused the end, as the report says it, and how many processes the end signalled
+/// and could not end, and how many it found outside the tree and never signalled. Each process is
+/// named by pid and program, a still-frozen one marked so. Empty when the end ended and left
+/// nothing and nothing was refused.
 pub(crate) fn end_lines(report: &crate::child_tree::EndReport, host: &str) -> Vec<String> {
     let named = |left: &[crate::child_tree::Leftover]| {
         left.iter()
@@ -466,6 +468,18 @@ pub(crate) fn end_lines(report: &crate::child_tree::EndReport, host: &str) -> Ve
     });
     let said: Vec<String> = report.faults.iter().cloned().chain(left).collect();
     let mut lines = Vec::new();
+    if !report.ended.is_empty() {
+        let noun = if report.ended.len() == 1 {
+            "process"
+        } else {
+            "processes"
+        };
+        lines.push(format!(
+            "{host}: the end of the session ended {} {noun} besides its main: {}",
+            report.ended.len(),
+            named(&report.ended)
+        ));
+    }
     if !said.is_empty() {
         lines.push(format!("{host}: {}", said.join("; ")));
     }

@@ -751,7 +751,7 @@ pub struct Leftover {
 
 impl Leftover {
     /// `pid` as a leftover, named by its command as it reads now.
-    fn of(pid: u32, stopped: bool) -> Leftover {
+    pub(crate) fn of(pid: u32, stopped: bool) -> Leftover {
         Leftover {
             pid,
             program: os_process::command(pid),
@@ -769,7 +769,7 @@ impl Leftover {
 /// OS refused it; and `by_pid_because`, why it signalled by pid.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndReport {
-    /// Found running besides the main by an ordinary end, and ended by it.
+    /// Found running besides the main by an ordinary end, and gone once it ended.
     pub ended: Vec<Leftover>,
     /// Signalled, and still running past the bound.
     pub residue: Vec<Leftover>,
