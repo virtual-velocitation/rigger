@@ -105,6 +105,8 @@ mod dedup_seeding_periphery;
 mod derived_append_refusal_periphery;
 mod derived_types_refused_periphery;
 mod design_intent_events;
+#[cfg(feature = "symbols")]
+mod doc_spans_reach_the_code_store_periphery;
 mod edge_side_binds_the_leaf_periphery;
 mod escalation_resume_periphery;
 mod event_classes_are_one_table;
