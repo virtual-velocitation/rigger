@@ -1683,20 +1683,32 @@ pub(crate) mod tests {
         }
     }
 
+    /// Spec 117, MODULE ROOTS AT READ: each out-of-line declaration's module row holds its name,
+    /// its test mark, the `as_root` and `as_child` lists `module_candidates` names off the
+    /// declaring file alone, and whether it carries a `#[path]` attribute.
     #[test]
     fn module_candidates_come_from_the_declaring_file_alone() {
-        // (declaring path, source, the (name, test, candidates) of each declaration, the
-        // candidates both its `as_root` and its `as_child` list hold)
-        type Row = (
+        // (name, test, as_root, as_child, path_attr) of one declaration
+        type Module = (
             &'static str,
-            &'static str,
-            &'static [(&'static str, bool, &'static [&'static str])],
+            bool,
+            &'static [&'static str],
+            &'static [&'static str],
+            bool,
         );
+        // (declaring path, source, each declaration's module row)
+        type Row = (&'static str, &'static str, &'static [Module]);
         let table: [Row; 10] = [
             (
                 "src/lib.rs",
                 "mod alpha;\n",
-                &[("alpha", false, &["src/alpha.rs", "src/alpha/mod.rs"])],
+                &[(
+                    "alpha",
+                    false,
+                    &["src/alpha.rs", "src/alpha/mod.rs"],
+                    &["src/alpha.rs", "src/alpha/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "lib/other.rs",
@@ -1704,57 +1716,98 @@ pub(crate) mod tests {
                 &[(
                     "alpha",
                     false,
+                    &["lib/alpha.rs", "lib/alpha/mod.rs"],
                     &["lib/other/alpha.rs", "lib/other/alpha/mod.rs"],
+                    false,
                 )],
             ),
             (
                 "src/lib.rs",
                 "#[cfg(test)]\nmod tests;\n",
-                &[("tests", true, &["src/tests.rs", "src/tests/mod.rs"])],
+                &[(
+                    "tests",
+                    true,
+                    &["src/tests.rs", "src/tests/mod.rs"],
+                    &["src/tests.rs", "src/tests/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/parent.rs",
                 "#[path = \"other/x.rs\"]\nmod renamed;\n",
-                &[("renamed", false, &["src/other/x.rs"])],
+                &[(
+                    "renamed",
+                    false,
+                    &["src/other/x.rs"],
+                    &["src/other/x.rs"],
+                    true,
+                )],
             ),
             (
                 "src/lib.rs",
                 "mod outer {\n    mod x;\n}\n",
-                &[("x", false, &["src/outer/x.rs", "src/outer/x/mod.rs"])],
+                &[(
+                    "x",
+                    false,
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/lib.rs",
                 "#![cfg(test)]\nfn first() {}\nmod x;\n",
-                &[("x", true, &["src/x.rs", "src/x/mod.rs"])],
+                &[(
+                    "x",
+                    true,
+                    &["src/x.rs", "src/x/mod.rs"],
+                    &["src/x.rs", "src/x/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/main.rs",
                 "#[cfg(test)]\nuse y;\nfn first() {}\nmod z;\n",
-                &[("z", false, &["src/z.rs", "src/z/mod.rs"])],
+                &[(
+                    "z",
+                    false,
+                    &["src/z.rs", "src/z/mod.rs"],
+                    &["src/z.rs", "src/z/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/lib.rs",
                 "mod outer {\n    #[cfg(test)]\n    mod x;\n}\n",
-                &[("x", true, &["src/outer/x.rs", "src/outer/x/mod.rs"])],
+                &[(
+                    "x",
+                    true,
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    false,
+                )],
             ),
             ("src/lib.rs", "mod inline { fn f() {} }\n", &[]),
             ("web/app.ts", "namespace N { function f() {} }\n", &[]),
         ];
         for (path, source, modules) in table {
             let facts = facts_of(path, source.as_bytes());
-            let held: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (facts.modules.iter())
+            let held = (facts.modules.iter())
                 .map(|m| {
                     (
                         m.name.as_str(),
                         m.test,
-                        m.as_root.iter().map(String::as_str).collect(),
-                        m.as_child.iter().map(String::as_str).collect(),
+                        m.as_root.iter().map(String::as_str).collect::<Vec<_>>(),
+                        m.as_child.iter().map(String::as_str).collect::<Vec<_>>(),
+                        m.path_attr,
                     )
                 })
-                .collect();
-            let expected: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (modules.iter())
-                .map(|(name, test, paths)| (*name, *test, paths.to_vec(), paths.to_vec()))
-                .collect();
+                .collect::<Vec<_>>();
+            let expected = (modules.iter())
+                .map(|&(name, test, as_root, as_child, path_attr)| {
+                    (name, test, as_root.to_vec(), as_child.to_vec(), path_attr)
+                })
+                .collect::<Vec<_>>();
             assert_eq!(held, expected, "{path}: {source:?}");
         }
     }

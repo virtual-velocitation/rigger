@@ -215,7 +215,8 @@ mod tests {
     /// A crate root at the walk's root: a declaring path with no directory.
     const ROOT_DECLARING_FILE: &str = "lib.rs";
 
-    /// A declaring file owning no module directory, so its own stem is its module directory.
+    /// A declaring file owning no module directory, so its own stem is its module directory when
+    /// it is a child.
     const NESTED_DECLARING_FILE: &str = "src/foo.rs";
 
     /// The one out-of-line `mod` declaration `symbols` holds.
@@ -227,60 +228,140 @@ mod tests {
             .expect("the source declares a module out of line")
     }
 
-    /// Spec 117 criterion 8: the candidates [`super::module_candidates`] names, in order, for each
-    /// declaration the table holds, read off the declaring path and the declaration alone - a
-    /// `#[path]` override's one file under the declaring file's directory, or its module
-    /// directory and inline chain when nested, none for an absolute or over-climbing override;
-    /// else `x.rs` then `x/mod.rs` under the module directory and the enclosing inline-mod chain.
+    /// Spec 117, MODULE ROOTS AT READ: EACH DECLARATION HAS BOTH LISTS. For each declaration the
+    /// table holds, [`super::module_candidates`] names, in order and read off the declaring path
+    /// and the declaration alone, its `as_root` list (placed as a crate root or a `mod.rs` file
+    /// places it, under the declaring file's directory) and its `as_child` list (placed as any
+    /// other file places it, under the file's stem, a `mod.rs`, `lib.rs` or `main.rs` file
+    /// owning its directory). A top-level `#[path]` override names one file under the declaring
+    /// file's directory in both; a nested one is joined to each list's module directory and
+    /// inline chain; an absolute or over-climbing one names none in the list it overflows. Else
+    /// `x.rs` then `x/mod.rs` under each list's module directory and the inline chain.
     #[test]
     fn module_candidates_name_the_candidates_of_each_tabled_declaration_in_order() {
         use crate::graph_fixtures::{DECLARING_FILE, DIR_MODULE_FILE, MODULE_FILE};
         use crate::symbol_index::{ABSOLUTE_PATH_MOD_X, INLINE_MOD_X, MOD_X, PATH_MOD_X};
-        let cases: [(&str, &str, &[&str]); 10] = [
-            (DECLARING_FILE, PATH_MOD_X, &["src/gen/real.rs"]),
+        // (declaring path, source, as_root, as_child)
+        let cases: [(&str, &str, &[&str], &[&str]); 19] = [
+            (
+                DECLARING_FILE,
+                PATH_MOD_X,
+                &["src/gen/real.rs"],
+                &["src/gen/real.rs"],
+            ),
+            (
+                NESTED_DECLARING_FILE,
+                PATH_MOD_X,
+                &["src/gen/real.rs"],
+                &["src/gen/real.rs"],
+            ),
             (
                 ROOT_DECLARING_FILE,
                 "#[path = \"real.rs\"]\nmod x;\n",
+                &["real.rs"],
                 &["real.rs"],
             ),
             (
                 DECLARING_FILE,
                 "mod outer {\n    #[path = \"real.rs\"]\n    mod x;\n}\n",
                 &["src/outer/real.rs"],
+                &["src/outer/real.rs"],
             ),
-            (DECLARING_FILE, ABSOLUTE_PATH_MOD_X, &[]),
-            (DECLARING_FILE, "#[path = \"../../x.rs\"]\nmod x;\n", &[]),
-            (DECLARING_FILE, MOD_X, &[MODULE_FILE, DIR_MODULE_FILE]),
+            (
+                "src/m.rs",
+                "mod a {\n    #[path = \"b.rs\"]\n    mod b;\n}\n",
+                &["src/a/b.rs"],
+                &["src/m/a/b.rs"],
+            ),
+            (
+                "src/m.rs",
+                "mod a {\n    #[path = \"../../../x.rs\"]\n    mod b;\n}\n",
+                &[],
+                &["x.rs"],
+            ),
+            (DECLARING_FILE, ABSOLUTE_PATH_MOD_X, &[], &[]),
+            (NESTED_DECLARING_FILE, ABSOLUTE_PATH_MOD_X, &[], &[]),
+            (
+                DECLARING_FILE,
+                "#[path = \"../../x.rs\"]\nmod x;\n",
+                &[],
+                &[],
+            ),
+            (
+                DECLARING_FILE,
+                MOD_X,
+                &[MODULE_FILE, DIR_MODULE_FILE],
+                &[MODULE_FILE, DIR_MODULE_FILE],
+            ),
+            (
+                "src/main.rs",
+                MOD_X,
+                &[MODULE_FILE, DIR_MODULE_FILE],
+                &[MODULE_FILE, DIR_MODULE_FILE],
+            ),
+            (
+                "src/code/mod.rs",
+                MOD_X,
+                &["src/code/x.rs", "src/code/x/mod.rs"],
+                &["src/code/x.rs", "src/code/x/mod.rs"],
+            ),
             (
                 NESTED_DECLARING_FILE,
                 MOD_X,
+                &[MODULE_FILE, DIR_MODULE_FILE],
                 &["src/foo/x.rs", "src/foo/x/mod.rs"],
             ),
-            (ROOT_DECLARING_FILE, MOD_X, &["x.rs", "x/mod.rs"]),
+            (
+                "src/bin/tool.rs",
+                MOD_X,
+                &["src/bin/x.rs", "src/bin/x/mod.rs"],
+                &["src/bin/tool/x.rs", "src/bin/tool/x/mod.rs"],
+            ),
+            (
+                "src/gen/real.rs",
+                "mod z;\n",
+                &["src/gen/z.rs", "src/gen/z/mod.rs"],
+                &["src/gen/real/z.rs", "src/gen/real/z/mod.rs"],
+            ),
+            (
+                ROOT_DECLARING_FILE,
+                MOD_X,
+                &["x.rs", "x/mod.rs"],
+                &["x.rs", "x/mod.rs"],
+            ),
             (
                 DECLARING_FILE,
                 INLINE_MOD_X,
+                &["src/outer/x.rs", "src/outer/x/mod.rs"],
                 &["src/outer/x.rs", "src/outer/x/mod.rs"],
             ),
             (
                 ROOT_DECLARING_FILE,
                 INLINE_MOD_X,
                 &["outer/x.rs", "outer/x/mod.rs"],
+                &["outer/x.rs", "outer/x/mod.rs"],
+            ),
+            (
+                NESTED_DECLARING_FILE,
+                INLINE_MOD_X,
+                &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                &["src/foo/outer/x.rs", "src/foo/outer/x/mod.rs"],
             ),
         ];
-        for (declaring, src, candidates) in cases {
+        let owned = |paths: &[&str]| paths.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+        for (declaring, src, as_root, as_child) in cases {
             let symbols = crate::symbol_index::extracted("rs", src);
             assert_eq!(
                 super::module_candidates(declaring, out_of_line_declaration(&symbols)),
-                candidates,
+                (owned(as_root), owned(as_child)),
                 "{declaring}: {src}"
             );
         }
     }
 
-    /// Spec 117 criterion 8: a declaring file whose name lacks `.rs` (one indexed as Rust under a
-    /// `--language` override) keeps its whole name as its module directory's last component, so
-    /// `src/foo` names the candidates `src/foo.rs` does.
+    /// Spec 117, MODULE ROOTS AT READ: a declaring file whose name lacks `.rs` (one indexed as
+    /// Rust under a `--language` override) keeps its whole name as its module directory's last
+    /// component, so `src/foo` names the candidates `src/foo.rs` does.
     #[test]
     fn module_candidates_of_a_declaring_file_without_the_rust_extension_keep_its_whole_name() {
         let symbols = crate::symbol_index::extracted("rs", crate::symbol_index::MOD_X);

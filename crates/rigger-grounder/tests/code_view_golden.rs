@@ -82,17 +82,28 @@ fn viewed(root: &Path) -> FactsView {
 
 /// The departures the code store states from the fold's graph: each row names one, with the
 /// golden lines it drops and the lines it adds.
-const DEPARTURES: &[(&str, &[&str], &[&str])] = &[(
-    "a test call from a file in the test-module closure proves the product definition it calls",
-    &[
-        "node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin",
-        "node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute",
-    ],
-    &[
-        r#"node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin proof_evidence=["src/lib_tests/more.rs:2"] proven_by=1"#,
-        r#"node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute proof_evidence=["src/lib_tests.rs:5"] proven_by=1"#,
-    ],
-)];
+const DEPARTURES: &[(&str, &[&str], &[&str])] = &[
+    (
+        "a test call from a file in the test-module closure proves the product definition it calls",
+        &[
+            "node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin",
+            "node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute",
+        ],
+        &[
+            r#"node src/shapes.rs::origin [code-entity] kind=function lang=rust line=16 name=origin proof_evidence=["src/lib_tests/more.rs:2"] proven_by=1"#,
+            r#"node src/util.rs::compute [code-entity] kind=function lang=rust line=3 name=compute proof_evidence=["src/lib_tests.rs:5"] proven_by=1"#,
+        ],
+    ),
+    (
+        "a file no declaration reaches places its modules as a crate root does (spec 117, MODULE \
+         ROOTS AT READ)",
+        &[
+            "edge src/twins.rs::left::leaf -CONTAINS/extracted-> src/twins/left/leaf.rs",
+            "edge src/twins.rs::right::leaf -CONTAINS/extracted-> src/twins/right/leaf.rs",
+        ],
+        &[],
+    ),
+];
 
 /// The golden with every departure applied.
 fn departed(golden: &str) -> String {
