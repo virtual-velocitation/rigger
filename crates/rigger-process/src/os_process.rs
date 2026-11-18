@@ -143,8 +143,8 @@ pub struct Entry {
     /// The process's pid.
     pub pid: u32,
     /// The pid the process's record names as its parent. On Windows a record keeps a parent's pid
-    /// after that parent exits, and a later process can take it, so a walk down the table keeps a
-    /// child only if it started no earlier than the parent it names.
+    /// after that parent exits, and a later process can take it, so a walk down the table reads
+    /// the parent's start against the child's ([`TIES`]) before it trusts that pid.
     pub parent: u32,
     /// The process's start time, the witness [`start_time`] reads.
     pub start: u64,
@@ -280,13 +280,66 @@ pub(crate) fn strip_deleted_suffix(path: &Path) -> PathBuf {
     }
 }
 
+/// What the start times of a process and of the parent its record names say of that parent
+/// ([`Ties::parentage`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Parentage {
+    /// The parent started before the process, or in the same tick where a tie is trusted: it may
+    /// be the process's parent.
+    Parent,
+    /// The parent started in the same tick as the process, where a tie is not trusted: the
+    /// process's parent, or a later process given a dead parent's pid, which the times cannot
+    /// tell apart.
+    Tie,
+    /// The parent started after the process: a later process given a dead parent's pid, never its
+    /// parent.
+    Later,
+}
+
+/// How a start-time tie between a process and the parent its record names is read: [`TIES`] is
+/// this OS's rule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ties {
+    /// A tie is a parent: a child often starts in its parent's own clock tick.
+    Trusted,
+    /// A tie is no parent: a pid the OS gives again within the tick could have named the parent.
+    Untrusted,
+}
+
+impl Ties {
+    /// What a parent that started at `parent_started` is to a process that started at `started`.
+    pub(crate) fn parentage(self, parent_started: u64, started: u64) -> Parentage {
+        match parent_started.cmp(&started) {
+            std::cmp::Ordering::Less => Parentage::Parent,
+            std::cmp::Ordering::Equal if self == Ties::Trusted => Parentage::Parent,
+            std::cmp::Ordering::Equal => Parentage::Tie,
+            std::cmp::Ordering::Greater => Parentage::Later,
+        }
+    }
+}
+
+/// This OS's tie rule. Windows reads a tie as no parent: a process snapshot keeps a dead parent's
+/// pid and Windows gives a freed pid out again quickly, so a process started in the child's own
+/// creation-time tick may hold the pid the child's record names, and a real child started in its
+/// parent's tick is left out of a walk and reported, never signalled. Linux and macOS read a tie
+/// as a parent: a record's parent pid is rewritten when that parent exits, and pids are given out
+/// in sequence, so a tie stands for a child started in its parent's own clock tick, which a
+/// forking shell does often; a pid given out again within one tick of the child's start is
+/// assumed not to happen, never proved.
+pub(crate) const TIES: Ties = if cfg!(target_os = "windows") {
+    Ties::Untrusted
+} else {
+    Ties::Trusted
+};
+
 /// Whether the parent a Windows process snapshot names for a process that started at `started`
-/// is still its parent: that parent still opens (`parent_started` is its start time) and started
-/// no later than the child. A snapshot entry keeps its parent's pid after the parent exits, and
-/// Windows may give that pid to a later process.
+/// is still its parent: that parent still opens (`parent_started` is its start time) and is a
+/// parent by `ties` ([`Ties::parentage`]). A snapshot entry keeps its parent's pid after the
+/// parent exits, and Windows may give that pid to a later process.
 #[cfg(any(target_os = "windows", test))]
-fn trusts_parent(parent_started: Option<u64>, started: u64) -> bool {
-    parent_started.is_some_and(|parent_started| parent_started <= started)
+fn trusts_parent(ties: Ties, parent_started: Option<u64>, started: u64) -> bool {
+    parent_started
+        .is_some_and(|parent_started| ties.parentage(parent_started, started) == Parentage::Parent)
 }
 
 /// The rows a table that claims `claimed` rows of `row_words` words each holds in its `words`
@@ -703,27 +756,71 @@ mod tests {
         assert!(spawner.join().unwrap().success());
     }
 
-    /// A parent a Windows snapshot names is trusted while it still opens and started before its
-    /// child or with it, never once it started after the child (a later process given the dead
-    /// parent's pid) or no longer opens.
+    /// A parent a Windows snapshot names is trusted while it still opens and is a parent by the
+    /// rule it is read with: never once it started after the child (a later process given the
+    /// dead parent's pid) or no longer opens, and when it started with the child only where a tie
+    /// is trusted.
     #[test]
-    fn a_named_parent_is_trusted_only_while_it_opens_and_started_no_later_than_its_child() {
+    fn a_named_parent_is_trusted_only_while_it_opens_and_its_start_makes_it_a_parent() {
         let started = 1_000;
         let rows = [
-            ("started before the child", Some(999), true),
-            ("started with the child", Some(1_000), true),
-            ("started after the child", Some(1_001), false),
-            ("no longer opens", None, false),
+            ("started before", Ties::Untrusted, Some(999), true),
+            ("a tie", Ties::Untrusted, Some(1_000), false),
+            ("a tie, ties trusted", Ties::Trusted, Some(1_000), true),
+            ("started after", Ties::Untrusted, Some(1_001), false),
+            ("no longer opens", Ties::Untrusted, None, false),
         ];
         let trusted: Vec<(&str, bool)> = rows
             .iter()
-            .map(|&(what, parent_started, _)| (what, trusts_parent(parent_started, started)))
+            .map(|&(what, ties, parent_started, _)| {
+                (what, trusts_parent(ties, parent_started, started))
+            })
             .collect();
         let expected: Vec<(&str, bool)> = rows
             .iter()
-            .map(|&(what, _, trusted)| (what, trusted))
+            .map(|&(what, _, _, trusted)| (what, trusted))
             .collect();
         assert_eq!(trusted, expected);
+    }
+
+    /// A parent that started after its child is never its parent and one that started before it
+    /// always is, under either rule; one that started in the child's own tick is a parent where a
+    /// tie is trusted (Linux and macOS) and a tie where it is not (Windows).
+    #[test]
+    fn a_parents_start_against_its_childs_reads_by_the_tie_rule() {
+        use Parentage::{Later, Parent, Tie};
+        let started = 1_000;
+        // What the parent's start is under each rule: ties trusted, then ties untrusted.
+        let rows = [
+            ("a later parent", 1_001, Later, Later),
+            ("an earlier parent", 999, Parent, Parent),
+            ("a tie", 1_000, Parent, Tie),
+        ];
+        let read: Vec<(&str, Parentage, Parentage)> = rows
+            .iter()
+            .map(|&(what, parent_started, _, _)| {
+                (
+                    what,
+                    Ties::Trusted.parentage(parent_started, started),
+                    Ties::Untrusted.parentage(parent_started, started),
+                )
+            })
+            .collect();
+        let expected: Vec<(&str, Parentage, Parentage)> = rows
+            .iter()
+            .map(|&(what, _, trusted, untrusted)| (what, trusted, untrusted))
+            .collect();
+        assert_eq!(read, expected);
+    }
+
+    /// Windows reads a tie as no parent and every other OS as a parent.
+    #[test]
+    fn this_oss_tie_rule_is_its_own() {
+        let expected = std::cfg_select! {
+            target_os = "windows" => { Ties::Untrusted }
+            _ => { Ties::Trusted }
+        };
+        assert_eq!(TIES, expected);
     }
 
     /// A table's rows are the rows it claims, capped at the whole rows its words hold: a partial

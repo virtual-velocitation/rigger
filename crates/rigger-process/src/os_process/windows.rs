@@ -101,11 +101,11 @@ pub(super) fn table() -> Vec<super::Entry> {
 }
 
 /// The parent `pid`'s snapshot entry names, while [`super::trusts_parent`] trusts it: that parent
-/// still opens and started no later than `pid`.
+/// still opens and started before `pid` ([`super::TIES`]: a tie is no parent here).
 pub(super) fn parent(pid: u32) -> Option<u32> {
     let (_, parent) = snapshot().into_iter().find(|&(each, _)| each == pid)?;
     let started = start_time(pid)?;
-    super::trusts_parent(start_time(parent), started).then_some(parent)
+    super::trusts_parent(super::TIES, start_time(parent), started).then_some(parent)
 }
 
 /// The creation time `GetProcessTimes` reports, in 100-nanosecond intervals since 1601.

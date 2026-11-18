@@ -102,6 +102,7 @@
 //! ([`no_process_descriptors`]).
 
 use crate::os_process;
+use crate::os_process::{Parentage, Ties};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -246,50 +247,77 @@ fn descendants_of(root_pid: u32) -> Vec<Identity> {
 }
 
 /// The descendants of `root_pid` in `table`, children before grandchildren and each generation in
-/// the table's order ([`generations_in`]).
+/// the table's order, by this OS's tie rule ([`walk_in`], [`os_process::TIES`]).
 pub(crate) fn descendants_in(table: &[os_process::Entry], root_pid: u32) -> Vec<Identity> {
-    generations_in(table, root_pid).concat()
+    walk_in(table, root_pid, os_process::TIES)
+        .generations
+        .concat()
 }
 
-/// The descendants of `root_pid` in `table`, one list per generation, its children first, each
-/// generation in the table's order: empty when the table does not list `root_pid`. A process is
-/// kept only if it started no earlier than the parent it names, because a Windows entry keeps a
-/// dead parent's pid and Windows may give that pid to a later process; a process failing that test
-/// is no descendant, and nor is anything below it. `seen` (the root included) ends the walk on a
-/// cycle, which the OS's own parent/child relationship should never produce but the walk must
-/// survive.
-fn generations_in(table: &[os_process::Entry], root_pid: u32) -> Vec<Vec<Identity>> {
+/// A walk down a process table from a root ([`walk_in`]).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Walk {
+    /// The root's descendants, one list per generation, its children first, each generation in
+    /// the table's order.
+    generations: Vec<Vec<Identity>>,
+    /// The processes the walk could not tell from strangers, in the order it reached them: each
+    /// one started in the same tick as the parent its record names where a tie is not trusted
+    /// ([`Parentage::Tie`]), and every process below one.
+    untrusted: Vec<Identity>,
+}
+
+/// The descendants of `root_pid` in `table`, empty when the table does not list `root_pid`, each
+/// process read against the parent its record names by `ties` ([`Ties::parentage`]). A process
+/// that started after its parent is a descendant; one that started before it is none, and nor is
+/// anything below it, since the parent's pid has been given to a later process: a Windows record
+/// keeps a dead parent's pid, and a table read one record at a time can name a parent whose pid a
+/// later tree member took while the table was read. One that started in its parent's own tick is
+/// a descendant where `ties` trusts a tie, and where it does not, it and everything below it are
+/// [`Walk::untrusted`]: a real child the walk cannot vouch for, or a stranger. `seen` (the root
+/// included) ends the walk on a cycle, which the OS's own parent/child relationship should never
+/// produce but the walk must survive.
+fn walk_in(table: &[os_process::Entry], root_pid: u32, ties: Ties) -> Walk {
+    let mut walk = Walk::default();
     let Some(root) = table.iter().find(|entry| entry.pid == root_pid) else {
-        return Vec::new();
+        return walk;
     };
     let mut children_of: HashMap<u32, Vec<&os_process::Entry>> = HashMap::new();
     for entry in table {
         children_of.entry(entry.parent).or_default().push(entry);
     }
-    let mut generations = Vec::new();
     let mut seen: HashSet<u32> = HashSet::from([root_pid]);
-    let mut parents = vec![root];
+    let mut parents = vec![(root, true)];
     while !parents.is_empty() {
         let mut generation = Vec::new();
         let mut next = Vec::new();
-        for parent in parents {
+        for (parent, trusted) in parents {
             for &kid in children_of.get(&parent.pid).into_iter().flatten() {
-                if kid.start < parent.start || !seen.insert(kid.pid) {
+                let kept = match ties.parentage(parent.start, kid.start) {
+                    Parentage::Parent => trusted,
+                    Parentage::Tie => false,
+                    Parentage::Later => continue,
+                };
+                if !seen.insert(kid.pid) {
                     continue;
                 }
-                generation.push(Identity {
+                let identity = Identity {
                     pid: kid.pid,
                     start: kid.start,
-                });
-                next.push(kid);
+                };
+                if kept {
+                    generation.push(identity);
+                } else {
+                    walk.untrusted.push(identity);
+                }
+                next.push((kid, kept));
             }
         }
         if !generation.is_empty() {
-            generations.push(generation);
+            walk.generations.push(generation);
         }
         parents = next;
     }
-    generations
+    walk
 }
 
 /// Whether `pid` is EVER eligible to be signalled by the reaper, independent of cwd/base:
@@ -603,7 +631,7 @@ impl Leftover {
 /// What an end left: `residue`, the processes it signalled that are still running past
 /// [`END_BOUND`]; and `skipped`, those still running that it found but never signalled, because at
 /// signal time their parent chain no longer reached the tree's root (an escape, or a stranger that
-/// took a pid).
+/// took a pid), or because the walk could not tell them from strangers ([`Walk::untrusted`]).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct EndReport {
     /// Signalled, and still running past the bound.
@@ -645,6 +673,9 @@ trait EndOs {
     fn address(&mut self, pid: u32) -> Option<Addressee>;
     /// Send `signal` to `to` ([`send_signal`]).
     fn send(&mut self, signal: Signal, to: &Addressee);
+    /// How a walk of [`EndOs::table`] reads a child started in its parent's own tick
+    /// ([`os_process::TIES`]).
+    fn ties(&self) -> Ties;
 }
 
 /// The live OS, and whether it addresses a process through a process descriptor
@@ -677,6 +708,10 @@ impl EndOs for LiveOs {
 
     fn send(&mut self, signal: Signal, to: &Addressee) {
         send_signal(signal, to);
+    }
+
+    fn ties(&self) -> Ties {
+        os_process::TIES
     }
 }
 
@@ -735,18 +770,35 @@ impl Tree {
         holds
     }
 
-    /// Walk the root's descendants in `os`'s table and send `signal` to each through
-    /// [`Tree::send`], checking each one afresh at every walk: one the checks refuse is reported
-    /// skipped, once, and one a later walk's checks pass is signalled and no longer reported, since
-    /// a check can fail for a moment, as when a parent exits and is reaped while it is read.
-    /// Answers the walk.
+    /// The root's descendants in `table`, one list per generation, read by `os`'s tie rule
+    /// ([`walk_in`]): each process the walk could not tell from a stranger is reported skipped and
+    /// never signalled.
+    fn walk(
+        &self,
+        os: &impl EndOs,
+        table: &[os_process::Entry],
+        report: &mut EndReport,
+    ) -> Vec<Vec<Identity>> {
+        let walk = walk_in(table, self.root, os.ties());
+        for target in &walk.untrusted {
+            report.skip(target);
+        }
+        walk.generations
+    }
+
+    /// Walk the root's descendants in `os`'s table ([`Tree::walk`]) and send `signal` to each
+    /// through [`Tree::send`], checking each one afresh at every walk: one the checks refuse is
+    /// reported skipped, once, and one a later walk's checks pass is signalled and no longer
+    /// reported, since a check can fail for a moment, as when a parent exits and is reaped while
+    /// it is read. Answers the walk.
     fn signal_walk(
         &self,
         os: &mut impl EndOs,
         report: &mut EndReport,
         signal: Signal,
     ) -> Vec<Identity> {
-        let walk = descendants_in(&os.table(), self.root);
+        let table = os.table();
+        let walk = self.walk(os, &table, report).concat();
         for target in &walk {
             if self.send(os, signal, target) {
                 report.unskip(target);
@@ -815,7 +867,7 @@ pub fn left_running(main: &Identity) -> Vec<Leftover> {
 /// reaped. `remembered` are the processes a watch of the tree saw while it ran.
 ///
 /// The main is frozen first, then the tree under it one generation at a time, parents before
-/// children ([`generations_in`]): each generation is read from a fresh table once the one above it
+/// children ([`Tree::walk`]): each generation is read from a fresh table once the one above it
 /// is confirmed frozen, and a process is frozen only while its parent reads frozen. A frozen
 /// parent can neither exit nor reap, so the parent chain of every process the end froze stays
 /// whole while the end runs. A process whose parent does not read frozen is ended without a
@@ -880,7 +932,7 @@ fn freeze_walk(
     let mut progress = false;
     for depth in 0.. {
         let table = os.table();
-        let generations = generations_in(&table, tree.root);
+        let generations = tree.walk(os, &table, report);
         if generations.len() <= depth {
             break;
         }
@@ -1817,22 +1869,46 @@ mod tests {
         os_process::Entry { pid, parent, start }
     }
 
-    /// A walk row: what it shows, the table, and the `(pid, start)` descendants of pid 10.
-    type WalkRow = (&'static str, Vec<os_process::Entry>, Vec<(u32, u64)>);
+    /// `(pid, start)` of each process in `found`.
+    fn pids_and_starts(found: &[Identity]) -> Vec<(u32, u64)> {
+        found.iter().map(|entry| (entry.pid, entry.start)).collect()
+    }
+
+    /// A walk row: what it shows, the tie rule, the table, and the `(pid, start)` descendants of
+    /// pid 10 and the processes the walk could not tell from strangers.
+    type WalkRow = (
+        &'static str,
+        Ties,
+        Vec<os_process::Entry>,
+        Vec<(u32, u64)>,
+        Vec<(u32, u64)>,
+    );
+
+    /// What a walk row shows, and the `(pid, start)` descendants and untrusted processes a walk
+    /// found.
+    type Walked = (&'static str, Vec<(u32, u64)>, Vec<(u32, u64)>);
 
     /// THE DESCENDANT WALK (one table, start order): from a root the table lists, every process
     /// whose named parent is the root or one of its descendants, parents before their children in
     /// the table's order, each with the start time the table read. A child that started before the
-    /// parent it names is no descendant (on Windows that parent's pid was taken by a later
-    /// process), and neither are its own children; a child started with its parent is one. A root
-    /// the table does not list has none, the root is never its own descendant, and a cycle of
-    /// parents ends.
+    /// parent it names is no descendant (that parent's pid was taken by a later process), and
+    /// neither are its own children, under either tie rule. A child started with its parent is one
+    /// where ties are trusted; where they are not, it and everything below it are the walk's
+    /// untrusted processes. A root the table does not list has none, the root is never its own
+    /// descendant, and a cycle of parents ends.
     #[test]
     fn the_descendant_walk_follows_named_parents_in_start_order_from_a_listed_root() {
-        let rows: [WalkRow; 7] = [
-            ("a root with no child", vec![row(10, 1, 100)], vec![]),
+        let rows: [WalkRow; 10] = [
+            (
+                "a root with no child",
+                Ties::Trusted,
+                vec![row(10, 1, 100)],
+                vec![],
+                vec![],
+            ),
             (
                 "children before grandchildren, in the table's order",
+                Ties::Trusted,
                 vec![
                     row(13, 11, 130),
                     row(10, 1, 100),
@@ -1840,48 +1916,93 @@ mod tests {
                     row(11, 10, 110),
                 ],
                 vec![(12, 120), (11, 110), (13, 130)],
+                vec![],
             ),
             (
-                "a child started with its parent",
-                vec![row(10, 1, 100), row(11, 10, 100)],
-                vec![(11, 100)],
+                "a child started with its parent, ties trusted",
+                Ties::Trusted,
+                vec![row(10, 1, 100), row(11, 10, 100), row(12, 11, 150)],
+                vec![(11, 100), (12, 150)],
+                vec![],
             ),
             (
-                "a child started before the parent it names, and its own child",
+                "a child started with its parent, ties untrusted",
+                Ties::Untrusted,
+                vec![row(10, 1, 100), row(11, 10, 100), row(12, 11, 150)],
+                vec![],
+                vec![(11, 100), (12, 150)],
+            ),
+            (
+                "a grandchild started with its parent, ties untrusted",
+                Ties::Untrusted,
+                vec![row(10, 1, 100), row(11, 10, 110), row(12, 11, 110)],
+                vec![(11, 110)],
+                vec![(12, 110)],
+            ),
+            (
+                "a child started before the parent it names, and its own child, ties trusted",
+                Ties::Trusted,
                 vec![row(10, 1, 100), row(11, 10, 99), row(12, 11, 150)],
+                vec![],
+                vec![],
+            ),
+            (
+                "a child started before the parent it names, and its own child, ties untrusted",
+                Ties::Untrusted,
+                vec![row(10, 1, 100), row(11, 10, 99), row(12, 11, 150)],
+                vec![],
                 vec![],
             ),
             (
                 "a stranger whose parent is another process",
+                Ties::Trusted,
                 vec![row(10, 1, 100), row(20, 1, 105), row(21, 20, 106)],
+                vec![],
                 vec![],
             ),
             (
                 "a root the table does not list",
+                Ties::Trusted,
                 vec![row(11, 10, 110)],
+                vec![],
                 vec![],
             ),
             (
                 "a cycle of parents through the root",
+                Ties::Trusted,
                 vec![row(10, 11, 100), row(11, 10, 100)],
                 vec![(11, 100)],
+                vec![],
             ),
         ];
-        let walked: Vec<(&str, Vec<(u32, u64)>)> = rows
+        let walked: Vec<Walked> = rows
             .iter()
-            .map(|(what, table, _)| {
-                let found = descendants_in(table, 10)
-                    .iter()
-                    .map(|entry| (entry.pid, entry.start))
-                    .collect();
-                (*what, found)
+            .map(|(what, ties, table, _, _)| {
+                let walk = walk_in(table, 10, *ties);
+                (
+                    *what,
+                    pids_and_starts(&walk.generations.concat()),
+                    pids_and_starts(&walk.untrusted),
+                )
             })
             .collect();
-        let expected: Vec<(&str, Vec<(u32, u64)>)> = rows
+        let expected: Vec<Walked> = rows
             .iter()
-            .map(|(what, _, found)| (*what, found.clone()))
+            .map(|(what, _, _, members, untrusted)| (*what, members.clone(), untrusted.clone()))
             .collect();
         assert_eq!(walked, expected);
+    }
+
+    /// The walk every end and watch reads takes this OS's tie rule ([`os_process::TIES`]): a child
+    /// started with its parent is a descendant on Linux and macOS, and none on Windows.
+    #[test]
+    fn the_descendant_walk_reads_a_tie_by_this_oss_rule() {
+        let table = [row(10, 1, 100), row(11, 10, 100)];
+        let expected: Vec<(u32, u64)> = std::cfg_select! {
+            target_os = "windows" => { vec![] }
+            _ => { vec![(11, 100)] }
+        };
+        assert_eq!(pids_and_starts(&descendants_in(&table, 10)), expected);
     }
 
     /// The walk over the live table finds a grandchild through the shell that started it, with
@@ -2162,11 +2283,14 @@ mod tests {
         /// the parent of `unreadable_once` unreadable at its first read, the parent of `stranded`'s
         /// pid unreadable once that pid was sent its signal, every freeze of `unstoppable` and
         /// every hard end of `swallowed` dropped, and `forker` started on one more process ahead
-        /// of each read of the table. Every signal the end sends is recorded, dropped or not, and
-        /// so is each process sent a freeze while its parent did not read frozen, and each address
-        /// and parent read, in order.
+        /// of each read of the table. `tied`'s parent's record reads `tied`'s start, and `ties`,
+        /// where some, is the tie rule a walk reads the table by. Every signal the end sends is
+        /// recorded, dropped or not, and so is each process sent a freeze while its parent did not
+        /// read frozen, and each address and parent read, in order.
         #[derive(Default)]
         struct Rigged {
+            tied: Option<u32>,
+            ties: Option<Ties>,
             stranger: Option<(u32, u32)>,
             ghost: Option<(Identity, u32)>,
             vanishing: Option<u32>,
@@ -2247,6 +2371,14 @@ mod tests {
                         table.retain(|entry| entry.pid != vanishing);
                     }
                 }
+                if let Some(tied) = self.tied {
+                    let read = table.iter().find(|entry| entry.pid == tied);
+                    let (parent, start) =
+                        read.map(|e| (e.parent, e.start)).expect("tied is listed");
+                    for entry in table.iter_mut().filter(|entry| entry.pid == parent) {
+                        entry.start = start;
+                    }
+                }
                 table
             }
 
@@ -2283,6 +2415,10 @@ mod tests {
                 if !dropped {
                     send_signal(signal, to);
                 }
+            }
+
+            fn ties(&self) -> Ties {
+                self.ties.unwrap_or(os_process::TIES)
             }
         }
 
@@ -2685,6 +2821,49 @@ mod tests {
                 the_watched_end_never_signals_a_stranger(Posing::InTheTable);
             the_watched_end_never_signals_a_stranger_it_remembered:
                 the_watched_end_never_signals_a_stranger(Posing::Remembered);
+        }
+
+        /// A watched end whose main's record reads its holder's start, so the two tie, read by
+        /// `ties`: where a tie is trusted the holder is ended with the tree, and where it is not
+        /// the holder is never signalled and is reported skipped, and the rest of the tree is
+        /// still ended.
+        fn the_watched_end_reads_a_tie_by_its_rule(ties: Ties, left: Reading) {
+            let mut witness = Witness::new();
+            let mut main = tree(&witness, "holder; up; held");
+            assert!(witness.wait_up(2), "the fixture's two processes are up");
+            let holder = only_child(main.id());
+            let mut os = Rigged {
+                tied: Some(holder),
+                ties: Some(ties),
+                ..Rigged::default()
+            };
+
+            let report = end_watched_with(&mut os, &mut main, &[], END_BOUND);
+
+            let skipped: Vec<u32> = report.skipped.iter().map(|leftover| leftover.pid).collect();
+            let signalled = os.sent.iter().any(|(_, pid)| *pid == holder);
+            let expected_skipped = match left {
+                Reading::Held => vec![holder],
+                Reading::Ended => vec![],
+            };
+            assert_eq!(
+                (witness.read(), skipped, signalled, report.residue),
+                (left, expected_skipped, left == Reading::Ended, vec![]),
+                "{ties:?}: the holder tied with its main: {:?}",
+                os.sent
+            );
+            assert!(
+                matches!(main.try_wait(), Ok(Some(_))),
+                "{ties:?}: the main is ended and reaped"
+            );
+            assert_eq!(witness.release(), Reading::Ended);
+        }
+
+        crate::test_cases! {
+            the_watched_end_ends_a_child_tied_with_its_main_where_ties_are_trusted:
+                the_watched_end_reads_a_tie_by_its_rule(Ties::Trusted, Reading::Ended);
+            the_watched_end_reports_a_child_tied_with_its_main_where_ties_are_untrusted:
+                the_watched_end_reads_a_tie_by_its_rule(Ties::Untrusted, Reading::Held);
         }
 
         #[test]
