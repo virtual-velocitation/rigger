@@ -100,6 +100,10 @@ pub struct Unit {
     /// step that picks up a mid-remediation unit) is prompted with the failure it must fix.
     /// Raw passthrough like `cause`; empty when that failure was no gate's.
     pub gate_evidence: Vec<String>,
+    /// The most recent `UnitFailed`'s refusal: git's message when git refused a step on the
+    /// unit's own work, which no gate or review judged. Raw passthrough like `cause`; empty when
+    /// that failure was no refusal.
+    pub refusal: String,
     /// The most recent `UnitFailed`'s review reason: the adjudicator's rejection reasoning
     /// (its raw output) when review rejected that attempt, or the conductor's own refusal of
     /// a plan-stage commit. Raw passthrough like `cause`; empty when that failure was no
@@ -716,6 +720,8 @@ struct UnitFailed {
     #[serde(default)]
     gate_evidence: Vec<String>,
     #[serde(default)]
+    refusal: String,
+    #[serde(default)]
     review_reason: String,
     #[serde(default)]
     required: Vec<RequiredItem>,
@@ -801,6 +807,7 @@ impl RunState {
             cause: String::new(),
             max_retries: 0,
             gate_evidence: Vec::new(),
+            refusal: String::new(),
             review_reason: String::new(),
             required: Vec::new(),
             resume_bound: 0,
@@ -853,6 +860,7 @@ impl RunState {
                 u.cause = p.cause;
                 u.max_retries = p.max_retries;
                 u.gate_evidence = p.gate_evidence;
+                u.refusal = p.refusal;
                 u.review_reason = p.review_reason;
                 u.required = p.required;
             }

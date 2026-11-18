@@ -220,6 +220,11 @@ pub const PRIOR_HALTED: &str = "A prior incarnation of this spawn was halted bef
      report; its uncommitted work is captured as commit {commit} on your branch. Finish and \
      report; do not start over.\n";
 
+/// FRAMING: git's `{refusal}` of a step on the work in the tree, printed only when git refused
+/// one; never under the retry header, since no check judged that work.
+pub const PRIOR_REFUSED: &str = "Git refused a step on the work in your tree: {refusal}\nThat \
+     work is still in your tree. Fix what git refused and carry on - do not start over.\n";
+
 /// FRAMING: the retry header, printed only when a gate, review, REQUIRED or contradiction cause
 /// is set.
 pub const PRIOR_RETRY_HEADER: &str =
@@ -317,6 +322,11 @@ pub const LATER_ATTEMPT_REVIEW_CAUSE: &str =
 
 /// FRAMING: one failed gate's `{evidence}`, once per gate the previous attempt failed.
 pub const LATER_ATTEMPT_GATE_CAUSE: &str = "the previous attempt failed these gates: {evidence}";
+
+/// FRAMING: git's `{refusal}` of a step on the previous attempt's work, printed only when git
+/// refused one.
+pub const LATER_ATTEMPT_REFUSED_CAUSE: &str =
+    "git refused a step on the previous attempt's work: {refusal}";
 
 /// FRAMING: the round's fact, printed only on a round whose delta changed documentation only.
 pub const DOC_ONLY_ROUND: &str = "This round changed documentation only.";
@@ -520,6 +530,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
         "conductor::task_block" => [TASK_BLOCK],
         "conductor::PriorFailure::block" => [
             PRIOR_HALTED,
+            PRIOR_REFUSED,
             PRIOR_RETRY_HEADER,
             PRIOR_GATE,
             PRIOR_REVIEW,
@@ -545,6 +556,7 @@ pub fn prompt_groups() -> &'static [rigger_domain::prompt_surface::Group] {
             LATER_ATTEMPT_REVIEW_CAUSE,
             DELTA_NONE,
             LATER_ATTEMPT_GATE_CAUSE,
+            LATER_ATTEMPT_REFUSED_CAUSE,
         ],
         "conductor::doc_only_round" => [DOC_ONLY_ROUND],
         "conductor::author_handover" => [AUTHOR_HANDOVER, AUTHOR_HANDOVER_LINE],
@@ -673,6 +685,7 @@ mod tests {
         ("GRAPH_AROUND_ONE", "CONTRACT"),
         ("LATER_ATTEMPT", "FRAMING"),
         ("LATER_ATTEMPT_GATE_CAUSE", "FRAMING"),
+        ("LATER_ATTEMPT_REFUSED_CAUSE", "FRAMING"),
         ("LATER_ATTEMPT_REVIEW_CAUSE", "FRAMING"),
         ("LESSONS_HEADER", "FRAMING"),
         ("LOOKUP_LEAD_IN", "FRAMING"),
@@ -694,6 +707,7 @@ mod tests {
         ("PRIOR_HALTED", "FRAMING"),
         ("PRIOR_PARTIAL_WORK", "FRAMING"),
         ("PRIOR_PATTERN", "CONTRACT"),
+        ("PRIOR_REFUSED", "FRAMING"),
         ("PRIOR_REQUIRED_LEAD", "FRAMING"),
         ("PRIOR_RETRY_HEADER", "FRAMING"),
         ("PRIOR_REVIEW", "FRAMING"),

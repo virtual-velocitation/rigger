@@ -2198,6 +2198,9 @@ impl IntegrationApproval {
 struct PriorFailure {
     /// The compact PASS/FAIL evidence of each gate that failed last attempt.
     gate_evidence: Vec<String>,
+    /// Git's message when git refused a step on the unit's own work last attempt, which no gate
+    /// or review judged ([`RunCtx::charge_refused_work`]).
+    refusal: String,
     /// The adjudicator's rejection reasoning (its raw output) when review rejected.
     review_reason: String,
     /// The REQUIRED list: the review items the next attempt must fix. It stays open across a
@@ -2216,14 +2219,15 @@ struct PriorFailure {
 }
 
 impl PriorFailure {
-    /// The failure `u`'s latest `UnitFailed` recorded (gap 61): its gate evidence, review
-    /// reason and REQUIRED list, exactly as [`Self::failed_body`] wrote them. A unit re-entering the implementer
+    /// The failure `u`'s latest `UnitFailed` recorded (gap 61): its gate evidence, refusal,
+    /// review reason and REQUIRED list, exactly as [`Self::failed_body`] wrote them. A unit re-entering the implementer
     /// stage in a LATER process than the one that saw the failure - an operator's `rigger
     /// resume-unit` grant, or any step that picks up a mid-remediation unit - is prompted from
     /// these, so its block is the one the in-process retry built from the same facts.
     fn logged(u: &ledger::Unit) -> PriorFailure {
         PriorFailure {
             gate_evidence: u.gate_evidence.clone(),
+            refusal: u.refusal.clone(),
             review_reason: u.review_reason.clone(),
             required: u.required.clone(),
             contradiction: String::new(),
@@ -2233,7 +2237,7 @@ impl PriorFailure {
 
     /// The `UnitFailed` body recording that `unit`'s attempt failed with `cause`, leaving
     /// `attempts` used of the `max_retries` it escalates at ([`RunCtx::max_retries_for`] on its
-    /// own stage): this failure's gate evidence and review reason ride on it, so the next
+    /// own stage): this failure's gate evidence, refusal and review reason ride on it, so the next
     /// attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
     /// re-enters the unit, and the bound rides on it so an operator surface holding only the
     /// log and the run's defaults shows the bound the unit escalates at. The one body every
@@ -2245,6 +2249,7 @@ impl PriorFailure {
             "max_retries": max_retries,
             "cause": cause,
             "gate_evidence": self.gate_evidence,
+            "refusal": self.refusal,
             "review_reason": self.review_reason,
             "required": self.required,
         })
@@ -2252,6 +2257,7 @@ impl PriorFailure {
 
     fn is_empty(&self) -> bool {
         self.gate_evidence.is_empty()
+            && self.refusal.trim().is_empty()
             && self.review_reason.trim().is_empty()
             && self.required.is_empty()
             && self.contradiction.trim().is_empty()
@@ -2264,6 +2270,9 @@ impl PriorFailure {
         let mut parts: Vec<String> = Vec::new();
         if !self.gate_evidence.is_empty() {
             parts.push(format!("gates failed: {}", self.gate_evidence.join(" | ")));
+        }
+        if !self.refusal.trim().is_empty() {
+            parts.push(format!("git refused: {}", self.refusal.trim()));
         }
         if !self.review_reason.trim().is_empty() {
             parts.push(format!("review rejected: {}", self.review_reason.trim()));
@@ -2298,6 +2307,10 @@ impl PriorFailure {
                 PRIOR_HALTED,
                 &[("commit", self.halted_commit.trim())],
             ));
+        }
+        if !self.refusal.trim().is_empty() {
+            // No check judged work git refused, so its line stands outside the retry header.
+            b.push_str(&fill(PRIOR_REFUSED, &[("refusal", self.refusal.trim())]));
         }
         if !self.gate_evidence.is_empty()
             || !self.review_reason.trim().is_empty()
@@ -6700,10 +6713,10 @@ impl RunCtx<'_> {
         // [`review_retry_window`], so an infra rerun's seam is fresh work. 0 for a speculation
         // candidate, which never reruns.
         ordinal: u32,
-        // The gates the previous attempt failed (its `PriorFailure` gate evidence, the same the
-        // implementer is handed): what a later attempt's resumed session is told changed when
-        // no review round sent the unit back. Empty on a first attempt.
-        gate_evidence: &[String],
+        // The previous attempt's failure, the same the implementer is handed: the gates it
+        // failed and git's refusal of its work are what a later attempt's resumed session is
+        // told changed when no review round sent the unit back. Empty on a first attempt.
+        prior: &PriorFailure,
     ) -> Result<Option<HandoverMiss>, Error> {
         // Worktree gate: an empty `dir` is a repo-less / `isolation: none` unit with no
         // committed tree for periphery tests to land in, and a write-capable agent must never
@@ -6740,7 +6753,8 @@ impl RunCtx<'_> {
         // A later attempt continues the sdet-author's own session, sent what sent the unit back
         // - the review round's delta, the gates the last attempt failed, or both - to bring the
         // periphery tests in line with (and the doc-only fact when it holds).
-        let mut resume_task = later_attempt_block(delta.as_ref(), gate_evidence);
+        let mut resume_task =
+            later_attempt_block(delta.as_ref(), &prior.gate_evidence, &prior.refusal);
         resume_task.push_str(doc_only);
         // The handover contract ends the prompt and the resumed task alike, so the session hands
         // over whichever it read. An empty resume task stays empty: there is nothing to send, so
@@ -7606,14 +7620,7 @@ impl RunCtx<'_> {
                 && !is_producer(st)
                 && !self.attempt_gates_started(&st.name, attempts)
             {
-                let seam = self.spawn_sdet_author(
-                    st,
-                    wt,
-                    dir,
-                    attempts,
-                    infra.ordinal,
-                    &prior.gate_evidence,
-                );
+                let seam = self.spawn_sdet_author(st, wt, dir, attempts, infra.ordinal, &prior);
                 match infra_crash(seam)? {
                     Err(crash) => {
                         tier_crash = Some(crash);
@@ -8078,7 +8085,7 @@ impl RunCtx<'_> {
     /// [`refused_unit_work`] error) after its agent's session ended, so no agent saw it. The
     /// refusal is the failure of the attempt it ended (`attempts` failed before it), charged
     /// like a failed gate's ([`Self::charge_failed_attempt`], cause [`CAUSE_GIT_REFUSED`]): git's
-    /// message is the failure's evidence, so the next attempt's prompt carries it. The caller
+    /// message is the failure's refusal, so the next attempt's prompt carries it on its own line. The caller
     /// keeps the unit's worktree, so the work in the tree at the refusal is there for that
     /// attempt. A spent bound escalates the unit (`Ok(false)`, no hold); otherwise the drive
     /// ends on the refusal marked with [`UNIT_RETRY_MARKER`], its first line naming the attempt,
@@ -8093,7 +8100,7 @@ impl RunCtx<'_> {
     ) -> Result<bool, Error> {
         let refusal = without_halt_markers(Error(strip_failure_marker(e))).0;
         let failure = PriorFailure {
-            gate_evidence: vec![refusal.clone()],
+            refusal: refusal.clone(),
             ..Default::default()
         };
         let rem = self.charge_failed_attempt(st, wt, dir, attempts, &failure, CAUSE_GIT_REFUSED)?;
@@ -8337,7 +8344,14 @@ impl RunCtx<'_> {
                     }
                 })
                 .and_then(|result| {
-                    match self.spawn_sdet_author(st, Some(&wt), &dir, attempt, 0, &[])? {
+                    match self.spawn_sdet_author(
+                        st,
+                        Some(&wt),
+                        &dir,
+                        attempt,
+                        0,
+                        &PriorFailure::default(),
+                    )? {
                         None => Ok(result),
                         Some(miss) => Err(Error(miss.evidence())),
                     }
@@ -16349,10 +16363,14 @@ fn is_documentation_only(paths: &[String]) -> bool {
 
 /// The task a RESUMED sdet-author is sent on a later attempt, naming what sent the unit back:
 /// the review round's `delta` (the round-start `base` it was judged at and the paths changed
-/// since), and the `gate_evidence` of the gates the previous attempt failed. Empty when neither
-/// names anything - a first attempt - so the spawn stays fresh. Its session already holds the
-/// criterion and the tests it authored.
-fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[String]) -> String {
+/// since), the `gate_evidence` of the gates the previous attempt failed, and git's `refusal` of a
+/// step on that attempt's work. Empty when none names anything - a first attempt - so the spawn
+/// stays fresh. Its session already holds the criterion and the tests it authored.
+fn later_attempt_block(
+    delta: Option<&(String, Vec<String>)>,
+    gate_evidence: &[String],
+    refusal: &str,
+) -> String {
     let mut causes: Vec<String> = Vec::new();
     if let Some((base, paths)) = delta {
         let changed = if paths.is_empty() {
@@ -16367,6 +16385,12 @@ fn later_attempt_block(delta: Option<&(String, Vec<String>)>, gate_evidence: &[S
     }
     for ev in gate_evidence {
         causes.push(fill(LATER_ATTEMPT_GATE_CAUSE, &[("evidence", ev)]));
+    }
+    if !refusal.trim().is_empty() {
+        causes.push(fill(
+            LATER_ATTEMPT_REFUSED_CAUSE,
+            &[("refusal", refusal.trim())],
+        ));
     }
     if causes.is_empty() {
         return String::new();
@@ -49237,8 +49261,13 @@ mod tests {
                     );
                     let retry_prompt = driver.prompts_for("worker").last().cloned();
                     let gate_line = crate::prompt_surface::PRIOR_GATE.split('{').next().unwrap();
+                    let refused_line = crate::prompt_surface::PRIOR_REFUSED
+                        .split('{')
+                        .next()
+                        .unwrap();
                     assert!(
                         retry_prompt.as_deref().is_some_and(|p| p.contains(named)
+                            && p.contains(refused_line)
                             && !p.contains(gate_line)
                             && !p.contains(crate::prompt_surface::PRIOR_RETRY_HEADER)),
                         "{step:?}: the retry's prompt carries the refusal on its own line, never \
@@ -56524,9 +56553,9 @@ mod tests {
                 )
             )
         };
-        let attempt = |paths: Option<&[&str]>, gates: &[&str]| {
+        let attempt = |paths: Option<&[&str]>, gates: &[&str], refusal: &str| {
             let delta = paths.map(|p| ("{base}".to_string(), strings(p)));
-            later_attempt_block(delta.as_ref(), &strings(gates))
+            later_attempt_block(delta.as_ref(), &strings(gates), refusal)
         };
         let review_cause = |changed: &str| {
             fill(
@@ -56556,6 +56585,14 @@ mod tests {
                     ..PriorFailure::default()
                 }),
                 format!("{}\n", prior(&["PRIOR_RETRY_HEADER", "PRIOR_GATE"])),
+            ),
+            (
+                "a refusal alone, under no retry header",
+                failure(PriorFailure {
+                    refusal: "{refusal}".to_string(),
+                    ..PriorFailure::default()
+                }),
+                format!("{}\n", prior(&["PRIOR_REFUSED"])),
             ),
             (
                 "a review reason alone",
@@ -56591,6 +56628,7 @@ mod tests {
                 "every prior failure at once",
                 failure(PriorFailure {
                     gate_evidence: strings(&["{evidence}"]),
+                    refusal: "{refusal}".to_string(),
                     review_reason: "{reason}".to_string(),
                     required: vec![required("{shape}")],
                     contradiction: "{contradiction}".to_string(),
@@ -56600,6 +56638,7 @@ mod tests {
                     "{}{item_line}{pattern}{}\n",
                     prior(&[
                         "PRIOR_HALTED",
+                        "PRIOR_REFUSED",
                         "PRIOR_RETRY_HEADER",
                         "PRIOR_GATE",
                         "PRIOR_REVIEW",
@@ -56655,15 +56694,15 @@ mod tests {
                     row("test", "FAIL")
                 ),
             ),
-            ("a first attempt", attempt(None, &[]), String::new()),
+            ("a first attempt", attempt(None, &[], ""), String::new()),
             (
                 "a later attempt after a review round that changed nothing",
-                attempt(Some(&[]), &[]),
+                attempt(Some(&[]), &[], ""),
                 later_lead(&review_cause(&later(&["DELTA_NONE"]))),
             ),
             (
                 "a later attempt after a review round and a failed gate",
-                attempt(Some(&["{a}", "{b}"]), &["{evidence}"]),
+                attempt(Some(&["{a}", "{b}"]), &["{evidence}"], ""),
                 later_lead(&format!(
                     "{}; and {}",
                     review_cause("{a}, {b}"),
@@ -56672,8 +56711,13 @@ mod tests {
             ),
             (
                 "a later attempt after a failed gate alone",
-                attempt(None, &["{evidence}"]),
+                attempt(None, &["{evidence}"], ""),
                 later_lead(&later(&["LATER_ATTEMPT_GATE_CAUSE"])),
+            ),
+            (
+                "a later attempt after git refused the work alone",
+                attempt(None, &[], "{refusal}"),
+                later_lead(&later(&["LATER_ATTEMPT_REFUSED_CAUSE"])),
             ),
         ];
         for (case, render, expected) in cases {
