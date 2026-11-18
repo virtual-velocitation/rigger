@@ -3936,7 +3936,13 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
 }
 
 /// The shell reading the launch's `--mcp-config` and `--settings` off its arguments, into `$config`
-/// and `$settings`.
+/// and `$settings`, and into `$commands` each command `$settings` names, its hooks' and its status
+/// line's, one per line, as a command line that runs it the way the host does when handed to
+/// `sh -c`: an exec-form command (one carrying `args`) as its `command` and each of its `args`,
+/// each a single word whatever it holds, since the host spawns that program with that argv and no
+/// shell; a shell-form command as written, since the host hands it to a shell. It reads the
+/// settings as the driver prints them, one key or array element to a line, in whatever order the
+/// keys come.
 const READ_LAUNCH_CONFIG: &str = r#"    for word in "$@"; do
         case "$flag" in
             --mcp-config) config=$word ;;
@@ -3944,13 +3950,45 @@ const READ_LAUNCH_CONFIG: &str = r#"    for word in "$@"; do
         esac
         flag=$word
     done
+    commands=$(printf '%s\n' "$settings" | awk '
+        function text(s,   out, i, c) {
+            sub(/^[ \t]*"/, "", s)
+            sub(/",?[ \t]*$/, "", s)
+            out = ""
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (c == "\\") { i++; c = substr(s, i, 1) }
+                out = out c
+            }
+            return out
+        }
+        function word(s,   out, i, c) {
+            out = q
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                out = out (c == q ? q "\\" q q : c)
+            }
+            return out q
+        }
+        BEGIN { q = sprintf("%c", 39) }
+        /"args": \[\]/ { exec = 1; next }
+        /"args": \[/ { exec = 1; listing = 1; next }
+        listing && /^[ \t]*\],?$/ { listing = 0; next }
+        listing { args = args " " word(text($0)); next }
+        /"command": "/ { sub(/^[ \t]*"command": /, ""); command = text($0); next }
+        /^[ \t]*\},?$/ {
+            if (command != "") print (exec ? word(command) args : command)
+            command = ""; args = ""; exec = 0
+        }
+    ')
 "#;
 
-/// The shell running, through a shell, the `StopFailure` command `$settings` names for `category`,
-/// the hook's payload on stdin, leaving what it printed and its status in the fake's directory.
+/// The shell running, as the host does, the `StopFailure` hook `$settings` names for `category`
+/// (its line of [`READ_LAUNCH_CONFIG`]'s `$commands`), the hook's payload on stdin, leaving what it
+/// printed and its status in the fake's directory.
 fn fire_stop_failure_hook(category: &str) -> String {
     format!(
-        r#"    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*{category}[^"]*\)".*/\1/p')
+        r#"    hook=$(printf '%s\n' "$commands" | sed -n '/stop-failure.*{category}/p')
     printf '%s' '{{"hook_event_name":"StopFailure","error":"{category}"}}' |
         sh -c "$hook" > "$here/hook-out" 2> "$here/hook-err"
     echo $? > "$here/hook-status"
@@ -3968,8 +4006,8 @@ const ASK_THE_SERVER_ITS_SCRATCH: &str = r#"    server=$(printf '%s\n' "$config"
 /// An arm of [`install_fake_claude`] standing in for the real host ending the first `Do the unit.`
 /// turn on an API error, from the session's own working directory and environment: the launch
 /// records its argv and working directory, asks the server its `--mcp-config` names for the
-/// spawn's scratch, runs through a shell the `StopFailure` command its `--settings` names for
-/// `max_output_tokens`, the hook's payload on stdin, and ends the session with no `result`. A
+/// spawn's scratch, runs the `StopFailure` hook its `--settings` names for `max_output_tokens` as
+/// the host does, the hook's payload on stdin, and ends the session with no `result`. A
 /// later launch completes.
 fn api_error_worker_arm() -> String {
     let hook = fire_stop_failure_hook("max_output_tokens");
@@ -3988,7 +4026,7 @@ fn api_error_worker_arm() -> String {
 }
 
 /// Spec 105's hook injection from inside the session: given a launch, when its session runs the
-/// `StopFailure` command the launch's `--settings` handed it, through a shell from its own working
+/// `StopFailure` hook the launch's `--settings` handed it, as the host does, from its own working
 /// directory, then the record lands in the project's progress store under the live run, so the
 /// launch closes as a fault of that class; and the path the session's bound server names for its
 /// scratch is one the launch's own write guard admits. The unit worktree row is the one a hook run
@@ -4132,8 +4170,8 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
 
 /// An arm of [`install_fake_claude`] standing in for the real host's `Stop` contract over a `Do
 /// the unit.` session that leaves its tree where the checkpoint refuses it: the session writes its
-/// work, leaves HEAD off the unit's branch and finishes; the host runs through a shell the `Stop`
-/// command the launch's `--settings` names, `stop_hook_active` false, and on its
+/// work, leaves HEAD off the unit's branch and finishes; the host runs the `Stop` hook the
+/// launch's `--settings` names, `stop_hook_active` false, and on its
 /// `"decision":"block"` the session continues, moves back onto its branch and finishes again, and
 /// the host runs the hook again, `stop_hook_active` true. The hook's two answers are left in the
 /// fake's directory.
@@ -4142,7 +4180,7 @@ fn held_then_fixed_worker_arm() -> String {
         r#"  *"Do the unit."*)
     echo "pub fn work() {{}}" > work.rs
     git checkout -q --detach
-{READ_LAUNCH_CONFIG}    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+{READ_LAUNCH_CONFIG}    hook=$(printf '%s\n' "$commands" | sed -n '/stop.*--dir/p')
     printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
         sh -c "$hook" > "$here/stop-held"
     case "$(cat "$here/stop-held")" in
@@ -4237,7 +4275,7 @@ fn a_session_held_by_its_stop_hook_fixes_its_tree_and_the_unit_lands() {
 /// for the real host's `Stop` contract over a conflict resolver: each implementer meets the other
 /// before it writes its own working directory to `shared.rs`, so the unit integrating second meets
 /// a real merge conflict there. Its resolver stages `resolved` and finishes with the merge
-/// unfinished; the host runs through a shell the `Stop` command the launch's `--settings` names,
+/// unfinished; the host runs the `Stop` hook the launch's `--settings` names,
 /// `stop_hook_active` false, and on its `"decision":"block"` the resolver concludes the merge, as
 /// its task asks, and finishes again, and the host runs the hook again, `stop_hook_active` true.
 /// The hook's two answers are left in the fake's directory. Each unit's reviewers approve it.
@@ -4249,7 +4287,7 @@ fn resolver_held_until_its_merge_is_concluded_arm() -> String {
       *"~retry"*)
         echo resolved > shared.rs
         git add shared.rs
-{READ_LAUNCH_CONFIG}        hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+{READ_LAUNCH_CONFIG}        hook=$(printf '%s\n' "$commands" | sed -n '/stop.*--dir/p')
         printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
             sh -c "$hook" > "$here/stop-held"
         case "$(cat "$here/stop-held")" in
@@ -4419,17 +4457,17 @@ const PRODUCER_LEAVES: &[ProducerLeaves] = &[
 
 /// The shell running, from the session's working directory, every command the launch's
 /// `--settings` names but its `Stop` and `StopFailure` hooks - the SessionStart prime, the
-/// status line, the write guard - each through a shell with the rigger [`READ_LAUNCH_CONFIG`]
-/// read from `--mcp-config` first on `PATH` and one payload carrying what each reads, then asking
+/// status line, the write guard - each as the host does ([`READ_LAUNCH_CONFIG`]'s `$commands`)
+/// with the rigger it read from `--mcp-config` first on `PATH` and one payload carrying what each reads, then asking
 /// that server for the spawn's scratch: everything rigger's tooling does in a session's tree
 /// before it stops. Each command run is left in `$here/tooling-ran` after its exit status, the
 /// server's reply in `$here/scratch-reply`, and git's porcelain status of the tree after them all,
 /// untracked files listed one by one, in `$here/fresh-status`.
 const RUN_THE_SESSIONS_TOOLING: &str = r#"    server=$(printf '%s\n' "$config" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p')
     payload='{"hook_event_name":"PreToolUse","source":"startup","session_id":"fresh","cwd":"'"$PWD"'","workspace":{"current_dir":"'"$PWD"'"},"tool_name":"Write","tool_input":{"file_path":"'"$PWD"'/specs/plan.md","content":"planned"}}'
-    printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*\)".*/\1/p' |
+    printf '%s\n' "$commands" |
         while IFS= read -r command; do
-            case "$command" in *"hook stop "*|*stop-failure*) continue ;; esac
+            case "$command" in *stop*--dir*|*stop-failure*) continue ;; esac
             printf '%s' "$payload" | PATH="$(dirname "$server"):$PATH" sh -c "$command" > /dev/null 2>&1
             printf '%s %s\n' "$?" "$command" >> "$here/tooling-ran"
         done
@@ -4441,8 +4479,7 @@ const RUN_THE_SESSIONS_TOOLING: &str = r#"    server=$(printf '%s\n' "$config" |
 /// An arm of [`install_fake_claude`] standing in for the real host's `Stop` contract over a
 /// producer's session that leaves its tree as `case` says: the session first runs rigger's tooling
 /// in its fresh tree ([`RUN_THE_SESSIONS_TOOLING`]), then leaves the tree and finishes; the host
-/// runs through a shell the `Stop` command the launch's `--settings` names, `stop_hook_active`
-/// false, and only on its `"decision":"block"` the session settles the tree as `case` says and
+/// runs the `Stop` hook the launch's `--settings` names, `stop_hook_active` false, and only on its `"decision":"block"` the session settles the tree as `case` says and
 /// finishes again, and the host runs the hook again, `stop_hook_active` true. The launch stays on
 /// record and the hook's answers are left in the fake's directory.
 fn producer_held_until_its_tree_is_settled_arm(case: &ProducerLeaves) -> String {
@@ -4452,7 +4489,7 @@ fn producer_held_until_its_tree_is_settled_arm(case: &ProducerLeaves) -> String 
     format!(
         r#"  *"Do the unit."*)
 {RECORD_EACH_LAUNCH}{READ_LAUNCH_CONFIG}{RUN_THE_SESSIONS_TOOLING}    {leaves}
-    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+    hook=$(printf '%s\n' "$commands" | sed -n '/stop.*--dir/p')
     printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
         sh -c "$hook" > "$here/stop-first"
     case "$(cat "$here/stop-first")" in
@@ -4655,7 +4692,7 @@ enum FirstStop {
 /// `git status --porcelain` of the tree it finds in the fake's directory, then commits the plan.
 /// Every launch stays on record.
 fn producer_ends_with_its_plan_outside_a_commit_arm(first: FirstStop) -> String {
-    let hook = r#"        hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+    let hook = r#"        hook=$(printf '%s\n' "$commands" | sed -n '/stop.*--dir/p')
 "#;
     // One run of the hook the host acts on no answer of, the command's own exit after `then`.
     let ignored = |then: &str| {

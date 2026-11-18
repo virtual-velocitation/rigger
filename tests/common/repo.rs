@@ -232,8 +232,22 @@ pub fn shell_words(command: &str) -> Vec<String> {
     recorded_argv(&recorded)
 }
 
-/// Each hook `settings` carries under `event`, in order: its matcher and the [`shell_words`] of
-/// its one command.
+/// The argv the command `hook` runs starts, whichever form the host reads it in: an exec-form
+/// hook's `command` and then each of its `args`, which the host spawns with no shell; a shell-form
+/// hook's [`shell_words`].
+fn run_words(hook: &serde_json::Value) -> Vec<String> {
+    let command = hook["command"].as_str().unwrap();
+    match hook["args"].as_array() {
+        Some(args) => std::iter::once(command)
+            .chain(args.iter().map(|arg| arg.as_str().unwrap()))
+            .map(str::to_string)
+            .collect(),
+        None => shell_words(command),
+    }
+}
+
+/// Each hook `settings` carries under `event`, in order: its matcher and the words of its one
+/// command ([`run_words`]).
 pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec<String>)> {
     settings["hooks"][event]
         .as_array()
@@ -242,7 +256,7 @@ pub fn hook_words(settings: &serde_json::Value, event: &str) -> Vec<(String, Vec
         .map(|entry| {
             (
                 entry["matcher"].as_str().unwrap().to_string(),
-                shell_words(entry["hooks"][0]["command"].as_str().unwrap()),
+                run_words(&entry["hooks"][0]),
             )
         })
         .collect()
