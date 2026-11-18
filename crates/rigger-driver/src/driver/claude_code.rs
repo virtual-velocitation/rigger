@@ -2219,7 +2219,7 @@ pub fn build_args(
             &opts.id,
             write_roots,
             &opts.dir,
-            &opts.checkpoint_branch,
+            &opts.tree_duty,
         ),
         "settings",
     )?;

@@ -202,14 +202,28 @@ pub struct SpawnOpts {
     /// with [`resumed_from`](Self::resumed_from); a host whose resume finds no such session
     /// falls back to a fresh launch with the full `prompt`.
     pub resume_task: String,
-    /// The branch the conductor commits this spawn's worktree ([`dir`](Self::dir)) onto once
-    /// its session ends - the attempt's checkpoint, or the conflict resolution's merge and the
-    /// checkpoint after it - empty for a spawn whose tree it does not commit (a reviewer, a
-    /// producer, a spawn with no worktree). Set at the conductor's writing spawn sites alone. A
-    /// session host that installs per-spawn hooks gives a spawn that names one a `Stop` hook
-    /// (`rigger hook stop`) asking whether that commit, or the merge after it, would be refused,
-    /// so the session that left the tree so fixes it before it ends.
-    pub checkpoint_branch: String,
+    /// What the conductor takes from this spawn's worktree ([`dir`](Self::dir)) once its session
+    /// ends. Set at the conductor's writing spawn sites alone; [`TreeDuty::None`] everywhere
+    /// else. A session host that installs per-spawn hooks gives a spawn with a duty a `Stop` hook
+    /// (`rigger hook stop`) asking whether the tree is one that step takes, so the session that
+    /// left it otherwise fixes it before it ends.
+    pub tree_duty: TreeDuty,
+}
+
+/// What the conductor takes from a writing spawn's worktree once the spawn's session ends, which
+/// is what that session's `Stop` hook asks of the tree before the session may stop.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum TreeDuty {
+    /// Nothing is taken from the tree: a reviewer, or a spawn with no worktree. No `Stop` hook.
+    #[default]
+    None,
+    /// The conductor commits the whole tree onto `branch` - the attempt's checkpoint, or the
+    /// conflict resolution's merge and the checkpoint after it - so the hook asks whether that
+    /// commit, or the merge before it, would be refused.
+    Checkpoint { branch: String },
+    /// The conductor lands only the commits the session made in the tree - a producer's - and
+    /// never commits the tree itself, so the hook asks whether work is left outside a commit.
+    OwnCommits,
 }
 
 impl SpawnOpts {
@@ -235,7 +249,7 @@ impl SpawnOpts {
             host,
             resumed_from: String::new(),
             resume_task: String::new(),
-            checkpoint_branch: String::new(),
+            tree_duty: TreeDuty::None,
         }
     }
 }

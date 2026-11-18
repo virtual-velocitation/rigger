@@ -57,7 +57,7 @@ pub use rigger_domain::wave::{blast_radius_conflicts, normalize_ws, ungated_fan_
 pub use rigger_domain::agent::{
     classify_failure, no_result_error, parked_spawn, spawn_request, store_fault,
     strip_failure_marker, AgentDriver, AgentFailure, AgentResult, Error, HelperCopy, SpawnHost,
-    SpawnOpts, STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
+    SpawnOpts, TreeDuty, STORE_FAULT_MARKER, TYPE_UNIT_PROPOSED,
 };
 use rigger_domain::agent::{EMIT_REFUSED_MARKER, INTERRUPTED_MARKER, PARKED_MARKER};
 use rigger_domain::gate_channel::{GateChannel, GateReply, GateRequest, GATE_SOCKET_ENV};
@@ -6814,7 +6814,11 @@ impl RunCtx<'_> {
             // once its session ends, so the session is asked before it stops whether that commit
             // would be refused.
             let opts = SpawnOpts {
-                checkpoint_branch: wt.map(|w| w.branch.clone()).unwrap_or_default(),
+                tree_duty: wt
+                    .map(|w| TreeDuty::Checkpoint {
+                        branch: w.branch.clone(),
+                    })
+                    .unwrap_or_default(),
                 ..opts
             };
             match self
@@ -7460,11 +7464,15 @@ impl RunCtx<'_> {
                     // The attempt's checkpoint commits this tree onto the unit's branch once
                     // the session ends, so the session is asked before it stops whether that
                     // commit would be refused. A producer's work is integrated from its own
-                    // commits alone, never a checkpoint, so it is not asked.
-                    checkpoint_branch: wt
-                        .filter(|_| !is_producer(st))
-                        .map(|w| w.branch.clone())
-                        .unwrap_or_default(),
+                    // commits alone, never a checkpoint, so it is asked instead whether work is
+                    // left outside a commit.
+                    tree_duty: match wt {
+                        Some(_) if is_producer(st) => TreeDuty::OwnCommits,
+                        Some(w) => TreeDuty::Checkpoint {
+                            branch: w.branch.clone(),
+                        },
+                        None => TreeDuty::None,
+                    },
                     ..SpawnOpts::new(self.spawn_host())
                 };
                 let opts = match missed_session.as_deref().filter(|s| !s.is_empty()) {
@@ -8264,7 +8272,9 @@ impl RunCtx<'_> {
                             resume_task: String::new(),
                             // The candidate's checkpoint commits its lane's tree onto the
                             // lane's branch once the session ends.
-                            checkpoint_branch: wt.branch.clone(),
+                            tree_duty: TreeDuty::Checkpoint {
+                                branch: wt.branch.clone(),
+                            },
                             ..SpawnOpts::new(self.spawn_host())
                         },
                         &emit,
@@ -12620,7 +12630,9 @@ impl RunCtx<'_> {
                 // commits this tree onto the unit's branch once the session ends, so the session
                 // is asked before it stops whether the merge is still unfinished or that commit
                 // would be refused.
-                checkpoint_branch: wt.branch.clone(),
+                tree_duty: TreeDuty::Checkpoint {
+                    branch: wt.branch.clone(),
+                },
                 ..SpawnOpts::new(self.spawn_host())
             },
             &emit,

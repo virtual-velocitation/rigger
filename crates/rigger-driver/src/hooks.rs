@@ -21,7 +21,7 @@ use rigger_domain::quoting::single_quoted;
 use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
 
-use crate::agent::{AgentFailure, HelperCopy, SpawnHost};
+use crate::agent::{AgentFailure, HelperCopy, SpawnHost, TreeDuty};
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
@@ -274,18 +274,20 @@ pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 /// Merge the hooks bound to one spawn into `existing` settings JSON, preserving every other
 /// setting: under `PreToolUse` the write guard, `guard-write` rooted at `roots` in order; under
 /// `StopFailure` one entry per [`AgentFailure::CATEGORIES`], `hook stop-failure` recording that
-/// category for `spawn`; and, for a spawn whose tree at `dir` the conductor commits onto
-/// `checkpoint_branch` once its session ends (a non-empty branch), under `Stop` the `hook stop`
-/// asking whether that commit would be refused, with [`STOP_HOOK_TIMEOUT_SECS`]. Each runs
-/// `rigger_bin`, and the shell a hook command runs under reads `rigger_bin`, `spawn`, each root,
-/// `dir` and the branch as one word whatever they hold ([`shell_quote`]). `existing` may be empty.
+/// category for `spawn`; and, for a spawn the conductor takes something from the tree at `dir`
+/// of once its session ends (its `duty`), under `Stop` the `hook stop` asking whether the tree is
+/// one that step takes, with [`STOP_HOOK_TIMEOUT_SECS`]: `--branch <branch>` for a tree the
+/// conductor commits onto that branch, `--own-commits` for one it lands only the commits of. Each
+/// runs `rigger_bin`, and the shell a hook command runs under reads `rigger_bin`, `spawn`, each
+/// root, `dir` and the branch as one word whatever they hold ([`shell_quote`]). `existing` may be
+/// empty.
 pub fn install_spawn_hooks(
     existing: &[u8],
     rigger_bin: &str,
     spawn: &str,
     roots: &[String],
     dir: &str,
-    checkpoint_branch: &str,
+    duty: &TreeDuty,
 ) -> Result<Vec<u8>, Error> {
     let bin = shell_quote(rigger_bin);
     let spawn = shell_quote(spawn);
@@ -299,12 +301,14 @@ pub fn install_spawn_hooks(
         let command = format!("{bin} hook stop-failure --spawn {spawn} --class {class}");
         merged = merge_hook_block(&merged, "StopFailure", class, &command, None)?;
     }
-    if !checkpoint_branch.is_empty() {
-        let command = format!(
-            "{bin} hook stop --spawn {spawn} --dir {} --branch {}",
-            shell_quote(dir),
-            shell_quote(checkpoint_branch)
-        );
+    let asks = match duty {
+        TreeDuty::None => None,
+        TreeDuty::Checkpoint { branch } => Some(format!("--branch {}", shell_quote(branch))),
+        TreeDuty::OwnCommits => Some("--own-commits".to_string()),
+    };
+    if let Some(asks) = asks {
+        let dir = shell_quote(dir);
+        let command = format!("{bin} hook stop --spawn {spawn} --dir {dir} {asks}");
         merged = merge_hook_block(&merged, "Stop", "", &command, Some(STOP_HOOK_TIMEOUT_SECS))?;
     }
     Ok(merged)
@@ -625,7 +629,8 @@ mod tests {
         );
         spawn_hooks_install_and_are_idempotent: assert_installs_idempotently(
             |existing| {
-                install_spawn_hooks(existing, "rigger", "u/i#0", &["/wt".to_string()], "/wt", "rigger/u/u")
+                let duty = TreeDuty::Checkpoint { branch: "rigger/u/u".to_string() };
+                install_spawn_hooks(existing, "rigger", "u/i#0", &["/wt".to_string()], "/wt", &duty)
             },
             &["PreToolUse", "StopFailure", "'rigger' guard-write --root '/wt'", "\"Stop\""],
             &[
@@ -679,41 +684,57 @@ mod tests {
         );
     }
 
-    /// A spawn's hooks over a bare and a hostile `rigger_bin`, one and two roots, with and
-    /// without a checkpoint branch: the whole `PreToolUse`, `StopFailure` and `Stop` arrays, every
-    /// category in order, on the settings kept. Only a spawn naming a branch gets the `Stop` hook,
-    /// with its timeout.
+    /// A spawn's hooks over a bare and a hostile `rigger_bin`, one and two roots, and each tree
+    /// duty: the whole `PreToolUse`, `StopFailure` and `Stop` arrays, every category in order, on
+    /// the settings kept. Only a spawn with a duty gets the `Stop` hook, with its timeout, asking
+    /// of a checkpointed tree on its branch and of a producer's tree for its own commits.
     #[test]
     fn spawn_hooks_are_the_write_guard_one_stop_failure_entry_per_category_and_the_stop_check() {
+        let stop = |command: &str| {
+            json!([{
+                "matcher": "",
+                "hooks": [{
+                    "type": "command",
+                    "command": command,
+                    "timeout": STOP_HOOK_TIMEOUT_SECS,
+                }],
+            }])
+        };
         let rows = [
             (
                 "rigger",
                 "u/implementer#0",
                 vec!["/wt"],
-                ("/wt", "rigger/u/u"),
+                (
+                    "/wt",
+                    TreeDuty::Checkpoint {
+                        branch: "rigger/u/u".to_string(),
+                    },
+                ),
                 "'rigger' guard-write --root '/wt'",
                 "'rigger' hook stop-failure --spawn 'u/implementer#0' --class",
-                json!([{
-                    "matcher": "",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "'rigger' hook stop --spawn 'u/implementer#0' --dir '/wt' \
-                                    --branch 'rigger/u/u'",
-                        "timeout": STOP_HOOK_TIMEOUT_SECS,
-                    }],
-                }]),
+                stop("'rigger' hook stop --spawn 'u/implementer#0' --dir '/wt' --branch 'rigger/u/u'"),
+            ),
+            (
+                "rigger",
+                "plan/implementer#0",
+                vec!["/wt plan"],
+                ("/wt plan", TreeDuty::OwnCommits),
+                "'rigger' guard-write --root '/wt plan'",
+                "'rigger' hook stop-failure --spawn 'plan/implementer#0' --class",
+                stop("'rigger' hook stop --spawn 'plan/implementer#0' --dir '/wt plan' --own-commits"),
             ),
             (
                 "/opt/it's here/rigger",
                 "u/reviewer#1",
                 vec!["/wt tree", "/scratch/s"],
-                ("/wt tree", ""),
+                ("/wt tree", TreeDuty::None),
                 r"'/opt/it'\''s here/rigger' guard-write --root '/wt tree' --root '/scratch/s'",
                 r"'/opt/it'\''s here/rigger' hook stop-failure --spawn 'u/reviewer#1' --class",
                 Value::Null,
             ),
         ];
-        for (bin, spawn, roots, (dir, branch), guard, stop_failure, stop) in rows {
+        for (bin, spawn, roots, (dir, duty), guard, stop_failure, stop) in rows {
             let roots: Vec<String> = roots.into_iter().map(str::to_string).collect();
             let stop_failures: Vec<Value> = crate::agent::AgentFailure::CATEGORIES
                 .iter()
@@ -723,7 +744,7 @@ mod tests {
                 })
                 .collect();
             let settings =
-                install_spawn_hooks(br#"{"model":"opus"}"#, bin, spawn, &roots, dir, branch)
+                install_spawn_hooks(br#"{"model":"opus"}"#, bin, spawn, &roots, dir, &duty)
                     .unwrap();
             assert_eq!(
                 serde_json::from_slice::<Value>(&settings).unwrap()["hooks"]["Stop"],
@@ -1237,7 +1258,8 @@ mod tests {
     #[test]
     fn spawn_hooks_refuse_settings_that_are_not_an_object() {
         let refused =
-            install_spawn_hooks(b"[]", "rigger", "u/implementer#0", &[], "", "").unwrap_err();
+            install_spawn_hooks(b"[]", "rigger", "u/implementer#0", &[], "", &TreeDuty::None)
+                .unwrap_err();
         assert_eq!(
             refused.to_string(),
             "hooks: settings.json is not a JSON object"

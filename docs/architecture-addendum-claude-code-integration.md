@@ -156,9 +156,12 @@ Per-spawn, through `--settings`:
   commit would carry, or a merge, cherry-pick, revert or rebase left unfinished. When one
   would, it blocks the stop (`{"decision": "block", "reason": ...}`) with the refusal and
   `git status` in git's words, so the session that left the tree so fixes it before it ends.
+  A producer's implementer, whose tree the conductor lands only the commits of, runs
+  `rigger hook stop --spawn <id> --dir <dir> --own-commits` instead: it is held while its
+  tree holds work outside a commit, which would otherwise never land.
   It holds a launch at most three times, counted from its own progress lines; past that, and
-  on any error, it allows the stop and records why, and the refusal reaches the run's hold.
-  Reviewers and producers get no `Stop` hook: the conductor commits nothing of theirs.
+  on any error, it allows the stop and records why: a checkpoint's refusal then reaches the
+  run's hold, and a producer's work outside a commit does not land. Reviewers get no `Stop` hook: the conductor takes nothing from their tree.
 
 ### 4.5 Verdicts are data
 

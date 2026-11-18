@@ -259,15 +259,16 @@ pub fn grep_guard_hook() -> (String, Vec<String>) {
 /// `bin` with `roots` in order, then the session's grep guard exactly when `grep_guard` (the
 /// workflow's `defaults.grep_guard`) declares it; under `StopFailure` one entry per category
 /// running `bin` for `spawn`, in category order; and under `Stop` the one `hook stop` asking of
-/// the tree at the `(dir, branch)` of `stop` for `spawn`, with its timeout, exactly when the
-/// launch's tree is one the conductor commits (`stop` names one), and no `Stop` entry otherwise.
+/// the tree at the `dir` of `stop` for `spawn` by the duty words `stop` names after it
+/// (`--branch <branch>` or `--own-commits`), with its timeout, exactly when the conductor takes
+/// something from the launch's tree (`stop` names one), and no `Stop` entry otherwise.
 pub fn assert_carries_spawn_hooks(
     settings: &serde_json::Value,
     bin: &str,
     spawn: &str,
     roots: &[String],
     grep_guard: bool,
-    stop: Option<(&str, &str)>,
+    stop: Option<(&str, &[&str])>,
 ) {
     let words = |text: &[&str]| -> Vec<String> { text.iter().map(|w| w.to_string()).collect() };
     let mut guard = words(&[bin, "guard-write"]);
@@ -305,13 +306,12 @@ pub fn assert_carries_spawn_hooks(
         "one entry per category: {settings}"
     );
     match stop {
-        Some((dir, branch)) => {
-            let command = [
-                bin, "hook", "stop", "--spawn", spawn, "--dir", dir, "--branch", branch,
-            ];
+        Some((dir, duty)) => {
+            let mut command = words(&[bin, "hook", "stop", "--spawn", spawn, "--dir", dir]);
+            command.extend(words(duty));
             assert_eq!(
                 hook_words(settings, "Stop"),
-                [(String::new(), words(&command))],
+                [(String::new(), command)],
                 "{spawn}: the stop check on its tree: {settings}"
             );
             assert_eq!(
@@ -322,7 +322,7 @@ pub fn assert_carries_spawn_hooks(
         }
         None => assert!(
             settings["hooks"]["Stop"].is_null(),
-            "{spawn}: a launch whose tree the conductor does not commit has no stop check: \
+            "{spawn}: a launch whose tree the conductor takes nothing from has no stop check: \
              {settings}"
         ),
     }

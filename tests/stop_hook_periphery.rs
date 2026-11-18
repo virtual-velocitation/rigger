@@ -1,15 +1,15 @@
-//! Periphery for `rigger hook stop --spawn <id> --dir <dir> --branch <branch>`, the `Stop` hook a
-//! writing session carries: drives the REAL COMPILED binary, with Claude Code's `Stop` payload on
-//! its stdin, against a real `.rigger/progress.db` and a real git tree left in each state the
-//! conductor's next content step refuses or accepts.
+//! Periphery for `rigger hook stop --spawn <id> --dir <dir> (--branch <branch> | --own-commits)`,
+//! the `Stop` hook a writing session carries: drives the REAL COMPILED binary, with Claude Code's
+//! `Stop` payload on its stdin, against a real `.rigger/progress.db` and a real git tree left in
+//! each state the conductor's next step on it refuses or accepts.
 //!
 //! OWNED HERE: the hook's answer in Claude Code's contract (a `{"decision": "block", "reason"}`
 //! object on stdout to hold the session, nothing to allow the stop, exit 0 either way), git's own
 //! status words in the reason, the progress lines it records, its bound per launch, its reading of
 //! `stop_hook_active`, and that every error allows the stop.
 //!
-//! NOT OWNED HERE: which refusals a tree has ([`rigger::worktree::checkpoint_refusals`]'s own
-//! test), which spawns carry the hook (the settings assertions of the launch tests in `cli.rs`
+//! NOT OWNED HERE: which refusals a tree has ([`rigger::worktree::checkpoint_refusals`]'s and
+//! [`rigger::worktree::own_commits_refusals`]'s own tests), which spawns carry the hook (the settings assertions of the launch tests in `cli.rs`
 //! and `hooks.rs`'s own tests), and a session held then fixing its tree end to end (`cli.rs`).
 
 use crate::common;
@@ -242,6 +242,80 @@ fn each_refusal_holds_the_stop_with_gits_words_and_an_accepted_tree_allows_it() 
     }
 }
 
+/// A PRODUCER'S STOP IS HELD WHILE ITS TREE HOLDS WORK OUTSIDE A COMMIT: with `--own-commits`
+/// (a stage the conductor lands only the commits of), a changed file and an untracked one each
+/// hold the session once, the reason naming the tree and carrying `git status` as git prints it;
+/// a clean tree and one whose work is committed each allow the stop. Each check records its
+/// line, then the hold or the allowance, and leaves the index as it was.
+#[test]
+fn a_producers_stop_is_held_while_its_tree_holds_work_outside_a_commit() {
+    // Each row: what leaves the tree so, and the git status words the reason carries (`None` for
+    // a stop allowed).
+    type Row = (&'static str, fn(&Path), Option<&'static str>);
+    let rows: [Row; 4] = [
+        (
+            "a changed file",
+            |dir| std::fs::write(dir.join("unit.txt"), "edited\n").unwrap(),
+            Some("modified:   unit.txt"),
+        ),
+        (
+            "an untracked file",
+            |dir| std::fs::write(dir.join("plan.md"), "planned\n").unwrap(),
+            Some("Untracked files:"),
+        ),
+        ("a clean tree", |_| {}, None),
+        (
+            "committed work",
+            |dir| {
+                std::fs::write(dir.join("plan.md"), "planned\n").unwrap();
+                git_ok(dir, &["add", "plan.md"]);
+                git_ok_with_identity(dir, &["commit", "-q", "-m", "plan"]);
+            },
+            None,
+        ),
+    ];
+    for (case, leave, refused) in rows {
+        let project = courier_project();
+        seed_a_run(project.path());
+        let tree = unit_tree();
+        leave(tree.path());
+        let index = index_bytes(tree.path());
+        let dir = tree.path().to_str().unwrap();
+
+        let out = stop_hook(
+            project.path(),
+            &["--spawn", SPAWN, "--dir", dir, "--own-commits"],
+            false,
+        );
+        let reason = held(case, &out);
+
+        let check = format!("stop check: {dir} for its own commits");
+        let refusal = format!("{dir} holds work no commit records");
+        match (refused, reason) {
+            (Some(status), Some(reason)) => {
+                assert!(
+                    reason.starts_with("This session cannot end yet."),
+                    "{case}: {reason}"
+                );
+                assert!(reason.contains(&refusal), "{case}: {reason}");
+                assert!(reason.contains(status), "{case}: git's own words: {reason}");
+                let hold = format!("stop held (1 of {STOP_HOLD_BOUND}): {refusal}");
+                assert_lines(case, &spawn_lines(project.path()), &[check, hold]);
+            }
+            (None, None) => {
+                let allowed = "stop allowed: no work is left outside a commit".to_string();
+                assert_lines(case, &spawn_lines(project.path()), &[check, allowed]);
+            }
+            (refused, reason) => panic!("{case}: expected {refused:?}, held {reason:?}"),
+        }
+        assert_eq!(
+            index_bytes(tree.path()),
+            index,
+            "{case}: the check leaves the index as it was"
+        );
+    }
+}
+
 /// THE HOLDS ARE BOUNDED PER LAUNCH: a tree that stays refused holds its session
 /// [`STOP_HOLD_BOUND`] times, `stop_hook_active` read on each continuation; the next stop is
 /// allowed with a line recording that the refusal stands; a new launch of the spawn starts the
@@ -322,7 +396,8 @@ fn every_error_allows_the_stop() {
             "a missing argument",
             courier_project,
             |_| vec!["--spawn".into(), SPAWN.into(), "--dir".into(), "/wt".into()],
-            "--spawn, --dir and --branch are each required",
+            "--spawn and --dir are required, with exactly one of --branch <branch> and \
+             --own-commits",
             &[],
         ),
         (

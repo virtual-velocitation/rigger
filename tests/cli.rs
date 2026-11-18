@@ -3871,9 +3871,12 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
         let settings: serde_json::Value =
             serde_json::from_str(flag_value(&argv, "--settings")).unwrap();
         let bin = std::fs::canonicalize(rigger_bin()).unwrap();
-        let stop = row
-            .worktree
-            .map(|_| (session_cwd.to_str().unwrap(), "rigger/u/solo"));
+        let stop = row.worktree.map(|_| {
+            (
+                session_cwd.to_str().unwrap(),
+                &["--branch", "rigger/u/solo"][..],
+            )
+        });
         assert_carries_spawn_hooks(
             &settings,
             bin.to_str().unwrap(),
@@ -4339,6 +4342,141 @@ fn a_conflict_resolver_is_held_until_its_merge_is_concluded_and_the_unit_lands()
         String::from_utf8(run_git(&root, &["show", "rigger-run:shared.rs"]).stdout).unwrap(),
         "resolved\n",
         "the resolution landed on the run branch"
+    );
+    let types: Vec<String> = common::cli::read_run_events(&root)
+        .into_iter()
+        .map(|event| event.type_)
+        .collect();
+    for absent in ["RunHeld", "UnitFailed", "UnitEscalated"] {
+        assert!(
+            !types.iter().any(|t| t == absent),
+            "no {absent} in the run: {types:?}"
+        );
+    }
+}
+
+/// A producer stage alone, its git-isolated worker landing only the commits it makes under
+/// `specs/`.
+const PRODUCER_WORKFLOW: WorkflowFixture = WorkflowFixture {
+    worker: REVIEWLESS_GIT_UNIT_WORKFLOW.worker,
+    body: r#"defaults:
+  grounder: nop
+  budget: 60
+stages:
+  plan:
+    agent: worker
+    produces: dag
+"#,
+};
+
+/// An arm of [`install_fake_claude`] standing in for the real host's `Stop` contract over a
+/// producer's session that leaves its plan outside a commit: the session writes `specs/plan.md`
+/// and finishes; the host runs through a shell the `Stop` command the launch's `--settings`
+/// names, `stop_hook_active` false, and on its `"decision":"block"` the session commits the plan
+/// and finishes again, and the host runs the hook again, `stop_hook_active` true. The launch
+/// stays on record and the hook's two answers are left in the fake's directory.
+fn producer_held_until_its_plan_is_committed_arm() -> String {
+    format!(
+        r#"  *"Do the unit."*)
+{RECORD_EACH_LAUNCH}    mkdir -p specs
+    echo planned > specs/plan.md
+{READ_LAUNCH_CONFIG}    hook=$(printf '%s\n' "$settings" | sed -n 's/.*"command": "\([^"]*hook stop --spawn[^"]*\)".*/\1/p')
+    printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":false}}' |
+        sh -c "$hook" > "$here/stop-held"
+    case "$(cat "$here/stop-held")" in
+        *'"decision":"block"'*) git add specs/plan.md && git commit -q -m plan ;;
+    esac
+    printf '%s' '{{"hook_event_name":"Stop","stop_hook_active":true}}' |
+        sh -c "$hook" > "$here/stop-allowed"
+    ;;
+"#
+    )
+}
+
+/// A PRODUCER IS HELD UNTIL ITS WORK IS COMMITTED, end to end: given a producer stage whose
+/// launch carries the `Stop` hook asking of its tree for its own commits, when its session
+/// leaves its plan outside a commit, then the hook holds it once, naming the uncommitted work,
+/// the session commits the plan, the hook allows the next stop, and the conductor lands the
+/// plan's commit on the run branch with no hold and no failed unit.
+#[cfg(unix)]
+#[test]
+fn a_producer_held_by_its_stop_hook_commits_its_plan_and_the_plan_lands() {
+    let dir = temp_git_project_with_commit();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    write_workflow_fixture(&root, &PRODUCER_WORKFLOW);
+    let held = tempfile::tempdir().unwrap();
+    let scratch = std::fs::canonicalize(held.path()).unwrap();
+    let (out, err, ok, fake) = common::cli::run_on_arms(
+        &root,
+        &["run"],
+        &scratch,
+        &producer_held_until_its_plan_is_committed_arm(),
+    );
+    assert!(ok, "the run succeeds; stderr: {err}\nstdout: {out}");
+
+    let run = common::cli::current_run_id_of(&root).expect("the run has an id");
+    let bin = std::fs::canonicalize(rigger_bin()).unwrap();
+    let launches = stand_in_launches(&fake.path().join("bin/launches"));
+    let spawns: Vec<&str> = launches.iter().map(|l| l.spawn.as_str()).collect();
+    assert_eq!(spawns, ["plan/implementer#0"], "the producer launches once");
+    let launch = &launches[0];
+    let container =
+        rigger::driver::replay::spawn_scratch_path(scratch.to_str().unwrap(), &run, &launch.spawn)
+            .unwrap();
+    let roots = [launch.cwd.as_str(), container.to_str().unwrap()].map(str::to_string);
+    let settings: serde_json::Value =
+        serde_json::from_str(flag_value(&launch.argv, "--settings")).unwrap();
+    assert_carries_spawn_hooks(
+        &settings,
+        bin.to_str().unwrap(),
+        &launch.spawn,
+        &roots,
+        false,
+        Some((launch.cwd.as_str(), &["--own-commits"][..])),
+    );
+
+    let read = |file: &str| {
+        std::fs::read_to_string(fake.path().join("bin").join(file))
+            .unwrap_or_else(|e| panic!("the session left {file}: {e}\nstderr: {err}"))
+    };
+    let held: serde_json::Value = serde_json::from_str(read("stop-held").trim())
+        .unwrap_or_else(|e| panic!("the first stop is held ({e}): stderr: {err}"));
+    assert_eq!(held["decision"], "block", "{held}");
+    assert!(
+        held["reason"]
+            .as_str()
+            .unwrap()
+            .contains("holds work no commit records"),
+        "the hold names the uncommitted work: {held}"
+    );
+    assert_eq!(
+        read("stop-allowed"),
+        "",
+        "the stop after the commit is allowed"
+    );
+
+    let lines: Vec<String> =
+        common::cli::recorded_progress::<rigger::progress::AgentProgress>(&root)
+            .into_iter()
+            .filter(|line| line.id == "plan/implementer#0" && line.activity.starts_with("stop "))
+            .map(|line| line.activity)
+            .collect();
+    let starts = [
+        "stop check: ",
+        "stop held (1 of 3): ",
+        "stop check: ",
+        "stop allowed: no work is left outside a commit",
+    ];
+    assert_eq!(lines.len(), starts.len(), "{lines:#?}");
+    for (line, start) in lines.iter().zip(starts) {
+        assert!(line.starts_with(start), "{line:?} begins {start:?}");
+    }
+    assert!(lines[0].ends_with(" for its own commits"), "{lines:#?}");
+
+    assert_eq!(
+        String::from_utf8(run_git(&root, &["show", "rigger-run:specs/plan.md"]).stdout).unwrap(),
+        "planned\n",
+        "the plan's commit landed on the run branch"
     );
     let types: Vec<String> = common::cli::read_run_events(&root)
         .into_iter()
@@ -7273,7 +7411,7 @@ fn every_launch_of_a_reviewed_unit_carries_the_hooks_for_its_own_spawn() {
             // The implementer's tree is the one the conductor commits; a reviewer's is not.
             let stop = spawn
                 .contains("/implementer#")
-                .then_some((launch.cwd.as_str(), "rigger/u/solo"));
+                .then_some((launch.cwd.as_str(), &["--branch", "rigger/u/solo"][..]));
             assert_carries_spawn_hooks(
                 &settings,
                 bin.to_str().unwrap(),

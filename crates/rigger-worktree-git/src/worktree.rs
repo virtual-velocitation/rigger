@@ -2773,6 +2773,24 @@ pub fn checkpoint_refusals(dir: &str, branch: &str) -> Result<Vec<String>, Error
     Ok(refusals)
 }
 
+/// Why a producer's tree rooted at `dir` is not ready for the conductor, which lands only the
+/// commits made there and never commits the tree itself: one line when the tree holds changes no
+/// commit records, untracked files included ([`path_is_dirty`], the conductor's own dirty-tree
+/// read), empty when it holds none. Read-only, like [`checkpoint_refusals`]; `rigger hook stop
+/// --own-commits` asks it before a producer's session may end, since that work would otherwise
+/// never reach the run branch.
+pub fn own_commits_refusals(dir: &str) -> Result<Vec<String>, Error> {
+    Ok(path_is_dirty(dir)?
+        .then(|| {
+            format!(
+                "{dir} holds work no commit records - the conductor lands only the commits made \
+                 there, so this work would never reach the run branch"
+            )
+        })
+        .into_iter()
+        .collect())
+}
+
 /// The operation git has left unfinished in the tree rooted at `dir`, or `None`: a merge
 /// (`MERGE_HEAD` resolves, [`Worktree::merge_in_progress`]'s read), a cherry-pick
 /// (`CHERRY_PICK_HEAD`), a revert (`REVERT_HEAD`), or a rebase (git's `rebase-merge` or
@@ -7598,6 +7616,81 @@ mod tests {
                     "{row}: the refusal names the tree: {refusal}"
                 );
             }
+            assert_eq!(
+                std::fs::read(&index).unwrap(),
+                before,
+                "{row}: the read leaves the index as it was"
+            );
+        }
+    }
+
+    /// A PRODUCER'S TREE IS READY ONLY WITH NO WORK OUTSIDE A COMMIT: a changed tracked file, a
+    /// staged one and an untracked one are each the one refusal, naming the tree; a clean tree,
+    /// one whose work is committed and one holding only a file git ignores are none. The read
+    /// leaves the index's bytes as they were.
+    #[test]
+    fn a_producers_tree_is_ready_only_with_no_work_outside_a_commit() {
+        fn write(dir: &str, file: &str, text: &str) {
+            std::fs::write(std::path::Path::new(dir).join(file), text).unwrap();
+        }
+        // Each row: what leaves the producer's tree in its state, and whether it is refused.
+        type Row = (&'static str, fn(&str), bool);
+        let cases: [Row; 6] = [
+            ("clean", |_| {}, false),
+            (
+                "committed work",
+                |dir| {
+                    write(dir, "spec.md", "planned\n");
+                    run_git(dir, &["add", "spec.md"]).unwrap();
+                    run_git(dir, &["commit", "-qm", "plan"]).unwrap();
+                },
+                false,
+            ),
+            (
+                "an ignored file",
+                |dir| write(dir, "scratch.log", "noise\n"),
+                false,
+            ),
+            (
+                "a changed file",
+                |dir| write(dir, "unit.txt", "edited\n"),
+                true,
+            ),
+            (
+                "a staged file",
+                |dir| {
+                    write(dir, "spec.md", "planned\n");
+                    run_git(dir, &["add", "spec.md"]).unwrap();
+                },
+                true,
+            ),
+            (
+                "an untracked file",
+                |dir| write(dir, "spec.md", "planned\n"),
+                true,
+            ),
+        ];
+        for (row, leave, refused) in cases {
+            let (_repo, repo_path, root) = scratch_repo(true);
+            let (dir, wt) = unit_wt(&repo_path, &root, "unit-plan");
+            write(&dir, "unit.txt", "committed\n");
+            write(&dir, ".gitignore", "*.log\n");
+            wt.commit("unit work").unwrap();
+            leave(&dir);
+            let index = git(&dir, &["rev-parse", "--git-path", "index"]).unwrap();
+            let index = std::path::Path::new(&dir).join(index.trim());
+            let before = std::fs::read(&index).unwrap();
+
+            let refusals = own_commits_refusals(&dir).unwrap();
+            let expected = if refused {
+                vec![format!(
+                    "{dir} holds work no commit records - the conductor lands only the commits \
+                     made there, so this work would never reach the run branch"
+                )]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(refusals, expected, "{row}");
             assert_eq!(
                 std::fs::read(&index).unwrap(),
                 before,

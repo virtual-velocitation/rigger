@@ -69,6 +69,20 @@ pub const STOP_HOOK_HELD: &str = "This session cannot end yet. Once it ends, the
      or rebase may be in progress there, and no file the commit would carry may hold a \
      conflict-marker line; then end as your task asks.";
 
+/// FRAMING: `rigger hook stop`'s reason for holding a producer's session from stopping, handed to
+/// the session as the reason to continue: in `{refusals}` the line saying the session's tree at
+/// `{dir}` holds work no commit records, which the conductor never lands, then in `{status}`
+/// git's own account of that tree, and last the one sentence of what must be true before the
+/// session stops. It says how to fix nothing beyond that.
+pub const STOP_HOOK_UNCOMMITTED: &str = "This session cannot end yet. Once it ends, the \
+     conductor lands only the commits this session made in {dir}, and work there is in no \
+     commit:\n\
+     {refusals}\n\n\
+     git status in {dir} reads:\n\
+     {status}\n\n\
+     Before this session stops, the tree at {dir} must hold no change outside a commit; then end \
+     as your task asks.";
+
 /// FRAMING: the instructions-in-force line after the domain's `INSTRUCTIONS_HEADING`: the
 /// built-ins in force in `{builtin}`, and in `{extra}` the operator file count
 /// ([`PRIME_OPERATOR_FILES`]) when an operator file is in force.
@@ -105,7 +119,7 @@ pub fn prompt_groups() -> &'static [Group] {
             GUARD_WRITE_NO_ROOT,
             GUARD_WRITE_PAYLOAD_UNREADABLE,
         ],
-        "guard::stop_hook_reason" => [STOP_HOOK_HELD],
+        "guard::stop_hook_reason" => [STOP_HOOK_HELD, STOP_HOOK_UNCOMMITTED],
         "prime::cmd_prime" => [
             PRIME_IN_FORCE,
             PRIME_OPERATOR_FILES,
