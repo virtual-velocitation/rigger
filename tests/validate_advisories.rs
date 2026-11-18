@@ -655,13 +655,14 @@ fn validate_still_fails_on_a_store_it_cannot_select_whatever_the_claude_login() 
 fn validate_reports_the_session_host_version_and_warns_below_the_hooks_minimum() {
     use common::cli::{ambient_tools_bin, lines_where, run_rigger_envs};
     use common::fixtures::{arms_claude, probe_arms};
+    use rigger::claude_auth::SessionHost;
     use rigger::claude_version::{parse, too_old};
 
     let reported = |version: &str| vec![format!("session host version: {version}")];
     let below = |printed: &str| {
         vec![format!(
             "warning: {}",
-            too_old(parse(printed).unwrap()).unwrap()
+            too_old(&SessionHost::default(), parse(printed).unwrap()).unwrap()
         )]
     };
     let failed = |why: &str| {

@@ -22,6 +22,7 @@ use crate::agent::{
     AgentResult, Disposition, Error, SpawnOpts, API_UNSTABLE, SPAWN_BOUND_TOOLS,
     SPAWN_PROGRESS_TOOL,
 };
+use crate::claude_auth::SessionHost;
 use crate::config::AgentDef;
 use crate::driver::replay::{
     answered, read_or_park, reclaim_spawn_registered_scratch, spawn_scratch_path, Logged,
@@ -92,9 +93,9 @@ pub const STOP_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Spawns agents as headless Claude Code sessions.
 pub struct Driver<'a> {
-    /// The `claude` binary to run. Empty resolves to `"claude"` on `$PATH`, same
-    /// fallback convention as [`crate::driver::cli::Driver`].
-    pub bin: String,
+    /// The session host this driver starts every session and canary from, and reads the login
+    /// of ([`SessionHost`]).
+    pub host: SessionHost,
     /// How this host invokes ITSELF as the spawn's bound MCP server
     /// (`<rigger_bin> mcp --spawn <id>`, §4.3). Empty resolves to `"rigger"` on `$PATH` -
     /// a test points this at a fixture binary instead of a real `rigger` install.
@@ -156,7 +157,7 @@ impl Default for Driver<'static> {
         // same file's `launch_records_a_lost_write_loudly_rather_than_spawning_blind`
         // test) rather than a second, unnecessary spelling of the same thing.
         Driver {
-            bin: crate::claude_auth::DEFAULT_BIN.to_string(),
+            host: SessionHost::default(),
             rigger_bin: "rigger".to_string(),
             progress_store: &crate::eventstore::SilentStore,
             run_store: &crate::eventstore::SilentStore,
@@ -381,15 +382,13 @@ impl Driver<'_> {
             },
         )?;
 
-        let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
-        let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
-        crate::claude_auth::apply_agent_credential(&mut cmd);
+        let mut cmd = self.host.command_in(&opts.dir);
         cmd.args(&args);
         // The ONE build-environment authority's injection site for this driver (spec 65),
         // exactly like the cli driver applies it: every var the resolver derived, on top
         // of the inherited ambient environment (`Command` never clears it) - so the
         // operator's own credential rides through untouched and unread (the one exception is
-        // a rigger-named token, [`crate::claude_auth::apply_agent_credential`]). The harness
+        // a rigger-named token, [`SessionHost::command_in`]). The harness
         // environment every headless worker gets ([`harness_env`]) goes first, so the build
         // environment overrides it under the same key.
         for (k, v) in harness_env(&opts.id) {
@@ -1824,14 +1823,12 @@ impl HoldProbe for Driver<'_> {
     /// outcome decides.
     fn probe(&self, root: &str, owed: &OwedProbe) -> ProbeOutcome {
         let deadline = std::time::Instant::now() + owed.delay;
-        let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
-        if owed.checks_login() && !crate::claude_auth::logged_in(bin, deadline) {
+        if owed.checks_login() && !crate::claude_auth::logged_in(&self.host, deadline) {
             return ProbeOutcome::LoggedOut;
         }
         let mut category = None;
         let mut passed = false;
-        let mut canary_cmd = crate::subprocess::command_in(bin, root);
-        crate::claude_auth::apply_agent_credential(&mut canary_cmd);
+        let mut canary_cmd = self.host.command_in(root);
         let spawned = canary_cmd
             .args(canary_args(&owed.held.model))
             .stdin(Stdio::piped())
@@ -3027,7 +3024,7 @@ mod tests {
                 Store::open(":memory:").unwrap(),
             );
             let driver = Driver {
-                bin: arms_claude(fake.path(), &probe_arms(&row.auth, &row.canary)),
+                host: arms_claude(fake.path(), &probe_arms(&row.auth, &row.canary)).into(),
                 progress_store: &progress,
                 run_store: &run_store,
                 beat_source: Some(&progress),
@@ -3085,7 +3082,7 @@ mod tests {
             }
         }
         let driver = Driver {
-            bin: "/definitely/does/not/exist/claude-xyz".to_string(),
+            host: "/definitely/does/not/exist/claude-xyz".into(),
             ..Driver::default()
         };
         let started = std::time::Instant::now();
@@ -3134,7 +3131,7 @@ mod tests {
         // to run in (spec 105): the next supervisor start reaps that directory as it closes the
         // record this failed spawn left open.
         let driver = Driver {
-            bin: "/definitely/does/not/exist/claude-xyz".to_string(),
+            host: "/definitely/does/not/exist/claude-xyz".into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3187,7 +3184,7 @@ mod tests {
     fn launch_starts_the_child_in_the_spawns_dir_with_a_minted_session_id() {
         let dir = std::env::temp_dir();
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3233,7 +3230,7 @@ mod tests {
         // environment, a resource `cargo test`'s default parallelism must not interleave.
         std::env::set_var("ANTHROPIC_API_KEY", "operators-own-credential");
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3291,7 +3288,7 @@ mod tests {
         for (name, ambient, rigger, seen) in TOKEN_ROWS {
             let _env = crate::claude_auth::TokenEnv::set(ambient, rigger);
             let driver = Driver {
-                bin: fixture_bin(),
+                host: fixture_bin().into(),
                 rigger_bin: "rigger".to_string(),
                 ..Driver::default()
             };
@@ -3324,7 +3321,7 @@ mod tests {
         let _env = crate::claude_auth::TokenEnv::set(None, Some(MARKER));
         let scratch = tempfile::tempdir().unwrap();
         let driver = Driver {
-            bin: crate::test_support::fixture_script("claude-code-token-presence-agent.sh"),
+            host: crate::test_support::fixture_script("claude-code-token-presence-agent.sh").into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3358,7 +3355,7 @@ mod tests {
         // stays open for the helper's result. `opts.env` is applied after it, so an
         // operator's own value under the same key wins.
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3394,7 +3391,7 @@ mod tests {
     #[test]
     fn launch_exports_the_spawn_id_to_the_worker() {
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3417,7 +3414,7 @@ mod tests {
     #[test]
     fn launch_frames_the_task_as_the_first_stream_json_user_message() {
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3445,7 +3442,7 @@ mod tests {
         // `result`, not this criterion - so `launch` must hand back a child whose stdin handle
         // is still present (not dropped/closed).
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3472,10 +3469,11 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let capture = tempfile::tempdir().unwrap();
         let driver = Driver {
-            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            host: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../tests/fixtures/prompt-capture-agent.sh")
                 .to_string_lossy()
-                .into_owned(),
+                .into_owned()
+                .into(),
             scratch_root: scratch.path().to_string_lossy().into_owned(),
             ..Driver::default()
         };
@@ -3582,7 +3580,7 @@ mod tests {
         // `--session-id` - records that it did, and sends only the resume task, since the
         // session already holds the rest.
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3627,7 +3625,7 @@ mod tests {
     fn a_relaunch_forks_the_interrupted_session_under_a_minted_id() {
         let store = Store::open(":memory:").unwrap();
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             progress_store: &store,
             ..Driver::default()
@@ -3693,7 +3691,7 @@ mod tests {
     #[test]
     fn a_launch_that_cannot_read_the_record_starts_nothing() {
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3761,7 +3759,7 @@ mod tests {
         // launches for the same spawn get two DIFFERENT session ids, and the record, not the
         // caller, moves the ordinal.
         let driver = Driver {
-            bin: fixture_bin(),
+            host: fixture_bin().into(),
             rigger_bin: "rigger".to_string(),
             ..Driver::default()
         };
@@ -3911,7 +3909,7 @@ mod tests {
         let progress_store = Store::open(":memory:").unwrap();
         let run_store = Store::open(":memory:").unwrap();
         let driver = Driver {
-            bin: fixture_script(script),
+            host: fixture_script(script).into(),
             progress_store: &progress_store,
             run_store: &run_store,
             ..Driver::default()
@@ -4103,7 +4101,7 @@ mod tests {
                 spawn_store::record_result(&run_store, res).unwrap();
             }
             let driver = Driver {
-                bin: row.bin,
+                host: row.bin.into(),
                 rigger_bin: "rigger".to_string(),
                 progress_store: &progress_store,
                 run_store: &run_store,

@@ -3798,6 +3798,7 @@ fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
 #[cfg(unix)]
 #[test]
 fn run_refuses_a_session_host_below_the_hooks_minimum_before_any_start_effect() {
+    use rigger::claude_auth::SessionHost;
     use rigger::claude_version::{parse, too_old};
 
     // (name, the stand-in's `--version` line, the line the run refuses with, none for a run)
@@ -3807,7 +3808,7 @@ fn run_refuses_a_session_host_below_the_hooks_minimum_before_any_start_effect() 
             "2.1.138 (Claude Code)",
             Some(format!(
                 "rigger: {}",
-                too_old(parse("2.1.138").unwrap()).unwrap()
+                too_old(&SessionHost::default(), parse("2.1.138").unwrap()).unwrap()
             )),
         ),
         ("the minimum", "2.1.139 (Claude Code)", None),

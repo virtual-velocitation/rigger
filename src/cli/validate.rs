@@ -20,14 +20,11 @@ fn has_tracked_project_id(root: &Path) -> Result<bool, String> {
 const CLAUDE_LOGIN_BOUND: Duration = Duration::from_secs(5);
 
 /// The `rigger validate` CLAUDE LOGIN report (spec 105, WHAT A PERSON SEES): the auth method the
-/// one login reader ([`rigger::claude_auth::auth_method`]) reads from the `claude` on PATH within
+/// one login reader ([`rigger::claude_auth::auth_method`]) reads from `host` within
 /// [`CLAUDE_LOGIN_BOUND`], on stdout, whatever the method; when no report came, one warning on
 /// stderr in its place. Neither changes the exit status.
-fn print_claude_login() {
-    match rigger::claude_auth::auth_method(
-        rigger::claude_auth::DEFAULT_BIN,
-        Instant::now() + CLAUDE_LOGIN_BOUND,
-    ) {
+fn print_claude_login(host: &rigger::claude_auth::SessionHost) {
+    match rigger::claude_auth::auth_method(host, Instant::now() + CLAUDE_LOGIN_BOUND) {
         Some(method) => println!("claude login: {method}"),
         None => eprintln!(
             "warning: claude login: `claude auth status --json` gave no report within {} s \
@@ -40,14 +37,14 @@ fn print_claude_login() {
 }
 
 /// The `rigger validate` SESSION HOST VERSION report: the version the one reader
-/// ([`rigger::claude_version::read`]) reads from the `claude` on PATH within its bound, on
-/// stdout; below the version the installed exec-form hooks need, the one too-old line `rigger
-/// run` refuses with ([`rigger::claude_version::too_old`]) as a warning in its place; when it
-/// read no version, one warning saying the read failed and why. None changes the exit status.
-fn print_session_host_version() {
+/// ([`rigger::claude_version::read`]) reads from `host` within its bound, on stdout; below the
+/// version the installed exec-form hooks need, the one too-old line `rigger run` refuses with
+/// ([`rigger::claude_version::too_old`]) as a warning in its place; when it read no version, one
+/// warning saying the read failed and why. None changes the exit status.
+fn print_session_host_version(host: &rigger::claude_auth::SessionHost) {
     use rigger::claude_version::{read, too_old, READ_BOUND};
-    match read(rigger::claude_auth::DEFAULT_BIN, READ_BOUND) {
-        Ok(version) => match too_old(version) {
+    match read(host, READ_BOUND) {
+        Ok(version) => match too_old(host, version) {
             Some(line) => eprintln!("warning: {line}"),
             None => println!("session host version: {version}"),
         },
@@ -238,8 +235,10 @@ pub(crate) fn cmd_validate(args: &[String]) -> Res {
     {
         println!("{line}");
     }
-    print_claude_login();
-    print_session_host_version();
+    // The session host a run would start: its login and its version are read from the one host.
+    let host = rigger::claude_auth::SessionHost::default();
+    print_claude_login(&host);
+    print_session_host_version(&host);
     // Non-fatal advisories (spec 05:55): surface config/install drift so it is seen,
     // not discovered by accident. Each is a stderr warning that never changes the exit
     // status - `rigger validate` still succeeds so long as the config itself is valid.

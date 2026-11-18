@@ -6,7 +6,7 @@
 use std::fmt;
 use std::time::{Duration, Instant};
 
-use crate::claude_auth::{printed, DEFAULT_BIN};
+use crate::claude_auth::{printed, SessionHost};
 use crate::hooks::MIN_HOST_VERSION;
 
 /// A session host version, `major.minor.patch`, ordered by each part as a number.
@@ -26,15 +26,15 @@ impl fmt::Display for HostVersion {
     }
 }
 
-/// How long a version read waits on `<bin> --version`.
+/// How long a version read waits on `<host> --version`.
 pub const READ_BOUND: Duration = Duration::from_secs(5);
 
-/// The version `bin --version` prints within `bound` ([`printed`], [`parse`]), or the error
-/// naming why none was read: the binary did not start, printed nothing by the bound, or printed
-/// a first line that opens with no version.
-pub fn read(bin: &str, bound: Duration) -> Result<HostVersion, String> {
-    let read = format!("`{bin} --version`");
-    let text = printed(bin, &["--version"], Instant::now() + bound)
+/// The version `host`'s binary prints for `--version` within `bound` ([`printed`], [`parse`]),
+/// or the error naming why none was read: the binary did not start, printed nothing by the
+/// bound, or printed a first line that opens with no version.
+pub fn read(host: &SessionHost, bound: Duration) -> Result<HostVersion, String> {
+    let read = format!("`{} --version`", host.bin());
+    let text = printed(host, &["--version"], Instant::now() + bound)
         .map_err(|e| format!("{read} did not start: {e}"))?;
     let first = text.lines().next().unwrap_or_default().trim();
     if first.is_empty() {
@@ -60,15 +60,16 @@ pub fn parse(printed: &str) -> Option<HostVersion> {
     parts.next().is_none().then_some(version)
 }
 
-/// The one line `rigger validate` warns with and `rigger run` refuses with when `version` is
-/// below [`MIN_HOST_VERSION`]; none when it is not.
-pub fn too_old(version: HostVersion) -> Option<String> {
+/// The one line `rigger validate` warns with and `rigger run` refuses with when `host`'s
+/// `version` is below [`MIN_HOST_VERSION`], naming the host's binary; none when it is not.
+pub fn too_old(host: &SessionHost, version: HostVersion) -> Option<String> {
     (version < MIN_HOST_VERSION).then(|| {
         format!(
-            "the session host `{DEFAULT_BIN}` is {version}, below {MIN_HOST_VERSION}, the first \
+            "the session host `{}` is {version}, below {MIN_HOST_VERSION}, the first \
              version that runs rigger's exec-form hooks (their `args` field): on it every tool \
              call a hook guards is blocked and every stop is held, with no word why; update it to \
-             {MIN_HOST_VERSION} or later"
+             {MIN_HOST_VERSION} or later",
+            host.bin()
         )
     })
 }
@@ -112,7 +113,9 @@ mod tests {
         for (printed, version, below) in rows {
             assert_eq!(parse(printed), version, "{printed:?}");
             assert_eq!(
-                version.and_then(too_old).is_some(),
+                version
+                    .and_then(|version| too_old(&SessionHost::default(), version))
+                    .is_some(),
                 below,
                 "{printed:?}: too old"
             );
@@ -122,7 +125,7 @@ mod tests {
     #[test]
     fn the_too_old_line_names_the_version_the_minimum_and_what_an_older_host_does() {
         assert_eq!(
-            too_old(v(2, 1, 138)).as_deref(),
+            too_old(&SessionHost::default(), v(2, 1, 138)).as_deref(),
             Some(
                 "the session host `claude` is 2.1.138, below 2.1.139, the first version that runs \
                  rigger's exec-form hooks (their `args` field): on it every tool call a hook \
@@ -141,7 +144,7 @@ mod tests {
         let fake = tempfile::tempdir().unwrap();
         let bin = crate::test_support::arms_claude(fake.path(), &probe_arms("", ""));
         let started = Instant::now();
-        assert_eq!(read(&bin, READ_BOUND), Ok(v(2, 1, 139)));
+        assert_eq!(read(&SessionHost::at(bin), READ_BOUND), Ok(v(2, 1, 139)));
         assert!(started.elapsed() < Duration::from_secs(3), "at once");
         for log in ["auth-argv", "canary-argv", "canary-cwd", "canary-first"] {
             assert!(!fake.path().join(log).exists(), "the read writes no {log}");
@@ -149,7 +152,7 @@ mod tests {
         let absent = tempfile::tempdir().unwrap();
         let bin = absent.path().join("claude");
         let bin = bin.to_str().unwrap();
-        let err = read(bin, READ_BOUND).unwrap_err();
+        let err = read(&SessionHost::at(bin), READ_BOUND).unwrap_err();
         assert!(
             err.starts_with(&format!("`{bin} --version` did not start: ")),
             "{err}"

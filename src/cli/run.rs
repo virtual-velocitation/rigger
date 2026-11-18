@@ -974,11 +974,11 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // closed on every one of them with no word why, so the run refuses on one here, before any
     // start effect, with the line `rigger validate` warns with; a version it cannot read refuses
     // nothing.
-    if let Ok(version) = rigger::claude_version::read(
-        rigger::claude_auth::DEFAULT_BIN,
-        rigger::claude_version::READ_BOUND,
-    ) {
-        if let Some(line) = rigger::claude_version::too_old(version) {
+    // The one session host the run's driver starts every session from, built here so the
+    // version checked is the binary launched.
+    let host = rigger::claude_auth::SessionHost::default();
+    if let Ok(version) = rigger::claude_version::read(&host, rigger::claude_version::READ_BOUND) {
+        if let Some(line) = rigger::claude_version::too_old(&host, version) {
             return Err(line.into());
         }
     }
@@ -1127,7 +1127,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         reclaim_orphans_at_start(&repo, root, &cfg.workflow, &store);
     }
     let driver = claude_code::Driver {
-        bin: String::new(),
+        host,
         rigger_bin: running_executable(),
         progress_store: &progress,
         run_store: &folding,
