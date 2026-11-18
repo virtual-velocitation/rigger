@@ -202,6 +202,12 @@ pub struct SpawnOpts {
     /// with [`resumed_from`](Self::resumed_from); a host whose resume finds no such session
     /// falls back to a fresh launch with the full `prompt`.
     pub resume_task: String,
+    /// What a session host's relaunch of this spawn's interrupted launch sends after its
+    /// interruption note and ahead of any [`resume_task`](Self::resume_task) it carries: what
+    /// the conductor learned since that launch began, which the forked session never saw. Sent
+    /// once: a relaunch whose carried task already holds it sends only that task. A launch that
+    /// is no relaunch ignores it; empty sends nothing.
+    pub relaunch_task: String,
     /// What the conductor takes from this spawn's worktree ([`dir`](Self::dir)) once its session
     /// ends. Set at the conductor's writing spawn sites alone; [`TreeDuty::None`] everywhere
     /// else. A session host that installs per-spawn hooks gives a spawn with a duty a `Stop` hook
@@ -261,6 +267,7 @@ impl SpawnOpts {
             host,
             resumed_from: String::new(),
             resume_task: String::new(),
+            relaunch_task: String::new(),
             tree_duty: TreeDuty::None,
         }
     }
