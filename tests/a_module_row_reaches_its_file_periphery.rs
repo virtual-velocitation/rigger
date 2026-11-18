@@ -64,8 +64,10 @@ fn graph_build_lands_a_mod_declaration_on_the_first_candidate_the_tree_holds() {
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_places_a_declared_file_by_how_its_declaring_file_is_reached() {
-    // (row, tree, the module edges the build lands as (mod node, file))
-    let cases: [(&str, &[(&str, &str)], &[(&str, &str)]); 5] = [
+    /// A tree's `(path, source)` files, or the module edges a build lands as `(mod node, file)`.
+    type Pairs = &'static [(&'static str, &'static str)];
+    // (row, tree, the module edges the build lands)
+    let cases: [(&str, Pairs, Pairs); 5] = [
         (
             "bin root",
             &[
