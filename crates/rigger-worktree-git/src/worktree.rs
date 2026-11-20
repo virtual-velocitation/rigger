@@ -5028,14 +5028,9 @@ mod tests {
         // A checkpoint preserves a halted spawn's tree; a content hook (the docs-drift
         // pre-commit hook, in the incident) must not be able to turn that into a lost tree
         // and a dead step. The agent's own commit path keeps running hooks.
-        use std::os::unix::fs::PermissionsExt;
         let repo = init_repo();
         let repo_path = repo.path().to_str().unwrap().to_string();
-        let hooks = repo.path().join(".git").join("hooks");
-        std::fs::create_dir_all(&hooks).unwrap();
-        let hook = hooks.join("pre-commit");
-        std::fs::write(&hook, "#!/bin/sh\necho 'hook: refusing' >&2\nexit 1\n").unwrap();
-        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::install_refusing_hook(repo.path());
         let wt_path = std::env::temp_dir().join(format!("rigger-wt-{}", uuid::Uuid::new_v4()));
         let wt = Worktree::create(
             &repo_path,

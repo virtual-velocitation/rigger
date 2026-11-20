@@ -277,5 +277,10 @@ serial_test = "3"
 # tree, even though the adapter it exercises is now compiled into every build.
 testcontainers = { version = "0.27" }
 
+[target.'cfg(unix)'.dev-dependencies]
+# `O_NONBLOCK` for the test witness's FIFO read end (`tests/common/witness.rs`), opened before any
+# writer exists. Already in the lock through `rigger-process`, so no new crate is built.
+libc = "0.2"
+
 [profile.release]
 opt-level = 3

@@ -266,14 +266,34 @@ pub(super) fn pids() -> Vec<u32> {
     }
 }
 
+/// Each listed process ([`pids`]) with its parent and start time, both read from ONE BSD info.
+pub(super) fn table() -> Vec<super::Entry> {
+    pids()
+        .into_iter()
+        .filter_map(|pid| {
+            let info = bsd_info(pid)?;
+            Some(super::Entry {
+                pid,
+                parent: info.pbi_ppid,
+                start: started(&info),
+            })
+        })
+        .collect()
+}
+
 /// The BSD info's `pbi_ppid`.
 pub(super) fn parent(pid: u32) -> Option<u32> {
     bsd_info(pid).map(|info| info.pbi_ppid)
 }
 
-/// The BSD info's start time, in microseconds since the epoch ([`super::micros_since_epoch`]).
+/// The BSD info's start time ([`started`]).
 pub(super) fn start_time(pid: u32) -> Option<u64> {
-    bsd_info(pid).map(|info| super::micros_since_epoch(info.pbi_start_tvsec, info.pbi_start_tvusec))
+    bsd_info(pid).map(|info| started(&info))
+}
+
+/// A BSD info's start time, in microseconds since the epoch ([`super::micros_since_epoch`]).
+fn started(info: &libc::proc_bsdinfo) -> u64 {
+    super::micros_since_epoch(info.pbi_start_tvsec, info.pbi_start_tvusec)
 }
 
 /// The current directory the vnode path info (`PROC_PIDVNODEPATHINFO`) names.
@@ -365,3 +385,6 @@ fn listens_on(pid: u32, port: u16) -> bool {
 
 /// The one scan [`super`] composes over the readers above.
 pub(super) use super::scan_holders as holders;
+
+/// The path the OS reports for the image this process runs.
+pub(super) use super::reported_image as running_image;

@@ -49,13 +49,17 @@
 
 use crate::common;
 
-use common::fixtures::{
-    container_runtime, start_failure, StartFailure, KURRENTDB_IMAGE, START_ATTEMPTS,
-};
+// Unix only: the runtime stand-ins below are unix sockets.
+#[cfg(unix)]
+use common::fixtures::container_runtime;
+use common::fixtures::{start_failure, StartFailure, KURRENTDB_IMAGE, START_ATTEMPTS};
 use common::repo::repo_text;
 use testcontainers::bollard::errors::Error as BollardError;
+#[cfg(unix)]
 use testcontainers::bollard::{Docker, API_DEFAULT_VERSION};
-use testcontainers::core::error::{ClientError, WaitContainerError};
+use testcontainers::core::error::ClientError;
+#[cfg(unix)]
+use testcontainers::core::error::WaitContainerError;
 use testcontainers::TestcontainersError;
 
 /// The body of the first `fn <name>(` in `src`, from its opening `{` to the matching `}`
@@ -270,6 +274,8 @@ const GATE_DOCKER_HOST: &str = "unix:///run/user/1000/podman/podman.sock";
 /// really returns: no socket where it looks for one (docker's default path, when DOCKER_HOST is
 /// unset), and a socket that exists but refuses the connection, which arrives as the failure of
 /// a start's first call to the runtime, the container's creation.
+// Unix only: the runtime is reached over a unix socket.
+#[cfg(unix)]
 fn no_runtime_failures() -> [TestcontainersError; 2] {
     let dir = tempfile::tempdir().unwrap();
     let path = |name: &str| dir.path().join(name).to_str().unwrap().to_string();
@@ -297,6 +303,8 @@ fn no_runtime_failures() -> [TestcontainersError; 2] {
 /// never reports ready in time, the runtime refuses the image's pull, the port does not bind, the
 /// daemon refuses to create the container, the runtime accepts the connection and closes it before
 /// answering.
+// Unix only: the runtime is reached over a unix socket.
+#[cfg(unix)]
 fn reachable_runtime_failures() -> [TestcontainersError; 5] {
     let daemon = |message: &str| BollardError::DockerResponseServerError {
         status_code: 500,
@@ -323,6 +331,8 @@ fn reachable_runtime_failures() -> [TestcontainersError; 5] {
 /// runtime the accepting task closes the connection before the client's connection task first runs.
 /// It shuts the connection down rather than dropping it, since a process another test spawns can
 /// hold a copy of the descriptor between fork and exec and keep a dropped one open.
+// Unix only: the runtime is reached over a unix socket.
+#[cfg(unix)]
 fn closed_before_answering() -> BollardError {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("closing.sock");
@@ -351,6 +361,8 @@ fn closed_before_answering() -> BollardError {
 
 /// A start that reached no container runtime skips the test while DOCKER_HOST is unset, or
 /// empty, which the test gate's container snippet reads as unset too.
+// Unix only: the runtime is reached over a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_fixture_skips_a_start_that_reaches_no_container_runtime() {
     for error in no_runtime_failures() {
@@ -365,6 +377,8 @@ fn the_fixture_skips_a_start_that_reaches_no_container_runtime() {
 }
 
 /// A start that fails on a runtime the client reached fails the test, never a skip.
+// Unix only: the runtime is reached over a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_fixture_fails_a_start_that_fails_on_a_reachable_runtime() {
     for error in reachable_runtime_failures() {
@@ -378,6 +392,8 @@ fn the_fixture_fails_a_start_that_fails_on_a_reachable_runtime() {
 
 /// Once DOCKER_HOST names a runtime - the test gate's container snippet exports it exactly when
 /// it found one - no failed start skips the test, not even one that reached nothing there.
+// Unix only: the runtime is reached over a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_fixture_never_skips_once_docker_host_names_a_runtime() {
     for error in no_runtime_failures()
@@ -448,6 +464,8 @@ fn the_fixture_fails_a_broken_pull_on_its_last_attempt() {
 
 /// A start the runtime refused or never reached is not retried on any attempt: a denied pull, a
 /// startup timeout or a daemon error fails at once, and no runtime skips at once.
+// Unix only: the runtime is reached over a unix socket.
+#[cfg(unix)]
 #[test]
 fn the_fixture_never_retries_a_start_the_runtime_refused_or_never_reached() {
     for attempt in 1..=START_ATTEMPTS {

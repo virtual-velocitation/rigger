@@ -2379,6 +2379,8 @@ fn a_configured_server_and_a_flagged_one_over_the_ambient_are_both_handed_to_the
         scaffold(root, CRITIC_WORKFLOW);
         let secret = rigger_file(root, "store.conn");
         std::fs::write(&secret, conn).unwrap();
+        // Unix only: Windows has no mode bits.
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o600)).unwrap();

@@ -76,6 +76,7 @@ fn launch_handing(
         handed_env,
         beat_source: None,
         hold_sink: None,
+        containment: common::session_containment(),
     };
     let mut opts = implementer_opts(SPAWN_ID);
     opts.host =

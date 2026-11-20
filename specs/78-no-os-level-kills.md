@@ -36,10 +36,11 @@ SANCTIONED SITES, decided: exactly two functions may call the signal API. Produc
 `wait()` on a child it spawned itself, or through the helper. The `no-os-kill` gate (landed in
 `.rigger/workflow.yml`, wired into the implement stage) fails any unit whose ADDED lines in
 `src/` or `tests/` outside those two files match: `Command::new(.(kill|pkill|killall|xkill)`,
-a shell `kill -<x>`/`killall -<x>`, `pkill`, `killpg`, `libc::kill(`, `signal::kill(`,
+a shell `kill -<x>`/`killall -<x>`, `pkill`, `libc::kill(`, `signal::kill(`,
 `kill_process(`, `.arg(.--.)`, or `format!(.-{`; inside the two files a shell-out, `--`
-separator or negative-pid format is still a failure. The gate matches comments too: describe
-the old shell-out in prose ("the shell-out to kill(1)"), never paste the command text into a
+separator or negative-pid format is still a failure. A process-group signal call (`killpg`,
+`kill_process_group`, `kill_current_process_group`) fails in every file, the two included.
+The gate matches comments too: describe the old shell-out in prose ("the shell-out to kill(1)"), never paste the command text into a
 code comment in `src/` or `tests/`. Prose in `docs/`, `specs/` and `.rigger/` is out of the
 gate's scope and may name the rule literally.
 

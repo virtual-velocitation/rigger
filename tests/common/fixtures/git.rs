@@ -1,5 +1,6 @@
 //! Git fixtures: throwaway repositories and the git commands a suite runs against them.
 
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -162,6 +163,8 @@ pub fn install_refusing_hook(repo_path: impl AsRef<Path>) {
     std::fs::create_dir_all(&hooks).unwrap();
     let hook = hooks.join("pre-commit");
     std::fs::write(&hook, "#!/bin/sh\necho 'hook: refusing' >&2\nexit 1\n").unwrap();
+    // Unix only: Windows files have no execute bit.
+    #[cfg(unix)]
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
@@ -195,6 +198,12 @@ pub fn loose_object_directory(root: &Path, id: &str) -> std::path::PathBuf {
 /// files read-only).
 pub fn loose_object(root: &Path, id: &str) -> std::path::PathBuf {
     let path = loose_object_directory(root, id).join(&id[2..]);
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    // Windows has no mode bits: there the file's read-only flag is cleared.
+    #[cfg(unix)]
+    permissions.set_mode(0o644);
+    #[cfg(not(unix))]
+    permissions.set_readonly(false);
+    std::fs::set_permissions(&path, permissions).unwrap();
     path
 }

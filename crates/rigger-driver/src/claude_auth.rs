@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use serde::Deserialize;
 
-use crate::reaped_child::ReapedChild;
+use crate::child_tree::ReapedChild;
 
 use rigger_domain::spawn::AGENT_TOKEN_VAR;
 pub use rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR;

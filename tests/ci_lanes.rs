@@ -607,8 +607,8 @@ fn kurrentdb_job_carries_no_retired_feature_flag_and_still_runs_the_contract_tes
 /// cross-compile of `crates/console-core` for `wasm32-unknown-unknown` runs whenever the outer
 /// build compiles `crates/rigger-dash/src/dash.rs`, and three jobs' cargo invocations do:
 /// `build-test`'s default AND `--no-default-features` lanes, `install-nolock`'s default-feature
-/// install and `cross-os-check`'s `cargo check --workspace`, which runs the build script of every
-/// package it checks. Each of those three jobs' own `dtolnay/rust-toolchain@*` step must
+/// install and `cross-os-check`'s `cargo check --workspace --all-targets`, which runs the build
+/// script of every package it checks. Each of those three jobs' own `dtolnay/rust-toolchain@*` step must
 /// therefore declare the target - a job whose toolchain step lacks it would fail on a runner with
 /// no target preinstalled. The `kurrentdb` job builds `rigger-store-sqlite` alone, which never
 /// compiles dash.rs, and neither does `build-test`'s pure `--features core` lane.
@@ -627,16 +627,21 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
     }
 }
 
-/// THE CROSS-OS CHECK (spec 125 criterion 12): CI compiles the workspace on Windows and on macOS.
+/// THE CROSS-OS CHECK (spec 125 criterion 12): CI compiles the workspace on Windows and on macOS,
+/// and runs the process crate's own tests there.
 /// The `cross-os-check` job's `strategy.matrix` is exactly `os: [windows-latest, macos-latest]`,
 /// with no `include` or `exclude` to add or drop a leg, and its `runs-on` is that matrix value, so
 /// each leg runs on its own OS. Its strategy sets `fail-fast: false`, so a red leg never cancels
 /// the other before that one reports its own errors, and neither the job nor any of its steps
 /// carries an `if` or a `continue-on-error`, so each leg checks and a red one fails the job. Its
-/// checkout fetches full history. Its one `run:` step runs under
-/// `bash` on every runner and, in that step's own shell, exports an empty `RUSTC_WRAPPER` and then
-/// runs `cargo check --workspace`: the empty value overrides `.cargo/config.toml`'s Unix wrapper
-/// script for cargo and every nested cargo it starts. The job's wasm target is pinned once, by
+/// checkout fetches full history. It has two `run:` steps, each under `bash` on every runner and
+/// each exporting an empty `RUSTC_WRAPPER` in its own shell before its cargo command: the empty
+/// value overrides `.cargo/config.toml`'s Unix wrapper script for cargo and every nested cargo it
+/// starts. The first runs `cargo test -p rigger-process --lib`, the crate whose own tests hold the
+/// rows for the macOS and Windows adapters, so they run on their own OS whatever else fails to
+/// compile there. The second runs `cargo check --workspace --all-targets --keep-going`, so every
+/// test that names one of those adapters compiles there, and one run names every target that does
+/// not. The job's wasm target is pinned once, by
 /// `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
 #[test]
 fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
@@ -696,13 +701,16 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
             ))
         })
         .collect();
+    let unwrapped = |cargo| (Some("bash"), vec!["export RUSTC_WRAPPER=", cargo]);
     assert_eq!(
         run_steps,
-        [(
-            Some("bash"),
-            vec!["export RUSTC_WRAPPER=", "cargo check --workspace"]
-        )],
-        "job `{JOB}` must have one `run:` step, under `shell: bash`, exporting an empty \
-         `RUSTC_WRAPPER` and then running `cargo check --workspace` (shell, lines)"
+        [
+            unwrapped("cargo test -p rigger-process --lib"),
+            unwrapped("cargo check --workspace --all-targets --keep-going"),
+        ],
+        "job `{JOB}` must have two `run:` steps, each under `shell: bash` exporting an empty \
+         `RUSTC_WRAPPER`: first `cargo test -p rigger-process --lib`, so the process crate's rows \
+         run whatever else fails to compile, then `cargo check --workspace --all-targets \
+         --keep-going`, so one run names every target that does not compile (shell, lines)"
     );
 }

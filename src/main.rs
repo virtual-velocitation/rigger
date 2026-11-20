@@ -122,6 +122,7 @@ fn is_closed_stdout_report(message: &str) -> bool {
 }
 
 fn main() {
+    rigger::child_tree::serve_keeper_if_asked();
     exit_quietly_when_stdout_closes();
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {

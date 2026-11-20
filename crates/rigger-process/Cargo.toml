@@ -25,9 +25,9 @@ rigger-domain = { path = "../rigger-domain", default-features = false }
 # `wasm32` core lane never builds them.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The reaper's ONLY sanctioned way to signal a process it does not own a `Child` handle to
-# (spec 78), and this crate's other system calls: the process ids and owners it reads and
-# `inherit_on_exec`'s descriptor-flag call. See the root manifest for why the 1.x line with only
-# `std` + `process`.
+# (spec 78), and this crate's other system calls: the process ids and owners it reads,
+# `inherit_on_exec`'s descriptor-flag call, and the Linux keeper's child subreaper and its wait on
+# its children. See the root manifest for why the 1.x line with only `std` + `process`.
 rustix = { version = "1.1", default-features = false, features = ["std", "process"] }
 # The build budget's cross-process advisory slot lock (`flock(2)` on unix, `LockFileEx` on
 # Windows).
@@ -54,7 +54,9 @@ tokio = { version = "1", features = ["rt", "time"] }
 # process interface's Windows adapter (spec 125) reads the process snapshot from ToolHelp, each
 # process's times and image name from Threading, the TCP listener table from IpHelper with its
 # address family from WinSock, and a directory's holders from RestartManager; the reaper's Windows
-# signal opens and ends a process through Threading. The gate channel's named pipe is created,
+# signal opens and ends a process through Threading. A jobbed tree is held in a job from
+# JobObjects, which the reaper ends and counts, and its main, created suspended, is resumed through
+# a ToolHelp thread snapshot and Threading. The gate channel's named pipe is created,
 # connected and waited for through Pipes, read and written overlapped through FileSystem and IO
 # with its event from Threading, and held to its owner by a descriptor from Security and
 # Authorization. The macOS adapters declare no crate: the
@@ -62,12 +64,14 @@ tokio = { version = "1", features = ["rt", "time"] }
 # process interface reads libproc through the libc below.
 [target.'cfg(unix)'.dependencies]
 # The unix interrupt trigger's `SIGINT` handler: `signal`, and the async-signal-safe `ftruncate`
-# and `_exit` it calls, and the macOS process adapter's libproc reads, from the libc the lock
-# already resolves for rustix's dependents.
+# and `_exit` it calls; the Linux keeper's signal dispositions (`sigaction`, `signal`), its wait on
+# its control pipe (`poll`), and its standard streams put over by `/dev/null` (`open`, `dup2`,
+# `close`) and its descriptors' close-on-exec (`fcntl`); and the macOS process adapter's libproc
+# reads, from the libc the lock already resolves for rustix's dependents.
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_RestartManager", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Power", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_JobObjects", "Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock", "Win32_System_RestartManager", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_Security_Authorization"] }
 
 [dev-dependencies]
 tempfile = "3"

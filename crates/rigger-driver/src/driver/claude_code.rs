@@ -12,7 +12,7 @@
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStderr, ChildStdin, Stdio};
+use std::process::{ChildStderr, ChildStdin, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::Value;
@@ -67,9 +67,9 @@ fn next_wait(
     })
 }
 
-/// Bounds [`Driver::read_stream`]'s ORDINARY (non-STOP) exit joins - the stderr-drain and
-/// stdout-reader threads, right after `reaped_child::ReapedChild::drop` reaps the one child this
-/// function held - a dedicated diagnostic-drain bound, DELIBERATELY NEVER
+/// Bounds the joins of the stderr-drain and stdout-reader threads once a session is finished
+/// with - [`Driver::read_stream`]'s ORDINARY exit and THE STOP ([`Driver::stop_session`]) alike -
+/// a dedicated diagnostic-drain bound, DELIBERATELY NEVER
 /// [`Driver::stop_grace`] (adj-u104stop-r4-verdict-reject REQUIRED FIX,
 /// `op-104-stop-ordinary-path-drain-bound`): `stop_grace` is THE STOP's own wait for a
 /// graceful exit and means nothing on this path, where the child has already exited
@@ -77,7 +77,9 @@ fn next_wait(
 /// to 2x its value (60s in production) whenever a descendant inherited a copy of either
 /// pipe, and permanently leaked the blocked reader thread if that descendant never exited
 /// (independently reproduced three ways: `adv-u104stop-r4-ordinary-path-reuses-stop-grace-
-/// for-60s-latency-and-thread-leak`). The common case - the pipe closes the instant the
+/// for-60s-latency-and-thread-leak`). THE STOP joins within it too: its end has closed every
+/// copy of the pipes its tree held, so only a process the end reported it left can hold one,
+/// and a longer wait would end none. The common case - the pipe closes the instant the
 /// child itself exits - still joins in microseconds; this bound only matters for the rare
 /// stranger holding a leaked copy, and a few seconds is enough to distinguish "closing
 /// right now" from "never closing", which is all a diagnostic drain needs to prove. Not
@@ -117,13 +119,13 @@ pub struct Driver<'a> {
     pub scratch_root: String,
     /// THE STOP's own grace period (spec 104 criterion 6, architecture addendum §4.6):
     /// how long [`Driver::stop_for_wall_clock_silence`] waits, after closing the
-    /// session's input, for the child to exit on its own before forcing it via
-    /// [`crate::reap::end_child`] - [`STOP_GRACE`] in production. An INJECTED field, never a
-    /// read of that constant here - the same "the real duration is a value a test overrides on
-    /// the instance" seam this codebase already uses for a waited duration elsewhere
-    /// (`d-clock-seam`), so a test proving the FULL stop sequence never has to sit out a real
-    /// 30 seconds. `Driver::default()` (test-only) resolves it to [`STOP_GRACE`]; each
-    /// composition root sets it explicitly.
+    /// session's input, for the child to exit on its own before ending its tree
+    /// ([`crate::child_tree::ReapedChild::end`]) - [`STOP_GRACE`] in production. An INJECTED
+    /// field, never a read of that constant here - the same "the real duration is a value a
+    /// test overrides on the instance" seam this codebase already uses for a waited duration
+    /// elsewhere (`d-clock-seam`), so a test proving the FULL stop sequence never has to sit
+    /// out a real 30 seconds. `Driver::default()` (test-only) resolves it to [`STOP_GRACE`];
+    /// each composition root sets it explicitly.
     pub stop_grace: std::time::Duration,
     /// The environment the store selection hands every launch: the connection a spawn's bound
     /// `rigger` server opens the run's store with, empty on the local store. Set after
@@ -140,7 +142,17 @@ pub struct Driver<'a> {
     /// hands it the folding store it hands as `run_store`. `None` on a host that holds nothing,
     /// `rigger critique`'s: it appends no hold and stamps no close.
     pub hold_sink: Option<&'a dyn EventStore>,
+    /// How each session's process tree is held ([`crate::child_tree::Containment`]): the session
+    /// is spawned through [`crate::child_tree::TreeCommand`] contained so, and THE STOP and every
+    /// fault end the whole tree through the handle. Each composition root hands the containment
+    /// the running binary gives; the test default watches.
+    pub containment: &'a crate::child_tree::Containment,
 }
+
+/// The test default's containment: a watch the test chose.
+#[cfg(test)]
+static WATCHED: crate::child_tree::Containment =
+    crate::child_tree::Containment::Watch(crate::child_tree::Why::Chosen);
 
 // `Default` is a TEST convenience only: production always constructs `Driver` with real
 // injected stores at a composition root (`src/cli/run.rs`, `src/cli/critique.rs`), so a value
@@ -165,16 +177,17 @@ impl Default for Driver<'static> {
             handed_env: Vec::new(),
             beat_source: None,
             hold_sink: None,
+            containment: &WATCHED,
         }
     }
 }
 
-/// A started launch: the live child (stdin open, for THE STREAM, criterion 2, to write the first
-/// message on and close after the first `result`), the session id this host minted or continued
-/// for it, and the exact argv it ran with (kept for the caller's own diagnostics/tests; not
-/// re-derivable from `Child`).
+/// A started launch: the session's tree handle (stdin open, for THE STREAM, criterion 2, to write
+/// the first message on and close after the first `result`), the session id this host minted or
+/// continued for it, and the exact argv it ran with (kept for the caller's own diagnostics/tests;
+/// not re-derivable from the handle).
 pub struct Launch {
-    pub child: Child,
+    pub child: crate::child_tree::ReapedChild,
     pub session_id: String,
     /// The model this launch runs on, the `--model` it was given, empty for the default model:
     /// what a hold of this launch names.
@@ -382,8 +395,12 @@ impl Driver<'_> {
         )?;
 
         let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
-        let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
-        crate::claude_auth::apply_agent_credential(&mut cmd);
+        let launch_error = |e| Error(format!("claude_code driver: launch {:?}: {e}", opts.id));
+        let mut tree =
+            crate::child_tree::TreeCommand::new(bin, self.containment).map_err(launch_error)?;
+        let cmd = tree.command_mut();
+        cmd.current_dir(crate::subprocess::session_dir(&opts.dir));
+        crate::claude_auth::apply_agent_credential(cmd);
         cmd.args(&args);
         // The ONE build-environment authority's injection site for this driver (spec 65),
         // exactly like the cli driver applies it: every var the resolver derived, on top
@@ -401,9 +418,16 @@ impl Driver<'_> {
         cmd.stdin(Stdio::piped());
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        let child = cmd
-            .spawn()
-            .map_err(|e| Error(format!("claude_code driver: launch {:?}: {e}", opts.id)))?;
+        let child = tree.spawn().map_err(launch_error)?;
+        // A launch whose tree is watched where a containment was wanted says so on the store its
+        // launch records to, best-effort like every progress line.
+        if let Some(reason) = child.degraded() {
+            let line = format!(
+                "launch: session containment unavailable ({reason}); the session's processes are \
+                 watched, and one whose parent exits unseen can outlive it"
+            );
+            let _ = progress_store::record(store, &opts.run_id, &opts.id, &line);
+        }
 
         Ok(Launch {
             child,
@@ -524,28 +548,26 @@ impl Driver<'_> {
     /// this reader cannot parse is never silently lost - it still lands liveness, the
     /// transcript file, AND a progress line (below), just no structured record.
     ///
-    /// Every exit reaps the child through ONE mechanism, [`crate::reaped_child::ReapedChild`] -
-    /// the SAME guard the dashboard's own supervised child uses (adj-u104-stream round-3
-    /// REQUIRED FIX 2: a second, hand-rolled Drop-based reap guard duplicated that exact
-    /// concern; deleted in favor of reusing the canonical one, per this codebase's
-    /// standing one-reaping-mechanism precedent). `launch.child` is moved into it before
-    /// the stdout loop below, so the missing-stdout-pipe guard, a read error before any
-    /// result, and a `record_result_unless_ended` write failure all leave `reaper` in scope
-    /// with the process still possibly running behind it; dropping it ends it either way:
-    /// `try_wait` first, falling back to a best-effort end-then-collect through the same
-    /// handle when the process is not yet known to have exited, so no child outlives this
-    /// function's `Err`.
+    /// Every exit reaps the session through ONE mechanism, its tree handle
+    /// ([`crate::child_tree::ReapedChild`], `launch.child`) - the SAME guard the dashboard's own
+    /// supervised child uses (adj-u104-stream round-3 REQUIRED FIX 2: a second, hand-rolled
+    /// Drop-based reap guard duplicated that exact concern; deleted in favor of reusing the
+    /// canonical one, per this codebase's standing one-reaping-mechanism precedent). The
+    /// missing-stdout-pipe guard, a read error before any result, and a
+    /// `record_result_unless_ended` write failure all leave `reaper` in scope with the session
+    /// still possibly running behind it; dropping it ends the session's whole tree, so no process
+    /// of it outlives this function's `Err`.
     ///
     /// A CLEAN EOF is different (adj-u104-stream round-5 REQUIRED FIX,
     /// op-104-stream-clean-eof-waits-before-the-reap): the child closing its OWN stdout
     /// pipe is not proof it has exited - real post-output teardown (flushing telemetry,
     /// releasing a lock) can still be running - so THIS function tracks that one exit
-    /// shape (`ended_via_break` below) and, on a clean EOF ONLY, blocks on the child's own
-    /// handle (`reaper.child_mut().wait()`, no signal) BEFORE the trailing `drop(reaper)`,
-    /// so that teardown always finishes on its own first. Every other exit path (missing
-    /// stdout pipe, a read error before any result, the post-result-read-error `break`
-    /// below, a `record_result_unless_ended` failure) is unchanged: straight to the
-    /// signal-capable drop, since none of those is evidence the child is mid-teardown.
+    /// shape (`ended_via_break` below) and, on a clean EOF ONLY, blocks on the main's own
+    /// status (`reaper.wait()`, no signal) BEFORE it finishes with the tree, so that teardown
+    /// always finishes on its own first. Every exit that leaves the loop finishes with the tree
+    /// the one way ([`crate::child_tree::ReapedChild::finish`]): a session whose main has exited
+    /// is let go, what it left running running on, and one whose main still runs (the
+    /// post-result silence or read-error `break` below) is ended with its whole tree.
     ///
     /// A read error AFTER a result is already captured (adj-u104-stream round-2 REQUIRED
     /// FIX) is handled the same uniform way: the loop below just stops reading (`break`)
@@ -580,7 +602,7 @@ impl Driver<'_> {
     /// STOP (spec 104 criterion 6): stdout is likewise read on its OWN thread (the SAME
     /// stderr-deadlock reasoning applies to it too - this function must never itself sit
     /// blocked in `BufReader::lines()` with no way to notice silence), forwarding each
-    /// line ([`crate::reaped_child::line_channel`], disconnecting on a clean EOF) over a channel
+    /// line ([`crate::child_tree::line_channel`], disconnecting on a clean EOF) over a channel
     /// this function drains with
     /// `recv_timeout`, so `max_wall_clock` (0 = unbounded, [`crate::config::AgentDef`]'s
     /// own resolved bound) can be enforced against STREAM SILENCE - the session's silent time
@@ -591,12 +613,12 @@ impl Driver<'_> {
     /// the bound waits out the rest of it, at least [`UNBOUNDED_POLL`], or the poll when its
     /// records do not read ([`next_wait`]), and re-checks the child. A genuine expiry before any
     /// result exists runs THE STOP sequence (close the session's input ([`Pipes::close_input`]),
-    /// wait [`Driver::stop_grace`], end the child via [`crate::reap::end_child`] - the handle-bound
-    /// production helper, never a computed pid) and, short of THE RESUME FALLBACK below, records
-    /// the EXISTING [`SpawnResult::liveness_fault`] shape, recorded HERE by this host. An expiry
-    /// AFTER a result already landed is not a stop at all - it degrades to the SAME soft-break the
-    /// post-result read-error path already takes (round-2 precedent), letting the existing reap
-    /// decide the child's fate.
+    /// wait [`Driver::stop_grace`], end the session's tree through its handle - never a computed
+    /// pid) and, short of THE RESUME FALLBACK below, records the EXISTING
+    /// [`SpawnResult::liveness_fault`] shape, recorded HERE by this host. An expiry AFTER a result
+    /// already landed is not a stop at all - it degrades to the SAME soft-break the post-result
+    /// read-error path already takes (round-2 precedent), letting the finish decide the session's
+    /// fate.
     ///
     /// HOLD (spec 105): a `system/api_retry` line of a category whose row holds is a sighting
     /// ([`Driver::sight_retry`]). The first `result` closes the session's input whatever it says.
@@ -643,32 +665,29 @@ impl Driver<'_> {
             resumed_from: &launch.resumed_from,
             model: &launch.model,
         };
-        let mut reaper = crate::reaped_child::ReapedChild::new(launch.child);
+        let mut reaper = launch.child;
 
-        let stdout = reaper.child_mut().stdout.take().ok_or_else(|| {
+        let stdout = reaper.take_stdout().ok_or_else(|| {
             Error(format!(
                 "claude_code driver: {:?}: launch carried no stdout pipe",
                 opts.id
             ))
         })?;
         let stderr_drain = reaper
-            .child_mut()
-            .stderr
-            .take()
+            .take_stderr()
             .map(|stderr| std::thread::spawn(move || drain_child_stderr_tail(stderr)));
         // THE STOP watchdog needs a way to notice silence while blocked reading stdout,
         // so stdout is read on its own thread too (see the doc above) and forwarded here
         // over a channel this loop drains with a timeout instead of `BufRead::lines`'s
         // own unbounded blocking iterator.
-        let (line_rx, stdout_reader) = crate::reaped_child::line_channel(stdout);
+        let (line_rx, stdout_reader) = crate::child_tree::line_channel(stdout);
         // The first message goes on its own thread as well (see the doc above), which holds the
         // session's input until the host closes it.
         let (input_open, close) = std::sync::mpsc::channel();
         let message = launch.message;
-        let input =
-            reaper.child_mut().stdin.take().map(|stdin| {
-                std::thread::spawn(move || write_first_message(stdin, &message, close))
-            });
+        let input = reaper
+            .take_stdin()
+            .map(|stdin| std::thread::spawn(move || write_first_message(stdin, &message, close)));
         let mut pipes = Pipes {
             input_open: Some(input_open),
             input,
@@ -751,7 +770,7 @@ impl Driver<'_> {
                             // yet, on a BOUNDED launch only. Runs the whole sequence inline so
                             // the caller sees exactly one outcome for "this launch never
                             // produced a result". A resume silent to here never showed its
-                            // session: the same sequence ends the child first, then the hold read
+                            // session: the same sequence ends the session first, then the hold read
                             // chooses, the fallback answering a run proved unheld with no fault of
                             // its own.
                             if awaiting_session {
@@ -790,7 +809,7 @@ impl Driver<'_> {
                     // that has exited while a descendant still holds the stdout pipe will
                     // never send EOF, so its exit ends the read here as a session with no
                     // result (classified below); a live child keeps its turn.
-                    if matches!(reaper.child_mut().try_wait(), Ok(Some(_))) {
+                    if matches!(reaper.try_wait(), Ok(Some(_))) {
                         break;
                     }
                     continue;
@@ -983,32 +1002,25 @@ impl Driver<'_> {
         // `try_wait` treated "not yet known to have exited" the same as "gone missing",
         // so a child still finishing that teardown got force-ended mid-flight.
         // A direct BLOCKING wait - no signal - here on the clean-EOF path ONLY lets that
-        // teardown finish on its own first; `ReapedChild::drop` just below then finds
-        // `Ok(Some(_))` via its own `try_wait` and sends nothing.
+        // teardown finish on its own first; the finish just below then finds the main exited
+        // and lets the tree go, ending nothing.
         //
-        // The `break` path (a read error, or post-result silence) is
-        // UNCHANGED: neither is evidence of in-progress teardown, so it keeps going
-        // straight to the signal-capable drop exactly as before this fix.
+        // The `break` path (a read error, or post-result silence) is neither evidence of
+        // in-progress teardown nor of an exit: the finish just below ends the tree of a main
+        // still running, and lets go of one whose main has exited.
         if !ended_via_break {
             // Its input closes first, so a session still reading it sees the end and exits.
             pipes.close_input();
-            let _ = reaper.child_mut().wait();
+            let _ = reaper.wait();
         }
 
-        // Reap through the ONE canonical mechanism, on every exit path alike (a clean
-        // EOF, or the `break` above on a read error): `ReapedChild::drop`
-        // tries a non-blocking `try_wait` first - on a clean EOF the explicit `wait()`
-        // just above already collected it, so this alone reaps it with no signal sent -
-        // and falls back to a best-effort end-then-collect through the same handle only
-        // when the process is not yet known to have exited (the break path above, which
-        // never waited). Explicit, right here, rather than left to run at the function's
-        // end: the join just below depends on the child's stderr pipe having already
-        // closed.
-        drop(reaper);
-        // The reap just above ends only the ONE child handle it holds (spec 104 criterion 6
-        // round-4 fix): a descendant that inherited a copy of either pipe's write end
-        // before going silent keeps it open regardless, so both joins below are bounded
-        // ([`Driver::join_within`]) rather than a bare `join()` that could wait on such a
+        // Finish with the tree through the ONE canonical mechanism, on every exit path alike,
+        // right here rather than at the function's end: the join just below depends on the
+        // child's stderr pipe having already closed. An end reports what it left.
+        self.record_end(opts, &reaper.finish());
+        // A session let go leaves what its main started running: a descendant that inherited
+        // a copy of either pipe's write end keeps it open regardless, so both joins below are
+        // bounded ([`Driver::join_within`]) rather than a bare `join()` that could wait on such a
         // stranger forever - never a caller-visible wait for its own sake in the ordinary
         // case, where the thread has already hit EOF or is about to. Bounded by
         // [`ORDINARY_DRAIN_JOIN_BOUND`], NEVER `self.stop_grace` - this is not THE STOP,
@@ -1019,7 +1031,7 @@ impl Driver<'_> {
         // no-result path folds it into a classification below) - a handle that outruns
         // the bound, or whose thread panicked, degrades to an empty tail, same as no
         // stderr pipe at all.
-        let stderr_tail = self.join_pipes(opts, pipes, ORDINARY_DRAIN_JOIN_BOUND);
+        let stderr_tail = self.join_pipes(opts, pipes);
 
         match (result, read_error) {
             (Some(result), _) => Ok(StreamEnd::Result(result)),
@@ -1333,7 +1345,7 @@ impl Driver<'_> {
     /// running with its tools and without rigger's (2026-09-28 probe: the whole task ran).
     fn stop_for_launch_fault(
         &self,
-        reaper: crate::reaped_child::ReapedChild,
+        reaper: crate::child_tree::ReapedChild,
         pipes: Pipes,
         opts: &SpawnOpts,
         id: LaunchId,
@@ -1405,7 +1417,7 @@ impl Driver<'_> {
     /// ([`Driver::session_gone`]), and on any other the same line and ending as here.
     fn stop_for_wall_clock_silence(
         &self,
-        reaper: crate::reaped_child::ReapedChild,
+        reaper: crate::child_tree::ReapedChild,
         pipes: Pipes,
         opts: &SpawnOpts,
         id: LaunchId,
@@ -1459,18 +1471,20 @@ impl Driver<'_> {
     }
 
     /// THE STOP sequence itself (spec 104 STOP: "closes the session's input, waits 30 s, then
-    /// ends the child through the sanctioned lifecycle helper on the child's own handle"),
+    /// ends the session's tree through the handle the driver holds"),
     /// the ONE stop mechanism every ending that must stop a live session goes through - a
     /// silence expiry ([`Driver::stop_for_wall_clock_silence`], the full
     /// [`Driver::stop_grace`]), a resume silent with no session ([`Driver::read_stream`]'s stop
     /// arm, the full grace too) and a launch fault ([`Driver::stop_for_launch_fault`], no
     /// grace) - so none ever signals a session any other way. `grace` bounds only the
-    /// passive wait for the child to exit on its own; the pipe joins stay bounded by
-    /// [`Driver::stop_grace`] whatever `grace` is. Records nothing: what a stop MEANS is each
-    /// caller's own record.
+    /// passive wait for the main to exit on its own. The session's whole tree is then ended
+    /// through its handle ([`crate::child_tree::ReapedChild::end`]), whether its main needed
+    /// ending or wound down on its own within the grace, so no process the session started is
+    /// still running when the stop returns, short of what the end reports it left. Records
+    /// nothing but that report: what a stop MEANS is each caller's own record.
     fn stop_session(
         &self,
-        mut reaper: crate::reaped_child::ReapedChild,
+        mut reaper: crate::child_tree::ReapedChild,
         mut pipes: Pipes,
         opts: &SpawnOpts,
         grace: std::time::Duration,
@@ -1480,20 +1494,9 @@ impl Driver<'_> {
         // holds it until the end below ends that write.
         pipes.close_input();
 
-        // Snapshot the child's own descendants RIGHT NOW (spec 104 criterion 6 round-4
-        // fix, decision `op-104-stop-end-the-tree-and-bound-the-joins`) - BEFORE the
-        // passive grace wait just below, not after, and not inside `end_child` (which is
-        // not even called until that wait ends): a descendant a session forked but never
-        // `exec`'d reparents to its nearest surviving ancestor the INSTANT the session
-        // itself exits, gracefully or not, so a snapshot taken any later would already be
-        // too late for exactly the well-behaved case the grace wait below exists for - a
-        // session that notices its input closed and winds down entirely on its own,
-        // orphaning whatever it forked before reap::end_child ever gets a chance to look.
-        let descendants = crate::reap::snapshot_descendants(reaper.child_mut().id());
-
         // "waits a grace period" (`grace`: self.stop_grace at a silence expiry - 30s in
         // production, an injected shorter one in a test proving the full sequence): poll
-        // for the child exiting on its own, without blocking the full grace when it
+        // for the main exiting on its own, without blocking the full grace when it
         // already has. Bounded by
         // `saturating_duration_since` rather than a raw `now() < deadline` comparison: the
         // exact tie between `now()` and a fixed `Instant` a prior addition computed is
@@ -1504,59 +1507,46 @@ impl Driver<'_> {
             .saturating_duration_since(std::time::Instant::now())
             .is_zero()
         {
-            if matches!(reaper.child_mut().try_wait(), Ok(Some(_))) {
+            if matches!(reaper.try_wait(), Ok(Some(_))) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
-        // "then ends the child through the sanctioned lifecycle helper on the child's own
-        // handle" - the handle-bound production helper (reap.rs, spec 104 criterion 6's own
-        // decision `u104-stop-uses-reap-child-handle`): a no-op on the child itself if the
-        // grace wait above already collected it. It also ends the descendants snapshotted
-        // above regardless (round-4 fix) - a process the session forked but never `exec`'d,
-        // so it is reaped too rather than merely outliving the one handle this function
-        // ever held, whether the session itself needed signalling or wound down on its own.
-        crate::reap::end_child(reaper.child_mut(), descendants);
-
-        // That descendant walk is matched by PID-TREE membership alone, deliberately NEVER
-        // by cwd - NO worktree-wide sweep here: this spawn's worktree can be shared, right now, by a live
-        // SIBLING spawn (the review fan-out's own concurrent lenses,
-        // `run_review_agents_concurrently`, all passed the same dir), and a cwd-scanned
-        // match has no notion of which spawn owns a process - a sweep here would signal
-        // that sibling's own legitimate, in-progress work, not just this spawn's leftovers
-        // (round-2 reject `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree`, upheld
-        // against the round-1 fix this replaces). A sibling's process hangs off a DIFFERENT
-        // parent, so it can never appear in this child's own descendant tree regardless of
-        // what it shares on disk - safe by construction, not by omission.
-        //
-        // A descendant that had ALREADY escaped this child's process tree before the
-        // snapshot above ever ran (reparented to init by a double fork, say) is invisible
-        // to this walk and stays untouched - the bounded joins just below are what keep
-        // THE STOP returning regardless of what such a stranger still does with the pipe.
-
+        // "then ends the session's tree through the handle the driver holds": the tree handle
+        // ends every process the session started, the main among them when the grace above did
+        // not see it exit. The tree is the session's own, held from its spawn, never matched by
+        // cwd - NO worktree-wide sweep here: this spawn's worktree can be
+        // shared, right now, by a live SIBLING spawn (the review fan-out's own concurrent lenses,
+        // `run_review_agents_concurrently`, all passed the same dir), and a cwd-scanned match has
+        // no notion of which spawn owns a process (round-2 reject
+        // `adv-u104stop-r2-stop-reaps-concurrent-sibling-worktree`). A sibling's process is in
+        // another session's tree, so it is never in this one.
+        self.record_end(opts, &reaper.end());
         drop(reaper);
-        // Bounded (spec 104 criterion 6 round-4 fix, [`Driver::join_within`]): the child's
-        // own pipe copy closes the moment `end_child` above finishes it and its known
-        // descendants, but a descendant that had ALREADY escaped the tree before that
-        // snapshot ran still holds its own copy open, and no signal this function sent
-        // could ever reach it - this is the backstop that keeps THE STOP returning anyway.
-        // Bounded by `self.stop_grace` here (THIS is THE STOP's own wait-for-a-graceful-
-        // exit concern, unlike `read_stream`'s ORDINARY-exit joins just below, which use
-        // the dedicated `ORDINARY_DRAIN_JOIN_BOUND` instead).
-        self.join_pipes(opts, pipes, self.stop_grace);
+
+        // Bounded ([`Driver::join_within`]) by [`ORDINARY_DRAIN_JOIN_BOUND`], as the ordinary
+        // end's joins are: an ended tree has closed every copy of the session's pipes it held, so
+        // the joins return at once, and only a process the end reported it left (a watched
+        // tree's escape) can hold one open, which no wait here would end. `stop_grace` keeps its
+        // one meaning, the wait for a graceful exit above.
+        self.join_pipes(opts, pipes);
     }
 
-    /// Join a reaped launch's pipe threads, each within `bound` ([`Driver::join_within`]), and
-    /// return the stderr tail: empty when its drain outran the bound, panicked or had no pipe.
-    /// The session's input closes first ([`Pipes::close_input`]), so the writer returns, and a
-    /// write that failed leaves a progress line naming its error.
-    fn join_pipes(
-        &self,
-        opts: &SpawnOpts,
-        mut pipes: Pipes,
-        bound: std::time::Duration,
-    ) -> Vec<u8> {
+    /// Say on the spawn's progress what an end of its session's tree left ([`end_line`]), when
+    /// it left anything.
+    fn record_end(&self, opts: &SpawnOpts, report: &crate::child_tree::EndReport) {
+        if let Some(line) = end_line(report) {
+            self.record_progress(opts, &line);
+        }
+    }
+
+    /// Join a finished launch's pipe threads, each within [`ORDINARY_DRAIN_JOIN_BOUND`]
+    /// ([`Driver::join_within`]), and return the stderr tail: empty when its drain outran the
+    /// bound, panicked or had no pipe. The session's input closes first ([`Pipes::close_input`]),
+    /// so the writer returns, and a write that failed leaves a progress line naming its error.
+    fn join_pipes(&self, opts: &SpawnOpts, mut pipes: Pipes) -> Vec<u8> {
+        let bound = ORDINARY_DRAIN_JOIN_BOUND;
         pipes.close_input();
         if let Some(Err(e)) = pipes
             .input
@@ -1601,9 +1591,8 @@ impl Driver<'_> {
     /// (spec 104 criterion 6 round-4 fix, decision
     /// `op-104-stop-end-the-tree-and-bound-the-joins`): a process the driven child forked
     /// but never `exec`'d can inherit a copy of the stdout/stderr pipe's write end, and once
-    /// that copy has ALREADY escaped the child's own process tree - reparented before
-    /// [`crate::reap::end_child`]'s descendant snapshot ever ran, so no signal this host
-    /// sends can reach it - nothing this function does closes it: the thread blocked
+    /// that process runs on past the session's end - let go at an ordinary end, or escaped a
+    /// watched tree before its end - nothing this function does closes it: the thread blocked
     /// reading that pipe would otherwise never see EOF, and neither [`Driver::read_stream`]
     /// nor [`Driver::stop_for_wall_clock_silence`] would ever return. Polling
     /// `JoinHandle::is_finished` against a deadline, rather than calling `join()` directly,
@@ -1612,13 +1601,11 @@ impl Driver<'_> {
     /// through, so a stop (and an ordinary stream end) both return on a bounded clock no
     /// matter who else holds the pipe.
     ///
-    /// `bound` is the caller's own concern, never this function's: THE STOP's two joins
-    /// pass `self.stop_grace` (its own wait-for-a-graceful-exit duration, injected and
-    /// test-overridable), while [`Driver::read_stream`]'s ORDINARY-exit joins pass the
-    /// dedicated, un-injected [`ORDINARY_DRAIN_JOIN_BOUND`] - the two concerns share this
-    /// mechanism but must never share a magnitude (adj-u104stop-r4-verdict-reject REQUIRED
-    /// FIX, `op-104-stop-ordinary-path-drain-bound`: reusing `stop_grace` on the ordinary
-    /// path stalled an already-captured successful result by up to 2x its value).
+    /// `bound` is the caller's own concern, never this function's: every join passes the
+    /// dedicated, un-injected [`ORDINARY_DRAIN_JOIN_BOUND`], never `self.stop_grace`, the stop's
+    /// wait for a graceful exit (adj-u104stop-r4-verdict-reject REQUIRED FIX,
+    /// `op-104-stop-ordinary-path-drain-bound`: reusing `stop_grace` on the ordinary path
+    /// stalled an already-captured successful result by up to 2x its value).
     ///
     /// `label` names which pipe this was, for the progress line recorded when `handle`
     /// outruns the deadline - the caller's only visible trace of a stranger it can neither
@@ -1830,17 +1817,20 @@ impl HoldProbe for Driver<'_> {
         }
         let mut category = None;
         let mut passed = false;
-        let mut canary_cmd = crate::subprocess::command_in(bin, root);
-        crate::claude_auth::apply_agent_credential(&mut canary_cmd);
-        let spawned = canary_cmd
-            .args(canary_args(&owed.held.model))
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn();
-        if let Ok(child) = spawned {
-            let mut canary = crate::reaped_child::ReapedChild::new(child);
-            let mut input = canary.child_mut().stdin.take();
+        let spawned =
+            crate::child_tree::TreeCommand::new(bin, self.containment).and_then(|mut tree| {
+                let canary_cmd = tree.command_mut();
+                canary_cmd.current_dir(crate::subprocess::session_dir(root));
+                crate::claude_auth::apply_agent_credential(canary_cmd);
+                canary_cmd
+                    .args(canary_args(&owed.held.model))
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
+                tree.spawn()
+            });
+        if let Ok(mut canary) = spawned {
+            let mut input = canary.take_stdin();
             if let Some(stdin) = input.as_mut() {
                 let _ = writeln!(stdin, "{}", first_user_message(CANARY_TASK));
             }
@@ -1862,6 +1852,11 @@ impl HoldProbe for Driver<'_> {
                 }
                 std::ops::ControlFlow::Continue(())
             });
+            // A canary that has exited is let go, and one still running is ended with its tree.
+            // It writes no store, so what an end left is said on stderr ([`canary_end_line`]).
+            if let Some(line) = canary_end_line(&canary.finish()) {
+                rigger_process::whole_line::say(format_args!("{line}"));
+            }
         }
         if passed {
             ProbeOutcome::Passed
@@ -2029,6 +2024,57 @@ fn api_retry_line(v: &Value) -> String {
     let (delay_ms, category) = api_retry_fields(v);
     let attempt = v.get("attempt").and_then(Value::as_u64).unwrap_or(0);
     format!("waiting: {category} (attempt {attempt}, retrying in {delay_ms}ms)")
+}
+
+/// The progress line an end of a session's tree records: what it left ([`end_text`]), on the
+/// stream. `None` when it left nothing and nothing was refused.
+fn end_line(report: &crate::child_tree::EndReport) -> Option<String> {
+    end_text(report).map(|text| format!("stream: {text}"))
+}
+
+/// The line the hold probe says on stderr when its canary's end left anything ([`end_text`]),
+/// since the probe writes no store. `None` when it left nothing and nothing was refused.
+fn canary_end_line(report: &crate::child_tree::EndReport) -> Option<String> {
+    end_text(report).map(|text| format!("rigger: the hold probe's canary: {text}"))
+}
+
+/// What an end of a session's tree left ([`crate::child_tree::EndReport`]): each call the OS
+/// refused it, as the report says it; then how many processes it signalled and could not end, and
+/// how many it found outside the tree and never signalled, each named by pid and program, a
+/// still-frozen one marked so. `None` when it left nothing and nothing was refused.
+fn end_text(report: &crate::child_tree::EndReport) -> Option<String> {
+    let named = |left: &[crate::child_tree::Leftover]| {
+        left.iter()
+            .map(|left| {
+                let frozen = if left.stopped { ", stopped" } else { "" };
+                format!("{} ({}{frozen})", left.pid, left.program)
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if !report.residue.is_empty() {
+        parts.push(format!(
+            "{} it signalled and could not end: {}",
+            report.residue.len(),
+            named(&report.residue)
+        ));
+    }
+    if !report.skipped.is_empty() {
+        parts.push(format!(
+            "{} outside the session's tree, never signalled: {}",
+            report.skipped.len(),
+            named(&report.skipped)
+        ));
+    }
+    let left = (!parts.is_empty()).then(|| {
+        format!(
+            "the end of the session left processes running; {}",
+            parts.join("; ")
+        )
+    });
+    let said: Vec<String> = report.faults.iter().cloned().chain(left).collect();
+    (!said.is_empty()).then(|| said.join("; "))
 }
 
 /// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the
@@ -3111,14 +3157,13 @@ mod tests {
     fn read_fixture_lines(launch: &mut Launch) -> Vec<String> {
         let (input_open, close) = std::sync::mpsc::channel();
         drop(input_open);
-        let stdin = launch.child.stdin.take().expect("piped stdin");
+        let stdin = launch.child.take_stdin().expect("piped stdin");
         write_first_message(stdin, &launch.message, close).expect("the fixture reads its input");
         let child = &mut launch.child;
         child.wait().expect("fixture agent exits");
         let mut out = String::new();
         child
-            .stdout
-            .take()
+            .take_stdout()
             .expect("piped stdout")
             .read_to_string(&mut out)
             .unwrap();
@@ -3455,7 +3500,7 @@ mod tests {
             .launch(&AgentDef::default(), "task", &o, &store)
             .unwrap();
         assert!(
-            launch.child.stdin.is_some(),
+            launch.child.take_stdin().is_some(),
             "stdin must stay open for the reader"
         );
         // Reap: `wait()` closes the input first, so the fixture reads its end and exits on its
@@ -3490,7 +3535,7 @@ mod tests {
         let mut launch = driver
             .launch(&AgentDef::default(), "task", &o, &store)
             .unwrap();
-        drop(launch.child.stdin.take());
+        drop(launch.child.take_stdin());
         launch.child.wait().unwrap();
 
         assert_eq!(
@@ -3789,6 +3834,145 @@ mod tests {
             })
             .collect();
         assert_eq!(launches, vec![0, 1]);
+    }
+
+    /// A launch contained as `how` records `said` on its progress: a watch where a containment
+    /// was wanted is named, and a watch the test chose is not.
+    fn assert_launch_says(how: crate::child_tree::Containment, said: &[&str]) {
+        let store = Store::open(":memory:").unwrap();
+        let driver = Driver {
+            bin: fixture_bin(),
+            rigger_bin: "rigger".to_string(),
+            containment: &how,
+            ..Driver::default()
+        };
+        let o = opts("u/implementer#0");
+        let mut launch = driver
+            .launch(&AgentDef::default(), "t", &o, &store)
+            .unwrap();
+        launch.child.wait().unwrap();
+
+        let activities: Vec<String> = crate::progress::read_run(&store, &o.run_id)
+            .unwrap()
+            .iter()
+            .filter(|e| e.type_ == crate::progress::TYPE_AGENT_PROGRESS)
+            .map(|e| {
+                serde_json::from_slice::<crate::progress::AgentProgress>(&e.data)
+                    .unwrap()
+                    .activity
+            })
+            .collect();
+        assert_eq!(activities, said);
+    }
+
+    crate::test_cases! {
+        a_launch_watched_for_a_keeper_that_failed_its_probe_says_so: assert_launch_says(
+            crate::child_tree::Containment::Watch(crate::child_tree::Why::ProbeFailed(
+                "no answer".to_string(),
+            )),
+            &["launch: session containment unavailable (the session keeper failed its probe: no \
+               answer); the session's processes are watched, and one whose parent exits unseen \
+               can outlive it"],
+        );
+        a_launch_whose_host_chose_no_containment_says_so: assert_launch_says(
+            crate::child_tree::Containment::Watch(crate::child_tree::Why::NotChosen),
+            &["launch: session containment unavailable (the host chose no containment); the \
+               session's processes are watched, and one whose parent exits unseen can outlive \
+               it"],
+        );
+        a_launch_watched_by_the_tests_choice_says_nothing: assert_launch_says(
+            crate::child_tree::Containment::Watch(crate::child_tree::Why::Chosen),
+            &[],
+        );
+    }
+
+    /// The line an end that answered `residue`, `skipped` and `faults` is recorded as, if any.
+    fn assert_end_line(
+        residue: &[(u32, &str, bool)],
+        skipped: &[(u32, &str, bool)],
+        faults: &[&str],
+        expected: Option<&str>,
+    ) {
+        let left = |rows: &[(u32, &str, bool)]| {
+            rows.iter()
+                .map(|&(pid, program, stopped)| crate::child_tree::Leftover {
+                    pid,
+                    program: program.to_string(),
+                    stopped,
+                })
+                .collect()
+        };
+        let report = crate::child_tree::EndReport {
+            residue: left(residue),
+            skipped: left(skipped),
+            faults: faults.iter().map(|fault| fault.to_string()).collect(),
+            by_pid_because: None,
+        };
+        assert_eq!(end_line(&report).as_deref(), expected);
+    }
+
+    crate::test_cases! {
+        an_end_that_left_nothing_is_no_line: assert_end_line(&[], &[], &[], None);
+        an_end_that_could_not_end_a_process_names_it_and_whether_it_is_stopped: assert_end_line(
+            &[(41, "sleep", false), (42, "node", true)],
+            &[],
+            &[],
+            Some(
+                "stream: the end of the session left processes running; 2 it signalled and \
+                 could not end: 41 (sleep), 42 (node, stopped)",
+            ),
+        );
+        an_end_that_found_a_process_outside_the_tree_names_it_as_never_signalled:
+            assert_end_line(
+                &[(41, "sleep", false)],
+                &[(77, "daemon", false)],
+                &[],
+                Some(
+                    "stream: the end of the session left processes running; 1 it signalled and \
+                     could not end: 41 (sleep); 1 outside the session's tree, never signalled: \
+                     77 (daemon)",
+                ),
+            );
+        an_end_the_os_refused_says_why: assert_end_line(
+            &[],
+            &[],
+            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
+            Some(
+                "stream: the job of session 7 could not be ended (denied), so the end did not \
+                 wait for it",
+            ),
+        );
+        an_end_that_hit_a_fault_and_left_a_process_says_both: assert_end_line(
+            &[(41, "sleep", false)],
+            &[],
+            &["the job of session 7 could not be let go (denied)"],
+            Some(
+                "stream: the job of session 7 could not be let go (denied); the end of the \
+                 session left processes running; 1 it signalled and could not end: 41 (sleep)",
+            ),
+        );
+    }
+
+    crate::test_cases! {
+        a_canary_end_that_left_nothing_says_nothing: assert_eq!(
+            canary_end_line(&crate::child_tree::EndReport::default()),
+            None
+        );
+        a_canary_end_that_left_a_process_says_so_naming_the_canary: assert_eq!(
+            canary_end_line(&crate::child_tree::EndReport {
+                residue: vec![crate::child_tree::Leftover {
+                    pid: 41,
+                    program: "claude".to_string(),
+                    stopped: false,
+                }],
+                ..crate::child_tree::EndReport::default()
+            })
+            .as_deref(),
+            Some(
+                "rigger: the hold probe's canary: the end of the session left processes \
+                 running; 1 it signalled and could not end: 41 (claude)"
+            )
+        );
     }
 
     // ---- THE STREAM (spec 104 criterion 2): the pure per-line mappings ----

@@ -18,9 +18,11 @@
 # `authentication_failed` class and an `is_error` `result`, and outlives the close of its input.
 # `answer-another-session` answers as `answer` does under a `system/init` naming the session
 # `sess-ran-as`, not the one its launch named, as a session the binary did not continue would.
-# `unreadable-pipes-held` is `unreadable` with a descendant holding the output pipes past the reap,
-# which keeps the host's drain joins open; the end of its input is how the descendant sees the
-# reap, since the host's handle on that input drops with the child. Each stays past that point
+# `unreadable-pipes-held` is `unreadable` with a process holding the output pipes past the reap,
+# which keeps the host's drain joins open. It leaves the session's tree (a double fork) before the
+# unreadable line, as an escaped process does, so the end of the session never reaches it; the end
+# of its input is how it sees the reap, since the host closes that input once the session is
+# reaped. Each stays past that point
 # until the test lands what it lands there ([`stay_until_released`]). A checked-in executable
 # fixture (never written at test time), for the same reason as every sibling fixture here: no
 # concurrent test's fork+exec can inherit a write fd to it.
@@ -128,10 +130,12 @@ stuck)
     ;;
 unreadable-pipes-held)
     exec 3<&0
-    {
-        wait_for_input_to_close <&3
-        stay_until_released
-    } &
+    (
+        {
+            wait_for_input_to_close <&3
+            stay_until_released
+        } &
+    )
     printf '\377\376\n'
     exec sleep 30
     ;;

@@ -22,7 +22,9 @@
 
 use crate::common;
 
-use common::cli::{run_payloads, run_recording, run_rigger_envs};
+#[cfg(unix)]
+use common::cli::run_payloads;
+use common::cli::{run_recording, run_rigger_envs};
 use common::cli::{write_workflow_fixture, REVIEWLESS_GIT_UNIT_WORKFLOW};
 use common::git::temp_git_project_with_commit;
 use common::git::{git_ok, git_out};
@@ -112,6 +114,8 @@ rigger::test_cases! {
 
 /// A run from a symlink onto the main tree is not refused as a linked worktree: it drives the
 /// unit's implementer as a run from the real path does.
+// Unix only: the symlink is made by std's unix call.
+#[cfg(unix)]
 #[test]
 fn a_run_via_a_symlinked_main_tree_is_not_refused() {
     let dir = temp_git_project_with_commit();

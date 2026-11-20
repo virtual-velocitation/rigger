@@ -257,6 +257,15 @@ mod tests {
         cmd.get_current_dir()
     }
 
+    /// The program [`command`] spawns for `name`: on Windows the path [`find_executable`]
+    /// resolves it to over [`SearchPath::ambient`], when it resolves one, else `name` itself.
+    fn program(name: &str) -> OsString {
+        let resolved = cfg!(windows)
+            .then(|| find_executable(&SearchPath::ambient(), name))
+            .flatten();
+        resolved.map_or_else(|| name.into(), PathBuf::into_os_string)
+    }
+
     crate::test_cases! {
         /// An empty directory runs the child in this process's own working directory, `.`.
         command_in_an_empty_dir_runs_the_child_in_this_processs_own:
@@ -272,7 +281,7 @@ mod tests {
     #[test]
     fn git_in_anchors_git_at_the_directory() {
         let cmd = git_in("/repo").unwrap();
-        assert_eq!(cmd.get_program(), "git");
+        assert_eq!(cmd.get_program(), program("git"));
         let args: Vec<&OsStr> = cmd.get_args().collect();
         assert_eq!(args, vec![OsStr::new("-C"), OsStr::new("/repo")]);
         assert_eq!(cwd_of(&cmd), None);
@@ -309,8 +318,9 @@ mod tests {
         }
     }
 
-    /// `shell_command` is the host's shell given the run whole - `cmd` and its one raw argument
-    /// on Windows, `sh -c <run>` elsewhere - in the directory, and nothing else.
+    /// `shell_command` is the host's shell given the run whole - `cmd`, as [`command`] spawns
+    /// it, and its one raw argument on Windows, `sh -c <run>` elsewhere - in the directory, and
+    /// nothing else.
     #[test]
     fn shell_command_is_the_hosts_shell_given_the_run_in_the_directory() {
         let run = r#"cargo test "a b""#;
@@ -329,7 +339,7 @@ mod tests {
                 cmd.get_envs().count()
             ),
             (
-                OsStr::new(program),
+                self::program(program).as_os_str(),
                 args.iter().map(OsStr::new).collect::<Vec<_>>(),
                 Some(dir),
                 0

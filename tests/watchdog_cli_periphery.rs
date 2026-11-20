@@ -42,9 +42,9 @@ use common::cli::seed_order_signature;
 use common::cli::seed_run_events;
 use common::cli::temp_project;
 use common::cli::temp_store_project;
+use rigger::child_tree::line_channel;
 use rigger::eventstore::namespace::Namespaced;
 use rigger::eventstore::sqlite::Store;
-use rigger::reaped_child::line_channel;
 
 // --- `rigger watch --once`: the composition root, driven through the real binary ---
 
