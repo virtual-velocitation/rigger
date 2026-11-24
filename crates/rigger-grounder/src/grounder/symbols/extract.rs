@@ -4204,7 +4204,7 @@ fn product() {}
         let member = |name: &str| Some(qualifier(name, false));
         // (the source, its call references' names and qualifiers in order)
         type Row = (&'static str, Vec<(&'static str, Option<Qualifier>)>);
-        let table: [Row; 18] = [
+        let table: [Row; 21] = [
             ("fn f() { Store::open(); }\n", vec![("open", path("Store"))]),
             (
                 "impl<T> Store<T> { fn f() { Self::new(); } }\n",
@@ -4225,6 +4225,18 @@ fn product() {}
             (
                 "fn f() { Memo::<K>::new(); }\n",
                 vec![("new", path("Memo"))],
+            ),
+            (
+                "fn f() { a::Memo::<K>::new(); }\n",
+                vec![("new", path("Memo"))],
+            ),
+            (
+                "fn f() { crate::a::Memo::<K>::new(); }\n",
+                vec![("new", path("Memo"))],
+            ),
+            (
+                "fn f() { Memo::<K>::Inner::<J>::new(); }\n",
+                vec![("new", path("Inner"))],
             ),
             (
                 "fn f() { Store::open::<u8>(); }\n",
