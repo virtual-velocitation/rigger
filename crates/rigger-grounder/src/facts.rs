@@ -5,7 +5,7 @@
 //! [`extractor_protocol`]; this module is no extractor of its own, and its one language knowledge
 //! is the doc rules [`FactsExtractor`]'s [`Extract::doc_text`] reads a doc span's text by: Rust's,
 //! which strips its lines to their comment text, and Python's, which reads its docstring's body,
-//! dedented. Every name is kept as written and
+//! its parts joined, dedented. Every name is kept as written and
 //! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
@@ -459,25 +459,32 @@ fn plain_literal<'t>(text: &'t str, closer: &str) -> (&'t str, &'t str) {
 
 /// The text of a Python docstring span's `raw` lines: the body of the string literal the span's
 /// first quote opens - three of that quote when it opens three, else the one - up to its own
-/// closer ([`plain_literal`]), its prefix (`r`, `u`) and whatever follows the closer dropped and
-/// its escapes not decoded; empty when the span holds no quote. The body is dedented as PEP 257
-/// trims a docstring: its first line trimmed; every later line stripped of the least indent of the
-/// later lines that are not blank, a tab counting as one column, and its end trimmed; the blank
-/// lines before the first line of text and after the last dropped; the lines joined by `\n`. The
-/// span's first quote is read as the docstring's opener, so a docstring on its header's line after
-/// a quote of the header's own (`def f(x="a"): """Doc."""`) is read from that quote.
+/// closer ([`plain_literal`]), joined with the body of each literal that continues it as an
+/// implicit concatenation ([`next_python_part`]), as Python joins `"a" "b"` into `ab`, each
+/// prefix (`r`, `u`) and whatever follows the last closer dropped and the escapes not decoded;
+/// empty when the span holds no quote. The joined body is dedented as PEP 257 trims a docstring:
+/// its first line trimmed; every later line stripped of the least indent of the later lines that
+/// are not blank, a tab counting as one column, and its end trimmed; the blank lines before the
+/// first line of text and after the last dropped; the lines joined by `\n`. The span's first
+/// quote is read as the docstring's opener, so a docstring on its header's line after a quote of
+/// the header's own (`def f(x="a"): """Doc."""`) is read from that quote.
 fn python_doc_text(raw: &str) -> String {
     let Some(open) = raw.find(['"', '\'']) else {
         return String::new();
     };
-    let quoted = &raw[open..];
-    let triple = quoted[..1].repeat(3);
-    let closer = if quoted.starts_with(&triple) {
-        triple.as_str()
-    } else {
-        &quoted[..1]
-    };
-    let body = plain_literal(&quoted[closer.len()..], closer).0;
+    let mut body = String::new();
+    let mut part = Some(&raw[open..]);
+    while let Some(quoted) = part {
+        let triple = quoted[..1].repeat(3);
+        let closer = if quoted.starts_with(&triple) {
+            triple.as_str()
+        } else {
+            &quoted[..1]
+        };
+        let (text, after) = plain_literal(&quoted[closer.len()..], closer);
+        body.push_str(text);
+        part = next_python_part(after);
+    }
     let indent = |line: &str| line.chars().take_while(|c| c.is_whitespace()).count();
     let margin = body
         .split('\n')
@@ -504,6 +511,27 @@ fn python_doc_text(raw: &str) -> String {
         (Some(first), Some(last)) => lines[first..=last].join("\n"),
         _ => String::new(),
     }
+}
+
+/// The text from the opening quote of the Python string literal that continues an implicit
+/// concatenation after `text`, the text after a part's closer: the whitespace and line breaks, a
+/// `\` that continues a line and each `#` comment to its line's end before it are passed over,
+/// then its prefix's letters (`r`, `u`). None when anything else comes first: a `)`, a `;`, other
+/// code or the span's end.
+fn next_python_part(text: &str) -> Option<&str> {
+    let mut rest = text;
+    loop {
+        rest = rest.trim_start();
+        if let Some(comment) = rest.strip_prefix('#') {
+            rest = comment.split_once('\n').map_or("", |(_, after)| after);
+        } else if let Some(continued) = rest.strip_prefix('\\') {
+            rest = continued;
+        } else {
+            break;
+        }
+    }
+    let quoted = rest.trim_start_matches(|c: char| c.is_ascii_alphabetic());
+    quoted.starts_with(['"', '\'']).then_some(quoted)
 }
 
 /// The body of the raw Rust string literal whose `r` ends just before `text` (`r".."`,
@@ -2084,7 +2112,7 @@ pub(crate) mod tests {
             // Go
             ("go", "go-tags-v3", "4d23a95104b19556"),
             // Python
-            ("py", "python-tags-v2", "e15e2d886dfa5e1f"),
+            ("py", "python-tags-v2", "ca3c7d0d1a679ab9"),
         ];
         const PINNED_FACTS: (&str, &str) = ("facts-v6", "006133eb2aae6c76");
         fn digest(facts: &impl std::fmt::Debug) -> String {

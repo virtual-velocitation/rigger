@@ -233,6 +233,22 @@ const GO_DEFINITION_TAGS: &str = r#"
 (method_elem name: (field_identifier) @name) @definition.method
 "#;
 
+// The statement a Python docstring is, spelled once for `PYTHON_TAGS`'s class, function and
+// module docstring patterns, a literal its own macro names since `concat!` takes literals alone:
+// a string, an implicit concatenation of strings or either in one pair of parentheses, each part
+// and each comment between parts a `@doc`, none of them a literal whose prefix holds `b`, `f` or
+// `t` (a bytes, formatted or template literal, which is no str).
+macro_rules! python_docstring {
+    () => {
+        r#"(expression_statement . [
+      (string) @doc
+      (concatenated_string [(string) (comment)]+ @doc)
+      (parenthesized_expression
+        [(string) @doc (concatenated_string [(string) (comment)]+ @doc)])
+    ] . (#not-match? @doc "^[A-Za-z]*[bBfFtT][A-Za-z]*[\"']"))"#
+    };
+}
+
 /// The Python `tags` query. The upstream `tree-sitter-python` `tags.scm` tags a module-level
 /// assignment whose target is an identifier a constant whatever its value, so a chained
 /// assignment (`x = y = f()`) tags its first target alone over the whole chain, every call in it
@@ -243,19 +259,29 @@ const GO_DEFINITION_TAGS: &str = r#"
 /// off the parsed tree by `extract`. Every def is tagged a function, which `extract` lowers to a
 /// method when its nearest enclosing definition is a class.
 ///
-/// Spec 117 (OTHER LANGUAGES): a class's or a function's docstring, the first statement of its
-/// body when that statement is a string alone, a prefixed one included, is its `@doc`, a comment
-/// before it aside; the module's, after any comments, is a match that tags nothing, which gives
-/// the file its doc span ([`CompiledTags::tags_in`]). Of the patterns naming one node the
-/// earliest makes its tag, so their order decides: a call on an object that is exactly a
+/// Spec 117 (OTHER LANGUAGES): a docstring is found as Python finds one, the first statement of a
+/// class's or a function's body, or of the module, comments before it aside, when that statement
+/// is a str literal alone: one string, an implicit concatenation of strings (`"a" "b"`, a comment
+/// between parts included) or either in one pair of parentheses (`("P.")`), every part and comment
+/// of it a `@doc`. A bytes, formatted or template literal, whose prefix holds `b`, `f` or `t`, is
+/// no str, so a first statement holding one is no docstring and gives no span. The shape is spelled
+/// once, in `python_docstring!`. The query reaches one pair of parentheses, so `(("N."))`, a
+/// docstring to Python, gives none. A class's or a function's docstring is its `@doc`, matched by
+/// a pattern ahead of the plain one that tags the definition whatever its first statement, so a
+/// definition with no docstring stays a definition; the module's is a match that tags nothing,
+/// which gives the file its doc span ([`CompiledTags::tags_in`]). Of the patterns naming one node
+/// the earliest makes its tag, so their order decides: a call on an object that is exactly a
 /// capitalised identifier is qualified by it, `Shape.area()` the call `Shape.area`, ahead of the
 /// upstream call; a base class, a name, an attribute's leaf or a subscript's value, is an
 /// `implementation`, a keyword argument none; a capitalised identifier a `type` node holds within
-/// three levels is a `type`, unqualified, an all-caps one included; an all-caps name read, an
-/// attribute's leaf included, is a `constant`; and any other attribute leaf, read or assigned and
-/// not called, is a `field`. The last two are qualified by their object when it is exactly a
-/// capitalised identifier, `Config.MAX` and `Shape.side`.
-const PYTHON_TAGS: &str = r#"
+/// three levels is a `type`, unqualified, an all-caps one included; an attribute's leaf read or
+/// assigned and not called, on an object that is exactly a capitalised identifier, is a `field`
+/// qualified by that object, `Shape.side` and the member constant `Config.MAX` alike, since a
+/// class body's assignment is a field; any other all-caps name read, an attribute's leaf included
+/// (`cfg.TIMEOUT`), is a `constant`; and any other attribute leaf, read or assigned and not
+/// called, is a `field`.
+const PYTHON_TAGS: &str = concat!(
+    r#"
 (module (expression_statement (assignment left: (identifier) @name !right) @definition.constant))
 (module
   (expression_statement
@@ -266,13 +292,21 @@ const PYTHON_TAGS: &str = r#"
 
 (class_definition
   name: (identifier) @name
-  body: (block . (expression_statement . (string) @doc .)?)) @definition.class
+  ":" . (comment)* . body: (block . "#,
+    python_docstring!(),
+    r#")) @definition.class
+(class_definition name: (identifier) @name) @definition.class
 
 (function_definition
   name: (identifier) @name
-  body: (block . (expression_statement . (string) @doc .)?)) @definition.function
+  ":" . (comment)* . body: (block . "#,
+    python_docstring!(),
+    r#")) @definition.function
+(function_definition name: (identifier) @name) @definition.function
 
-(module . (comment)* . (expression_statement . (string) @doc .))
+(module . (comment)* . "#,
+    python_docstring!(),
+    r#")
 
 (call
   function: (attribute
@@ -305,20 +339,15 @@ const PYTHON_TAGS: &str = r#"
 
 ((attribute
   object: (identifier) @qualifier.member
-  attribute: (identifier) @name @reference.constant)
-  (#match? @qualifier.member "^[A-Z]")
-  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+  attribute: (identifier) @name @reference.field)
+  (#match? @qualifier.member "^[A-Z]"))
 ((attribute attribute: (identifier) @name @reference.constant)
   (#match? @name "^[A-Z][A-Z0-9_]*$"))
 ((primary_expression/identifier) @name @reference.constant
   (#match? @name "^[A-Z][A-Z0-9_]*$"))
-
-((attribute
-  object: (identifier) @qualifier.member
-  attribute: (identifier) @name @reference.field)
-  (#match? @qualifier.member "^[A-Z]"))
 (attribute attribute: (identifier) @name @reference.field)
-"#;
+"#
+);
 
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, the `tags` query the
 /// extractor runs over a file in that language, the grammar's node kinds that construct an
@@ -1392,6 +1421,12 @@ class Cap(typing.Generic[T]):
     pass
 def fit(k: typing.Optional[Box]) -> A | B | C:
     return k
+def joined():
+    \"a\" 'b'
+def wrapped():
+    (\"P.\")
+def raw():
+    rb\"x\"
 ",
         ),
     ];
@@ -1562,7 +1597,7 @@ def fit(k: typing.Optional[Box]) -> A | B | C:
             // Go
             ("go", "go-tags-v3", "40f80b41e4a13f29"),
             // Python
-            ("py", "python-tags-v2", "a7c2bc0cb11e3298"),
+            ("py", "python-tags-v2", "526d67033f741273"),
         ];
         assert_eq!(
             GRAMMAR_TAGS_VERSION,

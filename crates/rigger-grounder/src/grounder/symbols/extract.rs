@@ -308,8 +308,8 @@ enum Capture {
     /// ([`CompiledTags::constructors`]), where it stays a call, so `new T()` is a call of `T`
     /// (spec 117, CAPTURES).
     Class(Option<&'static str>),
-    /// `@doc`: a doc comment of the match's definition, which gives it its doc span, or of the
-    /// file when the match tags nothing ([`CompiledTags::tags_in`]).
+    /// `@doc`: a doc comment or docstring of the match's definition, which gives it its doc span,
+    /// or of the file when the match tags nothing ([`CompiledTags::tags_in`]).
     Doc,
     /// `@qualifier.path` (true) or `@qualifier.member` (false): the node the match's reference is
     /// qualified by, a path or a member access, in place of the qualifier its name's text writes
@@ -495,11 +495,13 @@ impl CompiledTags {
 
     /// The tags the query yields over the tree rooted at `root`, parsed from `source`, in the
     /// order the tree-sitter tags convention yields them: a match whose captures hold a name and a
-    /// definition or reference makes a tag, unless its name node holds a parse error; of the
-    /// matches naming the same node, the one of the earliest pattern makes its tag; and a tag
-    /// is yielded once a later-matched name starts past its name's end, the rest in name order
-    /// when the matches run out. Within a match the last name capture names it, the last
-    /// definition or reference capture is the tagged node, a `@reference.class` one a call when
+    /// definition or reference makes a tag, unless its name node holds a parse error; a tag is
+    /// yielded once a later-matched name starts past its name's end, the rest in name order when
+    /// the matches run out; and of the matches naming the same node, the one of the earliest
+    /// pattern makes its tag, which stands in the first tag's place, so a match that comes after
+    /// that node's tag was yielded still replaces it when its pattern is earlier. Within a match
+    /// the last name capture names it, the last definition or reference capture is the tagged
+    /// node, a `@reference.class` one a call when
     /// that node's kind is one of the [`CompiledTags::constructors`], and its `@doc` captures,
     /// read as the matcher yields them, cover its doc ([`Tag::doc`]), for every language. A
     /// reference is named by the leaf its name splits to ([`CompiledTags::split_leaf`]), a name
@@ -515,10 +517,12 @@ impl CompiledTags {
     ) -> (Vec<Tag>, Option<std::ops::Range<usize>>) {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, source.as_bytes());
-        // The tags not yet yielded, in (name end, name start) order, each with the pattern that
-        // made it.
+        let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
+        // The tags not yet yielded, in (name end, name start) order, and the tags yielded, in
+        // yield order, each with the pattern that made it, and where each yielded tag's key sits.
         let mut queue: std::collections::VecDeque<(Tag, usize)> = Default::default();
-        let mut tags = Vec::new();
+        let mut tags: Vec<(Tag, usize)> = Vec::new();
+        let mut yielded = std::collections::HashMap::new();
         let mut file_doc = None;
         loop {
             while queue.len() > 1
@@ -526,7 +530,10 @@ impl CompiledTags {
                     .back()
                     .is_some_and(|(last, _)| queue[0].0.name_range.end < last.name_range.start)
             {
-                tags.extend(queue.pop_front().map(|(tag, _)| tag));
+                if let Some(next) = queue.pop_front() {
+                    yielded.insert(key(&next.0), tags.len());
+                    tags.push(next);
+                }
             }
             let Some(found) = matches.next() else {
                 break;
@@ -593,16 +600,23 @@ impl CompiledTags {
                 doc,
                 qualifier,
             };
-            let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
-            match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
-                Ok(at) if queue[at].1 > found.pattern_index => {
-                    queue[at] = (tag, found.pattern_index);
+            // The tag already made for this name node, yielded or queued, else a new one queued.
+            let made = if let Some(&at) = yielded.get(&key(&tag)) {
+                &mut tags[at]
+            } else {
+                match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
+                    Ok(at) => &mut queue[at],
+                    Err(at) => {
+                        queue.insert(at, (tag, found.pattern_index));
+                        continue;
+                    }
                 }
-                Ok(_) => {}
-                Err(at) => queue.insert(at, (tag, found.pattern_index)),
+            };
+            if made.1 > found.pattern_index {
+                *made = (tag, found.pattern_index);
             }
         }
-        tags.extend(queue.into_iter().map(|(tag, _)| tag));
+        let tags = tags.into_iter().chain(queue).map(|(tag, _)| tag).collect();
         (tags, file_doc)
     }
 }
