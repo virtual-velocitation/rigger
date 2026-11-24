@@ -29,12 +29,13 @@ type Case = (
 /// C# STAGES ITS ROW: each entry of a class's, struct's, record's or interface's base list is an
 /// `impl` mention, a record's primary-constructor base included and an enum's base none; an
 /// identifier or generic name in a property, return, parameter, local, array element, nullable,
-/// cast, `is`, `as`, `typeof`, generic argument or field type is a `type` mention, a qualified
-/// type none; `new T()` stays a call; `x.f` not called, read or assigned, is a `field` mention,
-/// named `Square.SIDES` when a capitalised name qualifies it, while a called `x.g()` is a call;
-/// and the `///` block directly above a definition, a blank line inside it included, is its doc
-/// span, which `doc_text` reads back without its XML tags, while a `////` line, a block comment
-/// and a run a plain `//` line joins give none, over the production extractor.
+/// cast, `is`, `as`, `typeof`, generic argument or field type is a `type` mention, a generic
+/// name's type arguments each a mention too, a qualified type none; `new T()` stays a call; `x.f`
+/// not called, read or assigned, is a `field` mention, named `Square.SIDES` when a capitalised
+/// name qualifies it, while a called `x.g()` is a call; and the `///` block directly above a
+/// definition, a blank line and a bare `///` line inside it included, is its doc span, which
+/// `doc_text` reads back without its XML tags, while a `////` line, a block comment and a run a
+/// plain `//` line joins give none, over the production extractor.
 #[test]
 fn csharp_stages_its_row() {
     // A mention inside the definition at index `at`, written `name` of `leaf`.
@@ -45,7 +46,7 @@ fn csharp_stages_its_row() {
     let leaf_in = |at: u32, leaf: &str, kind: Option<&str>, line: u32| {
         mention_in(Some(at), leaf, leaf, kind, line, false)
     };
-    let cases: [Case; 6] = [
+    let cases: [Case; 7] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -139,6 +140,26 @@ fn csharp_stages_its_row() {
                 ("D", None, ""),
                 ("E", None, ""),
                 ("F", Some((15, 15)), "no space"),
+            ],
+        ),
+        (
+            "a generic name as a return, after `is` and `as` and inside a type argument, and a doc block opening on a bare `///`",
+            "class K {\n    GRet<A> M(object p) {\n        var i = p is GIs<B>;\n        var k = p as GAs<C>;\n        var l = p is List<Box<D>>;\n        return null;\n    }\n    ///\n    /// bare above\n    int F;\n}\n",
+            vec![
+                leaf_in(1, "A", Some(REF_KIND_TYPE), 2),
+                leaf_in(1, "GRet", Some(REF_KIND_TYPE), 2),
+                leaf_in(1, "B", Some(REF_KIND_TYPE), 3),
+                leaf_in(1, "GIs", Some(REF_KIND_TYPE), 3),
+                leaf_in(1, "C", Some(REF_KIND_TYPE), 4),
+                leaf_in(1, "GAs", Some(REF_KIND_TYPE), 4),
+                leaf_in(1, "D", Some(REF_KIND_TYPE), 5),
+                leaf_in(1, "Box", Some(REF_KIND_TYPE), 5),
+                leaf_in(1, "List", Some(REF_KIND_TYPE), 5),
+            ],
+            vec![
+                ("K", None, ""),
+                ("M", None, ""),
+                ("F", Some((8, 9)), "bare above"),
             ],
         ),
     ];
