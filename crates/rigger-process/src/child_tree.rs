@@ -962,40 +962,57 @@ mod tests {
         );
     }
 
-    /// Whether a read of [`HUNG`] may return, and the wake its reads wait on.
-    static RELEASED: (Mutex<bool>, std::sync::Condvar) =
-        (Mutex::new(false), std::sync::Condvar::new());
+    /// A gate a read of arguments waits at, as a read of a process stuck in the kernel waits on
+    /// that process's memory: shut until opened, then open for good.
+    struct Latch(Mutex<bool>, std::sync::Condvar);
 
-    /// Reads that do not return until [`release`]d, as a read of the arguments of a process stuck
-    /// in the kernel does not, and then answer a writer's arguments.
+    impl Latch {
+        const fn new() -> Self {
+            Self(Mutex::new(false), std::sync::Condvar::new())
+        }
+
+        /// Waits until the latch is open.
+        fn wait(&self) {
+            let mut open = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+            while !*open {
+                open = self.1.wait(open).unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+
+        /// Opens the latch, so every wait at it returns.
+        fn open(&self) {
+            *self.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            self.1.notify_all();
+        }
+    }
+
+    /// What lets [`HUNG`]'s reads return.
+    static UNHUNG: Latch = Latch::new();
+
+    /// Reads that do not return until [`UNHUNG`] opens, as a read of the arguments of a process
+    /// stuck in the kernel does not, and then answer a writer's arguments.
     static HUNG: ArgumentReads = ArgumentReads {
-        read: hangs,
+        read: |_| {
+            UNHUNG.wait();
+            Some(vec!["a writer".to_string()])
+        },
         given_up: Mutex::new(Vec::new()),
     };
 
-    /// [`HUNG`]'s read: waits until [`release`]d, and then answers a writer's arguments.
-    fn hangs(_member: &Identity) -> Option<Vec<String>> {
-        let (released, wake) = &RELEASED;
-        let mut released = released.lock().unwrap_or_else(PoisonError::into_inner);
-        while !*released {
-            released = wake.wait(released).unwrap_or_else(PoisonError::into_inner);
-        }
-        Some(vec!["a writer".to_string()])
-    }
-
-    /// Lets every read of [`HUNG`] return.
-    fn release() {
-        let (released, wake) = &RELEASED;
-        *released.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        wake.notify_all();
-    }
-
     /// A hold that names this process among its tree's processes and whose end only reaps the
-    /// main.
-    struct NamesThisProcess;
+    /// main; one that `opens` a latch opens it at its second look at its members, as a read given
+    /// up before returns while a later finish waits.
+    struct NamesThisProcess {
+        opens: Option<&'static Latch>,
+        looks: usize,
+    }
 
     impl Hold for NamesThisProcess {
         fn members(&mut self, _main: &mut Child) -> Vec<Identity> {
+            self.looks += 1;
+            if self.looks == 2 {
+                self.opens.inspect(|latch| latch.open());
+            }
             vec![Identity {
                 pid: std::process::id(),
                 start: 0,
@@ -1008,14 +1025,20 @@ mod tests {
         }
     }
 
-    /// A finish for any writer of a tree whose main has exited, reading through [`HUNG`] and
-    /// waiting for a writer for at most `bound`, run on a thread of its own: how long it took and
-    /// its faults, or `None` where it had not answered within `within`.
-    fn finish_hung(bound: Duration, within: Duration) -> Option<(Duration, Vec<String>)> {
+    /// A finish for any writer of a tree whose main has exited, held by a [`NamesThisProcess`]
+    /// that `opens`, reading through [`HUNG`] and waiting for a writer for at most `bound`, run
+    /// on a thread of its own: how long it took and its faults, or `None` where it had not
+    /// answered within `within`.
+    fn finish_hung(
+        opens: Option<&'static Latch>,
+        bound: Duration,
+        within: Duration,
+    ) -> Option<(Duration, Vec<String>)> {
         let (answer, answered) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let main = Command::new("true").spawn().expect("spawn the main");
-            let mut tree = ReapedChild::holding(main, Box::new(NamesThisProcess));
+            let hold = NamesThisProcess { opens, looks: 0 };
+            let mut tree = ReapedChild::holding(main, Box::new(hold));
             assert!(
                 wait_until(|| matches!(tree.try_wait(), Ok(Some(_)))),
                 "the main exits"
@@ -1029,31 +1052,39 @@ mod tests {
 
     /// A finish whose read of its members' arguments does not return, as a read of a process
     /// stuck in the kernel does not, gives that read up at the end of its wait for a writer and
-    /// takes none of them for a writer; a finish while that read has not returned starts no read
-    /// and waits for no writer, so given-up reads never pile up; once the read returns, its thread
-    /// is let go.
+    /// takes none of them for a writer, as it takes none whose read is only late. A later finish
+    /// starts no read while that one has not returned, so given-up reads never pile up, and waits
+    /// on instead: to the end of its own wait, reporting the read that was given up before that
+    /// wait began and held it throughout, or until that read returns, when it reads its own
+    /// members again. A read that has returned is let go.
     #[test]
     fn a_finish_gives_up_a_read_of_arguments_that_does_not_return_by_its_bound() {
         let bound = Duration::from_millis(300);
-        let slack = Duration::from_secs(2);
+        let within = bound + Duration::from_secs(2);
+        let waited = |answer: Option<(Duration, Vec<String>)>| {
+            answer.map(|(took, faults)| ((bound..within).contains(&took), faults))
+        };
 
-        let first = finish_hung(bound, bound + slack);
-        let second = finish_hung(bound, slack);
-        let held = HUNG.still_given_up();
-        release();
+        let first = finish_hung(None, bound, within);
+        let held = finish_hung(None, bound, within);
+        let given_up = HUNG.still_given_up();
+        let returned = finish_hung(Some(&UNHUNG), bound, within);
+        UNHUNG.open();
 
         let let_go = wait_until(|| HUNG.still_given_up() == 0);
         assert_eq!(
             (
-                first.map(|(took, faults)| ((bound..bound + slack).contains(&took), faults)),
-                second.map(|(took, faults)| (took < bound, faults)),
-                held,
+                waited(first),
+                waited(held),
+                given_up,
+                waited(returned),
                 let_go
             ),
             (
-                Some((true, vec![ARGUMENTS_GIVEN_UP.to_string()])),
+                Some((true, vec![])),
                 Some((true, vec![ARGUMENTS_HELD.to_string()])),
                 1,
+                Some((true, vec![])),
                 true
             )
         );
