@@ -2035,7 +2035,9 @@ mod tests {
     use crate::code_facts::{
         Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, Stamp, Tip, WfNode,
     };
-    use crate::code_view::{Cluster, DefRef, FactsView, FileRef, Groupings, MentionRef};
+    use crate::code_view::{
+        Cluster, DefRef, Entry, Extract, FactsView, FileRef, Groupings, MentionRef, SourceLines,
+    };
     use crate::contextgraph::{
         KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_CONCEPT, KIND_DECISION, KIND_DESIGN_DOC, KIND_FILE,
         KIND_FINDING, KIND_STAGE, REL_ABOUT, REL_GOVERNS, REL_REALIZES, REL_SPECIFIES,
@@ -3041,6 +3043,207 @@ mod tests {
             };
             let got = near.unwrap().definition_end(&site).unwrap();
             assert_eq!(got, want, "{case}");
+        }
+    }
+
+    /// A worktree's lines as a table: each file's span with the raw lines it holds there.
+    struct Lines(Vec<(&'static str, (u32, u32), &'static str)>);
+
+    impl SourceLines for Lines {
+        fn lines(&self, path: &str, span: (u32, u32)) -> Option<String> {
+            (self.0.iter())
+                .find(|(file, at, _)| *file == path && *at == span)
+                .map(|(_, _, raw)| raw.to_string())
+        }
+    }
+
+    /// An extractor whose doc text names the language it read the span's lines as.
+    struct LangMarked;
+
+    impl Extract for LangMarked {
+        fn fingerprint(&self) -> u64 {
+            0
+        }
+
+        fn extract(&self, entry: &Entry, _bytes: &[u8]) -> FileFacts {
+            FileFacts {
+                path: entry.path.clone(),
+                ..FileFacts::default()
+            }
+        }
+
+        fn doc_text(&self, lang: &str, raw: &str) -> String {
+            format!("{lang}: {raw}")
+        }
+    }
+
+    /// A node's doc is its facts' doc span read from the worktree: GIVEN the facts of `src/a.rs`
+    /// documenting the file on lines 1-2, `run` at line 4 on line 3, two `helper`s and a test twin
+    /// at line 8 and `gone` at line 14 on a span the worktree does not hold, and `src/b.rs` with no
+    /// doc, WHEN the near read is asked each node's doc, THEN a read describing the worktree gives
+    /// the extractor's text of the span's lines - the file's, or the widest production definition's
+    /// at the node's name, kind and line - and none for a site no definition sits at, a nameless
+    /// node, a definition or file with no doc, a span the worktree does not hold or a record node,
+    /// while a read withholding its code facts, or opened with no doc reader, gives none.
+    #[test]
+    fn a_node_s_doc_is_its_facts_span_read_from_the_worktree() {
+        let documented = |local: &str, line, end_line, doc, test| Def {
+            line,
+            end_line,
+            doc: Some(doc),
+            test,
+            ..def(local)
+        };
+        let a = FileFacts {
+            doc: Some((1, 2)),
+            ..rust(
+                "src/a.rs",
+                vec![
+                    documented("run", 4, 5, (3, 3), false),
+                    documented("helper", 8, 9, (7, 7), false),
+                    documented("helper", 8, 12, (6, 7), false),
+                    documented("helper", 8, 20, (5, 5), true),
+                    documented("gone", 14, 15, (13, 13), false),
+                ],
+                Vec::new(),
+            )
+        };
+        let b = rust("src/b.rs", vec![def("compute")], Vec::new());
+        let mut view = view(Some("c1"));
+        view.facts = FactsView::new(view.facts.stamp().clone(), vec![a, b]);
+        let lines = Lines(vec![
+            ("src/a.rs", (1, 2), "//! A.\n//! More."),
+            ("src/a.rs", (3, 3), "/// Runs."),
+            ("src/a.rs", (5, 5), "/// Tests."),
+            ("src/a.rs", (6, 7), "/// Helps\n/// widely."),
+            ("src/a.rs", (7, 7), "/// Helps."),
+        ]);
+        let reader = DocReader {
+            lines: &lines,
+            extract: &LangMarked,
+        };
+        let records = records();
+        let read = |compared, docs| {
+            Composed::near(
+                &records,
+                &view,
+                ViewFilter::default(),
+                honest(compared),
+                docs,
+            )
+            .unwrap()
+        };
+        let held = |id: &str| -> Node {
+            let graph = read(Compared::Overlaid(0), None).subgraph(&[id.into()], 0);
+            graph
+                .unwrap()
+                .nodes
+                .into_iter()
+                .find(|n| n.id == id)
+                .expect(id)
+        };
+        let entity = |id: &str, name: &str, kind: &str, line: &str| {
+            let attrs = [("name", name), ("kind", kind), ("line", line)];
+            node(id, KIND_CODE_ENTITY, &attrs)
+        };
+        let run = held("src/a.rs::run");
+        // (case, the comparison, whether the read has a doc reader, the node, its doc)
+        let cases = [
+            (
+                "a definition's doc",
+                Compared::Overlaid(0),
+                true,
+                run.clone(),
+                Some("rust: /// Runs."),
+            ),
+            (
+                "the file's doc",
+                Compared::Overlaid(0),
+                true,
+                held("src/a.rs"),
+                Some("rust: //! A.\n//! More."),
+            ),
+            (
+                "an overlaid read",
+                Compared::Overlaid(1),
+                true,
+                run.clone(),
+                Some("rust: /// Runs."),
+            ),
+            (
+                "the widest production definition at its line",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::helper", "helper", "function", "8"),
+                Some("rust: /// Helps\n/// widely."),
+            ),
+            (
+                "another line",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::run", "run", "function", "5"),
+                None,
+            ),
+            (
+                "another kind",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::run", "run", "struct", "4"),
+                None,
+            ),
+            (
+                "a nameless node",
+                Compared::Overlaid(0),
+                true,
+                node("src/a.rs::run", KIND_CODE_ENTITY, &[("line", "4")]),
+                None,
+            ),
+            (
+                "a definition with no doc",
+                Compared::Overlaid(0),
+                true,
+                held("src/b.rs::compute"),
+                None,
+            ),
+            (
+                "a file with no doc",
+                Compared::Overlaid(0),
+                true,
+                held("src/b.rs"),
+                None,
+            ),
+            (
+                "a span the worktree does not hold",
+                Compared::Overlaid(0),
+                true,
+                entity("src/a.rs::gone", "gone", "function", "14"),
+                None,
+            ),
+            (
+                "a record node",
+                Compared::Overlaid(0),
+                true,
+                node("dec-1", KIND_DECISION, &[("title", "keep it")]),
+                None,
+            ),
+            (
+                "no comparison",
+                Compared::Uncomparable,
+                true,
+                run.clone(),
+                None,
+            ),
+            (
+                "no doc reader",
+                Compared::Overlaid(0),
+                false,
+                run.clone(),
+                None,
+            ),
+        ];
+        for (case, compared, docs, node, want) in cases {
+            let got = read(compared, docs.then_some(reader)).doc(&node);
+            assert_eq!(got.as_deref(), want, "{case}");
         }
     }
 

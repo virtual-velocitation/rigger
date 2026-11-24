@@ -9,6 +9,7 @@ mod disk_memo;
 pub mod doubles;
 mod overlay;
 mod snapshot;
+mod worktree_lines;
 
 pub use advance::{
     fingerprint, open_compared, open_current, AtomicPublish, Behind, Mode, Opened, Publish, Store,
