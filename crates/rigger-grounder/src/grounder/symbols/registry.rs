@@ -235,17 +235,19 @@ const GO_DEFINITION_TAGS: &str = r#"
 
 // The statement a Python docstring is, spelled once for `PYTHON_TAGS`'s class, function and
 // module docstring patterns, a literal its own macro names since `concat!` takes literals alone:
-// a string, an implicit concatenation of strings or either in one pair of parentheses, each part
-// and each comment between parts a `@doc`, none of them a literal whose prefix holds `b`, `f` or
-// `t` (a bytes, formatted or template literal, which is no str).
+// a statement whose one named child is a string, an implicit concatenation of strings or either in
+// one pair of parentheses, so a tuple a string leads is none, each part and each comment between
+// parts a `@doc`, none of them a literal whose prefix holds `b`, `f` or `t` (a bytes, formatted or
+// template literal, which is no str). The prefix predicate sits on a group around the statement,
+// since tree-sitter drops a trailing `.` anchor that a predicate follows.
 macro_rules! python_docstring {
     () => {
-        r#"(expression_statement . [
+        r#"((expression_statement . [
       (string) @doc
       (concatenated_string [(string) (comment)]+ @doc)
       (parenthesized_expression
         [(string) @doc (concatenated_string [(string) (comment)]+ @doc)])
-    ] . (#not-match? @doc "^[A-Za-z]*[bBfFtT][A-Za-z]*[\"']"))"#
+    ] .) (#not-match? @doc "^[A-Za-z]*[bBfFtT][A-Za-z]*[\"']"))"#
     };
 }
 
@@ -263,10 +265,12 @@ macro_rules! python_docstring {
 /// class's or a function's body, or of the module, comments before it aside, when that statement
 /// is a str literal alone: one string, an implicit concatenation of strings (`"a" "b"`, a comment
 /// between parts included) or either in one pair of parentheses (`("P.")`), every part and comment
-/// of it a `@doc`. A bytes, formatted or template literal, whose prefix holds `b`, `f` or `t`, is
-/// no str, so a first statement holding one is no docstring and gives no span. The shape is spelled
-/// once, in `python_docstring!`. The query reaches one pair of parentheses, so `(("N."))`, a
-/// docstring to Python, gives none. A class's or a function's docstring is its `@doc`, matched by
+/// of it a `@doc`, so a tuple a str leads (`"a", "b"`) is none. A bytes, formatted or template
+/// literal, whose prefix holds `b`, `f` or `t`, is no str, so a first statement holding one is no
+/// docstring and gives no span. The shape is spelled once, in `python_docstring!`. The query
+/// reaches one pair of parentheses, so `(("N."))`, a docstring to Python, gives none, and its
+/// anchors skip the anonymous comma, so the one-element tuple `"a",`, none to Python, gives a span.
+/// A class's or a function's docstring is its `@doc`, matched by
 /// a pattern ahead of the plain one that tags the definition whatever its first statement, so a
 /// definition with no docstring stays a definition; the module's is a match that tags nothing,
 /// which gives the file its doc span ([`CompiledTags::tags_in`]). Of the patterns naming one node
