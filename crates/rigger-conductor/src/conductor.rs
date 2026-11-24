@@ -1063,7 +1063,9 @@ fn classify_gate_failure(
 /// while a failure that stays red across every rerun is a believed-real failure that demotes
 /// (`flaky`) or holds the ratchet (`infra`).
 ///
-/// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence)`, or the
+/// Returns `(recorded_pass, flaky_annotation, ratchet_effect, evidence, note)`, the note being
+/// the first non-empty [`gate::GateResult::note`] across the runs, which the caller records
+/// beside the evidence and never classifies; or the
 /// [`gate::ProbeFault`] of a failed guard probe on the first run or on any rerun, which ends the
 /// gate there with no outcome and no further rerun (spec 121 criterion 19). The one gate run the
 /// driver ([`RunCtx::run_gates_at`]) and `rigger gate <id>` ([`gate_once`]) share.
@@ -1073,7 +1075,7 @@ fn run_gate_with_taxonomy(
     g: &Gate,
     dir: &str,
     inputs: &GateInputs,
-) -> Result<(bool, bool, GateRatchet, String), gate::ProbeFault> {
+) -> Result<(bool, bool, GateRatchet, String, String), gate::ProbeFault> {
     let run = || {
         runner.run(
             g,
@@ -1088,8 +1090,9 @@ fn run_gate_with_taxonomy(
         )
     };
     let res = run()?;
+    let mut note = res.note;
     if res.pass {
-        return Ok((true, false, GateRatchet::CleanPass, res.evidence));
+        return Ok((true, false, GateRatchet::CleanPass, res.evidence, note));
     }
     // Classify the failure. `FailureClass` is Copy and `Backoff` cheap to clone, so we
     // hold no borrow of the taxonomy across the rerun loop below.
@@ -1108,6 +1111,7 @@ fn run_gate_with_taxonomy(
             false,
             GateRatchet::for_persistent_failure(class),
             first_evidence,
+            note,
         ));
     }
     for n in 0..limit {
@@ -1119,7 +1123,11 @@ fn run_gate_with_taxonomy(
             // unit's gate, never the wider wave.
             std::thread::sleep(delay);
         }
-        if run()?.pass {
+        let rerun = run()?;
+        if note.is_empty() {
+            note = rerun.note;
+        }
+        if rerun.pass {
             // MIXED: the gate failed then passed - a FlakyVerdict pass-with-warning.
             let evidence = format!(
                 "flaky: gate {:?} failed then passed on rerun {}/{}; first failure:\n{first_evidence}",
@@ -1127,7 +1135,7 @@ fn run_gate_with_taxonomy(
                 n + 1,
                 limit,
             );
-            return Ok((true, true, GateRatchet::FlakyPass, evidence));
+            return Ok((true, true, GateRatchet::FlakyPass, evidence, note));
         }
     }
     // Stayed red across every rerun: a believed-real failure. A `flaky` class demotes
@@ -1135,7 +1143,7 @@ fn run_gate_with_taxonomy(
     // ratchet - an outage must not cost the gate its earned autonomy. Same single
     // demote-vs-hold authority as the early-return above and the deferred gate.
     let ratchet = GateRatchet::for_persistent_failure(class);
-    Ok((false, false, ratchet, first_evidence))
+    Ok((false, false, ratchet, first_evidence, note))
 }
 
 /// What one run of a declared gate on a committed tree found ([`gate_once`]).
@@ -1261,7 +1269,7 @@ fn gate_once(
         autonomy: gate::Autonomy::Manual,
         history: Vec::new(),
     };
-    let (pass, flaky, _ratchet, evidence) =
+    let (pass, flaky, _ratchet, evidence, note) =
         run_gate_with_taxonomy(runner, taxonomy, &g, dir, &inputs)
             .map_err(|fault| without_halt_markers(probe_fault_halt(fault)))?;
     // A result addresses the commit only if the gate left it as it found it: otherwise no one can
@@ -1272,7 +1280,7 @@ fn gate_once(
             command: gc.run.clone(),
             pass: false,
             flaky: false,
-            evidence: format!("{refusal}\n{evidence}"),
+            evidence: format!("{refusal}\n{note}{evidence}"),
             commit,
             digest: String::new(),
         });
@@ -1283,7 +1291,7 @@ fn gate_once(
         command: gc.run.clone(),
         pass,
         flaky,
-        evidence,
+        evidence: format!("{note}{evidence}"),
         commit,
         digest,
     })
@@ -11150,7 +11158,7 @@ impl RunCtx<'_> {
             // unit 2): a clean pass; a flaky/infra failure that reran and PASSED (a
             // FlakyVerdict pass-with-warning); or a real failure (product/flaky demote,
             // infra hold). A failed guard probe is the halt instead, before any verdict.
-            let (pass, flaky, ratchet, evidence) =
+            let (pass, flaky, ratchet, evidence, note) =
                 run_gate_with_taxonomy(self.deps.gates, &self.taxonomy, &g, dir, &inputs)
                     .map_err(probe_fault_halt)?;
             // A run that edited the tracked tree addresses no commit: a non-pass with no digest,
@@ -11174,8 +11182,9 @@ impl RunCtx<'_> {
             // FlakyVerdict annotation (no new event type). Replay-keyed (and cached) so a
             // re-step replays this verdict instead of re-running; the `digest` addresses it
             // by content so a later gate over the same command + tree is a cache-hit (a
-            // GREEN populates the content cache; a red records the digest but never caches).
-            let recorded_evidence = format!("{why_rerun}{evidence}");
+            // GREEN populates the content cache; a red records the digest but never caches). The
+            // run's note joins the record after the evidence was classified, never before.
+            let recorded_evidence = format!("{why_rerun}{note}{evidence}");
             let row = VerdictRow {
                 pass,
                 flaky,
@@ -11512,8 +11521,9 @@ impl RunCtx<'_> {
             // no per-tree address to compute (dir "" -> empty digest): it keeps its
             // once-per-run replay semantics and is NOT content-addressed by unit 1
             // (the owning unit is empty and the cache is untouched at an empty
-            // digest). Its verdict still records normally, on no commit.
-            let recorded_evidence = format!("{why_rerun}{}", res.evidence);
+            // digest). Its verdict still records normally, on no commit, the run's note beside
+            // its evidence.
+            let recorded_evidence = format!("{why_rerun}{}{}", res.note, res.evidence);
             let row = VerdictRow {
                 replay_key: &key,
                 unit: "",
@@ -12695,8 +12705,8 @@ impl RunCtx<'_> {
             .map_err(probe_fault_halt)?;
         if !res.pass {
             return Err(Error(format!(
-                "regenerate command {run:?} failed:\n{}",
-                res.evidence
+                "regenerate command {run:?} failed:\n{}{}",
+                res.note, res.evidence
             )));
         }
         Ok(())
@@ -42217,11 +42227,13 @@ stage "implement" adjudicator "adj" failed
                 Ok(gate::GateResult {
                     pass: false,
                     evidence: self.evidence.clone(),
+                    ..Default::default()
                 })
             } else {
                 Ok(gate::GateResult {
                     pass: true,
                     evidence: "PASS".into(),
+                    ..Default::default()
                 })
             }
         }
@@ -44183,6 +44195,7 @@ stage "implement" adjudicator "adj" failed
                 } else {
                     format!("FAIL\ngate {} failed", g.id)
                 },
+                ..Default::default()
             })
         }
     }
@@ -44285,6 +44298,7 @@ stage "implement" adjudicator "adj" failed
             Ok(gate::GateResult {
                 pass,
                 evidence: if pass { "PASS" } else { "FAIL: transient" }.into(),
+                ..Default::default()
             })
         }
     }
@@ -44411,6 +44425,7 @@ stage "implement" adjudicator "adj" failed
                 return Ok(gate::GateResult {
                     pass: false,
                     evidence: "FAIL: the first run".into(),
+                    ..Default::default()
                 });
             }
             Ok(res)
@@ -45294,6 +45309,7 @@ stage "implement" adjudicator "adj" failed
             Ok(gate::GateResult {
                 pass: true,
                 evidence: "PASS".into(),
+                ..Default::default()
             })
         }
     }
@@ -45387,6 +45403,47 @@ stage "implement" adjudicator "adj" failed
                 "{change:?}: only an unchanged tree is addressed"
             );
         }
+    }
+
+    /// A gate the driver runs on a verb's request records its run's note before its evidence,
+    /// in the reply and in the recorded verdict.
+    #[test]
+    fn a_gate_the_verb_runs_records_its_note_beside_its_evidence() {
+        let repo = temp_git_project_with_commit();
+        let dir = repo.path().to_str().unwrap().to_string();
+        let mut cfg = Config::default();
+        cfg.workflow.gates.insert("g".into(), gate_def("true"));
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &Noted(true),
+            run_branch: branch_of(&dir),
+            repo: dir.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let _live = ctx.live_unit(&dir, "u");
+        let GateReply::Ran { evidence, .. } = ctx.answer_gate_request(GateRequest {
+            dir: dir.clone(),
+            gate: "g".into(),
+        }) else {
+            panic!("the run gates the commit");
+        };
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            (
+                evidence,
+                events
+                    .iter()
+                    .find(|e| is_gate_verdict_row(e))
+                    .map(verdict_evidence)
+            ),
+            (
+                format!("{NOTED_NOTE}PASS"),
+                Some(format!("{NOTED_NOTE}PASS"))
+            ),
+            "the reply and the verdict carry the note, then the evidence"
+        );
     }
 
     /// THE DRIVER'S PASS ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a clean committed worktree and
@@ -53928,11 +53985,13 @@ stage "implement" adjudicator "adj" failed
                 Ok(gate::GateResult {
                     pass: false,
                     evidence: self.evidence.clone(),
+                    ..Default::default()
                 })
             } else {
                 Ok(gate::GateResult {
                     pass: true,
                     evidence: "PASS".into(),
+                    ..Default::default()
                 })
             }
         }
@@ -54145,6 +54204,88 @@ stage "implement" adjudicator "adj" failed
             "the unlockable budget ends the step on its fault and the gate records no verdict"
         );
         assert_held_on_the_fault_uncharged(&events, &fault);
+    }
+
+    /// A gate runner whose every run passes (`Noted(true)`, evidence `PASS`) or fails with
+    /// product evidence (`Noted(false)`), with a note saying the build budget was not enforced
+    /// for a reason that names an infrastructure error.
+    struct Noted(bool);
+
+    /// [`Noted`]'s failing evidence and its note.
+    const NOTED_EVIDENCE: &str = "FAIL\nassertion failed: left == right";
+    const NOTED_NOTE: &str = "build budget not enforced: slot directory /budget/slots could not \
+                              be created: No space left on device (os error 28); ";
+
+    impl gate::Runner for Noted {
+        fn run(
+            &self,
+            _g: &Gate,
+            _dir: &str,
+            _target: &str,
+            _gate_scratch: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
+            _store_fence: &str,
+            _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            Ok(gate::GateResult {
+                pass: self.0,
+                evidence: if self.0 { "PASS" } else { NOTED_EVIDENCE }.into(),
+                note: NOTED_NOTE.into(),
+            })
+        }
+    }
+
+    /// A gate run outside an unenforced build budget records the note before its evidence, and
+    /// the note never decides the failure's class: a product red whose note names an
+    /// infrastructure error is charged to the unit and never rerun as infra.
+    #[test]
+    fn a_gates_note_is_recorded_beside_its_evidence_and_never_classified() {
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &Noted(false),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let _ = run_isolated(&verify_only_cfg(vec![("g1", gate_def("false"))]), &deps);
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .find(|e| is_gate_verdict_row(e))
+                .map(verdict_evidence),
+            Some(format!("{NOTED_NOTE}{NOTED_EVIDENCE}")),
+            "the verdict records the note, then the evidence"
+        );
+        assert_eq!(
+            (
+                count_of_type(&events, ledger::TYPE_UNIT_FAILED) > 0,
+                status_mark_keys(&events, "infra-retry").len(),
+                status_mark_keys(&events, "infra-halt").len(),
+            ),
+            (true, 0, 0),
+            "the product red is charged and never rerun as infra"
+        );
+    }
+
+    /// The phase-boundary gate records its run's note before its evidence, as an inline gate
+    /// does.
+    #[test]
+    fn a_deferred_gates_note_is_recorded_beside_its_evidence() {
+        let (_rs, events) = deferred_gate_run("true", &Noted(true));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| is_gate_verdict_row(e))
+                .filter_map(|e| serde_json::from_slice::<GateVerdictData>(&e.data).ok())
+                .filter(|v| v.gate == "deferred")
+                .map(|v| v.evidence)
+                .collect::<Vec<_>>(),
+            [format!("{NOTED_NOTE}PASS")],
+            "the deferred verdict records the note, then the evidence"
+        );
     }
 
     crate::test_cases! {
@@ -55065,6 +55206,7 @@ stage "implement" adjudicator "adj" failed
                 } else {
                     "tree clean".into()
                 },
+                ..Default::default()
             })
         }
     }

@@ -76,15 +76,22 @@ impl BuildBudget {
     ///
     /// Best-effort against filesystem trouble unrelated to the build itself: a slot
     /// directory that cannot be created (a read-only or absent temp mount) degrades to
-    /// unlimited for this call rather than wedging the loop. A pass in which no slot is held by
+    /// unlimited for this call rather than wedging the loop, and the guard's
+    /// [`SlotGuard::unenforced`] names the directory and the OS error. A pass in which no slot is held by
     /// another process, yet none could be opened and locked, is the last slot's error: no
     /// holder will ever free a slot, so waiting would never end.
     pub fn acquire(&self) -> std::io::Result<SlotGuard> {
         if self.max_concurrent == 0 {
-            return Ok(SlotGuard(None));
+            return Ok(SlotGuard::default());
         }
-        if fs::create_dir_all(&self.slot_dir).is_err() {
-            return Ok(SlotGuard(None));
+        if let Err(e) = fs::create_dir_all(&self.slot_dir) {
+            return Ok(SlotGuard {
+                held: None,
+                unenforced: format!(
+                    "slot directory {} could not be created: {e}",
+                    self.slot_dir.display()
+                ),
+            });
         }
         loop {
             let (mut held, mut failure) = (false, None);
@@ -98,7 +105,12 @@ impl BuildBudget {
                     .map_err(TryLockError::Error)
                     .and_then(|f| f.try_lock().map(|()| f));
                 match slot {
-                    Ok(f) => return Ok(SlotGuard(Some(f))),
+                    Ok(f) => {
+                        return Ok(SlotGuard {
+                            held: Some(f),
+                            unenforced: String::new(),
+                        });
+                    }
                     Err(TryLockError::WouldBlock) => held = true,
                     Err(TryLockError::Error(e)) => {
                         failure = Some(std::io::Error::new(
@@ -120,12 +132,24 @@ impl BuildBudget {
 /// lock explicitly (the OS would also release it on process exit, including an abnormal
 /// one that never runs this `Drop`) so the next waiter's poll finds it free without delay.
 /// Holds no lock at all - `Drop` is then a no-op - on the unlimited / degraded-to-unlimited
-/// path, where the inner `File` is `None`.
-pub struct SlotGuard(Option<File>);
+/// path, where `held` is `None`.
+#[derive(Default)]
+pub struct SlotGuard {
+    held: Option<File>,
+    unenforced: String,
+}
+
+impl SlotGuard {
+    /// Why the build this guard admits runs outside the budget: the slot directory that could
+    /// not be created and the OS error, or empty when a slot is held or the budget is unlimited.
+    pub fn unenforced(&self) -> &str {
+        &self.unenforced
+    }
+}
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
-        if let Some(f) = &self.0 {
+        if let Some(f) = &self.held {
             let _ = f.unlock();
         }
     }
@@ -205,6 +229,35 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(5)),
             Ok(true),
             "an acquire no slot can satisfy must return its error"
+        );
+    }
+
+    /// A slot directory that cannot be created (it lies under a regular file) admits the build
+    /// outside the budget, and its guard says why the budget was not enforced; an unlimited
+    /// budget and a held slot say nothing.
+    #[test]
+    fn a_slot_directory_that_cannot_be_created_admits_the_build_and_says_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("file");
+        fs::write(&file, b"").unwrap();
+        let slot_dir = file.join("slots");
+        let create_error = fs::create_dir_all(&slot_dir).unwrap_err();
+        let unenforced = |budget: BuildBudget| budget.acquire().unwrap().unenforced().to_string();
+        assert_eq!(
+            [
+                unenforced(BuildBudget::new(1, slot_dir.clone())),
+                unenforced(BuildBudget::new(0, slot_dir.clone())),
+                unenforced(BuildBudget::new(1, dir.path().join("slots"))),
+            ],
+            [
+                format!(
+                    "slot directory {} could not be created: {create_error}",
+                    slot_dir.display()
+                ),
+                String::new(),
+                String::new(),
+            ],
+            "only a budget that admitted the build outside its slots says why"
         );
     }
 

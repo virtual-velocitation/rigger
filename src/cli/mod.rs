@@ -3380,6 +3380,7 @@ impl Runner for ReplayRunner {
                  with no recorded verdict); rigger replay never executes a gate command",
                 g.id
             ),
+            ..Default::default()
         })
     }
 }

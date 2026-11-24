@@ -1128,6 +1128,7 @@ impl rigger::gate::Runner for RecordingGateRunner {
             pass: true,
             evidence: "fake runner: regenerated via the injected interface, never a raw shell"
                 .into(),
+            ..Default::default()
         })
     }
 }
@@ -2405,6 +2406,7 @@ impl FailRegenerateOnceRunner {
         Self::answering_once(Ok(rigger::gate::GateResult {
             pass: false,
             evidence: "simulated crash: regenerate gate failed once".into(),
+            ..Default::default()
         }))
     }
 

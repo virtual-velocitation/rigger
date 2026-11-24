@@ -503,10 +503,16 @@ impl Runner for ExecRunner {
         // memory. Never held across anything but this call - a hung command still
         // frees its slot the instant it is killed, and no other code path in the crate
         // acquires a slot, so non-build work is never gated. A slot directory where no slot
-        // can ever be locked is the [`ProbeFault::BudgetSlot`], before the command runs.
-        let _slot = budget
+        // can ever be locked is the [`ProbeFault::BudgetSlot`], before the command runs; one
+        // whose slot directory cannot be created admits the command outside the budget, and the
+        // result's note says why.
+        let slot = budget
             .acquire()
             .map_err(|e| ProbeFault::BudgetSlot(e.to_string()))?;
+        let note = match slot.unenforced() {
+            "" => String::new(),
+            why => format!("build budget not enforced: {why}; "),
+        };
         // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77 criterion 5,
         // BOUNDED SHARED CACHE; spec 125 criterion 10): a non-empty `build_cache_guard` names the
         // lock file `rigger reset --build-cache` takes EXCLUSIVE before it reclaims the shared
@@ -540,11 +546,13 @@ impl Runner for ExecRunner {
                 GateResult {
                     pass,
                     evidence: compact(pass, &evidence),
+                    note,
                 }
             }
             Err(e) => GateResult {
                 pass: false,
                 evidence: format!("FAIL\ngate {}: {e}", g.id),
+                note,
             },
         })
     }
@@ -1367,6 +1375,54 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
                 false
             ),
             "the unlockable budget faults naming the slot and the command never runs"
+        );
+    }
+
+    /// A build budget whose slot directory cannot be created runs the gate outside the budget
+    /// and says so in the result's note, naming why, while the command's evidence is untouched;
+    /// an enforced budget's result carries no note.
+    #[test]
+    fn a_budget_whose_slot_directory_cannot_be_created_runs_the_gate_and_notes_why() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"")
+            .expect("a regular file where the slot directory's parent would be");
+        let slot_dir = file.join("slots");
+        let create_error = std::fs::create_dir_all(&slot_dir).unwrap_err();
+        let run = |budget: BuildBudget| {
+            ExecRunner
+                .run(
+                    &gate_cmd("echo ok"),
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    "",
+                    &BuildEnv::default(),
+                    &budget,
+                )
+                .map(|res| (res.pass, res.evidence, res.note))
+                .expect("a budget that admits the build runs the gate")
+        };
+        assert_eq!(
+            [
+                run(BuildBudget::new(1, slot_dir.clone())),
+                run(BuildBudget::new(1, dir.path().join("slots"))),
+            ],
+            [
+                (
+                    true,
+                    "PASS\nok".to_string(),
+                    format!(
+                        "build budget not enforced: slot directory {} could not be created: \
+                         {create_error}; ",
+                        slot_dir.display()
+                    )
+                ),
+                (true, "PASS\nok".to_string(), String::new()),
+            ],
+            "only the run the budget could not bound notes it, and its evidence is the command's"
         );
     }
 
