@@ -5390,6 +5390,55 @@ mod tests {
         );
     }
 
+    /// `accept_incoming` resolves the one path it is given to the incoming side and stages it.
+    /// A name git would read as a pattern or as pathspec magic still names that file alone, so
+    /// a sibling conflict stays unmerged for the resolver.
+    #[test]
+    fn accept_incoming_resolves_exactly_the_named_path() {
+        // Each row: the path resolved, and a sibling conflicted beside it.
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut rows = [("a name with glob characters", "g/[ab].md", "g/a.md")].to_vec();
+        // A name no Windows file system holds, so these rows stand where such a file can.
+        #[cfg(unix)]
+        rows.extend([
+            ("a name like short pathspec magic", ":notes.md", "notes.md"),
+            ("a name like long pathspec magic", ":(x).md", "x.md"),
+        ]);
+        for (row, path, sibling) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap();
+            let (wa, a) = temp_wt(repo_path, "rigger/u/a");
+            let (wb, b) = temp_wt(repo_path, "rigger/u/b");
+            for (dir, text) in [(&wa, "A version\n"), (&wb, "B version\n")] {
+                std::fs::create_dir_all(dir.join("g")).unwrap();
+                for name in [path, sibling] {
+                    std::fs::write(dir.join(name), text).unwrap();
+                }
+            }
+            a.integrate("rigger: integrate a").unwrap().expect_merged();
+            b.commit("rigger: b's own work").unwrap();
+            assert!(
+                matches!(
+                    b.integrate("rigger: integrate b").unwrap(),
+                    IntegrateOutcome::Conflict(_)
+                ),
+                "{row}: the add/add merge must conflict"
+            );
+            let accepted = b.accept_incoming(path);
+            assert!(accepted.is_ok(), "{row}: {accepted:?}");
+            assert_eq!(
+                std::fs::read_to_string(wb.join(path)).unwrap(),
+                "A version\n",
+                "{row}: the path holds the incoming side"
+            );
+            assert_eq!(
+                b.conflicting_paths().unwrap(),
+                [sibling],
+                "{row}: only the sibling is still unmerged"
+            );
+        }
+    }
+
     #[test]
     fn commit_refuses_a_worktree_with_a_merge_left_in_progress() {
         // Spec 89, criterion 1 (A CHECKPOINT NEVER COMMITS A HALF-MERGE): the
