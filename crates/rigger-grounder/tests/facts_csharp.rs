@@ -47,8 +47,11 @@ type Case = (
 /// `///` block directly above a definition, a blank line and a bare `///` line inside it
 /// included, under at most two other comments, a plain line and a trailing comment included, is
 /// its doc span, which `doc_text` reads back without its XML tags, while a `////` line, a block
-/// comment, a block under three other comments and a `///` line a plain one follows give none,
-/// over the production extractor.
+/// comment, a block under three other comments and a `///` line a plain one follows give none;
+/// and each per-form row, one pattern form written as a statement in a method's body, in each
+/// position and under each argument mix, a list case label and a list in one pair of parentheses
+/// included, stages the `type`, `field` or call mentions, or none, that the C# reference
+/// patterns' doc (`CSHARP_REFERENCE_TAGS`) states for that form; over the production extractor.
 #[test]
 fn csharp_stages_its_row() {
     // A mention inside the definition at index `at`, written `name` of `leaf`.

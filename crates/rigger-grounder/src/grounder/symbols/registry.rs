@@ -106,30 +106,56 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 /// list entry named by an identifier, a generic, a qualified or an alias-qualified name is an
 /// implementation, a record's primary-constructor base included, and no type, so a comment inside
 /// the list is none; an enum's base is none. A constructed type, `new T()` or `new List<T>()`,
-/// stays a call ([`CSHARP_CONSTRUCTORS`]); a constraint's and a local's or field's declared type
-/// is a type. An identifier or a generic name in any other `type` field, a method's return, the
-/// right of an `as`, a generic's type argument and a constant pattern is a type, a qualified name
-/// none, and the identifier `nameof` none in those `type` fields and a constant pattern. The
-/// grammar parses `x is T` as a constant pattern, so `T` is a type under a `not`, an `and`, an
-/// `or` or parentheses too, and so is the identifier of a switch case, a switch arm or a property
-/// subpattern, a constant's name included, since the grammar tells no type from a constant there;
-/// `x is T?` and `x is T[]` reach `T` through their `type` field, and `x is Ns.T`, which the
-/// grammar parses as a member access, is the field `Ns.T`. A positional pattern's name, `Pt` of
-/// `Pt(0, 0)`, is a type under each parse the grammar gives it: a recursive pattern's `type`, as
-/// with a designation, `Pt(0, 0) d`; an invocation in a constant pattern, directly or in one pair
-/// of parentheses, as `x is Pt(0, 0)` is; the constant `Pt`, when the grammar reads
-/// `x is Pt(var a, 0)` as a call of `x is Pt`; and an invocation directly in a switch section, as
-/// the grammar reads a case label with no `when` whose first argument declares one variable or
-/// discards, `case Pt(var a, 0):`, which a call in the section's body or `when` clause is not; a
-/// `when` or a first `var (a, b)` makes the label a recursive pattern. In a second pair of
-/// parentheses, which the grammar nests as a further expression, it is none, and
-/// `x is Ns.Pt(0, 0)` stays the call `Ns.Pt`. `nameof` in any pattern position, under each of
-/// those parses and as a declaration pattern's `type`, `case nameof(Foo):`, is none, while a
-/// member access in its argument is the field it names, as in any expression. A member access
-/// named by an identifier and called stays a call (`@reference.send`) and one not called, read or
-/// assigned, is a field; either is qualified by its object when that object is exactly a
-/// capitalised identifier, so `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and
-/// `s.Side` the field `Side`.
+/// stays a call ([`CSHARP_CONSTRUCTORS`]). A member access named by an identifier and called stays
+/// a call (`@reference.send`) and one not called, read or assigned, is a field, in a pattern too,
+/// so `x is Ns.T`, which the grammar parses as a member access, is the field `Ns.T`; either is
+/// qualified by its object when that object is exactly a capitalised identifier, so
+/// `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and `s.Side` the field `Side`.
+///
+/// An identifier or a generic name, `T` below, is a type, and a qualified name none, as:
+///
+/// - a constraint's type, a local's or a field's declared type, a method's return, the right of
+///   an `as` and a generic's type argument;
+/// - any other `type` field: a parameter's, a property's, an array's or a nullable's element, a
+///   cast's, a `default`'s, a `typeof`'s and a `sizeof`'s, and in a pattern `x is T[]`, `x is T?`,
+///   a declaration pattern's `T t` and a recursive pattern's `T { P: 1 }` or `T(var (a, b), 0)`;
+/// - a constant pattern, as the grammar parses `x is T`: after `is`, under a `not`, an `and` or an
+///   `or`, in parentheses, two pairs included, in a switch case or arm, as a property
+///   subpattern's value and as a list element, a constant's name included, since the grammar
+///   tells no type from a constant there;
+/// - a positional pattern's name, `Pt` of `Pt(0, 0)`, in each of those positions, under each
+///   parse the grammar gives it: a recursive pattern's `type`, as with a designation,
+///   `Pt(0, 0) d`, a property clause or a first argument `var (a, b)`, and as a declaring pattern
+///   in a switch arm or in a case label with a `when`; an invocation in a constant pattern,
+///   directly or in one pair of parentheses, as `x is Pt(0, 0)` and `case Pt(0, var y):` are; the
+///   constant `Pt`, when the grammar reads `x is Pt(var a, 0)`, its first argument declaring,
+///   typed or discarding, as a call of `x is Pt`; and an invocation directly in a switch section,
+///   as the grammar reads a case label with no `when` whose first argument declares one variable,
+///   is typed or discards, `case Pt(var a, 0):`, stacked labels included;
+/// - an element of a list the grammar reads as a collection expression, a case label with no
+///   `when` holding a declaring positional pattern, `case [Ln, Lo(var a, 0)]:`, or a list in one
+///   pair of parentheses in any pattern position, `x is ([Ln])`: the element's identifier, generic
+///   name or called identifier, directly or in one pair of parentheses.
+///
+/// None is a type in:
+///
+/// - `nameof` in any of those positions, `case nameof(Foo):`, `case not nameof(Foo):`, a switch
+///   arm's `nameof(Foo)`, `x is { Name: nameof(Foo) }`, a list's `[nameof(Foo)]`, a declaring
+///   `nameof(var a)` and a declaration pattern's `nameof x` included, while a member access in
+///   its argument is the field it names, as in any expression;
+/// - a predefined type; an identifier in a binary or a prefix expression; a relational pattern's
+///   operand, a qualified one the field it names; a `var` pattern and a discard; a property
+///   subpattern's name, an extended one the field it names; a tuple pattern's elements; and a
+///   list after `is` whose slice holds a pattern or precedes one, which the grammar fails to
+///   parse;
+/// - a call in a case's body or `when` or in an expression's collection; a positional pattern in
+///   a second pair of parentheses, which the grammar nests as a further expression, and a list in
+///   a second pair or nested in a collection-expression list's element; a positional pattern's
+///   argument subpattern, `Inner` of `Pt(Inner(0, 0), 1)`, where the grammar reads the pattern as
+///   an invocation, whose arguments are no patterns, while under a recursive pattern's parse, as
+///   with a designation, it is a pattern like any other; a generic positional pattern,
+///   `Pt<A>(0, 0)`, comparisons to the grammar; and a qualified one, `Ns.Pt(0, 0)`, which stays
+///   the call `Ns.Pt`.
 const CSHARP_REFERENCE_TAGS: &str = r#"
 (class_declaration
   (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
