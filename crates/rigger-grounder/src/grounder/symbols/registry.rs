@@ -115,8 +115,9 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 /// constant there; `x is T?` and `x is T[]` reach `T` through their `type` field, and `x is Ns.T`,
 /// which the grammar parses as a member access, is the field `Ns.T`. The grammar parses a
 /// positional pattern with no designation, `x is Pt(0, 0)`, as an invocation in a constant
-/// pattern, so an identifier called there, directly or in parentheses, is a type wherever a
-/// constant pattern's `T` is, `nameof(T)` excepted, the one invocation a constant admits, and
+/// pattern, so an identifier called there, directly or in one pair of parentheses, is a type
+/// wherever a constant pattern's `T` is, `nameof(T)` excepted, the one invocation a constant
+/// admits; in a second pair, which the grammar nests as a further expression, it is none, and
 /// `x is Ns.Pt(0, 0)` stays the call `Ns.Pt`. A member access named by an identifier and called
 /// stays a call (`@reference.send`) and one not called, read or assigned, is a field; either is
 /// qualified by its object when that object is exactly a capitalised identifier, so
