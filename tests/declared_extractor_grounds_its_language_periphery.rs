@@ -486,8 +486,9 @@ fn a_read_in_a_linked_worktree_asks_the_roots_extractor_for_the_text_it_changed(
 /// looks a name up, shows a definition or reads a file's neighbourhood there, each read starts
 /// one session of the root's extractor, in the root, asks it the worktree's text alone, and has
 /// closed and waited for that session by the time it exits, saying nothing on stderr. Each read's
-/// stdout and stderr are files the stub does not hold open, so the read's end is rigger's own;
-/// each changes the file's text, so no read is answered from an earlier one's.
+/// stdout and stderr are files, not pipes the test reads to their end, so the read's end is
+/// rigger's own though the stub inherits its stderr; each changes the file's text, so no read is
+/// answered from an earlier one's.
 #[test]
 fn a_one_shot_read_closes_and_waits_for_its_session_before_it_exits() {
     let (_dir, root) = source_repository();

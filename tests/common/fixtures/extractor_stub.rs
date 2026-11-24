@@ -3,11 +3,11 @@
 //! for the request's path, and records the directory it started in, every request it read and
 //! each time its input ended, once it has waited out the linger a test may set, so a test pins
 //! what the code store asked, how many sessions it started and closed and whether the reader
-//! waited for each to exit. It lives in its own directory, outside the project it serves, so no walk
-//! of the project reads it. It runs under `sh`, so only a unix test starts it. Beside it lie the
-//! request line it reads for a file, the one-function and the references-only answer lines a test
-//! writes for it, the physical root it records as its start and the identity facts a declared
-//! file holds when it holds no symbols.
+//! waited for each to exit. It lives in its own directory, outside the project it serves, so no
+//! walk of the project reads it. It runs under `sh`, so only a unix test starts it. Beside it lie
+//! the request line it reads for a file, the one-function and the references-only answer lines a
+//! test writes for it, the physical root it records as its start and the identity facts a
+//! declared file holds when it holds no symbols.
 
 use std::path::{Path, PathBuf};
 
