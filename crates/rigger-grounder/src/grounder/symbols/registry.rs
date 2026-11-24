@@ -118,7 +118,8 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///   an `as` and a generic's type argument;
 /// - any other `type` field: a parameter's, a property's, an array's or a nullable's element, a
 ///   cast's, a `default`'s, a `typeof`'s and a `sizeof`'s, and in a pattern `x is T[]`, `x is T?`,
-///   a declaration pattern's `T t` and a recursive pattern's `T { P: 1 }` or `T(var (a, b), 0)`;
+///   a declaration pattern's `T t`, a positional pattern's typed argument, `T` of `Pt(T t, 0)`,
+///   and a recursive pattern's `T { P: 1 }` or `T(var (a, b), 0)`;
 /// - a constant pattern, as the grammar parses `x is T`: after `is`, under a `not`, an `and` or an
 ///   `or`, in parentheses, two pairs included, in a switch case or arm, as a property
 ///   subpattern's value and as a list element, a constant's name included, since the grammar
@@ -135,28 +136,71 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 /// - an element of a list the grammar reads as a collection expression, a case label with no
 ///   `when` holding a declaring positional pattern, `case [Ln, Lo(var a, 0)]:`, or a list in one
 ///   pair of parentheses in any pattern position, `x is ([Ln])`: the element's identifier, generic
-///   name or called identifier, directly or in one pair of parentheses.
+///   name or called identifier, directly or in one pair of parentheses;
+/// - the left operand of a binary operator binding looser than `is`, `==`, `!=`, `&`, `^`, `|`,
+///   `&&`, `||` or `??` ([`CSHARP_LOOSER_OPERATORS`]), which the grammar nests inside the constant
+///   pattern before the operator, `Foo` of `x is Foo && ok`, `Pt` of `x is not Pt(0, 0) || ok`
+///   and `Bar` of `x is Foo or Bar && ok`, in a switch case too: its identifier, generic name or
+///   called identifier, or a list as above, directly or in one pair of parentheses, leftmost in a
+///   chain that puts at most [`CSHARP_SPINE_BOUND`], 16, nodes of any kind between the constant
+///   pattern and it, so `case (A | B):` stages `A`; each operator is one such node, and a right
+///   operand the grammar wraps around the chain adds its own, as a conditional access does,
+///   `x is Foo && s?.A?.B > 0` four nodes, so sixteen `&& ok` are staged and seventeen none, while
+///   four `&& s?.A?.B > 0` are staged and five none;
+/// - the right of an `is` the grammar reads as a type test, as it reads `x is Foo && ok ? 1 : 0`
+///   before a conditional's `?`, and the type argument of a one-argument generic the grammar
+///   splits there into comparisons, `A` of `x is Gen<A> & ok ? 1 : 0`, read `x is Gen < A > &ok`,
+///   whose last operand is a prefix `&` or `^`, `&&` read as two, directly or first in the node
+///   there, as in `& s switch { _ => ok }`.
 ///
 /// None is a type in:
 ///
-/// - `nameof` in any of those positions, `case nameof(Foo):`, `case not nameof(Foo):`, a switch
+/// - a pattern keyword, `nameof`, `not`, `and` or `or`, wherever the grammar reads one as a name:
+///   `nameof` in any of those positions, `case nameof(Foo):`, `case not nameof(Foo):`, a switch
 ///   arm's `nameof(Foo)`, `x is { Name: nameof(Foo) }`, a list's `[nameof(Foo)]`, a declaring
-///   `nameof(var a)` and a declaration pattern's `nameof x` included, while a member access in
-///   its argument is the field it names, as in any expression;
-/// - a predefined type; an identifier in a binary or a prefix expression; a relational pattern's
+///   `nameof(var a)`, a declaration pattern's `nameof x` and a left operand's `nameof(Foo) && ok`
+///   included, while a member access in its argument is the field it names, as in any
+///   expression; a positional pattern's argument `not null`, `and x` or `or x`, which the grammar
+///   reads as a declaration typed `not`, `and` or `or`; and `not` opening a statement the grammar
+///   recovers as a local's declaration, `case C: not null:`;
+/// - a predefined type; an identifier in an arithmetic, a shift or a relational expression, as
+///   `case Cf + 1:`, `x is Foo << 1` and `x is Foo < ok` are, as the right operand of a looser
+///   operator, `Bar` of `x is Foo == Bar`, or in a prefix expression; a relational pattern's
 ///   operand, a qualified one the field it names; a `var` pattern and a discard; a property
 ///   subpattern's name, an extended one the field it names; a tuple pattern's elements; and a
 ///   list after `is` whose slice holds a pattern or precedes one, which the grammar fails to
 ///   parse;
-/// - a call in a case's body or `when` or in an expression's collection; a positional pattern in
-///   a second pair of parentheses, which the grammar nests as a further expression, and a list in
-///   a second pair or nested in a collection-expression list's element; a positional pattern's
-///   argument subpattern, `Inner` of `Pt(Inner(0, 0), 1)`, where the grammar reads the pattern as
-///   an invocation, whose arguments are no patterns, while under a recursive pattern's parse, as
-///   with a designation, it is a pattern like any other; a generic positional pattern,
-///   `Pt<A>(0, 0)`, comparisons to the grammar; and a qualified one, `Ns.Pt(0, 0)`, which stays
-///   the call `Ns.Pt`.
-const CSHARP_REFERENCE_TAGS: &str = r#"
+/// - a left operand past the bound above; and a generic name of two or more type arguments the
+///   grammar splits at its commas into elements of a list, an argument list, an index, an
+///   initializer, a collection, a `for` update, an interpolation or parentheses it then reads as
+///   a tuple, as `F(x is Gen<A, B> & s is null)` is, whose kept `Gen < A` is a relational
+///   expression, while `F(x is Gen<A, B> & ok)`, kept whole, is the left operand above;
+/// - a call in a case's body or `when` or in an expression's collection; a positional pattern
+///   directly in a second pair of parentheses, which the grammar nests as a further expression,
+///   and a list directly in a second pair or nested in a collection-expression list's element; a
+///   positional pattern's untyped argument subpattern, `Inner` of `Pt(Inner(0, 0), 1)`, where the
+///   grammar reads the pattern as an invocation, whose arguments are no patterns, while under a
+///   recursive pattern's parse, as with a designation, it is a pattern like any other; a generic
+///   positional pattern, `Pt<A>(0, 0)`, comparisons to the grammar; and a qualified one,
+///   `Ns.Pt(0, 0)`, which stays the call `Ns.Pt`.
+fn csharp_reference_tags() -> String {
+    let guard = CSHARP_KEYWORD_GUARD;
+    let names = format!("(identifier) @name (generic_name) @name {CSHARP_CALLED}");
+    let element = format!("[{names} (parenthesized_expression [{names}])]");
+    let list =
+        format!("(collection_expression (collection_element (expression_element {element})))");
+    let operand = format!("[{names} {list} (parenthesized_expression [{names} {list}])]");
+    let left = format!("(_ left: {operand} operator: {CSHARP_LOOSER_OPERATORS})");
+    let spines = std::iter::successors(Some(left), |spine| Some(first_child(spine)));
+    let chains = std::iter::once(operand)
+        .chain(spines.take(CSHARP_SPINE_BOUND))
+        .map(|spine| format!("((constant_pattern {spine}) @reference.type {guard})"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prefix = r#"(prefix_unary_expression ["&" "^"])"#;
+    let closing = format!("[{prefix} {}]", first_child(prefix));
+    format!(
+        r#"
 (class_declaration
   (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
   @reference.implementation
@@ -173,43 +217,22 @@ const CSHARP_REFERENCE_TAGS: &str = r#"
 (object_creation_expression type: [(identifier) (generic_name)] @name) @reference.class
 (type_parameter_constraints_clause (identifier) @name) @reference.class
 (type_parameter_constraint (type type: (identifier) @name)) @reference.class
-(variable_declaration type: (identifier) @name) @reference.class
-((_ type: [(identifier) (generic_name)] @name) @reference.type (#not-eq? @name "nameof"))
+((variable_declaration type: (identifier) @name) @reference.class {guard})
+((_ type: [(identifier) (generic_name)] @name) @reference.type {guard})
 (_ returns: [(identifier) (generic_name)] @name) @reference.type
 (as_expression right: [(identifier) (generic_name)] @name) @reference.type
-((constant_pattern [(identifier) (generic_name)] @name) @reference.type (#not-eq? @name "nameof"))
-((constant_pattern
-  [(invocation_expression function: (identifier) @name)
-   (parenthesized_expression (invocation_expression function: (identifier) @name))])
+{chains}
+((switch_section [{CSHARP_CALLED} {list}]) @reference.type {guard})
+((is_expression right: [(identifier) (generic_name)] @name) @reference.type {guard})
+((binary_expression
+  left: (binary_expression
+    left: [(is_expression) (is_pattern_expression)]
+    operator: "<"
+    right: [(identifier) (generic_name)] @name)
+  operator: ">"
+  right: {closing})
   @reference.type
-  (#not-eq? @name "nameof"))
-((switch_section (invocation_expression function: (identifier) @name) @reference.type)
-  (#not-eq? @name "nameof"))
-((switch_section
-  (collection_expression
-    (collection_element
-      (expression_element
-        [(identifier) @name
-         (generic_name) @name
-         (invocation_expression function: (identifier) @name)
-         (parenthesized_expression
-           [(identifier) @name
-            (generic_name) @name
-            (invocation_expression function: (identifier) @name)])]) @reference.type)))
-  (#not-eq? @name "nameof"))
-((constant_pattern
-  (parenthesized_expression
-    (collection_expression
-      (collection_element
-        (expression_element
-          [(identifier) @name
-           (generic_name) @name
-           (invocation_expression function: (identifier) @name)
-           (parenthesized_expression
-             [(identifier) @name
-              (generic_name) @name
-              (invocation_expression function: (identifier) @name)])]) @reference.type))))
-  (#not-eq? @name "nameof"))
+  {guard})
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
 ((invocation_expression
   function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
@@ -220,7 +243,29 @@ const CSHARP_REFERENCE_TAGS: &str = r#"
   @reference.field
   (#match? @qualifier.member "^[A-Z]"))
 (member_access_expression name: (identifier) @name) @reference.field
-"#;
+"#
+    )
+}
+
+/// The guard on each C# reference pattern a pattern's name can reach.
+const CSHARP_KEYWORD_GUARD: &str = r#"(#not-match? @name "^(nameof|not|and|or)$")"#;
+
+/// A called identifier, `Pt` of `Pt(0, 0)`, its invocation matched as any node with a `function`
+/// field, which only an invocation has and which compiles far faster than the typed node.
+const CSHARP_CALLED: &str = "(_ function: (identifier) @name)";
+
+/// The C# binary operators binding looser than `is`; of the nodes with a `left` field, only a
+/// binary expression has one of them as its `operator`, so a wildcard parent with both fields is
+/// one, and compiles far faster than the typed node.
+const CSHARP_LOOSER_OPERATORS: &str = r#"["==" "!=" "&" "^" "|" "&&" "||" "??"]"#;
+
+/// The most nodes between a constant pattern and the left operand it stages.
+const CSHARP_SPINE_BOUND: usize = 16;
+
+/// Any node whose first named child is `inner`.
+fn first_child(inner: &str) -> String {
+    format!("(_ . {inner})")
+}
 
 /// The comment runs a C# definition's doc patterns capture, in order ([`csharp_tags`]): the whole
 /// run of comments directly above the definition, then that run less its first comment, then
@@ -234,7 +279,7 @@ const CSHARP_DOC_RUNS: [&str; 3] = [
 /// The C# `tags` query (spec 117, DOC FACTS): each of [`CSHARP_DEFINITION_TAGS`] first after each
 /// of [`CSHARP_DOC_RUNS`] in turn, each giving the definition its doc span when every comment it
 /// captures is a `///` line, then alone, so a definition none of them passes for is tagged with
-/// no span; then [`CSHARP_REFERENCE_TAGS`]. The matcher yields each run's longest capture alone,
+/// no span; then [`csharp_reference_tags`]. The matcher yields each run's longest capture alone,
 /// blank lines inside it included, and the earliest passing pattern makes the tag, so the span is
 /// the `///` block directly above a definition when at most two other comments sit above it in
 /// the run, a plain `//` line or a trailing comment on the line above among them; under three or
@@ -248,7 +293,7 @@ fn csharp_tags() -> String {
     [
         documented.join("\n"),
         CSHARP_DEFINITION_TAGS.join("\n"),
-        CSHARP_REFERENCE_TAGS.to_string(),
+        csharp_reference_tags(),
     ]
     .join("\n")
 }
