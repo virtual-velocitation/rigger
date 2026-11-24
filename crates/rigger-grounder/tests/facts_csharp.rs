@@ -49,9 +49,11 @@ type Case = (
 /// its doc span, which `doc_text` reads back without its XML tags, while a `////` line, a block
 /// comment, a block under three other comments and a `///` line a plain one follows give none;
 /// and each per-form row, one pattern form written as a statement in a method's body, in each
-/// position and under each argument mix, a list case label and a list in one pair of parentheses
-/// included, stages the `type`, `field` or call mentions, or none, that the C# reference
-/// patterns' doc (`CSHARP_REFERENCE_TAGS`) states for that form; over the production extractor.
+/// position and under each argument mix, a list case label, a list in one pair of parentheses, a
+/// keyword or typed argument and the left operand of a binary operator binding looser than `is`,
+/// at the bound and one past it, included, stages the `type`, `field` or call mentions, or none,
+/// that the C# reference patterns' doc (`csharp_reference_tags`) states for that form; over the
+/// production extractor.
 #[test]
 fn csharp_stages_its_row() {
     // A mention inside the definition at index `at`, written `name` of `leaf`.
@@ -80,7 +82,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 188] = [
+    let cases: [Case; 238] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1337,6 +1339,306 @@ fn csharp_stages_its_row() {
             "a collection in an expression",
             in_m!("int[] r = [Mh(1), 2];"),
             vec![],
+            k_m(),
+        ),
+        (
+            "a declaring positional pattern as the left operand of `&&` in an `if`",
+            in_m!("if (p is Pt(var x, var y) && x == y) { }"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern of constants as the left operand of `||`",
+            in_m!("var r = p is Pt(0, 0) || ok;"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern under `not` as the left operand of `&&` in an `if`",
+            in_m!("if (p is not Pt(0, 0) && ok) { }"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `&&` in an `if`",
+            in_m!("if (p is Foo && ok) { }"),
+            vec![ty("Foo")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument is `not null` after `is`",
+            in_m!("var r = p is Pt(not null, var y);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument is `not null` in a switch case",
+            in_m!("switch (p) { case Pt(not null, var y): break; }"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `==`",
+            in_m!("var r = p is Oa == ok;"),
+            vec![ty("Oa")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `!=`",
+            in_m!("var r = p is Ob != ok;"),
+            vec![ty("Ob")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `&`",
+            in_m!("var r = p is Oc & ok;"),
+            vec![ty("Oc")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `^`",
+            in_m!("var r = p is Od ^ ok;"),
+            vec![ty("Od")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `|`",
+            in_m!("var r = p is Oe | ok;"),
+            vec![ty("Oe")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `||`",
+            in_m!("var r = p is Of || ok;"),
+            vec![ty("Of")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `??`",
+            in_m!("var r = p is Og ?? ok;"),
+            vec![ty("Og")],
+            k_m(),
+        ),
+        (
+            "a generic name as the left operand of `&&`",
+            in_m!("var r = p is Gg<A> && ok;"),
+            vec![ty("A"), ty("Gg")],
+            k_m(),
+        ),
+        (
+            "an identifier under `or` as the left operand of `&&`",
+            in_m!("var r = p is Oh or Oi && ok;"),
+            vec![ty("Oh"), ty("Oi")],
+            k_m(),
+        ),
+        (
+            "an identifier under `and not` as the left operand of `||`",
+            in_m!("var r = p is Oj and not Ok || ok;"),
+            vec![ty("Oj"), ty("Ok")],
+            k_m(),
+        ),
+        (
+            "an identifier under `not` as the left operand of `==`",
+            in_m!("var r = p is not Ol == ok;"),
+            vec![ty("Ol")],
+            k_m(),
+        ),
+        (
+            "an identifier in one pair of parentheses as the left operand of `||`",
+            in_m!("var r = p is (Om) || ok;"),
+            vec![ty("Om")],
+            k_m(),
+        ),
+        (
+            "a positional pattern in one pair of parentheses as the left operand of `&&`",
+            in_m!("var r = p is (Pt(0, 0)) && ok;"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a generic name in one pair of parentheses as the left operand of `==`",
+            in_m!("var r = p is (Gp<A>) == ok;"),
+            vec![ty("A"), ty("Gp")],
+            k_m(),
+        ),
+        (
+            "a list holding an identifier as the left operand of `&&`",
+            in_m!("var r = p is [On] && ok;"),
+            vec![ty("On")],
+            k_m(),
+        ),
+        (
+            "a list holding a positional pattern as the left operand of `&&`",
+            in_m!("var r = p is [Pt(0, 0)] && ok;"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a list in one pair of parentheses as the left operand of `&&`",
+            in_m!("var r = p is ([Oo]) && ok;"),
+            vec![ty("Oo")],
+            k_m(),
+        ),
+        (
+            "a list holding an identifier in parentheses as the left operand of `&&`",
+            in_m!("var r = p is [(Op)] && ok;"),
+            vec![ty("Op")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `&&` in a switch case",
+            in_m!("switch (p) { case Oq && ok: break; }"),
+            vec![ty("Oq")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `|` in one pair of parentheses in a switch case",
+            in_m!("switch (p) { case (Or | Os): break; }"),
+            vec![ty("Or")],
+            k_m(),
+        ),
+        (
+            "`nameof` as the left operand of `&&`",
+            in_m!("var r = s is nameof(Foo) && ok;"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "the identifier `nameof` as the left operand of `&&`",
+            in_m!("var r = s is nameof && ok;"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "an identifier in an arithmetic left operand of `==`, a value",
+            in_m!("var r = p is Ot + 1 == ok;"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `<<`, a value",
+            in_m!("var r = p is Ou << 1;"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `<`, a value",
+            in_m!("var r = p is Ov < ok;"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "an identifier as the right operand of `==`, a value",
+            in_m!("var r = p is Ow == Ox;"),
+            vec![ty("Ow")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `&&` whose right operand is a conditional access",
+            in_m!("var r = p is Oy && s?.Length > 0;"),
+            vec![ty("Oy")],
+            k_m(),
+        ),
+        (
+            "an identifier as the left operand of `&&` in a conditional's condition, an `is` expression to the grammar",
+            in_m!("var r = p is Qa && ok ? 1 : 0;"),
+            vec![ty("Qa")],
+            k_m(),
+        ),
+        (
+            "a generic name as the left operand of `&` in a conditional's condition, comparisons to the grammar",
+            in_m!("var r = p is Gq<A> & ok ? 1 : 0;"),
+            vec![ty("Gq"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name as the left operand of `&&` in a conditional's condition, comparisons to the grammar",
+            in_m!("var r = p is Gr<A> && ok ? 1 : 0;"),
+            vec![ty("Gr"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name as the left operand of `&` and a switch in a conditional's condition",
+            in_m!("var r = p is Gs<A> & s switch { _ => ok } ? 1 : 0;"),
+            vec![ty("Gs"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name as the left operand of `&` and a conditional access in a conditional's condition",
+            in_m!("var r = p is Gt<A> & s?.Length ? 1 : 0;"),
+            vec![ty("Gt"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in an argument, split at its comma by the grammar",
+            in_m!("F(p is Gv<A, B> & s is null);"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in an argument",
+            in_m!("F(p is Gw<A, B> & ok);"),
+            vec![ty("A"), ty("B"), ty("Gw")],
+            k_m(),
+        ),
+        (
+            "a generic name of two type arguments as the left operand of `&` in parentheses, a tuple to the grammar",
+            in_m!("var r = (p is Gx<A, B> & s?.Length > 0);"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "an identifier through four `&&` whose right operands are conditional accesses, sixteen nodes, the bound",
+            in_m!("var r = p is Qc && s?.A?.B > 0 && s?.A?.B > 0 && s?.A?.B > 0 && s?.A?.B > 0;"),
+            vec![ty("Qc")],
+            k_m(),
+        ),
+        (
+            "an identifier through five `&&` whose right operands are conditional accesses, twenty nodes, past the bound",
+            in_m!("var r = p is Qd && s?.A?.B > 0 && s?.A?.B > 0 && s?.A?.B > 0 && s?.A?.B > 0 && s?.A?.B > 0;"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "an identifier through sixteen `&&`, sixteen nodes, the bound",
+            in_m!("var r = p is Qb && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok;"),
+            vec![ty("Qb")],
+            k_m(),
+        ),
+        (
+            "an identifier through seventeen `&&`, seventeen nodes, past the bound",
+            in_m!("var r = p is Qe && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok && ok;"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument is `not Foo`",
+            in_m!("var r = p is Pt(not Foo, 0);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument is `and x`",
+            in_m!("var r = p is Pt(and x, 0);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument is `or x`",
+            in_m!("var r = p is Pt(or x, 0);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "`not` opening a statement after a case label, a local's type to the grammar's recovery",
+            in_m!("switch (p) { case Kx: not null: break; }"),
+            vec![ty("Kx")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument declares a named type after `is`",
+            in_m!("var r = p is Pt(Tf f, 0);"),
+            vec![ty("Pt"), ty("Tf")],
             k_m(),
         ),
     ];
