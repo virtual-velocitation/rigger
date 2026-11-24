@@ -103,21 +103,34 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 
 /// The C# reference patterns (spec 117, OTHER LANGUAGES), after the definitions; of the patterns
 /// naming one node the earliest makes its tag. A class's, struct's, record's or interface's base
-/// list entry is an implementation, a record's primary-constructor base included, and no type; an
-/// enum's base is none. A constructed type, `new T()` or `new List<T>()`, stays a call
-/// ([`CSHARP_CONSTRUCTORS`]); a constraint's and a local's or field's declared type is a type. An
-/// identifier or a generic name in any other `type` field, a method's return, the right of an
-/// `as`, a generic's type argument and `x is T`, which the grammar parses as a constant pattern,
-/// is a type, a qualified name none; `x is T?` and `x is T[]` reach `T` through their `type`
-/// field. A member access called stays a call (`@reference.send`) and one not called, read or
-/// assigned, is a field; either is qualified by its object when that object is exactly a
-/// capitalised identifier, so `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and
-/// `s.Side` the field `Side`.
+/// list entry named by an identifier, a generic, a qualified or an alias-qualified name is an
+/// implementation, a record's primary-constructor base included, and no type, so a comment inside
+/// the list is none; an enum's base is none. A constructed type, `new T()` or `new List<T>()`,
+/// stays a call ([`CSHARP_CONSTRUCTORS`]); a constraint's and a local's or field's declared type
+/// is a type. An identifier or a generic name in any other `type` field, a method's return, the
+/// right of an `as`, a generic's type argument and a constant pattern is a type, a qualified name
+/// none. The grammar parses `x is T` as a constant pattern, so `T` is a type under a `not`, an
+/// `and`, an `or` or parentheses too, and so is the identifier of a switch case, a switch arm or a
+/// property subpattern, a constant's name included, since the grammar tells no type from a
+/// constant there; `x is T?` and `x is T[]` reach `T` through their `type` field, and `x is Ns.T`,
+/// which the grammar parses as a member access, is the field `Ns.T`. A member access named by an
+/// identifier and called stays a call (`@reference.send`) and one not called, read or assigned,
+/// is a field; either is qualified by its object when that object is exactly a capitalised
+/// identifier, so `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and `s.Side` the
+/// field `Side`.
 const CSHARP_REFERENCE_TAGS: &str = r#"
-(class_declaration (base_list (_) @name)) @reference.implementation
-(struct_declaration (base_list (_) @name)) @reference.implementation
-(record_declaration (base_list (_) @name)) @reference.implementation
-(interface_declaration (base_list (_) @name)) @reference.implementation
+(class_declaration
+  (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
+  @reference.implementation
+(struct_declaration
+  (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
+  @reference.implementation
+(record_declaration
+  (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
+  @reference.implementation
+(interface_declaration
+  (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
+  @reference.implementation
 (base_list (primary_constructor_base_type type: (_) @name)) @reference.implementation
 (object_creation_expression type: [(identifier) (generic_name)] @name) @reference.class
 (type_parameter_constraints_clause (identifier) @name) @reference.class
@@ -126,7 +139,7 @@ const CSHARP_REFERENCE_TAGS: &str = r#"
 (_ type: [(identifier) (generic_name)] @name) @reference.type
 (_ returns: [(identifier) (generic_name)] @name) @reference.type
 (as_expression right: [(identifier) (generic_name)] @name) @reference.type
-(is_pattern_expression pattern: (constant_pattern [(identifier) (generic_name)] @name)) @reference.type
+(constant_pattern [(identifier) (generic_name)] @name) @reference.type
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
 ((invocation_expression
   function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
@@ -139,15 +152,29 @@ const CSHARP_REFERENCE_TAGS: &str = r#"
 (member_access_expression name: (identifier) @name) @reference.field
 "#;
 
-/// The C# `tags` query (spec 117, DOC FACTS): each of [`CSHARP_DEFINITION_TAGS`] first after the
-/// run of comments directly above it, which gives the definition its doc span when every comment
-/// of the run is a `///` line, then alone, so a definition under any other run is tagged with no
-/// span; then [`CSHARP_REFERENCE_TAGS`]. The matcher yields the longest run alone, blank lines
-/// inside it included, so a `///` block under another comment with no code between, a trailing
-/// comment on the line above included, gets no span.
+/// The comment runs a C# definition's doc patterns capture, in order ([`csharp_tags`]): the whole
+/// run of comments directly above the definition, then that run less its first comment, then
+/// less its first two, an uncaptured `(comment)` standing for each one left out.
+const CSHARP_DOC_RUNS: [&str; 3] = [
+    "(comment)* @doc",
+    "(comment) . (comment)+ @doc",
+    "(comment) . (comment) . (comment)+ @doc",
+];
+
+/// The C# `tags` query (spec 117, DOC FACTS): each of [`CSHARP_DEFINITION_TAGS`] first after each
+/// of [`CSHARP_DOC_RUNS`] in turn, each giving the definition its doc span when every comment it
+/// captures is a `///` line, then alone, so a definition none of them passes for is tagged with
+/// no span; then [`CSHARP_REFERENCE_TAGS`]. The matcher yields each run's longest capture alone,
+/// blank lines inside it included, and the earliest passing pattern makes the tag, so the span is
+/// the `///` block directly above a definition when at most two other comments sit above it in
+/// the run, a plain `//` line or a trailing comment on the line above among them; under three or
+/// more it is none, never a truncated block.
 fn csharp_tags() -> String {
-    let documented = CSHARP_DEFINITION_TAGS
-        .map(|def| format!("((comment)* @doc . {def} (#match? @doc \"^///([^/]|$)\"))"));
+    let documented = CSHARP_DOC_RUNS.map(|run| {
+        CSHARP_DEFINITION_TAGS
+            .map(|def| format!("({run} . {def} (#match? @doc \"^///([^/]|$)\"))"))
+            .join("\n")
+    });
     [
         documented.join("\n"),
         CSHARP_DEFINITION_TAGS.join("\n"),
