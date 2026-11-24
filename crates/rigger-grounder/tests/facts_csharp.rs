@@ -249,7 +249,7 @@ fn csharp_stages_its_row() {
             vec![("K", None, ""), ("M", None, "")],
         ),
         (
-            "a positional pattern with a declaration first in a switch case label, stacked included, an invocation in the switch section to the grammar, and a call in a case's body or `when`",
+            "a positional pattern whose first argument declares one variable or discards in a switch case label with no `when`, stacked included, an invocation in the switch section to the grammar, and a call in a case's body or `when`",
             "class K {\n    void M1(object p) { switch (p) { case Pt(var x, var y): break; } }\n    void M2(object p) { switch (p) { case Pt(var x, 0): break; } }\n    void M3(object p) { switch (p) { case Pt(int u, int v): break; } }\n    void M4(object p) { switch (p) { case Pt(_, var v): break; } }\n    void M5(object p) { switch (p) { case Pt(int u, _): break; } }\n    void M6(object p) { switch (p) { case PtA(var u, var v): case PtB(var w, var z): break; } }\n    void M7(object p) { switch (p) { case 0: Go(1); break; case int i when Check(i): break; } }\n}\n",
             vec![
                 leaf_in(1, "Pt", Some(REF_KIND_TYPE), 2),
