@@ -1,8 +1,9 @@
-//! Periphery (integration) tests for spec 117, RUST DOC SPANS ARE EXTRACTED, and the `/** */`
-//! clause of TYPESCRIPT AND JAVASCRIPT STAGE THEIR ROWS, across the seam the crate's own tests stop
-//! short of: the real `rigger graph build` extracts each file, the facts layer copies the file's
-//! and each definition's doc span into the file's facts, and the code store persists those facts,
-//! so a reader of the built store finds the spans extraction gave. The crate's tests pin the
+//! Periphery (integration) tests for spec 117, RUST DOC SPANS ARE EXTRACTED, the docstring
+//! spans of PYTHON STAGES ITS ROW and the `/** */` clause of TYPESCRIPT AND JAVASCRIPT STAGE THEIR
+//! ROWS, across the seam the crate's own tests stop short of: the real `rigger graph build`
+//! extracts each file, the facts layer copies the file's and each definition's doc span into the
+//! file's facts, and the code store persists those facts, so a reader of the built store finds the
+//! spans extraction gave. The crate's tests pin the
 //! extraction and the copy in process; these pin that the binary's own build stores them, and
 //! that a rebuild replaces a rewritten file's spans and keeps an unchanged file's. And, for the
 //! doc half of SHOW PRINTS THE DOC AND THE REFERRERS, across the seam `ContextGraph::doc`'s own tests stop
@@ -11,9 +12,9 @@
 //! text of its stored span read from the reader's own worktree.
 //!
 //! NOT OWNED here: a fixture query's `@doc` capture (only a crate test can hand extraction a query
-//! of its own; the Go, TypeScript and JavaScript files below are that capture's reach through a
-//! bundled query), the spans' serialized form (the symbols model's own test) and the `--show`
-//! print of a doc (`tests/graph_honesty_label_cli.rs`).
+//! of its own; the Go, TypeScript, JavaScript and Python files below are that capture's reach
+//! through a bundled query), the spans' serialized form (the symbols model's own test) and the
+//! `--show` print of a doc (`tests/graph_honesty_label_cli.rs`).
 //!
 //! Every test extracts real source, so the file runs on the `symbols` lane alone.
 
@@ -48,10 +49,12 @@ type Held = (
 /// The first build: a Rust file opening with two inner doc lines and holding a definition whose
 /// outer doc lines have a `#[doc(hidden)]` between them beside an undocumented one, a Rust file
 /// with no doc line, a Go file whose bundled query captures a three-line comment block over one
-/// function and none over the next, a TypeScript and a JavaScript file whose bundled queries
-/// each capture a `/** */` block over one definition and none over the next, and a Rust file
-/// whose one definition, a test, has an outer doc line.
-const FIRST: [Row; 6] = [
+/// function and none over the next, a TypeScript and a JavaScript file whose bundled queries each
+/// capture a `/** */` block over one definition and none over the next, a Rust file whose one
+/// definition, a test, has an outer doc line, and a Python file opening with a module docstring of
+/// two parts in parentheses over two lines and holding a class, past its base class, whose body
+/// opens with a four-line docstring beside an undocumented function.
+const FIRST: [Row; 7] = [
     (
         "src/lib.rs",
         "//! The crate.\n//! It holds two functions.\n\n/// First.\n#[doc(hidden)]\n/// Last.\n\
@@ -85,13 +88,22 @@ const FIRST: [Row; 6] = [
         None,
         &[("checks", Some((1, 1)))],
     ),
+    (
+        "p.py",
+        "(\"The \"\n \"shapes.\")\n\n\nclass Shape(Base):\n    \"\"\"A shape.\n\n    Of any size.\n    \
+         \"\"\"\n\n\ndef bare():\n    pass\n",
+        Some((1, 2)),
+        &[("Shape", Some((6, 9))), ("bare", None)],
+    ),
 ];
 
 /// The rebuild: the first Rust file rewritten so its file span and `documented`'s are gone and
 /// `plain` gains one, the second given a file span and a definition span, the TypeScript file
 /// rewritten so `area`'s span is gone and `bare` gains one, the Go, JavaScript and test files
-/// unchanged.
-const NEXT: [Row; 6] = [
+/// unchanged, and the Python file rewritten so its string follows an import and is no module
+/// docstring, `Shape`'s body opens with a bytes literal, which is no docstring, and `bare`'s, past
+/// its parameter's annotation, opens with a docstring joined from two parts.
+const NEXT: [Row; 7] = [
     (
         "src/lib.rs",
         "/// Now first.\npub fn plain() {}\n\npub fn documented() {}\n",
@@ -113,6 +125,13 @@ const NEXT: [Row; 6] = [
     ),
     FIRST[4],
     FIRST[5],
+    (
+        "p.py",
+        "import os\n\"\"\"Not the file's.\"\"\"\n\n\nclass Shape:\n    b\"Not a docstring.\"\n\n\n\
+         def bare(s: Shape):\n    \"Now \" 'documented.'\n",
+        None,
+        &[("Shape", None), ("bare", Some((10, 10)))],
+    ),
 ];
 
 /// The doc text of `p.go`'s `Reads`, which both builds hold.
@@ -185,9 +204,9 @@ fn expected(rows: &[Row]) -> Vec<Held> {
 
 /// GIVEN a project holding `FIRST`'s files, WHEN the operator runs `rigger graph build`, THEN
 /// the code store holds each file's and each definition's doc span exactly; and WHEN the operator
-/// rewrites the first two Rust files and the TypeScript file to `NEXT`'s and builds again, THEN
-/// each rewritten file holds its new spans, a span its source dropped gone, and the unchanged Go,
-/// JavaScript and test files keep their own.
+/// rewrites the first two Rust files, the TypeScript file and the Python file to `NEXT`'s and
+/// builds again, THEN each rewritten file holds its new spans, a span its source dropped gone, and
+/// the unchanged Go, JavaScript and test files keep their own.
 #[test]
 fn a_build_stores_each_doc_span_and_a_rebuild_replaces_a_rewritten_files() {
     let project = temp_project();
@@ -201,7 +220,7 @@ fn a_build_stores_each_doc_span_and_a_rebuild_replaces_a_rewritten_files() {
 /// store's head with a doc reader over that worktree and the extractor the head carries, and asks
 /// each node of `DOCS` its doc, THEN the head matches the worktree and each node reads its `FIRST`
 /// doc; and WHEN the worktree is rewritten to `NEXT`'s files, uncommitted, THEN the head overlays
-/// the three rewritten files and each node reads its `NEXT` doc, from the worktree's text.
+/// the four rewritten files and each node reads its `NEXT` doc, from the worktree's text.
 #[test]
 fn a_node_s_doc_is_its_span_read_from_the_reader_s_worktree() {
     let project = temp_project();
@@ -210,7 +229,7 @@ fn a_node_s_doc_is_its_span_read_from_the_reader_s_worktree() {
     build_head(root);
     assert_docs(root, "the built tree", 0, 0);
     write_files(root, &sources(&NEXT));
-    assert_docs(root, "the rewritten worktree", 3, 1);
+    assert_docs(root, "the rewritten worktree", 4, 1);
 }
 
 /// Asserts that the code store's head read for the worktree `root` overlays `differing` files and

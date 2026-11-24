@@ -194,6 +194,8 @@ mod proof_lands_on_the_card_periphery;
 mod proof_row_renders_on_the_card;
 mod published_content_key_split_periphery;
 mod python_definitions_are_nodes_periphery;
+#[cfg(feature = "symbols")]
+mod python_staged_mentions_land_periphery;
 mod rationale_overlay_data;
 mod rationale_overlay_seam;
 mod readable_graph_adaptive_labels;

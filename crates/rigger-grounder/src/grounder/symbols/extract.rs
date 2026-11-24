@@ -308,7 +308,8 @@ enum Capture {
     /// ([`CompiledTags::constructors`]), where it stays a call, so `new T()` is a call of `T`
     /// (spec 117, CAPTURES).
     Class(Option<&'static str>),
-    /// `@doc`: a doc comment of the match's definition, which gives it its doc span.
+    /// `@doc`: a doc comment or docstring of the match's definition, which gives it its doc span,
+    /// or of the file when the match tags nothing ([`CompiledTags::tags_in`]).
     Doc,
     /// `@qualifier.path` (true) or `@qualifier.member` (false): the node the match's reference is
     /// qualified by, a path or a member access, in place of the qualifier its name's text writes
@@ -494,30 +495,45 @@ impl CompiledTags {
 
     /// The tags the query yields over the tree rooted at `root`, parsed from `source`, in the
     /// order the tree-sitter tags convention yields them: a match whose captures hold a name and a
-    /// definition or reference makes a tag, unless its name node holds a parse error; of the
-    /// matches naming the same node, the one of the earliest pattern makes its tag; and a tag
-    /// is yielded once a later-matched name starts past its name's end, the rest in name order
-    /// when the matches run out. Within a match the last name capture names it, the last
-    /// definition or reference capture is the tagged node, a `@reference.class` one a call when
+    /// definition or reference makes a tag, unless its name node holds a parse error; a tag is
+    /// yielded once a later-matched name starts past its name's end, the rest in name order when
+    /// the matches run out; and of the matches naming the same node, the one of the earliest
+    /// pattern makes its tag, which stands in the first tag's place, so a match that comes after
+    /// that node's tag was yielded still replaces it when its pattern is earlier. Within a match
+    /// the last name capture names it, the last definition or reference capture is the tagged
+    /// node, a `@reference.class` one a call when
     /// that node's kind is one of the [`CompiledTags::constructors`], and its `@doc` captures,
     /// read as the matcher yields them, cover its doc ([`Tag::doc`]), for every language. A
     /// reference is named by the leaf its name splits to ([`CompiledTags::split_leaf`]), a name
     /// that is no chain making no tag, and qualified by the match's last `@qualifier.path` or
     /// `@qualifier.member` capture, else by the qualifier the split reads off its name's text.
-    fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
+    /// A match that tags nothing, no definition and no reference captured, makes no tag: its
+    /// `@doc` captures cover the file's doc, the first such match holding one giving it, which
+    /// the reading returns beside the tags (spec 117, DOC FACTS).
+    fn tags_in(
+        &self,
+        root: tree_sitter::Node,
+        source: &str,
+    ) -> (Vec<Tag>, Option<std::ops::Range<usize>>) {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, source.as_bytes());
-        // The tags not yet yielded, in (name end, name start) order, each with the pattern that
-        // made it.
+        let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
+        // The tags not yet yielded, in (name end, name start) order, and the tags yielded, in
+        // yield order, each with the pattern that made it, and where each yielded tag's key sits.
         let mut queue: std::collections::VecDeque<(Tag, usize)> = Default::default();
-        let mut tags = Vec::new();
+        let mut tags: Vec<(Tag, usize)> = Vec::new();
+        let mut yielded = std::collections::HashMap::new();
+        let mut file_doc = None;
         loop {
             while queue.len() > 1
                 && queue
                     .back()
                     .is_some_and(|(last, _)| queue[0].0.name_range.end < last.name_range.start)
             {
-                tags.extend(queue.pop_front().map(|(tag, _)| tag));
+                if let Some(next) = queue.pop_front() {
+                    yielded.insert(key(&next.0), tags.len());
+                    tags.push(next);
+                }
             }
             let Some(found) = matches.next() else {
                 break;
@@ -545,7 +561,11 @@ impl CompiledTags {
                     }
                 }
             }
-            let (Some(name), Some((node, role))) = (name, tagged) else {
+            let Some((node, role)) = tagged else {
+                file_doc = file_doc.or(doc);
+                continue;
+            };
+            let Some(name) = name else {
                 continue;
             };
             if name.has_error() {
@@ -580,17 +600,24 @@ impl CompiledTags {
                 doc,
                 qualifier,
             };
-            let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
-            match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
-                Ok(at) if queue[at].1 > found.pattern_index => {
-                    queue[at] = (tag, found.pattern_index);
+            // The tag already made for this name node, yielded or queued, else a new one queued.
+            let made = if let Some(&at) = yielded.get(&key(&tag)) {
+                &mut tags[at]
+            } else {
+                match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
+                    Ok(at) => &mut queue[at],
+                    Err(at) => {
+                        queue.insert(at, (tag, found.pattern_index));
+                        continue;
+                    }
                 }
-                Ok(_) => {}
-                Err(at) => queue.insert(at, (tag, found.pattern_index)),
+            };
+            if made.1 > found.pattern_index {
+                *made = (tag, found.pattern_index);
             }
         }
-        tags.extend(queue.into_iter().map(|(tag, _)| tag));
-        tags
+        let tags = tags.into_iter().chain(queue).map(|(tag, _)| tag).collect();
+        (tags, file_doc)
     }
 }
 
@@ -632,9 +659,11 @@ impl CompiledTags {
 /// impl header's trait row taking the self type's path when exactly one non-test definition of
 /// the file has the self type's leaf, else the impl block's.
 ///
-/// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, in every
-/// language; in Rust, a definition with no capture takes its outer doc lines' ([`outer_doc`]) and
-/// the file takes its opening inner doc lines' ([`inner_doc`]). Every other file has none.
+/// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, and the
+/// first match that tags nothing and holds a capture gives the file its span, in every language;
+/// in Rust, a definition with no capture takes its outer doc lines' ([`outer_doc`]) and a file
+/// with no such match its opening inner doc lines' ([`inner_doc`]). Every other definition and
+/// file has none.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags reading yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -655,7 +684,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     let root = tree.root_node();
-    let tags = tags.tags_in(root, source);
+    let (tags, file_doc) = tags.tags_in(root, source);
     let text = Source::new(source);
     let mut defs = Vec::new();
     let mut refs = Vec::new();
@@ -809,18 +838,21 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             ));
         }
     }
-    // Spec 117 (DOC FACTS): in Rust, a definition no `@doc` capture gave a span, an impl block's
-    // and a read-off's included, takes the one its outer doc lines give it ([`outer_doc`]), and
-    // the file takes the one its opening inner doc lines give it ([`inner_doc`]).
+    // Spec 117 (DOC FACTS): the file takes the span of the first match that tags nothing and holds
+    // a `@doc` capture ([`CompiledTags::tags_in`]). In Rust, a definition no `@doc` capture gave a
+    // span, an impl block's and a read-off's included, takes the one its outer doc lines give it
+    // ([`outer_doc`]), and a file no such match gave one takes the one its opening inner doc lines
+    // give it ([`inner_doc`]).
+    let file_doc = file_doc.map(|doc| text.span(&doc));
     let doc = if lang == Lang::Rust {
         for (d, (range, _, _)) in defs.iter_mut().zip(&def_ranges) {
             d.doc = d
                 .doc
                 .or_else(|| outer_doc(root, range, source.as_bytes()).map(|doc| text.span(&doc)));
         }
-        inner_doc(root, source.as_bytes()).map(|doc| text.span(&doc))
+        file_doc.or_else(|| inner_doc(root, source.as_bytes()).map(|doc| text.span(&doc)))
     } else {
-        None
+        file_doc
     };
     // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH; CONTAINS IS STRUCTURE): each definition's id path
     // and parent, decided over every definition's range at once, so a container recorded after
@@ -3770,6 +3802,36 @@ fn b() {
         assert_eq!(crate::symbol_index::defs_by_line(&fs), vec![(1, "m", kind)]);
     }
 
+    /// OF THE MATCHES NAMING ONE NODE, THE EARLIEST PATTERN MAKES ITS TAG, ONE YIELDED ALREADY
+    /// INCLUDED: `f`'s plain pattern and its body pattern name one node, and the body pattern's
+    /// match comes past the reference `T` its parameter names, so `f`'s tag is yielded before it.
+    /// `f` is one definition, of the kind of whichever pattern each row's query puts first.
+    #[test]
+    fn the_earliest_pattern_names_a_node_whose_tag_was_yielded() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let plain = "(function_item name: (identifier) @name) @definition.function";
+        let body = "(function_item name: (identifier) @name body: (block (call_expression))) \
+                    @definition.constant";
+        let rows = [
+            ("the body pattern first", [body, plain], Kind::Constant),
+            ("the plain pattern first", [plain, body], Kind::Function),
+        ];
+        for (what, [first, second], kind) in rows {
+            let query = format!("{first}\n{second}\n(type_identifier) @name @reference.type");
+            let fs = extract(
+                "fn f(x: T) { g() }\n",
+                Lang::Rust,
+                &compiled(&language, &query),
+            )
+            .unwrap();
+            assert_eq!(
+                crate::symbol_index::defs_by_line(&fs),
+                vec![(1, "f", kind)],
+                "{what}"
+            );
+        }
+    }
+
     /// The symbols the Rust grammar extracts from `src`.
     fn rust_symbols(src: &str) -> FileSymbols {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -5090,14 +5152,16 @@ pub fn f() -> u8 {
     /// `/**/` and `/***/` is no doc line, while a raw string value is one; and under a fixture
     /// query a `@doc` capture in a definition's match gives that definition the captured span,
     /// over the rule's, while a capture in the match of a definition the extraction drops gives no
-    /// other definition a span.
+    /// other definition a span, and a capture in a match that tags nothing gives the file its
+    /// span, the first such match's, over the rule's.
     #[test]
     fn rust_doc_spans_are_extracted() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         let fixture = compiled(
             &language,
             "((line_comment)* @doc . (function_item name: (identifier) @name) @definition.function)\n\
-             ((line_comment)* @doc . (const_item name: (identifier) @name) @definition.constant)\n",
+             ((line_comment)* @doc . (const_item name: (identifier) @name) @definition.constant)\n\
+             ((block_comment) @doc)\n",
         );
         // (case, whether the fixture query reads the source - else the registered one does -, the
         // source, its file span, each definition's span)
@@ -5214,6 +5278,20 @@ pub fn f() -> u8 {
                 "fn f() {}\n// Gone.\nconst _: u8 = 0;\n",
                 None,
                 vec![("f", None)],
+            ),
+            (
+                "a capture in a match that tags nothing wins over the rule",
+                true,
+                "/* Licence. */\n//! The crate.\nstruct S;\n",
+                Some((1, 1)),
+                vec![],
+            ),
+            (
+                "the first match that tags nothing gives the file its span",
+                true,
+                "/* One. */\n/* Two. */\nstruct S;\n",
+                Some((1, 1)),
+                vec![],
             ),
         ];
         for (case, under_fixture, src, file, defs) in rows {

@@ -343,6 +343,24 @@ const GO_DEFINITION_TAGS: &str = r#"
 const GO_FIELD_TAGS: &str =
     "(selector_expression field: (field_identifier) @name) @reference.field";
 
+// The statement a Python docstring is, spelled once for `PYTHON_TAGS`'s class, function and
+// module docstring patterns, a literal its own macro names since `concat!` takes literals alone:
+// a statement whose one named child is a string, an implicit concatenation of strings or either in
+// one pair of parentheses, so a tuple a string leads is none, each part and each comment between
+// parts a `@doc`, none of them a literal whose prefix holds `b`, `f` or `t` (a bytes, formatted or
+// template literal, which is no str). The prefix predicate sits on a group around the statement,
+// since tree-sitter drops a trailing `.` anchor that a predicate follows.
+macro_rules! python_docstring {
+    () => {
+        r#"((expression_statement . [
+      (string) @doc
+      (concatenated_string [(string) (comment)]+ @doc)
+      (parenthesized_expression
+        [(string) @doc (concatenated_string [(string) (comment)]+ @doc)])
+    ] .) (#not-match? @doc "^[A-Za-z]*[bBfFtT][A-Za-z]*[\"']"))"#
+    };
+}
+
 /// The Python `tags` query. The upstream `tree-sitter-python` `tags.scm` tags a module-level
 /// assignment whose target is an identifier a constant whatever its value, so a chained
 /// assignment (`x = y = f()`) tags its first target alone over the whole chain, every call in it
@@ -352,7 +370,32 @@ const GO_FIELD_TAGS: &str =
 /// chain, the names a pattern binds, a class body's targets and a `type X = ..` alias are read
 /// off the parsed tree by `extract`. Every def is tagged a function, which `extract` lowers to a
 /// method when its nearest enclosing definition is a class.
-const PYTHON_TAGS: &str = r#"
+///
+/// Spec 117 (OTHER LANGUAGES): a docstring is found as Python finds one, the first statement of a
+/// class's or a function's body, or of the module, comments before it aside, when that statement
+/// is a str literal alone: one string, an implicit concatenation of strings (`"a" "b"`, a comment
+/// between parts included) or either in one pair of parentheses (`("P.")`), every part and comment
+/// of it a `@doc`, so a tuple a str leads (`"a", "b"`) is none. A bytes, formatted or template
+/// literal, whose prefix holds `b`, `f` or `t`, is no str, so a first statement holding one is no
+/// docstring and gives no span. The shape is spelled once, in `python_docstring!`. The query
+/// reaches one pair of parentheses, so `(("N."))`, a docstring to Python, gives none, and its
+/// anchors skip the anonymous comma, so the one-element tuple `"a",`, none to Python, gives a span.
+/// A class's or a function's docstring is its `@doc`, matched by
+/// a pattern ahead of the plain one that tags the definition whatever its first statement, so a
+/// definition with no docstring stays a definition; the module's is a match that tags nothing,
+/// which gives the file its doc span ([`CompiledTags::tags_in`]). Of the patterns naming one node
+/// the earliest makes its tag, so their order decides: a call on an object that is exactly a
+/// capitalised identifier is qualified by it, `Shape.area()` the call `Shape.area`, ahead of the
+/// upstream call; a base class, a name, an attribute's leaf or a subscript's value, is an
+/// `implementation`, a keyword argument none; a capitalised identifier a `type` node holds within
+/// three levels is a `type`, unqualified, an all-caps one included; an attribute's leaf read or
+/// assigned and not called, on an object that is exactly a capitalised identifier, is a `field`
+/// qualified by that object, `Shape.side` and the member constant `Config.MAX` alike, since a
+/// class body's assignment is a field; any other all-caps name read, an attribute's leaf included
+/// (`cfg.TIMEOUT`), is a `constant`; and any other attribute leaf, read or assigned and not
+/// called, is a `field`.
+const PYTHON_TAGS: &str = concat!(
+    r#"
 (module (expression_statement (assignment left: (identifier) @name !right) @definition.constant))
 (module
   (expression_statement
@@ -362,10 +405,28 @@ const PYTHON_TAGS: &str = r#"
     @definition.constant))
 
 (class_definition
-  name: (identifier) @name) @definition.class
+  name: (identifier) @name
+  ":" . (comment)* . body: (block . "#,
+    python_docstring!(),
+    r#")) @definition.class
+(class_definition name: (identifier) @name) @definition.class
 
 (function_definition
-  name: (identifier) @name) @definition.function
+  name: (identifier) @name
+  ":" . (comment)* . body: (block . "#,
+    python_docstring!(),
+    r#")) @definition.function
+(function_definition name: (identifier) @name) @definition.function
+
+(module . (comment)* . "#,
+    python_docstring!(),
+    r#")
+
+(call
+  function: (attribute
+    object: (identifier) @qualifier.member
+    attribute: (identifier) @name)
+  (#match? @qualifier.member "^[A-Z]")) @reference.call
 
 (call
   function: [
@@ -373,7 +434,34 @@ const PYTHON_TAGS: &str = r#"
       (attribute
         attribute: (identifier) @name)
   ]) @reference.call
-"#;
+
+(class_definition
+  superclasses: (argument_list
+    [
+      (identifier) @name
+      (attribute attribute: (identifier) @name)
+      (subscript
+        value: [
+          (identifier) @name
+          (attribute attribute: (identifier) @name)
+        ])
+    ] @reference.implementation))
+
+((type (identifier) @name @reference.type) (#match? @name "^[A-Z]"))
+((type (_ (identifier) @name @reference.type)) (#match? @name "^[A-Z]"))
+((type (_ (_ (identifier) @name @reference.type))) (#match? @name "^[A-Z]"))
+
+((attribute
+  object: (identifier) @qualifier.member
+  attribute: (identifier) @name @reference.field)
+  (#match? @qualifier.member "^[A-Z]"))
+((attribute attribute: (identifier) @name @reference.constant)
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+((primary_expression/identifier) @name @reference.constant
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+(attribute attribute: (identifier) @name @reference.field)
+"#
+);
 
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, the `tags` query the
 /// extractor runs over a file in that language, the grammar's node kinds that construct an
@@ -1485,6 +1573,20 @@ class Box:
         return calc(LIMIT)
 def calc(n):
     return n
+class Lid(Box):
+    \"\"\"A lid.\"\"\"
+    def seal(self, b: Box):
+        return b.w + Box.MAX
+class Cap(typing.Generic[T]):
+    pass
+def fit(k: typing.Optional[Box]) -> A | B | C:
+    return k
+def joined():
+    \"a\" 'b'
+def wrapped():
+    (\"P.\")
+def raw():
+    rb\"x\"
 ",
         ),
     ];
@@ -1655,7 +1757,7 @@ def calc(n):
             // Go
             ("go", "go-tags-v4", "5775409d3ffc32c0"),
             // Python
-            ("py", "python-tags-v1", "2ae6674264c03453"),
+            ("py", "python-tags-v2", "526d67033f741273"),
         ];
         assert_eq!(
             GRAMMAR_TAGS_VERSION,
@@ -1778,8 +1880,8 @@ def calc(n):
 
     /// The name filter keeps `_` where it is an ordinary name: a JS `const _ = require(..)` and a
     /// Python `_ = gettext.gettext` each keep their definition under the composed JS query and
-    /// the registered Python one; neither source holds a reference, the upstream JS query tagging
-    /// no `require` call and a Python attribute read being no call.
+    /// the registered Python one; neither source holds a call, the upstream JS query tagging no
+    /// `require` call and the Python attribute read being a field use.
     #[test]
     fn a_js_and_a_python_definition_named_underscore_keeps_its_def() {
         let js =
@@ -2056,6 +2158,11 @@ def calc(n):
         /// target that assignment's (`make()` is `k`'s), its field spanning the whole assignment
         /// as a module-level constant of one target does; the value of a pattern or a chained
         /// assignment is the file's, each bound name spanning its own identifier alone.
+        ///
+        /// The tagged references (spec 117, PYTHON STAGES ITS ROW): the attribute target `self.x`
+        /// is a field use, `area`'s; the read of `TYPE_CHECKING` a const read, the file's; and
+        /// each capitalised name in a type alias, its own name and its type parameter included
+        /// (`X` and `T` of `type X[T] = int`, `Y`), a type reference, the alias's.
         every_python_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "py",
@@ -2096,7 +2203,11 @@ def calc(n):
                     (18, "f", None),
                     (19, "f", None),
                 ],
-                "",
+                "11 field x Shape::area\n\
+                 22 const TYPE_CHECKING -\n\
+                 24 type T X\n\
+                 24 type X X\n\
+                 29 type Y Y",
             );
         /// Every Python definition carries its extent (spec 119, ONE EXTENT): a single-target
         /// module-level assignment (`z = 1`, `w: int`, and one of each other value type the
