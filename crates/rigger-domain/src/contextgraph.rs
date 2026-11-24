@@ -1899,6 +1899,47 @@ mod reference_candidate_kinds_rule {
     }
 }
 
+/// Spec 117, READERS: the label a referrer is listed under, by its mention's tag.
+#[cfg(test)]
+mod referrer_label_rule {
+    use super::*;
+    use crate::code_facts::MentionKind;
+
+    /// Every tag has its label: the table holds one row per tag in the spec's order, a call
+    /// carrying no tag; each tag's mention reads its row's label, and a tag the table holds no
+    /// row for (a call's name spelled as a tag, the empty tag, a label) reads none.
+    #[test]
+    fn each_tag_has_its_label_in_the_readers_order_and_an_unlisted_tag_none() {
+        let listed = [
+            (None, "called by"),
+            (Some("const"), "reads"),
+            (Some("type"), "type use"),
+            (Some("impl"), "implemented by"),
+            (Some("field"), "field use"),
+            (Some("variant"), "variant use"),
+            (Some("use"), "imported by"),
+            (Some("module"), "declared by"),
+        ];
+        assert_eq!(
+            REFERRER_LABELS, listed,
+            "one row per tag, in the spec's order"
+        );
+        let kind = |tag: Option<&str>| {
+            tag.map_or(MentionKind::Call, |tag| MentionKind::Tagged(tag.into()))
+        };
+        assert_eq!(
+            listed.map(|(tag, _)| referrer_label(&kind(tag))),
+            listed.map(|(_, label)| Some(label)),
+            "each tag's mention reads its row's label"
+        );
+        assert_eq!(
+            [Some("call"), Some(""), Some("reads")].map(|tag| referrer_label(&kind(tag))),
+            [None, None, None],
+            "a tag the table holds no row for reads no label"
+        );
+    }
+}
+
 #[cfg(test)]
 mod graph_kinds {
     use super::*;
