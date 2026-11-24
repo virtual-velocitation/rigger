@@ -670,7 +670,8 @@ impl CompiledTags {
 /// staying a call ([`Capture::Class`]), named by the bare leaf its name splits to and carrying
 /// the qualifier it is written with ([`CompiledTags::split_leaf`]). A Rust tag's name is that leaf
 /// already, so a Rust reference carries the qualifier the Rust rule reads off the tree around its
-/// name ([`rust_qualifier`], spec 117, RUST REFERENCES) instead.
+/// name ([`rust_qualifier`], spec 117, RUST REFERENCES) instead, and one whose path's qualifier
+/// names the standard library or a primitive type stages nothing ([`excluded_qualifier`]).
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
@@ -711,6 +712,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     let structure = StructuralNodes::of(root, lang, whole);
     let file_scope = Scope {
         std_imports: std_imports(&structure.uses, bytes),
+        aliases: use_aliases(&structure.uses, bytes),
         ..Scope::default()
     };
     // Spec 117 (MACRO TOKEN TREES): every macro invocation's token tree, re-parsed, of a Rust
@@ -797,12 +799,19 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                 }
                 TagRole::Reference(ref_kind) => {
                     // A Rust reference is qualified by the Rust rule, off its name node: the Rust
-                    // query's names are leaves, so its tags carry no qualifier.
+                    // query's names are leaves, so its tags carry no qualifier. One whose path's
+                    // qualifier names the standard library or a primitive type stages nothing.
                     let qualifier = match lang {
-                        Lang::Rust => read
-                            .root
-                            .descendant_for_byte_range(tag.leaf.start, tag.leaf.end)
-                            .and_then(|leaf| rust_qualifier(leaf, bytes, read.scope)),
+                        Lang::Rust => {
+                            let leaf = read
+                                .root
+                                .descendant_for_byte_range(tag.leaf.start, tag.leaf.end);
+                            if leaf.is_some_and(|leaf| excluded_qualifier(leaf, bytes, read.scope))
+                            {
+                                continue;
+                            }
+                            leaf.and_then(|leaf| rust_qualifier(leaf, bytes, read.scope))
+                        }
                         _ => tag.qualifier,
                     };
                     ref_positions.push(tag.range.start);
@@ -1278,14 +1287,16 @@ impl<'t> StructuralNodes<'t> {
 }
 
 /// The context one read tree's references stage with ([`rust_references`], [`rust_qualifier`]):
-/// the names the FILE imports from the standard library ([`std_imports`]) and, for a token tree's
-/// re-parse (spec 117, MACRO TOKEN TREES), its invocation's: the names of the generic parameters
-/// enclosing it ([`enclosing_generics`]), the type or trait `Self` and `self` name there
-/// ([`self_qualifier`]) and the inline modules holding it, outermost first ([`inline_modules`]).
-/// The file's own read has the first alone.
+/// the names the FILE imports from the standard library ([`std_imports`]) and the aliases its
+/// `use` declarations bind ([`use_aliases`]) and, for a token tree's re-parse (spec 117, MACRO
+/// TOKEN TREES), its invocation's: the names of the generic parameters enclosing it
+/// ([`enclosing_generics`]), the type or trait `Self` and `self` name there ([`self_qualifier`])
+/// and the inline modules holding it, outermost first ([`inline_modules`]). The file's own read
+/// has the first two alone.
 #[derive(Clone, Default)]
 struct Scope {
     std_imports: Vec<String>,
+    aliases: Vec<(String, String)>,
     generics: Vec<String>,
     owner: Option<String>,
     modules: Vec<String>,
@@ -1293,12 +1304,13 @@ struct Scope {
 
 impl Scope {
     /// The scope the token tree of `invocation`, a macro invocation in a tree read with this
-    /// scope, is re-parsed with: the file's standard-library imports, the generic parameters
-    /// enclosing `invocation` and then this scope's, the owner `Self` names at `invocation`, and
-    /// this scope's inline modules followed by those holding `invocation`.
+    /// scope, is re-parsed with: the file's standard-library imports and aliases, the generic
+    /// parameters enclosing `invocation` and then this scope's, the owner `Self` names at
+    /// `invocation`, and this scope's inline modules followed by those holding `invocation`.
     fn at(&self, invocation: tree_sitter::Node, source: &[u8]) -> Scope {
         Scope {
             std_imports: self.std_imports.clone(),
+            aliases: self.aliases.clone(),
             generics: enclosing_generics(invocation, source)
                 .map(str::to_string)
                 .chain(self.generics.iter().cloned())
@@ -1532,6 +1544,19 @@ fn std_imports(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The aliases the `use` declarations `uses` bind, each with the name it imports (`use a::B as
+/// C` gives `(C, B)`): a file's [`Scope::aliases`], which [`rust_qualifier`] writes an alias
+/// qualifier by.
+fn use_aliases(uses: &[tree_sitter::Node], source: &[u8]) -> Vec<(String, String)> {
+    uses.iter()
+        .flat_map(|&decl| use_leaves(decl, source))
+        .filter_map(|leaf| {
+            let imported = leaf.node.utf8_text(source).ok()?;
+            (leaf.bound != imported).then(|| (leaf.bound, imported.to_string()))
+        })
+        .collect()
+}
+
 /// THE RUST PRELUDE (spec 117): the names a Rust file reaches with no `use` that no tagged
 /// reference stages - the 2021 prelude's types, traits and variants at toolchain 1.95.0
 /// (`library/std/src/prelude/v1.rs`, `library/core/src/prelude/v1.rs`, plus 2021's `TryFrom`,
@@ -1587,12 +1612,13 @@ pub const RUST_PRELUDE: [&str; 43] = [
 const STD_ROOTS: [&str; 3] = ["std", "core", "alloc"];
 
 /// Whether the root segment `segment` names the standard library ([`STD_ROOTS`]): the one test
-/// both a `use` leaf ([`UseLeaf::roots_at_std`]) and a path's leaf ([`excluded`]) read.
+/// both a `use` leaf ([`UseLeaf::roots_at_std`]) and a path ([`std_named`]) read.
 fn is_std_root(segment: &str) -> bool {
     STD_ROOTS.contains(&segment)
 }
 
-/// Rust's primitive types: a const qualified by one (`u32::MAX`) stages nothing.
+/// Rust's primitive types: a const or a call on a path rooted at one (`u32::MAX`, `u32::from`)
+/// stages nothing.
 const PRIMITIVE_TYPES: [&str; 17] = [
     "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64", "i128", "isize", "f32",
     "f64", "bool", "char", "str",
@@ -1787,10 +1813,8 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
 }
 
 /// Whether the leaf `name`, read at `node` under a path whose root segment is `root_seg`, stages
-/// no tagged reference (spec 117): `Self`, a [`RUST_PRELUDE`] name, a leaf the file imports from
-/// the standard library ([`Scope::std_imports`], an alias by its alias name), a path rooted at the
-/// standard library ([`is_std_root`]) or at such an imported leaf, and a generic or const generic
-/// parameter of an item enclosing `node` ([`names_enclosing_generic`]).
+/// no tagged reference (spec 117): `Self`, a name of the standard library ([`std_named`]), and a
+/// generic or const generic parameter of an item enclosing `node` ([`names_enclosing_generic`]).
 fn excluded(
     name: &str,
     root_seg: Option<&str>,
@@ -1798,12 +1822,21 @@ fn excluded(
     source: &[u8],
     scope: &Scope,
 ) -> bool {
-    let imported = |leaf: &str| scope.std_imports.iter().any(|bound| bound == leaf);
     name == "Self"
-        || RUST_PRELUDE.contains(&name)
+        || std_named(name, root_seg, scope)
+        || names_enclosing_generic(name, node, source, scope)
+}
+
+/// Whether `name`, under a path whose root segment is `root_seg`, names the standard library
+/// (spec 117): a [`RUST_PRELUDE`] name, a leaf the file imports from the standard library
+/// ([`Scope::std_imports`], an alias by its alias name), or a path rooted at the standard library
+/// ([`is_std_root`]) or at such an imported leaf; the one test both [`excluded`] and
+/// [`excluded_qualifier`] read.
+fn std_named(name: &str, root_seg: Option<&str>, scope: &Scope) -> bool {
+    let imported = |leaf: &str| scope.std_imports.iter().any(|bound| bound == leaf);
+    RUST_PRELUDE.contains(&name)
         || imported(name)
         || root_seg.is_some_and(|r| is_std_root(r) || imported(r))
-        || names_enclosing_generic(name, node, source, scope)
 }
 
 /// Whether `name` is a generic or const generic parameter of an item enclosing `node`: one of
@@ -1842,10 +1875,13 @@ fn enclosing_generics<'a>(
 /// with, read off the parent of `leaf`, its name node. A scoped path's name is qualified, as a
 /// path, by the segment before it ([`path_qualifier`]); a member's name whose receiver node is
 /// exactly `self` is qualified, as a member access, by the type or trait `self` names there
-/// ([`self_qualifier`]). A qualifier naming a generic parameter of an item enclosing `leaf` is
-/// none, and every other name is unqualified: a lowercase segment, a `crate`, `self` or `super`
-/// path, and any other receiver (`self.inner.open()`). A re-parsed `leaf` reads `Self`, `self`
-/// and the enclosing generics through its invocation's `scope` too.
+/// ([`self_qualifier`]). A qualifier [`excluded`] holds - a generic parameter of an item
+/// enclosing `leaf`, or a `Self` or `self` whose self type names the standard library - is none,
+/// an alias the file's `use` binds is written as the name it imports ([`Scope::aliases`]), and
+/// every other name is unqualified: a lowercase segment, a `crate`, `self` or `super` path, and
+/// any other receiver (`self.inner.open()`). A re-parsed `leaf` reads `Self`, `self`, the
+/// enclosing generics and the aliases through its invocation's `scope` too. A path whose
+/// qualifier names the standard library never reaches here ([`excluded_qualifier`]).
 fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<Qualifier> {
     let parent = leaf.parent()?;
     let (name, path) = match parent.kind() {
@@ -1862,28 +1898,65 @@ fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
         }
         _ => return None,
     };
-    (!names_enclosing_generic(&name, leaf, source, scope)).then_some(Qualifier { name, path })
+    if excluded(&name, None, leaf, source, scope) {
+        return None;
+    }
+    let name = scope
+        .aliases
+        .iter()
+        .find(|(alias, _)| *alias == name)
+        .map_or(name, |(_, imported)| imported.clone());
+    Some(Qualifier { name, path })
+}
+
+/// AN EXCLUDED QUALIFIER (spec 117, RUST REFERENCES): whether `leaf`, a reference's name node,
+/// is the name of a scoped path that stages no mention - one whose qualifier as written
+/// ([`qualifier_segment`], before any alias is read) names the standard library ([`std_named`])
+/// or whose root segment ([`root_segment`]) does or is a primitive type ([`PRIMITIVE_TYPES`]),
+/// whatever the case of its other segments (`Vec::new`, `std::fs::read`, `u32::from`). A `Self`
+/// and an enclosing generic parameter are no such qualifier: their call stages, unqualified by
+/// [`rust_qualifier`].
+fn excluded_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> bool {
+    let Some(path) = leaf
+        .parent()
+        .filter(|parent| parent.kind() == "scoped_identifier")
+        .and_then(|parent| parent.child_by_field_name("path"))
+    else {
+        return false;
+    };
+    let root = root_segment(path, source);
+    let root = root.as_deref();
+    root.is_some_and(|r| PRIMITIVE_TYPES.contains(&r))
+        || qualifier_segment(path)
+            .and_then(|segment| segment.utf8_text(source).ok())
+            .is_some_and(|written| std_named(written, root, scope))
 }
 
 /// The qualifier the `path` of a scoped path writes before its name ([`rust_qualifier`]): its
-/// final segment ([`final_identifier`]) when that begins uppercase, a turbofish's generic type
-/// by its type's final segment, a scoped path's name ([`final_identifier`]) or a bare type name
-/// ([`base_type_identifier`]) (`Memo::<K>::new` and `a::Memo::<K>::new` give `Memo`,
-/// `Memo::<K>::Inner::<J>::new` gives `Inner`), a qualified-self path by its trait
-/// (`<T as Tr>::f` gives `Tr`), and `Self` by the type or trait it names there
-/// ([`self_qualifier`]); `None` for a lowercase segment, a `crate`, `self` or `super` path and a
-/// bracketed type naming no trait (`<T>::f`).
+/// segment ([`qualifier_segment`]) when that begins uppercase (`Memo::<K>::new` and
+/// `a::Memo::<K>::new` give `Memo`, `Memo::<K>::Inner::<J>::new` gives `Inner`, `<T as Tr>::f`
+/// gives `Tr`), and `Self` by the type or trait it names there ([`self_qualifier`]); `None` for a
+/// lowercase segment, a `crate`, `self` or `super` path and a bracketed type naming no trait
+/// (`<T>::f`).
 fn path_qualifier(path: tree_sitter::Node, source: &[u8], scope: &Scope) -> Option<String> {
-    let segment = match path.kind() {
-        "generic_type" => final_identifier(path).or_else(|| base_type_identifier(path))?,
-        "bracketed_type" => {
-            base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)?
-        }
-        _ => final_identifier(path)?,
-    };
+    let segment = qualifier_segment(path)?;
     match segment.utf8_text(source).ok()? {
         "Self" => self_qualifier(path, source, scope),
         text => begins_upper(segment, source).then(|| text.to_string()),
+    }
+}
+
+/// The segment the `path` of a scoped path writes last before its name: its final segment
+/// ([`final_identifier`]), a turbofish's generic type by its type's final segment or a bare type
+/// name ([`base_type_identifier`]), and a qualified-self path's trait; `None` for a `crate`,
+/// `self` or `super` path and a bracketed type naming no trait.
+fn qualifier_segment(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
+    match path.kind() {
+        "generic_type" => final_identifier(path).or_else(|| base_type_identifier(path)),
+        "bracketed_type" => {
+            base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)
+        }
+        _ => final_identifier(path),
     }
 }
 
