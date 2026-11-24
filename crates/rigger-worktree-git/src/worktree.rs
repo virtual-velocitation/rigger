@@ -971,20 +971,20 @@ impl Worktree {
     }
 
     /// The diff between `from` and this worktree's current `HEAD`, name-only, sorted and
-    /// de-duplicated, in the [`DiffMode`] the caller names: runs one `git diff --name-only
+    /// de-duplicated, in the [`DiffMode`] the caller names: runs one `git diff --name-only -z
     /// <range>` and parses its output, so the two diff MODES (merge-base-anchored three-dot
-    /// vs a direct two-dot tree comparison) never drift the line-parsing logic apart.
+    /// vs a direct two-dot tree comparison) never drift the parsing logic apart. `-z` names
+    /// each path as it sits on disk, never quoted.
     pub fn diff_names(&self, from: &str, mode: DiffMode) -> Result<Vec<String>, Error> {
         let range = match mode {
             DiffMode::MergeBase => format!("{from}...HEAD"),
             DiffMode::Direct => format!("{from}..HEAD"),
         };
-        let out = git(&self.dir, &["diff", "--name-only", &range])?;
+        let out = git(&self.dir, &["diff", "--name-only", "-z", &range])?;
         let mut paths: Vec<String> = out
-            .lines()
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-            .map(|l| l.to_string())
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
             .collect();
         paths.sort();
         paths.dedup();
@@ -1021,7 +1021,8 @@ impl Worktree {
 
     /// Every path a single commit `sha` (already on this worktree's own object
     /// database - it need not be on this branch's tip) touched, by ITS OWN parent
-    /// diff (`git diff-tree --no-commit-id --name-only -r --root <sha>`), independent
+    /// diff (`git diff-tree --no-commit-id --name-only -z -r --root <sha>`, each path as it
+    /// sits on disk, never quoted), independent
     /// of any other commit around it. Unlike [`Self::changed_since_base`]'s AGGREGATE
     /// three-dot diff across a whole range - which nets a path to nothing when a
     /// LATER commit in the same range reverts an EARLIER one's own touch to that same
@@ -1038,15 +1039,15 @@ impl Worktree {
                 "diff-tree",
                 "--no-commit-id",
                 "--name-only",
+                "-z",
                 "-r",
                 "--root",
                 sha,
             ],
         )?;
         Ok(out
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
+            .split('\0')
+            .filter(|path| !path.is_empty())
             .map(str::to_string)
             .collect())
     }
@@ -5216,6 +5217,33 @@ mod tests {
             state() == checked_out,
             "a later read rewrote the index of a worktree rigger had just checked out"
         );
+    }
+
+    /// A path git would quote (one holding a non-ASCII byte, under the default
+    /// `core.quotePath`) reads back from each name-only diff reader as it sits on disk, so a
+    /// scope check or a residue list names the file the unit wrote.
+    #[test]
+    fn a_non_ascii_path_reads_back_unquoted() {
+        let (_repo, repo_path, root) = scratch_repo(false);
+        run_git(&repo_path, &["config", "core.quotePath", "true"]).unwrap();
+        let base = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+        let (dir, wt) = unit_wt(&repo_path, &root, "accent");
+        let want = vec!["caf\u{e9}.txt".to_string(), "plain.txt".to_string()];
+        for name in &want {
+            std::fs::write(std::path::Path::new(&dir).join(name), "x\n").unwrap();
+        }
+        run_git(&dir, &["add", "."]).unwrap();
+        run_git(&dir, &["commit", "-q", "-m", "accent"]).unwrap();
+        let head = git(&dir, &["rev-parse", "HEAD"]).unwrap();
+        for (reader, got) in [
+            ("diff_names", wt.diff_names(base.trim(), DiffMode::Direct)),
+            (
+                "files_touched_by_commit",
+                wt.files_touched_by_commit(head.trim()),
+            ),
+        ] {
+            assert_eq!(got.unwrap(), want, "{reader}");
+        }
     }
 
     /// Create `dir` (with its parents) holding an `x` file for each of `files`.
