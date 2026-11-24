@@ -107,8 +107,9 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 /// enum's base is none. A constructed type, `new T()` or `new List<T>()`, stays a call
 /// ([`CSHARP_CONSTRUCTORS`]); a constraint's and a local's or field's declared type is a type. An
 /// identifier or a generic name in any other `type` field, a method's return, the right of an
-/// `is` or an `as`, a bare `x is T` and a generic's type argument is a type, a qualified name
-/// none. A member access called stays a call (`@reference.send`) and one not called, read or
+/// `as`, a generic's type argument and `x is T`, which the grammar parses as a constant pattern,
+/// is a type, a qualified name none; `x is T?` and `x is T[]` reach `T` through their `type`
+/// field. A member access called stays a call (`@reference.send`) and one not called, read or
 /// assigned, is a field; either is qualified by its object when that object is exactly a
 /// capitalised identifier, so `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and
 /// `s.Side` the field `Side`.
@@ -124,7 +125,6 @@ const CSHARP_REFERENCE_TAGS: &str = r#"
 (variable_declaration type: (identifier) @name) @reference.class
 (_ type: [(identifier) (generic_name)] @name) @reference.type
 (_ returns: [(identifier) (generic_name)] @name) @reference.type
-(is_expression right: [(identifier) (generic_name)] @name) @reference.type
 (as_expression right: [(identifier) (generic_name)] @name) @reference.type
 (is_pattern_expression pattern: (constant_pattern [(identifier) (generic_name)] @name)) @reference.type
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
