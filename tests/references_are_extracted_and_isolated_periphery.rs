@@ -1,5 +1,5 @@
-//! Periphery (API / contract / integration) tests for spec 117, REFERENCES ARE EXTRACTED AND
-//! ISOLATED: a Rust const read, type reference and `use` are extracted tagged with their
+//! Periphery (API / contract / integration) tests for spec 117, RUST REFERENCES: a Rust const
+//! read, type reference and `use` are extracted tagged with their
 //! `ref_kind`, and no consumer that counts calls - the fold's `REFERENCES` and `CALLS` edges among
 //! them - reads one. The crate's own tests pin the extraction, the emit pass, the grounder's
 //! counts and the fold arm one module at a time over hand-built input; these run OUTSIDE the
@@ -7,7 +7,7 @@
 //!
 //!  - the graph `rigger graph build` folds: a real tree's tagged references fold no placeholder
 //!    and no edge of the event arm's, each landing instead as the staged row's one edge onto its
-//!    one definition (spec 117, STAGED REFERENCES), while its call folds as before; that edge
+//!    one definition (spec 117, RESOLVER AT READ), while its call folds as before; that edge
 //!    lands only while one candidate of its reference's kind answers it - the same file's before
 //!    the project's, `extracted` - stands with its dates while a re-extraction keeps its
 //!    definition, retires with it and lands again on its return, and
@@ -21,12 +21,17 @@
 //!    one `REFERENCES` edge onto its one same-file definition, and nowhere when nothing defines it;
 //!  - a constructor stays a call: a TypeScript, TSX, JavaScript or C# `new Square()` lands as
 //!    the call's `REFERENCES` and `CALLS` edges onto its one same-file class, no placeholder;
-//!  - and a qualifier capture names the mention: a TypeScript, TSX or JavaScript `new Ns.Box()`
+//!  - a qualifier capture names the mention: a TypeScript, TSX or JavaScript `new Ns.Box()`
 //!    and a C# base `Ns.IShape` or `List<IShape>` are stored as the mentions `Ns.Box` of the leaf
 //!    `Box`, `Ns.IShape` of `IShape` and `List` of `List`, and land on the one definition the name
 //!    as written reaches - the member qualifier's fallback to the one same-file `Box`, the
 //!    `namespace Ns` member over its same-file namesake, and `List`, the leaf before the type
-//!    arguments.
+//!    arguments;
+//!  - and Rust writes the qualifier: `Store::open()`, `a::Memo::<u8>::new()`, `Self::new()` inside
+//!    `impl<T> Store<T>` and `self.file()` inside `trait CodeView` are stored as the calls
+//!    `Store::open`, `Memo::new`, `Store::new` and `CodeView.file`, while `self.inner.open()` and
+//!    `paths::module_dir()` are stored bare, and each lands where its name reaches - nowhere for a
+//!    qualifier naming no type of the tree, and the trait's own `file` over its same-file namesake.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -545,20 +550,12 @@ const QUALIFIED_FILES: [(&str, &str, &str, &str, &str, &str, bool); 6] = [
 fn graph_build_lands_a_qualified_reference_where_its_name_as_written_reaches() {
     use rigger::contextgraph::query::entity_id;
     use rigger::contextgraph::TIER_EXTRACTED;
-    use rigger_domain::code_view::CodeView;
 
     let (found, expected): (Vec<_>, Vec<_>) = QUALIFIED_FILES
         .into_iter()
         .map(|(file, source, from, name, leaf, to, call)| {
             let (_project, graph) = common::cli::built_graph(&[(file, source)]);
-            let mentions = graph.view.file(file).map(|facts| {
-                facts
-                    .into_owned()
-                    .mentions
-                    .into_iter()
-                    .map(|mention| (mention.name, mention.leaf))
-                    .collect::<Vec<_>>()
-            });
+            let mentions = stored_mentions(&graph, file);
             let to = entity_id(file, to);
             let edges = if call {
                 common::fixtures::a_call_from(file, from, &to, TIER_EXTRACTED)
@@ -584,6 +581,130 @@ fn graph_build_lands_a_qualified_reference_where_its_name_as_written_reaches() {
         found, expected,
         "each qualified or type-argument reference is stored named as written, of its leaf, and \
          lands on the one definition that name reaches"
+    );
+}
+
+/// The mentions the store holds for `file` in `graph`, each as `(name as written, leaf)`, sorted;
+/// none when it holds no facts for `file`.
+#[cfg(feature = "symbols")]
+fn stored_mentions(graph: &common::cli::BuiltGraph, file: &str) -> Option<Vec<(String, String)>> {
+    use rigger_domain::code_view::CodeView;
+
+    graph.view.file(file).map(|facts| {
+        let mut mentions: Vec<_> = (facts.into_owned().mentions.into_iter())
+            .map(|mention| (mention.name, mention.leaf))
+            .collect();
+        mentions.sort();
+        mentions
+    })
+}
+
+/// One Rust file `f.rs` per call shape RUST WRITES THE QUALIFIER names (spec 117, RUST
+/// REFERENCES), and one module-prefixed turbofish, whose type the rule reads by its final segment,
+/// each `(what it shows, source, its stored mentions as (name as written, leaf),
+/// the calls it lands as (caller, callee), each by id path and `extracted`)`. An impl header
+/// stages a call to its self type, so `impl Store` calling `Store` is a row's landing too.
+#[cfg(feature = "symbols")]
+type RustQualifiedCall = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+    &'static [(&'static str, &'static str)],
+);
+
+/// The rows of [`graph_build_names_a_rust_call_by_the_qualifier_rust_writes`].
+#[cfg(feature = "symbols")]
+const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 6] = [
+    (
+        "`Store::open()`, its uppercase segment naming no type of the tree, makes no link",
+        "fn open() {}\nfn main() { Store::open(); }\n",
+        &[("Store", "Store"), ("Store::open", "open")],
+        &[],
+    ),
+    (
+        "`a::Memo::<u8>::new()`, its turbofish type's final segment naming no type, makes no link",
+        "fn new() {}\nfn main() { a::Memo::<u8>::new(); }\n",
+        &[("Memo", "Memo"), ("Memo::new", "new")],
+        &[],
+    ),
+    (
+        "`Self::new()` inside `impl<T> Store<T>` is qualified by the self type, generics stripped",
+        "struct Store<T>(T);\nimpl<T> Store<T> { fn new() {} fn make() { Self::new() } }\n",
+        &[("Store", "Store"), ("Store::new", "new")],
+        &[("Store<T>::make", "Store<T>::new"), ("impl Store<T>", "Store")],
+    ),
+    (
+        "`self.file()` inside `trait CodeView` is qualified by the trait, over the free `file`",
+        "trait CodeView { fn file(&self) {} fn lines(&self) { self.file() } }\nfn file() {}\n",
+        &[("CodeView.file", "file")],
+        &[("CodeView::lines", "CodeView::file")],
+    ),
+    (
+        "`self.inner.open()`, its receiver no bare `self`, lands on its one same-file `open`",
+        "struct Inner;\nimpl Inner { fn open(&self) {} }\nstruct Store;\nimpl Store { fn reopen(&self) { self.inner.open() } }\n",
+        &[("Inner", "Inner"), ("Store", "Store"), ("open", "open")],
+        &[
+            ("Store::reopen", "Inner::open"),
+            ("impl Inner", "Inner"),
+            ("impl Store", "Store"),
+        ],
+    ),
+    (
+        "`paths::module_dir()`, its segment lowercase, lands on its one same-file `module_dir`",
+        "fn module_dir() {}\nfn main() { paths::module_dir(); }\n",
+        &[("module_dir", "module_dir")],
+        &[("main", "module_dir")],
+    ),
+];
+
+/// GIVEN a project whose one Rust file `f.rs` makes a call in a shape RUST WRITES THE QUALIFIER
+/// names, or through a module-prefixed turbofish ([`RUST_QUALIFIED_CALLS`]),
+/// WHEN the operator runs `rigger graph build`,
+/// THEN the store holds the call's mention named as the Rust qualifier rule writes it -
+/// `Store::open`, `Memo::new` and `Store::new` as paths, `CodeView.file` as a member access,
+/// `open` and `module_dir` bare - beside the mention an uppercase path segment or an impl header's
+/// self type stages, and the graph's `REFERENCES` and `CALLS` edges are exactly where those names
+/// reach: nowhere for `Store::open` and `Memo::new`, their qualifiers naming no type of the tree,
+/// where a bare `open` or `new` lands on its same-file fn; the trait's own `file` for
+/// `CodeView.file`, where a bare `file` lands on a placeholder beside the same-file free `file`;
+/// and the one same-file candidate for each other name, which `paths::module_dir`, its qualifier
+/// naming no type, would not reach.
+#[cfg(feature = "symbols")]
+#[test]
+fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
+    use rigger::contextgraph::query::entity_id;
+    use rigger::contextgraph::TIER_EXTRACTED;
+
+    let owned = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        (pairs.iter())
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect()
+    };
+    let (found, expected): (Vec<_>, Vec<_>) = RUST_QUALIFIED_CALLS
+        .into_iter()
+        .map(|(shows, source, mentions, calls)| {
+            let (_project, graph) = common::cli::built_graph(&[("f.rs", source)]);
+            let mut edges: Vec<_> = (calls.iter())
+                .flat_map(|(caller, callee)| {
+                    let to = entity_id("f.rs", callee);
+                    common::fixtures::a_call_from("f.rs", caller, &to, TIER_EXTRACTED)
+                })
+                .collect();
+            edges.sort();
+            (
+                (
+                    shows,
+                    stored_mentions(&graph, "f.rs"),
+                    common::fixtures::landed(&graph),
+                ),
+                (shows, Some(owned(mentions)), edges),
+            )
+        })
+        .unzip();
+    assert_eq!(
+        found, expected,
+        "each Rust call is stored named by the qualifier Rust writes, and lands where that name \
+         reaches"
     );
 }
 

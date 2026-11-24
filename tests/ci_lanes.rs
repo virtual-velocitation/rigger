@@ -634,10 +634,11 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
 /// the other before that one reports its own errors, and neither the job nor any of its steps
 /// carries an `if` or a `continue-on-error`, so each leg checks and a red one fails the job. Its
 /// checkout fetches full history. Its one `run:` step runs under
-/// `bash` on every runner and, in that step's own shell, exports an empty `RUSTC_WRAPPER` and then
-/// runs `cargo check --workspace`: the empty value overrides `.cargo/config.toml`'s Unix wrapper
-/// script for cargo and every nested cargo it starts. The job's wasm target is pinned once, by
-/// `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
+/// `bash` on every runner and, in that step's own shell, exports an empty `RUSTC_WRAPPER`, runs
+/// `cargo check --workspace` and then runs the one suite that proves an OS's own behaviour,
+/// `bare_rigger_hooks_resolve_periphery`: the empty value overrides `.cargo/config.toml`'s Unix
+/// wrapper script for cargo and every nested cargo it starts. The job's wasm target is pinned
+/// once, by `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
 #[test]
 fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
     const JOB: &str = "cross-os-check";
@@ -700,9 +701,14 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
         run_steps,
         [(
             Some("bash"),
-            vec!["export RUSTC_WRAPPER=", "cargo check --workspace"]
+            vec![
+                "export RUSTC_WRAPPER=",
+                "cargo check --workspace",
+                "cargo test -p rigger --test bare_rigger_hooks_resolve_periphery",
+            ]
         )],
         "job `{JOB}` must have one `run:` step, under `shell: bash`, exporting an empty \
-         `RUSTC_WRAPPER` and then running `cargo check --workspace` (shell, lines)"
+         `RUSTC_WRAPPER`, running `cargo check --workspace` and then the bare-rigger hook suite \
+         (shell, lines)"
     );
 }

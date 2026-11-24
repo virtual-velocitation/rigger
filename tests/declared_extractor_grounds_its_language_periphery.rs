@@ -17,7 +17,8 @@
 //! holds a declared answer's mentions, as it holds those of a file the bundled grammar reads, one
 //! tagged mention per enclosing definition, name, leaf, tag and test flag, in the first one's
 //! place at the lowest of their lines, and every call, one per site (spec 117, ONE TAGGED MENTION
-//! PER SITE KIND).
+//! PER SITE KIND); and each mention the code store holds, of either extractor, reads the label its
+//! referrer is listed under by its tag alone (spec 117, READERS).
 
 use std::path::Path;
 
@@ -898,6 +899,88 @@ fn graph_build_stores_one_tagged_mention_per_site_kind_and_every_call_of_each_ex
         (ok, err, found),
         (true, String::new(), expected),
         "each file's mentions are stored one tagged mention per site kind and every call; \
+         stdout: {out}"
+    );
+}
+
+/// A Zig file whose lines 1 to 7 import `math`, take a `Shape`, check it against `Area`, compare
+/// its kind with the variant `Round`, call `g`, read its field `radius` and read `LIMIT`.
+const EVERY_TAG_ZIG: &str = concat!(
+    "const math = @import(\"math.zig\");\npub fn f(s: Shape) u32 {\n",
+    "    comptime Area.check(Shape);\n    _ = s.kind == .Round;\n    g();\n",
+    "    const r = s.radius;\n    return r + LIMIT;\n}\n",
+);
+
+/// The references of the answer to the file holding [`EVERY_TAG_ZIG`], one per line 1 to 7, each
+/// of a tag THE EXTRACTOR PROTOCOL accepts and a call where it omits the tag: the `use` of `math`,
+/// the `type` `Shape`, the `impl` `Area`, the `variant` `Round`, the call of `g`, the `field`
+/// `radius` and the `const` `LIMIT`.
+const EVERY_TAG_REFS: &str = concat!(
+    r#"{"name":"math","line":1,"ref_kind":"use"},"#,
+    r#"{"name":"Shape","line":2,"ref_kind":"type"},"#,
+    r#"{"name":"Area","line":3,"ref_kind":"impl"},"#,
+    r#"{"name":"Round","line":4,"ref_kind":"variant"},"#,
+    r#"{"name":"g","line":5},"#,
+    r#"{"name":"radius","line":6,"ref_kind":"field"},"#,
+    r#"{"name":"LIMIT","line":7,"ref_kind":"const"}"#,
+);
+
+/// Given a committed repository whose workflow declares the stub for `zig`, holding the Rust tree
+/// whose user file imports `Kestrel`, takes it as a type, calls `draw` and reads `QUOTA_CAP`, and a
+/// Zig file answered with one reference of each tag the protocol accepts and one call, when the
+/// operator builds the graph, every mention the code store holds reads the label its referrer is
+/// listed under (spec 117, READERS) by its tag alone, whichever extractor gave it: a `use` reads
+/// `imported by`, a `type` `type use`, a `const` `reads`, an `impl` `implemented by`, a `field`
+/// `field use`, a `variant` `variant use` and a call `called by`. Nothing is said on stderr.
+#[test]
+fn each_stored_mention_reads_its_tags_referrer_label_whichever_extractor_gave_it() {
+    use common::fixtures::{REFERENCE_KINDS_DEFINER, REFERENCE_KINDS_TREE, REFERENCE_KINDS_USER};
+    use rigger::contextgraph::referrer_label;
+
+    let zig = "src/t.zig";
+    let (_dir, root) = source_repository();
+    let kept = tempfile::tempdir().expect("tempdir");
+    let stub = StubExtractor::new(kept.path());
+    declare(&root, &stub, "zig", "[zig]");
+    let mut files = REFERENCE_KINDS_TREE.to_vec();
+    files.push((zig, EVERY_TAG_ZIG));
+    commit(&root, &files);
+    stub.answers(zig, &answer_with_refs(zig, EVERY_TAG_REFS));
+    let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+    let graph = BuiltGraph::of(&root);
+    let mut labelled: Vec<(&str, u32, String, Option<&str>)> =
+        [REFERENCE_KINDS_DEFINER, REFERENCE_KINDS_USER, zig]
+            .into_iter()
+            .flat_map(|path| {
+                let held = graph.view.file(path);
+                held.map_or_else(Vec::new, |facts| facts.into_owned().mentions)
+                    .into_iter()
+                    .map(move |m| (path, m.line, m.name, referrer_label(&m.kind)))
+            })
+            .collect();
+    labelled.sort();
+    assert_eq!(
+        (ok, err, labelled),
+        (
+            true,
+            String::new(),
+            [
+                (zig, 1, "math", Some("imported by")),
+                (zig, 2, "Shape", Some("type use")),
+                (zig, 3, "Area", Some("implemented by")),
+                (zig, 4, "Round", Some("variant use")),
+                (zig, 5, "g", Some("called by")),
+                (zig, 6, "radius", Some("field use")),
+                (zig, 7, "LIMIT", Some("reads")),
+                (REFERENCE_KINDS_USER, 1, "Kestrel", Some("imported by")),
+                (REFERENCE_KINDS_USER, 2, "Kestrel", Some("type use")),
+                (REFERENCE_KINDS_USER, 2, "QUOTA_CAP", Some("reads")),
+                (REFERENCE_KINDS_USER, 2, "draw", Some("called by")),
+            ]
+            .map(|(path, line, name, label)| (path, line, name.to_string(), label))
+            .to_vec(),
+        ),
+        "each stored mention, (path, line, name as written, label), reads its tag's label; \
          stdout: {out}"
     );
 }

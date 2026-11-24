@@ -335,6 +335,14 @@ const GO_DEFINITION_TAGS: &str = r#"
 (method_elem name: (field_identifier) @name) @definition.method
 "#;
 
+/// The Go tags-query field pattern (spec 117), appended after [`GO_DEFINITION_TAGS`]: a
+/// selector's field (`x.f`) is a field use. The grammar parses a package member (`pkg.Name`) and
+/// a method value (`x.m`) as the same selector, so each is a field use too. A called selector
+/// (`x.g()`) stays the upstream query's call: its call pattern names the same `field_identifier`
+/// and comes first, and of the matches naming one node the earliest pattern makes its tag.
+const GO_FIELD_TAGS: &str =
+    "(selector_expression field: (field_identifier) @name) @reference.field";
+
 /// The Python `tags` query. The upstream `tree-sitter-python` `tags.scm` tags a module-level
 /// assignment whose target is an identifier a constant whatever its value, so a chained
 /// assignment (`x = y = f()`) tags its first target alone over the whole chain, every call in it
@@ -433,7 +441,8 @@ impl LanguageEntry {
 /// its own grammar's value types (TSX reads `<T>x` as JSX, so only TS holds a
 /// `type_assertion` and only TSX the JSX elements).
 pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
-    // The Go `tags` query, composed ONCE: the upstream query plus `GO_DEFINITION_TAGS`.
+    // The Go `tags` query, composed ONCE: the upstream query plus `GO_DEFINITION_TAGS` and
+    // `GO_FIELD_TAGS`.
     static GO_TAGS: OnceLock<String> = OnceLock::new();
     // The JS, TS and TSX `tags` queries, each composed ONCE. The upstream
     // `tree-sitter-typescript` crate ships a `tags.scm` that tags only TypeScript-specific
@@ -563,7 +572,14 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "go" => (
             Lang::Go,
             tree_sitter_go::LANGUAGE.into(),
-            composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
+            composed_once(
+                &GO_TAGS,
+                &[
+                    tree_sitter_go::TAGS_QUERY,
+                    GO_DEFINITION_TAGS,
+                    GO_FIELD_TAGS,
+                ],
+            ),
             &[],
             TS_GO_TYPE_ARGUMENTS,
             &GO,
@@ -1375,6 +1391,7 @@ mod tests {
     #[test]
     fn t() { super::helper(1); }
 }
+impl Kestrel { fn molt(&self) -> u32 { Self::grow(self) + self.grow() } }
 ",
         ),
         ("rs", "fn whole() { helper(); }\nfn broken( {\n"),
@@ -1456,6 +1473,7 @@ func calc(n int) int { return n }
 // Zero is nothing.
 // It reads nothing.
 func Zero() int { return 0 }
+func Read(t T) int { return t.n }
 ",
         ),
         (
@@ -1625,7 +1643,7 @@ def calc(n):
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v2", "cf79ba29624d68ed"),
+            ("rs", "rust-tags-v3", "3f66c33150215f0f"),
             // C#
             ("cs", "csharp-tags-v4", "e396669571843f87"),
             // TypeScript
@@ -1635,7 +1653,7 @@ def calc(n):
             // JavaScript
             ("js", "javascript-tags-v6", "080c51224e924c72"),
             // Go
-            ("go", "go-tags-v3", "40f80b41e4a13f29"),
+            ("go", "go-tags-v4", "5775409d3ffc32c0"),
             // Python
             ("py", "python-tags-v1", "2ae6674264c03453"),
         ];
