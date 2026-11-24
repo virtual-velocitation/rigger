@@ -4,7 +4,8 @@
 //! inside the real `rigger graph build`. The crate's tests pin each staged mention in process;
 //! this pins that the built code store holds it and that the built graph lands it on its one
 //! definition: a TypeScript `IShape[]`, `implements IShape` and constant read, a JavaScript
-//! `extends Base` and `x.f`, and a `Square.make()` whose qualifier picks one of two `make`s.
+//! `extends Base` and member read `x.depth`, and a `Square.make()` whose qualifier picks one of
+//! two `make`s.
 //!
 //! NOT OWNED here: a `/** */` block's doc span (`doc_spans_reach_the_code_store_periphery`) and a
 //! `new Ns.Box()` whose qualifier names nothing (`references_are_extracted_and_isolated_periphery`).
