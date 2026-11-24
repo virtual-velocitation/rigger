@@ -526,23 +526,54 @@ impl Worktree {
         Ok(git(repo, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    /// Reset the run branch checked out in `repo` back to `sha` (spec 12, unit 5): used
-    /// to UNDO a merge whose POST-MERGE re-gate went RED, so the broken merged tree never
+    /// Reset the run branch checked out in `repo` from `merge` back to `sha` (spec 12, unit 5):
+    /// used to UNDO a merge whose POST-MERGE re-gate went RED, so the broken merged tree never
     /// lands. Unlike [`Self::revert_on_base`] (which reverses an ALREADY-integrated commit as
     /// a new, evented commit - unit 4), this removes a merge that was NEVER recorded with an
     /// `UnitIntegrated`: nothing in the log ever claimed it landed, so discarding it is not a
     /// history rewrite of recorded work, it is aborting a failed integration attempt. The
     /// caller holds the integrate lock, so no concurrent integration observes the reset, and a
     /// following remediation re-attempt re-merges against this same restored tip. An empty
-    /// `sha` (no resolvable pre-merge tip) is a no-op rather than an error. `repo` is the
-    /// operator's checkout, so the reset keeps its uncommitted edits: one to a file the merge
-    /// changed refuses the reset, an error that leaves the branch and the edit as they were.
-    pub fn reset_to(repo: &str, sha: &str) -> Result<(), Error> {
+    /// `sha` (no resolvable pre-merge tip) is a no-op rather than an error.
+    ///
+    /// A compare-and-swap: the branch's tip must still be `merge`, so a commit made on top of
+    /// it after the landing is never dropped, and any other tip refuses, naming the commits
+    /// the merge does not hold. `repo` is the operator's checkout, so the reset keeps its
+    /// uncommitted edits: one to a file the merge changed refuses the reset, naming the merge,
+    /// those paths and the recovery. A refusal leaves the branch and the edits as they were.
+    pub fn reset_to(repo: &str, merge: &str, sha: &str) -> Result<(), Error> {
         if sha.is_empty() {
             return Ok(());
         }
-        git(repo, &["reset", "--keep", sha])?;
-        Ok(())
+        let tip = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        if tip != merge {
+            let after = git(repo, &["log", "--format=%h %s", &format!("{merge}..{tip}")])?;
+            return Err(Error(format!(
+                "refusing to roll back merge {merge} to {sha}: the run branch's tip is {tip}, \
+                 and the reset would drop the commits after the merge: {}. Move them off the \
+                 run branch so its tip is the merge again, then run `rigger release`",
+                after.lines().collect::<Vec<_>>().join("; ")
+            )));
+        }
+        let Err(refused) = git(repo, &["reset", "--keep", sha]) else {
+            return Ok(());
+        };
+        let merged = git(repo, &["diff", "--name-only", "-z", sha, merge])?;
+        let blocking: Vec<String> = uncommitted_paths(repo)?
+            .into_iter()
+            .filter(|p| merged.split('\0').any(|m| m == p))
+            .collect();
+        if blocking.is_empty() {
+            return Err(refused);
+        }
+        Err(Error(format!(
+            "rolling back merge {merge} to {sha} was refused: the checkout holds uncommitted \
+             edits to {}, which the merge changed. Stash them (`git stash`), run `rigger \
+             release` to finish the rollback, then `git stash pop`; never commit them on the \
+             run branch, since a commit on top of the merge stops the rollback ({})",
+            blocking.join(", "),
+            refused.0.trim()
+        )))
     }
 
     /// Reset THIS worktree's branch HARD to `sha`, discarding only what [`Self::integrate`]
@@ -5305,12 +5336,20 @@ mod tests {
         }
     }
 
-    /// Rolling the run branch back over a merge keeps the checkout's uncommitted edit: an edit
-    /// to a file the merge left alone survives the move, and one to a file the merge changed
-    /// refuses it, leaving the branch and the edit as they were.
+    /// Rolling the run branch back over a merge keeps the checkout's uncommitted edit and every
+    /// commit made after the merge: an edit to a file the merge left alone survives the move; one
+    /// to a file the merge changed refuses it, naming the merge, the path and the recovery; and a
+    /// commit on top of the merge refuses it, naming that commit. A refusal leaves the branch and
+    /// the edit as they were.
     #[test]
-    fn a_run_branch_rollback_keeps_an_uncommitted_edit_or_refuses() {
-        for (edited, rolls_back) in [("notes.txt", true), ("m.txt", false)] {
+    fn a_run_branch_rollback_keeps_an_uncommitted_edit_and_a_later_commit_or_refuses() {
+        // (the file the operator edits, whether they commit the edit, what a refusal names)
+        let recovery = ["m.txt", "git stash", "rigger release", "git stash pop"];
+        for (edited, committed, refusal) in [
+            ("notes.txt", false, None),
+            ("m.txt", false, Some(&recovery[..])),
+            ("notes.txt", true, Some(&["operator edit"][..])),
+        ] {
             let (_repo, repo_path, _root) = scratch_repo(false);
             let file = |name: &str| std::path::Path::new(&repo_path).join(name);
             for name in ["notes.txt", "m.txt"] {
@@ -5318,16 +5357,35 @@ mod tests {
             }
             run_git(&repo_path, &["add", "."]).unwrap();
             run_git(&repo_path, &["commit", "-q", "-m", "base"]).unwrap();
-            let pre_merge = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+            let head = || {
+                git(&repo_path, &["rev-parse", "HEAD"])
+                    .unwrap()
+                    .trim()
+                    .to_string()
+            };
+            let pre_merge = head();
             std::fs::write(file("m.txt"), "merged\n").unwrap();
             run_git(&repo_path, &["commit", "-qam", "merge"]).unwrap();
-            let merged = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+            let merged = head();
             std::fs::write(file(edited), "operator\n").unwrap();
-            let reset = Worktree::reset_to(&repo_path, pre_merge.trim());
-            assert_eq!(reset.is_ok(), rolls_back, "{edited}");
-            let head = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
-            let want = if rolls_back { &pre_merge } else { &merged };
-            assert_eq!(&head, want, "{edited}");
+            if committed {
+                run_git(&repo_path, &["commit", "-qam", "operator edit"]).unwrap();
+            }
+            let tip = head();
+            let reset = Worktree::reset_to(&repo_path, &merged, &pre_merge);
+            match refusal {
+                None => {
+                    assert!(reset.is_ok(), "{edited}: {reset:?}");
+                    assert_eq!(head(), pre_merge, "{edited}");
+                }
+                Some(named) => {
+                    let refused = reset.expect_err(edited).0;
+                    for wanted in named.iter().chain([&merged.as_str()]) {
+                        assert!(refused.contains(wanted), "{edited}: {wanted}: {refused}");
+                    }
+                    assert_eq!(head(), tip, "{edited}");
+                }
+            }
             let kept = std::fs::read_to_string(file(edited)).unwrap();
             assert_eq!(kept, "operator\n", "{edited}");
         }

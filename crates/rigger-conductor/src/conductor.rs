@@ -12212,7 +12212,9 @@ impl RunCtx<'_> {
             let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             let merged = gate_result?;
             if !merged.pass {
-                self.moving_the_run_branch(|| Worktree::reset_to(&self.deps.repo, &pre_merge))?;
+                self.moving_the_run_branch(|| {
+                    Worktree::reset_to(&self.deps.repo, &commit, &pre_merge)
+                })?;
                 // Defense in depth (spec 64 criterion 3), same as every other post-gate touch
                 // of `wt` in this function: the post-merge gate just above is real wall-clock
                 // time - a window in which an out-of-band actor (or, as spec 88 criterion 1's
@@ -49621,6 +49623,94 @@ stage "implement" adjudicator "adj" failed
         for moved in [branch.as_str(), "elsewhere"] {
             assert_eq!(git_out(&repo_path, &["rev-parse", moved]), tip, "{moved}");
         }
+    }
+
+    /// An operator edit to a file a landed merge changed, made while that merge's post-merge
+    /// re-gate runs red, halts the rollback with a message naming the merge, the file and the
+    /// recovery, and leaves the merge and the edit in place; once the edit is stashed, the next
+    /// drive completes the rollback to the tip the merge was made over.
+    #[test]
+    fn a_rollback_over_an_operator_edit_halts_and_completes_once_the_edit_is_stashed() {
+        /// The implementer writes `work.rs`; its first spawn also commits `other.rs` on the run
+        /// branch, so the merge carries a tree no pre-merge gate saw and the re-gate runs.
+        struct OperatorCommitsOnce {
+            repo: String,
+            operator: std::sync::Mutex<String>,
+        }
+        impl AgentDriver for OperatorCommitsOnce {
+            fn spawn(
+                &self,
+                _a: &AgentDef,
+                _p: &str,
+                opts: &SpawnOpts,
+                _emit: &dyn Fn(&str, serde_json::Value) -> Result<(), Error>,
+            ) -> Result<AgentResult, Error> {
+                if !opts.id.contains("/implementer#") {
+                    return Ok(crate::test_support::review_or_adjudicate(opts));
+                }
+                let mut operator = self.operator.lock().unwrap();
+                if operator.is_empty() {
+                    std::fs::write(Path::new(&self.repo).join("other.rs"), "other\n").unwrap();
+                    run_git(&self.repo, &["add", "other.rs"]);
+                    run_git(&self.repo, &["commit", "-q", "-m", "operator"]);
+                    *operator = git_out(&self.repo, &["rev-parse", "HEAD"]);
+                }
+                std::fs::write(Path::new(&opts.dir).join("work.rs"), "work\n").unwrap();
+                Ok(AgentResult::default())
+            }
+        }
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let edited = tempfile::tempdir().unwrap();
+        let edited = edited.path().join("edited");
+        let mut cfg = crate::test_support::scratch_cfg(&repo_path);
+        // Green in the unit's worktree, red in the post-merge one, whose first run edits the
+        // operator's copy of the file the merge added.
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def(&format!(
+                "case \"$(basename \"$(pwd -P)\")\" in rigger-postmerge-*) [ -e '{e}' ] || \
+                 {{ : > '{e}'; printf 'operator\\n' > '{repo_path}/work.rs'; }}; exit 1;; esac",
+                e = edited.display()
+            )),
+        );
+        cfg.workflow.stages.insert(
+            "unit-a".into(),
+            crate::test_support::mk_stage("unit-a", "g"),
+        );
+        let store = Store::open(":memory:").unwrap();
+        let driver = OperatorCommitsOnce {
+            repo: repo_path.clone(),
+            operator: Default::default(),
+        };
+        let deps = Deps {
+            run_branch: branch_of(&repo_path),
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let Err(halted) = run(&cfg, &deps) else {
+            panic!("the rollback halts over the operator's edit")
+        };
+        let merge = git_out(&repo_path, &["rev-parse", "HEAD"]);
+        let operator = driver.operator.lock().unwrap().clone();
+        assert_ne!(merge, operator, "the merge landed before the re-gate");
+        for wanted in [
+            &merge,
+            "work.rs",
+            "git stash",
+            "rigger release",
+            "git stash pop",
+        ] {
+            assert!(halted.0.contains(wanted), "{wanted}: {halted}");
+        }
+        let work = Path::new(&repo_path).join("work.rs");
+        assert_eq!(std::fs::read_to_string(&work).unwrap(), "operator\n");
+        run_git(&repo_path, &["stash", "-q"]);
+        let rs = run(&cfg, &deps).expect("the resumed drive completes the rollback");
+        assert_ne!(rs.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(git_out(&repo_path, &["rev-parse", "HEAD"]), operator);
+        assert!(!work.exists(), "the rolled-back merge's file is gone");
+        assert!(!git_out(&repo_path, &["stash", "list"]).is_empty());
     }
 
     #[test]
