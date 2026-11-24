@@ -194,12 +194,13 @@ jobs:
           targets: wasm32-unknown-unknown
       # The process crate's tests are built once, then run in steps that together run each test
       # once: the reap module's in seven, by the path a process is ended through, then the other
-      # modules whose tests start and signal processes, then every other test. Each step runs its
-      # tests one at a time, so libtest prints each test's name as it starts, and `--nocapture`
-      # prints what each writes as it writes it. Each step's bound is many times its usual seconds:
-      # a test that hangs holds its step past it, and the step ends with a log whose last name is
-      # that test. A stall that takes the runner out keeps no log at all, and then the step the
-      # job's timeline shows unfinished is the only name left, so no step holds many tests.
+      # modules whose tests start and signal processes, then every other test. Each group's last
+      # step runs what the group's others leave, so a test added to a group runs in it. Each step
+      # runs its tests one at a time, so libtest prints each test's name as it starts, and
+      # `--nocapture` prints what each writes as it writes it. Each step's bound is many times its
+      # usual seconds: a test that hangs holds its step past it, and the step ends with a log whose
+      # last name is that test. A stall that takes the runner out keeps no log at all, and then the
+      # step the job's timeline shows unfinished is the only name left, so no step holds many tests.
       - name: build the process crate's tests
         shell: bash
         timeout-minutes: 5
@@ -218,12 +219,12 @@ jobs:
         run: |
           export RUSTC_WRAPPER=
           cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::ends::the_watched_end_never reap::tests::ends::the_watched_end_of_a_main
-      - name: test the watched end's reports
+      - name: test the rest of the watched end
         shell: bash
         timeout-minutes: 2
         run: |
           export RUSTC_WRAPPER=
-          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::ends::the_watched_end_reports reap::tests::ends::the_watched_end_resumes reap::tests::ends::the_watched_end_signals
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::ends::the_watched_end --skip reap::tests::ends::the_watched_end_ends --skip reap::tests::ends::the_watched_end_freezes --skip reap::tests::ends::the_watched_end_stops --skip reap::tests::ends::the_watched_end_walks --skip reap::tests::ends::the_watched_end_never --skip reap::tests::ends::the_watched_end_of_a_main
       - name: test the descendant end
         shell: bash
         timeout-minutes: 2
