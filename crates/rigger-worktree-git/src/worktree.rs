@@ -1079,11 +1079,13 @@ impl Worktree {
     /// It exists only to unblock `git commit` (which refuses while ANY path is unmerged, even
     /// one nobody was asked to touch) until the conductor's OWN regeneration pass overwrites
     /// the path for real, in a follow-up commit, after the source conflict is resolved - the
-    /// design's "in that order".
+    /// design's "in that order". Git reads `path` literally, never as a pattern or as pathspec
+    /// magic, so it acts on that one file.
     pub fn accept_incoming(&self, path: &str) -> Result<(), StepError> {
+        let spec = literal_pathspec(path);
         for args in [
-            &["checkout", "--theirs", "--", path][..],
-            &["add", "--", path][..],
+            &["checkout", "--theirs", "--", &spec][..],
+            &["add", "--", &spec][..],
         ] {
             run_git_with_status(&self.dir, args)
                 .map_err(|(status, out)| content_failure(status, git_failed(args, out).0))?;
