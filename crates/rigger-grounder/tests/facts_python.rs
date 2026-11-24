@@ -43,7 +43,7 @@ fn python_stages_its_row() {
     let in_def = |at: u32, name: &str, leaf: &str, kind: Option<&str>, line: u32| {
         mention_in(Some(at), name, leaf, kind, line, false)
     };
-    let cases: [Case; 15] = [
+    let cases: [Case; 19] = [
         (
             "a module constant's read",
             "LIMIT = 3\n\n\ndef size():\n    return LIMIT\n",
@@ -181,6 +181,41 @@ fn python_stages_its_row() {
             vec![],
             vec![],
             None,
+        ),
+        (
+            "a tuple a str leads first is no docstring, in the module, a function and a class",
+            "\"a\", \"b\"\n\n\ndef pair():\n    \"a\", \"b\"\n\n\ndef wrapped_pair():\n    (\"a\"), \"b\"\n\n\ndef joined_pair():\n    \"a\" \"b\", \"c\"\n\n\nclass Pair:\n    \"a\", \"b\"\n\n\nclass WrappedPair:\n    (\"a\"), \"b\"\n\n\nclass JoinedPair:\n    \"a\" \"b\", \"c\"\n",
+            vec![],
+            vec![
+                ("pair", None),
+                ("wrapped_pair", None),
+                ("joined_pair", None),
+                ("Pair", None),
+                ("WrappedPair", None),
+                ("JoinedPair", None),
+            ],
+            None,
+        ),
+        (
+            "a module's tuple a parenthesised str leads first is no docstring",
+            "(\"a\"), \"b\"\n",
+            vec![],
+            vec![],
+            None,
+        ),
+        (
+            "a module's tuple a joined str leads first is no docstring",
+            "\"a\" \"b\", \"c\"\n",
+            vec![],
+            vec![],
+            None,
+        ),
+        (
+            "a docstring a comment follows on its line",
+            "\"\"\"The tool.\"\"\"  # a comment\n\n\ndef noted():\n    \"\"\"Noted.\"\"\"  # a comment\n",
+            vec![],
+            vec![("noted", Some((5, 5)))],
+            Some((1, 1)),
         ),
     ];
     for (case, source, mentions, docs, file_doc) in cases {
