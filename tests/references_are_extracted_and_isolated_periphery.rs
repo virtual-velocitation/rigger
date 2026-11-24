@@ -1,5 +1,5 @@
-//! Periphery (API / contract / integration) tests for spec 117, REFERENCES ARE EXTRACTED AND
-//! ISOLATED: a Rust const read, type reference and `use` are extracted tagged with their
+//! Periphery (API / contract / integration) tests for spec 117, RUST REFERENCES: a Rust const
+//! read, type reference and `use` are extracted tagged with their
 //! `ref_kind`, and no consumer that counts calls - the fold's `REFERENCES` and `CALLS` edges among
 //! them - reads one. The crate's own tests pin the extraction, the emit pass, the grounder's
 //! counts and the fold arm one module at a time over hand-built input; these run OUTSIDE the
@@ -7,7 +7,7 @@
 //!
 //!  - the graph `rigger graph build` folds: a real tree's tagged references fold no placeholder
 //!    and no edge of the event arm's, each landing instead as the staged row's one edge onto its
-//!    one definition (spec 117, STAGED REFERENCES), while its call folds as before; that edge
+//!    one definition (spec 117, RESOLVER AT READ), while its call folds as before; that edge
 //!    lands only while one candidate of its reference's kind answers it - the same file's before
 //!    the project's, `extracted` - stands with its dates while a re-extraction keeps its
 //!    definition, retires with it and lands again on its return, and
