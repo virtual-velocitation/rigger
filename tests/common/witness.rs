@@ -163,7 +163,7 @@ impl Drop for Witness {
 }
 
 /// Makes a FIFO at `path`.
-fn make_fifo(path: &Path) {
+pub fn make_fifo(path: &Path) {
     let status = std::process::Command::new("mkfifo")
         .arg(path)
         .status()

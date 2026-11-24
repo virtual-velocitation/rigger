@@ -1307,7 +1307,8 @@ mod forks_at_stop {
     /// What a row's ending leaves running.
     #[derive(Clone, Copy, Debug)]
     enum Leaves {
-        /// Nothing the session started.
+        /// Nothing the session started; a stop names in its progress line the holder it was sent
+        /// to.
         Nothing,
         /// The process the session started before its result, which an ordinary end leaves
         /// alone, or one that left a watched tree before the watch saw it.
@@ -1409,11 +1410,22 @@ mod forks_at_stop {
         if let Leaves::TheEscapee = leaves {
             let named = fx.activities().into_iter().any(|line| {
                 line.contains("left processes running")
-                    && line.contains("outside the session's tree, never signalled")
+                    && line.contains("left running, never signalled")
             });
             assert!(
                 named,
                 "{mode}: the end names the escapee: {:?}",
+                fx.activities()
+            );
+        }
+        if let (Window::Silence(_), Leaves::Nothing) = (window, leaves) {
+            let holder = format!(" ({})", shell_name());
+            let named = fx.activities().into_iter().any(|line| {
+                line.contains("the end of the session was sent to ") && line.contains(&holder)
+            });
+            assert!(
+                named,
+                "{held:?} {mode}: the stop names the holder it was sent to: {:?}",
                 fx.activities()
             );
         }
@@ -1422,6 +1434,15 @@ mod forks_at_stop {
             Reading::Ended,
             "{mode}: the test's release ends every process the fixture started"
         );
+    }
+
+    /// The name an end gives a holder, a fresh `sh` the fixture starts: the file name of the
+    /// image `sh` on this test's `PATH` runs, never the holder's arguments.
+    fn shell_name() -> String {
+        let search = rigger::subprocess::SearchPath::ambient();
+        let sh = rigger::subprocess::find_executable(&search, "sh").expect("sh is on PATH");
+        let image = std::fs::canonicalize(sh).unwrap();
+        image.file_name().unwrap().to_string_lossy().into_owned()
     }
 
     /// [`ends_held_at`] with the tree kept, as the composition root holds it.

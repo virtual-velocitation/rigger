@@ -610,18 +610,35 @@ mod tests {
         command.spawn().expect("spawn the watched tree")
     }
 
+    /// The pids `report` names as sent the end, none of them the main's `main`, and the rest of
+    /// the report.
+    fn sent_besides(main: u32, report: EndReport) -> (Vec<u32>, EndReport) {
+        let sent: Vec<u32> = report.sent.iter().map(|left| left.pid).collect();
+        assert!(
+            !sent.contains(&main),
+            "the main is never named as sent the end"
+        );
+        let rest = EndReport {
+            sent: Vec::new(),
+            ..report
+        };
+        (sent, rest)
+    }
+
     /// A watched tree running `body`, ended once `up` of its processes are up, leaves nothing
-    /// running and reports nothing.
+    /// running and reports only the processes besides the main it sent its end to.
     fn ends_the_tree(body: &str, up: usize) {
         let mut witness = Witness::new();
         let mut tree = watched(&witness, body);
         assert!(witness.wait_up(up), "the fixture's {up} processes are up");
+        let main = tree.id();
 
         let report = tree.end();
 
+        let (sent, rest) = sent_besides(main, report);
         assert_eq!(
-            (witness.read(), report),
-            (Reading::Ended, EndReport::default())
+            (witness.read(), sent.is_empty(), rest),
+            (Reading::Ended, false, EndReport::default())
         );
     }
 
@@ -682,8 +699,9 @@ mod tests {
     }
 
     /// A watched tree running `body`, finished once `up` of its processes are up and, where
-    /// `exited`, once its main has exited, leaves the witness reading `left`.
-    fn finishes(body: &str, up: usize, exited: bool, left: Reading) {
+    /// `exited`, once its main has exited, leaves the witness reading `left` and reports `sent`
+    /// processes besides the main it sent its end to.
+    fn finishes(body: &str, up: usize, exited: bool, left: Reading, sent: usize) {
         let mut witness = Witness::new();
         let mut tree = watched(&witness, body);
         assert!(witness.wait_up(up), "the fixture's {up} processes are up");
@@ -694,17 +712,22 @@ mod tests {
             );
         }
 
+        let main = tree.id();
         let report = tree.finish();
 
-        assert_eq!((witness.read(), report), (left, EndReport::default()));
+        let (named, rest) = sent_besides(main, report);
+        assert_eq!(
+            (witness.read(), named.len(), rest),
+            (left, sent, EndReport::default())
+        );
         assert_eq!(witness.release(), Reading::Ended);
     }
 
     crate::test_cases! {
         a_finished_tree_whose_main_exited_leaves_what_it_started_running:
-            finishes("holder; up", 2, true, Reading::Held);
+            finishes("holder; up", 2, true, Reading::Held, 0);
         a_finished_tree_whose_main_runs_is_ended:
-            finishes("holder; up; held", 2, false, Reading::Ended);
+            finishes("holder; up; held", 2, false, Reading::Ended, 1);
     }
 
     /// A hold the OS will not let go, as a Windows job whose limit cannot be cleared is: its
@@ -762,12 +785,14 @@ mod tests {
             .expect("spawn the fixture shell");
         let mut tree = ReapedChild::new(child);
         assert!(witness.wait_up(2), "the holder and the main are up");
+        let main = tree.id();
 
         let report = tree.end();
 
+        let (sent, rest) = sent_besides(main, report);
         assert_eq!(
-            (witness.read(), report),
-            (Reading::Ended, EndReport::default())
+            (witness.read(), sent.len(), rest),
+            (Reading::Ended, 1, EndReport::default())
         );
         let status = tree.try_wait().expect("read the main's status");
         assert_eq!(

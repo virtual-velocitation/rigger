@@ -129,9 +129,10 @@ rigger::test_cases! {
 }
 
 /// The kept fixture `body`, with `up` of its processes up and then `before` done to it, is ended
-/// by the handle's end, which leaves nothing running and reports nothing: a process that ignores
-/// the end's request to exit is ended without asking once the grace passes.
-fn ends_the_tree(body: &str, up: usize, before: fn(&mut ReapedChild, &mut Witness)) {
+/// by the handle's end, which leaves nothing running, reports `sent` processes besides the main it
+/// sent its end to, and reports nothing left: a process that ignores the end's request to exit is
+/// ended without asking once the grace passes.
+fn ends_the_tree(body: &str, up: usize, before: fn(&mut ReapedChild, &mut Witness), sent: usize) {
     let mut witness = Witness::new();
     let mut tree = kept(&witness, body);
     assert!(witness.wait_up(up), "the fixture's {up} processes are up");
@@ -140,8 +141,15 @@ fn ends_the_tree(body: &str, up: usize, before: fn(&mut ReapedChild, &mut Witnes
     let report = tree.end();
 
     assert_eq!(
-        (witness.read(), report),
-        (Reading::Ended, EndReport::default())
+        (
+            witness.read(),
+            report.sent.len(),
+            EndReport {
+                sent: Vec::new(),
+                ..report
+            }
+        ),
+        (Reading::Ended, sent, EndReport::default())
     );
 }
 
@@ -156,26 +164,29 @@ fn after_the_main_exits(tree: &mut ReapedChild, witness: &mut Witness) {
     );
 }
 
-/// Closes the main's input.
-fn after_the_input_closes(tree: &mut ReapedChild, _witness: &mut Witness) {
+/// Closes the main's input, and waits for the process the main starts at its input's end to be
+/// up, so the end that follows has it to end.
+fn after_the_input_closes(tree: &mut ReapedChild, witness: &mut Witness) {
     drop(tree.take_stdin());
+    assert!(witness.wait_up(2), "the main starts its holder");
 }
 
+// Each end names the one process besides the main it was sent to.
 rigger::test_cases! {
     a_kept_end_ends_a_running_tree:
-        ends_the_tree("holder; up; held", 2, |_, _| {});
+        ends_the_tree("holder; up; held", 2, |_, _| {}, 1);
     a_kept_end_ends_what_an_exited_main_left:
-        ends_the_tree("holder; up", 2, after_the_main_exits);
+        ends_the_tree("holder; up", 2, after_the_main_exits, 1);
     a_kept_end_ends_what_the_main_starts_as_it_exits_at_the_end_of_its_input:
-        ends_the_tree("up; read -r unused; holder; exit 0", 1, after_the_input_closes);
+        ends_the_tree("up; read -r unused; holder; exit 0", 1, after_the_input_closes, 1);
     a_kept_end_ends_a_process_started_in_another_directory:
-        ends_the_tree("cd / && holder; up; held", 2, |_, _| {});
+        ends_the_tree("cd / && holder; up; held", 2, |_, _| {}, 1);
     a_kept_end_ends_a_process_in_a_session_of_its_own:
-        ends_the_tree("setsid sh -c 'printf u >&9; read -r unused <&8' & up; held", 2, |_, _| {});
+        ends_the_tree("setsid sh -c 'printf u >&9; read -r unused <&8' & up; held", 2, |_, _| {}, 1);
     a_kept_end_ends_a_process_that_ignores_the_request_to_exit:
-        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {});
+        ends_the_tree("( trap '' TERM; up; held ) & up; held", 2, |_, _| {}, 1);
     a_kept_end_ends_a_main_that_ignores_the_request_to_exit:
-        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {});
+        ends_the_tree("trap '' TERM; holder; up; held", 2, |_, _| {}, 1);
 }
 
 #[test]

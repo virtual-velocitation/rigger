@@ -392,7 +392,10 @@ mod tests {
             started.elapsed() < reap::END_BOUND,
             "the end waits for nothing"
         );
-        assert_eq!((report.residue, report.skipped), (vec![], vec![]));
+        assert_eq!(
+            (report.sent, report.residue, report.skipped),
+            (vec![], vec![], vec![])
+        );
         assert!(
             matches!(&report.faults[..], [fault] if fault.contains("could not be ended")),
             "the report says the job could not be ended: {:?}",
@@ -415,6 +418,7 @@ mod tests {
         );
         assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
         let (held, _) = reap::job_members(job.0.as_raw_handle());
+        let main_pid = main.id();
         let started = Instant::now();
 
         let report = reap::end_job(job.0, &mut main);
@@ -434,7 +438,23 @@ mod tests {
             elapsed < reap::END_BOUND,
             "the end returns within its bound: {elapsed:?}"
         );
-        assert_eq!((running, report), (vec![], EndReport::default()));
+        let mut others: Vec<u32> = held
+            .iter()
+            .map(|member| member.identity.pid)
+            .filter(|pid| *pid != main_pid)
+            .collect();
+        others.sort_unstable();
+        let mut sent: Vec<u32> = report.sent.iter().map(|left| left.pid).collect();
+        sent.sort_unstable();
+        let rest = EndReport {
+            sent: Vec::new(),
+            ..report
+        };
+        assert_eq!(
+            (running, sent, rest),
+            (vec![], others, EndReport::default()),
+            "each process the job held besides the main is named as sent the end"
+        );
     }
 
     /// An end whose bound passes before the job's processes have exited closes the job, which ends
@@ -544,10 +564,20 @@ mod tests {
         let (mut tree, lines) =
             jobbed("start /b ping -n 60 127.0.0.1 & echo up& ping -n 60 127.0.0.1 >NUL");
         assert!(read_until(&lines, "127.0.0.1"), "the background ping is up");
+        let main = tree.id();
 
         let report = tree.end();
 
-        assert_eq!(report, EndReport::default());
+        let sent: Vec<u32> = report.sent.iter().map(|left| left.pid).collect();
+        let rest = EndReport {
+            sent: Vec::new(),
+            ..report
+        };
+        assert_eq!(
+            (sent.is_empty(), sent.contains(&main), rest),
+            (false, false, EndReport::default()),
+            "the end names what it was sent to besides the main, and nothing else"
+        );
         assert!(ends(&lines), "nothing the tree started holds its output");
     }
 
