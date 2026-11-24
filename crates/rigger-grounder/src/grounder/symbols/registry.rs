@@ -1474,13 +1474,14 @@ def calc(n):
     /// so a change to what one language's extraction records fails that language's row alone
     /// until its generation is bumped and the row re-pinned, and a snapshot of the code store
     /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
-    /// generation table's generations joined in its order. The fixtures set every part a snapshot
+    /// generation table's generations joined in its order. The fixtures set an implementation
+    /// reference, the tagged reference kind a Python base class records, and every part a snapshot
     /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind a registered language records (a const read, a type reference and a use) and a
-    /// reference's qualifier included, so a change to any of them moves a digest.
+    /// kind a registered language records (a const read, a type reference, a use and a field use)
+    /// and a reference's qualifier included, so a change to any of them moves a digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
-        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_TYPE, REF_KIND_USE};
         use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
         // One row per line with a comment line between rows, so units re-pinning different
         // languages' rows merge clean.
@@ -1557,7 +1558,12 @@ def calc(n):
             ),
             ("a const read", tagged(REF_KIND_CONST)),
             ("a type reference", tagged(REF_KIND_TYPE)),
+            (
+                "an implementation",
+                tagged(crate::contextgraph::REF_KIND_IMPL),
+            ),
             ("a use", tagged(REF_KIND_USE)),
+            ("a field use", tagged(REF_KIND_FIELD)),
             ("a partial file", extracted.iter().any(|(_, fs)| fs.partial)),
             (
                 "a definition's doc span",

@@ -4904,14 +4904,16 @@ pub fn f() -> u8 {
     /// `/**/` and `/***/` is no doc line, while a raw string value is one; and under a fixture
     /// query a `@doc` capture in a definition's match gives that definition the captured span,
     /// over the rule's, while a capture in the match of a definition the extraction drops gives no
-    /// other definition a span.
+    /// other definition a span, and a capture in a match that tags nothing gives the file its
+    /// span, the first such match's, over the rule's.
     #[test]
     fn rust_doc_spans_are_extracted() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         let fixture = compiled(
             &language,
             "((line_comment)* @doc . (function_item name: (identifier) @name) @definition.function)\n\
-             ((line_comment)* @doc . (const_item name: (identifier) @name) @definition.constant)\n",
+             ((line_comment)* @doc . (const_item name: (identifier) @name) @definition.constant)\n\
+             ((block_comment) @doc)\n",
         );
         // (case, whether the fixture query reads the source - else the registered one does -, the
         // source, its file span, each definition's span)
@@ -5028,6 +5030,20 @@ pub fn f() -> u8 {
                 "fn f() {}\n// Gone.\nconst _: u8 = 0;\n",
                 None,
                 vec![("f", None)],
+            ),
+            (
+                "a capture in a match that tags nothing wins over the rule",
+                true,
+                "/* Licence. */\n//! The crate.\nstruct S;\n",
+                Some((1, 1)),
+                vec![],
+            ),
+            (
+                "the first match that tags nothing gives the file its span",
+                true,
+                "/* One. */\n/* Two. */\nstruct S;\n",
+                Some((1, 1)),
+                vec![],
             ),
         ];
         for (case, under_fixture, src, file, defs) in rows {

@@ -2776,7 +2776,8 @@ pub(crate) mod tests {
 
     /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust
     /// spans, `\r\n` endings, `#[doc(hidden)]` lines, nested block comments and literals holding
-    /// a comment marker or a quote among them, and the lines of a language with no doc rule.
+    /// a comment marker or a quote among them, Python docstrings, and the lines of a language with
+    /// no doc rule.
     const DOC_TEXT_ROWS: &[(&str, &str, &str)] = &[
         (
             "rust",
@@ -2846,6 +2847,43 @@ Unclosed"#,
             "// A Go doc.\n// Its second line.\n",
         ),
         (
+            "python",
+            "    \"\"\"Area of the shape.\n\n    Computed in units.\n      Indented more.   \n    \"\"\"\n",
+            "Area of the shape.\n\nComputed in units.\n  Indented more.",
+        ),
+        (
+            "python",
+            "    \"\"\"\r\n    Starts below.\r\n\r\n    Then more.\r\n    \"\"\"\r\n",
+            "Starts below.\n\nThen more.",
+        ),
+        (
+            "python",
+            "\t\"\"\"Mixed.\n\tTab in.\n    Four in.\n\t\"\"\"",
+            "Mixed.\nTab in.\n   Four in.",
+        ),
+        ("python", "    \"\"\"One line.\"\"\"\n", "One line."),
+        ("python", "\"\"\"  Spaced.  \"\"\"", "Spaced."),
+        ("python", "'''Single.'''", "Single."),
+        ("python", "    'Plain.'\n", "Plain."),
+        ("python", "r\"\"\"Raw \\d.\"\"\"", "Raw \\d."),
+        ("python", "'It\\'s here.'", "It\\'s here."),
+        (
+            "python",
+            "\"\"\"Say 'hi', \"bye\" and \\\"\"\" too.\"\"\"",
+            "Say 'hi', \"bye\" and \\\"\"\" too.",
+        ),
+        ("python", "'a\"\"\"b'", "a\"\"\"b"),
+        ("python", "    \"\"\"Doc.\"\"\"  # a \"note\"\n", "Doc."),
+        ("python", "\"\"\"\"\"\"", ""),
+        ("python", "''", ""),
+        (
+            "python",
+            "    \"\"\"Unclosed\n    still open\n",
+            "Unclosed\nstill open",
+        ),
+        ("python", "    pass\n", ""),
+        ("python", "def one(): r\"\"\"Raw \\d.\"\"\"\n", "Raw \\d."),
+        (
             "zig",
             "/// Not read as Rust.\n #[doc(hidden)] ",
             "/// Not read as Rust.\n#[doc(hidden)]",
@@ -2900,9 +2938,9 @@ Unclosed"#,
     /// THE DOC TEXT IS STRIPPED: `doc_text` turns a Rust span's raw lines, `\r\n` endings and a
     /// `#[doc(hidden)]` line included, into the comment text alone - the text of each doc comment
     /// and each doc attribute's literal, every comment and literal bounded as Rust lexes it,
-    /// everything else dropped, a doc block's opener, closer and one leading `*` stripped - and
-    /// gives a language with no rule its lines trimmed. The project's extractor with no
-    /// declaration answers as the bundled one.
+    /// everything else dropped, a doc block's opener, closer and one leading `*` stripped - gives a
+    /// Python span its docstring's body, dedented, and gives a language with no rule its lines
+    /// trimmed. The project's extractor with no declaration answers as the bundled one.
     #[test]
     fn the_doc_text_is_the_comment_text_alone() {
         let project = project_declaring(None);
