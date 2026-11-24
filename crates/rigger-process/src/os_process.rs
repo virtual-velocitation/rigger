@@ -1,6 +1,6 @@
 //! The process interface (spec 125, criterion 9): the one place rigger reads a fact about a
 //! running process - which processes exist, a process's parent, start time, working directory,
-//! command line, executable name, run state and open files, which process listens
+//! command line, executable name, control group, run state and open files, which process listens
 //! on a TCP port, which processes hold a directory, and the path that execs this process's own
 //! image. Each fact is a function here, answered by the native adapter of the OS the binary is
 //! built for; the reaper ([`crate::reap`]), the holder check ([`crate::holders`]) and the dash
@@ -43,6 +43,7 @@ std::cfg_select! {
             use std::path::PathBuf;
 
             pub(super) use super::command_file_name as executable_name;
+            pub(super) use super::no_cgroup as cgroup;
             pub(super) use super::reported_image as running_image;
             pub(super) use super::scan_holders as holders;
 
@@ -106,6 +107,7 @@ std::cfg_select! {
                             cwd(me),
                             command(me),
                             executable_name(me),
+                            cgroup(me),
                             state(me),
                             open_files(me),
                             is_unexeced_fork_of(me, me),
@@ -120,6 +122,7 @@ std::cfg_select! {
                             None,
                             String::new(),
                             String::new(),
+                            None,
                             None,
                             Vec::new(),
                             false,
@@ -218,6 +221,25 @@ fn file_name_text(path: &Path) -> Option<String> {
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn command_file_name(pid: u32) -> String {
     file_name_text(Path::new(&command(pid))).unwrap_or_default()
+}
+
+/// The control group process `pid` is in, as the text of the kernel's file naming it: on Linux
+/// `/proc/<pid>/cgroup`, read whole. A service manager starts, holds and ends each unit it runs as
+/// one control group: systemd's `KillMode=control-group`, the default for every unit, and logind's
+/// `KillUserProcesses` end a session's processes by that membership, never by parentage, so a
+/// process the service manager moved into a unit of its own outlives the session that started it.
+/// An end that stops a session the same way reads this to leave such a process to the unit that
+/// holds it ([`crate::reap::HeldApart`]). `None` when `pid` is gone, the file cannot be read, or
+/// the OS has no control groups, as macOS and Windows do not, so there every process reads as one
+/// with no separate unit and is ended as before.
+pub fn cgroup(pid: u32) -> Option<String> {
+    native::cgroup(pid)
+}
+
+/// [`cgroup`] on every OS without control groups: none.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn no_cgroup(_pid: u32) -> Option<String> {
+    None
 }
 
 /// Process `pid`'s run state as one letter: `R` running, `S` sleeping, `T` stopped, `Z` a zombie
@@ -741,6 +763,7 @@ mod tests {
                 cwd(gone),
                 command(gone),
                 executable_name(gone),
+                cgroup(gone),
                 state(gone),
                 open_files(gone),
                 is_unexeced_fork_of(gone, std::process::id()),
@@ -752,6 +775,7 @@ mod tests {
                 None,
                 String::new(),
                 String::new(),
+                None,
                 None,
                 Vec::new(),
                 false
