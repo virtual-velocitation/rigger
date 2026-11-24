@@ -196,9 +196,10 @@ pub struct SymRef {
     /// Spec 117 (CAPTURES, RUST REFERENCES): the qualifier the reference was written with: a tags
     /// query's `@qualifier.path` or `@qualifier.member` capture, else the text before the leaf of
     /// a chained `@name` (`Ns` of `Ns.IShape`), and for a Rust call the one the Rust rule reads
-    /// off the tree around its name (`Store` of `Store::open()`, the enclosing impl's type or the
-    /// trait of `self.file()`). `name` above stays the bare leaf. `None` for a reference written
-    /// bare and for a Rust call the rule qualifies by nothing (`self.inner.open()`).
+    /// off the tree around its name (`Store` of `Store::open()`, `B` of `C::f()` under `use a::B
+    /// as C`, the enclosing impl's type or the trait of `self.file()`). `name` above stays the
+    /// bare leaf. `None` for a reference written bare and for a Rust call the rule qualifies by
+    /// nothing (`self.inner.open()`).
     /// Serde-defaulted and omitted when `None`, so an unqualified reference serializes
     /// byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]

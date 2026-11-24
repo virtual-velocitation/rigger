@@ -1624,6 +1624,12 @@ const PRIMITIVE_TYPES: [&str; 17] = [
     "f64", "bool", "char", "str",
 ];
 
+/// Whether the root segment `segment` is a primitive type ([`PRIMITIVE_TYPES`]): the one test
+/// both a const read ([`rust_references`]) and a call's path ([`excluded_qualifier`]) read.
+fn is_primitive(segment: &str) -> bool {
+    PRIMITIVE_TYPES.contains(&segment)
+}
+
 /// The grammar node kinds whose subtree the reference walk never enters (spec 117): a macro's
 /// token tree, read by re-parse instead ([`reparse_invocations`]), a `macro_rules!` body, never
 /// re-parsed, an attribute and a visibility path.
@@ -1774,9 +1780,7 @@ fn rust_references(structure: &StructuralNodes, source: &[u8], scope: &Scope) ->
                         stage(last, REF_KIND_TYPE, root_seg.as_deref(), None);
                     }
                 }
-                let primitive = root_seg
-                    .as_deref()
-                    .is_some_and(|r| PRIMITIVE_TYPES.contains(&r));
+                let primitive = root_seg.as_deref().is_some_and(is_primitive);
                 if let Some(name) = node.child_by_field_name("name") {
                     if !primitive && is_read(node) && is_const_spelled(name, source) {
                         stage(name, REF_KIND_CONST, root_seg.as_deref(), None);
@@ -1912,7 +1916,7 @@ fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> Opti
 /// AN EXCLUDED QUALIFIER (spec 117, RUST REFERENCES): whether `leaf`, a reference's name node,
 /// is the name of a scoped path that stages no mention - one whose qualifier as written
 /// ([`qualifier_segment`], before any alias is read) names the standard library ([`std_named`])
-/// or whose root segment ([`root_segment`]) does or is a primitive type ([`PRIMITIVE_TYPES`]),
+/// or whose root segment ([`root_segment`]) does or is a primitive type ([`is_primitive`]),
 /// whatever the case of its other segments (`Vec::new`, `std::fs::read`, `u32::from`). A `Self`
 /// and an enclosing generic parameter are no such qualifier: their call stages, unqualified by
 /// [`rust_qualifier`].
@@ -1926,7 +1930,7 @@ fn excluded_qualifier(leaf: tree_sitter::Node, source: &[u8], scope: &Scope) -> 
     };
     let root = root_segment(path, source);
     let root = root.as_deref();
-    root.is_some_and(|r| PRIMITIVE_TYPES.contains(&r))
+    root.is_some_and(is_primitive)
         || qualifier_segment(path)
             .and_then(|segment| segment.utf8_text(source).ok())
             .is_some_and(|written| std_named(written, root, scope))
