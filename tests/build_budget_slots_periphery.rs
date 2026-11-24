@@ -352,6 +352,7 @@ fn configured_max_concurrent_serializes_two_real_concurrent_stage_gate_builds() 
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: None,
         repo: String::new(),
         grounder: None,
         graph: None,

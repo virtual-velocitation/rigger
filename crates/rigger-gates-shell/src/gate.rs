@@ -1618,6 +1618,48 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
+    /// A gate never sees the agents' login token, even when this process holds it: the gate's
+    /// command is project code. The gate echoes the variable and fails, so its evidence carries
+    /// the line; the assertions never print the evidence, which holds the value when inherited.
+    #[test]
+    fn exec_runner_never_hands_a_gate_the_agents_login_token() {
+        const TOKEN: &str = rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR;
+        struct Restore(Option<std::ffi::OsString>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(v) => std::env::set_var(TOKEN, v),
+                    None => std::env::remove_var(TOKEN),
+                }
+            }
+        }
+        let _restore = Restore(std::env::var_os(TOKEN));
+        let dummy = "dummy-token-for-test";
+        std::env::set_var(TOKEN, dummy);
+        let result = ExecRunner
+            .run(
+                &gate_cmd(&format!("echo \"error: token=[${{{TOKEN}}}]\"; false")),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::default(),
+            )
+            .unwrap();
+        assert!(!result.pass, "the gate exits 1");
+        assert!(
+            result.evidence.contains("token=[]"),
+            "the gate's echo of an unset token reaches the evidence"
+        );
+        assert!(
+            !result.evidence.contains(dummy),
+            "a gate must not be handed {TOKEN}"
+        );
+    }
+
     #[test]
     fn exec_runner_honors_an_injected_store_fence_override_when_target_dir_is_empty() {
         // Spec 70 criterion 3, u4 round 3 fix for

@@ -94,8 +94,9 @@ struct Credential {
 
 /// The credentials a driver can run on: the login token its agents get, and the server event
 /// store's connection string, which `--conn` gives too. A driver records which it had, never a
-/// value, and only a check whose environment sets each of them relaunches it, since a relaunch
-/// without one runs its agents on another login or drives another store.
+/// value, and only a check whose environment sets each of them relaunches it, handing each on to
+/// the relaunch by name, since a relaunch without one runs its agents on another login or drives
+/// another store.
 const CREDENTIALS_ENV: [Credential; 2] = [
     Credential {
         var: rigger::claude_auth::RIGGER_AGENT_TOKEN_VAR,
@@ -123,11 +124,10 @@ fn credentials_had(parsed: Option<&RunArgs>) -> BTreeSet<String> {
         .collect()
 }
 
-/// Each of [`ROOTS_ENV`] with its value in this process, `None` where it is unset.
-fn roots_env() -> BTreeMap<String, Option<OsString>> {
-    ROOTS_ENV
-        .iter()
-        .map(|var| ((*var).to_string(), std::env::var_os(var)))
+/// Each of `vars` with its value in this process, `None` where it is unset.
+fn env_of<'a>(vars: impl IntoIterator<Item = &'a str>) -> BTreeMap<String, Option<OsString>> {
+    vars.into_iter()
+        .map(|var| (var.to_string(), std::env::var_os(var)))
         .collect()
 }
 
@@ -319,7 +319,7 @@ impl KeptRecord {
             args: relaunch_args(parsed, run),
             bin: Some(standing_executable()),
             run: run.to_string(),
-            env: roots_env(),
+            env: env_of(ROOTS_ENV),
             credentials: credentials_had(Some(parsed)),
             relaunched_at: None,
             revived_at,
@@ -654,8 +654,14 @@ fn revive(dir: &Path, check: &Check, launcher: &dyn Launcher) -> Option<String> 
     lock.replace(&stamp).ok()?;
     // The lock is released before the launch, so the relaunched driver can take it.
     drop(lock);
+    // No child inherits the agents' login token (`subprocess::command`), so the driver is handed
+    // by name each credential this invocation was just checked for; no record holds a value.
+    let mut env = record.env.clone();
+    env.extend(env_of(
+        CREDENTIALS_ENV.iter().map(|credential| credential.var),
+    ));
     Some(
-        match launcher.launch(&bin, &record.args, &record.env, &record.cwd, &output) {
+        match launcher.launch(&bin, &record.args, &env, &record.cwd, &output) {
             Ok(pid) => format!(
             "rigger: no driver was alive for this project's run {}, so rigger relaunched it in \
              the background (pid {pid}), its output in {}: {}. Follow it with `rigger status`.",
@@ -796,7 +802,8 @@ mod tests {
 
     /// A relaunch hands its launcher the roots variables the dead driver recorded, each set or
     /// removed as the driver had it, and a record an older driver wrote, which recorded none,
-    /// hands it none, so the relaunch keeps the checker's.
+    /// hands it none, so the relaunch keeps the checker's; beside them it hands each credential
+    /// as this process has it, which no record holds and no child inherits.
     #[test]
     fn a_relaunch_hands_the_launcher_the_roots_variables_the_driver_recorded() {
         let recorded: BTreeMap<String, Option<OsString>> = [
@@ -840,7 +847,13 @@ mod tests {
             };
             let keeper = EnvKeeper::default();
             revive(dir.path(), &check, &keeper);
-            assert_eq!(keeper.0.into_inner(), vec![env], "{name}");
+            let mut handed = env;
+            handed.extend(
+                CREDENTIALS_ENV.iter().map(|credential| {
+                    (credential.var.to_string(), std::env::var_os(credential.var))
+                }),
+            );
+            assert_eq!(keeper.0.into_inner(), vec![handed], "{name}");
         }
     }
 

@@ -470,6 +470,16 @@ pub fn isolated(
     run(&cfg, deps)
 }
 
+/// The run branch a test's run over `repo` names ([`Deps::run_branch`]): the branch the checkout
+/// holds when the deps are built, as `rigger run` names the branch it checked out; None without a
+/// repo or on a detached HEAD.
+pub fn branch_of(repo: &str) -> Option<String> {
+    if repo.is_empty() {
+        return None;
+    }
+    rigger::worktree::current_branch(repo).unwrap()
+}
+
 /// The conductor's interfaces for one run over `repo`: no grounder, no graph and no criteria.
 pub fn bare_deps<'a>(
     store: &'a dyn EventStore,
@@ -482,6 +492,7 @@ pub fn bare_deps<'a>(
         driver,
         gates,
         repo: repo.to_string(),
+        run_branch: branch_of(repo),
         grounder: None,
         graph: None,
         criteria: Vec::new(),

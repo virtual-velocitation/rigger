@@ -875,6 +875,7 @@ fn conductors_derived_store_fence_actually_reaches_a_real_exec_runner() {
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path,
         grounder: None,
         graph: None,

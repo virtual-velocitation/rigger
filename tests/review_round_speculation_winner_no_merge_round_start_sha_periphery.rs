@@ -71,6 +71,7 @@ fn a_speculation_winner_with_no_merge_reviewed_sha_stays_the_round_start_sha_acr
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(&repo_path),
         repo: repo_path.clone(),
         grounder: None,
         graph: None,

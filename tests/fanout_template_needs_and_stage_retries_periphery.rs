@@ -516,6 +516,7 @@ fn checkin_integrates_after_a_real_planner_supersede_of_a_fanout_baseline_lands_
         store: &store,
         driver: &driver,
         gates: &ExecRunner,
+        run_branch: common::fixtures::branch_of(repo.path().to_str().unwrap()),
         repo: repo.path().to_str().unwrap().to_string(),
         grounder: None,
         graph: None,
