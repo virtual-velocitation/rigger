@@ -1,11 +1,10 @@
 //! TYPESCRIPT AND JAVASCRIPT STAGE THEIR ROWS (spec 117, OTHER LANGUAGES): the facts the bundled
 //! TypeScript, TSX and JavaScript grammars give a file hold a `type` mention for a type in type
 //! position, an `impl` mention for each type an `implements` or `extends` clause names, a `const`
-//! mention for a constant read, a `field` mention for a member that is not called while a called
-//! one stays a call, a call named `Square.make` for `Square.make()`, and a doc span for a `/** */`
-//! block directly above a method other than a constructor, or above a function declaration, a
-//! class declaration or a `const`, `let` or `var` holding a function, each when no `export`
-//! precedes it.
+//! mention for a constant read, a `field` mention for `x.f` not called while a called `x.f()`
+//! stays a call, a call named `Square.make` for `Square.make()`, and, as each one's doc span, the
+//! `/** */` block directly above the TypeScript function `area`, the TSX class `View` and the
+//! JavaScript class `Square`.
 
 #![cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 
@@ -37,14 +36,14 @@ type Case = (
 /// a class extends; and a constant read is a `const` mention. In JavaScript the class
 /// `extends Base` names is an `impl` mention, a dotted one qualified by its object; `x.f` not
 /// called is a `field` mention, read, written, an inner chain, a subscript's object, an argument
-/// or a private member alike, while a called `x.f()` and a `new` are calls; a member spelled as a
-/// constant is a `const` mention; and `Square.make()` is a call named `Square.make` of the leaf
-/// `make`, each qualified by a capitalised object alone, a member chain by its last name, so
-/// `Ns.Kit.make()` is the call `Kit.make`. A generic member call is a call of its leaf,
-/// unqualified, in TypeScript and TSX alike, and an uncalled instantiation a field. A `/** */`
-/// block directly above a method other than a constructor, or above a function declaration, a
-/// class declaration or a `const`, `let` or `var` holding a function, each when no `export`
-/// precedes it, is its doc span in both, over the production extractor.
+/// or a private member alike, while a called `x.f()`, `new Ns.Box` and `new Ns.MAX()` are calls;
+/// a member spelled as a constant is a `const` mention; and `Square.make()` is a call named
+/// `Square.make` of the leaf `make`, each qualified by a capitalised object alone, a member chain
+/// by its last name, so `Ns.Kit.make()` is the call `Kit.make`. In TypeScript `x.f<T>()` and
+/// `Square.make<T>()` are calls of their leaf, unqualified, as `Square.make<T>()` is in TSX, and
+/// the uncalled instantiation `x.g<T>` is a field. The `/** */` block directly above the
+/// TypeScript function `area`, the TSX class `View` and the JavaScript class `Square` is each
+/// one's doc span, over the production extractor.
 #[test]
 fn typescript_and_javascript_stage_their_rows() {
     let at =
