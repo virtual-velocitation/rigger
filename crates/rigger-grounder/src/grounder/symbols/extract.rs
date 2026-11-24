@@ -1333,12 +1333,12 @@ struct Read<'t> {
     structure: StructuralNodes<'t>,
 }
 
-/// The wrapper a token tree's tokens are first re-parsed in, a call's argument list: the bytes
-/// served in place of the two before them and the two after them.
+/// The wrapper a token run's span ([`read_tokens`]) is first re-parsed in, a call's argument
+/// list: the bytes served in place of the two before it and the two after it.
 const ARGUMENT_LIST: (&[u8], &[u8]) = (b"f(", b");");
 
-/// The wrapper a token tree's tokens are re-parsed in second, as items: nothing before them and a
-/// `;` served in place of the byte after them, which ends a last item written without its own
+/// The wrapper a token run's span is re-parsed in second, as items: nothing before it and a `;`
+/// served in place of the byte after it, which ends a last item written without its own
 /// (`thread_local!(static X: u8 = 0)`) and is an empty statement after one that ends already.
 const ITEMS: (&[u8], &[u8]) = (b"", b";");
 
@@ -1386,10 +1386,12 @@ fn inner_tokens(token_tree: tree_sitter::Node) -> Vec<tree_sitter::Node> {
 }
 
 /// THE TOKEN READ (spec 117, MACRO TOKEN TREES): the parses of `tokens`, a run of one token
-/// tree's tokens, into `out`, each with the byte ranges of it that are read. None for an empty
-/// run. Else the run's span re-parsed as a call's argument list ([`ARGUMENT_LIST`]) when that
-/// parse holds no error, read over the span; else as items ([`ITEMS`]) when that one holds
-/// none, read over the span and the `;` served after it, which a last item it ends holds; else,
+/// tree's tokens, into `out`, each with the byte ranges of it that are read. None for a run of
+/// comments alone or of none. Else the run's span, from its first token to its last that is no
+/// comment ([`is_comment`]: a line comment would swallow the bytes served after it), re-parsed
+/// as a call's argument list ([`ARGUMENT_LIST`]) when that parse holds no error, read over the
+/// span; else as items ([`ITEMS`]) when that one holds none, read over the span and the `;`
+/// served after it, which a last item it ends holds; else,
 /// when the run holds a `,` or `:` that no subtree of the argument-list parse within
 /// the span holding no error ([`error_free_within`]) holds beyond itself, the reads of each run
 /// between those (the `,` of `pair::<A, B>(x)` cuts nothing); else that parse read over each
@@ -1403,7 +1405,7 @@ fn read_tokens(
 ) {
     let Some(span) = tokens
         .first()
-        .zip(tokens.last())
+        .zip(tokens.iter().rfind(|token| !is_comment(**token)))
         .map(|(first, last)| first.start_byte()..last.end_byte())
     else {
         return;
