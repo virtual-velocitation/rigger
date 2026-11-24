@@ -5511,8 +5511,9 @@ pub fn f() -> u8 {
     /// Spec 117, MACRO TOKEN TREES: a macro invocation's token tree is re-parsed and read like
     /// the code around it - a call inside `vec![..]`, a constant inside `assert_eq!(..)`, a call
     /// inside `json!({"k": f(x)})` and a `static` inside `thread_local!` yield a call, a const, a
-    /// call and a definition at their lines, the `static` in braces or parentheses and with or
-    /// without the `;` after its last declaration - and a `macro_rules!` body yields nothing. A
+    /// call and a definition at their lines, the `static` in braces or parentheses, with or
+    /// without the `;` after its last declaration and with or without a line comment after that -
+    /// and a `macro_rules!` body yields nothing. A
     /// re-parsed definition takes its doc, path, parent, test flag and inline module path as the
     /// same item written outside a macro does, and a re-parsed reference stages with the
     /// invocation's generic parameters, `Self`, `self` and test region; where a row writes a
@@ -5615,6 +5616,30 @@ pub static C: u8 = h();
 3 ref call h B
 5 def Static C to 5
 5 ref call h C",
+            ),
+            (
+                "a last static before a line comment in thread_local! is a definition at its line, \
+                 as its plain twin is",
+                "\
+thread_local! {
+    static A: u8 = g();
+    static B: u8 = h() // the last
+}
+thread_local!(static D: u8 = h() // the last
+);
+static C: u8 = h(); // the last
+",
+                "\
+1 ref call thread_local -
+2 def Static A to 2
+2 ref call g A
+3 def Static B to 3
+3 ref call h B
+5 def Static D to 5
+5 ref call h D
+5 ref call thread_local -
+7 def Static C to 7
+7 ref call h C",
             ),
             (
                 "a macro_rules! body is a template and yields nothing",
