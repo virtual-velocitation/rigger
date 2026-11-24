@@ -2619,7 +2619,7 @@ fn a_failed_guard_probe_on_the_regenerate_command_halts_the_step_and_a_resume_la
     let cfg = regenerating_cfg(&repo_path);
     let store = Store::open(":memory:").unwrap();
     let driver = confined_conflict_driver(&repo_path);
-    let fault = rigger::gate::ProbeFault {
+    let fault = rigger::gate::ProbeFault::Guard {
         guard: "/scratch/regenerate/cargo-target.lock".into(),
         error: "Permission denied (os error 13)".into(),
     };

@@ -69,7 +69,7 @@ pub use rigger_domain::gate::*;
 /// A non-empty `build_cache_guard` is locked shared through [`hold_shared_lock`] before the gate
 /// command runs (spec 121 criterion 19, spec 125 criterion 10): a guard that cannot be locked is
 /// the [`ProbeFault`] `Err`, never a [`GateResult`], and the gate command never runs, so nothing
-/// is built anywhere.
+/// is built anywhere. A `budget` no slot of which can ever be locked is its `Err` likewise.
 pub trait Runner: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     fn run(
@@ -86,19 +86,24 @@ pub trait Runner: Send + Sync {
     ) -> Result<GateResult, ProbeFault>;
 }
 
-/// A requested shared-cache guard that [`hold_shared_lock`] could not lock (spec 121 criterion
-/// 19): its parent directory could not be created, the guard could not be opened, or its
-/// filesystem refused an advisory lock. An infrastructure fault, not a gate failure: no wait
-/// and no rerun changes a local filesystem's answer, only the operator's fix, so its text names
-/// the guard path, the OS error and that fix.
+/// A lock a gate run needs before its command runs that the filesystem refuses. An
+/// infrastructure fault, not a gate failure: no wait and no rerun changes a local filesystem's
+/// answer, only the operator's fix, so its text names the path, the OS error and that fix.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error(
-    "build cache guard {guard:?} failed its probe: {error}; fix the path or set the project's \
-     scratch root to a filesystem with advisory locks, then relaunch"
-)]
-pub struct ProbeFault {
-    pub guard: String,
-    pub error: String,
+pub enum ProbeFault {
+    /// A requested shared-cache guard that [`hold_shared_lock`] could not lock (spec 121
+    /// criterion 19): its parent directory could not be created, the guard could not be opened,
+    /// or its filesystem refused an advisory lock.
+    #[error(
+        "build cache guard {guard:?} failed its probe: {error}; fix the path or set the \
+         project's scratch root to a filesystem with advisory locks, then relaunch"
+    )]
+    Guard { guard: String, error: String },
+    /// A build budget no slot of which could be opened and locked while no other process held
+    /// one, so no holder will ever free one: [`BuildBudget::acquire`]'s error, naming the slot
+    /// and the OS error.
+    #[error("{0}; fix the path, then relaunch")]
+    BudgetSlot(String),
 }
 
 /// BuildEnv is the ONE build-environment authority: the workflow's declared `build.env`,
@@ -498,16 +503,10 @@ impl Runner for ExecRunner {
         // memory. Never held across anything but this call - a hung command still
         // frees its slot the instant it is killed, and no other code path in the crate
         // acquires a slot, so non-build work is never gated. A slot directory where no slot
-        // can ever be locked fails the gate as a command that could not start does.
-        let _slot = match budget.acquire() {
-            Ok(slot) => slot,
-            Err(e) => {
-                return Ok(GateResult {
-                    pass: false,
-                    evidence: format!("FAIL\ngate {}: {e}", g.id),
-                })
-            }
-        };
+        // can ever be locked is the [`ProbeFault::BudgetSlot`], before the command runs.
+        let _slot = budget
+            .acquire()
+            .map_err(|e| ProbeFault::BudgetSlot(e.to_string()))?;
         // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77 criterion 5,
         // BOUNDED SHARED CACHE; spec 125 criterion 10): a non-empty `build_cache_guard` names the
         // lock file `rigger reset --build-cache` takes EXCLUSIVE before it reclaims the shared
@@ -586,7 +585,7 @@ fn lock_guard(
     guard: &str,
     lock: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
 ) -> Result<std::fs::File, ProbeFault> {
-    let fault = |e: std::io::Error| ProbeFault {
+    let fault = |e: std::io::Error| ProbeFault::Guard {
         guard: guard.to_string(),
         error: e.to_string(),
     };
@@ -1329,32 +1328,45 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
     }
 
-    /// A build budget whose every slot fails to open, so no holder will ever free one, fails the
-    /// gate with the slot's error and never runs its command.
+    /// A build budget whose slot directory exists but whose every slot fails to open, so no
+    /// holder will ever free one, is the probe fault naming the slot, the OS error and the
+    /// operator's fix, never a red gate, and the gate's command never runs.
     #[test]
-    fn a_budget_no_slot_can_satisfy_fails_the_gate_without_running_it() {
+    fn a_budget_no_slot_can_satisfy_is_a_probe_fault_and_runs_nothing() {
         let dir = tempfile::tempdir().expect("tempdir");
         let slot = dir.path().join("slots/slot-0.lock");
         std::fs::create_dir_all(&slot).expect("a directory where the slot file would be");
+        let open_error = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&slot)
+            .unwrap_err();
         let ran = dir.path().join("ran");
-        let res = ExecRunner
-            .run(
-                &gate_cmd(&format!("touch {}", ran.display())),
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                &BuildEnv::default(),
-                &BuildBudget::new(1, dir.path().join("slots")),
-            )
-            .expect("no guard is requested, so no probe faults");
+        let got = ExecRunner.run(
+            &gate_cmd(&format!("touch {}", ran.display())),
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            &BuildEnv::default(),
+            &BuildBudget::new(1, dir.path().join("slots")),
+        );
         assert_eq!(
-            (res.pass, res.evidence.contains("slot-0.lock"), ran.exists()),
-            (false, true, false),
-            "the gate fails naming the slot and its command never runs: {}",
-            res.evidence
+            (
+                got.map(|res| res.pass).map_err(|fault| fault.to_string()),
+                ran.exists()
+            ),
+            (
+                Err(format!(
+                    "build budget slot {}: {open_error}; fix the path, then relaunch",
+                    slot.display()
+                )),
+                false
+            ),
+            "the unlockable budget faults naming the slot and the command never runs"
         );
     }
 
@@ -1410,7 +1422,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let guard_str = guard.to_str().unwrap();
         let ran = root.path().join("ran");
         let cache = root.path().join("cache");
-        let expected_fault = os_error.map(|error| ProbeFault {
+        let expected_fault = os_error.map(|error| ProbeFault::Guard {
             guard: guard_str.to_string(),
             error: error(&guard).to_string(),
         });
@@ -1529,7 +1541,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert_eq!(
             (got.map(drop), guard.is_file()),
             (
-                Err(ProbeFault {
+                Err(ProbeFault::Guard {
                     guard: guard_str.to_string(),
                     error: "no locks available".to_string(),
                 }),

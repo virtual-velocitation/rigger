@@ -3029,15 +3029,15 @@ fn landing_refused(unit: &str, paths: &[String]) -> Error {
 }
 
 /// The sentinel a FAILED GUARD PROBE embeds in its error (spec 121 criterion 19): a gate's
-/// requested shared-cache guard failed its probe, so the runner returned a
-/// [`gate::ProbeFault`] and ran nothing. A local filesystem answer that no wait and no rerun
+/// requested shared-cache guard failed its probe, or no slot of its build budget can ever be
+/// locked, so the runner returned a [`gate::ProbeFault`] and ran nothing. A local filesystem answer that no wait and no rerun
 /// changes, only the operator's fix, so it is a halt over [`HALT_MARKERS`], never the F3
 /// infra rerun and never the self-retrying hold: the hold it leaves is the conductor's fault hold,
 /// which no probe ends ([`held_on_a_fault`]).
 const PROBE_FAULT_MARKER: &str = "\u{1}rigger:probe-fault\u{1}";
 
-/// The error a gate runner's [`gate::ProbeFault`] travels as: its text, which names the guard
-/// path, the OS error and the operator's fix, marked with [`PROBE_FAULT_MARKER`].
+/// The error a gate runner's [`gate::ProbeFault`] travels as: its text, which names the path,
+/// the OS error and the operator's fix, marked with [`PROBE_FAULT_MARKER`].
 fn probe_fault_halt(fault: gate::ProbeFault) -> Error {
     marked(PROBE_FAULT_MARKER, fault)
 }
@@ -44189,7 +44189,7 @@ stage "implement" adjudicator "adj" failed
 
     /// The guard-probe fault a [`RecordingRunner`] returns at its faulting run.
     fn probe_fault() -> gate::ProbeFault {
-        gate::ProbeFault {
+        gate::ProbeFault::Guard {
             guard: "/scratch/not-a-directory/cargo-target.lock".into(),
             error: "Not a directory (os error 20)".into(),
         }
@@ -50990,7 +50990,7 @@ stage "implement" adjudicator "adj" failed
     #[test]
     fn a_fault_met_again_after_a_release_reads_the_same_first_line() {
         let probe = |guard: &str, error: &str| {
-            probe_fault_halt(gate::ProbeFault {
+            probe_fault_halt(gate::ProbeFault::Guard {
                 guard: guard.into(),
                 error: error.into(),
             })
@@ -54047,23 +54047,104 @@ stage "implement" adjudicator "adj" failed
             ),
             "the pass's earlier verdicts stay and the faulted gate records none"
         );
+        assert_held_on_the_fault_uncharged(&events, &probe_fault().to_string());
+    }
+
+    /// That the log `events` of a run whose step ended on the probe fault `fault` charged no
+    /// attempt, wrote no lesson, infra mark or deferred failure, and holds the run for the
+    /// orchestrator naming the fault.
+    fn assert_held_on_the_fault_uncharged(events: &[Event], fault: &str) {
         assert_eq!(
             [
-                count_of_type(&events, ledger::TYPE_UNIT_FAILED),
-                count_of_type(&events, ledger::TYPE_UNIT_ESCALATED),
-                count_of_type(&events, contextgraph::TYPE_LESSON_LEARNED),
-                count_of_type(&events, TYPE_DEFERRED_GATE_FAILED),
-                status_mark_keys(&events, "infra-retry").len(),
-                status_mark_keys(&events, "infra-halt").len(),
+                count_of_type(events, ledger::TYPE_UNIT_FAILED),
+                count_of_type(events, ledger::TYPE_UNIT_ESCALATED),
+                count_of_type(events, contextgraph::TYPE_LESSON_LEARNED),
+                count_of_type(events, TYPE_DEFERRED_GATE_FAILED),
+                status_mark_keys(events, "infra-retry").len(),
+                status_mark_keys(events, "infra-halt").len(),
             ],
             [0; 6],
             "a probe fault charges no attempt and writes no lesson, infra mark or deferred failure"
         );
         assert_eq!(
-            holds_in(&events),
-            [conductor_fault_hold(&probe_fault().to_string())],
+            holds_in(events),
+            [conductor_fault_hold(fault)],
             "the halt holds the run for the orchestrator, naming the fault"
         );
+    }
+
+    /// A gate runner that runs each gate through [`ExecRunner`] over its own build budget in
+    /// place of the run's, so a test hands it a slot directory no slot of which can be locked
+    /// without touching the machine-wide one every test shares.
+    struct OverBudget(BuildBudget);
+
+    impl gate::Runner for OverBudget {
+        fn run(
+            &self,
+            g: &Gate,
+            dir: &str,
+            target: &str,
+            gate_scratch: &str,
+            build_cache_dir: &str,
+            build_cache_guard: &str,
+            store_fence: &str,
+            build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            gate::Runner::run(
+                &ExecRunner,
+                g,
+                dir,
+                target,
+                gate_scratch,
+                build_cache_dir,
+                build_cache_guard,
+                store_fence,
+                build_env,
+                &self.0,
+            )
+        }
+    }
+
+    /// A build budget no slot of which can ever be locked is an infrastructure fault, not a red
+    /// gate: the step ends on the probe fault naming the slot, the gate records no verdict, and
+    /// the run holds for the orchestrator with no attempt charged.
+    #[test]
+    fn a_budget_no_slot_can_satisfy_holds_the_run_and_charges_no_attempt() {
+        let slots = tempfile::tempdir().unwrap();
+        let slot = slots.path().join("slot-0.lock");
+        std::fs::create_dir(&slot).unwrap();
+        let open_error = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&slot)
+            .unwrap_err();
+        let fault = format!(
+            "build budget slot {}: {open_error}; fix the path, then relaunch",
+            slot.display()
+        );
+        let runner = OverBudget(BuildBudget::new(1, slots.path().to_path_buf()));
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &runner,
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let halt = run_isolated(&verify_only_cfg(vec![("g1", gate_def("true"))]), &deps)
+            .map(|_| ())
+            .map_err(|e| e.0);
+        drop(deps);
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            (
+                halt,
+                events.iter().filter(|e| is_gate_verdict_row(e)).count()
+            ),
+            (Err(fault.clone()), 0),
+            "the unlockable budget ends the step on its fault and the gate records no verdict"
+        );
+        assert_held_on_the_fault_uncharged(&events, &fault);
     }
 
     crate::test_cases! {
