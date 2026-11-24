@@ -677,9 +677,11 @@ Grouping before and after:
 | **budget (Done-when)** | **<= 3 s** | **<= 8 s** (today: 5 min 23.5 s) |
 
 A grammar's tags query is compiled once per process, at its first extraction, never per file
-(`LanguageEntry::tags`). Each file is parsed once: the tags query runs over the tree the
-structural reads use, and the impl blocks, Rust's tagged references and the test regions start
-from the nodes one walk of that tree gathers (`StructuralNodes`). Every reference's caller is
+(`LanguageEntry::tags`). Each file is parsed once, and in Rust each macro invocation's token tree
+is parsed again in place, at the file's byte positions (spec 117, MACRO TOKEN TREES): the tags
+query runs over each tree the structural reads use, and the impl blocks, Rust's tagged
+references and the test regions start from the nodes one walk of each tree gathers
+(`StructuralNodes`). Every reference's caller is
 found in one sweep over the references in position order, each definition entering at its
 range's start and leaving at its end (`enclosing_defs`), never a scan of every definition per
 reference.
