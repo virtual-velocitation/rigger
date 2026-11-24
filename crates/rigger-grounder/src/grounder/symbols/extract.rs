@@ -4152,7 +4152,10 @@ fn product() {}
                 "fn f() { paths::module_dir(); }\n",
                 vec![("module_dir", None)],
             ),
-            ("fn f() { Memo::<K>::new(); }\n", vec![("new", path("Memo"))]),
+            (
+                "fn f() { Memo::<K>::new(); }\n",
+                vec![("new", path("Memo"))],
+            ),
             (
                 "fn f() { Store::open::<u8>(); }\n",
                 vec![("open", path("Store"))],
@@ -4213,24 +4216,6 @@ fn product() {}
                 .map(|r| (r.name.as_str(), r.qualifier.clone()))
                 .collect();
             assert_eq!(found, expected, "{source:?}");
-        }
-    }
-
-    #[test]
-    fn zz_dump_trees() {
-        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
-        for src in [
-            "fn f() { Memo::<K>::new(); }",
-            "fn f() { <Store as CodeView>::file(); }",
-            "fn f() { <Store>::open(); }",
-            "fn f() { Self::new(); self.file(); self::helper(); }",
-            "fn f() { a::Store::open::<T>(); crate::store::Store::open(); }",
-            "fn f() { Store::open().close(); }",
-        ] {
-            let mut parser = tree_sitter::Parser::new();
-            parser.set_language(&language).unwrap();
-            let tree = parser.parse(src, None).unwrap();
-            println!("{src}\n{}\n", tree.root_node().to_sexp());
         }
     }
 
