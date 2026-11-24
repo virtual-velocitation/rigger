@@ -25,7 +25,7 @@
 //!     authority - control goes through the CLI, never the dash.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::Arc;
@@ -3103,9 +3103,11 @@ impl Response {
         match self.status {
             200 => "OK",
             400 => "Bad Request",
+            403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
             410 => "Gone",
+            431 => "Request Header Fields Too Large",
             500 => "Internal Server Error",
             _ => "OK",
         }
@@ -3721,6 +3723,22 @@ where
     Ok(())
 }
 
+/// The most bytes of a request head (request line and headers) a connection may send.
+const MAX_REQUEST_HEAD: u64 = 16 * 1024;
+
+/// Whether a `Host` header value names this machine's loopback: `localhost`, `127.0.0.1` or
+/// `[::1]`, in any case, with or without a port.
+fn is_loopback_host(value: &str) -> bool {
+    let value = value.trim();
+    let name = match value.rsplit_once(':') {
+        Some((name, port)) if port.bytes().all(|b| b.is_ascii_digit()) => name,
+        _ => value,
+    };
+    ["localhost", "127.0.0.1", "[::1]"]
+        .iter()
+        .any(|loopback| name.eq_ignore_ascii_case(loopback))
+}
+
 /// Read one request, route it, and write the response. Splits the store read from the
 /// pure [`route`] so a `provider` failure degrades only the `/api/*` paths (to `500`),
 /// never the static page - and of `/api/graph` only a unit seed, the one graph view that
@@ -3756,7 +3774,7 @@ where
 {
     // Bound how long a slow or broken client can hold the single serving slot.
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    let mut reader = BufReader::new(stream);
+    let mut reader = BufReader::new((&stream).take(MAX_REQUEST_HEAD));
 
     let mut request_line = String::new();
     if reader.read_line(&mut request_line)? == 0 {
@@ -3770,21 +3788,37 @@ where
     // so it reflects what the browser actually applied - unlike the URL's own `since=`,
     // which that same native retry reissues verbatim from whatever `connectStream(since)`
     // was called with at page-load and never re-evaluates.
+    // A `Host` naming anything but this machine's loopback is refused (DNS rebinding: a page
+    // on another origin resolving its own name to 127.0.0.1 must not read the dash).
     let mut header = String::new();
     let mut last_event_id: Option<Position> = None;
+    let mut head_ended = false;
+    let mut host_is_loopback = true;
     while reader.read_line(&mut header)? > 0 {
         if header == "\r\n" || header == "\n" {
+            head_ended = true;
             break;
         }
         if let Some((name, value)) = header.trim_end_matches(['\r', '\n']).split_once(':') {
             if name.trim().eq_ignore_ascii_case("last-event-id") {
                 last_event_id = value.trim().parse::<Position>().ok();
             }
+            if name.trim().eq_ignore_ascii_case("host") {
+                host_is_loopback &= is_loopback_host(value);
+            }
         }
         header.clear();
     }
+    let head_overran = !head_ended && reader.get_ref().limit() == 0;
+    drop(reader);
 
-    let mut stream = reader.into_inner();
+    let mut stream = stream;
+    if head_overran {
+        return Response::text(431, "request head too large").write_to(&mut stream);
+    }
+    if !host_is_loopback {
+        return Response::text(403, "the dash answers only a loopback Host").write_to(&mut stream);
+    }
     let parsed = parse_request_line(request_line.trim_end());
 
     // THE STREAM (spec 94, criterion 2; d-u94c2-stream-threading): a console tab's
@@ -10688,6 +10722,79 @@ mod tests {
         assert_eq!(v["run"]["units"][0]["id"], "u1");
         assert_eq!(v["run"]["units"][0]["status"], "integrated");
         assert_eq!(v["metrics"]["review_approve"], 1);
+    }
+
+    /// The status a dash whose run read fails answers to the request head `head`, sent whole.
+    fn status_answering(head: &[u8]) -> Option<u16> {
+        use std::io::{Read, Write};
+        let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
+            Err("the run read failed".into())
+        });
+        let graph_provider = |_: Option<&str>, _: Tests, _: f64| Graph::default();
+        let calls_provider =
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
+        let instances_provider = Vec::new;
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (conn, _) = listener.accept().unwrap();
+            handle_conn(
+                conn,
+                &provider,
+                &graph_provider,
+                &calls_provider,
+                &instances_provider,
+                3,
+                "rigger-run",
+                "origin/main",
+            )
+            .unwrap();
+        });
+        let mut client = TcpStream::connect(addr).unwrap();
+        client.write_all(head).unwrap();
+        let mut resp = String::new();
+        client.read_to_string(&mut resp).unwrap();
+        server.join().unwrap();
+        resp.strip_prefix("HTTP/1.1 ")
+            .and_then(|r| r.get(..3))
+            .and_then(|code| code.parse().ok())
+    }
+
+    /// A request head that fills [`MAX_REQUEST_HEAD`] exactly and never ends.
+    fn unending_head() -> Vec<u8> {
+        let mut head = b"GET / HTTP/1.1\r\nX-Pad: ".to_vec();
+        head.resize(MAX_REQUEST_HEAD as usize, b'a');
+        head
+    }
+
+    /// GIVEN the dash on loopback, WHEN a request names a `Host` that is not this machine's
+    /// loopback, THEN it answers 403 before any route or provider, the stream included; a loopback
+    /// name with any port, in any case, or no `Host` at all, is served; and a head that fills its
+    /// bound without ending answers 431.
+    #[test]
+    fn only_a_loopback_host_and_a_bounded_head_are_served() {
+        let rows: [(&str, Option<&str>, u16); 9] = [
+            ("/api/state", Some("evil.example"), 403),
+            ("/api/console/stream", Some("evil.example:7420"), 403),
+            ("/", Some("localhost.evil.example"), 403),
+            ("/", Some("127.0.0.1.evil.example:7420"), 403),
+            ("/", Some("localhost"), 200),
+            ("/", Some("127.0.0.1:7420"), 200),
+            ("/", Some("[::1]:7420"), 200),
+            ("/", Some("LocalHost:7420"), 200),
+            ("/", None, 200),
+        ];
+        for (target, host, status) in rows {
+            let host = host.map_or(String::new(), |h| format!("Host: {h}\r\n"));
+            let head = format!("GET {target} HTTP/1.1\r\n{host}\r\n");
+            assert_eq!(status_answering(head.as_bytes()), Some(status), "{head:?}");
+        }
+        assert_eq!(status_answering(&unending_head()), Some(431));
     }
 
     /// GIVEN a dash whose read of the run fails, WHEN `/api/graph` is asked for the overview, a
