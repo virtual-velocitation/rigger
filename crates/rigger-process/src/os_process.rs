@@ -1089,11 +1089,15 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
         let (accepted, _) = listener.accept().unwrap();
-        let listening = listening_pid(port);
-        drop(listener);
-        assert_eq!(listening, Some(std::process::id()));
         // A sibling test's fork that has not exec'd yet holds a copy of the listener until its
-        // exec closes it, so the port is given that moment to close.
+        // exec closes it, and may be the holder named while it does, so each answer is given
+        // that moment.
+        let listening = wait_until(|| listening_pid(port) == Some(std::process::id()));
+        drop(listener);
+        assert!(
+            listening,
+            "the process holding the listener listens on its port"
+        );
         let closed = wait_until(|| listening_pid(port).is_none());
         drop((client, accepted));
         assert!(
