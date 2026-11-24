@@ -2778,6 +2778,46 @@ pub(crate) mod tests {
         );
     }
 
+    /// A READ HEAD HOLDS NO SESSION: over a project declaring the stub for `zig`, a reader that
+    /// reads the store's head - from the root, which advances the store, and from a worktree
+    /// differing in the declared file, which extracts that file again - holds a head whose every
+    /// session of the stub has already ended, so a read that ends by exiting leaves no extractor
+    /// running, and the head still carries the project's extractor, its doc text read with none.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_head_holds_the_extractor_with_every_session_closed() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "zig", "[zig]", &[("src/a.zig", "a\n")]);
+        stub.answers("src/a.zig", &answer_defining("src/a.zig", "a"));
+        let root = project.path();
+        let workflow =
+            std::fs::read_to_string(root.join(workflow_doc())).expect("read the workflow");
+        let worktree = project_declaring(Some(&workflow));
+        std::fs::create_dir_all(worktree.path().join("src")).expect("create the source directory");
+        std::fs::write(worktree.path().join("src/a.zig"), "b\n").expect("change the file");
+        // (the case, the reader's worktree, the stub's starts and ends while the head is held)
+        let rows: [(&str, &Path, usize); 2] = [
+            ("the root", root, 1),
+            (
+                "a worktree differing in the declared file",
+                worktree.path(),
+                2,
+            ),
+        ];
+        for (case, reader, sessions) in rows {
+            let head = DirectoryHead::new(root)
+                .head(reader)
+                .expect("read the head");
+            let doc = (head.extract.as_deref()).map(|extract| extract.doc_text("zig", " a \n b"));
+            assert_eq!(
+                (stub.starts().len(), stub.ends().len(), doc.as_deref()),
+                (sessions, sessions, Some("a\nb")),
+                "{case}"
+            );
+        }
+    }
+
     /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust
     /// spans, `\r\n` endings, `#[doc(hidden)]` lines, nested block comments and literals holding
     /// a comment marker or a quote among them, and the lines of a language with no doc rule.
