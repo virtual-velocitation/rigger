@@ -4734,6 +4734,178 @@ fn product() {}
         }
     }
 
+    /// AN EXCLUDED QUALIFIER STAGES NOTHING (spec 117, RUST REFERENCES): a call whose path's
+    /// written qualifier is a prelude name, a standard-library import or alias, or whose path is
+    /// rooted at the standard library, at such an import or at a primitive type, stages no
+    /// mention, a macro's token tree alike, while the macro's own call stages. An alias qualifier
+    /// is written as the name it imports, exclusion read on the alias as written first; a `Self`
+    /// or `self` whose self type is excluded and an enclosing generic parameter stage the call
+    /// unqualified; a qualifier no exclusion holds, an unaliased import, a path with no written
+    /// segment and a call with no path stage as before.
+    #[test]
+    fn an_excluded_qualifier_stages_nothing() {
+        let cases = [
+            (
+                "a standard-library import's qualifier stages no call",
+                "use std::io::Cursor;\nfn a(x: u8) {\n    Cursor::new(x);\n}\n",
+                "2 def Function a to 4",
+            ),
+            (
+                "a standard-library import's qualifier in a token tree stages no call, the macro's \
+                 call stages",
+                "\
+use std::io::Cursor;
+fn b(c: Cursor<Vec<u8>>, v: Vec<u8>) {
+    assert_eq!(c, Cursor::new(v));
+}
+",
+                "\
+2 def Function b to 4
+3 ref call assert_eq b",
+            ),
+            (
+                "an alias qualifier is written as the name it imports",
+                "use a::B as C;\nfn g() {\n    C::f();\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref type C g",
+            ),
+            (
+                "an alias qualifier in a token tree is written as the name it imports",
+                "use a::B as C;\nfn g() {\n    vec![C::f()];\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref call vec g
+3 ref type C g",
+            ),
+            (
+                "an alias's Self and self are written as the name it imports",
+                "\
+use a::B as C;
+impl C {
+    fn g(&self) {
+        Self::f();
+        self.h();
+    }
+}
+",
+                "\
+1 ref use B -
+2 def Impl impl C to 7
+2 ref call C impl C
+3 def Method C::g to 6 in impl C
+4 ref call f C::g q B::
+5 ref call h C::g q B.",
+            ),
+            (
+                "a prelude qualifier stages no call, a turbofish's alike",
+                "\
+fn h() {
+    Vec::new();
+    String::from(\"x\");
+    Vec::<u8>::with_capacity(1);
+}
+",
+                "1 def Function h to 5",
+            ),
+            (
+                "a standard-library alias's qualifier stages no call: exclusion reads the alias \
+                 as written",
+                "use std::io::Cursor as Cur;\nfn a(x: u8) {\n    Cur::new(x);\n}\n",
+                "2 def Function a to 4",
+            ),
+            (
+                "an alias of a prelude name is written as the name it imports: exclusion reads \
+                 the alias as written",
+                "use a::Vec as V;\nfn v() {\n    V::new();\n}\n",
+                "\
+2 def Function v to 4
+3 ref call new v q Vec::
+3 ref type V v",
+            ),
+            (
+                "a standard-library-rooted path stages no call, whatever the case of its segments",
+                "\
+fn r(p: &str) {
+    std::fs::read(p);
+    ::core::mem::drop(p);
+    std::io::Cursor::new(p);
+}
+",
+                "1 def Function r to 5",
+            ),
+            (
+                "a path rooted at a standard-library import stages no call",
+                "use std::io;\nfn o() {\n    io::stdout();\n    io::Cursor::new(1);\n}\n",
+                "2 def Function o to 5",
+            ),
+            (
+                "a path rooted at a primitive type stages no call",
+                "fn p(x: u8) {\n    u32::from(x);\n    char::from(x);\n}\n",
+                "1 def Function p to 4",
+            ),
+            (
+                "a Self and a self whose self type is excluded stage the call unqualified",
+                "\
+impl Local for Vec<u8> {
+    fn f(&self) {
+        Self::new();
+        self.len();
+    }
+}
+",
+                "\
+1 def Impl impl Local for Vec<u8> to 6
+1 ref call Local impl Local for Vec<u8>
+1 ref call Vec impl Local for Vec<u8>
+1 ref type Local impl Local for Vec<u8>
+2 def Method <Vec<u8> as Local>::f to 5 in impl Local for Vec<u8>
+3 ref call new <Vec<u8> as Local>::f
+4 ref call len <Vec<u8> as Local>::f",
+            ),
+            (
+                "an enclosing generic parameter stages the call unqualified",
+                "fn d<T: Default>() {\n    T::default();\n}\n",
+                "\
+1 def Function d to 3
+2 ref call default d",
+            ),
+            (
+                "a qualifier no exclusion holds stages as before beside a standard-library import",
+                "use std::io::Cursor;\nfn s() {\n    Store::open();\n}\n",
+                "\
+2 def Function s to 4
+3 ref call open s q Store::
+3 ref type Store s",
+            ),
+            (
+                "an unaliased import's qualifier is written as itself",
+                "use a::B;\nfn g() {\n    B::f();\n}\n",
+                "\
+1 ref use B -
+2 def Function g to 4
+3 ref call f g q B::
+3 ref type B g",
+            ),
+            (
+                "a path with no written segment and a call with no path stage unqualified",
+                "fn q() {\n    ::f();\n    crate::g();\n    h();\n}\n",
+                "\
+1 def Function q to 5
+2 ref call f q
+3 ref call g q
+4 ref call h q",
+            ),
+        ];
+        for (why, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{why}");
+        }
+    }
+
     #[test]
     fn malformed_tags_query_surfaces_as_err_not_panic() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -5571,9 +5743,7 @@ static PLAIN: RefCell<u32> = RefCell::new(0);
                 "\
 2 ref call thread_local -
 4 def Static SLOT to 4 doc 3-3
-4 ref call new SLOT q RefCell::
-7 def Static PLAIN to 7 doc 6-6
-7 ref call new PLAIN q RefCell::",
+7 def Static PLAIN to 7 doc 6-6",
             ),
             (
                 "a static inside thread_local!(..) is a definition at its line, as its plain twin \
@@ -5595,10 +5765,8 @@ static PLAIN: Cell<u32> = const { Cell::new(1) };
 4 ref call thread_local f
 5 def Static f::Y to 5 in f
 7 def Static FOO to 7
-7 ref call new FOO q Cell::
 7 ref call thread_local -
-8 def Static PLAIN to 8
-8 ref call new PLAIN q Cell::",
+8 def Static PLAIN to 8",
             ),
             (
                 "a last static thread_local! holds without its `;` is a definition at its line, as \
