@@ -82,7 +82,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 238] = [
+    let cases: [Case; 244] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1639,6 +1639,42 @@ fn csharp_stages_its_row() {
             "a positional pattern whose first argument declares a named type after `is`",
             in_m!("var r = p is Pt(Tf f, 0);"),
             vec![ty("Pt"), ty("Tf")],
+            k_m(),
+        ),
+        (
+            "`nameof` as the type of an `is` expression in a conditional's condition",
+            in_m!("var r = p is nameof && ok ? 1 : 0;"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a generic name as the left operand of `==` in a conditional's condition, an `is` expression to the grammar",
+            in_m!("var r = p is Hd<A> == ok ? 1 : 0;"),
+            vec![ty("A"), ty("Hd")],
+            k_m(),
+        ),
+        (
+            "a generic name under `not` as the left operand of `&` in a conditional's condition, comparisons to the grammar",
+            in_m!("var r = p is not Gy<A> & ok ? 1 : 0;"),
+            vec![ty("Gy"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name as the left operand of `^` in a conditional's condition, comparisons to the grammar",
+            in_m!("var r = p is Gz<A> ^ ok ? 1 : 0;"),
+            vec![ty("Gz"), ty("A")],
+            k_m(),
+        ),
+        (
+            "a generic name whose type argument is `nameof` as the left operand of `&` in a conditional's condition, comparisons to the grammar",
+            in_m!("var r = p is Ha<nameof> & ok ? 1 : 0;"),
+            vec![ty("Ha")],
+            k_m(),
+        ),
+        (
+            "a generic name whose type argument is generic as the left operand of `&` in a conditional's condition, comparisons to the grammar",
+            in_m!("var r = p is Hb<Hc<B> > & ok ? 1 : 0;"),
+            vec![ty("Hb"), ty("B"), ty("Hc")],
             k_m(),
         ),
     ];
