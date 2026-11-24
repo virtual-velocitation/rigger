@@ -8,6 +8,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::code_facts::MentionKind;
 use crate::code_view::{Head, ViewFilter};
 use crate::eventstore::{Event, Position};
 
@@ -1536,6 +1537,33 @@ pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
     }
 }
 
+/// The label a referrer is listed under, by its mention's tag (spec 117, READERS): one row per
+/// tag, in the spec's order, a call carrying no tag (`None`, as an [`EdgeInferred::ref_kind`] is
+/// absent for one).
+pub const REFERRER_LABELS: [(Option<&str>, &str); 8] = [
+    (None, "called by"),
+    (Some(REF_KIND_CONST), "reads"),
+    (Some(REF_KIND_TYPE), "type use"),
+    (Some(REF_KIND_IMPL), "implemented by"),
+    (Some(REF_KIND_FIELD), "field use"),
+    (Some(REF_KIND_VARIANT), "variant use"),
+    (Some(REF_KIND_USE), "imported by"),
+    (Some(REF_KIND_MODULE), "declared by"),
+];
+
+/// The label a referrer whose mention is of `kind` is listed under ([`REFERRER_LABELS`]); `None`
+/// for a tag the table holds no row for.
+pub fn referrer_label(kind: &MentionKind) -> Option<&'static str> {
+    let tag = match kind {
+        MentionKind::Call => None,
+        MentionKind::Tagged(tag) => Some(tag.as_str()),
+    };
+    REFERRER_LABELS
+        .iter()
+        .find(|(row, _)| *row == tag)
+        .map(|(_, label)| *label)
+}
+
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE
 /// ROOTS AT READ): a [`REL_CONTAINS`] onto a [`KIND_FILE`] node, the edge a `mod x;` reaches its
 /// file by. A declaration is not coupling, so no community or label degree counts it,
@@ -1896,6 +1924,47 @@ mod reference_candidate_kinds_rule {
     #[test]
     fn a_module_rows_candidates_are_newline_joined_on_the_log() {
         assert_eq!(MODULE_CANDIDATE_SEPARATOR, "\n");
+    }
+}
+
+/// Spec 117, READERS: the label a referrer is listed under, by its mention's tag.
+#[cfg(test)]
+mod referrer_label_rule {
+    use super::*;
+    use crate::code_facts::MentionKind;
+
+    /// Every tag has its label: the table holds one row per tag in the spec's order, a call
+    /// carrying no tag; each tag's mention reads its row's label, and a tag the table holds no
+    /// row for (a call's name spelled as a tag, the empty tag, a label) reads none.
+    #[test]
+    fn each_tag_has_its_label_in_the_readers_order_and_an_unlisted_tag_none() {
+        let listed = [
+            (None, "called by"),
+            (Some("const"), "reads"),
+            (Some("type"), "type use"),
+            (Some("impl"), "implemented by"),
+            (Some("field"), "field use"),
+            (Some("variant"), "variant use"),
+            (Some("use"), "imported by"),
+            (Some("module"), "declared by"),
+        ];
+        assert_eq!(
+            REFERRER_LABELS, listed,
+            "one row per tag, in the spec's order"
+        );
+        let kind = |tag: Option<&str>| {
+            tag.map_or(MentionKind::Call, |tag| MentionKind::Tagged(tag.into()))
+        };
+        assert_eq!(
+            listed.map(|(tag, _)| referrer_label(&kind(tag))),
+            listed.map(|(_, label)| Some(label)),
+            "each tag's mention reads its row's label"
+        );
+        assert_eq!(
+            [Some("call"), Some(""), Some("reads")].map(|tag| referrer_label(&kind(tag))),
+            [None, None, None],
+            "a tag the table holds no row for reads no label"
+        );
     }
 }
 

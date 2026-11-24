@@ -579,16 +579,17 @@ shell so every nested cargo inherits it, overrides `.cargo/config.toml`'s Unix w
 The version derivation degrades without the version tool, so the job installs nothing else.
 `tests/ci_lanes.rs`' `every_job_that_builds_dash_installs_the_console_core_wasm_target` (:616)
 adds `cross-os-check` to its job list and names the three jobs in its doc (:608-615); it is the
-job's one wasm-target pin. No job runs a test on macOS or Windows: their adapters ship compiled
-and unrun. Nothing in the run compiles a macOS or Windows arm, since nothing is installed: the
-PR's `cross-os-check` is their first compile. The spec is done when its PR merges, and the PR
-merges only with `cross-os-check` green, the check that observes the Goal's macOS and Windows
-compile. A red `cross-os-check` is fixed on the PR branch by an operator fix that runs this
+job's one wasm-target pin. The job runs one suite on macOS and Windows,
+`bare_rigger_hooks_resolve_periphery` (a bare `rigger` hook runs the binary on `PATH`); the adapters
+ship compiled and unrun. Nothing in the run compiles a macOS or Windows arm, since nothing is
+installed: the PR's `cross-os-check` is their first compile. The spec is done when its PR merges,
+and the PR merges only with `cross-os-check` green, the check that observes the Goal's macOS and
+Windows compile. A red `cross-os-check` is fixed on the PR branch by an operator fix that runs this
 repository's gate battery, every declared gate and both lanes, read against the owning criterion
 before merge: criterion 9 owns a failure in `os_process`, `reap.rs`, `holders.rs` or `dash.rs`,
-criterion 11 one in `home.rs` or a home read, criterion 14 one in `gate_socket.rs`, criterion 12
-one in the job's own environment, and criterion 10 one in any other file, any other Unix-only
-item the job finds included.
+criterion 11 one in `home.rs` or a home read, criterion 14 one in `gate_socket.rs`, criterion 12 one
+in the job's own environment, and criterion 10 one in any other file, any other Unix-only item the
+job finds included.
 
 **CONSTRAINTS WALK, decided here.**
 

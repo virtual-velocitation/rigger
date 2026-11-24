@@ -1,15 +1,16 @@
-//! Periphery (integration) tests for spec 117, RUST DOC SPANS ARE EXTRACTED and the docstring
-//! spans of PYTHON STAGES ITS ROW, across the seam the crate's own tests stop short of: the real
-//! `rigger graph build` extracts each file, the facts layer copies the file's and each
-//! definition's doc span into the file's facts, and the code store persists those facts, so a
-//! reader of the built store finds the spans extraction gave. The crate's tests pin the
+//! Periphery (integration) tests for spec 117, RUST DOC SPANS ARE EXTRACTED, the docstring
+//! spans of PYTHON STAGES ITS ROW and the `/** */` clause of TYPESCRIPT AND JAVASCRIPT STAGE THEIR
+//! ROWS, across the seam the crate's own tests stop short of: the real `rigger graph build`
+//! extracts each file, the facts layer copies the file's and each definition's doc span into the
+//! file's facts, and the code store persists those facts, so a reader of the built store finds the
+//! spans extraction gave. The crate's tests pin the
 //! extraction and the copy in process; these pin that the binary's own build stores them, and
 //! that a rebuild replaces a rewritten file's spans and keeps an unchanged file's.
 //!
 //! NOT OWNED here: a fixture query's `@doc` capture (only a crate test can hand extraction a query
-//! of its own; the Go and Python files below are that capture's reach through a bundled query),
-//! the spans' serialized form (the symbols model's own test) and the readers that print a span
-//! (spec 117's reader criteria).
+//! of its own; the Go, TypeScript, JavaScript and Python files below are that capture's reach
+//! through a bundled query), the spans' serialized form (the symbols model's own test) and the
+//! readers that print a span (spec 117's reader criteria).
 //!
 //! Every test extracts real source, so the file runs on the `symbols` lane alone.
 
@@ -38,11 +39,12 @@ type Held = (
 
 /// The first build: a Rust file opening with two inner doc lines and holding a definition whose
 /// outer doc lines have a `#[doc(hidden)]` between them beside an undocumented one, a Rust file
-/// with no doc line, a Go file whose bundled query captures a three-line comment block over
-/// one function and none over the next, and a Python file opening with a module docstring of two
-/// parts in parentheses over two lines and holding a class, past its base class, whose body opens
-/// with a four-line docstring beside an undocumented function.
-const FIRST: [Row; 4] = [
+/// with no doc line, a Go file whose bundled query captures a three-line comment block over one
+/// function and none over the next, a TypeScript and a JavaScript file whose bundled queries each
+/// capture a `/** */` block over one definition and none over the next, and a Python file opening
+/// with a module docstring of two parts in parentheses over two lines and holding a class, past its
+/// base class, whose body opens with a four-line docstring beside an undocumented function.
+const FIRST: [Row; 6] = [
     (
         "src/lib.rs",
         "//! The crate.\n//! It holds two functions.\n\n/// First.\n#[doc(hidden)]\n/// Last.\n\
@@ -59,6 +61,18 @@ const FIRST: [Row; 4] = [
         &[("Reads", Some((3, 5))), ("Bare", None)],
     ),
     (
+        "f.ts",
+        "/**\n * The area.\n * Of a shape.\n */\nfunction area() {}\n\nfunction bare() {}\n",
+        None,
+        &[("area", Some((1, 4))), ("bare", None)],
+    ),
+    (
+        "f.js",
+        "/**\n * A square.\n */\nclass Square {}\n\nclass Plain {}\n",
+        None,
+        &[("Square", Some((1, 3))), ("Plain", None)],
+    ),
+    (
         "p.py",
         "(\"The \"\n \"shapes.\")\n\n\nclass Shape(Base):\n    \"\"\"A shape.\n\n    Of any size.\n    \
          \"\"\"\n\n\ndef bare():\n    pass\n",
@@ -68,11 +82,12 @@ const FIRST: [Row; 4] = [
 ];
 
 /// The rebuild: the first Rust file rewritten so its file span and `documented`'s are gone and
-/// `plain` gains one, the second given a file span and a definition span, the Go file unchanged,
+/// `plain` gains one, the second given a file span and a definition span, the TypeScript file
+/// rewritten so `area`'s span is gone and `bare` gains one, the Go and JavaScript files unchanged,
 /// and the Python file rewritten so its string follows an import and is no module docstring,
 /// `Shape`'s body opens with a bytes literal, which is no docstring, and `bare`'s, past its
 /// parameter's annotation, opens with a docstring joined from two parts.
-const NEXT: [Row; 4] = [
+const NEXT: [Row; 6] = [
     (
         "src/lib.rs",
         "/// Now first.\npub fn plain() {}\n\npub fn documented() {}\n",
@@ -86,6 +101,13 @@ const NEXT: [Row; 4] = [
         &[("bare", Some((3, 3)))],
     ),
     FIRST[2],
+    (
+        "f.ts",
+        "function area() {}\n\n/** Now documented. */\nfunction bare() {}\n",
+        None,
+        &[("area", None), ("bare", Some((3, 3)))],
+    ),
+    FIRST[4],
     (
         "p.py",
         "import os\n\"\"\"Not the file's.\"\"\"\n\n\nclass Shape:\n    b\"Not a docstring.\"\n\n\n\
@@ -129,8 +151,9 @@ fn expected(rows: &[Row]) -> Vec<Held> {
 
 /// GIVEN a project holding `FIRST`'s files, WHEN the operator runs `rigger graph build`, THEN
 /// the code store holds each file's and each definition's doc span exactly; and WHEN the operator
-/// rewrites the Rust and Python files to `NEXT`'s and builds again, THEN each rewritten file holds
-/// its new spans, a span its source dropped gone, and the unchanged Go file keeps its own.
+/// rewrites the Rust, TypeScript and Python files to `NEXT`'s and builds again, THEN each
+/// rewritten file holds its new spans, a span its source dropped gone, and the unchanged Go and
+/// JavaScript files keep their own.
 #[test]
 fn a_build_stores_each_doc_span_and_a_rebuild_replaces_a_rewritten_files() {
     let project = temp_project();

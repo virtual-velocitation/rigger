@@ -1278,9 +1278,11 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         );
         let res = handle.join().expect("gate thread must not panic").unwrap();
         assert!(res.pass, "the gate command must pass: {res:?}");
-        assert_eq!(
-            try_exclusive_lock(&guard_path),
-            Ok(()),
+        // The gate releases its shared hold by closing the guard, by design, since its command
+        // inherits it; a process another test thread forked during the run holds a copy of the
+        // guard's descriptor until that process execs, so the release is waited for, bounded.
+        assert!(
+            wait_until_for(400, || try_exclusive_lock(&guard_path) == Ok(())),
             "once the gate build exits its shared hold must be released"
         );
     }
