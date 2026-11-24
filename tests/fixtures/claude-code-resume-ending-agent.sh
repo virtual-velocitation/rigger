@@ -26,6 +26,7 @@
 # concurrent test's fork+exec can inherit a write fd to it.
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
+answer_version "$@"
 sid=$(launched_session 99999999-9999-4999-8999-999999999999 "$@")
 case " $* " in
 *" --resume "*) ending=${RIGGER_TEST_RESUME_ENDING:-answer} ;;

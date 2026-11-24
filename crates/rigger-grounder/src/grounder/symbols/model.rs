@@ -288,7 +288,7 @@ macro_rules! js_tags_generation {
 
 macro_rules! go_tags_generation {
     () => {
-        "go-tags-v3"
+        "go-tags-v4"
     };
 }
 

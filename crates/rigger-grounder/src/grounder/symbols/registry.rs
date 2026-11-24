@@ -233,6 +233,14 @@ const GO_DEFINITION_TAGS: &str = r#"
 (method_elem name: (field_identifier) @name) @definition.method
 "#;
 
+/// The Go tags-query field pattern (spec 117), appended after [`GO_DEFINITION_TAGS`]: a
+/// selector's field (`x.f`) is a field use. The grammar parses a package member (`pkg.Name`) and
+/// a method value (`x.m`) as the same selector, so each is a field use too. A called selector
+/// (`x.g()`) stays the upstream query's call: its call pattern names the same `field_identifier`
+/// and comes first, and of the matches naming one node the earliest pattern makes its tag.
+const GO_FIELD_TAGS: &str =
+    "(selector_expression field: (field_identifier) @name) @reference.field";
+
 /// The Python `tags` query. The upstream `tree-sitter-python` `tags.scm` tags a module-level
 /// assignment whose target is an identifier a constant whatever its value, so a chained
 /// assignment (`x = y = f()`) tags its first target alone over the whole chain, every call in it
@@ -331,7 +339,8 @@ impl LanguageEntry {
 /// its own grammar's value types (TSX reads `<T>x` as JSX, so only TS holds a
 /// `type_assertion` and only TSX the JSX elements).
 pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
-    // The Go `tags` query, composed ONCE: the upstream query plus `GO_DEFINITION_TAGS`.
+    // The Go `tags` query, composed ONCE: the upstream query plus `GO_DEFINITION_TAGS` and
+    // `GO_FIELD_TAGS`.
     static GO_TAGS: OnceLock<String> = OnceLock::new();
     // The JS, TS and TSX `tags` queries, each composed ONCE. The upstream
     // `tree-sitter-typescript` crate ships a `tags.scm` that tags only TypeScript-specific
@@ -442,7 +451,14 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "go" => (
             Lang::Go,
             tree_sitter_go::LANGUAGE.into(),
-            composed_once(&GO_TAGS, &[tree_sitter_go::TAGS_QUERY, GO_DEFINITION_TAGS]),
+            composed_once(
+                &GO_TAGS,
+                &[
+                    tree_sitter_go::TAGS_QUERY,
+                    GO_DEFINITION_TAGS,
+                    GO_FIELD_TAGS,
+                ],
+            ),
             &[],
             TS_GO_TYPE_ARGUMENTS,
             &GO,
@@ -1319,6 +1335,7 @@ func calc(n int) int { return n }
 // Zero is nothing.
 // It reads nothing.
 func Zero() int { return 0 }
+func Read(t T) int { return t.n }
 ",
         ),
         (
@@ -1477,11 +1494,11 @@ def calc(n):
     /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
     /// generation table's generations joined in its order. The fixtures set every part a snapshot
     /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind a registered language records (a const read, a type reference and a use) and a
-    /// reference's qualifier included, so a change to any of them moves a digest.
+    /// kind a registered language records (a const read, a type reference, a use and a field use)
+    /// and a reference's qualifier included, so a change to any of them moves a digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
-        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_TYPE, REF_KIND_USE};
         use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
         // One row per line with a comment line between rows, so units re-pinning different
         // languages' rows merge clean.
@@ -1497,7 +1514,7 @@ def calc(n):
             // JavaScript
             ("js", "javascript-tags-v5", "57bcf3aad620d53b"),
             // Go
-            ("go", "go-tags-v3", "40f80b41e4a13f29"),
+            ("go", "go-tags-v4", "5775409d3ffc32c0"),
             // Python
             ("py", "python-tags-v1", "2ae6674264c03453"),
         ];
@@ -1559,6 +1576,7 @@ def calc(n):
             ("a const read", tagged(REF_KIND_CONST)),
             ("a type reference", tagged(REF_KIND_TYPE)),
             ("a use", tagged(REF_KIND_USE)),
+            ("a field use", tagged(REF_KIND_FIELD)),
             ("a partial file", extracted.iter().any(|(_, fs)| fs.partial)),
             (
                 "a definition's doc span",

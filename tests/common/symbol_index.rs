@@ -14,6 +14,7 @@
 //! it; `registered` and `extracted`, with `assert_definitions_fixture`, `assert_callers` and
 //! `assert_tagged_refs` through it, alone reach a grammar and are held by the `symbols` lane only,
 //! as is `extracted_rust_index`, which calls `extracted`.
+//! The grounder crate's `tests/facts_*.rs` suites mount it too, with the crate named `rigger`.
 
 #![allow(dead_code)]
 
