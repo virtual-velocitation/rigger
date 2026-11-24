@@ -826,6 +826,63 @@ impl EndReport {
     fn unskip(&mut self, target: &Identity) {
         self.skipped.retain(|leftover| leftover.pid != target.pid);
     }
+
+    /// The lines this end of a session's tree is said in, each led by `host`, the host that says
+    /// it: first how many processes besides the main the end was sent to; then, in a line of its
+    /// own, each call the OS refused the end, as the report says it, and how many processes the end
+    /// signalled and could not end, and how many it left running and never signalled. Each process
+    /// is named by pid and program, a still-frozen one marked so. Empty when the end was sent to
+    /// nothing besides the main, left nothing and nothing was refused.
+    pub fn lines(&self, host: &str) -> Vec<String> {
+        let named = |left: &[Leftover]| {
+            left.iter()
+                .map(|left| {
+                    let frozen = if left.stopped { ", stopped" } else { "" };
+                    format!("{} ({}{frozen})", left.pid, left.program)
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let mut parts = Vec::new();
+        if !self.residue.is_empty() {
+            parts.push(format!(
+                "{} it signalled and could not end: {}",
+                self.residue.len(),
+                named(&self.residue)
+            ));
+        }
+        if !self.skipped.is_empty() {
+            parts.push(format!(
+                "{} left running, never signalled: {}",
+                self.skipped.len(),
+                named(&self.skipped)
+            ));
+        }
+        let left = (!parts.is_empty()).then(|| {
+            format!(
+                "the end of the session left processes running; {}",
+                parts.join("; ")
+            )
+        });
+        let said: Vec<String> = self.faults.iter().cloned().chain(left).collect();
+        let mut lines = Vec::new();
+        if !self.sent.is_empty() {
+            let noun = if self.sent.len() == 1 {
+                "process"
+            } else {
+                "processes"
+            };
+            lines.push(format!(
+                "{host}: the end of the session was sent to {} {noun} besides its main: {}",
+                self.sent.len(),
+                named(&self.sent)
+            ));
+        }
+        if !said.is_empty() {
+            lines.push(format!("{host}: {}", said.join("; ")));
+        }
+        lines
+    }
 }
 
 /// The OS facilities an end and a sweep use, so a test can add a stranger to the table an end
@@ -4245,5 +4302,92 @@ mod tests {
                 Ok(Some(_))
             )));
         }
+    }
+
+    /// The lines the stream host says an end that answered `sent`, `residue`, `skipped` and
+    /// `faults` in.
+    fn assert_end_lines(
+        sent: &[(u32, &str, bool)],
+        residue: &[(u32, &str, bool)],
+        skipped: &[(u32, &str, bool)],
+        faults: &[&str],
+        expected: &[&str],
+    ) {
+        let left = |rows: &[(u32, &str, bool)]| {
+            rows.iter()
+                .map(|&(pid, program, stopped)| Leftover {
+                    pid,
+                    program: program.to_string(),
+                    stopped,
+                })
+                .collect()
+        };
+        let report = EndReport {
+            sent: left(sent),
+            residue: left(residue),
+            skipped: left(skipped),
+            faults: faults.iter().map(|fault| fault.to_string()).collect(),
+            by_pid_because: None,
+        };
+        assert_eq!(report.lines("stream"), expected);
+    }
+
+    crate::test_cases! {
+        an_end_sent_to_nothing_that_left_nothing_is_no_line: assert_end_lines(&[], &[], &[], &[], &[]);
+        an_end_that_could_not_end_a_process_names_it_and_whether_it_is_stopped: assert_end_lines(
+            &[],
+            &[(41, "sleep", false), (42, "node", true)],
+            &[],
+            &[],
+            &["stream: the end of the session left processes running; 2 it signalled and could \
+               not end: 41 (sleep), 42 (node, stopped)"],
+        );
+        an_end_names_each_process_it_was_sent_to_by_pid_and_program: assert_end_lines(
+            &[(41, "sleep", false), (42, "node", false)],
+            &[],
+            &[],
+            &[],
+            &["stream: the end of the session was sent to 2 processes besides its main: 41 \
+               (sleep), 42 (node)"],
+        );
+        an_end_sent_to_one_process_that_left_one_says_each_in_a_line_of_its_own:
+            assert_end_lines(
+                &[(41, "sleep", false)],
+                &[],
+                &[(77, "daemon", false)],
+                &[],
+                &[
+                    "stream: the end of the session was sent to 1 process besides its main: 41 \
+                     (sleep)",
+                    "stream: the end of the session left processes running; 1 left running, \
+                     never signalled: 77 (daemon)",
+                ],
+            );
+        an_end_that_never_signalled_a_process_names_it_as_left_running:
+            assert_end_lines(
+                &[],
+                &[(41, "sleep", false)],
+                &[(77, "daemon", false)],
+                &[],
+                &["stream: the end of the session left processes running; 1 it signalled and \
+                   could not end: 41 (sleep); 1 left running, never signalled: 77 (daemon)"],
+            );
+        an_end_the_os_refused_says_why: assert_end_lines(
+            &[],
+            &[],
+            &[],
+            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
+            &["stream: the job of session 7 could not be ended (denied), so the end did not wait \
+               for it"],
+        );
+        an_end_that_hit_a_fault_and_left_a_process_says_both: assert_end_lines(
+            &[],
+            &[(41, "sleep", false)],
+            &[],
+            &["the job of session 7 could not be ended (denied), so the end did not wait for it"],
+            &["stream: the job of session 7 could not be ended (denied), so the end did not wait \
+               for it; the end of the session left processes running; 1 it signalled and could \
+               not end: 41 (sleep)"],
+        );
     }
 }

@@ -1534,9 +1534,9 @@ impl Driver<'_> {
     }
 
     /// Say on the spawn's progress what an end of its session's tree was sent to and left
-    /// ([`super::end_lines`]), a line each.
+    /// ([`crate::child_tree::EndReport::lines`]), a line each.
     fn record_end(&self, opts: &SpawnOpts, report: &crate::child_tree::EndReport) {
-        for line in super::end_lines(report, "stream") {
+        for line in report.lines("stream") {
             self.record_progress(opts, &line);
         }
     }
@@ -2024,11 +2024,11 @@ fn api_retry_line(v: &Value) -> String {
     format!("waiting: {category} (attempt {attempt}, retrying in {delay_ms}ms)")
 }
 
-/// The lines the hold probe says on stderr for its canary's end ([`super::end_lines`]), since the
+/// The lines the hold probe says on stderr for its canary's end ([`crate::child_tree::EndReport::lines`]), since the
 /// probe writes no store. Empty when the end was sent to nothing besides the canary's main, left
 /// nothing and nothing was refused.
 fn canary_end_lines(report: &crate::child_tree::EndReport) -> Vec<String> {
-    super::end_lines(report, "rigger: the hold probe's canary")
+    report.lines("rigger: the hold probe's canary")
 }
 
 /// THE STOP's human-readable message (spec 104 criterion 6), recorded both as the

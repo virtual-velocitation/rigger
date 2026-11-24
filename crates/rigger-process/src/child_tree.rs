@@ -501,9 +501,14 @@ fn joined(reader: Option<JoinHandle<io::Result<Vec<u8>>>>) -> io::Result<Vec<u8>
 }
 
 impl Drop for ReapedChild {
+    /// Ends a tree nobody ended or released, saying what that end signalled and left as an
+    /// explicit end's host would, so a dropped tree's end is never silent.
     fn drop(&mut self) {
         if !self.released {
-            self.end();
+            let host = format!("rigger: the dropped tree of session {}", self.id());
+            for line in self.end().lines(&host) {
+                whole_line::say(format_args!("{line}"));
+            }
         }
     }
 }
