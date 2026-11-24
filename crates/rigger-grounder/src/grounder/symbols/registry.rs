@@ -155,24 +155,27 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///
 /// None is a type in:
 ///
-/// - a pattern keyword, `nameof`, `not`, `and` or `or`, as the whole name of a `type` field, a
-///   local's or a field's declared type, a constant pattern, a left operand, a switch section or
-///   the right of an `is` above, the names a pattern can reach: `nameof` in any of those
-///   positions, `case nameof(Foo):`, `case not nameof(Foo):`, a switch arm's `nameof(Foo)`,
-///   `x is { Name: nameof(Foo) }`, a list's `[nameof(Foo)]`, a declaring `nameof(var a)`, a
-///   declaration pattern's `nameof x` and a left operand's `nameof(Foo) && ok` included, while a
-///   member access in its argument is the field it names, as in any expression; a positional
-///   pattern's argument `not null`, `and x` or `or x`, which the grammar reads as a declaration
-///   typed `not`, `and` or `or`; and `not` opening a statement the grammar recovers as a local's
-///   declaration, `case C: not null:`; while a generic's own name, `nameof` of `x is nameof<A>`,
-///   and a type argument, `not` of `x is Gen<not> && ok` and `nameof` of the split
-///   `x is Gen<nameof> & ok ? 1 : 0`, stay the types they name whatever their spelling, since no
-///   pattern keyword stands there;
+/// - a pattern keyword, `nameof`, `not`, `and` or `or`, as the whole name, or as a generic's own
+///   name before its type arguments, of a `type` field, a local's or a field's declared type, a
+///   constant pattern, a left operand, a switch section or the right of an `is` above, the names
+///   a pattern can reach: `nameof` in any of those positions, `case nameof(Foo):`,
+///   `case not nameof(Foo):`, a switch arm's `nameof(Foo)`, `x is { Name: nameof(Foo) }`, a
+///   list's `[nameof(Foo)]`, a declaring `nameof(var a)`, a declaration pattern's `nameof x`, a
+///   left operand's `nameof(Foo) && ok` and a generic's `x is nameof<A>`, whole or split as
+///   `x is nameof<A> & ok ? 1 : 0` is, included, while a member access in its argument is the
+///   field it names, as in any expression; a positional pattern's argument `not null`, `and x` or
+///   `or x`, which the grammar reads as a declaration typed `not`, `and` or `or`; and `not`
+///   opening a statement the grammar recovers as a local's declaration, `case C: not null:`;
+///   while a type argument, `A` of `x is nameof<A>`, `not` of `x is Gen<not> && ok` and `nameof`
+///   of the split `x is Gen<nameof> & ok ? 1 : 0`, stays the type it names whatever its spelling,
+///   since no pattern keyword stands there, and so does a name only starting with a keyword,
+///   `notable` of `x is notable<A> && ok`;
 /// - a predefined type; an identifier that is itself an operand of an arithmetic, a shift or a
 ///   relational expression, as `case Cf + 1:`, `x is Foo << 1` and `x is Foo < ok` are, the right
 ///   operand of a looser operator, `Bar` of `x is Foo == Bar`, or a prefix expression's operand,
-///   `case -Ch:`, while the leftmost operand of a looser chain that, in parentheses, is the first
-///   operand of such an expression is the left operand above, `A` of `case (A | B) + 1:` and of
+///   `case -Ch:`, while `case (Cf) + 1:` is a cast of `+1` to the grammar, `Cf` the cast's type,
+///   and the leftmost operand of a looser chain that, in parentheses, is the first operand of such
+///   an expression is the left operand above, `A` of `case (A | B) + 1:` and of
 ///   `case !(A && ok):`; a relational pattern's operand, a qualified one the field it names; a
 ///   `var` pattern and a discard; a property subpattern's name, an extended one the field it
 ///   names; a tuple pattern's elements; and a list after `is` whose slice holds a pattern or
@@ -253,8 +256,10 @@ fn csharp_reference_tags() -> String {
     )
 }
 
-/// The guard on each C# reference pattern a pattern's name can reach.
-const CSHARP_KEYWORD_GUARD: &str = r#"(#not-match? @name "^(nameof|not|and|or)$")"#;
+/// The guard on each C# reference pattern a pattern's name can reach: it refuses a pattern
+/// keyword as the whole name and as a generic's own name, which the grammar reads as a whole
+/// name where it splits the generic into comparisons.
+const CSHARP_KEYWORD_GUARD: &str = r#"(#not-match? @name "^(nameof|not|and|or)(\\W|$)")"#;
 
 /// A called identifier, `Pt` of `Pt(0, 0)`, its invocation matched as any node with a `function`
 /// field, which only an invocation has and which compiles far faster than the typed node.
