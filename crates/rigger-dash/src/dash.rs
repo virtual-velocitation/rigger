@@ -856,11 +856,11 @@ pub fn should_reap_singleton(
     ever_seen_live && live_instances == 0 && !agent_live
 }
 
-/// What the dash's data provider yields per request: the run's events, its context subgraph with
-/// what the read that drew it describes, this run's progress reports (spec 14), and each in-flight
-/// spawn's liveness-marker age. Factored into a `type` so the provider signature stays readable
-/// across the server, its callers, and the tests.
-pub type DashInputs = (Vec<Event>, GraphRead, Vec<Event>, HashMap<String, u64>);
+/// What the dash's data provider yields per request: the run's events, this run's progress
+/// reports (spec 14), and each in-flight spawn's liveness-marker age. The run's context subgraph
+/// is no part of it: only `/api/state` draws one, through its own provider. Factored into a `type`
+/// so the provider signature stays readable across the server, its callers, and the tests.
+pub type DashInputs = (Vec<Event>, Vec<Event>, HashMap<String, u64>);
 
 /// One row of the dash's LANDING view (spec 50, criterion 3): a registered rigger instance the
 /// operator can ATTACH to. It is the presentation projection of a [`crate::registry::Instance`],
@@ -3659,12 +3659,12 @@ fn report_error(
 /// fixed address itself via [`bind_singleton`] (so the AddrInUse that decides the singleton
 /// short-circuit is seen BEFORE this accept loop), then hands the bound listener here.
 ///
-/// Two providers, split by cadence (spec 45, criterion 1): `provider` yields the cheap
-/// run-scoped inputs (events, the run-seeded graph, progress, liveness) every `/api/*`
-/// request rides - including the 1.5s state poll - while `graph_provider` opens the
-/// projection and reads the whole graph LAZILY, consulted ONLY on a `/api/graph` request.
-/// So the state poll never triggers a whole-graph read; the overview/drill/neighborhood
-/// views read the projection directly through their own provider.
+/// The graph is read by need (spec 45, criterion 1): `provider` yields the cheap run-scoped
+/// inputs (events, progress, liveness) every `/api/*` request rides - including the 1.5s state
+/// poll and every console stream poll - while `state_graph_provider` draws the run-seeded graph
+/// from those events for `/api/state` alone, and `graph_provider` opens the projection and reads
+/// the whole graph LAZILY, consulted ONLY on a `/api/graph` request. So no poll but the state
+/// poll reads a graph, and none reads the whole one.
 ///
 /// One connection at a time, synchronously: loopback single-operator traffic needs no
 /// concurrency, and a serial loop keeps the sqlite reads and the whole server free of any
@@ -3678,9 +3678,10 @@ fn report_error(
 /// local project (backward compatible). The `instances_provider` reads the machine-global
 /// registry for the `/api/instances` landing list.
 #[allow(clippy::too_many_arguments)]
-pub fn serve_on<F, G, R, H, I, C>(
+pub fn serve_on<F, S, G, R, H, I, C>(
     listener: TcpListener,
     provider: F,
+    state_graph_provider: S,
     graph_provider: G,
     calls_provider: I,
     instances_provider: H,
@@ -3690,6 +3691,7 @@ pub fn serve_on<F, G, R, H, I, C>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
+    S: Fn(Option<&str>, &[Event]) -> GraphRead,
     G: Fn(Option<&str>, Tests, f64) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
@@ -3707,6 +3709,7 @@ where
                 if let Err(e) = handle_conn(
                     s,
                     &provider,
+                    &state_graph_provider,
                     &graph_provider,
                     &calls_provider,
                     &instances_provider,
@@ -3744,19 +3747,21 @@ fn is_loopback_host(value: &str) -> bool {
 /// never the static page - and of `/api/graph` only a unit seed, the one graph view that
 /// reads the run; every other graph view answers from the graph alone.
 ///
-/// The graph is sourced by cadence (spec 45, criterion 1): every other `/api/*` path reads the
-/// run-scoped inputs from `provider`, but a `/api/graph` request opens the whole-graph
-/// projection through `graph_provider` (consulted HERE and nowhere else), so the state poll
-/// never rides a whole-graph read, and reads `provider` only for a unit seed it re-points.
+/// The graph is sourced by need (spec 45, criterion 1): every other `/api/*` path reads the
+/// run-scoped inputs from `provider`, and of those only `/api/state` draws the run-seeded graph
+/// through `state_graph_provider`; a `/api/graph` request opens the whole-graph projection
+/// through `graph_provider` (consulted HERE and nowhere else), so the state poll never rides a
+/// whole-graph read, and reads `provider` only for a unit seed it re-points.
 ///
 /// Which STORE the run/graph providers read is chosen HERE from the request's `?instance=<id>`
 /// selector (spec 50, criterion 3): present, they open that registered instance's stores;
 /// absent, the dash's own local project. `/api/instances` is served from the separate
 /// `instances_provider` (the registry landing) and needs no store read at all.
 #[allow(clippy::too_many_arguments)]
-fn handle_conn<F, G, R, H, I, C>(
+fn handle_conn<F, S, G, R, H, I, C>(
     stream: TcpStream,
     provider: &Arc<F>,
+    state_graph_provider: &S,
     graph_provider: &G,
     calls_provider: &I,
     instances_provider: &H,
@@ -3766,6 +3771,7 @@ fn handle_conn<F, G, R, H, I, C>(
 ) -> io::Result<()>
 where
     F: Fn(Option<&str>) -> Result<DashInputs, String> + Send + Sync + 'static,
+    S: Fn(Option<&str>, &[Event]) -> GraphRead,
     G: Fn(Option<&str>, Tests, f64) -> R,
     R: Into<GraphRead>,
     H: Fn() -> Vec<InstanceView>,
@@ -3941,10 +3947,15 @@ where
                     answer
                 } else {
                     match provider(instance) {
-                        Ok((events, read, progress, liveness)) => {
-                            // Every other `/api/*` path keeps the cheap run-seeded graph the
-                            // polled provider yields; the run snapshot states what that read
-                            // describes in its body, beside the decisions it draws.
+                        Ok((events, progress, liveness)) => {
+                            // Only the run snapshot draws the run-seeded graph, and states what
+                            // that read describes in its body, beside the decisions it draws;
+                            // every other `/api/*` path answers from the run inputs alone.
+                            let read = if path == "/api/state" {
+                                state_graph_provider(instance, &events)
+                            } else {
+                                GraphRead::default()
+                            };
                             let answer = route_hiding(
                                 &method,
                                 &target,
@@ -4113,7 +4124,7 @@ fn serve_console_stream<F>(
     // from the fresh head - rather than replaying a position the store can never serve
     // again.
     if since > 0 {
-        if let Ok((events, _, _, _)) = provider(instance) {
+        if let Ok((events, _, _)) = provider(instance) {
             if let Some(floor) = events.iter().map(|e| e.position).min() {
                 if since < floor {
                     write_retained_window_gone(&mut stream, since, floor);
@@ -4148,7 +4159,7 @@ fn serve_console_stream<F>(
     let mut last_heartbeat = Instant::now();
 
     loop {
-        if let Ok((events, _graph, progress_events, liveness_ages)) = provider(instance) {
+        if let Ok((events, progress_events, liveness_ages)) = provider(instance) {
             let mut new_events: Vec<&Event> = events
                 .iter()
                 .filter(|e| is_console_event(e) && e.position > last_event)
@@ -4851,12 +4862,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((
-                Vec::new(),
-                Graph::default().into(),
-                Vec::new(),
-                HashMap::new(),
-            ))
+            Ok((Vec::new(), Vec::new(), HashMap::new()))
         };
         let graph_provider = |_instance: Option<&str>, _tests: Tests, _: f64| Graph::default();
         let instances_provider = Vec::new;
@@ -4875,6 +4881,7 @@ mod tests {
             if let Err(e) = serve_on(
                 listener,
                 provider,
+                no_state_graph,
                 graph_provider,
                 calls_provider,
                 instances_provider,
@@ -10674,7 +10681,7 @@ mod tests {
             let events = store
                 .read_stream(conductor::STREAM, 0, Direction::Forward)
                 .map_err(|e| e.to_string())?;
-            Ok((events, Graph::default().into(), Vec::new(), HashMap::new()))
+            Ok((events, Vec::new(), HashMap::new()))
         };
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -10694,6 +10701,7 @@ mod tests {
             handle_conn(
                 conn,
                 &provider,
+                &no_state_graph,
                 &graph_provider,
                 &calls_provider,
                 &instances_provider,
@@ -10724,6 +10732,11 @@ mod tests {
         assert_eq!(v["metrics"]["review_approve"], 1);
     }
 
+    /// A state graph provider that draws no graph.
+    fn no_state_graph(_: Option<&str>, _: &[Event]) -> GraphRead {
+        GraphRead::default()
+    }
+
     /// The status a dash whose run read fails answers to the request head `head`, sent whole.
     fn status_answering(head: &[u8]) -> Option<u16> {
         use std::io::{Read, Write};
@@ -10746,6 +10759,7 @@ mod tests {
             handle_conn(
                 conn,
                 &provider,
+                &no_state_graph,
                 &graph_provider,
                 &calls_provider,
                 &instances_provider,
@@ -10835,6 +10849,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &no_state_graph,
                     &graph_provider,
                     &calls_provider,
                     &instances_provider,
@@ -10941,12 +10956,7 @@ mod tests {
             let calls_seen = Arc::new(Mutex::new(Vec::new()));
             let (g, c) = (Arc::clone(&graph_seen), Arc::clone(&calls_seen));
             let provider = |_: Option<&str>| -> Result<DashInputs, String> {
-                Ok((
-                    Vec::new(),
-                    Graph::default().into(),
-                    Vec::new(),
-                    HashMap::new(),
-                ))
+                Ok((Vec::new(), Vec::new(), HashMap::new()))
             };
             let graph_provider = move |_: Option<&str>, tests: Tests, _: f64| {
                 g.lock().unwrap().push(tests);
@@ -10972,6 +10982,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &no_state_graph,
                     &graph_provider,
                     &calls_provider,
                     &Vec::new,
@@ -11049,13 +11060,13 @@ mod tests {
         use std::net::{TcpListener, TcpStream};
 
         let ask = |read: Option<GraphLabel>| -> (String, serde_json::Value) {
-            let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
-                let polled = GraphRead {
-                    label: read.clone(),
-                    ..GraphRead::default()
-                };
-                Ok((Vec::new(), polled, Vec::new(), HashMap::new()))
+            let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
+                Ok((Vec::new(), Vec::new(), HashMap::new()))
             });
+            let state_graph = move |_: Option<&str>, _: &[Event]| GraphRead {
+                label: read.clone(),
+                ..GraphRead::default()
+            };
             let graph_provider = |_: Option<&str>, _: Tests, _: f64| GraphRead::default();
             let calls_provider = |_: Option<&str>,
                                   _: &[String],
@@ -11070,6 +11081,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &state_graph,
                     &graph_provider,
                     &calls_provider,
                     &Vec::new,
@@ -11127,12 +11139,7 @@ mod tests {
 
         let ask = |target: &str, read: Option<GraphLabel>| -> String {
             let provider = Arc::new(|_: Option<&str>| -> Result<DashInputs, String> {
-                Ok((
-                    Vec::new(),
-                    Graph::default().into(),
-                    Vec::new(),
-                    HashMap::new(),
-                ))
+                Ok((Vec::new(), Vec::new(), HashMap::new()))
             });
             let whole = read.clone();
             // The read withheld `x` alone: a view counts the withheld hits of its own answer.
@@ -11164,6 +11171,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &no_state_graph,
                     &graph_provider,
                     &calls_provider,
                     &Vec::new,
@@ -11253,6 +11261,7 @@ mod tests {
             handle_conn(
                 conn,
                 &provider,
+                &no_state_graph,
                 &graph_provider,
                 &calls_provider,
                 &instances_provider,
@@ -11292,15 +11301,8 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         // The polled provider: the cheap run-scoped inputs `/api/state` and `/api/events` ride.
-        // Its graph slot is the run-seeded slice (here empty); it is what the decisions/findings
-        // panel reads, and it must be the ONLY graph the state poll touches.
         let provider = |_instance: Option<&str>| -> Result<DashInputs, String> {
-            Ok((
-                Vec::new(),
-                Graph::default().into(),
-                Vec::new(),
-                HashMap::new(),
-            ))
+            Ok((Vec::new(), Vec::new(), HashMap::new()))
         };
 
         // The SEPARATE whole-graph provider: it counts every consultation and yields a fixture
@@ -11340,6 +11342,7 @@ mod tests {
                 handle_conn(
                     conn,
                     &provider,
+                    &no_state_graph,
                     &graph_provider,
                     &calls_provider,
                     &instances_provider,
@@ -11408,36 +11411,41 @@ mod tests {
         );
     }
 
-    /// A graph request reads the polled run inputs (the run's events, its run-seeded graph,
-    /// progress and liveness) only when its answer needs the run's events: a seed that is no
-    /// node of the graph, re-pointed onto a unit's content. Every other graph view answers from
-    /// the graph provider alone, while the state poll still reads the polled inputs once.
+    /// A graph request reads the polled run inputs (the run's events, progress and liveness) only
+    /// when its answer needs the run's events: a seed that is no node of the graph, re-pointed
+    /// onto a unit's content. Every other graph view answers from the graph provider alone, while
+    /// the state poll still reads the polled inputs once. Of the paths that read them, only the
+    /// state poll draws the run-seeded graph.
     #[test]
     fn a_graph_request_reads_the_polled_run_inputs_only_to_re_point_a_unit_seed() {
         use std::io::{Read, Write};
         use std::net::{TcpListener, TcpStream};
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let cases: [(&str, usize); 6] = [
-            ("/api/graph", 0),
-            ("/api/graph?tests=include", 0),
-            ("/api/graph?tests=only", 0),
-            ("/api/graph?seed=seed-node&depth=1", 0),
-            ("/api/graph?seed=u-unit&depth=1", 1),
-            ("/api/state", 1),
+        // (target, polled run reads, run-seeded graph draws)
+        let cases: [(&str, usize, usize); 9] = [
+            ("/api/graph", 0, 0),
+            ("/api/graph?tests=include", 0, 0),
+            ("/api/graph?tests=only", 0, 0),
+            ("/api/graph?seed=seed-node&depth=1", 0, 0),
+            ("/api/graph?seed=u-unit&depth=1", 1, 0),
+            ("/api/state", 1, 1),
+            ("/api/state?instance=x", 1, 1),
+            ("/api/events", 1, 0),
+            ("/api/console/snapshot", 1, 0),
         ];
-        for (target, expected) in cases {
+        for (target, expected, expected_drawn) in cases {
             let polled = Arc::new(AtomicUsize::new(0));
             let polled_by_provider = Arc::clone(&polled);
             let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
                 polled_by_provider.fetch_add(1, Ordering::SeqCst);
-                Ok((
-                    Vec::new(),
-                    Graph::default().into(),
-                    Vec::new(),
-                    HashMap::new(),
-                ))
+                Ok((Vec::new(), Vec::new(), HashMap::new()))
             });
+            let drawn = AtomicUsize::new(0);
+            let state_graph = |_: Option<&str>, _: &[Event]| {
+                drawn.fetch_add(1, Ordering::SeqCst);
+                GraphRead::default()
+            };
             let graph_provider = |_: Option<&str>, _: Tests, _: f64| -> Graph {
                 Graph {
                     nodes: vec![Node {
@@ -11458,37 +11466,103 @@ mod tests {
             let instances_provider = Vec::new;
             let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let addr = listener.local_addr().unwrap();
-            let server = std::thread::spawn(move || {
-                let (conn, _) = listener.accept().unwrap();
-                handle_conn(
-                    conn,
-                    &provider,
-                    &graph_provider,
-                    &calls_provider,
-                    &instances_provider,
-                    3,
-                    "rigger-run",
-                    "origin/main",
-                )
-                .unwrap();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let (conn, _) = listener.accept().unwrap();
+                    handle_conn(
+                        conn,
+                        &provider,
+                        &state_graph,
+                        &graph_provider,
+                        &calls_provider,
+                        &instances_provider,
+                        3,
+                        "rigger-run",
+                        "origin/main",
+                    )
+                    .unwrap();
+                });
+                let mut client = TcpStream::connect(addr).unwrap();
+                client
+                    .write_all(
+                        format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes(),
+                    )
+                    .unwrap();
+                let mut resp = String::new();
+                client.read_to_string(&mut resp).unwrap();
+                assert!(
+                    resp.starts_with("HTTP/1.1 200 OK"),
+                    "{target} is served: {resp}"
+                );
             });
-            let mut client = TcpStream::connect(addr).unwrap();
-            client
-                .write_all(format!("GET {target} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
-                .unwrap();
-            let mut resp = String::new();
-            client.read_to_string(&mut resp).unwrap();
-            server.join().unwrap();
-            assert!(
-                resp.starts_with("HTTP/1.1 200 OK"),
-                "{target} is served: {resp}"
-            );
             assert_eq!(
-                polled.load(Ordering::SeqCst),
-                expected,
-                "{target} reads the polled run inputs {expected} time(s)"
+                (polled.load(Ordering::SeqCst), drawn.load(Ordering::SeqCst)),
+                (expected, expected_drawn),
+                "{target}: polled run reads, run-seeded graph draws"
             );
         }
+    }
+
+    /// GIVEN an open console stream, WHEN it has polled the run inputs several times, THEN it
+    /// has drawn the run-seeded graph none of them: only the state poll draws one.
+    #[test]
+    fn a_console_stream_poll_draws_no_run_graph() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let polled = Arc::new(AtomicUsize::new(0));
+        let polled_by_provider = Arc::clone(&polled);
+        let provider = Arc::new(move |_: Option<&str>| -> Result<DashInputs, String> {
+            polled_by_provider.fetch_add(1, Ordering::SeqCst);
+            Ok((Vec::new(), Vec::new(), HashMap::new()))
+        });
+        let drawn = AtomicUsize::new(0);
+        let state_graph = |_: Option<&str>, _: &[Event]| {
+            drawn.fetch_add(1, Ordering::SeqCst);
+            GraphRead::default()
+        };
+        let graph_provider = |_: Option<&str>, _: Tests, _: f64| Graph::default();
+        let calls_provider =
+            |_: Option<&str>,
+             _: &[String],
+             _: crate::contextgraph::Direction,
+             _: i64,
+             _: &str,
+             _: Tests| { crate::contextgraph::CallGraph::default() };
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(addr).unwrap();
+        client
+            .write_all(b"GET /api/console/stream HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .unwrap();
+        let (conn, _) = listener.accept().unwrap();
+        handle_conn(
+            conn,
+            &provider,
+            &state_graph,
+            &graph_provider,
+            &calls_provider,
+            &Vec::new,
+            3,
+            "rigger-run",
+            "origin/main",
+        )
+        .unwrap();
+        let mut status = String::new();
+        BufReader::new(&client).read_line(&mut status).unwrap();
+        assert!(status.starts_with("HTTP/1.1 200"), "{status}");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while polled.load(Ordering::SeqCst) < 3 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            (
+                polled.load(Ordering::SeqCst) >= 3,
+                drawn.load(Ordering::SeqCst)
+            ),
+            (true, 0),
+            "the stream polled the run inputs, and drew no run-seeded graph"
+        );
     }
 
     // --- Spec 39, criterion 1: the per-project dash marker + idempotency decision ---
