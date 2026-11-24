@@ -3777,6 +3777,7 @@ fn drive(
         green_digests,
         verdict_key,
         gate_address: channel.and_then(GateChannel::address),
+        run_base: run_base_of(prior_events),
         settled: Mutex::new(settled_positions(prior_events)),
         live_units: Mutex::new(HashMap::new()),
         compensations: Mutex::new(pending_compensations),
@@ -4410,6 +4411,9 @@ struct RunCtx<'a> {
     /// The absolute address of the gate channel this run serves, handed to every spawn as
     /// [`GATE_SOCKET_ENV`] ([`spawn_env`](Self::spawn_env)); `None` when it serves none.
     gate_address: Option<String>,
+    /// The run's `$RIGGER_RUN_BASE` ([`run_base_of`]), folded once from the run read this
+    /// context is built over; [`run_base_env`](Self::run_base_env) hands it out.
+    run_base: String,
     /// The log positions of the gate verdict rows a settle record cites ([`settled_positions`]),
     /// seeded at run start and extended as this process settles a battery: passes that are history.
     settled: Mutex<HashSet<u64>>,
@@ -4536,6 +4540,9 @@ impl<'a> RunCtx<'a> {
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
             gate_address: None,
+            run_base: crate::run::read::read_current_run(deps.store, STREAM)
+                .map(|(events, _)| run_base_of(&events))
+                .unwrap_or_default(),
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -5454,7 +5461,7 @@ impl RunCtx<'_> {
             &self.deps.repo,
             &request.dir,
             &request.gate,
-            &self.run_base_env(),
+            self.run_base_env(),
         )?;
         // The first verb key for this commit no verdict holds yet, claimed in the one lookup.
         let key = (0..)
@@ -10808,8 +10815,8 @@ impl RunCtx<'_> {
 
     /// The build environment for this run (the ONE build-environment authority): the
     /// workflow's declared `build.env` and `build.jobs` with the run's recorded base
-    /// ([`run_base_env`](Self::run_base_env), read from the store), re-derived each call rather
-    /// than cached - a single resolver, called from every site that needs it, so a gate build
+    /// ([`run_base_env`](Self::run_base_env), folded once from the store) - a single resolver,
+    /// called from every site that needs it, so a gate build
     /// ([`run_gates`](Self::run_gates), [`run_deferred_gates`](Self::run_deferred_gates)) and an
     /// agent-spawn build (every `SpawnOpts.env`) can never derive two disagreeing copies.
     ///
@@ -10820,7 +10827,7 @@ impl RunCtx<'_> {
     /// PROPAGATES the refusal, so a library caller gets the identical loud failure a CLI caller
     /// does.
     fn build_env(&self) -> Result<gate::BuildEnv, Error> {
-        build_env_of(self.cfg, &self.run_base_env())
+        build_env_of(self.cfg, self.run_base_env())
     }
 
     /// Whether a reviewer spawned at `dir` carries the unit's review cache
@@ -10837,21 +10844,20 @@ impl RunCtx<'_> {
 
     /// The run's own `$RIGGER_RUN_BASE`: the SINGLE resolution the one build environment
     /// ([`build_env`](Self::build_env), and through [`GateInputs::resolve`] every gate) carries
-    /// to every gate and every spawn - never a second, independently re-derived copy. Reads the run's own `RunStarted` off
-    /// the live event stream and folds [`crate::run::current_run_base_tip`] over it: the run
-    /// branch's tip commit sha AT THE MOMENT this run started, persisted once at mint
-    /// (`RunStarted::base_tip`) and never re-resolved live - so a unit that lands mid-run
-    /// never shifts what a LATER gate diffs against, and the check-in stage's gates always diff
-    /// the whole spec's work against the recorded base, never a moving target.
+    /// to every gate and every spawn - never a second, independently re-derived copy. Folded
+    /// once, when this context is built, from the run's own `RunStarted` by
+    /// [`crate::run::current_run_base_tip`]: the run branch's tip commit sha AT THE MOMENT this
+    /// run started, persisted once at mint (`RunStarted::base_tip`) and never re-resolved live -
+    /// so a unit that lands mid-run never shifts what a LATER gate diffs against, and the check-in
+    /// stage's gates always diff the whole spec's work against the recorded base, never a moving
+    /// target.
     ///
     /// Empty (so [`gate::BuildEnv::with_var`] injects nothing) when this run predates the
-    /// field - a legacy `RunStarted` - or the event stream cannot be read; a gate script's own
-    /// `test -n "$RIGGER_RUN_BASE"` guard then refuses loud rather than diffing an empty range,
-    /// the behavior a run with nothing to diff against needs.
-    fn run_base_env(&self) -> String {
-        self.read_current_run()
-            .map(|events| run_base_of(&events))
-            .unwrap_or_default()
+    /// field - a legacy `RunStarted`; a gate script's own `test -n "$RIGGER_RUN_BASE"` guard then
+    /// refuses loud rather than diffing an empty range, the behavior a run with nothing to diff
+    /// against needs.
+    fn run_base_env(&self) -> &str {
+        &self.run_base
     }
 
     /// What a spawn's OWN process carries: `build_env` resolved at the spawn's site
@@ -10994,7 +11000,7 @@ impl RunCtx<'_> {
             &self.deps.repo,
             dir,
             postmerge_unit_dir.as_deref(),
-            &self.run_base_env(),
+            self.run_base_env(),
         )?;
         // The commit the battery's results address, read once before any gate runs: the
         // resolved HEAD of a tree whose tracked files are clean, else none. A gate run that
@@ -28557,6 +28563,7 @@ stage "implement" adjudicator "adj" failed
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
             gate_address: None,
+            run_base: String::new(),
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -37576,6 +37583,7 @@ stage "implement" adjudicator "adj" failed
             green_digests: GreenDigests::after(&[]),
             verdict_key: VerdictKey::from_bytes(b"run-ctx-test-key"),
             gate_address: None,
+            run_base: String::new(),
             settled: Mutex::new(HashSet::new()),
             live_units: Mutex::new(HashMap::new()),
             compensations: Mutex::new(Vec::new()),
@@ -38201,6 +38209,41 @@ stage "implement" adjudicator "adj" failed
                 );
             }
         }
+    }
+
+    /// THE RUN BASE IS READ ONCE: GIVEN a run whose `RunStarted` carries a base tip, WHEN the
+    /// context is built and then builds the environment of gates and spawns again and again, THEN
+    /// each build carries that base and none of them reads the event stream.
+    #[test]
+    fn the_run_base_is_read_once_at_context_build_never_per_build_environment() {
+        let inner = Store::open(":memory:").unwrap();
+        inner
+            .append(
+                STREAM,
+                ExpectedRevision::Any,
+                &[Event::new(
+                    crate::run::TYPE_RUN_STARTED,
+                    serde_json::to_vec(&json!({"run": "r", "base_tip": "base-sha"})).unwrap(),
+                )],
+            )
+            .unwrap();
+        let store = crate::test_support::ReadCountingStore::new(&inner);
+        let cfg = Config::default();
+        let driver = Stub::new();
+        let deps = stub_deps(&store, &driver, Vec::new());
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        let built = store.reads().len();
+        for _ in 0..3 {
+            let env = ctx.build_env().unwrap();
+            assert!(
+                env.at("")
+                    .vars
+                    .iter()
+                    .any(|(k, v)| k == crate::spawn::RUN_BASE_ENV && v == "base-sha"),
+                "each build carries the recorded base"
+            );
+        }
+        assert_eq!(store.reads().len(), built, "no build reads the stream");
     }
 
     #[test]
