@@ -32,7 +32,7 @@ use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Output};
-use std::sync::{mpsc, Mutex, Once, PoisonError};
+use std::sync::{mpsc, Mutex, MutexGuard, Once, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -450,11 +450,12 @@ impl ReapedChild {
     /// arguments, read while its pid still names it ([`os_process::arguments_of`]), `writer`
     /// accepts, as a hook or a tool server still writing the spawn's record is, so that write
     /// finishes before the end. The bound holds whatever OS call a read of arguments waits in:
-    /// processes whose arguments were not read by then are no writers, and the end reports why
-    /// ([`ArgumentReads`]). A main that still runs is ended at once with all it started, as a
-    /// stop ends it. A watched tree whose main has exited signals nothing, and answers what the
-    /// main left running as never signalled ([`crate::reap::end_watched`]). Answers what the end
-    /// signalled and what it left ([`ReapedChild::end`]).
+    /// processes whose arguments were not read by then are no writers ([`ArgumentReads`]), and an
+    /// end that a read given up before its wait began held throughout it says so. A main that
+    /// still runs is ended at once with all it started, as a stop ends it. A watched tree whose
+    /// main has exited signals nothing, and answers what the main left running as never signalled
+    /// ([`crate::reap::end_watched`]). Answers what the end signalled and what it left
+    /// ([`ReapedChild::end`]).
     pub fn finish(self, writer: Option<&IsWriter<'_>>) -> EndReport {
         self.finish_with(writer, &ARGUMENTS, reap::END_BOUND)
     }
@@ -470,11 +471,19 @@ impl ReapedChild {
         let mut unread = None;
         if let Some(writer) = writer {
             if matches!(self.try_wait(), Ok(Some(_))) {
-                let deadline = Instant::now() + bound;
+                let began = Instant::now();
+                let deadline = began + bound;
                 reap::poll_until(deadline, || {
                     match reads.of(self.hold.members(&mut self.child), deadline) {
-                        Ok(arguments) => !arguments.iter().flatten().any(|words| writer(words)),
-                        Err(why) => {
+                        Ok(arguments) => {
+                            unread = None;
+                            !arguments.iter().flatten().any(|words| writer(words))
+                        }
+                        Err(Unread::Held(since)) => {
+                            unread = (since < began).then(|| ARGUMENTS_HELD.to_string());
+                            false
+                        }
+                        Err(Unread::Failed(why)) => {
                             unread = Some(why);
                             true
                         }
@@ -517,14 +526,24 @@ pub type IsWriter<'a> = dyn Fn(&[String]) -> bool + 'a;
 /// among them ([`ReapedChild::finish`]): each process's by `read`, on a thread of its own, so the
 /// finish gives the read up at the end of its wait whatever OS call the read waits in, as a read
 /// of a process stuck in the kernel waits on that process's memory. A read given up runs on until
-/// its call returns, and then its answer is dropped and its thread exits; while one has not
+/// its call returns, and then its answer is dropped and its thread exits. While one has not
 /// returned, no finish starts another, so given-up reads never pile up behind a process that
-/// stays stuck.
+/// stays stuck: a finish waits on instead, reading again once it has returned.
 struct ArgumentReads {
     /// Reads one process's arguments; `None` where they cannot be read, which no writer's are.
     read: fn(&Identity) -> Option<Vec<String>>,
-    /// The thread of each read a finish gave up, kept until it is seen to have returned.
-    given_up: Mutex<Vec<JoinHandle<()>>>,
+    /// The thread of each read a finish gave up, and when it gave it up, kept until it is seen to
+    /// have returned.
+    given_up: Mutex<Vec<(JoinHandle<()>, Instant)>>,
+}
+
+/// Why a finish read no arguments this time ([`ArgumentReads::of`]).
+enum Unread {
+    /// A read a finish gave up at the instant it holds has not returned yet, so none is started
+    /// until it has.
+    Held(Instant),
+    /// None can be read, for the reason held.
+    Failed(String),
 }
 
 /// The reads every finish makes: each process's arguments while its pid still names it
@@ -539,12 +558,6 @@ fn arguments_while_named(member: &Identity) -> Option<Vec<String>> {
     os_process::arguments_of(member.pid, member.start)
 }
 
-/// The fault a finish reports where the arguments of the processes its end would reach were not
-/// read by the end of its wait for a writer ([`ArgumentReads::of`]).
-const ARGUMENTS_GIVEN_UP: &str = "the arguments of the processes this end would reach were not \
-     read by the end of its wait for a writer, as when one of them is stuck in the kernel; it \
-     took none of them for a writer, and no end reads arguments until that read returns";
-
 /// The fault a finish reports where the arguments of the processes its end would reach could not
 /// be read, for the reason `why` ([`ArgumentReads::of`]).
 fn arguments_unread(why: &str) -> String {
@@ -554,28 +567,35 @@ fn arguments_unread(why: &str) -> String {
     )
 }
 
-/// The fault a finish reports where a read of arguments an earlier finish gave up had not
-/// returned, so it read none ([`ArgumentReads::of`]).
-const ARGUMENTS_HELD: &str = "a read of arguments an earlier end gave up has not returned, so \
-     this end read none and took none of the processes it would reach for a writer";
+/// The fault a finish reports where a read of arguments an earlier finish gave up before its
+/// wait for a writer began had not returned by the end of that wait, so it read none
+/// ([`ArgumentReads::of`]).
+const ARGUMENTS_HELD: &str = "a read of arguments an earlier end gave up before this end's wait \
+     for a writer began had not returned by the end of that wait, as when the process it reads is \
+     stuck in the kernel, so this end read none and took none of the processes it would reach for \
+     a writer";
 
 impl ArgumentReads {
     /// The arguments of each of `members`, in their order, read ([`ArgumentReads::read`]) on a
-    /// thread of its own by `deadline`, the end of the finish's wait for a writer; none once
-    /// `deadline` has passed, and none where there are no members. Where they were not read by
-    /// `deadline`, the read is given up ([`ArgumentReads::given_up`]); where a read given up
-    /// before has not returned, none is started; and where no thread could be started, or the
-    /// read ended without an answer, none is read. Each answers why.
+    /// thread of its own by `deadline`, the end of the finish's wait for a writer; none where
+    /// there are no members, and none once `deadline` has passed. Where they were not read by
+    /// `deadline`, the read is given up ([`ArgumentReads::given_up`]) and none is read; where a
+    /// read given up before has not returned, none is started ([`Unread::Held`]); and where no
+    /// thread could be started, or the read ended without an answer, none is read
+    /// ([`Unread::Failed`]).
     fn of(
         &self,
         members: Vec<Identity>,
         deadline: Instant,
-    ) -> Result<Vec<Option<Vec<String>>>, String> {
-        if members.is_empty() || Instant::now() >= deadline {
+    ) -> Result<Vec<Option<Vec<String>>>, Unread> {
+        if members.is_empty() {
             return Ok(Vec::new());
         }
-        if self.still_given_up() > 0 {
-            return Err(ARGUMENTS_HELD.to_string());
+        if let Some(since) = self.unreturned().iter().map(|(_, since)| *since).min() {
+            return Err(Unread::Held(since));
+        }
+        if Instant::now() >= deadline {
+            return Ok(Vec::new());
         }
         let read = self.read;
         let (answer, answered) = mpsc::channel();
@@ -585,29 +605,34 @@ impl ArgumentReads {
                 let _ = answer.send(members.iter().map(read).collect());
             })
             .map_err(|error| {
-                arguments_unread(&format!("no thread to read them started: {error}"))
+                Unread::Failed(arguments_unread(&format!(
+                    "no thread to read them started: {error}"
+                )))
             })?;
         match answered.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(arguments) => Ok(arguments),
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                Err(arguments_unread("their read ended without an answer"))
-            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(Unread::Failed(arguments_unread(
+                "their read ended without an answer",
+            ))),
             Err(mpsc::RecvTimeoutError::Timeout) => {
-                self.given_up
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(reader);
-                Err(ARGUMENTS_GIVEN_UP.to_string())
+                self.unreturned().push((reader, Instant::now()));
+                Ok(Vec::new())
             }
         }
     }
 
-    /// How many reads a finish gave up have not returned yet; the threads of those that have
-    /// returned are let go.
-    fn still_given_up(&self) -> usize {
+    /// The reads a finish gave up that have not returned yet, each with when it was given up; the
+    /// threads of those that have returned are let go.
+    fn unreturned(&self) -> MutexGuard<'_, Vec<(JoinHandle<()>, Instant)>> {
         let mut given_up = self.given_up.lock().unwrap_or_else(PoisonError::into_inner);
-        given_up.retain(|read| !read.is_finished());
-        given_up.len()
+        given_up.retain(|(read, _)| !read.is_finished());
+        given_up
+    }
+
+    /// How many reads a finish gave up have not returned yet.
+    #[cfg(all(test, unix))]
+    fn still_given_up(&self) -> usize {
+        self.unreturned().len()
     }
 }
 
