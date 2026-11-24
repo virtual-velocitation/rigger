@@ -226,7 +226,9 @@ const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
 /// them on the command it is handed. The agents' login token
 /// ([`RIGGER_AGENT_TOKEN_VAR`](rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR)) is not passed on
 /// either: git and every hook the repository runs need no login, and a hook is code rigger did
-/// not write.
+/// not write. Git speaks in the C locale (`LC_ALL=C`), so the English refusals a caller matches
+/// (a merge refused over local changes, a revert with nothing to commit) read the same on every
+/// host whatever language its user chose; a hook git runs inherits that locale.
 ///
 /// The one place a production git command is built, so the one place an empty `dir` is refused:
 /// git reads `-C ""` as the process's own working directory, which for a caller holding no
@@ -246,6 +248,7 @@ pub fn git_in(dir: impl AsRef<OsStr>) -> std::io::Result<Command> {
         cmd.env_remove(variable);
     }
     cmd.env_remove(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR);
+    cmd.env("LC_ALL", "C");
     Ok(cmd)
 }
 
@@ -271,8 +274,9 @@ mod tests {
     }
 
     /// `git_in` is exactly `git -C <dir>` with every variable naming a repository, and the one
-    /// carrying the agents' login token, removed from the child's environment, and nothing else
-    /// added: no git child rigger starts, nor any hook git runs, is handed the token.
+    /// carrying the agents' login token, removed from the child's environment, the C locale set,
+    /// and nothing else added: no git child rigger starts, nor any hook git runs, is handed the
+    /// token, and every git refusal a caller matches is in English.
     #[test]
     fn git_in_anchors_git_at_the_directory() {
         let cmd = git_in("/repo").unwrap();
@@ -281,13 +285,14 @@ mod tests {
         assert_eq!(args, vec![OsStr::new("-C"), OsStr::new("/repo")]);
         assert_eq!(cwd_of(&cmd), None);
         let envs: Vec<(&OsStr, Option<&OsStr>)> = cmd.get_envs().collect();
-        let mut removed: Vec<(&OsStr, Option<&OsStr>)> = GIT_REPOSITORY_VARIABLES
+        let mut expected: Vec<(&OsStr, Option<&OsStr>)> = GIT_REPOSITORY_VARIABLES
             .iter()
             .chain([&rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR])
             .map(|variable| (OsStr::new(variable), None))
+            .chain([(OsStr::new("LC_ALL"), Some(OsStr::new("C")))])
             .collect();
-        removed.sort();
-        assert_eq!(envs, removed);
+        expected.sort();
+        assert_eq!(envs, expected);
     }
 
     /// An empty repository path builds no git command: git would read it as this process's own
