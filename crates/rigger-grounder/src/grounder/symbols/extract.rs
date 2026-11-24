@@ -4901,10 +4901,10 @@ impl Clone for Kestrel {}
 9 type Kestrel impl core::ops::Add<Kestrel> for Kestrel",
             ),
             // No pattern, call or macro head, path segment, alias, closure parameter, lifetime,
-            // label, attribute, visibility path, token tree or `macro_rules!` pattern stages a
-            // const read, nor a name not spelled as a const; a match guard, a digit-bearing const
-            // and a whole path's final identifier do, and an uppercase segment before it is a
-            // type.
+            // label, attribute, visibility path or `macro_rules!` pattern stages a const read, nor
+            // a name not spelled as a const; a macro's token tree, a match guard, a digit-bearing
+            // const and a whole path's final identifier do, and an uppercase segment before it is
+            // a type.
             (
                 "no non-read or opaque position stages a const read",
                 "\
@@ -4924,6 +4924,7 @@ extern crate foo as ALIAS_CAP;
 ",
                 "\
 3 type Kestrel f
+4 const TOKEN_CAP f
 8 const GUARD_CAP f
 9 const V2_CAP f
 10 type CONST_TY f
@@ -5085,6 +5086,278 @@ pub fn f() -> u8 {
                 ("Draw", Some("t::impl Draw for Kestrel"), Some("type"), true),
             ]
         );
+    }
+
+    /// The definitions and references of a Rust `src`, one line each, ordered by line and then
+    /// text: `<line> def <kind> <path> to <end line>`, with ` in <parent>`, ` test`, ` doc
+    /// <first>-<last>`, ` out-of-line`, ` under <enclosing inline module path>` and ` at <path
+    /// override>` when set; and `<line> ref <ref kind, or call> <name> <caller, or ->`, with ` q
+    /// <qualifier><:: or .>` and ` test` when set.
+    fn read_lines(src: &str) -> String {
+        let fs = crate::symbol_index::extracted("rs", src);
+        let defs = fs.defs.iter().map(|d| {
+            let tail: String = [
+                d.parent.as_ref().map(|p| format!(" in {p}")),
+                d.is_test.then(|| " test".to_owned()),
+                d.doc.map(|(first, last)| format!(" doc {first}-{last}")),
+                d.is_out_of_line_module.then(|| " out-of-line".to_owned()),
+                d.enclosing_inline_module_path
+                    .as_ref()
+                    .map(|e| format!(" under {e}")),
+                d.path_override.as_ref().map(|o| format!(" at {o}")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let line = format!(
+                "{} def {:?} {} to {}{tail}",
+                d.line, d.kind, d.path, d.end_line
+            );
+            (d.line, line)
+        });
+        let refs = fs.refs.iter().map(|r| {
+            let tail: String = [
+                r.qualifier
+                    .as_ref()
+                    .map(|q| format!(" q {}{}", q.name, if q.path { "::" } else { "." })),
+                r.is_test.then(|| " test".to_owned()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let line = format!(
+                "{} ref {} {} {}{tail}",
+                r.line,
+                r.ref_kind.as_deref().unwrap_or("call"),
+                r.name,
+                r.enclosing.as_deref().unwrap_or("-"),
+            );
+            (r.line, line)
+        });
+        let mut lines: Vec<(u32, String)> = defs.chain(refs).collect();
+        lines.sort();
+        lines
+            .into_iter()
+            .map(|(_, line)| line)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Spec 117, MACRO TOKEN TREES: a macro invocation's token tree is re-parsed and read like
+    /// the code around it - a call inside `vec![..]`, a constant inside `assert_eq!(..)`, a call
+    /// inside `json!({"k": f(x)})` and a `static` inside `thread_local!` yield a call, a const, a
+    /// call and a definition at their lines - and a `macro_rules!` body yields nothing. A
+    /// re-parsed definition takes its doc, path, parent, test flag and inline module path as the
+    /// same item written outside a macro does, and a re-parsed reference stages with the
+    /// invocation's generic parameters, `Self`, `self` and test region; each macro line below
+    /// reads as its plain twin beside it does.
+    #[test]
+    fn macro_token_trees_are_read() {
+        let cases = [
+            (
+                "a call inside vec![..] is a call at its line",
+                "fn a() {\n    let v = vec![g(1), h(2)];\n}\n",
+                "\
+1 def Function a to 3
+2 ref call g a
+2 ref call h a
+2 ref call vec a",
+            ),
+            (
+                "a constant inside assert_eq!(..) is a const read at its line",
+                "fn b(c: u32) {\n    assert_eq!(c, LIMIT);\n}\n",
+                "\
+1 def Function b to 3
+2 ref call assert_eq b
+2 ref const LIMIT b",
+            ),
+            (
+                "a call inside json!({..}) is a call though neither parse accepts the token tree",
+                "fn d(x: u8) {\n    let j = json!({\"k\": f(x), \"m\": [g(x)]});\n}\n",
+                "\
+1 def Function d to 3
+2 ref call f d
+2 ref call g d
+2 ref call json d",
+            ),
+            (
+                "a call after a top-level separator neither parse accepts is a call",
+                "fn s() {\n    m!(\"k\": f(1));\n}\n",
+                "\
+1 def Function s to 3
+2 ref call f s
+2 ref call m s",
+            ),
+            (
+                "a static inside thread_local! is a definition at its line, as its plain twin is",
+                "\
+use std::cell::RefCell;
+thread_local! {
+    /// The slot.
+    static SLOT: RefCell<u32> = RefCell::new(0);
+}
+/// The plain.
+static PLAIN: RefCell<u32> = RefCell::new(0);
+",
+                "\
+2 ref call thread_local -
+4 def Static SLOT to 4 doc 3-3
+4 ref call new SLOT q RefCell::
+7 def Static PLAIN to 7 doc 6-6
+7 ref call new PLAIN q RefCell::",
+            ),
+            (
+                "a macro_rules! body is a template and yields nothing",
+                "macro_rules! mk {\n    ($e:expr) => { call_it($e) + CAP + vec![h(1)].len() };\n}\n",
+                "1 def Macro mk to 3",
+            ),
+            (
+                "a nested invocation is read too",
+                "fn n() {\n    outer!(inner!(deep(1)), K2);\n}\n",
+                "\
+1 def Function n to 3
+2 ref call deep n
+2 ref call inner n
+2 ref call outer n
+2 ref const K2 n",
+            ),
+            (
+                "a token tree's reference to an enclosing generic parameter stages nothing",
+                "\
+fn gen<T: Default>(w: Wrap<T>) {
+    let a = Wrap::<T>::new();
+    dbg!(Wrap::<T>::new());
+}
+",
+                "\
+1 def Function gen to 4
+1 ref type Wrap gen
+2 ref call new gen q Wrap::
+2 ref type Wrap gen
+3 ref call dbg gen
+3 ref call new gen q Wrap::
+3 ref type Wrap gen",
+            ),
+            (
+                "a token tree's Self and self are the invocation's impl type",
+                "\
+struct S;
+impl S {
+    fn a(&self) {
+        self.b();
+        Self::c();
+        dbg!(self.b(), Self::c());
+    }
+}
+",
+                "\
+1 def Type S to 1
+2 def Impl impl S to 8
+2 ref call S impl S
+3 def Method S::a to 7 in impl S
+4 ref call b S::a q S.
+5 ref call c S::a q S::
+6 ref call b S::a q S.
+6 ref call c S::a q S::
+6 ref call dbg S::a",
+            ),
+            (
+                "a re-parsed definition takes the invocation's path and parent",
+                "\
+mod outer {
+    fn host() {
+        thread_local! {
+            static CELL: u8 = 0;
+        }
+        static PLAIN: u8 = 0;
+    }
+}
+",
+                "\
+1 def Module outer to 8
+2 def Method outer::host to 7 in outer
+3 ref call thread_local outer::host
+4 def Static outer::host::CELL to 4 in outer::host
+6 def Static outer::host::PLAIN to 6 in outer::host",
+            ),
+            (
+                "a re-parsed item is test code under the invocation's or its own test attribute",
+                "\
+#[cfg(test)]
+thread_local! {
+    static T1: u8 = probe(1);
+}
+thread_local! {
+    #[cfg(test)]
+    static T2: u8 = 0;
+}
+items! {
+    #[cfg(test)]
+    use crate::fixture::Probe;
+}
+#[cfg(test)]
+mod tests {
+    fn t() {
+        vec![probe(2)];
+    }
+}
+",
+                "\
+2 ref call thread_local - test
+3 def Static T1 to 3 test
+3 ref call probe T1 test
+5 ref call thread_local -
+7 def Static T2 to 7 test
+9 ref call items -
+11 ref use Probe - test
+14 def Module tests to 18 test
+15 def Method tests::t to 17 in tests test
+16 ref call probe tests::t test
+16 ref call vec tests::t test",
+            ),
+            (
+                "a re-parsed reference is at its own line and column, the token tree's first line \
+                 and the lines after it alike",
+                "fn w() {\n    m!\n    (g(1));\n    n!(\n        h(2),\n        k(3)\n    );\n}\n",
+                "\
+1 def Function w to 8
+2 ref call m w
+3 ref call g w
+4 ref call n w
+5 ref call h w
+6 ref call k w",
+            ),
+            (
+                "an empty token tree yields nothing",
+                "fn e() {\n    m!();\n    n![];\n}\n",
+                "\
+1 def Function e to 4
+2 ref call m e
+3 ref call n e",
+            ),
+            (
+                "a re-parsed out-of-line module is placed under the invocation's inline module",
+                "\
+mod plat {
+    cfg_if! {
+        if #[cfg(unix)] {
+            mod sys;
+        }
+    }
+    mod plain;
+}
+",
+                "\
+1 def Module plat to 8
+2 ref call cfg_if plat
+3 ref call cfg plat
+4 def Module plat::sys to 4 in plat out-of-line under plat
+7 def Module plat::plain to 7 in plat out-of-line under plat",
+            ),
+        ];
+        for (case, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{case}");
+        }
     }
 
     /// Spec 117, RUST REFERENCES: the tagged reference pass reads Rust alone, so a TypeScript type
