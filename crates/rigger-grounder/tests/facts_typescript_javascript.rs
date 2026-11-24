@@ -2,8 +2,9 @@
 //! TypeScript, TSX and JavaScript grammars give a file hold a `type` mention for a type in type
 //! position, an `impl` mention for each type an `implements` or `extends` clause names, a `const`
 //! mention for a constant read, a `field` mention for a member that is not called while a called
-//! one stays a call, a call named `Square.make` for `Square.make()`, and a `/** */` block's doc
-//! span.
+//! one stays a call, a call named `Square.make` for `Square.make()`, and a doc span for a `/** */`
+//! block directly above a function, class or method declaration that no `export` wraps (a
+//! constructor aside), or above a `const`, `let` or `var` that holds a function.
 
 #![cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 
@@ -39,8 +40,10 @@ type Case = (
 /// constant is a `const` mention; and `Square.make()` is a call named `Square.make` of the leaf
 /// `make`, each qualified by a capitalised object alone, a member chain by its last name, so
 /// `Ns.Kit.make()` is the call `Kit.make`. A generic member call is a call of its leaf,
-/// unqualified, and an uncalled instantiation a field. A `/** */` block above a definition is its
-/// doc span in both, over the production extractor.
+/// unqualified, in TypeScript and TSX alike, and an uncalled instantiation a field. A `/** */`
+/// block directly above a function, class or method declaration that no `export` wraps (a
+/// constructor aside), or above a `const`, `let` or `var` that holds a function, is its doc span
+/// in both, over the production extractor.
 #[test]
 fn typescript_and_javascript_stage_their_rows() {
     let at =

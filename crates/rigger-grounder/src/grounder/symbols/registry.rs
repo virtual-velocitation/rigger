@@ -263,17 +263,19 @@ const TS_HERITAGE_TAGS: &str = r#"
 
 /// The JS-family queries' const and field patterns (spec 117, OTHER LANGUAGES: a const read, an
 /// `^[A-Z][A-Z0-9_]*$` identifier read; a field, `x.f` not called), composed after every other
-/// pattern but [`TS_TYPE_TAGS`]. A member expression whose parent holds no `arguments` and no
-/// `constructor` is not called, the callee of a call and of a `new` being the only member
-/// expressions such a parent holds: it is a const when its property is spelled as a constant and
-/// a field otherwise, read or written (`a.b = 1`), an inner chain (`y` of `x.y.z`), a
-/// subscript's object, an argument or a TS instantiation (`x.f<T>`) alike. Each is qualified as
-/// [`MEMBER_CALL_TAGS_CLOSE`] qualifies a call, by a capitalised object, so `Config.MAX` is the
-/// const `Config.MAX` and `cfg.TIMEOUT` the const `TIMEOUT`. The const patterns stand before the
-/// field patterns and a qualified pattern before its plain one, because each pair names the
-/// same property node and the earlier pattern makes the tag; an identifier spelled as a constant
-/// in an expression's place is a const too. Its parent's fields are tested under a wildcard
-/// grandparent, the query language reading no negated field on a pattern's root.
+/// pattern but [`TS_TYPE_TAGS`]. A member expression whose direct parent holds no `arguments` and
+/// no `constructor` is staged, which leaves out the callee of a call and of a `new`: it is a const
+/// when its property is spelled as a constant and a field otherwise, read or written (`a.b = 1`),
+/// an inner chain (`y` of `x.y.z`), a subscript's object, an argument or a TS instantiation
+/// (`x.f<T>`) alike. The rule reads the direct parent alone and is taken at face value, so three
+/// members that run as calls are staged fields: `x.f!()` and `(x.g)()`, whose callee is the
+/// wrapper around the member, and the decorator `@Foo.bar`, the field `Foo.bar`. Each staged
+/// member is qualified as [`MEMBER_CALL_TAGS_CLOSE`] qualifies a call, by a capitalised object, so
+/// `Config.MAX` is the const `Config.MAX` and `cfg.TIMEOUT` the const `TIMEOUT`. The const
+/// patterns stand before the field patterns and a qualified pattern before its plain one, because
+/// each pair names the same property node and the earlier pattern makes the tag; an identifier
+/// spelled as a constant in an expression's place is a const too. The parent's fields are tested
+/// under a wildcard grandparent, the query language reading no negated field on a pattern's root.
 const JS_REFERENCE_TAGS: &str = r#"
 ((_ (_ !arguments !constructor
     (member_expression
