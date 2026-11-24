@@ -485,6 +485,11 @@ fn graph_build_lands_a_constructor_as_a_call_onto_its_class() {
 #[cfg(feature = "symbols")]
 const JS_QUALIFIED_SOURCE: &str = "class Box {}\nfunction make() { return new Ns.Box(); }\n";
 
+/// One stored mention of a [`QUALIFIED_FILES`] row: its name, its leaf and the id path of the one
+/// definition it lands on.
+#[cfg(feature = "symbols")]
+type Written = (&'static str, &'static str, &'static str);
+
 /// One file per corner of a qualified reference's name (spec 117, CAPTURES), each `(file, source,
 /// the id path of the definition the references are staged from, each stored mention's name, leaf
 /// and the id path of the one definition it lands on, in order, whether they land as calls)`: in
@@ -494,7 +499,7 @@ const JS_QUALIFIED_SOURCE: &str = "class Box {}\nfunction make() { return new Ns
 /// `namespace Other`; and in C# a base `List<IShape>`, a name holding type arguments, beside a
 /// class `List` and an interface `IShape`, its type argument `IShape` a mention of its own.
 #[cfg(feature = "symbols")]
-const QUALIFIED_FILES: [(&str, &str, &str, &[(&str, &str, &str)], bool); 6] = [
+const QUALIFIED_FILES: [(&str, &str, &str, &[Written], bool); 6] = [
     ("f.ts", JS_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
     ("f.tsx", JS_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
     ("f.js", JS_QUALIFIED_SOURCE, "make", &[("Ns.Box", "Box", "Box")], true),
