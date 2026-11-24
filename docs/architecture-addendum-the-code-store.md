@@ -301,12 +301,13 @@ written as a chain of identifiers splits at its last separator, its type argumen
 the split (`Ns.IShape` is the leaf `IShape` qualified by the member `Ns`, `List<IShape>` the leaf
 `List`), and one that is no such chain names no mention. A Rust call's `@name` is its leaf
 already, so its qualifier is read off the tree around it instead: the segment before the leaf when
-that begins uppercase, generics and turbofish stripped (`Memo::<K>::new` gives `Memo`), the trait
-of a qualified-self path (`<T as Tr>::f` gives `Tr`), and for `Self::f` the enclosing impl's self
-type, generics stripped, or inside a trait body the trait; a call whose receiver is exactly `self`
-is a member access qualified by that same type or trait. A lowercase segment, a `crate`, `self` or
-`super` path, any other receiver (`self.a.f()`), an enclosing generic parameter and a self type
-naming no single type write none. A module's two lists depend only on the declaring file, so they
+that begins uppercase, generics and turbofish stripped (`Memo::<K>::new` and `a::Memo::<K>::new`
+give `Memo`), the trait of a qualified-self path (`<T as Tr>::f` gives `Tr`), and for `Self::f` the
+enclosing impl's self type, generics stripped, or inside a trait body the trait; a call whose
+receiver is exactly `self` is a member access qualified by that same type or trait. A lowercase
+segment, a `crate`, `self` or `super` path, any other receiver (`self.a.f()`), an enclosing generic
+parameter and a self type naming no single type write none.
+A module's two lists depend only on the declaring file, so they
 are computed at extraction, an enclosing inline module's components and an explicit path attribute
 placed by the same two rules; for a file named `mod.rs`, `lib.rs` or `main.rs` the two are equal.
 Which list applies, and the first path in it that is a file in the tree, are cross-file

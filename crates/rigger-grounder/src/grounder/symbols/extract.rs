@@ -1475,13 +1475,15 @@ fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8]) -> Option<Qualifier> {
 
 /// The qualifier the `path` of a scoped path writes before its name ([`rust_qualifier`]): its
 /// final segment ([`final_identifier`]) when that begins uppercase, a turbofish's generic type
-/// by its type's identifier (`Memo::<K>::new` gives `Memo`), a qualified-self path by its trait
+/// by its type's final segment, a scoped path's name ([`final_identifier`]) or a bare type name
+/// ([`base_type_identifier`]) (`Memo::<K>::new` and `a::Memo::<K>::new` give `Memo`,
+/// `Memo::<K>::Inner::<J>::new` gives `Inner`), a qualified-self path by its trait
 /// (`<T as Tr>::f` gives `Tr`), and `Self` by the type or trait it names there
 /// ([`self_qualifier`]); `None` for a lowercase segment, a `crate`, `self` or `super` path and a
 /// bracketed type naming no trait (`<T>::f`).
 fn path_qualifier(path: tree_sitter::Node, source: &[u8]) -> Option<String> {
     let segment = match path.kind() {
-        "generic_type" => base_type_identifier(path)?,
+        "generic_type" => final_identifier(path).or_else(|| base_type_identifier(path))?,
         "bracketed_type" => {
             base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)?
         }
