@@ -757,7 +757,10 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     let mut file_doc = None;
     for (at_read, read) in reads.iter().enumerate() {
         let (found, read_doc) = tags.tags_in(read.root, source);
-        file_doc = file_doc.or(read_doc);
+        // The file's doc is the file tree's: a token tree's re-parse is never the file's head.
+        if at_read == 0 {
+            file_doc = read_doc;
+        }
         for tag in found.into_iter().filter(|tag| kept(read.keep, &tag.range)) {
             let Some(name) = source.get(tag.leaf.start..tag.leaf.end) else {
                 continue;
