@@ -9034,8 +9034,8 @@ mod tests {
     /// as their unit's. A lane of a live unit, such as the tree a run held on a lane leaves in
     /// place for its release, is neither reclaimed nor named residue; a dirty lane of a unit the
     /// workflow declares is spared as the unit's own tree is, and named residue as that tree is
-    /// while no run records the unit; a lane of a terminal unit the workflow no longer declares is
-    /// named and reclaimed.
+    /// while no run records the unit; a lane of a terminal unit is named and reclaimed, whether or
+    /// not the workflow still declares the unit, since the group's outcome has passed it by.
     #[test]
     fn the_orphan_sweep_and_the_residue_scan_read_a_speculation_lane_as_its_unit() {
         /// Where the run stands with the lane's unit.
@@ -9063,6 +9063,13 @@ mod tests {
                 "a lane of a terminal unit no longer declared",
                 Unit::Terminal,
                 false,
+                false,
+                true,
+            ),
+            (
+                "a dirty lane of a terminal unit still declared",
+                Unit::Terminal,
+                true,
                 false,
                 true,
             ),
