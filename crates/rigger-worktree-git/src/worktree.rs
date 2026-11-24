@@ -1532,24 +1532,23 @@ impl Worktree {
                     .spawn()
             })
             .map_err(|e| step_failed(format!("git show {sha}"), e))?;
-        let show_stdout = show
-            .stdout
-            .take()
-            .ok_or_else(|| step_failed(format!("git show {sha}"), "no stdout pipe"))?;
-        let patch_id = crate::subprocess::git_in(dir)
-            .and_then(|mut git| {
-                git.args(["patch-id", "--stable"])
-                    .stdin(Stdio::from(show_stdout))
-                    .output()
-            })
-            .map_err(|e| step_failed(format!("git patch-id {sha}"), e))?;
+        let show_stdout = show.stdout.take();
+        let patch_id = crate::subprocess::git_in(dir).and_then(|mut git| {
+            let piped = show_stdout.ok_or_else(|| std::io::Error::other("no stdout pipe"))?;
+            git.args(["patch-id", "--stable"])
+                .stdin(Stdio::from(piped))
+                .output()
+        });
         // The Child handle that spawned `show` is waited on directly, never signalled -
         // this crate's handle-bound process lifecycle discipline (spec 78): a process
         // this crate starts is ended only through its own spawning handle, never a
-        // shell-out or a computed-pid signal.
-        let show_status = show
-            .wait()
-            .map_err(|e| step_failed(format!("waiting on git show {sha}"), e))?;
+        // shell-out or a computed-pid signal. It is waited on before any error returns, so a
+        // failed `patch-id` leaves no unreaped `show`; its pipe's reader is gone by then, so
+        // the wait ends.
+        let show_status = show.wait();
+        let patch_id = patch_id.map_err(|e| step_failed(format!("git patch-id {sha}"), e))?;
+        let show_status =
+            show_status.map_err(|e| step_failed(format!("waiting on git show {sha}"), e))?;
         if !show_status.success() {
             return Err(step_failed(
                 format!("git show {sha}"),
