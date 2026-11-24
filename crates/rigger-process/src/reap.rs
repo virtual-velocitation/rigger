@@ -4043,15 +4043,23 @@ mod tests {
                 an_end_never_reports_a_process_gone_before_its_signal(Ending::Descendants);
         }
 
-        /// `ending` over a tree whose member has a child that exited and is left unreaped, since
-        /// the member never waits for it: the end names the member as one it was sent to, by the
-        /// executable read before its signal, and never the child, which the table still lists
-        /// but which had exited before the end reached it.
+        /// `ending` over a tree whose member has a child that exited and is left unreaped: the
+        /// member starts the child and becomes `cat`, which never waits for a child, and the child
+        /// exits only once `cat` opens the FIFO the child writes to, so it exits after that exec
+        /// whatever order the two run in, and no shell is left to reap it. The end names the
+        /// member as one it was sent to, by the executable read before its signal, and never the
+        /// child, which the table still lists but which had exited before the end reached it.
         fn an_end_names_what_it_signalled_and_no_process_that_had_exited(ending: Ending) {
             let mut witness = Witness::new();
+            let dir = tempfile::tempdir().expect("a directory for the child's FIFO");
+            let opened = dir.path().join("opened");
+            crate::test_support::make_fifo(&opened);
             let mut root = tree(
                 &witness,
-                "sh -c 'true & exec sh -c \"$1\"' sh \"$witness_held\" & up; wait",
+                &format!(
+                    "sh -c ': >\"$1\" & exec cat \"$1\" - <&8' sh '{}' & up; wait",
+                    opened.display()
+                ),
             );
             assert!(witness.wait_up(1), "the fixture's root is up");
             let member = only_child(root.id());
