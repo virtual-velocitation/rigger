@@ -77,7 +77,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 163] = [
+    let cases: [Case; 166] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -917,6 +917,12 @@ fn csharp_stages_its_row() {
             k_m(),
         ),
         (
+            "a list case label holding a generic name in parentheses and a declaring positional pattern",
+            in_m!("switch (p) { case [(Lp<int>), Lo(var x, 0)]: break; }"),
+            vec![ty("Lp"), ty("Lo")],
+            k_m(),
+        ),
+        (
             "a list case label holding a member access and a declaring positional pattern",
             in_m!("switch (p) { case [Lq.Lr, Lo(var x, 0)]: break; }"),
             vec![field("Lq.Lr", "Lr"), ty("Lo")],
@@ -980,6 +986,18 @@ fn csharp_stages_its_row() {
             "a list in one pair of parentheses after `is` holding an identifier in parentheses and a positional pattern of constants",
             in_m!("var r = p is ([(Lw), Lo(0, 0)]);"),
             vec![ty("Lw"), ty("Lo")],
+            k_m(),
+        ),
+        (
+            "a list in one pair of parentheses after `is` holding a generic name in parentheses",
+            in_m!("var r = p is ([(Lp<int>)]);"),
+            vec![ty("Lp")],
+            k_m(),
+        ),
+        (
+            "a list in one pair of parentheses after `is` holding a positional pattern in parentheses",
+            in_m!("var r = p is ([(Lw(0, 0))]);"),
+            vec![ty("Lw")],
             k_m(),
         ),
         (
