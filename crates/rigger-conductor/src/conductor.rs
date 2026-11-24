@@ -1240,29 +1240,21 @@ impl GateStart {
     /// other changes: a gate's commit (a regeneration), untracked residue (the review's residue
     /// check) and a deleted worktree (its restore); and a tree whose changes were unreadable when
     /// the run began gives nothing to judge it against, so its result addresses no commit
-    /// ([`Self::unaddressed`]).
-    fn refusal(&self, dir: &str, gate_id: &str) -> Option<String> {
+    /// ([`Self::unaddressed`]). A tree git cannot read after the run is no change of the unit's
+    /// but the conductor's git step failing, so it is that step's halt ([`git_step`]).
+    fn refusal(&self, dir: &str, gate_id: &str) -> Result<Option<String>, Error> {
         let Ok(before) = &self.changes else {
-            return None;
+            return Ok(None);
         };
         if self.head.is_empty() || crate::worktree::head_sha_of(dir) != self.head {
-            return None;
+            return Ok(None);
         }
-        let changed = match crate::worktree::tracked_changes(dir) {
-            Ok(after) => {
-                let made: Vec<String> = after
-                    .into_iter()
-                    .filter(|change| !before.contains(change))
-                    .map(|(_, path)| path)
-                    .collect();
-                if made.is_empty() {
-                    return None;
-                }
-                Ok(made)
-            }
-            Err(e) => Err(e.to_string()),
-        };
-        Some(changed_refusal(gate_id, changed))
+        let made: Vec<String> = git_step(crate::worktree::tracked_changes(dir))?
+            .into_iter()
+            .filter(|change| !before.contains(change))
+            .map(|(_, path)| path)
+            .collect();
+        Ok((!made.is_empty()).then(|| changed_refusal(gate_id, Ok(made))))
     }
 }
 
@@ -3134,7 +3126,9 @@ const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
 /// ([`Worktree::changed_files`], [`Worktree::changed_since_base`],
 /// [`Worktree::committed_since_base`], [`Worktree::commits_since_base`],
 /// [`Worktree::files_touched_by_commit`],
-/// [`Worktree::diff_names`], [`Worktree::find_landed_by_patch_id`]); and the run branch's own
+/// [`Worktree::diff_names`], [`Worktree::find_landed_by_patch_id`]); reading the tracked changes
+/// a driver gate left ([`worktree::tracked_changes`], [`GateStart::refusal`]); and the run
+/// branch's own
 /// moves through [`RunCtx::moving_the_run_branch`] ([`Worktree::land`],
 /// [`Worktree::revert_on_base`], [`Worktree::reset_to`]).
 ///
@@ -11222,7 +11216,7 @@ impl RunCtx<'_> {
             // A run that edited the tracked tree it began on addresses no commit: a non-pass with
             // no digest, so it answers no later gate, and no ratchet move, since it neither proves
             // nor disproves the gate.
-            let (pass, flaky, ratchet, evidence, digest) = match start.refusal(dir, gid) {
+            let (pass, flaky, ratchet, evidence, digest) = match start.refusal(dir, gid)? {
                 Some(refusal) => (
                     false,
                     false,
@@ -45805,7 +45799,7 @@ stage "implement" adjudicator "adj" failed
             "the gate began on tracked changes that are unreadable (git status warned), so its \
              result addresses no commit and is not cached; "
         );
-        assert_eq!(start.refusal(&dir, "g"), None);
+        assert_eq!(start.refusal(&dir, "g").ok(), Some(None));
     }
 
     /// A REPLAY WALKS WHAT A RUN SETTLED: GIVEN a run that passed its inline and deferred gates
@@ -54478,6 +54472,80 @@ stage "implement" adjudicator "adj" failed
             "the unlockable budget ends the step on its fault and the gate records no verdict"
         );
         assert_held_on_the_fault_uncharged(&events, &fault);
+    }
+
+    /// A gate runner that passes after corrupting the index of the tree it gates, so what the
+    /// gate left there can no longer be read, keeping the tree and what that read answers.
+    #[derive(Default)]
+    struct IndexCorrupting(std::sync::Mutex<Option<(String, String)>>);
+
+    impl gate::Runner for IndexCorrupting {
+        fn run(
+            &self,
+            _g: &Gate,
+            dir: &str,
+            _target: &str,
+            _gate_scratch: &str,
+            _build_cache_dir: &str,
+            _build_cache_guard: &str,
+            _store_fence: &str,
+            _build_env: &gate::BuildEnv,
+            _budget: &BuildBudget,
+        ) -> Result<gate::GateResult, gate::ProbeFault> {
+            let index = crate::test_support::git_out(dir, &["rev-parse", "--git-path", "index"]);
+            std::fs::write(Path::new(dir).join(index), "not an index\n").unwrap();
+            let read = crate::worktree::tracked_changes(dir)
+                .unwrap_err()
+                .to_string();
+            *self.0.lock().unwrap() = Some((dir.to_string(), read));
+            Ok(gate::GateResult {
+                pass: true,
+                evidence: "PASS".into(),
+                ..Default::default()
+            })
+        }
+    }
+
+    /// A tree its gate left unreadable is an infrastructure fault, not the unit's change: GIVEN a
+    /// passing gate that corrupts the index of the worktree it gates, THEN the step ends on the
+    /// read's fault, naming the tree and then git's error, the gate records no verdict, and the
+    /// run holds for the orchestrator with no attempt charged.
+    #[test]
+    fn a_tree_unreadable_after_its_gate_holds_the_run_and_charges_no_attempt() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let runner = IndexCorrupting::default();
+        let st = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &runner,
+            run_branch: branch_of(&repo_path),
+            repo: repo_path.clone(),
+            ..stub_deps(&st, &driver, Vec::new())
+        };
+        let halt = run_isolated(&verify_only_cfg(vec![("g1", gate_def("true"))]), &deps)
+            .map(|_| ())
+            .map_err(|e| e.0);
+        drop(deps);
+        let (dir, fault) = runner.0.lock().unwrap().clone().expect("the gate ran");
+        let events = st.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert_eq!(
+            (
+                halt,
+                events.iter().filter(|e| is_gate_verdict_row(e)).count()
+            ),
+            (Err(fault.clone()), 0),
+            "the unreadable tree ends the step on its fault and the gate records no verdict"
+        );
+        assert_held_on_the_fault_uncharged(&events, &fault);
+        assert_eq!(
+            (fault.lines().next(), fault.lines().count() > 1),
+            (
+                Some(format!("worktree: reading the tracked changes of {dir} failed").as_str()),
+                true
+            ),
+            "the fault names the tree, then git's error: {fault}"
+        );
     }
 
     /// A gate runner whose every run passes (`Noted(true)`, evidence `PASS`) or fails with
