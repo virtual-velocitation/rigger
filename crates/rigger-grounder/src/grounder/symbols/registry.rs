@@ -159,6 +159,31 @@ const CSHARP_REFERENCE_TAGS: &str = r#"
   (#not-eq? @name "nameof"))
 ((switch_section (invocation_expression function: (identifier) @name) @reference.type)
   (#not-eq? @name "nameof"))
+((switch_section
+  (collection_expression
+    (collection_element
+      (expression_element
+        [(identifier) @name
+         (generic_name) @name
+         (invocation_expression function: (identifier) @name)
+         (parenthesized_expression
+           [(identifier) @name
+            (generic_name) @name
+            (invocation_expression function: (identifier) @name)])]) @reference.type)))
+  (#not-eq? @name "nameof"))
+((constant_pattern
+  (parenthesized_expression
+    (collection_expression
+      (collection_element
+        (expression_element
+          [(identifier) @name
+           (generic_name) @name
+           (invocation_expression function: (identifier) @name)
+           (parenthesized_expression
+             [(identifier) @name
+              (generic_name) @name
+              (invocation_expression function: (identifier) @name)])]) @reference.type))))
+  (#not-eq? @name "nameof"))
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
 ((invocation_expression
   function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
