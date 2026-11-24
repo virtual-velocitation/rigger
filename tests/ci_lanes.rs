@@ -637,11 +637,14 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
 /// checkout fetches full history. It has two `run:` steps, each under `bash` on every runner and
 /// each exporting an empty `RUSTC_WRAPPER` in its own shell before its cargo command: the empty
 /// value overrides `.cargo/config.toml`'s Unix wrapper script for cargo and every nested cargo it
-/// starts. The first runs `cargo test -p rigger-process --lib`, the crate whose own tests hold the
-/// rows for the macOS and Windows adapters, so they run on their own OS whatever else fails to
-/// compile there. The second runs `cargo check --workspace --all-targets --keep-going`, so every
-/// test that names one of those adapters compiles there, and one run names every target that does
-/// not. The job's wasm target is pinned once, by
+/// starts. The first runs `cargo test -p rigger-process --lib -- --nocapture`, the crate whose own
+/// tests hold the rows for the macOS and Windows adapters, so they run on their own OS whatever
+/// else fails to compile there. It is bounded by `timeout-minutes: 5`, about seven times its usual
+/// time, so a test that hangs ends the step with its log kept: the tests run in parallel, as
+/// everywhere else, libtest names each one still running after 60 s, and `--nocapture` prints what
+/// each writes as it writes it. The second runs `cargo check --workspace --all-targets
+/// --keep-going`, so every test that names one of those adapters compiles there, and one run names
+/// every target that does not. The job's wasm target is pinned once, by
 /// `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
 #[test]
 fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
@@ -691,26 +694,29 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
         [Some(0)],
         "job `{JOB}` must check out once, with `fetch-depth: 0` (full history)"
     );
-    let run_steps: Vec<(Option<&str>, Vec<&str>)> = steps
+    let run_steps: Vec<(Option<&str>, Option<u64>, Vec<&str>)> = steps
         .iter()
         .filter_map(|step| {
             let lines = step.get("run")?.as_str()?.lines().map(str::trim);
             Some((
                 step["shell"].as_str(),
+                step["timeout-minutes"].as_u64(),
                 lines.filter(|line| !line.is_empty()).collect(),
             ))
         })
         .collect();
-    let unwrapped = |cargo| (Some("bash"), vec!["export RUSTC_WRAPPER=", cargo]);
+    let unwrapped = |minutes, cargo| (Some("bash"), minutes, vec!["export RUSTC_WRAPPER=", cargo]);
     assert_eq!(
         run_steps,
         [
-            unwrapped("cargo test -p rigger-process --lib"),
-            unwrapped("cargo check --workspace --all-targets --keep-going"),
+            unwrapped(Some(5), "cargo test -p rigger-process --lib -- --nocapture"),
+            unwrapped(None, "cargo check --workspace --all-targets --keep-going"),
         ],
         "job `{JOB}` must have two `run:` steps, each under `shell: bash` exporting an empty \
-         `RUSTC_WRAPPER`: first `cargo test -p rigger-process --lib`, so the process crate's rows \
-         run whatever else fails to compile, then `cargo check --workspace --all-targets \
-         --keep-going`, so one run names every target that does not compile (shell, lines)"
+         `RUSTC_WRAPPER`: first `cargo test -p rigger-process --lib -- --nocapture` bounded by \
+         `timeout-minutes: 5`, so the process crate's rows run whatever else fails to compile and \
+         a hung one is named in a log the bound keeps, then `cargo check --workspace \
+         --all-targets --keep-going`, so one run names every target that does not compile \
+         (shell, timeout-minutes, lines)"
     );
 }
