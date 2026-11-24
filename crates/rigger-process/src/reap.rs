@@ -976,8 +976,7 @@ impl Tree {
             return false;
         }
         let ends = matches!(signal, Signal::Term | Signal::Hard);
-        let named = (ends && !report.was_sent(target.pid) && running(target))
-            .then(|| Leftover::of(target.pid, false));
+        let named = (ends && running(target)).then(|| Leftover::of(target.pid, false));
         os.send(signal, &to);
         if signal == Signal::Stop && to.descriptor.is_none() {
             let reached = os.start_after_freeze(&to);
@@ -1001,7 +1000,9 @@ impl Tree {
                 return false;
             }
         }
-        report.sent.extend(named);
+        if let Some(left) = named {
+            report.add_sent(left);
+        }
         true
     }
 
