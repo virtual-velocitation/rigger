@@ -3714,6 +3714,36 @@ fn b() {
         assert_eq!(crate::symbol_index::defs_by_line(&fs), vec![(1, "m", kind)]);
     }
 
+    /// OF THE MATCHES NAMING ONE NODE, THE EARLIEST PATTERN MAKES ITS TAG, ONE YIELDED ALREADY
+    /// INCLUDED: `f`'s plain pattern and its body pattern name one node, and the body pattern's
+    /// match comes past the reference `T` its parameter names, so `f`'s tag is yielded before it.
+    /// `f` is one definition, of the kind of whichever pattern each row's query puts first.
+    #[test]
+    fn the_earliest_pattern_names_a_node_whose_tag_was_yielded() {
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        let plain = "(function_item name: (identifier) @name) @definition.function";
+        let body = "(function_item name: (identifier) @name body: (block (call_expression))) \
+                    @definition.constant";
+        let rows = [
+            ("the body pattern first", [body, plain], Kind::Constant),
+            ("the plain pattern first", [plain, body], Kind::Function),
+        ];
+        for (what, [first, second], kind) in rows {
+            let query = format!("{first}\n{second}\n(type_identifier) @name @reference.type");
+            let fs = extract(
+                "fn f(x: T) { g() }\n",
+                Lang::Rust,
+                &compiled(&language, &query),
+            )
+            .unwrap();
+            assert_eq!(
+                crate::symbol_index::defs_by_line(&fs),
+                vec![(1, "f", kind)],
+                "{what}"
+            );
+        }
+    }
+
     /// The symbols the Rust grammar extracts from `src`.
     fn rust_symbols(src: &str) -> FileSymbols {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();

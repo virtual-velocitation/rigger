@@ -8,7 +8,8 @@
 //!    that constant, and a base class on that class, each `extracted` onto its one same-file
 //!    definition;
 //!  - an attribute read `x.depth` lands on the one field `depth` names, `inferred` though that
-//!    field is in the same file, and `Shape.side` lands on `Shape`'s `side` over `Other`'s,
+//!    field is in the same file, `Shape.side` lands on `Shape`'s `side` over `Other`'s, and the
+//!    member constant `Config.MAX` on `Config`'s `MAX` and never the module constant `MAX`, each
 //!    `extracted`.
 //!
 //! The `type` mention of an annotation and the call named `Shape.area` land in the Python rows of
@@ -32,9 +33,10 @@ type Landing = (
 
 /// One [`Landing`] per staged mention that lands: a module constant `LIMIT` read in `size`; a
 /// module constant `MAX` read as `cfg.MAX` through a parameter in `limits`; a class `Square` whose
-/// base is `Shape`; a field `depth` of `Shape` read through a parameter `x` in `total`; and
-/// `Shape.side` read in `total` beside the field `side` of `Shape` and of `Other`.
-const LANDING_FILES: [Landing; 5] = [
+/// base is `Shape`; a field `depth` of `Shape` read through a parameter `x` in `total`;
+/// `Shape.side` read in `total` beside the field `side` of `Shape` and of `Other`; and
+/// `Config.MAX` read in `limits` beside the module constant `MAX` and `Config`'s own `MAX`.
+const LANDING_FILES: [Landing; 6] = [
     (
         "a module constant's read",
         "LIMIT = 3\n\n\ndef size():\n    return LIMIT\n",
@@ -65,6 +67,12 @@ const LANDING_FILES: [Landing; 5] = [
         &["Other", "Other.side", "Shape", "Shape.side", "total"],
         &[("total", "Shape.side", TIER_EXTRACTED)],
     ),
+    (
+        "a member constant's read through its class",
+        "MAX = 1\n\n\nclass Config:\n    MAX = 3\n\n\ndef limits():\n    return Config.MAX\n",
+        &["Config", "Config.MAX", "MAX", "limits"],
+        &[("limits", "Config.MAX", TIER_EXTRACTED)],
+    ),
 ];
 
 /// GIVEN a project whose one Python file reads a constant, names a base class or reads an
@@ -73,9 +81,10 @@ const LANDING_FILES: [Landing; 5] = [
 /// THEN the graph's `REFERENCES` and `CALLS` edges are exactly the row's, each a `REFERENCES` edge
 /// and none a call: the `const` and `impl` mentions onto their one same-file definition,
 /// `extracted`; the unqualified `field` mention onto the one field of its name, `inferred`, as a
-/// field use never prefers its file; and the field mention qualified by `Shape` onto `Shape`'s
-/// field, `extracted`, where its leaf alone reaches two. Its code entities are the definitions
-/// alone, no placeholder standing for any mention.
+/// field use never prefers its file; and the field mention qualified by `Shape` or `Config` onto
+/// that class's field, `extracted`, where its leaf alone reaches two, `Config.MAX` never onto the
+/// module constant `MAX`. Its code entities are the definitions alone, no placeholder standing for
+/// any mention.
 #[test]
 fn graph_build_lands_a_python_constant_base_class_and_attribute_read_as_references() {
     use rigger::contextgraph::query::entity_id;

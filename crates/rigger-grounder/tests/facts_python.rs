@@ -2,7 +2,7 @@
 //! file hold a `const` mention for a constant read, a `type` mention for a capitalised name in an
 //! annotation, an `impl` mention for a base class, a `field` mention for an attribute that is not
 //! called while a called one stays a call, a call named `Shape.area` for `Shape.area()`, and a
-//! docstring's doc span, a definition's and the module's.
+//! docstring's doc span, a definition's and the module's, found as Python finds a docstring.
 
 #![cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 
@@ -27,21 +27,23 @@ type Case = (
     Option<(u32, u32)>,
 );
 
-/// PYTHON STAGES ITS ROW: a read of a module constant is a `const` mention, a member constant
-/// qualified by a capitalised object; a capitalised name in an annotation is a `type` mention, an
-/// all-caps one included; each base class, dotted or subscripted, is an `impl` mention and a
-/// keyword argument none; `x.f` read or assigned and not called is a `field` mention, qualified
-/// by a capitalised object, while a called `x.g()` is a call; `Shape.area()` is a call named
-/// `Shape.area` of the leaf `area`; and a docstring, the first statement of a body or of the
-/// module, comments before it aside, is that definition's or the file's doc span, over the
-/// production extractor.
+/// PYTHON STAGES ITS ROW: a read of a module constant is a `const` mention, an all-caps attribute
+/// of a lowercase object (`cfg.TIMEOUT`) included; a capitalised name in an annotation is a `type`
+/// mention, an all-caps one included; each base class, dotted or subscripted, is an `impl` mention
+/// and a keyword argument none; `x.f` read or assigned and not called is a `field` mention,
+/// qualified by an object that is exactly a capitalised identifier, `Shape.side` and the member
+/// constant `Config.MAX` alike, while a called `x.g()` is a call; `Shape.area()` is a call named
+/// `Shape.area` of the leaf `area`; and a docstring is that definition's or the file's doc span:
+/// the first statement of a body or of the module, comments before it aside, when it is a str
+/// literal alone, joined from parts or in parentheses, and never a bytes, formatted or template
+/// one, over the production extractor.
 #[test]
 fn python_stages_its_row() {
     // A mention inside the definition at index `at`, written `name` of `leaf`.
     let in_def = |at: u32, name: &str, leaf: &str, kind: Option<&str>, line: u32| {
         mention_in(Some(at), name, leaf, kind, line, false)
     };
-    let cases: [Case; 10] = [
+    let cases: [Case; 15] = [
         (
             "a module constant's read",
             "LIMIT = 3\n\n\ndef size():\n    return LIMIT\n",
@@ -53,7 +55,7 @@ fn python_stages_its_row() {
             "a member constant's read",
             "def limits(cfg):\n    return Config.MAX + cfg.TIMEOUT\n",
             vec![
-                in_def(0, "Config.MAX", "MAX", Some(REF_KIND_CONST), 2),
+                in_def(0, "Config.MAX", "MAX", Some(REF_KIND_FIELD), 2),
                 in_def(0, "TIMEOUT", "TIMEOUT", Some(REF_KIND_CONST), 2),
             ],
             vec![("limits", None)],
@@ -125,10 +127,59 @@ fn python_stages_its_row() {
             None,
         ),
         (
-            "a string that is not the first statement, and a joined one",
-            "import os\n\"\"\"Not a docstring.\"\"\"\n\n\ndef late():\n    x = 1\n    \"\"\"Not its docstring.\"\"\"\n\n\ndef joined():\n    \"a\" \"b\"\n",
+            "a string that is not the first statement",
+            "import os\n\"\"\"Not a docstring.\"\"\"\n\n\ndef late():\n    x = 1\n    \"\"\"Not its docstring.\"\"\"\n",
             vec![],
-            vec![("late", None), ("joined", None)],
+            vec![("late", None)],
+            None,
+        ),
+        (
+            "a joined, a continued and a parenthesised docstring, one over two lines past a comment",
+            "def joined(s: Shape):\n    \"a\" 'b'\n\n\ndef continued():\n    \"a\" \\\n    r\"b\"\n\n\ndef wrapped():\n    (\"P.\")\n\n\ndef long():\n    (\"long \"  # it's \"x\"\n     \"doc\")\n",
+            vec![in_def(0, "Shape", "Shape", Some(REF_KIND_TYPE), 1)],
+            vec![
+                ("joined", Some((2, 2))),
+                ("continued", Some((6, 7))),
+                ("wrapped", Some((11, 11))),
+                ("long", Some((15, 16))),
+            ],
+            None,
+        ),
+        (
+            "a bytes, a formatted, a mixed or a template string first is no docstring",
+            "def raw_bytes(s: Shape):\n    rb\"x\"\n\n\ndef formatted():\n    f\"x\"\n\n\ndef mixed():\n    \"a\" Fr\"b\"\n\n\ndef template():\n    t\"x\"\n\n\nclass Lid(Box):\n    b\"x\"\n",
+            vec![
+                in_def(0, "Shape", "Shape", Some(REF_KIND_TYPE), 1),
+                in_def(4, "Box", "Box", Some(REF_KIND_IMPL), 17),
+            ],
+            vec![
+                ("raw_bytes", None),
+                ("formatted", None),
+                ("mixed", None),
+                ("template", None),
+                ("Lid", None),
+            ],
+            None,
+        ),
+        (
+            "a module's parenthesised docstring and a class docstring past its base",
+            "(\"The \"\n \"shapes.\")\n\n\nclass Lid(Box):\n    \"\"\"A lid.\"\"\"\n",
+            vec![in_def(0, "Box", "Box", Some(REF_KIND_IMPL), 5)],
+            vec![("Lid", Some((6, 6)))],
+            Some((1, 2)),
+        ),
+        (
+            "a module's joined docstring after a comment",
+            "# A comment.\n\"The \" 'tool.'\n",
+            vec![],
+            vec![],
+            Some((2, 2)),
+        ),
+        (
+            "a module's bytes string first is no docstring",
+            "b\"The tool.\"\n\nimport os\n",
+            vec![],
+            vec![],
             None,
         ),
     ];

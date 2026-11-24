@@ -2827,8 +2827,8 @@ pub(crate) mod tests {
 
     /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust
     /// spans, `\r\n` endings, `#[doc(hidden)]` lines, nested block comments and literals holding
-    /// a comment marker or a quote among them, Python docstrings, and the lines of a language with
-    /// no doc rule.
+    /// a comment marker or a quote among them, Python docstrings, one joined from parts and one in
+    /// parentheses among them, and the lines of a language with no doc rule.
     const DOC_TEXT_ROWS: &[(&str, &str, &str)] = &[
         (
             "rust",
@@ -2934,6 +2934,21 @@ Unclosed"#,
         ),
         ("python", "    pass\n", ""),
         ("python", "def one(): r\"\"\"Raw \\d.\"\"\"\n", "Raw \\d."),
+        ("python", "    \"a\" 'b'\n", "ab"),
+        ("python", "    \"a\" U'b' R\"c\"\n", "abc"),
+        ("python", "    \"a\" \\\n    r\"\\d\"\n", "a\\d"),
+        ("python", "    (\"P.\")\n", "P."),
+        (
+            "python",
+            "    (\"long \"  # it's \"x\"\n     \"doc\")\n",
+            "long doc",
+        ),
+        (
+            "python",
+            "    (\"\"\"First.\n\n        Indented.\n    \"\"\" \"\"\"    Tail.\"\"\")\n",
+            "First.\n\nIndented.\nTail.",
+        ),
+        ("python", "    \"a\"; x = \"q\"\n", "a"),
         (
             "zig",
             "/// Not read as Rust.\n #[doc(hidden)] ",
@@ -2990,8 +3005,8 @@ Unclosed"#,
     /// `#[doc(hidden)]` line included, into the comment text alone - the text of each doc comment
     /// and each doc attribute's literal, every comment and literal bounded as Rust lexes it,
     /// everything else dropped, a doc block's opener, closer and one leading `*` stripped - gives a
-    /// Python span its docstring's body, dedented, and gives a language with no rule its lines
-    /// trimmed. The project's extractor with no declaration answers as the bundled one.
+    /// Python span its docstring's body, its parts joined, dedented, and gives a language with no
+    /// rule its lines trimmed. The project's extractor with no declaration answers as the bundled one.
     #[test]
     fn the_doc_text_is_the_comment_text_alone() {
         let project = project_declaring(None);
