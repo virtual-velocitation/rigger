@@ -28156,6 +28156,35 @@ fn the_content_script_checks_the_whole_spec_from_a_base_and_only_the_branch_with
     }
 }
 
+/// The content script's `check`, handed a base that shares no history with HEAD, refuses with
+/// its message rather than reading the failed three-dot diff as a clean one.
+fn the_content_script_refuses_an_unrelated_base(check: &str) {
+    let (dir, _) = common::git::unit_branch_repo(
+        "pub fn f() {}\n",
+        &[("src/lib.rs", "pub fn g() {}\n", "a unit commit")],
+    );
+    // A root commit of git's empty tree: in the repository, sharing no history with HEAD.
+    let empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    let unrelated = common::git::git_out(dir.path(), &["commit-tree", empty_tree, "-m", "other"]);
+    assert_eq!(
+        common::repo::run_gate_script(dir.path(), "content.sh", &[check, &unrelated], &[]),
+        (
+            false,
+            format!(
+                "{check} gate: base '{unrelated}' shares no history with HEAD, so there is no \
+                 diff to check; refusing\n"
+            )
+        ),
+    );
+}
+
+rigger::test_cases! {
+    the_style_check_refuses_a_base_unrelated_to_head:
+        the_content_script_refuses_an_unrelated_base("style");
+    the_no_os_kill_check_refuses_a_base_unrelated_to_head:
+        the_content_script_refuses_an_unrelated_base("no-os-kill");
+}
+
 /// Round-9 escalation-remedy reject (adj-u69c1r9-verdict-reject upholding
 /// adv-u69c1-mismatched-marker-suppression-borrows-wrong-files-mtime): the mismatched-marker
 /// arm above always sourced `dash_breadcrumb_written_at` from the MARKER's mtime, even in this
