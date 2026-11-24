@@ -12717,8 +12717,10 @@ impl RunCtx<'_> {
     /// give this command the identical site cache, which a declared `{build_cache}` resolves
     /// to, and store fence, so a regenerate build shares its unit's gate cache and never walks
     /// into the live event store. A failed guard probe is returned as the [`probe_fault_halt`] `Err`, not
-    /// as this command's own failure, so it ends the step as a halt (spec 121 criterion 19).
-    fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<(), Error> {
+    /// as this command's own failure, so it ends the step as a halt (spec 121 criterion 19). A
+    /// pass answers its run's note ([`gate::GateResult::note`]), which the regeneration commit's
+    /// row records ([`Self::record_regenerate_commit`]).
+    fn run_regenerate_command(&self, dir: &str, run: &str) -> Result<String, Error> {
         let target = crate::worktree::unit_cache_sibling(dir).unwrap_or_default();
         let gate_scratch =
             crate::worktree::unit_sibling(dir, crate::worktree::UNIT_GATE_SCRATCH_PREFIX)
@@ -12759,7 +12761,7 @@ impl RunCtx<'_> {
                 res.note, res.evidence
             )));
         }
-        Ok(())
+        Ok(res.note)
     }
 
     /// Resolve conflicting paths CONFINED to registered regenerable rules (spec 88,
@@ -12778,13 +12780,14 @@ impl RunCtx<'_> {
     /// after this call's real mutation but before that record left the durable regenerate-
     /// pending marker un-cleared, so a resumed call re-enters here, finds nothing new to
     /// commit, and - under the old "" contract - never re-recorded the after-record for the
-    /// mutation that already, genuinely happened).
+    /// mutation that already, genuinely happened). Beside the sha it answers the commands' notes,
+    /// in the order they ran ([`Self::run_regenerate_command`]).
     fn regenerate_conflicted_paths(
         &self,
         wt: &Worktree,
         unit: &str,
         paths: &[String],
-    ) -> Result<String, Error> {
+    ) -> Result<(String, String), Error> {
         let mut commands: Vec<&str> = Vec::new();
         for p in paths {
             if let Some(rule) = self.regenerate_rule_for(p) {
@@ -12793,16 +12796,17 @@ impl RunCtx<'_> {
                 }
             }
         }
+        let mut notes = String::new();
         for cmd in commands {
-            self.run_regenerate_command(&wt.dir, cmd)?;
+            notes.push_str(&self.run_regenerate_command(&wt.dir, cmd)?);
         }
         let committed = on_regenerable_paths(git_step(wt.commit_checkpoint(&format!(
             "rigger: regenerate conflicting artifacts for {unit}"
         ))))?;
         if committed.is_empty() {
-            Ok(worktree::head_sha_of(&wt.dir))
+            Ok((worktree::head_sha_of(&wt.dir), notes))
         } else {
-            Ok(committed)
+            Ok((committed, notes))
         }
     }
 
@@ -12864,8 +12868,8 @@ impl RunCtx<'_> {
         paths: &[String],
         tag: impl FnOnce(&str) -> String,
     ) -> Result<(), Error> {
-        let regen_sha = self.regenerate_conflicted_paths(wt, unit, paths)?;
-        self.record_regenerate_commit(unit, attempt, &tag(&regen_sha), &regen_sha)?;
+        let (regen_sha, note) = self.regenerate_conflicted_paths(wt, unit, paths)?;
+        self.record_regenerate_commit(unit, attempt, &tag(&regen_sha), &regen_sha, &note)?;
         clear_attempt(&self.conflict_regenerate_pending, unit, attempt);
         Ok(())
     }
@@ -12981,23 +12985,29 @@ impl RunCtx<'_> {
     /// [`Self::regenerate_conflicted_paths`] never returns an empty sha (round 4's own fix:
     /// it falls back to the current worktree HEAD when there was nothing NEW to commit,
     /// since that HEAD already IS the regenerate commit either way) - the empty-sha guard
-    /// below is kept purely defensive, never expected to fire in real operation.
+    /// below is kept purely defensive, never expected to fire in real operation. The row carries
+    /// the regenerate commands' `note`, when they gave one.
     fn record_regenerate_commit(
         &self,
         unit: &str,
         attempt: u32,
         episode: &str,
         sha: &str,
+        note: &str,
     ) -> Result<(), Error> {
         if sha.is_empty() {
             return Ok(());
+        }
+        let mut evidence = json!({"sha": sha});
+        if !note.is_empty() {
+            evidence["note"] = json!(note);
         }
         self.record_integrate_row(
             &format!("{unit}/regenerate-commit#{attempt}~{episode}"),
             STATUS_INTEGRATE_REGENERATE_COMMIT,
             unit,
             attempt,
-            json!({"sha": sha}),
+            evidence,
         )
     }
 
@@ -40547,7 +40557,7 @@ stage "implement" adjudicator "adj" failed
         };
         let ctx = RunCtx::for_test(&cfg, &deps);
 
-        let got = ctx
+        let (got, _) = ctx
             .regenerate_conflicted_paths(&wt, "regen-unit", &["regen.txt".to_string()])
             .expect("a registered regenerable path must regenerate and commit cleanly");
 
@@ -54628,6 +54638,40 @@ stage "implement" adjudicator "adj" failed
             [format!("{NOTED_NOTE}PASS")],
             "the deferred verdict records the note, then the evidence"
         );
+    }
+
+    /// A passing regenerate command's run records its note on the regeneration commit's row, as
+    /// a gate's run records its note beside its evidence.
+    #[test]
+    fn a_regenerate_commands_note_is_recorded_on_its_commit_row() {
+        let (repo, wt, cfg) = regenerable_worktree();
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            gates: &Noted(true),
+            run_branch: branch_of(repo.path().to_str().unwrap()),
+            repo: repo.path().to_str().unwrap().to_string(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let ctx = RunCtx::for_test(&cfg, &deps);
+        ctx.regenerate_and_record(&wt, "regen-unit", 1, &["regen.txt".to_string()], |sha| {
+            format!("noted-{sha}")
+        })
+        .unwrap();
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        let notes: Vec<Value> = events
+            .iter()
+            .filter(|e| e.type_ == ledger::TYPE_UNIT_STATUS)
+            .map(|e| serde_json::from_slice::<Value>(&e.data).unwrap())
+            .filter(|row| row["status"] == STATUS_INTEGRATE_REGENERATE_COMMIT)
+            .map(|row| row["evidence"]["note"].clone())
+            .collect();
+        assert_eq!(
+            notes,
+            [json!(NOTED_NOTE)],
+            "the regeneration commit's row records the command's note"
+        );
+        wt.remove().unwrap();
     }
 
     crate::test_cases! {
