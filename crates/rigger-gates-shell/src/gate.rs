@@ -497,8 +497,17 @@ impl Runner for ExecRunner {
         // waits for a free slot rather than stacking another compiler fleet into
         // memory. Never held across anything but this call - a hung command still
         // frees its slot the instant it is killed, and no other code path in the crate
-        // acquires a slot, so non-build work is never gated.
-        let _slot = budget.acquire();
+        // acquires a slot, so non-build work is never gated. A slot directory where no slot
+        // can ever be locked fails the gate as a command that could not start does.
+        let _slot = match budget.acquire() {
+            Ok(slot) => slot,
+            Err(e) => {
+                return Ok(GateResult {
+                    pass: false,
+                    evidence: format!("FAIL\ngate {}: {e}", g.id),
+                })
+            }
+        };
         // The shared gate build cache's exclusion protocol, PRODUCER half (spec 77 criterion 5,
         // BOUNDED SHARED CACHE; spec 125 criterion 10): a non-empty `build_cache_guard` names the
         // lock file `rigger reset --build-cache` takes EXCLUSIVE before it reclaims the shared
@@ -1317,6 +1326,35 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert!(
             wait_until_for(400, || try_exclusive_lock(&guard) == Ok(())),
             "once the background child exits the guard is free"
+        );
+    }
+
+    /// A build budget whose every slot fails to open, so no holder will ever free one, fails the
+    /// gate with the slot's error and never runs its command.
+    #[test]
+    fn a_budget_no_slot_can_satisfy_fails_the_gate_without_running_it() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let slot = dir.path().join("slots/slot-0.lock");
+        std::fs::create_dir_all(&slot).expect("a directory where the slot file would be");
+        let ran = dir.path().join("ran");
+        let res = ExecRunner
+            .run(
+                &gate_cmd(&format!("touch {}", ran.display())),
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                &BuildEnv::default(),
+                &BuildBudget::new(1, dir.path().join("slots")),
+            )
+            .expect("no guard is requested, so no probe faults");
+        assert_eq!(
+            (res.pass, res.evidence.contains("slot-0.lock"), ran.exists()),
+            (false, true, false),
+            "the gate fails naming the slot and its command never runs: {}",
+            res.evidence
         );
     }
 
