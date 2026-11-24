@@ -2181,18 +2181,25 @@ impl OpenGraph for ReadGraph<'_> {
     }
 
     /// The graph whose code half resolves near the ids `ask` reads (spec 6.3), over the one view
-    /// of the head this answer opens.
+    /// of the head this answer opens, a node's doc read from the head's worktree as the extractor
+    /// the store was opened with gives its text.
     fn answer(
         &self,
         filter: rigger_domain::code_view::ViewFilter,
         ask: &mut dyn FnMut(&dyn ContextGraph) -> Result<(), contextgraph::Error>,
     ) -> Result<(), contextgraph::Error> {
         let head = self.head().map_err(contextgraph::Error)?;
+        let lines = rigger_store::code::WorktreeLines::new(&head.worktree);
+        let docs = (head.extract.as_deref()).map(|extract| rigger_domain::composed::DocReader {
+            lines: &lines,
+            extract,
+        });
         let composed = rigger_domain::composed::Composed::near(
             self.records,
             &*head.view,
             filter,
             Self::honesty(&head),
+            docs,
         )?;
         ask(&composed)
     }
@@ -2207,7 +2214,7 @@ fn open_head(site: &Site, worktree: &Path) -> Result<rigger_domain::code_view::H
 }
 
 /// Light-lane [`open_head`]: no extractor is compiled in, so the head's tree is read with no code
-/// facts.
+/// facts and gives no doc.
 #[cfg(not(feature = "symbols"))]
 fn open_head(site: &Site, worktree: &Path) -> Result<rigger_domain::code_view::Head, String> {
     use rigger_domain::code_view::TreeSource;
@@ -2231,6 +2238,7 @@ fn open_head(site: &Site, worktree: &Path) -> Result<rigger_domain::code_view::H
         compared: rigger_domain::code_view::Compared::of(diff.as_ref().map_err(String::as_str)),
         behind: None,
         worktree: worktree.to_path_buf(),
+        extract: None,
     })
 }
 

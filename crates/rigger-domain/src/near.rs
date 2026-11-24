@@ -1132,6 +1132,17 @@ impl CodeHalf for Near<'_> {
         let facts = state.facts(place)?;
         recorded.widest_end(facts.defs.iter().map(Bound::from))
     }
+    /// Read from the file's facts, the ones its nodes are resolved from.
+    fn doc_span(&self, file: &str, recorded: Option<Recorded>) -> Option<(String, (u32, u32))> {
+        let mut state = self.state();
+        let place = state.code_place(file)?;
+        let facts = state.facts(place)?;
+        let span = match recorded {
+            None => facts.doc,
+            Some(recorded) => recorded.widest(&facts.defs)?.doc,
+        }?;
+        Some((facts.lang.clone(), span))
+    }
     /// Read from the proofs read resolving `ids`, or, once the view is resolved whole, from the
     /// proof calls that read.
     fn hidden_provers(&self, ids: &[String]) -> Vec<String> {
@@ -1486,7 +1497,7 @@ mod tests {
         }) {
             let filter = ViewFilter { tests };
             let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
-            let near = Composed::near(&records, read, filter, honesty()).unwrap();
+            let near = Composed::near(&records, read, filter, honesty(), None).unwrap();
             for seed in seeds {
                 let seed = [seed.to_string()];
                 for depth in [1, 2, 3] {
@@ -1595,7 +1606,7 @@ mod tests {
                     want,
                     "whole {at}"
                 );
-                let near = Composed::near(&records, read, filter, honesty(compared)).unwrap();
+                let near = Composed::near(&records, read, filter, honesty(compared), None).unwrap();
                 near.subgraph(&ids, 1).unwrap();
                 counting.taken();
                 assert_eq!(near.hidden_provers(&ids).unwrap().len(), want, "near {at}");
@@ -1665,7 +1676,7 @@ mod tests {
                     want,
                     "whole {at}"
                 );
-                let near = Composed::near(&records, read, filter, honesty(compared)).unwrap();
+                let near = Composed::near(&records, read, filter, honesty(compared), None).unwrap();
                 near.subgraph(&ids, 1).unwrap();
                 assert_eq!(
                     near.hidden_placeholder_callers(&ids).unwrap().len(),
@@ -2179,7 +2190,7 @@ mod tests {
         for (shows, tests, seed, want) in cases {
             let filter = ViewFilter { tests };
             let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
-            let near = Composed::near(&records, &view, filter, honesty()).unwrap();
+            let near = Composed::near(&records, &view, filter, honesty(), None).unwrap();
             let seed = [seed.to_string()];
             let at = format!("{tests:?} {}: {shows}", seed[0]);
             let drawn = around(&whole, &seed, 2).unwrap();

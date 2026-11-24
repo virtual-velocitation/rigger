@@ -17,7 +17,7 @@ mod extractor_protocol;
 
 use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
@@ -82,20 +82,26 @@ pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Op
 /// The head of the code store at `root` read for a reader in `worktree`, overlaid with the files
 /// the worktree differs in ([`open_head`]), composed as [`open_store`] composes it, its
 /// differing files' facts memoised for the life of the process and on disk under the store
-/// ([`Memo::process`]).
+/// ([`Memo::process`]). The head keeps the project's extractor, which a doc read takes a span's
+/// text from with no session; every declared extractor's session the read started is closed and
+/// waited for before the head is given ([`ProjectExtractor::close_sessions`]), so none outlives a
+/// read that ends by exiting.
 pub fn read_head(
     root: &Path,
     source: &(dyn TreeSource + Sync),
     worktree: &Path,
 ) -> Result<Head, String> {
-    open_head(
+    let extract = Arc::new(ProjectExtractor::of(root));
+    let head = open_head(
         root,
         source,
-        &ProjectExtractor::of(root),
+        extract.clone(),
         &ProductionGroupings,
         worktree,
         Memo::process(),
-    )
+    );
+    extract.close_sessions();
+    head
 }
 
 /// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
@@ -221,18 +227,22 @@ impl ProjectExtractor {
             }
         }
     }
+
+    /// Closes, and waits for, every session the extractor holds, so none outlives the read that
+    /// started it; a later file of a declared extractor's extensions starts a new one.
+    fn close_sessions(&self) {
+        let sessions =
+            std::mem::take(&mut *self.sessions.lock().unwrap_or_else(PoisonError::into_inner));
+        for session in sessions.into_values() {
+            session.close();
+        }
+    }
 }
 
 impl Drop for ProjectExtractor {
-    /// Closes every session the extractor still holds.
+    /// Closes every session the extractor still holds ([`ProjectExtractor::close_sessions`]).
     fn drop(&mut self) {
-        let sessions = self
-            .sessions
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
-        for session in std::mem::take(sessions).into_values() {
-            session.close();
-        }
+        self.close_sessions();
     }
 }
 
@@ -2854,6 +2864,46 @@ pub(crate) mod tests {
             (vec![root_dir_of(project.path())], 2),
             "the `.rs` files were asked of one session, no other file of any"
         );
+    }
+
+    /// A READ HEAD HOLDS NO SESSION: over a project declaring the stub for `zig`, a reader that
+    /// reads the store's head - from the root, which advances the store, and from a worktree
+    /// differing in the declared file, which extracts that file again - holds a head whose every
+    /// session of the stub has already ended, so a read that ends by exiting leaves no extractor
+    /// running, and the head still carries the project's extractor, its doc text read with none.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_head_holds_the_extractor_with_every_session_closed() {
+        let kept = tempfile::tempdir().expect("tempdir");
+        let stub = StubExtractor::new(kept.path());
+        let project = stub_project(&stub, "zig", "[zig]", &[("src/a.zig", "a\n")]);
+        stub.answers("src/a.zig", &answer_defining("src/a.zig", "a"));
+        let root = project.path();
+        let workflow =
+            std::fs::read_to_string(root.join(workflow_doc())).expect("read the workflow");
+        let worktree = project_declaring(Some(&workflow));
+        std::fs::create_dir_all(worktree.path().join("src")).expect("create the source directory");
+        std::fs::write(worktree.path().join("src/a.zig"), "b\n").expect("change the file");
+        // (the case, the reader's worktree, the stub's starts and ends while the head is held)
+        let rows: [(&str, &Path, usize); 2] = [
+            ("the root", root, 1),
+            (
+                "a worktree differing in the declared file",
+                worktree.path(),
+                2,
+            ),
+        ];
+        for (case, reader, sessions) in rows {
+            let head = DirectoryHead::new(root)
+                .head(reader)
+                .expect("read the head");
+            let doc = (head.extract.as_deref()).map(|extract| extract.doc_text("zig", " a \n b"));
+            assert_eq!(
+                (stub.starts().len(), stub.ends().len(), doc.as_deref()),
+                (sessions, sessions, Some("a\nb")),
+                "{case}"
+            );
+        }
     }
 
     /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust

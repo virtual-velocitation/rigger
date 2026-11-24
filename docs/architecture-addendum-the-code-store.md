@@ -294,8 +294,9 @@ ModuleDecl
 ```
 
 A doc span is the 1-based, inclusive first and last line of a doc comment; the comment's text is
-never stored. A tags query's reference is named by its bare leaf, qualified by a path (`::`) or a
-member access (`.`) when one is written: by the qualifier a `@qualifier.path` or
+never stored, but read from the reader's worktree when a node's doc is asked for (section 6.3).
+A tags query's reference is named by its bare leaf, qualified by a path (`::`) or a member access
+(`.`) when one is written: by the qualifier a `@qualifier.path` or
 `@qualifier.member` capture gives, else by the one its `@name` writes before the leaf. A `@name`
 written as a chain of identifiers splits at its last separator, its type arguments left out of
 the split (`Ns.IShape` is the leaf `IShape` qualified by the member `Ns`, `List<IShape>` the leaf
@@ -901,6 +902,14 @@ as written from every file holding them, and whether one is test code (section 6
 only for those touching a node it resolves, so a link to a node the neighbourhood never reaches
 reads no definition.
 
+A node's doc (`ContextGraph::doc`) is read by a neighbourhood alone. Its file's facts give the
+span: the file's own for a file node, else the one of the production definition the node records
+by name, kind and line, the widest of those when several share them (`Recorded::widest`, the
+definition whose end `definition_end` gives). The span's lines are read from the reader's worktree
+(`SourceLines`) and their text is the one the extractor the store was opened with gives
+(`Extract::doc_text`), which the head carries. A whole-graph read, a graph that withholds its code
+facts, a span past the file's end and a file the read cannot open give no doc.
+
 The work is proportional to the number of mentions of one leaf. The largest frontier measured is
 25 candidates.
 
@@ -967,6 +976,10 @@ pub trait Group {
     fn generation(&self) -> u64;                                   // folded into the fingerprint
     fn group(&self, view: &dyn CodeView) -> Groupings;
 }
+pub trait SourceLines: Send + Sync {
+    fn lines(&self, path: &str, span: (u32, u32)) -> Option<String>;   // a doc span's lines, none
+                                                                   // past the file's end or unread
+}
 
 pub enum Tests { Exclude, Include, Only }
 pub struct ViewFilter { pub tests: Tests }                         // default: Exclude
@@ -978,6 +991,7 @@ pub struct ViewFilter { pub tests: Tests }                         // default: E
 | `TreeSource` | `GitTreeSource` (rigger-worktree-git, every git it starts itself with `--no-optional-locks`: `ls-tree`, `diff --raw` over a copy of the worktree's index (6.1), whose modes class each path as a regular file or not, so a symlink or submodule, which a tree's listing never holds, is no difference; `ls-files --others --exclude-standard -- :/`, the whole worktree's untracked files from any directory of it; `cat-file --batch` through the existing `BlobBatch`; a worktree file's bytes read as a regular file, never through a symlink); `DirTreeSource` (rigger-store: walks the directory with the one scoped walk, `rigger_store::walk::walk_scoped`, which the grounder walks with too, and hashes each file with FNV, for a project with no git, so `rigger graph build` outside a repository keeps working; it holds the last head's listing only, so a long-lived reader holds one listing) |
 | `Extract` | `FactsExtractor` (rigger-grounder `facts.rs`, over the existing symbol, design and workflow extractors; its `doc_text` strips a Rust doc span's lines to their comment text, gives a Python span its docstring's body, its parts joined, dedented, and gives any other language the lines trimmed); `ProjectExtractor` (beside it, the one the store's openers compose: `FactsExtractor` under the extractors the project's workflow declares, its fingerprint `FactsExtractor`'s with none and carrying the declaration's digest with any, its `doc_text` `FactsExtractor`'s; each declared extractor's command runs as one session, started at the project's root on the first file it reads and closed when a file's answer fails, the next file starting a new one, or when the `ProjectExtractor` is dropped) |
 | `Group` | `ProductionGroupings` (rigger-domain, over the existing community and concept algorithms) |
+| `SourceLines` | `WorktreeLines` (rigger-store `code/worktree_lines.rs`: each file read through std at its path under the reader's worktree, its bytes read as UTF-8 with each invalid sequence as U+FFFD) |
 
 The store crate depends only on `rigger-domain`, std and the `ignore` gitignore engine.
 Extraction and grouping are passed into it, so it holds no language knowledge. A file's scope

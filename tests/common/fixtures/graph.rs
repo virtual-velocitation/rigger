@@ -234,6 +234,16 @@ pub fn matching_honesty() -> rigger::composed::Honesty {
     }
 }
 
+/// What a reader in `head`'s worktree knows of it: the worktree, how the head's view compares
+/// with it and why the view is behind, when it is.
+pub fn head_honesty(head: &rigger::code_view::Head) -> rigger::composed::Honesty {
+    rigger::composed::Honesty {
+        worktree: head.worktree.display().to_string(),
+        compared: head.compared,
+        behind: head.behind.clone(),
+    }
+}
+
 /// The record half `records` composed with `view`, read from a worktree that matches its tree.
 pub fn view_graph<'r>(
     records: &'r dyn rigger::contextgraph::Neighbors,
@@ -258,7 +268,7 @@ pub fn halves<'r>(
     use rigger::composed::Composed;
     let filter = rigger::code_view::ViewFilter { tests };
     let whole = Composed::new(records, view, filter, matching_honesty()).unwrap();
-    let near = Composed::near(records, view, filter, matching_honesty()).unwrap();
+    let near = Composed::near(records, view, filter, matching_honesty(), None).unwrap();
     [("whole", Box::new(whole)), ("near", Box::new(near))]
 }
 
@@ -570,6 +580,7 @@ pub fn matching_head(view: rigger::code_view::FactsView) -> rigger::code_view::H
         compared: rigger::code_view::Compared::Overlaid(0),
         behind: None,
         worktree: std::path::PathBuf::new(),
+        extract: None,
     }
 }
 
