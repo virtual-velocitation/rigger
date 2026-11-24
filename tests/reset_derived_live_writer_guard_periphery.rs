@@ -1316,7 +1316,6 @@ fn the_help_and_the_rendered_skills_state_that_the_guard_reads_liveness() {
 /// lock; once released, the identical command succeeds.
 #[test]
 fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
-    use fs2::FileExt;
     let dir = temp_store_project();
     let root = dir.path();
 
@@ -1336,7 +1335,6 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
         "the refusal must name the override; stderr: {err:?}"
     );
 
-    FileExt::unlock(&lock_file).unwrap();
     drop(lock_file);
 
     assert_prunes(
@@ -1353,7 +1351,6 @@ fn reset_derived_refuses_a_held_step_lock_and_succeeds_once_released() {
 /// under the worktree's own path.
 #[test]
 fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_lock() {
-    use fs2::FileExt;
     let dir = temp_git_project_with_commit();
     let root = dir.path();
     seed_store(root);
@@ -1376,7 +1373,6 @@ fn reset_derived_from_a_nested_worktree_still_refuses_the_resolved_stores_held_l
         "the refusal must name the held step lock; stderr: {err:?}"
     );
 
-    FileExt::unlock(&lock_file).unwrap();
     drop(lock_file);
 }
 
