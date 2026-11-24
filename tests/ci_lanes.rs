@@ -648,8 +648,10 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
 /// parallel, as everywhere else, libtest names each one still running after 60 s, and
 /// `--nocapture` prints what each writes as it writes it. The last step runs `cargo check
 /// --workspace --all-targets --keep-going`, so every test that names one of those adapters
-/// compiles there, and one run names every target that does not. The job's wasm target is pinned
-/// once, by `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
+/// compiles there, and one run names every target that does not, and then the one suite of the
+/// product's own that proves an OS's behaviour, `bare_rigger_hooks_resolve_periphery`. The job's
+/// wasm target is pinned once, by
+/// `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
 #[test]
 fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
     const JOB: &str = "cross-os-check";
@@ -731,13 +733,21 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
                 "cargo test -p rigger-process --lib -- --nocapture --skip reap:: \
                  --skip child_tree:: --skip os_process::"
             ),
-            unwrapped(None, "cargo check --workspace --all-targets --keep-going"),
+            (
+                Some("bash"),
+                None,
+                vec![
+                    "export RUSTC_WRAPPER=",
+                    "cargo check --workspace --all-targets --keep-going",
+                    "cargo test -p rigger --test bare_rigger_hooks_resolve_periphery",
+                ],
+            ),
         ],
         "job `{JOB}` must have these `run:` steps, each under `shell: bash` exporting an empty \
          `RUSTC_WRAPPER`: the process crate's tests built, then run one module per step and the \
          rest in one, each bounded, so the crate's rows run whatever else fails to compile and a \
          hung one is named by its step, then `cargo check --workspace --all-targets \
-         --keep-going`, so one run names every target that does not compile \
-         (shell, timeout-minutes, lines)"
+         --keep-going`, so one run names every target that does not compile, and the bare-rigger \
+         hook suite (shell, timeout-minutes, lines)"
     );
 }

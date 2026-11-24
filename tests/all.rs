@@ -129,6 +129,8 @@ mod gitsemver_derivation;
 mod gitsemver_path_inclusion_accounting_periphery;
 mod gitsemver_worktree_periphery;
 mod go_definitions_are_nodes_periphery;
+#[cfg(feature = "symbols")]
+mod go_field_use_lands_periphery;
 mod graph_additive_indexes_persist;
 mod graph_around_governance_boundaries;
 #[cfg(feature = "symbols")]

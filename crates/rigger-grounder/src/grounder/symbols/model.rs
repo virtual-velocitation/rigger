@@ -115,36 +115,34 @@ pub struct Def {
     /// Captured structurally in [`crate::grounder::symbols::extract::extract`] alongside
     /// `is_out_of_line_module`, for the SAME reason: only the declaring file's own parsed tree
     /// carries the attribute, so it must be carried on the definition since a reused persisted
-    /// index never re-reads the source. Consumed by
-    /// `symbols::paths::module_candidates`, which resolves it
-    /// relative to the declaring file's own directory, or its module directory and inline chain
-    /// when nested in inline mods ([`Self::enclosing_inline_module_path`], whose doc gives examples
-    /// where that chain departs from rustc). `#[serde(default)]` for the same
-    /// pre-86-index-compatibility reason as `is_test`/`is_out_of_line_module`; omitted from the
-    /// wire form when `None` so the overwhelmingly common case stays byte-identical to before this
-    /// field existed.
+    /// index never re-reads the source. Consumed by `symbols::paths::module_candidates`, which
+    /// resolves it in both of its lists relative to the declaring file's own directory, or, when
+    /// nested in inline mods, to the module directory each list places it under and the inline
+    /// chain ([`Self::enclosing_inline_module_path`], whose doc gives examples where that chain
+    /// departs from rustc). `#[serde(default)]` for the same pre-86-index-compatibility reason as
+    /// `is_test`/`is_out_of_line_module`; omitted from the wire form when `None` so the
+    /// overwhelmingly common case stays byte-identical to before this field existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path_override: Option<String>,
     /// Round 9 (`op-u86-c1-path-attribute-contract-is-rustc-s-and-unresolvable-never-excludes`):
     /// the `/`-joined chain of enclosing INLINE `mod name { .. }` names (outermost first) this
     /// out-of-line declaration sits nested inside, when any - the EXTRA directory-component chain
-    /// its file resolves under, `#[path]` override or convention alike (spec 117 criterion 8), one
-    /// level per enclosing inline module, on top of the declaring file's own module directory, so
-    /// `mod outer { mod x; }` in `src/lib.rs` names `src/outer/x.rs`. Each level is the inline
-    /// name as written, so the chain names rustc's directory only where that name is the
-    /// directory. Among the departures: an inline parent with its own `#[path]` (under
-    /// `#[path = "dir"] mod outer { .. }` rustc looks in `dir/`) and a raw identifier
-    /// (`mod r#type { .. }`, where rustc reads `type/`). `None` when the declaration sits
-    /// directly at the file's own top level (the overwhelmingly common case), in which case an
-    /// override stays directory-of-file-relative exactly as before this field existed. Verified
-    /// against real rustc for a plain inline parent
-    /// (throwaway probe crates, not part of this tree): `mod outer { #[path = "foo.rs"] mod
-    /// inner; }` in `src/lib.rs` resolves `foo.rs` against `src/outer/foo.rs`, and the identical
-    /// nesting inside a LEAF file `src/parent.rs` resolves against `src/parent/outer/foo.rs` - the
-    /// file's own MODULE directory (what a plain, non-overridden out-of-line sibling of
-    /// `parent.rs` would already use) with `outer/`
-    /// appended, never the file's bare directory. Captured
-    /// structurally in [`crate::grounder::symbols::extract::extract`] alongside
+    /// its file resolves under, `#[path]` override or convention alike (spec 117, MODULE ROOTS AT
+    /// READ), one level per enclosing inline module, on top of the module directory each of the
+    /// declaration's two lists places it under, so `mod outer { mod x; }` in `src/lib.rs` names
+    /// `src/outer/x.rs`. Each level is the inline name as written, so the chain names rustc's
+    /// directory only where that name is the directory. Among the departures: an inline parent
+    /// with its own `#[path]` (under `#[path = "dir"] mod outer { .. }` rustc looks in `dir/`) and
+    /// a raw identifier (`mod r#type { .. }`, where rustc reads `type/`). `None` when the
+    /// declaration sits directly at the file's own top level (the overwhelmingly common case), in
+    /// which case an override stays directory-of-file-relative exactly as before this field
+    /// existed. Verified against real rustc for a plain inline parent (throwaway probe crates, not
+    /// part of this tree): `mod outer { #[path = "foo.rs"] mod inner; }` in `src/lib.rs` resolves
+    /// `foo.rs` against `src/outer/foo.rs`, and the identical nesting inside a LEAF file
+    /// `src/parent.rs` resolves against `src/parent/outer/foo.rs` - the file's own MODULE
+    /// directory (what a plain, non-overridden out-of-line sibling of `parent.rs` would already
+    /// use) with `outer/` appended, never the file's bare directory. Captured structurally in
+    /// [`crate::grounder::symbols::extract::extract`] alongside
     /// `is_out_of_line_module`/`path_override`, for the same reason: only the declaring file's own
     /// parsed tree can see its ancestor `mod_item` nodes. Consumed at the events/index layer
     /// ([`crate::grounder::symbols::paths::module_candidates`], both branches).
@@ -160,9 +158,9 @@ pub struct Def {
     pub doc: Option<(u32, u32)>,
 }
 
-/// A reference site: the referenced name, its 1-based line, and the ENCLOSING definition the
-/// reference occurs inside (the caller), named by its path ([`Def::path`], spec 119 criterion 8:
-/// `T::new`, `outer::inner`). `None` for a top-level reference outside every
+/// A reference site: the referenced name's bare leaf, its 1-based line, and the ENCLOSING
+/// definition the reference occurs inside (the caller), named by its path ([`Def::path`], spec 119
+/// criterion 8: `T::new`, `outer::inner`). `None` for a top-level reference outside every
 /// definition - an import or a module-level call; a file-level impl header's trait and type
 /// attribute to the impl block, a definition of its own, and its trait's tagged `type` row to the
 /// self type's definition when the file defines that once (spec 117). Set during extraction by
@@ -195,6 +193,22 @@ pub struct SymRef {
     /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
+    /// Spec 117 (CAPTURES): the qualifier the reference was written with: a tags query's
+    /// `@qualifier.path` or `@qualifier.member` capture, else the text before the leaf of a
+    /// chained `@name` (`Ns` of `Ns.IShape`). `name` above stays the bare leaf. `None` for a
+    /// reference written bare. Serde-defaulted and omitted when `None`, so an unqualified
+    /// reference serializes byte-identically to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualifier: Option<Qualifier>,
+}
+
+/// A reference's qualifier (spec 117, CAPTURES): its text, and whether it is a path (`Shape` of
+/// `Shape::area`) or a member access (`Shape` of `Shape.area`). The facts layer writes the
+/// mention's name from it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Qualifier {
+    pub name: String,
+    pub path: bool,
 }
 
 /// One file's extracted symbols, tagged with the language it was parsed as (the scope key for
@@ -247,31 +261,31 @@ macro_rules! rust_tags_generation {
 
 macro_rules! csharp_tags_generation {
     () => {
-        "csharp-tags-v3"
+        "csharp-tags-v4"
     };
 }
 
 macro_rules! ts_tags_generation {
     () => {
-        "typescript-tags-v4"
+        "typescript-tags-v5"
     };
 }
 
 macro_rules! tsx_tags_generation {
     () => {
-        "tsx-tags-v4"
+        "tsx-tags-v5"
     };
 }
 
 macro_rules! js_tags_generation {
     () => {
-        "javascript-tags-v4"
+        "javascript-tags-v5"
     };
 }
 
 macro_rules! go_tags_generation {
     () => {
-        "go-tags-v3"
+        "go-tags-v4"
     };
 }
 
@@ -411,6 +425,10 @@ mod tests {
                 enclosing: None,
                 is_test: false,
                 ref_kind: None,
+                qualifier: Some(Qualifier {
+                    name: "Health".into(),
+                    path: true,
+                }),
             }],
             partial: false,
             doc: Some((1, 2)),

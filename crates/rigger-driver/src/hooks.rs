@@ -21,6 +21,7 @@ use rigger_domain::review::EDITING_TOOLS;
 use serde_json::{json, Map, Value};
 
 use crate::agent::{AgentFailure, HelperCopy, SpawnHost, TreeDuty};
+use crate::claude_version::HostVersion;
 
 #[derive(Debug, thiserror::Error)]
 #[error("hooks: {0}")]
@@ -291,6 +292,18 @@ fn strip_hooks(
 /// default.
 pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 
+/// The session host version that added the hook `args` field, the exec form every hook
+/// [`install_spawn_hooks`] merges is written with. The host's changelog adds the field under its
+/// `## 2.1.139` heading: "Added hook `args: string[]` field (exec form) that spawns the command
+/// directly without a shell, so path placeholders never need quoting". `rigger validate` warns
+/// of an older host, and `rigger run`'s version check refuses one before any session starts
+/// ([`crate::claude_version::too_old`]).
+pub const MIN_HOST_VERSION: HostVersion = HostVersion {
+    major: 2,
+    minor: 1,
+    patch: 139,
+};
+
 /// Merge the hooks bound to one spawn into `existing` settings JSON, preserving every other
 /// setting: under `PreToolUse` the write guard, `guard-write` rooted at `roots` in order; under
 /// `StopFailure` one entry per [`AgentFailure::CATEGORIES`], `hook stop-failure` recording that
@@ -303,7 +316,7 @@ pub const STOP_HOOK_TIMEOUT_SECS: u32 = 60;
 /// every OS (<https://code.claude.com/docs/en/hooks>), so `rigger_bin`, `spawn`, each root, `dir`,
 /// the branch and the output reach rigger as written, save that the host substitutes its own path
 /// placeholders (such as `${CLAUDE_PROJECT_DIR}`) into each, and the hook's exit status is
-/// rigger's own. The `args` field needs the host at 2.1.139 or later.
+/// rigger's own. The `args` field needs the host at [`MIN_HOST_VERSION`] or later.
 /// `existing` may be empty.
 pub fn install_spawn_hooks(
     existing: &[u8],

@@ -105,7 +105,7 @@ impl Fixture {
 
     fn driver(&self) -> Driver<'_> {
         Driver {
-            bin: fixture_script(STREAM_AGENT),
+            host: fixture_script(STREAM_AGENT).into(),
             rigger_bin: "rigger".to_string(),
             progress_store: &self.progress_store,
             run_store: &self.run_store,
@@ -121,7 +121,7 @@ impl Fixture {
     /// [`Fixture::driver`] launching the fixture agent script `script` instead.
     fn driver_running(&self, script: &str) -> Driver<'_> {
         Driver {
-            bin: fixture_script(script),
+            host: fixture_script(script).into(),
             ..self.driver()
         }
     }
@@ -751,7 +751,7 @@ fn spawn_propagates_a_launch_failure_never_reading_a_stream_that_never_started()
     // stream to read a result from.
     let fx = Fixture::new();
     let driver = Driver {
-        bin: "/definitely/does/not/exist/claude-code-xyz".to_string(),
+        host: "/definitely/does/not/exist/claude-code-xyz".into(),
         ..fx.driver()
     };
     spawn_fails_recording_nothing(

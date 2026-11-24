@@ -8,7 +8,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 
-use rigger_domain::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+use rigger_domain::contextgraph::query::{
+    path_leaf, qualified_name, MEMBER_SEPARATOR, PATH_SEPARATOR,
+};
+use rigger_domain::contextgraph::reference_candidate_kinds;
 use rigger_process::subprocess;
 use serde::{Deserialize, Serialize};
 
@@ -93,7 +96,7 @@ pub(super) fn request_line(path: &str, text: &str) -> String {
 
 /// One answer of THE EXTRACTOR PROTOCOL as it parses: the path it is for, and the error the
 /// extractor met or the file's definitions and references in the bundled extraction's own forms,
-/// with whether they cover only part of the file.
+/// with whether they cover only part of the file and the lines of the file's own doc comment.
 #[derive(Deserialize)]
 struct Answer {
     path: String,
@@ -102,20 +105,29 @@ struct Answer {
     refs: Option<Vec<SymRef>>,
     #[serde(default)]
     partial: bool,
+    #[serde(default)]
+    doc: Option<(u32, u32)>,
 }
 
 /// The symbols the answer line `line` gives the request for the file at `path` holding `text`,
 /// or why THE EXTRACTOR PROTOCOL refuses it. Checked in order: the line parses as an answer; it is
-/// for `path`; it holds no error; it holds both lists; each def has a name and a path, a line from
-/// 1 to the text's last - one more than the `\n` the text holds - and an end line from its line to
-/// the last, and none of the out-of-line module fields only the bundled Rust grammar sets; each
-/// ref has a name, a line from 1 to the last and, when it has a kind, one of `const`, `type` and
-/// `use`; and no def path leads back to itself through the parents ([`parent_cycle`]). The why
-/// quotes each text the extractor wrote into it - the answer's path, its error, a ref's kind, the
-/// def path a cycle runs through - so
-/// a line break or terminal escape there is escaped and the line saying the why stays one line.
-/// The protocol carries no doc span (spec 117, DOC FACTS), so the symbols hold none, the file's
-/// or a def's, whatever the answer writes.
+/// for `path`; it holds no error; it holds both lists; the file's doc span, when it has one, is
+/// within the text's lines ([`outside`]) - from 1 to the last, one more than the `\n` the text
+/// holds; each def has a name and a path, its line and end line within them, its doc span, when it
+/// has one, within them, and none of the out-of-line module fields only the bundled Rust grammar
+/// sets; each ref has a name, a qualifier, when it has one, that is not empty, then, beside a
+/// qualifier, a name holding neither [`PATH_SEPARATOR`] nor [`MEMBER_SEPARATOR`] (the facts layer
+/// writes it after the qualifier, and every read cuts the written name at its last separator, so
+/// a leaf holding one would read back under another qualifier), then one the cut of its written
+/// name ([`qualified_name`], [`path_leaf`]) gives back whole (`:b` after the path qualifier `Q` is
+/// written `Q:::b` and read back as `b`), a line from 1 to the last and, when it has a kind, a
+/// tagged mention kind, one whose references [`reference_candidate_kinds`] resolves onto
+/// definitions; and no def path leads back to itself through the parents ([`parent_cycle`]). The
+/// why quotes each text the extractor wrote into it - the answer's path, its error, a qualified
+/// ref's name, the name written from it and the leaf read back, a ref's kind, the def path a cycle
+/// runs through - so a line break or terminal escape there is escaped and the line saying the why
+/// stays one line. The symbols hold the doc spans, the file's and each def's, as the answer writes
+/// them (spec 117, DOC FACTS).
 pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<CodeSymbols, String> {
     let answer: Answer =
         serde_json::from_str(line).map_err(|e| format!("the answer does not parse: {e}"))?;
@@ -125,10 +137,13 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
     if let Some(error) = answer.error {
         return Err(format!("the answer is an error: {error:?}"));
     }
-    let (Some(mut defs), Some(refs)) = (answer.defs, answer.refs) else {
+    let (Some(defs), Some(refs)) = (answer.defs, answer.refs) else {
         return Err("the answer holds no error and lacks defs or refs".to_string());
     };
     let last = text.matches('\n').count() as u32 + 1;
+    if let Some(why) = answer.doc.and_then(|doc| outside(doc, last, DOC_BOUNDS)) {
+        return Err(format!("the file's {why}"));
+    }
     for (i, def) in defs.iter().enumerate() {
         if def.name.is_empty() {
             return Err(format!("defs[{i}]: the name is empty"));
@@ -136,17 +151,10 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
         if def.path.is_empty() {
             return Err(format!("defs[{i}]: the path is empty"));
         }
-        if !(1..=last).contains(&def.line) {
-            return Err(format!(
-                "defs[{i}]: line {} is outside 1..={last}",
-                def.line
-            ));
-        }
-        if !(def.line..=last).contains(&def.end_line) {
-            return Err(format!(
-                "defs[{i}]: end_line {} is outside {}..={last}",
-                def.end_line, def.line
-            ));
+        if let Some(why) = outside((def.line, def.end_line), last, ["line", "end_line"])
+            .or_else(|| def.doc.and_then(|doc| outside(doc, last, DOC_BOUNDS)))
+        {
+            return Err(format!("defs[{i}]: {why}"));
         }
         if def.is_out_of_line_module
             || def.path_override.is_some()
@@ -161,14 +169,34 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
         if r.name.is_empty() {
             return Err(format!("refs[{i}]: the name is empty"));
         }
+        if let Some(q) = &r.qualifier {
+            if q.name.is_empty() {
+                return Err(format!("refs[{i}]: the qualifier is empty"));
+            }
+            if r.name.contains(PATH_SEPARATOR) || r.name.contains(MEMBER_SEPARATOR) {
+                return Err(format!(
+                    "refs[{i}]: a qualified ref's name {:?} holds {PATH_SEPARATOR:?} or \
+                     {MEMBER_SEPARATOR:?}",
+                    r.name
+                ));
+            }
+            let written = qualified_name(&q.name, q.path, &r.name);
+            let read = path_leaf(&written);
+            if read != r.name {
+                return Err(format!(
+                    "refs[{i}]: a qualified ref's name {:?} reads back from {written:?} as \
+                     {read:?}",
+                    r.name
+                ));
+            }
+        }
         if !(1..=last).contains(&r.line) {
             return Err(format!("refs[{i}]: line {} is outside 1..={last}", r.line));
         }
         if let Some(kind) = &r.ref_kind {
-            if ![REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE].contains(&kind.as_str()) {
+            if reference_candidate_kinds(kind).is_empty() {
                 return Err(format!(
-                    "refs[{i}]: ref_kind {kind:?} is not {REF_KIND_CONST}, {REF_KIND_TYPE} or \
-                     {REF_KIND_USE}"
+                    "refs[{i}]: ref_kind {kind:?} is not a tagged mention kind"
                 ));
             }
         }
@@ -178,17 +206,31 @@ pub(super) fn symbols_answered(path: &str, text: &str, line: &str) -> Result<Cod
             "the defs' parents form a cycle through {through:?}"
         ));
     }
-    // Spec 117 (DOC FACTS): the protocol carries no doc span yet, so a def's span the answer
-    // writes is dropped, and the file has none.
-    for def in &mut defs {
-        def.doc = None;
-    }
     Ok(CodeSymbols {
         defs,
         refs,
         partial: answer.partial,
-        doc: None,
+        doc: answer.doc,
     })
+}
+
+/// What [`outside`] names a doc span's first and last line by.
+const DOC_BOUNDS: [&str; 2] = ["doc start", "doc end"];
+
+/// Why the 1-based, inclusive line span `(start, end)` lies outside a text whose last line is
+/// `last`, the span's first and last line named `start_name` and `end_name`: a start outside 1 to
+/// the last line, or else an end outside the start to the last line. None when the span is within
+/// the text.
+fn outside(
+    (start, end): (u32, u32),
+    last: u32,
+    [start_name, end_name]: [&str; 2],
+) -> Option<String> {
+    if !(1..=last).contains(&start) {
+        return Some(format!("{start_name} {start} is outside 1..={last}"));
+    }
+    (!(start..=last).contains(&end))
+        .then(|| format!("{end_name} {end} is outside {start}..={last}"))
 }
 
 /// The def path a walk of `defs` from def path to parent returns to, when one does:
@@ -210,6 +252,7 @@ fn parent_cycle(defs: &[model::Def]) -> Option<&str> {
 mod tests {
     use super::*;
     use crate::grounder::symbols::model::Kind;
+    use crate::symbol_index::{qualifier, sym_ref_of_kind};
 
     /// A def an answer carries: a function named `name` at `path` over `line..=end_line`, its
     /// container `parent`.
@@ -230,20 +273,6 @@ mod tests {
         }
     }
 
-    /// A ref an answer carries: `name` at `line`, inside the def at `enclosing`, of `ref_kind`.
-    fn answered_ref(
-        name: &str,
-        line: u32,
-        enclosing: Option<&str>,
-        ref_kind: Option<&str>,
-        is_test: bool,
-    ) -> SymRef {
-        SymRef {
-            ref_kind: ref_kind.map(str::to_string),
-            ..crate::symbol_index::sym_ref(name, line, enclosing, is_test)
-        }
-    }
-
     /// An answer for `a.zig` carrying the defs `defs` (JSON objects, comma-separated) and no refs.
     fn answer_with_defs(defs: &str) -> String {
         format!(r#"{{"path":"a.zig","defs":[{defs}],"refs":[]}}"#)
@@ -251,18 +280,25 @@ mod tests {
 
     /// An answer for `a.zig` carrying no defs and the refs `refs` (JSON objects, comma-separated).
     fn answer_with_refs(refs: &str) -> String {
-        format!(r#"{{"path":"a.zig","defs":[],"refs":[{refs}]}}"#)
+        crate::extractor_stub::answer_with_refs("a.zig", refs)
     }
 
     /// THE EXTRACTOR PROTOCOL, the answer: over a request for `a.zig`, an answer holding defs and
-    /// refs within the text's lines - the last one more than the `\n` the text holds - gives them
-    /// and its partial flag as written, and no doc span, the file's or a def's, whatever it
-    /// writes; every answer the protocol refuses gives the exact why:
+    /// refs within the text's lines - the last one more than the `\n` the text holds - gives them,
+    /// each ref's tagged mention kind and qualifier, an unqualified ref's name holding `::` or `.`,
+    /// a qualified one's holding a lone `:` (`a:b`; `b:` after the path qualifier `Q`, `b` after
+    /// `Q:`, and `:b` after the member qualifier `Q`), its partial flag and the doc spans, the
+    /// file's and each def's, as written; every answer the protocol refuses gives the exact why:
     /// one that does not parse, that is for another path, that is an error - its text quoted, a
     /// line break or terminal escape in it escaped - that lacks a list, a
     /// def or ref outside the lines or with an empty name, a def with an empty path, an end line
-    /// outside its line and the last, or an out-of-line module field, a ref kind other than
-    /// `const`, `type` and `use`, and a cycle among the def paths through their parents.
+    /// outside its line and the last, or an out-of-line module field, a doc span, the file's or a
+    /// def's, starting outside the first line and the last or ending outside its start and the
+    /// last, a ref with an empty qualifier (checked before its name), a qualifier beside a name
+    /// holding `::` or `.`, which a read of the written name would cut inside the leaf, or beside
+    /// any other name a read of the written name cuts elsewhere (`:b` after the path qualifier
+    /// `Q`, written `Q:::b`), or a kind that is no tagged mention kind (`call`, the empty kind,
+    /// `module`), and a cycle among the def paths through their parents.
     #[test]
     fn an_answer_gives_its_symbols_or_why_the_protocol_refuses_it() {
         const TEXT: &str = "a\nb\nc\n";
@@ -287,7 +323,7 @@ mod tests {
         };
         let refused = |why: &str| Err(why.to_string());
         // (the request's text, the answer line, its symbols or why it is refused)
-        let rows: Vec<(&str, String, Result<CodeSymbols, String>)> = vec![
+        let mut rows: Vec<(&str, String, Result<CodeSymbols, String>)> = vec![
             (
                 TEXT,
                 r#"{"path":"a.zig","defs":[],"refs":[]}"#.into(),
@@ -326,11 +362,11 @@ mod tests {
                         answered_def("a", "a", (2, 3), Some("c"), true),
                     ],
                     refs: vec![
-                        answered_ref("x", 1, None, None, false),
-                        answered_ref("y", 4, Some("a"), None, true),
-                        answered_ref("C", 2, None, Some("const"), false),
-                        answered_ref("T", 3, None, Some("type"), false),
-                        answered_ref("u", 4, None, Some("use"), false),
+                        sym_ref_of_kind("x", 1, None, None, false),
+                        sym_ref_of_kind("y", 4, Some("a"), None, true),
+                        sym_ref_of_kind("C", 2, None, Some("const"), false),
+                        sym_ref_of_kind("T", 3, None, Some("type"), false),
+                        sym_ref_of_kind("u", 4, None, Some("use"), false),
                     ],
                     partial: false,
                     doc: None,
@@ -347,7 +383,55 @@ mod tests {
                 r#"{"path":"a.zig","defs":[{"kind":"Function","name":"f","line":2,"end_line":2,"path":"f","doc":[1,1]}],"refs":[],"doc":[1,1]}"#
                     .into(),
                 Ok(CodeSymbols {
-                    defs: vec![answered_def("f", "f", (2, 2), None, false)],
+                    defs: vec![model::Def {
+                        doc: Some((1, 1)),
+                        ..answered_def("f", "f", (2, 2), None, false)
+                    }],
+                    doc: Some((1, 1)),
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"field"}"#),
+                Ok(CodeSymbols {
+                    refs: vec![sym_ref_of_kind("x", 1, None, Some("field"), false)],
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"variant"}"#),
+                Ok(CodeSymbols {
+                    refs: vec![sym_ref_of_kind("x", 1, None, Some("variant"), false)],
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"impl"}"#),
+                Ok(CodeSymbols {
+                    refs: vec![sym_ref_of_kind("x", 1, None, Some("impl"), false)],
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"area","line":1,"qualifier":{"name":"Shape","path":true}},"#,
+                    r#"{"name":"area","line":2,"qualifier":{"name":"s","path":false}}"#
+                )),
+                Ok(CodeSymbols {
+                    refs: vec![
+                        SymRef {
+                            qualifier: Some(qualifier("Shape", true)),
+                            ..sym_ref_of_kind("area", 1, None, None, false)
+                        },
+                        SymRef {
+                            qualifier: Some(qualifier("s", false)),
+                            ..sym_ref_of_kind("area", 2, None, None, false)
+                        },
+                    ],
                     ..empty()
                 }),
             ),
@@ -503,12 +587,95 @@ mod tests {
             (
                 TEXT,
                 answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"call"}"#),
-                refused(r#"refs[0]: ref_kind "call" is not const, type or use"#),
+                refused(r#"refs[0]: ref_kind "call" is not a tagged mention kind"#),
             ),
             (
                 TEXT,
                 answer_with_refs(r#"{"name":"x","line":1,"ref_kind":""}"#),
-                refused(r#"refs[0]: ref_kind "" is not const, type or use"#),
+                refused(r#"refs[0]: ref_kind "" is not a tagged mention kind"#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"x","line":1,"ref_kind":"module"}"#),
+                refused(r#"refs[0]: ref_kind "module" is not a tagged mention kind"#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"x","line":1,"qualifier":{"name":"Q","path":true}},"#,
+                    r#"{"name":"x","line":1,"qualifier":{"name":"","path":false}}"#
+                )),
+                refused("refs[1]: the qualifier is empty"),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"a.b","line":1,"qualifier":{"name":"","path":true}}"#),
+                refused("refs[0]: the qualifier is empty"),
+            ),
+            (
+                TEXT,
+                answer_with_refs(r#"{"name":"a.b","line":1,"qualifier":{"name":"Q","path":true}}"#),
+                refused(r#"refs[0]: a qualified ref's name "a.b" holds "::" or ".""#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"x","line":1},"#,
+                    r#"{"name":"a::b","line":1,"qualifier":{"name":"Q","path":false}}"#
+                )),
+                refused(r#"refs[1]: a qualified ref's name "a::b" holds "::" or ".""#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"a.b","line":1},"#,
+                    r#"{"name":"a::b","line":2},"#,
+                    r#"{"name":"a:b","line":3,"qualifier":{"name":"Q","path":true}}"#
+                )),
+                Ok(CodeSymbols {
+                    refs: vec![
+                        sym_ref_of_kind("a.b", 1, None, None, false),
+                        sym_ref_of_kind("a::b", 2, None, None, false),
+                        SymRef {
+                            qualifier: Some(qualifier("Q", true)),
+                            ..sym_ref_of_kind("a:b", 3, None, None, false)
+                        },
+                    ],
+                    ..empty()
+                }),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":"x","line":1},"#,
+                    r#"{"name":":b","line":1,"qualifier":{"name":"Q","path":true}}"#
+                )),
+                refused(r#"refs[1]: a qualified ref's name ":b" reads back from "Q:::b" as "b""#),
+            ),
+            (
+                TEXT,
+                answer_with_refs(concat!(
+                    r#"{"name":":b","line":1,"qualifier":{"name":"Q","path":false}},"#,
+                    r#"{"name":"b:","line":2,"qualifier":{"name":"Q","path":true}},"#,
+                    r#"{"name":"b","line":3,"qualifier":{"name":"Q:","path":true}}"#
+                )),
+                Ok(CodeSymbols {
+                    refs: vec![
+                        SymRef {
+                            qualifier: Some(qualifier("Q", false)),
+                            ..sym_ref_of_kind(":b", 1, None, None, false)
+                        },
+                        SymRef {
+                            qualifier: Some(qualifier("Q", true)),
+                            ..sym_ref_of_kind("b:", 2, None, None, false)
+                        },
+                        SymRef {
+                            qualifier: Some(qualifier("Q:", true)),
+                            ..sym_ref_of_kind("b", 3, None, None, false)
+                        },
+                    ],
+                    ..empty()
+                }),
             ),
             (
                 TEXT,
@@ -541,6 +708,46 @@ mod tests {
                 refused(r#"the defs' parents form a cycle through "a""#),
             ),
         ];
+        // (a doc span over TEXT, why the protocol refuses it or none): each is answered as a def's
+        // span and as the file's, the def's why led by its index and the file's by "the file's".
+        let doc_spans = [
+            ((0, 1), Some("doc start 0 is outside 1..=4")),
+            ((1, 4), None),
+            ((4, 4), None),
+            ((5, 5), Some("doc start 5 is outside 1..=4")),
+            ((3, 2), Some("doc end 2 is outside 3..=4")),
+            ((3, 3), None),
+            ((2, 5), Some("doc end 5 is outside 2..=4")),
+        ];
+        for ((start, end), why) in doc_spans {
+            rows.push((
+                TEXT,
+                answer_with_defs(&format!(
+                    r#"{{"kind":"Function","name":"f","line":1,"end_line":1,"path":"f","doc":[{start},{end}]}}"#
+                )),
+                match why {
+                    Some(why) => refused(&format!("defs[0]: {why}")),
+                    None => Ok(CodeSymbols {
+                        defs: vec![model::Def {
+                            doc: Some((start, end)),
+                            ..answered_def("f", "f", (1, 1), None, false)
+                        }],
+                        ..empty()
+                    }),
+                },
+            ));
+            rows.push((
+                TEXT,
+                format!(r#"{{"path":"a.zig","defs":[],"refs":[],"doc":[{start},{end}]}}"#),
+                match why {
+                    Some(why) => refused(&format!("the file's {why}")),
+                    None => Ok(CodeSymbols {
+                        doc: Some((start, end)),
+                        ..empty()
+                    }),
+                },
+            ));
+        }
         for (text, answer, symbols) in rows {
             assert_eq!(
                 symbols_answered("a.zig", text, &answer),
