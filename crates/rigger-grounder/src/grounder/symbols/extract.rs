@@ -5740,6 +5740,82 @@ mod plat {
         }
     }
 
+    /// Spec 117, MACRO TOKEN TREES: the corners of the token read read as their plain twins do.
+    /// An invocation nested in another's token tree has no generic parameter, impl or inline
+    /// module around it in the tree it was re-parsed in, so its token tree stages with those of
+    /// its outer invocation ([`Scope::at`]); an impl re-parsed out of a token tree gives its
+    /// methods its self type's path, read off its re-parse ([`def_paths`]); and what a token tree
+    /// neither parse accepts holds inside a token tree its argument-list parse breaks is read
+    /// once, by that token tree's own read ([`read_tokens`]), never by the outer parse as well,
+    /// while one that parse holds whole is read inside it.
+    #[test]
+    fn a_token_tree_corner_reads_as_its_plain_twin() {
+        let cases = [
+            (
+                "a nested token tree's generic parameter stages nothing and its self is the impl's",
+                "\
+struct S;
+impl S {
+    fn a<T>(&self) {
+        outer!(inner!(self.b(), Wrap::<T>::new()));
+    }
+}
+",
+                "\
+1 def Type S to 1
+2 def Impl impl S to 6
+2 ref call S impl S
+3 def Method S::a to 5 in impl S
+4 ref call b S::a q S.
+4 ref call inner S::a
+4 ref call new S::a q Wrap::
+4 ref call outer S::a
+4 ref type Wrap S::a",
+            ),
+            (
+                "a nested token tree's out-of-line module is placed under the inline module",
+                "mod plat {\n    outer! {\n        inner! { mod sys; }\n    }\n}\n",
+                "\
+1 def Module plat to 5
+2 ref call outer plat
+3 def Module plat::sys to 3 in plat out-of-line under plat
+3 ref call inner plat",
+            ),
+            (
+                "a token tree's impl gives its method its self type's path",
+                "struct S;\nitems! {\n    impl S {\n        fn f() {}\n    }\n}\n",
+                "\
+1 def Type S to 1
+2 ref call items -
+3 def Impl impl S to 5
+3 ref call S impl S
+4 def Method S::f to 4 in impl S",
+            ),
+            (
+                "a struct inside a broken token tree is one definition with one field and one type read",
+                "fn z() {\n    m!({ \"k\": struct P(Q); });\n}\n",
+                "\
+1 def Function z to 3
+2 def Field z::P.0 to 2 in z::P
+2 def Type z::P to 2 in z
+2 ref call m z
+2 ref type Q z",
+            ),
+            (
+                "a token tree the broken argument-list parse holds whole is read inside it",
+                "fn y() {\n    m!(S { x: K } +);\n}\n",
+                "\
+1 def Function y to 3
+2 ref call m y
+2 ref const K y
+2 ref type S y",
+            ),
+        ];
+        for (case, src, expected) in cases {
+            assert_eq!(read_lines(src), expected, "{case}");
+        }
+    }
+
     /// Spec 117, RUST REFERENCES: the tagged reference pass reads Rust alone, so a TypeScript type
     /// name, a `type_identifier` in its grammar too, stages no row of its own: its one row is the
     /// type reference the TypeScript query's `@reference.type` capture tags (spec 117, CAPTURES).
