@@ -35,8 +35,13 @@ type Case = (
 /// each a mention too, while a qualified type is none and a qualified name in a constant pattern,
 /// a member access to the grammar, is a `field` mention; a positional pattern's type,
 /// `p is Pt(0, 0)`, an invocation in a constant pattern to the grammar, is a `type` mention after
-/// `is`, under a `not`, in a switch case or arm and in one pair of parentheses, while one in two
-/// pairs and `nameof(Foo)` there are none; `new T()` stays a call; `x.f` not called, read or
+/// `is`, under a `not`, in a switch case or arm and in one pair of parentheses, and so is one with a
+/// declaration first in a switch case label, `case Pt(var x, 0):`, stacked included, an invocation
+/// in the switch section to the grammar, while a call in a case's body or `when` is none and one
+/// in two pairs is none; `nameof` in any pattern position, a switch case, with `when`, `or` or
+/// `and not` and under `not`, a switch arm, a property subpattern, a list, parentheses and a
+/// declaring `nameof(var x)` included, is none, while a member access in its argument is the
+/// `field` mention it names, as in an expression; `new T()` stays a call; `x.f` not called, read or
 /// assigned, is a `field` mention, named `Square.SIDES` when a capitalised name qualifies it,
 /// while a called `x.g()` is a call; and the `///` block directly above a definition, a blank
 /// line and a bare `///` line inside it included, under at most two other comments, a plain line
@@ -53,7 +58,7 @@ fn csharp_stages_its_row() {
     let leaf_in = |at: u32, leaf: &str, kind: Option<&str>, line: u32| {
         mention_in(Some(at), leaf, leaf, kind, line, false)
     };
-    let cases: [Case; 13] = [
+    let cases: [Case; 16] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -240,6 +245,44 @@ fn csharp_stages_its_row() {
             "an identifier and a positional pattern in two pairs of parentheses, the second a nested expression to the grammar",
             "class K {\n    void M(object p) {\n        var a = p is ((ParQ));\n        var b = p is ((PtQ(0, 0)));\n    }\n}\n",
             vec![leaf_in(1, "ParQ", Some(REF_KIND_TYPE), 3)],
+            vec![("K", None, ""), ("M", None, "")],
+        ),
+        (
+            "a positional pattern with a declaration first in a switch case label, stacked included, an invocation in the switch section to the grammar, and a call in a case's body or `when`",
+            "class K {\n    void M1(object p) { switch (p) { case Pt(var x, var y): break; } }\n    void M2(object p) { switch (p) { case Pt(var x, 0): break; } }\n    void M3(object p) { switch (p) { case Pt(int u, int v): break; } }\n    void M4(object p) { switch (p) { case Pt(_, var v): break; } }\n    void M5(object p) { switch (p) { case Pt(int u, _): break; } }\n    void M6(object p) { switch (p) { case PtA(var u, var v): case PtB(var w, var z): break; } }\n    void M7(object p) { switch (p) { case 0: Go(1); break; case int i when Check(i): break; } }\n}\n",
+            vec![
+                leaf_in(1, "Pt", Some(REF_KIND_TYPE), 2),
+                leaf_in(2, "Pt", Some(REF_KIND_TYPE), 3),
+                leaf_in(3, "Pt", Some(REF_KIND_TYPE), 4),
+                leaf_in(4, "Pt", Some(REF_KIND_TYPE), 5),
+                leaf_in(5, "Pt", Some(REF_KIND_TYPE), 6),
+                leaf_in(6, "PtA", Some(REF_KIND_TYPE), 7),
+                leaf_in(6, "PtB", Some(REF_KIND_TYPE), 7),
+            ],
+            vec![
+                ("K", None, ""),
+                ("M1", None, ""),
+                ("M2", None, ""),
+                ("M3", None, ""),
+                ("M4", None, ""),
+                ("M5", None, ""),
+                ("M6", None, ""),
+                ("M7", None, ""),
+            ],
+        ),
+        (
+            "`nameof` in a switch case, with `when`, `or`, `and not` or under `not`, a switch arm, a property subpattern, a list and parentheses, and the grammar's reading of a declaring `nameof(var x)` in a case and after `is`",
+            "class K {\n    int M(object p, string s, bool ok) {\n        switch (s) { case nameof(Foo): break; }\n        switch (s) { case nameof(Foo) when ok: break; }\n        switch (s) { case nameof(Foo) or nameof(Bar): break; }\n        switch (s) { case nameof(Foo) and not nameof(Bar): break; }\n        switch (s) { case not nameof(Foo): break; }\n        var a = s switch { nameof(Foo) => 1, _ => 0 };\n        var b = s switch { nameof(Foo) or nameof(Bar) => 1, _ => 0 };\n        var c = s switch { nameof(Foo) when ok => 1, _ => 0 };\n        var d = s switch { not nameof(Foo) => 1, _ => 0 };\n        var e = p is { Name: nameof(Foo) };\n        var f = p is [nameof(Foo), ..];\n        var g = s is (not nameof(Foo));\n        switch (s) { case nameof(var x): break; }\n        var h = s is nameof(var y);\n        return 0;\n    }\n}\n",
+            vec![],
+            vec![("K", None, ""), ("M", None, "")],
+        ),
+        (
+            "a member access in `nameof`'s argument in a switch case and in an expression",
+            "class K {\n    void M(string s) {\n        switch (s) { case nameof(Ns.Foo): break; }\n        var n = nameof(Ns.Bar);\n    }\n}\n",
+            vec![
+                in_def(1, "Ns.Foo", "Foo", Some(REF_KIND_FIELD), 3),
+                in_def(1, "Ns.Bar", "Bar", Some(REF_KIND_FIELD), 4),
+            ],
             vec![("K", None, ""), ("M", None, "")],
         ),
     ];
