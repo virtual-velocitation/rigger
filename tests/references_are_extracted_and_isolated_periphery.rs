@@ -16,16 +16,17 @@
 //!    new `use`-only file gains its file node; and the tagged
 //!    references of a test file, of a `#[cfg(test)]` module or under their own `#[cfg(test)]`
 //!    fold no edge and prove no definition, while their call proves one;
-//!  - through CAPTURES, a type that the Go, TypeScript, TSX or C# tags query captures as a
+//!  - through CAPTURES, a type that the Go, TypeScript, TSX, C# or Python tags query captures as a
 //!    reference outside a constructor folds no placeholder and no `CALLS` edge, landing instead as
 //!    one `REFERENCES` edge onto its one same-file definition, and nowhere when nothing defines it;
 //!  - a constructor stays a call: a TypeScript, TSX, JavaScript or C# `new Square()` lands as
 //!    the call's `REFERENCES` and `CALLS` edges onto its one same-file class, no placeholder;
-//!  - and a qualifier capture names the mention: a TypeScript, TSX or JavaScript `new Ns.Box()`
-//!    and a C# base `Ns.IShape` or `List<IShape>` are stored as the mentions `Ns.Box` of the leaf
-//!    `Box`, `Ns.IShape` of `IShape` and `List` of `List`, and land on the one definition the name
-//!    as written reaches - the member qualifier's fallback to the one same-file `Box`, the
-//!    `namespace Ns` member over its same-file namesake, and `List`, the leaf before the type
+//!  - and a qualifier capture names the mention: a TypeScript, TSX or JavaScript `new Ns.Box()`,
+//!    a C# base `Ns.IShape` or `List<IShape>` and a Python call `Shape.area()` are stored as the
+//!    mentions `Ns.Box` of the leaf `Box`, `Ns.IShape` of `IShape`, `List` of `List` and
+//!    `Shape.area` of `area`, and land on the one definition the name as written reaches - the
+//!    member qualifier's fallback to the one same-file `Box`, the `namespace Ns` member and
+//!    `Shape`'s method over their same-file namesakes, and `List`, the leaf before the type
 //!    arguments.
 
 #[cfg(feature = "symbols")]
@@ -331,11 +332,11 @@ const TS_TYPE_USER: &str =
 /// `@reference.<kind>` reference (spec 117, CAPTURES), each defining a type `Kestrel` and a
 /// function `draw` and, in a function `paint`, calling `draw` and naming a `Kestrel` and a `Wren`,
 /// a type nothing defines, at a site its query captures: a parameter's type in Go, TypeScript and
-/// TSX, a local's in C#, where `draw` and `paint` are the methods `Draw` and `Paint` of a class
-/// `Shop` and the call is `this.Draw()`. Each row is `(file, source, the id paths of its definitions, sorted,
-/// paint's id path, draw's id path)`.
+/// TSX, a parameter's annotation in Python, a local's in C#, where `draw` and `paint` are the
+/// methods `Draw` and `Paint` of a class `Shop` and the call is `this.Draw()`. Each row is `(file,
+/// source, the id paths of its definitions, sorted, paint's id path, draw's id path)`.
 #[cfg(feature = "symbols")]
-const TYPE_USERS: [(&str, &str, &[&str], &str, &str); 4] = [
+const TYPE_USERS: [(&str, &str, &[&str], &str, &str); 5] = [
     (
         "f.go",
         "package p\n\ntype Kestrel struct{}\n\nfunc draw() {}\n\nfunc paint(k Kestrel, w Wren) { draw() }\n",
@@ -364,11 +365,18 @@ const TYPE_USERS: [(&str, &str, &[&str], &str, &str); 4] = [
         "Shop::Paint",
         "Shop::Draw",
     ),
+    (
+        "f.py",
+        "class Kestrel:\n    pass\n\n\ndef draw():\n    pass\n\n\ndef paint(k: Kestrel, w: Wren):\n    draw()\n",
+        &["Kestrel", "draw", "paint"],
+        "paint",
+        "draw",
+    ),
 ];
 
-/// GIVEN a project whose one file, in Go, TypeScript, TSX or C# ([`TYPE_USERS`]), defines `Kestrel`
-/// and `draw` and, in `paint`, calls `draw` and names a `Kestrel` and an undefined `Wren` where its
-/// query captures a type (in C#, `Shop`'s methods `Draw` and `Paint`),
+/// GIVEN a project whose one file, in Go, TypeScript, TSX, C# or Python ([`TYPE_USERS`]), defines
+/// `Kestrel` and `draw` and, in `paint`, calls `draw` and names a `Kestrel` and an undefined `Wren`
+/// where its query captures a type (in C#, `Shop`'s methods `Draw` and `Paint`),
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the graph's `REFERENCES` and `CALLS` edges are the call's two onto `draw` and one
 /// `REFERENCES` edge from `paint` onto `Kestrel`, each `extracted`: the type reference its query's
@@ -491,10 +499,12 @@ const JS_QUALIFIED_SOURCE: &str = "class Box {}\nfunction make() { return new Ns
 /// as a call)`: in TypeScript, TSX and JavaScript a `new Ns.Box()` whose member qualifier `Ns`
 /// names no definition, beside one `Box`; in TypeScript the same call beside a top-level `Box`
 /// and the `Box` of a `namespace Ns`; in C# a base `Ns.IShape` beside the `IShape` of
-/// `namespace Ns` and of `namespace Other`; and in C# a base `List<IShape>`, a name holding type
-/// arguments, beside a class `List` and an interface `IShape`.
+/// `namespace Ns` and of `namespace Other`; in C# a base `List<IShape>`, a name holding type
+/// arguments, beside a class `List` and an interface `IShape`; and in Python a call `Shape.area()`
+/// whose member qualifier `Shape` names a class, beside the method `area` of `Shape` and of
+/// `Other`.
 #[cfg(feature = "symbols")]
-const QUALIFIED_FILES: [(&str, &str, &str, &str, &str, &str, bool); 6] = [
+const QUALIFIED_FILES: [(&str, &str, &str, &str, &str, &str, bool); 7] = [
     ("f.ts", JS_QUALIFIED_SOURCE, "make", "Ns.Box", "Box", "Box", true),
     ("f.tsx", JS_QUALIFIED_SOURCE, "make", "Ns.Box", "Box", "Box", true),
     ("f.js", JS_QUALIFIED_SOURCE, "make", "Ns.Box", "Box", "Box", true),
@@ -525,21 +535,30 @@ const QUALIFIED_FILES: [(&str, &str, &str, &str, &str, &str, bool); 6] = [
         "List",
         false,
     ),
+    (
+        "f.py",
+        "class Shape:\n    def area(self):\n        pass\n\n\nclass Other:\n    def area(self):\n        pass\n\n\ndef total():\n    Shape.area()\n",
+        "total",
+        "Shape.area",
+        "area",
+        "Shape::area",
+        true,
+    ),
 ];
 
 /// GIVEN a project whose one file names a definition through a qualifier or with type arguments
 /// ([`QUALIFIED_FILES`]),
 /// WHEN the operator runs `rigger graph build`,
 /// THEN A QUALIFIER CAPTURE NAMES THE MENTION (spec 117, CAPTURES): the store holds the file's
-/// one mention, named as written (`Ns.Box`, `Ns.IShape`, `List`) of its leaf (`Box`, `IShape`,
-/// `List`), and the graph's `REFERENCES` and `CALLS` edges are exactly the reference's, each
-/// `extracted`, onto the one definition its name as written reaches - a call's two, a type
-/// reference's one from the class naming its base. The member qualifier `Ns` of `new Ns.Box()`
-/// keeps no candidate and leaves the call to its one same-file `Box`, where a path qualifier
-/// naming nothing would make no link; the qualifier keeps the `Box` and the `IShape` that
-/// `namespace Ns` holds over their same-file namesakes, which leave a reference by its leaf alone
-/// no one target; and `List<IShape>` is named and lands on `List`, its leaf before the type
-/// arguments.
+/// one mention, named as written (`Ns.Box`, `Ns.IShape`, `List`, `Shape.area`) of its leaf
+/// (`Box`, `IShape`, `List`, `area`), and the graph's `REFERENCES` and `CALLS` edges are exactly
+/// the reference's, each `extracted`, onto the one definition its name as written reaches - a
+/// call's two, a type reference's one from the class naming its base. The member qualifier `Ns`
+/// of `new Ns.Box()` keeps no candidate and leaves the call to its one same-file `Box`, where a
+/// path qualifier naming nothing would make no link; the qualifier keeps the `Box` and the
+/// `IShape` that `namespace Ns` holds, and the `area` that `Shape` holds, over their same-file
+/// namesakes, which leave a reference by its leaf alone no one target; and `List<IShape>` is
+/// named and lands on `List`, its leaf before the type arguments.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_lands_a_qualified_reference_where_its_name_as_written_reaches() {
