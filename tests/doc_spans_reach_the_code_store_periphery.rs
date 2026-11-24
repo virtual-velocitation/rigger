@@ -41,7 +41,8 @@ type Held = (
 /// outer doc lines have a `#[doc(hidden)]` between them beside an undocumented one, a Rust file
 /// with no doc line, a Go file whose bundled query captures a three-line comment block over
 /// one function and none over the next, and a C# file whose class sits under a two-line `///`
-/// block holding XML tags beside an undocumented field.
+/// block holding XML tags, itself under a plain `//` line the span leaves out, beside an
+/// undocumented field.
 const FIRST: [Row; 4] = [
     (
         "src/lib.rs",
@@ -60,10 +61,10 @@ const FIRST: [Row; 4] = [
     ),
     (
         "Shape.cs",
-        "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\n\
+        "// Shapes.\n/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\n\
          class Square : IShape {\n    int Side;\n}\n",
         None,
-        &[("Square", Some((1, 2))), ("Square.Side", None)],
+        &[("Square", Some((2, 3))), ("Square.Side", None)],
     ),
 ];
 

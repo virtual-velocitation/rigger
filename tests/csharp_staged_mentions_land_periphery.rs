@@ -5,8 +5,9 @@
 //! from a `type`, and lands each in the graph through the resolver as one `REFERENCES` edge and
 //! never a call:
 //!
-//!  - a base list's `IShape` lands on that interface, and a parameter's `List<IShape>` on `List`
-//!    and on `IShape`, each `extracted` onto its one same-file definition;
+//!  - a base list's `IShape` lands on that interface, a comment beside it storing no mention, and
+//!    a parameter's `List<IShape>` on `List` and on `IShape`, each `extracted` onto its one
+//!    same-file definition;
 //!  - `Square.SIDES` lands on `Square`'s constant `SIDES`, `extracted`, through its qualifier,
 //!    where a field mention by its leaf alone never reaches a constant; and `s.Side`, its object
 //!    lowercase and so no qualifier, lands on the one field `Side`, `inferred` though that field
@@ -21,15 +22,16 @@ use crate::symbol_index::mention_in;
 
 /// A C# file holding the criterion's row beside the definitions its mentions name: an interface
 /// `IShape` (line 1), a class `List<T>` (line 2), and under a two-line `///` block a class
-/// `Square : IShape` (lines 5-9) with a constant `SIDES`, a field `Side` and a method
-/// `Draw(List<IShape> s)` reading `Square.SIDES` and assigning `s.Side`.
-const SQUARE_SOURCE: &str = "interface IShape { }\nclass List<T> { }\n/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n";
+/// `Square : IShape` (lines 5-9), a comment inside its base list, with a constant `SIDES`, a
+/// field `Side` and a method `Draw(List<IShape> s)` reading `Square.SIDES` and assigning `s.Side`.
+const SQUARE_SOURCE: &str = "interface IShape { }\nclass List<T> { }\n/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : /* base */ IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n";
 
 /// GIVEN a project whose one C# file ([`SQUARE_SOURCE`]) defines `IShape`, `List<T>` and a class
-/// `Square : IShape` whose method `Draw(List<IShape> s)` reads `Square.SIDES` and assigns
-/// `s.Side`,
+/// `Square : IShape`, a comment inside its base list, whose method `Draw(List<IShape> s)` reads
+/// `Square.SIDES` and assigns `s.Side`,
 /// WHEN the operator runs `rigger graph build`,
-/// THEN the code store holds the file's five mentions exactly: `Square`'s base `IShape` an `impl`,
+/// THEN the code store holds the file's five mentions exactly, none for the base list's comment:
+/// `Square`'s base `IShape` an `impl`,
 /// `Draw`'s `IShape` and `List` each a `type`, and its `Square.SIDES`, of leaf `SIDES`, and `Side`
 /// each a `field`; and the graph's `REFERENCES` and `CALLS` edges are exactly one `REFERENCES`
 /// edge each, none a call: from `Square` onto `IShape`, its base; from `Square::Draw` onto `List`
