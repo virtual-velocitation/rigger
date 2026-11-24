@@ -73,25 +73,14 @@ fn version_of(dependencies: &[(String, String)], name: &str) -> String {
 #[test]
 fn each_os_build_of_rigger_process_takes_its_own_keep_awake_adapters_crate_alone() {
     let rows: [(&str, &[&str]); 3] = [
-        (
-            WINDOWS,
-            &["fs2", "rigger-domain", "ring", "rustix", "windows-sys"],
-        ),
+        (WINDOWS, &["rigger-domain", "ring", "rustix", "windows-sys"]),
         (
             "aarch64-apple-darwin",
-            &["fs2", "libc", "rigger-domain", "ring", "rustix"],
+            &["libc", "rigger-domain", "ring", "rustix"],
         ),
         (
             "x86_64-unknown-linux-gnu",
-            &[
-                "fs2",
-                "libc",
-                "rigger-domain",
-                "ring",
-                "rustix",
-                "tokio",
-                "zbus",
-            ],
+            &["libc", "rigger-domain", "ring", "rustix", "tokio", "zbus"],
         ),
     ];
     for (target, crates) in rows {

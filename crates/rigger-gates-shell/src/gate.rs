@@ -559,19 +559,14 @@ pub fn open_build_cache_guard(path: &std::path::Path) -> std::io::Result<std::fs
 /// Takes the in-process shared lock on the shared-cache guard at `guard` (spec 77 criterion 5,
 /// BOUNDED SHARED CACHE; spec 121 criterion 19; spec 125 criterion 10) and answers the open
 /// guard holding it. The guard is opened through [`open_build_cache_guard`], so a missing
-/// scratch root is created rather than faulted, and locked shared through the file-lock
-/// dependency (`flock(2)` on unix, `LockFileEx` on Windows), waiting while
-/// `rigger reset --build-cache` holds it exclusive. Nothing here unlocks it: the lock lasts
-/// while the answered file stays open, and on unix while any process that inherited its
-/// descriptor ([`inherit_on_exec`]) keeps it. A refused create, open or lock is the
-/// [`ProbeFault`] naming `guard` and the OS error.
+/// scratch root is created rather than faulted, and locked shared through std's
+/// [`File::lock_shared`](std::fs::File::lock_shared) (`flock(2)` on unix, `LockFileEx` on
+/// Windows), waiting while `rigger reset --build-cache` holds it exclusive. Nothing here unlocks
+/// it: the lock lasts while the answered file stays open, and on unix while any process that
+/// inherited its descriptor ([`inherit_on_exec`]) keeps it. A refused create, open or lock is
+/// the [`ProbeFault`] naming `guard` and the OS error.
 pub fn hold_shared_lock(guard: &str) -> Result<std::fs::File, ProbeFault> {
-    // Fully-qualified (not `file.lock_shared()`): this crate deliberately uses `fs2` for
-    // every advisory lock ([`crate::budget`], `main.rs`'s step lock) rather than std's
-    // more recently stabilized `File::lock_shared`, which shares this exact method name -
-    // a plain method call would silently resolve to the std inherent method (inherent
-    // methods always win over a trait's) and leave the `fs2` import genuinely unused.
-    lock_guard(guard, <std::fs::File as fs2::FileExt>::lock_shared)
+    lock_guard(guard, std::fs::File::lock_shared)
 }
 
 /// Opens the guard at `guard` through [`open_build_cache_guard`], takes `lock` on it and
@@ -1245,7 +1240,7 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         // non-blocking; a gate build must hold it SHARED for its whole invocation, so a
         // reset attempted while this gate's command is still running is refused rather
         // than corrupting the cache out from under it. Proven from the OTHER side: while
-        // the gate command is still running, an independent probe's try_lock_exclusive on
+        // the gate command is still running, an independent probe's exclusive try-lock on
         // the SAME guard path must fail (contended); once the gate command exits, the
         // same probe must succeed (the shared hold was released).
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1336,7 +1331,9 @@ test result: FAILED. 6 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         let second = open_build_cache_guard(&guard).expect("a second open of the guard");
         assert_eq!(
             (
-                fs2::FileExt::try_lock_shared(&second).map_err(|e| e.raw_os_error()),
+                second
+                    .try_lock_shared()
+                    .map_err(|e| std::io::Error::from(e).kind()),
                 try_exclusive_lock(&guard),
             ),
             (Ok(()), contended()),

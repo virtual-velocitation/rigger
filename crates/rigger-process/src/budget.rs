@@ -1,8 +1,9 @@
-//! Machine-wide build concurrency budget (spec 65): a flock-based slot directory caps how
+//! Machine-wide build concurrency budget (spec 65): a file-lock slot directory caps how
 //! many actual compiler invocations run concurrently ACROSS every rigger process on the
 //! machine, so N unit worktrees building in parallel never stack N compiler fleets into
 //! memory at once. THE AUTHORITATIVE STATE IS THE SLOT FILES on disk, never any in-process
-//! counter: a fixed set of `slot-<i>.lock` files, each held via an exclusive `flock` for
+//! counter: a fixed set of `slot-<i>.lock` files, each held via std's exclusive file lock
+//! (`flock(2)` on unix, `LockFileEx` on Windows) for
 //! exactly the wrapped build's duration and auto-released by the kernel the instant the
 //! holding process exits - cleanly or crashed. That is deliberate: an in-process counter,
 //! an environment variable, or any state a crash could strand is NOT an implementation of
@@ -14,7 +15,6 @@
 //! ([`crate::gate::ExecRunner::run`]) acquires a slot. A reviewer reading code or querying
 //! the graph never calls into this module at all, so it is never budget-gated.
 
-use fs2::FileExt;
 use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -67,12 +67,12 @@ impl BuildBudget {
     /// unlimited path never touches the filesystem.
     ///
     /// Polls each of the `max_concurrent` numbered slot files in turn with a non-blocking
-    /// [`FileExt::try_lock_exclusive`]; the first free slot wins and its held [`File`]
-    /// becomes the returned [`SlotGuard`], which releases the instant it drops - on a clean
-    /// return, an early `?`, or the process being killed (the kernel releases an `flock` on
-    /// any exit of the holding process). A hung build holding its slot is therefore exactly
-    /// as bounded as the liveness watchdog that eventually kills it; this module adds no
-    /// second reaper and strands nothing on its own crash either.
+    /// [`File::try_lock`]; the first free slot wins and its held [`File`] becomes the returned
+    /// [`SlotGuard`], which releases the instant it drops - on a clean return, an early `?`, or
+    /// the process being killed (the kernel releases the lock on any exit of the holding
+    /// process). A hung build holding its slot is therefore exactly as bounded as the liveness
+    /// watchdog that eventually kills it; this module adds no second reaper and strands nothing
+    /// on its own crash either.
     ///
     /// Best-effort against filesystem trouble unrelated to the build itself: a slot
     /// directory that cannot be created (a read-only or absent temp mount) degrades to
@@ -93,7 +93,7 @@ impl BuildBudget {
                     .truncate(false)
                     .open(&path)
                 {
-                    if f.try_lock_exclusive().is_ok() {
+                    if f.try_lock().is_ok() {
                         return SlotGuard(Some(f));
                     }
                 }
@@ -104,7 +104,7 @@ impl BuildBudget {
 }
 
 /// RAII guard for one held budget slot ([`BuildBudget::acquire`]). Dropping it releases the
-/// flock explicitly (the OS would also release it on process exit, including an abnormal
+/// lock explicitly (the OS would also release it on process exit, including an abnormal
 /// one that never runs this `Drop`) so the next waiter's poll finds it free without delay.
 /// Holds no lock at all - `Drop` is then a no-op - on the unlimited / degraded-to-unlimited
 /// path, where the inner `File` is `None`.
@@ -113,7 +113,7 @@ pub struct SlotGuard(Option<File>);
 impl Drop for SlotGuard {
     fn drop(&mut self) {
         if let Some(f) = &self.0 {
-            let _ = FileExt::unlock(f);
+            let _ = f.unlock();
         }
     }
 }
