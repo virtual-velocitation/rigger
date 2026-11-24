@@ -5746,7 +5746,8 @@ mod plat {
     /// methods its self type's path, read off its re-parse ([`def_paths`]); and what a token tree
     /// neither parse accepts holds inside a token tree its argument-list parse breaks is read
     /// once, by that token tree's own read ([`read_tokens`]), never by the outer parse as well,
-    /// while one that parse holds whole is read inside it.
+    /// while one that parse holds whole is read inside it, as is a `,` or `:` it holds inside a
+    /// subtree with no error, a generic's or a closure's, which cuts nothing.
     #[test]
     fn a_token_tree_corner_reads_as_its_plain_twin() {
         let cases = [
@@ -5808,6 +5809,36 @@ impl S {
 2 ref call m y
 2 ref const K y
 2 ref type S y",
+            ),
+            (
+                "a separator inside a subtree the broken argument-list parse holds whole cuts nothing",
+                "\
+fn p() {
+    m!(\"k\": pair::<A, B>(x));
+    m!(x => Wrap::<A, B>::new(), y => h(1));
+    pair::<A, B>(x);
+    Wrap::<A, B>::new();
+}
+",
+                "\
+1 def Function p to 6
+2 ref call m p
+2 ref call pair p
+2 ref type A p
+2 ref type B p
+3 ref call h p
+3 ref call m p
+3 ref call new p q Wrap::
+3 ref type A p
+3 ref type B p
+3 ref type Wrap p
+4 ref call pair p
+4 ref type A p
+4 ref type B p
+5 ref call new p q Wrap::
+5 ref type A p
+5 ref type B p
+5 ref type Wrap p",
             ),
         ];
         for (case, src, expected) in cases {
