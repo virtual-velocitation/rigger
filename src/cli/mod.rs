@@ -4085,10 +4085,15 @@ fn reclaim_orphan_scratch(
             // claiming the two mirror each other. Sharing the one primitive - and picking the
             // same `unwrap_or(true)` fail-closed direction the sibling call site now also picks
             // explicitly - makes that divergence structurally impossible to reintroduce.
+            //
+            // A speculation lane counts its unit as a declared owner only while the unit has not
+            // finished: once it has, the group's outcome has merged, dropped or kept each lane's
+            // work, so a lane tree left behind is residue this sweep reclaims.
             let slug = name.trim_start_matches(rigger::worktree::UNIT_WORKTREE_PREFIX);
-            let dirty = rigger::worktree::owner_names(slug)
-                .any(|owner| declared_slugs.contains(owner))
-                && path.join(".git").exists()
+            let dirty = rigger::worktree::owner_names(slug).any(|owner| {
+                declared_slugs.contains(owner)
+                    && (owner == slug || !run_units.dead_slugs.contains(owner))
+            }) && path.join(".git").exists()
                 && rigger::worktree::path_is_dirty(&path.to_string_lossy()).unwrap_or(true);
             if !worktree_belongs_to_live(&name, &live, &run_units.dead_slugs) && !dirty {
                 let kept = match rigger::worktree::kept_by_git(repo, &path.to_string_lossy()) {
