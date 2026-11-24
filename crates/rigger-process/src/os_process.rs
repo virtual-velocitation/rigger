@@ -906,12 +906,16 @@ mod tests {
 
     /// A Windows command line splits into the arguments it was quoted from, as the host's launch
     /// quotes a hook's: an argument holding a space, or nothing, in double quotes, a quote inside
-    /// one after a backslash, and a backslash doubled before a closing quote. An empty line, which
-    /// the split would answer with this process's own path, answers none.
+    /// one after a backslash, and a backslash doubled before a closing quote. A line as Rust's
+    /// quoting makes it splits so, and so does one as libuv's makes it (`quote_cmd_arg`, in its
+    /// `src/win/process.c`), the quoting the session host's runtime starts a hook through, here
+    /// with an argument holding a space, quotes and a closing backslash, and backslashes before a
+    /// quote. An empty line, which the split would answer with this process's own path, answers
+    /// none.
     #[cfg(windows)]
     #[test]
     fn a_command_line_splits_into_the_arguments_it_was_quoted_from() {
-        let rows: [(&str, &str, Option<&[&str]>); 5] = [
+        let rows: [(&str, &str, Option<&[&str]>); 6] = [
             (
                 "a hook for a spawn id holding a space",
                 r#""C:\Program Files\rigger\rigger.exe" hook stop-failure --spawn "u 7/implementer#2" --class rate_limit"#,
@@ -923,6 +927,20 @@ mod tests {
                     "u 7/implementer#2",
                     "--class",
                     "rate_limit",
+                ]),
+            ),
+            (
+                "a hook as libuv's quote_cmd_arg quotes one",
+                r#""C:\Program Files\rigger\rigger.exe" hook stop-failure --spawn "u 7/implementer#2" "a \"b\" c\\" "hello\\\\\"world" """#,
+                Some(&[
+                    r"C:\Program Files\rigger\rigger.exe",
+                    "hook",
+                    "stop-failure",
+                    "--spawn",
+                    "u 7/implementer#2",
+                    r#"a "b" c\"#,
+                    r#"hello\\"world"#,
+                    "",
                 ]),
             ),
             (
