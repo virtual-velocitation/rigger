@@ -4,9 +4,9 @@
 //! each time its input ended, so a test pins what the code store asked and how many sessions it
 //! started and closed. It lives in its own directory, outside the project it serves, so no walk
 //! of the project reads it. It runs under `sh`, so only a unix test starts it. Beside it lie the
-//! request line it reads for a file, the one-function answer line a test writes for it, the
-//! physical root it records as its start and the identity facts a declared file holds when it
-//! holds no symbols.
+//! request line it reads for a file, the one-function and the references-only answer lines a test
+//! writes for it, the physical root it records as its start and the identity facts a declared
+//! file holds when it holds no symbols.
 
 use std::path::{Path, PathBuf};
 
@@ -114,6 +114,12 @@ pub fn answer_defining_at(path: &str, leaf: &str, line: u32, end_line: u32) -> S
     format!(
         r#"{{"path":"{path}","defs":[{{"kind":"Function","name":"{leaf}","line":{line},"end_line":{end_line},"path":"{leaf}"}}],"refs":[]}}"#
     )
+}
+
+/// The answer line giving the file `path` no definitions and the references `refs`, JSON objects
+/// comma-separated.
+pub fn answer_with_refs(path: &str, refs: &str) -> String {
+    format!(r#"{{"path":"{path}","defs":[],"refs":[{refs}]}}"#)
 }
 
 /// The physical directory of the project at `root`, as the stub records where it started.

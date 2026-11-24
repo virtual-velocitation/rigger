@@ -111,8 +111,9 @@ pub struct Config {
 }
 "#,
     ),
-    // Two inline modules each declaring an out-of-line module of one name: each declaration's
-    // edge leaves its own definition.
+    // Two inline modules each declaring an out-of-line module of one name. No declaration reaches
+    // this file, so it places them as a crate root does, at `src/left/leaf.rs` and
+    // `src/right/leaf.rs`, which the tree does not hold.
     (
         "src/twins.rs",
         r#"pub mod left {

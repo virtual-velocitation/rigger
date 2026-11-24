@@ -3,7 +3,8 @@
 //! runs to report the auth method (WHAT A PERSON SEES). The JSON alone answers, each read on its
 //! own key: the session is logged in only when the report's `loggedIn` is `true`, and its auth
 //! method is the report's `authMethod` string; a report that does not come by the deadline, does
-//! not parse or names no such key answers not logged in, and no auth method.
+//! not parse or names no such key answers not logged in, and no auth method. Every read and
+//! every session starts the one [`SessionHost`]: which binary the host is and how it is started.
 
 use std::ops::ControlFlow;
 use std::process::Stdio;
@@ -22,7 +23,7 @@ pub use rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR;
 /// alone, and is not passed on itself. Unset or empty, the inherited environment rides through
 /// untouched, an ambient [`AGENT_TOKEN_VAR`] included. The value is set on the command and held
 /// nowhere else: no field, no record, no message.
-pub(crate) fn apply_agent_credential(cmd: &mut std::process::Command) {
+fn apply_agent_credential(cmd: &mut std::process::Command) {
     if let Some(token) = agent_token() {
         cmd.env(AGENT_TOKEN_VAR, token);
         cmd.env_remove(RIGGER_AGENT_TOKEN_VAR);
@@ -41,9 +42,72 @@ pub fn agent_token_set() -> bool {
     agent_token().is_some()
 }
 
-/// The agent binary a driver launches from `PATH` when it is given none, and so the one whose
-/// login `rigger validate` reads.
+/// The agent binary a [`SessionHost`] given none starts, from `PATH`.
 pub const DEFAULT_BIN: &str = "claude";
+
+/// THE SESSION HOST: which binary the host is and how it is started, the one home every start
+/// of it reads. A driver of either host kind holds one and starts each session from it; the
+/// hold probe reads its login and starts its canary from it; `rigger run` builds the one its
+/// driver holds before any start effect and reads that host's version first, so the version it
+/// checks is the binary it launches; and `rigger validate` reads the login and the version of
+/// the same default host. A host given no binary is [`DEFAULT_BIN`] on `PATH`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionHost {
+    /// The binary as given; empty is [`DEFAULT_BIN`] on `PATH`.
+    bin: String,
+}
+
+impl SessionHost {
+    /// The host the binary `bin` is; empty is [`DEFAULT_BIN`] on `PATH`.
+    pub fn at(bin: impl Into<String>) -> Self {
+        SessionHost { bin: bin.into() }
+    }
+
+    /// The binary this host starts.
+    pub fn bin(&self) -> &str {
+        crate::driver::bin_or_path_default(&self.bin, DEFAULT_BIN)
+    }
+
+    /// The one start of this host: a command for its binary that runs in
+    /// [`crate::subprocess::session_dir`] of `dir`, on the environment a spawn gets
+    /// ([`apply_agent_credential`]).
+    pub(crate) fn command_in(&self, dir: &str) -> std::process::Command {
+        let mut cmd = crate::subprocess::command(self.bin());
+        started_in(&mut cmd, dir);
+        cmd
+    }
+
+    /// The start of a session of this host: [`Self::command_in`]'s start, as a command whose
+    /// process starts a tree contained as `how`. An error where this OS holds no tree as `how`.
+    pub(crate) fn tree_in(
+        &self,
+        dir: &str,
+        how: &crate::child_tree::Containment,
+    ) -> std::io::Result<crate::child_tree::TreeCommand> {
+        let mut tree = crate::child_tree::TreeCommand::new(self.bin(), how)?;
+        started_in(tree.command_mut(), dir);
+        Ok(tree)
+    }
+}
+
+/// What every start of a host sets on its command: the directory, [`crate::subprocess::session_dir`]
+/// of `dir`, and the environment a spawn gets ([`apply_agent_credential`]).
+fn started_in(cmd: &mut std::process::Command, dir: &str) {
+    cmd.current_dir(crate::subprocess::session_dir(dir));
+    apply_agent_credential(cmd);
+}
+
+impl From<String> for SessionHost {
+    fn from(bin: String) -> Self {
+        SessionHost::at(bin)
+    }
+}
+
+impl From<&str> for SessionHost {
+    fn from(bin: &str) -> Self {
+        SessionHost::at(bin)
+    }
+}
 
 /// The one key of the report the login read decides on.
 #[derive(Deserialize)]
@@ -59,41 +123,49 @@ struct AuthMethod {
     auth_method: String,
 }
 
-/// Whether `bin`'s session is logged in, by its `auth status --json` report as it stands by
+/// Whether `host`'s session is logged in, by its `auth status --json` report as it stands by
 /// `deadline` ([`report`]).
-pub fn logged_in(bin: &str, deadline: Instant) -> bool {
-    parse_logged_in(&report(bin, deadline))
+pub fn logged_in(host: &SessionHost, deadline: Instant) -> bool {
+    parse_logged_in(&report(host, deadline))
 }
 
-/// The auth method `bin`'s `auth status --json` report names by `deadline` ([`report`]): none
+/// The auth method `host`'s `auth status --json` report names by `deadline` ([`report`]): none
 /// when the report is not one JSON object naming an `authMethod` string.
-pub fn auth_method(bin: &str, deadline: Instant) -> Option<String> {
-    serde_json::from_str::<AuthMethod>(&report(bin, deadline))
+pub fn auth_method(host: &SessionHost, deadline: Instant) -> Option<String> {
+    serde_json::from_str::<AuthMethod>(&report(host, deadline))
         .ok()
         .map(|status| status.auth_method)
 }
 
-/// The lines `bin auth status --json` printed by `deadline`, joined: the child reads no input
-/// and its stderr and exit status go unread, and a binary that does not start reports nothing at
-/// once.
-fn report(bin: &str, deadline: Instant) -> String {
-    let mut cmd = crate::subprocess::command(bin);
-    apply_agent_credential(&mut cmd);
-    let Ok(child) = cmd
-        .args(["auth", "status", "--json"])
+/// The lines `host`'s `auth status --json` printed by `deadline`, joined ([`printed`]): a binary
+/// that does not start reports nothing at once.
+fn report(host: &SessionHost, deadline: Instant) -> String {
+    printed(host, &["auth", "status", "--json"], deadline).unwrap_or_default()
+}
+
+/// The one bounded read of what the session host prints for a read that carries no task: the
+/// lines `host` given `args` printed by `deadline`, joined, started as every session of it is
+/// ([`SessionHost::command_in`]). The child reads no input and its stderr and exit status go
+/// unread; a child still running at `deadline` is reaped ([`ReapedChild`]). The error is the
+/// one the binary did not start on.
+pub(crate) fn printed(
+    host: &SessionHost,
+    args: &[&str],
+    deadline: Instant,
+) -> std::io::Result<String> {
+    let mut cmd = host.command_in("");
+    let child = cmd
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn()
-    else {
-        return String::new();
-    };
-    let mut report = Vec::new();
+        .spawn()?;
+    let mut lines = Vec::new();
     ReapedChild::new(child).read_lines_until(deadline, |line| {
-        report.push(line.to_string());
+        lines.push(line.to_string());
         ControlFlow::Continue(())
     });
-    report.join("\n")
+    Ok(lines.join("\n"))
 }
 
 /// Whether `report` is one JSON object whose `loggedIn` is `true`.
@@ -228,7 +300,7 @@ mod tests {
             let bin =
                 crate::test_support::arms_claude(fake.path(), &probe_arms(&report, PASSING_CANARY));
             let started = Instant::now();
-            let answer = logged_in(&bin, started + bound);
+            let answer = logged_in(&SessionHost::at(bin), started + bound);
             let elapsed = started.elapsed();
             assert_eq!(answer, expected, "{name}");
             assert!(
@@ -250,7 +322,7 @@ mod tests {
         let bin = absent.path().join("claude");
         let started = Instant::now();
         assert!(
-            !logged_in(bin.to_str().unwrap(), started + long),
+            !logged_in(&SessionHost::at(bin.to_str().unwrap()), started + long),
             "a binary that does not start answers not logged in"
         );
         assert!(started.elapsed() < quick.1, "and at once");
@@ -267,8 +339,56 @@ mod tests {
         let auth = "    printf '{\"authMethod\": \"%s\"}\n' \"$CLAUDE_CODE_OAUTH_TOKEN\" >&3\n";
         let bin = crate::test_support::arms_claude(fake.path(), &probe_arms(auth, PASSING_CANARY));
         assert_eq!(
-            auth_method(&bin, Instant::now() + Duration::from_secs(5)).as_deref(),
+            auth_method(
+                &SessionHost::at(bin),
+                Instant::now() + Duration::from_secs(5)
+            )
+            .as_deref(),
             Some("rigger-named")
+        );
+    }
+
+    /// THE SESSION HOST IS ONE HOME: a host given no binary is `claude` on `PATH`, a host given
+    /// one names it, and its version read, its login read, a session's start and the too-old line
+    /// each run or name that one binary, so a run that checks its host's version checks the
+    /// binary its driver starts.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_host_is_the_one_binary_its_reads_and_starts_run() {
+        for host in [SessionHost::default(), SessionHost::at("")] {
+            assert_eq!(host.bin(), DEFAULT_BIN, "a host given no binary");
+        }
+        let fake = tempfile::tempdir().unwrap();
+        let bin = crate::test_support::arms_claude(
+            fake.path(),
+            &probe_arms(&printing(LOGGED_IN_STATUS), PASSING_CANARY),
+        );
+        let host = SessionHost::at(bin.clone());
+        assert_eq!(host.bin(), bin, "a host given a binary");
+        assert_eq!(
+            crate::claude_version::read(&host, crate::claude_version::READ_BOUND)
+                .map(|version| version.to_string()),
+            Ok("2.1.139".to_string()),
+            "the version read runs the host's binary"
+        );
+        assert!(
+            logged_in(&host, Instant::now() + Duration::from_secs(5)),
+            "the login read runs the host's binary"
+        );
+        assert_eq!(
+            recorded_argv(&fake.path().join("auth-argv")),
+            ["auth", "status", "--json"]
+        );
+        assert_eq!(
+            host.command_in("").get_program(),
+            std::ffi::OsStr::new(&bin),
+            "a session starts the host's binary"
+        );
+        let below = crate::claude_version::parse("2.1.138").unwrap();
+        let line = crate::claude_version::too_old(&host, below).unwrap();
+        assert!(
+            line.contains(&format!("`{bin}`")),
+            "the too-old line names the host's binary: {line}"
         );
     }
 }

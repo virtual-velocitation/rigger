@@ -1,23 +1,27 @@
 //! Shared fixtures for the symbol extraction suites: building a one-file set of symbols, building
-//! them from Rust sources, a tree whose inline mod declares a `#[cfg(test)]` mod out of line, the
-//! `mod x;` declaration sources, the one-fn source the module-row tests extract and the one-`use`
-//! source, projecting a file's definitions, its test-marked definitions and references and its call
-//! references with their callers, checking a language's definition types against a file's
-//! definitions, checking a language's definitions fixture whole and a source's callers whole,
-//! projecting a file's definition extents, rendering and checking a file's tagged references, and
-//! looking up a registered language. Mounted once by `tests/all.rs` (a suite reaches it with
-//! `use crate::symbol_index;`) and included by the grounder crate for its unit tests; a suite uses
-//! the subset it needs (hence the module-wide `dead_code` allowance, the same convention
-//! `tests/common/mod.rs` keeps). Every lane compiles it; `registered` and `extracted`, with
-//! `assert_definitions_fixture`, `assert_callers` and `assert_tagged_refs` through it, alone reach
-//! a grammar and are held by the `symbols` lane only, as is `extracted_rust_index`, which calls
-//! `extracted`.
+//! them from Rust sources, a reference of a tagged kind or a call, a reference's qualifier, a
+//! mention the facts hold of a tagged kind or a call, a tree whose inline mod declares a
+//! `#[cfg(test)]` mod out of line, the out-of-line `mod` declaration sources, the one-fn source
+//! the module-row tests extract, the one-`use` source and the source whose function reads one
+//! constant three times and calls one function three times, projecting a file's definitions, its
+//! test-marked definitions and references and its call references with their callers, checking a
+//! language's definition types against a file's definitions, checking a language's definitions
+//! fixture whole and a source's callers whole, projecting a file's definition extents, rendering
+//! and checking a file's tagged references, and looking up a registered language. Mounted once by
+//! `tests/all.rs` (a suite reaches it with `use crate::symbol_index;`) and included by the
+//! grounder crate for its unit tests; a suite uses the subset it needs (hence the module-wide
+//! `dead_code` allowance, the same convention `tests/common/mod.rs` keeps). Every lane compiles
+//! it; `registered` and `extracted`, with `assert_definitions_fixture`, `assert_callers` and
+//! `assert_tagged_refs` through it, alone reach a grammar and are held by the `symbols` lane only,
+//! as is `extracted_rust_index`, which calls `extracted`.
+//! The grounder crate's `tests/facts_*.rs` suites mount it too, with the crate named `rigger`.
 
 #![allow(dead_code)]
 
 #[cfg(feature = "symbols")]
 use rigger::grounder::symbols::model::SymbolIndex;
-use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
+use rigger::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, Qualifier, SymRef};
+use rigger_domain::code_facts::{Mention, MentionKind};
 
 /// A line-1 file-level definition of `kind` named `name` with every optional field unset, its doc
 /// span included, `end_line` 0 and `path` its name - the shape a product-only definition takes;
@@ -46,6 +50,53 @@ pub fn sym_ref(name: &str, line: u32, enclosing: Option<&str>, is_test: bool) ->
         enclosing: enclosing.map(Into::into),
         is_test,
         ref_kind: None,
+        qualifier: None,
+    }
+}
+
+/// A reference to `name` at `line`, attributed to `enclosing` when it has a caller, of the tagged
+/// mention kind `ref_kind`, a call when it has none.
+pub fn sym_ref_of_kind(
+    name: &str,
+    line: u32,
+    enclosing: Option<&str>,
+    ref_kind: Option<&str>,
+    is_test: bool,
+) -> SymRef {
+    SymRef {
+        ref_kind: ref_kind.map(str::to_string),
+        ..sym_ref(name, line, enclosing, is_test)
+    }
+}
+
+/// A reference's qualifier `name`, a path (`::`) when `path` and a member access (`.`) otherwise.
+pub fn qualifier(name: &str, path: bool) -> Qualifier {
+    Qualifier {
+        name: name.into(),
+        path,
+    }
+}
+
+/// The mention written `name` of `leaf` on `line`, inside the definition at `enclosing`, of
+/// the tagged mention kind `kind`, a call when it has none.
+pub fn mention_in(
+    enclosing: Option<u32>,
+    name: &str,
+    leaf: &str,
+    kind: Option<&str>,
+    line: u32,
+    test: bool,
+) -> Mention {
+    Mention {
+        enclosing,
+        name: name.to_string(),
+        leaf: leaf.to_string(),
+        kind: match kind {
+            None => MentionKind::Call,
+            Some(kind) => MentionKind::Tagged(kind.to_string()),
+        },
+        line,
+        test,
     }
 }
 
@@ -128,10 +179,30 @@ pub const PATH_MOD_X: &str = "#[path = \"gen/real.rs\"]\nmod x;\n";
 pub const ABSOLUTE_PATH_MOD_X: &str = "#[path = \"/etc/x.rs\"]\nmod x;\n";
 /// [`MOD_X`] inside the inline `mod outer`.
 pub const INLINE_MOD_X: &str = "mod outer {\n    mod x;\n}\n";
+/// A Rust source declaring the module `z` out of line.
+pub const MOD_Z: &str = "mod z;\n";
+/// A Rust source declaring the module `b` out of line inside the inline `mod a`, through a
+/// `#[path]` override naming `b.rs`.
+pub const INLINE_PATH_MOD_B: &str = "mod a {\n    #[path = \"b.rs\"]\n    mod b;\n}\n";
 /// A Rust source defining the fn `y`.
 pub const FN_Y: &str = "fn y() {}\n";
 /// A Rust file holding one `use` and nothing else: its whole extraction is one tagged reference.
 pub const USE_ONLY_SOURCE: &str = "use crate::store::Ledger;\n";
+/// A Rust file defining `LIMIT`, `g` and `f`, in that order, whose `f` reads `LIMIT` on lines 4,
+/// 6 and 8 and calls `g` on lines 5, 7 and 9.
+pub const THREE_READS_AND_THREE_CALLS_SOURCE: &str = "\
+const LIMIT: u32 = 3;
+fn g() {}
+fn f() -> u32 {
+    let a = LIMIT;
+    g();
+    let b = LIMIT;
+    g();
+    let c = LIMIT;
+    g();
+    a + b + c
+}
+";
 
 /// Every definition of `fs` as `(line, end line, name)`, sorted: the one projection of each
 /// `Def`'s extent the extent tests compare whole.

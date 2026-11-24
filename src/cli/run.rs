@@ -980,6 +980,17 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
     // Refuse before starting if a gating persona would stall the integration gate (spec 18,
     // unit 2); `load_run_config` reuses unit 1's lint at this run's config-load seam.
     let cfg = load_run_config(&project.to_string_lossy())?;
+    // THE SESSION HOST RUNS THE HOOKS: the exec-form hooks are written with the hook `args`
+    // field, which the host added at the minimum version, so the run refuses a host below it
+    // here, before any start effect and so before any session starts, with the line `rigger
+    // validate` warns with; a version it cannot read refuses nothing. The host is the one the
+    // run's driver starts every session from, so the version checked is the binary launched.
+    let host = rigger::claude_auth::SessionHost::default();
+    if let Ok(version) = rigger::claude_version::read(&host, rigger::claude_version::READ_BOUND) {
+        if let Some(line) = rigger::claude_version::too_old(&host, version) {
+            return Err(line.into());
+        }
+    }
     // EXACTLY ONE ROOT: this run's teardown reclaims the scratch root and its hosted agents write
     // into it, so it is refused here, before anything is reclaimed, reaped or anchored.
     let scratch = project_scratch_root(&repo, &cfg);
@@ -1125,7 +1136,7 @@ fn run_cli(parsed: &RunArgs, sleep: &dyn SleepHold) -> Res {
         reclaim_orphans_at_start(&repo, root, &cfg.workflow, &store);
     }
     let driver = claude_code::Driver {
-        bin: String::new(),
+        host,
         rigger_bin: running_executable(),
         progress_store: &progress,
         run_store: &folding,
@@ -2606,5 +2617,52 @@ mod tests {
                  closes interrupted"
             );
         }
+    }
+
+    /// The run-start sweeps, in the order `run_cli` runs them, keep a unit tree git marks
+    /// `prunable` while its dir is still there (its link lost, or a remove git did not finish):
+    /// its files and its registration survive, while a merged tree beside it is still swept.
+    #[test]
+    fn the_run_start_sweeps_keep_a_tree_git_marks_prunable_with_its_dir_there() {
+        use crate::test_support::{git_ok, git_out, init_repo, write_file};
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        init_repo(&root);
+        git_ok(&root, &["checkout", "-q", "-b", RUN_BRANCH]);
+        let repo = root.to_str().unwrap();
+        let tree = |slug: &str| {
+            let dir = root.join(format!("rigger-wt-{slug}"));
+            rigger::worktree::Worktree::create(
+                repo,
+                dir.to_str().unwrap(),
+                &format!("rigger/u/{slug}"),
+                "",
+            )
+            .unwrap();
+            write_file(&dir.join("work.txt"), b"work\n");
+            dir
+        };
+        let merged = tree("merged");
+        let prunable = tree("lost-link");
+        std::fs::remove_file(prunable.join(".git")).unwrap();
+        let store = Store::open(":memory:").unwrap();
+        let workflow = config::Workflow::default();
+        sweep_terminal_at_start(repo, repo, &workflow, &store);
+        reclaim_orphans_at_start(repo, repo, &workflow, &store);
+        let listed = git_out(&root, &["worktree", "list", "--porcelain"]);
+        let registered = |dir: &std::path::Path| {
+            listed
+                .lines()
+                .any(|line| line == format!("worktree {}", dir.display()))
+        };
+        assert_eq!(
+            (
+                merged.exists(),
+                prunable.join("work.txt").exists(),
+                registered(&prunable)
+            ),
+            (false, true, true),
+            "the merged tree is swept; the prunable tree's work and registration survive:\n{listed}"
+        );
     }
 }

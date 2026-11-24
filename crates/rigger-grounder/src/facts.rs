@@ -14,7 +14,7 @@
 
 mod extractor_protocol;
 
-use std::collections::{btree_map, BTreeMap, HashMap};
+use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
@@ -24,6 +24,7 @@ use rigger_domain::code_facts::{
 };
 use rigger_domain::code_view::{trimmed_lines, Entry, Extract, Head, OpenCodeView, TreeSource};
 use rigger_domain::contextgraph::definition_precedence;
+use rigger_domain::contextgraph::query::qualified_name;
 use rigger_domain::groupings::ProductionGroupings;
 use rigger_domain::playbooks::fnv1a_64;
 use rigger_process::whole_line;
@@ -49,7 +50,7 @@ use crate::grounder::workflowdef;
 /// design, a rationale and a workflow fixture, so a change that is not bumped fails there; a
 /// conversion change that moves a language's facts re-pins that language's row of the same golden
 /// with the bump.
-const FACTS_GENERATION: &str = "facts-v3";
+const FACTS_GENERATION: &str = "facts-v6";
 
 /// The fingerprint of an extractor built from these generations: a stable hash, since a snapshot
 /// stores it and a later process compares against it.
@@ -582,7 +583,8 @@ fn bundled_code(path: &str, text: Option<&str>) -> Option<CodeFile> {
 
 /// Fills the definitions, mentions, module declarations, parse-error marker and doc span of
 /// `facts` from the `symbols` an extraction gave the file at `path`, each definition keeping its
-/// own doc span.
+/// own doc span and each reference becoming a mention, a tagged one kept once per site kind
+/// ([`one_tagged_mention_per_site_kind`]).
 fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
     let CodeSymbols {
         defs,
@@ -607,39 +609,76 @@ fn code_facts(path: &str, symbols: &CodeSymbols, facts: &mut FileFacts) {
             doc: d.doc,
         })
         .collect();
-    facts.mentions = refs
-        .iter()
-        .map(|r| Mention {
-            enclosing: r.enclosing.as_deref().and_then(index_of),
-            name: r.name.clone(),
-            // The extractor names a reference by its identifier alone, and a definition's leaf is
-            // its name whole, so the reference's name is the leaf the resolver finds it by.
-            leaf: r.name.clone(),
-            kind: match &r.ref_kind {
-                None => MentionKind::Call,
-                Some(kind) => MentionKind::Tagged(kind.clone()),
-            },
-            line: r.line,
-            test: r.is_test,
-        })
-        .collect();
+    facts.mentions = one_tagged_mention_per_site_kind(refs.iter().map(|r| Mention {
+        enclosing: r.enclosing.as_deref().and_then(index_of),
+        // Spec 117 (CAPTURES): the name as written, its qualifier joined to its leaf by `::`
+        // for a path and `.` for a member access, the leaf alone with no qualifier.
+        name: match &r.qualifier {
+            Some(q) => qualified_name(&q.name, q.path, &r.name),
+            None => r.name.clone(),
+        },
+        // The extractor names a reference by its bare leaf, as a definition's leaf is its name
+        // whole, so the leaf is what the resolver finds the mention by, qualified or not.
+        leaf: r.name.clone(),
+        kind: match &r.ref_kind {
+            None => MentionKind::Call,
+            Some(kind) => MentionKind::Tagged(kind.clone()),
+        },
+        line: r.line,
+        test: r.is_test,
+    }));
     facts.modules = defs
         .iter()
         .filter(|d| d.is_out_of_line_module)
         .map(|d| {
-            // `module_candidates` gives one list, placed by the declaring file's own module
-            // directory, and both lists hold it.
-            let candidates = module_candidates(path, d);
+            // Spec 117, MODULE ROOTS AT READ: both lists, off the declaring file alone, and the
+            // `#[path]` mark the resolver reads to place the file this declaration reaches.
+            let (as_root, as_child) = module_candidates(path, d);
             ModuleDecl {
                 name: d.name.clone(),
                 def: by_path[d.path.as_str()],
                 test: d.is_test,
-                as_root: candidates.clone(),
-                as_child: candidates,
-                path_attr: false,
+                as_root,
+                as_child,
+                path_attr: d.path_override.is_some(),
             }
         })
         .collect();
+}
+
+/// The `mentions` of one file in their order, every call kept, one per site, since a proof's
+/// evidence lists each call's line, and one tagged mention kept per enclosing definition, name,
+/// leaf, tag and test flag (spec 117, ONE TAGGED MENTION PER SITE KIND). It sits in the first
+/// one's place and takes the lowest of their lines, since an extraction need not give a file's
+/// tagged references in line order. The leaf keeps apart the two a declared extractor may write
+/// alike: an unqualified `a.b` and `b` under the member `a`.
+fn one_tagged_mention_per_site_kind(mentions: impl Iterator<Item = Mention>) -> Vec<Mention> {
+    let mut kept: Vec<Mention> = Vec::new();
+    let mut at: HashMap<_, usize> = HashMap::new();
+    for mention in mentions {
+        let MentionKind::Tagged(tag) = &mention.kind else {
+            kept.push(mention);
+            continue;
+        };
+        let site_kind = (
+            mention.enclosing,
+            mention.name.clone(),
+            mention.leaf.clone(),
+            tag.clone(),
+            mention.test,
+        );
+        match at.entry(site_kind) {
+            hash_map::Entry::Occupied(first) => {
+                let first = &mut kept[*first.get()];
+                first.line = first.line.min(mention.line);
+            }
+            hash_map::Entry::Vacant(none) => {
+                none.insert(kept.len());
+                kept.push(mention);
+            }
+        }
+    }
+    kept
 }
 
 /// The index in `defs` of the definition a path names, for the paths an extraction gives a parent
@@ -735,12 +774,14 @@ pub(crate) mod tests {
     use crate::extractors_fixtures::{workflow_declaring_extractors, EXTRACTOR_REFUSALS};
     use crate::go_definition_sources::GO_DEFINITIONS_SOURCE;
     use crate::grounder::symbols::content_hash;
+    use crate::grounder::symbols::extract::tests::compiled;
     use crate::grounder::symbols::extract::{extract, CompiledTags};
     use crate::js_ts_definition_sources::{
         JS_DEFINITIONS_SOURCE, TSX_DEFINITIONS_SOURCE, TS_DEFINITIONS_SOURCE,
     };
     use crate::python_definition_sources::PYTHON_DEFINITIONS_SOURCE;
     use crate::rust_definition_sources::RUST_DEFINITIONS_SOURCE;
+    use crate::symbol_index::{mention_in, THREE_READS_AND_THREE_CALLS_SOURCE};
     use rigger_domain::code_view::CodeView;
     use rigger_domain::config::ExtractorDecl;
     use rigger_domain::contextgraph::{
@@ -791,8 +832,12 @@ pub(crate) mod tests {
         format!("{kind:?}").to_lowercase()
     }
 
+    /// Every definition and every call the symbol extractor finds in each language's fixture is
+    /// held, and its tagged references one per site kind (spec 117, ONE TAGGED MENTION PER SITE
+    /// KIND): a tagged reference repeating an earlier one's enclosing definition, leaf, tag and
+    /// test flag is held once, in the earlier one's place at the lower of their lines.
     #[test]
-    fn facts_hold_every_def_and_mention_the_symbol_extractor_finds() {
+    fn facts_hold_every_def_and_call_and_one_tagged_mention_per_site_kind() {
         let table = [
             ("src/lib.rs", "rust", RUST_DEFINITIONS_SOURCE),
             ("pkg/main.go", "go", GO_DEFINITIONS_SOURCE),
@@ -852,28 +897,38 @@ pub(crate) mod tests {
                 .collect();
             assert_eq!(held_defs, found_defs, "{path}: definitions");
 
-            let found_refs: Vec<_> = symbols
-                .refs
-                .iter()
-                .map(|r| {
-                    let kind = match &r.ref_kind {
-                        None => "call".to_string(),
-                        Some(kind) => format!("tagged:{kind}"),
-                    };
-                    (r.name.clone(), kind, r.line, r.is_test, r.enclosing.clone())
-                })
-                .collect();
+            let mut found_refs: Vec<(String, String, u32, bool, Option<String>)> = Vec::new();
+            for r in &symbols.refs {
+                let kind = match &r.ref_kind {
+                    None => "call".to_string(),
+                    Some(kind) => format!("tagged:{kind}"),
+                };
+                let row = (r.name.clone(), kind, r.line, r.is_test, r.enclosing.clone());
+                let repeated = r.ref_kind.as_ref().and_then(|_| {
+                    found_refs.iter_mut().find(|held| {
+                        (&held.0, &held.1, held.3, &held.4) == (&row.0, &row.1, row.3, &row.4)
+                    })
+                });
+                match repeated {
+                    Some(held) => held.2 = held.2.min(row.2),
+                    None => found_refs.push(row),
+                }
+            }
             let held_refs: Vec<_> = facts
                 .mentions
                 .iter()
                 .map(|m| {
-                    assert_eq!(m.leaf, m.name, "{path}: a reference is named by its leaf");
+                    assert_eq!(
+                        m.name, m.leaf,
+                        "{path}: the fixture writes no reference with a qualifier, so each is \
+                         named by its leaf"
+                    );
                     let kind = match &m.kind {
                         MentionKind::Call => "call".to_string(),
                         MentionKind::Tagged(kind) => format!("tagged:{kind}"),
                     };
                     (
-                        m.name.clone(),
+                        m.leaf.clone(),
                         kind,
                         m.line,
                         m.test,
@@ -922,8 +977,7 @@ pub(crate) mod tests {
                 )
             })
             .collect();
-        let fixture = CompiledTags::compile(&tree_sitter_python::LANGUAGE.into(), &query, &[])
-            .expect("the fixture query compiles");
+        let fixture = compiled(&tree_sitter_python::LANGUAGE.into(), &query);
         let facts = facts_under("tool/run.py", &source, Lang::Python, &fixture);
         let expected: Vec<Mention> = table
             .into_iter()
@@ -974,6 +1028,327 @@ pub(crate) mod tests {
                     (path, facts_of(path, source.as_bytes()).mentions),
                     (path, mentions),
                 )
+            })
+            .unzip();
+        assert_eq!(found, expected);
+    }
+
+    /// A QUALIFIER CAPTURE NAMES THE MENTION (spec 117, CAPTURES): a mention is named
+    /// `<qualifier>::<leaf>` under a path qualifier and `<qualifier>.<leaf>` under a member one,
+    /// its leaf always the bare leaf. A fixture query's `@qualifier.path` and `@qualifier.member`
+    /// captures name a Python `Shape.area` call and field read `Shape::area` and `Shape.area`,
+    /// the capture deciding the qualifier over the text a `@name` holding it reads. A `@name`
+    /// with named children is split: its named leaves outside the type arguments, joined by `.`
+    /// or `::`, give the last as the leaf and the text before its separator as the qualifier, so
+    /// a C# base type `Ns.IShape` yields the leaf `IShape`, `global::IShape` the leaf `IShape`
+    /// under a path, `List<IShape>` the leaf `List`, and a JavaScript `new Ns.Kit.Box()` a call
+    /// of `Box`; a `@name` that is no such chain (`new arr[0]()`, `new a[0].b()`, `new (Box)()`)
+    /// stages no mention.
+    #[test]
+    fn a_qualifier_capture_names_the_mention() {
+        let mention = |name: &str, leaf: &str, kind: MentionKind, enclosing: Option<u32>| Mention {
+            enclosing,
+            name: name.to_string(),
+            leaf: leaf.to_string(),
+            kind,
+            line: 1,
+            test: false,
+        };
+        let tagged = |kind: &str| MentionKind::Tagged(kind.to_string());
+        // (path, source, the Python fixture query its symbols are extracted under, or none for
+        // the bundled grammar, the mentions its facts hold)
+        let table = [
+            (
+                "tool/run.py",
+                "Shape.area()\n",
+                Some(
+                    "(call function: (attribute object: (_) @qualifier.path \
+                     attribute: (identifier) @name)) @reference.call",
+                ),
+                vec![mention("Shape::area", "area", MentionKind::Call, None)],
+            ),
+            (
+                "tool/run.py",
+                "Shape.area\n",
+                Some(
+                    "(expression_statement (attribute object: (_) @qualifier.member \
+                     attribute: (identifier) @name)) @reference.field",
+                ),
+                vec![mention("Shape.area", "area", tagged("field"), None)],
+            ),
+            (
+                "tool/run.py",
+                "Shape.area()\n",
+                Some(
+                    "(call function: (attribute object: (_) @qualifier.path) @name) \
+                     @reference.call",
+                ),
+                vec![mention("Shape::area", "area", MentionKind::Call, None)],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : Ns.IShape { }\n",
+                None,
+                vec![mention("Ns.IShape", "IShape", tagged("type"), Some(0))],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : global::IShape { }\n",
+                None,
+                vec![mention("global::IShape", "IShape", tagged("type"), Some(0))],
+            ),
+            (
+                "App/Shape.cs",
+                "class A : List<IShape> { }\n",
+                None,
+                vec![mention("List", "List", tagged("type"), Some(0))],
+            ),
+            (
+                "web/make.js",
+                "new Ns.Kit.Box();\n",
+                None,
+                vec![mention("Ns.Kit.Box", "Box", MentionKind::Call, None)],
+            ),
+            ("web/make.js", "new arr[0]();\n", None, vec![]),
+            ("web/make.js", "new a[0].b();\n", None, vec![]),
+            ("web/make.js", "new (Box)();\n", None, vec![]),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(path, source, fixture, mentions)| {
+                let facts = match fixture {
+                    Some(query) => facts_under(
+                        path,
+                        source,
+                        Lang::Python,
+                        &compiled(&tree_sitter_python::LANGUAGE.into(), query),
+                    ),
+                    None => facts_of(path, source.as_bytes()),
+                };
+                ((source, facts.mentions), (source, mentions))
+            })
+            .unzip();
+        assert_eq!(found, expected);
+    }
+
+    /// ONE TAGGED MENTION PER SITE KIND (spec 117): a Rust function reading one constant three
+    /// times holds one `const` mention, at the first read's line, while its three calls to one
+    /// function stay three call mentions, one per call's line.
+    #[test]
+    fn one_tagged_mention_per_site_kind() {
+        let facts = facts_of("src/lib.rs", THREE_READS_AND_THREE_CALLS_SOURCE.as_bytes());
+        assert_eq!(
+            facts
+                .defs
+                .iter()
+                .map(|d| d.local.as_str())
+                .collect::<Vec<_>>(),
+            ["LIMIT", "g", "f"],
+            "the definitions, `f` at index 2"
+        );
+        assert_eq!(
+            facts.mentions,
+            [
+                mention_in(Some(2), "g", "g", None, 5, false),
+                mention_in(Some(2), "g", "g", None, 7, false),
+                mention_in(Some(2), "g", "g", None, 9, false),
+                mention_in(Some(2), "LIMIT", "LIMIT", Some("const"), 4, false),
+            ]
+        );
+    }
+
+    /// ONE TAGGED MENTION PER SITE KIND (spec 117), part by part: of an extraction's tagged
+    /// references, one is kept per enclosing definition, name, leaf, tag and test flag, in the
+    /// first one's place at the lowest of their lines, and one differing from it in any single
+    /// part is kept beside it; every call is kept, one per site, two on one line included.
+    #[test]
+    fn a_tagged_mention_is_kept_once_per_enclosing_name_leaf_tag_and_test_flag() {
+        use crate::symbol_index::{def, qualifier, sym_ref_of_kind};
+        let defs = vec![
+            def(model::Kind::Function, "f"),
+            def(model::Kind::Function, "g"),
+        ];
+        let qualified = |q: &str, path: bool, r: SymRef| SymRef {
+            qualifier: Some(qualifier(q, path)),
+            ..r
+        };
+        // (the case, the references the extraction gives, the mentions the facts hold; `f` is
+        // the definition at index 0 and `g` the one at index 1)
+        let table = [
+            ("no reference", vec![], vec![]),
+            (
+                "a repeat in one definition",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 5, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 7, Some("f"), Some("const"), false),
+                ],
+                vec![mention_in(
+                    Some(0),
+                    "LIMIT",
+                    "LIMIT",
+                    Some("const"),
+                    3,
+                    false,
+                )],
+            ),
+            (
+                "a repeat at a lower line, after a call",
+                vec![
+                    sym_ref_of_kind("LIMIT", 5, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("h", 6, Some("f"), None, false),
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "h", "h", None, 6, false),
+                ],
+            ),
+            (
+                "a repeat at file level",
+                vec![
+                    sym_ref_of_kind("LIMIT", 1, None, Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 2, None, Some("const"), false),
+                ],
+                vec![mention_in(None, "LIMIT", "LIMIT", Some("const"), 1, false)],
+            ),
+            (
+                "another enclosing definition, or none",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 5, Some("g"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 7, None, Some("const"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(1), "LIMIT", "LIMIT", Some("const"), 5, false),
+                    mention_in(None, "LIMIT", "LIMIT", Some("const"), 7, false),
+                ],
+            ),
+            (
+                "another tag",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 4, Some("f"), Some("type"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("type"), 4, false),
+                ],
+            ),
+            (
+                "another test flag",
+                vec![
+                    sym_ref_of_kind("LIMIT", 3, Some("f"), Some("const"), false),
+                    sym_ref_of_kind("LIMIT", 4, Some("f"), Some("const"), true),
+                ],
+                vec![
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 3, false),
+                    mention_in(Some(0), "LIMIT", "LIMIT", Some("const"), 4, true),
+                ],
+            ),
+            (
+                "another name: `x.f` beside `T { f }`",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    sym_ref_of_kind("f", 4, Some("f"), Some("field"), false),
+                ],
+                vec![
+                    mention_in(Some(0), "x.f", "f", Some("field"), 3, false),
+                    mention_in(Some(0), "f", "f", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "another name: `x.f` beside `x::f`",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    qualified(
+                        "x",
+                        true,
+                        sym_ref_of_kind("f", 4, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![
+                    mention_in(Some(0), "x.f", "f", Some("field"), 3, false),
+                    mention_in(Some(0), "x::f", "f", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "a repeat under one qualifier",
+                vec![
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 3, Some("f"), Some("field"), false),
+                    ),
+                    qualified(
+                        "x",
+                        false,
+                        sym_ref_of_kind("f", 5, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![mention_in(Some(0), "x.f", "f", Some("field"), 3, false)],
+            ),
+            (
+                "another leaf: an unqualified `a.b` beside `b` under the member `a`",
+                vec![
+                    sym_ref_of_kind("a.b", 3, Some("f"), Some("field"), false),
+                    qualified(
+                        "a",
+                        false,
+                        sym_ref_of_kind("b", 4, Some("f"), Some("field"), false),
+                    ),
+                ],
+                vec![
+                    mention_in(Some(0), "a.b", "a.b", Some("field"), 3, false),
+                    mention_in(Some(0), "a.b", "b", Some("field"), 4, false),
+                ],
+            ),
+            (
+                "three calls to one function",
+                vec![
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                    sym_ref_of_kind("g", 7, Some("f"), None, false),
+                    sym_ref_of_kind("g", 9, Some("f"), None, false),
+                ],
+                vec![
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                    mention_in(Some(0), "g", "g", None, 7, false),
+                    mention_in(Some(0), "g", "g", None, 9, false),
+                ],
+            ),
+            (
+                "two calls on one line",
+                vec![
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                    sym_ref_of_kind("g", 5, Some("f"), None, false),
+                ],
+                vec![
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                    mention_in(Some(0), "g", "g", None, 5, false),
+                ],
+            ),
+        ];
+        let (found, expected): (Vec<_>, Vec<_>) = table
+            .into_iter()
+            .map(|(case, refs, mentions)| {
+                let symbols = CodeSymbols {
+                    defs: defs.clone(),
+                    refs,
+                    partial: false,
+                    doc: None,
+                };
+                let mut facts = FileFacts::default();
+                code_facts("src/lib.rs", &symbols, &mut facts);
+                ((case, facts.mentions), (case, mentions))
             })
             .unzip();
         assert_eq!(found, expected);
@@ -1308,20 +1683,32 @@ pub(crate) mod tests {
         }
     }
 
+    /// Spec 117, MODULE ROOTS AT READ: each out-of-line declaration's module row holds its name,
+    /// its test mark, the `as_root` and `as_child` lists `module_candidates` names off the
+    /// declaring file alone, and whether it carries a `#[path]` attribute.
     #[test]
     fn module_candidates_come_from_the_declaring_file_alone() {
-        // (declaring path, source, the (name, test, candidates) of each declaration, the
-        // candidates both its `as_root` and its `as_child` list hold)
-        type Row = (
+        // (name, test, as_root, as_child, path_attr) of one declaration
+        type Module = (
             &'static str,
-            &'static str,
-            &'static [(&'static str, bool, &'static [&'static str])],
+            bool,
+            &'static [&'static str],
+            &'static [&'static str],
+            bool,
         );
+        // (declaring path, source, each declaration's module row)
+        type Row = (&'static str, &'static str, &'static [Module]);
         let table: [Row; 10] = [
             (
                 "src/lib.rs",
                 "mod alpha;\n",
-                &[("alpha", false, &["src/alpha.rs", "src/alpha/mod.rs"])],
+                &[(
+                    "alpha",
+                    false,
+                    &["src/alpha.rs", "src/alpha/mod.rs"],
+                    &["src/alpha.rs", "src/alpha/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "lib/other.rs",
@@ -1329,57 +1716,98 @@ pub(crate) mod tests {
                 &[(
                     "alpha",
                     false,
+                    &["lib/alpha.rs", "lib/alpha/mod.rs"],
                     &["lib/other/alpha.rs", "lib/other/alpha/mod.rs"],
+                    false,
                 )],
             ),
             (
                 "src/lib.rs",
                 "#[cfg(test)]\nmod tests;\n",
-                &[("tests", true, &["src/tests.rs", "src/tests/mod.rs"])],
+                &[(
+                    "tests",
+                    true,
+                    &["src/tests.rs", "src/tests/mod.rs"],
+                    &["src/tests.rs", "src/tests/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/parent.rs",
                 "#[path = \"other/x.rs\"]\nmod renamed;\n",
-                &[("renamed", false, &["src/other/x.rs"])],
+                &[(
+                    "renamed",
+                    false,
+                    &["src/other/x.rs"],
+                    &["src/other/x.rs"],
+                    true,
+                )],
             ),
             (
                 "src/lib.rs",
                 "mod outer {\n    mod x;\n}\n",
-                &[("x", false, &["src/outer/x.rs", "src/outer/x/mod.rs"])],
+                &[(
+                    "x",
+                    false,
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/lib.rs",
                 "#![cfg(test)]\nfn first() {}\nmod x;\n",
-                &[("x", true, &["src/x.rs", "src/x/mod.rs"])],
+                &[(
+                    "x",
+                    true,
+                    &["src/x.rs", "src/x/mod.rs"],
+                    &["src/x.rs", "src/x/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/main.rs",
                 "#[cfg(test)]\nuse y;\nfn first() {}\nmod z;\n",
-                &[("z", false, &["src/z.rs", "src/z/mod.rs"])],
+                &[(
+                    "z",
+                    false,
+                    &["src/z.rs", "src/z/mod.rs"],
+                    &["src/z.rs", "src/z/mod.rs"],
+                    false,
+                )],
             ),
             (
                 "src/lib.rs",
                 "mod outer {\n    #[cfg(test)]\n    mod x;\n}\n",
-                &[("x", true, &["src/outer/x.rs", "src/outer/x/mod.rs"])],
+                &[(
+                    "x",
+                    true,
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    &["src/outer/x.rs", "src/outer/x/mod.rs"],
+                    false,
+                )],
             ),
             ("src/lib.rs", "mod inline { fn f() {} }\n", &[]),
             ("web/app.ts", "namespace N { function f() {} }\n", &[]),
         ];
         for (path, source, modules) in table {
             let facts = facts_of(path, source.as_bytes());
-            let held: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (facts.modules.iter())
+            let held = (facts.modules.iter())
                 .map(|m| {
                     (
                         m.name.as_str(),
                         m.test,
-                        m.as_root.iter().map(String::as_str).collect(),
-                        m.as_child.iter().map(String::as_str).collect(),
+                        m.as_root.iter().map(String::as_str).collect::<Vec<_>>(),
+                        m.as_child.iter().map(String::as_str).collect::<Vec<_>>(),
+                        m.path_attr,
                     )
                 })
-                .collect();
-            let expected: Vec<(&str, bool, Vec<&str>, Vec<&str>)> = (modules.iter())
-                .map(|(name, test, paths)| (*name, *test, paths.to_vec(), paths.to_vec()))
-                .collect();
+                .collect::<Vec<_>>();
+            let expected = (modules.iter())
+                .map(|&(name, test, as_root, as_child, path_attr)| {
+                    (name, test, as_root.to_vec(), as_child.to_vec(), path_attr)
+                })
+                .collect::<Vec<_>>();
             assert_eq!(held, expected, "{path}: {source:?}");
         }
     }
@@ -1593,21 +2021,21 @@ pub(crate) mod tests {
         // languages' rows merge clean.
         const PINNED: [(&str, &str, &str); 7] = [
             // Rust
-            ("rs", "rust-tags-v2", "7ffb605da6fb93dd"),
+            ("rs", "rust-tags-v2", "927b635405339750"),
             // C#
-            ("cs", "csharp-tags-v3", "1219fbe9ccd55d87"),
+            ("cs", "csharp-tags-v4", "a6e816e8572b143e"),
             // TypeScript
-            ("ts", "typescript-tags-v4", "d1fdef8457b78129"),
+            ("ts", "typescript-tags-v5", "ea4e6938dc08f1b3"),
             // TSX
-            ("tsx", "tsx-tags-v4", "01ba0329c337ba1f"),
+            ("tsx", "tsx-tags-v5", "11cb8ac6fae0ab22"),
             // JavaScript
-            ("js", "javascript-tags-v4", "0b4c01075a5c5218"),
+            ("js", "javascript-tags-v5", "04c009a62eb98170"),
             // Go
-            ("go", "go-tags-v3", "f9d10fb20ec8989c"),
+            ("go", "go-tags-v4", "dc89c1ebc294684f"),
             // Python
             ("py", "python-tags-v1", "4c940d044409c6d8"),
         ];
-        const PINNED_FACTS: (&str, &str) = ("facts-v3", "006133eb2aae6c76");
+        const PINNED_FACTS: (&str, &str) = ("facts-v6", "006133eb2aae6c76");
         fn digest(facts: &impl std::fmt::Debug) -> String {
             format!("{:016x}", fnv1a_64(format!("{facts:#?}").as_bytes()))
         }
@@ -1674,7 +2102,19 @@ pub(crate) mod tests {
                 "a mention's caller",
                 any(&|f| f.mentions.iter().any(|m| m.enclosing.is_some())),
             ),
+            (
+                "a qualified mention",
+                any(&|f| f.mentions.iter().any(|m| m.name != m.leaf)),
+            ),
             ("a module declaration", any(&|f| !f.modules.is_empty())),
+            (
+                "a module's two lists apart",
+                any(&|f| f.modules.iter().any(|m| m.as_root != m.as_child)),
+            ),
+            (
+                "a module's `#[path]` mark",
+                any(&|f| f.modules.iter().any(|m| m.path_attr)),
+            ),
             (
                 "a definition's doc span",
                 any(&|f| f.defs.iter().any(|d| d.doc.is_some())),

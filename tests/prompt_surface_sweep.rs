@@ -53,7 +53,11 @@ const ALLOW_LIST: &[Allowed] = &[
         &[
             "settled: a completed gate battery acted on {} verdict row(s)",
             "recovered a halted spawn's tree as commit {}",
-            "the tree it left is kept as {}, off the unit's branch",
+            "{trees} kept as {}, off the unit's branch",
+            "all {width} speculation candidates crashed or lost to infras",
+            "wip({}): tree of speculation lane {lane}, which git refused",
+            "rigger: left speculation lane {lane} of {} in its worktree a",
+            "rigger: kept the worktree at {} (branch {}): {}",
             "{BUDGET_MARKER} stage {stage:?} {tier} {agent:?}: spawn budg",
             "{MISMATCH_MARKER}stage {stage:?} {tier} {agent:?} returned N",
             "{DEGENERATE_MARKER}stage {stage:?} {tier} {agent:?} returned",

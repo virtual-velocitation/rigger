@@ -5,6 +5,19 @@
 # elsewhere reaches through the link:
 # `self=$(readlink "$0") || self=$0; . "$(dirname "$self")/launch-args.sh"`.
 
+# The session host's answer to its one read that carries no task, `--version`: when `$1` is
+# `--version`, the line the installed binary prints, `2.1.139 (Claude Code)`, or the line
+# `RIGGER_TEST_HOST_VERSION` holds when it is set (set empty, an empty line), then the fixture
+# exits before it reads its input or puts anything on record. Every fixture a `rigger run` or
+# `rigger validate` finds as `claude` on PATH calls it right after sourcing this file:
+# `answer_version "$@"`.
+answer_version() {
+    if [ "${1-}" = --version ]; then
+        printf '%s\n' "${RIGGER_TEST_HOST_VERSION-2.1.139 (Claude Code)}"
+        exit 0
+    fi
+}
+
 # The value after the last `$1` among the rest of the arguments; nothing when none names it.
 launch_arg() {
     la_flag=$1

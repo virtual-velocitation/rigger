@@ -306,6 +306,11 @@ pub const META_SPEC_WINNER: &str = "speculation_winner";
 /// implementer spawn ids - every parked candidate the winner displaced.
 pub const META_SPEC_LOSERS: &str = "speculation_losers";
 
+/// The metadata key on a speculation group's `UnitEscalated` carrying why the group escalated,
+/// one line: the escalation lesson's reason when a lane lost on its work, else the outage every
+/// lane lost to, which teaches no lesson and records no failure.
+pub const META_ESCALATION_REASON: &str = "escalation_reason";
+
 /// The `UnitStatus.status` token a CANCELLED speculation candidate carries (spec 13, unit 3).
 /// Like [`STATUS_COMPENSATION_QUEUED`] it is deliberately NOT a [`ledger::Status`] variant, so
 /// the ledger fold leaves the unit's real status (driven by the WINNER's lifecycle) untouched
@@ -1705,18 +1710,26 @@ struct SpecCandidate {
 }
 
 /// What a speculation group's losing lanes failed with, gathered in lane order: each red gate's
-/// evidence, each review's rejection and each refusal git made of a lane's work, with the first
-/// loss's cause. A group with no winner records it as the unit's failure. A loss to infrastructure
+/// evidence, each review's rejection and each refusal git made of a lane's work, with where that
+/// lane's tree is kept, and the first loss's cause. A group with no winner records it as the
+/// unit's failure; a lane that wins drops the keeps. A loss to infrastructure
 /// ([`is_infra_cause`]) is left out, as the single lane charges an outage no `UnitFailed`.
 ///
 /// A group writes its lanes' failures only once its outcome is known, so one loss is one
 /// failure: a lane whose merge broke post-merge is held in `breaks`, written as its own
 /// `UnitFailed` when a later lane wins, and carried in the group's one record when none does.
+/// For the same reason a lane Phase A lost to git refusing its work keeps its tree and branch in
+/// `left` until that outcome: a win or the escalation tail removes them, and a park or a hold
+/// leaves them for the re-entry, which meets the same refusal in the same tree. `keep_fault` is
+/// the first keep of a refused lane git could not make ([`RunCtx::lane_refused`]): the group
+/// races on, and holds the run on it only when no lane wins.
 #[derive(Default)]
 struct LostLanes {
     cause: Option<String>,
     failure: PriorFailure,
     breaks: Vec<LaneBreak>,
+    left: Vec<Worktree>,
+    keep_fault: Option<Error>,
 }
 
 /// A speculation lane whose merge broke post-merge: its attempt, the re-gate's evidence and the
@@ -1762,12 +1775,33 @@ impl LostLanes {
     }
 
     /// A lane lost on git refusing a content step on its own work (`e`, a [`refused_unit_work`]
-    /// error), cause [`CAUSE_GIT_REFUSED`]: git's refusal joins the failure's refusal, so a
-    /// re-entered lane's prompt carries it on its own line.
-    fn refused(&mut self, e: &Error) {
+    /// error), cause [`CAUSE_GIT_REFUSED`], its tree kept as `kept`: git's refusal joins the
+    /// failure's refusal, so a re-entered lane's prompt carries it on its own line, and the keep
+    /// joins the failure's keeps.
+    fn refused(&mut self, e: &Error, kept: Vec<ledger::Kept>) {
         self.cause
             .get_or_insert_with(|| CAUSE_GIT_REFUSED.to_string());
         push_paragraph(&mut self.failure.refusal, &refusal_text(e));
+        self.failure.kept.extend(kept);
+    }
+
+    /// Where the trees of the lanes git refused are kept, in lane order.
+    fn kept(&self) -> &[ledger::Kept] {
+        &self.failure.kept
+    }
+
+    /// Why a group of `width` lanes with no winner escalated, one line: the gathered failure's
+    /// [`PriorFailure::escalation_reason`] when a lane lost on its work, else that every lane
+    /// crashed or lost to infrastructure, which judged no lane's work.
+    fn escalation_reason(&self, width: u32) -> String {
+        if self.cause.is_some() {
+            self.failure.escalation_reason()
+        } else {
+            format!(
+                "all {width} speculation candidates crashed or lost to infrastructure, which says \
+                 nothing of their work"
+            )
+        }
     }
 
     /// The first loss's cause and the gathered failure, or none when no lane lost on its gates,
@@ -2285,10 +2319,11 @@ struct PriorFailure {
     /// that found the freshly adopted worktree genuinely dirty.
     halted_commit: String,
     /// Where the tree of the attempt that spent the unit's retry bound with work outside a
-    /// commit is kept, `commit <sha> on <kept ref>` ([`RunCtx::kept_at_the_bound`]): work git
-    /// refused a step on ([`RunCtx::charge_refused_work`]) or a plan its planner left
-    /// uncommitted. Read by the escalation lesson alone, so no record or prompt carries it.
-    kept: String,
+    /// commit is kept ([`RunCtx::kept_at_the_bound`]): work git refused a step on
+    /// ([`RunCtx::charge_refused_work`]) or a plan its planner left uncommitted. The escalation
+    /// lesson names each, and the attempt's `UnitFailed` records each ([`ledger::Unit::keeps`]),
+    /// so the unit's integration removes it by its commit; no prompt carries it.
+    kept: Vec<ledger::Kept>,
 }
 
 impl PriorFailure {
@@ -2305,7 +2340,7 @@ impl PriorFailure {
             required: u.required.clone(),
             contradiction: String::new(),
             halted_commit: String::new(),
-            kept: String::new(),
+            kept: Vec::new(),
         }
     }
 
@@ -2314,8 +2349,9 @@ impl PriorFailure {
     /// own stage): this failure's gate evidence, refusal and review reason ride on it, so the next
     /// attempt's prompt is rebuilt from the log ([`Self::logged`]) by whichever process
     /// re-enters the unit, and the bound rides on it so an operator surface holding only the
-    /// log and the run's defaults shows the bound the unit escalates at. The one body every
-    /// `UnitFailed` writes, whichever path failed.
+    /// log and the run's defaults shows the bound the unit escalates at, and the trees kept for
+    /// it ride on it so its integration removes them ([`ledger::Unit::keeps`]). The one body
+    /// every `UnitFailed` writes, whichever path failed.
     fn failed_body(&self, unit: &str, attempts: u32, max_retries: u32, cause: &str) -> Value {
         json!({
             "id": unit,
@@ -2326,6 +2362,7 @@ impl PriorFailure {
             "refusal": self.refusal,
             "review_reason": self.review_reason,
             "required": self.required,
+            "kept": self.kept,
         })
     }
 
@@ -2336,7 +2373,7 @@ impl PriorFailure {
             && self.required.is_empty()
             && self.contradiction.trim().is_empty()
             && self.halted_commit.trim().is_empty()
-            && self.kept.trim().is_empty()
+            && self.kept.is_empty()
     }
 
     /// A one-line summary of the failure, for the escalation lesson (spec 02: the
@@ -2361,10 +2398,20 @@ impl PriorFailure {
                 self.halted_commit.trim()
             ));
         }
-        if !self.kept.trim().is_empty() {
+        if !self.kept.is_empty() {
+            let kept: Vec<String> = self
+                .kept
+                .iter()
+                .map(|k| format!("commit {} on {}", k.commit, k.reference))
+                .collect();
+            let trees = if kept.len() == 1 {
+                "the tree it left is"
+            } else {
+                "the trees it left are"
+            };
             parts.push(format!(
-                "the tree it left is kept as {}, off the unit's branch",
-                self.kept.trim()
+                "{trees} kept as {}, off the unit's branch",
+                kept.join(", ")
             ));
         }
         parts.join("; ")
@@ -3656,6 +3703,13 @@ fn drive(
         .values()
         .map(|u| (u.id.clone(), PriorFailure::logged(u)))
         .collect();
+    // Each unit's recorded keeps from the SAME fold, so the unit's landing removes them.
+    let prior_keeps: HashMap<String, Vec<ledger::Kept>> = prior
+        .units
+        .values()
+        .filter(|u| !u.keeps.is_empty())
+        .map(|u| (u.id.clone(), u.keeps.clone()))
+        .collect();
     let ctx = RunCtx {
         cfg,
         deps,
@@ -3673,6 +3727,7 @@ fn drive(
         prior_attempts,
         prior_resume_bound,
         prior_failure,
+        prior_keeps,
         replayed_keys,
         gate_verdicts: Mutex::new(gate_verdicts),
         green_digests,
@@ -4256,6 +4311,10 @@ struct RunCtx<'a> {
     /// `prior_attempts` is. [`logged_prior_failure`](RunCtx::logged_prior_failure) is the
     /// sole reader.
     prior_failure: HashMap<String, PriorFailure>,
+    /// Each unit's kept trees from the prior log ([`ledger::Unit::keeps`]), a run-start snapshot
+    /// of the SAME fold `prior_failure` is. [`recorded_keeps`](RunCtx::recorded_keeps) is the
+    /// sole reader.
+    prior_keeps: HashMap<String, Vec<ledger::Kept>>,
     /// The `(unit, attempt)` keys ([`conflict_regenerate_key`]'s shape) for which the prior
     /// log durably recorded at least one spec 88 criterion 1 round 4 TABLE marker (round 4's
     /// own fix, `resume_phase`'s sole reader): [`Worktree::branch_has_work`]'s `tip == base`
@@ -4427,6 +4486,7 @@ impl<'a> RunCtx<'a> {
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
+            prior_keeps: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
@@ -4809,6 +4869,14 @@ impl RunCtx<'_> {
             Some(failure) if self.prior_attempts.get(unit) == Some(&attempts) => failure.clone(),
             _ => PriorFailure::default(),
         }
+    }
+
+    /// The trees kept for `unit` that the run's log recorded before this process
+    /// ([`ledger::Unit::keeps`]), which its landing removes ([`worktree::reap_keeps`]). A keep
+    /// at the retry bound is made only by an attempt that escalates its unit, so the log holds
+    /// every such keep of a unit this process lands.
+    fn recorded_keeps(&self, unit: &str) -> &[ledger::Kept] {
+        self.prior_keeps.get(unit).map_or(&[], Vec::as_slice)
     }
 
     /// What `unit` is told on entering its lifecycle at attempt `attempts`, the one reader the
@@ -5996,7 +6064,7 @@ impl RunCtx<'_> {
             || matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &wt {
             if !parked_unwind && !kept_for_retry && !holds_work {
-                let _ = w.remove();
+                self.remove_or_say(w);
             }
             // The unit's branch is its DURABLE checkpoint (resume-continuity): it must
             // survive an interrupted unit so the next run reuses its committed work.
@@ -6005,11 +6073,12 @@ impl RunCtx<'_> {
             // the merged work lives in the base now. An un-integrated unit (Ok(false),
             // an Err, a pause/escalation, or a crash before this line) KEEPS its branch.
             // Deletion happens after the worktree dir is removed, since git refuses to
-            // delete a branch that is still checked out in a worktree. The unit's kept ref
-            // ([`Worktree::keep_tree_aside`]) goes with its branch.
+            // delete a branch that is still checked out in a worktree. The unit's recorded keeps
+            // ([`Worktree::keep_tree_aside`]) go with its branch ([`worktree::reap_keeps`]).
             if matches!(result, Ok(true)) {
                 let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
-                let _ = worktree::delete_kept(&self.deps.repo, &w.branch);
+                let keeps = self.recorded_keeps(&st.name);
+                let _ = worktree::reap_keeps(&self.deps.repo, &w.branch, keeps);
             }
         }
         result
@@ -8305,28 +8374,87 @@ impl RunCtx<'_> {
     /// bound, no next attempt continues the tree and the escalation removes it, so its work is
     /// kept first on the unit's kept ref ([`Worktree::keep_tree_aside`]), exactly as the attempt
     /// left it, the unit's branch left at its last guarded tip so nothing git refused enters the
-    /// history a later attempt builds on or lands. Returns where, `commit <sha> on <kept ref>`,
-    /// for the escalation lesson ([`PriorFailure::kept`]); empty when the attempt does not spend
-    /// the bound, the unit has no tree, or the tree holds nothing its branch lacks. A keep git
-    /// cannot make ends the drive on that fault, uncharged, the tree kept.
+    /// history a later attempt builds on or lands. Returns where, for the escalation lesson and
+    /// the attempt's record ([`PriorFailure::kept`]); empty when the attempt does not spend the
+    /// bound, the unit has no tree, or the tree holds nothing its branch lacks. A keep git cannot
+    /// make ends the drive on that fault, uncharged, the tree kept.
     fn kept_at_the_bound(
         &self,
         st: &Stage,
         wt: Option<&Worktree>,
         attempts: u32,
         what: &str,
-    ) -> Result<String, Error> {
+    ) -> Result<Vec<ledger::Kept>, Error> {
         let next = self.remediation(st, attempts);
         let (safety::Decision::Escalate, Some(w)) = (next.decision, wt) else {
-            return Ok(String::new());
+            return Ok(Vec::new());
         };
         let kept = git_step(w.keep_tree_aside(&format!(
             "wip({}): tree of attempt {}, {what}",
             st.name, next.attempts
         )))?;
-        Ok(kept
-            .map(|kept| format!("commit {} on {}", kept.commit, kept.reference))
-            .unwrap_or_default())
+        Ok(kept.into_iter().collect())
+    }
+
+    /// A SPECULATION LANE GIT REFUSED: lane `lane` of unit `st`'s group, its tree `w`, lost on
+    /// git refusing a content step on its work (`e`). The lane's tree and branch go at the group's
+    /// outcome, and a group with no winner escalates, as the attempt that spends a single lane's bound
+    /// does ([`Self::kept_at_the_bound`]), so the lane's work is kept first on the lane's own
+    /// kept ref ([`Worktree::keep_lane_aside`]): `rigger/kept/<unit>` for lane 0 and
+    /// `rigger/kept/<unit>-spec<lane>` for lane `lane`, as its branch is named. The refusal and
+    /// the keep join the group's loss ([`LostLanes::refused`]): a group with no winner records
+    /// and names each keep, and a lane that wins drops them. A keep git cannot make does not stop
+    /// the lanes that can still win: it is said through [`Deps::log`], naming the lane's tree, its
+    /// branch and the fault, and held as the group's [`LostLanes::keep_fault`], the lane's tree and
+    /// branch staying with the group's losses. A win removes them with its other losers; a group
+    /// with no winner holds the run on that fault, uncharged, every tree in place for the release,
+    /// whose re-entry meets the refusal in the same tree and tries the keep again.
+    fn lane_refused(&self, st: &Stage, lane: u32, w: &Worktree, e: &Error, lost: &mut LostLanes) {
+        match git_step(w.keep_lane_aside(&format!(
+            "wip({}): tree of speculation lane {lane}, which git refused",
+            st.name
+        ))) {
+            Ok(kept) => lost.refused(e, kept.into_iter().collect()),
+            Err(fault) => {
+                (self.deps.log)(&format!(
+                    "rigger: left speculation lane {lane} of {} in its worktree at {} (branch {}): \
+                     its keep failed, and the run holds on it if no other lane wins: {}",
+                    st.name,
+                    w.dir,
+                    w.branch,
+                    without_halt_markers(Error(fault.0.clone())).0
+                ));
+                lost.refused(e, Vec::new());
+                lost.keep_fault.get_or_insert(fault);
+            }
+        }
+    }
+
+    /// REMOVE A TREE ITS STAGE IS DONE WITH, OR SAY WHY IT STAYS: `w`'s removal where its stage
+    /// ends, its outcome already decided. Git refusing it (a lock a person set meanwhile, which
+    /// [`Worktree::remove`] reads) or a read failing keeps the tree where it is, and the run says
+    /// so through [`Deps::log`], naming the tree, its branch and the refusal. Nothing else would:
+    /// a transient tree (a standalone review's, the plan-critique gate's, a post-merge
+    /// re-gate's) is never created again to read the lock, and a unit's tree is held only at its
+    /// next create. The error is not propagated: it would make a person's lock the failure of a
+    /// stage whose outcome is already recorded, or mask the error the stage ended on. A tree
+    /// already gone keeps nothing, so nothing is said of it.
+    fn remove_or_say(&self, w: &Worktree) {
+        if let Err(e) = w.remove() {
+            if std::path::Path::new(&w.dir).exists() {
+                (self.deps.log)(&format!(
+                    "rigger: kept the worktree at {} (branch {}): {}",
+                    w.dir, w.branch, e.0
+                ));
+            }
+        }
+    }
+
+    /// Tear down a speculation lane's tree `w` ([`Self::remove_or_say`]) and its branch, once
+    /// its group is done with the lane.
+    fn remove_lane(&self, w: &Worktree) {
+        self.remove_or_say(w);
+        let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
     }
 
     /// The effective first-green-wins speculation width for a unit class (spec 13, unit 3):
@@ -8385,17 +8513,9 @@ impl RunCtx<'_> {
             &self.deps.repo,
             &self.cfg.workflow.defaults.workdir,
         );
-        let dir = unit_worktree_dir(&scratch, &st.name);
-        let branch = unit_branch(&st.name);
-        if lane == 0 {
-            return git_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch));
-        }
-        git_step(Worktree::create(
-            &self.deps.repo,
-            &format!("{dir}-spec{lane}"),
-            &format!("{branch}-spec{lane}"),
-            &scratch,
-        ))
+        let dir = worktree::lane_name(&unit_worktree_dir(&scratch, &st.name), lane);
+        let branch = worktree::lane_name(&unit_branch(&st.name), lane);
+        git_step(Worktree::create(&self.deps.repo, &dir, &branch, &scratch))
     }
 
     /// First-green-wins speculation (spec 13, unit 3). A unit class declaring
@@ -8623,7 +8743,7 @@ impl RunCtx<'_> {
                 // lane's branch kept either way.
                 Err((LaneError::Fault, e)) => {
                     if !tree_is_dirty(&dir) {
-                        let _ = wt.remove();
+                        self.remove_or_say(&wt);
                     }
                     // A store read failing before the implementer's launch carries no halt
                     // marker, so it reaches the wave as the infra halt it is. One before the sdet
@@ -8645,19 +8765,22 @@ impl RunCtx<'_> {
                 // sdet crash, or an sdet record refused past its re-run): it is simply absent
                 // from the group - a losing candidate whose diff never commits. The remaining
                 // candidates still race; if none survives, the escalation tail fires, its
-                // failure carrying each refusal (a crash is no feedback for the author). Its
-                // lane worktree AND branch were already created (above), and NO terminal path
-                // below tears them down - winner cleanup, `cancel_speculation_candidates`, and
-                // the escalation tail all iterate `candidates`, which EXCLUDES this never-pushed
-                // lane, and `Worktree` has no `Drop`. So remove them HERE, or the conductor
-                // leaks a durable dir + branch, breaking the "conductor owns the K worktrees'
-                // whole lifecycle" invariant (spec 13, unit 3).
+                // failure carrying each refusal and where each refused tree is kept (a crash is
+                // no feedback for the author). Its lane worktree AND branch were already created
+                // (above), and `Worktree` has no `Drop`, so the conductor owns them here (spec
+                // 13, unit 3). A crashed lane's are removed now: its loss is answered from the
+                // log on any re-entry. A refused lane's work is kept, and its tree and branch
+                // stay with the group's losses ([`LostLanes::left`]) until the group's outcome
+                // removes them: a re-entry before it (another lane's park, a hold's release)
+                // answers this lane's implementer from the log, so only the same tree meets the
+                // same refusal again; a fresh one would commit nothing and race empty.
                 Err((class, e)) => {
                     if class == LaneError::Refused {
-                        lost.refused(&e);
+                        self.lane_refused(st, lane, &wt, &e, &mut lost);
+                        lost.left.push(wt);
+                    } else {
+                        self.remove_lane(&wt);
                     }
-                    let _ = wt.remove();
-                    let _ = Worktree::delete_branch(&self.deps.repo, &wt.branch);
                 }
             }
         }
@@ -8772,7 +8895,10 @@ impl RunCtx<'_> {
                     &candidates[i],
                     &review,
                 )?;
-                self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
+                self.cancel_speculation_candidates(st, &group, attempt, &candidates, &lost)?;
+                // The refused lanes' keeps go with the group; the unit's own recorded keeps wait
+                // for its landing.
+                let _ = worktree::drop_keeps(&self.deps.repo, lost.kept());
                 return Ok(false);
             }
             let integration = match self.integrate_and_emit(
@@ -8783,9 +8909,11 @@ impl RunCtx<'_> {
             ) {
                 Ok(integration) => integration,
                 // Git refused the merge on the candidate's own work before any of it landed:
-                // the run branch is as it was, so the candidate loses and the next is tried.
+                // the run branch is as it was, so the candidate loses, its work kept, and the
+                // next is tried.
                 Err(e) if self.lane_error(&st.name, attempt, &e) == LaneError::Refused => {
-                    lost.refused(&e);
+                    let wt = &candidates[i].wt;
+                    self.lane_refused(st, attempt - base, wt, &e, &mut lost);
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -8840,23 +8968,35 @@ impl RunCtx<'_> {
                     (META_SPEC_LOSERS, &losers.join(",")),
                 ],
             )?;
-            self.cancel_speculation_candidates(st, &group, attempt, &candidates)?;
+            self.cancel_speculation_candidates(st, &group, attempt, &candidates, &lost)?;
             // The winner's work merged into the base: tear down its worktree and branch too,
             // exactly as the single-lane path deletes an integrated unit's branch, and the
-            // unit's kept ref with them.
-            let _ = candidates[i].wt.remove();
-            let _ = Worktree::delete_branch(&self.deps.repo, &candidates[i].wt.branch);
-            let _ = worktree::delete_kept(&self.deps.repo, &unit_branch(&st.name));
+            // unit's recorded keeps with them, the keeps of this group's refused lanes included.
+            self.remove_lane(&candidates[i].wt);
+            let keeps: Vec<ledger::Kept> = self
+                .recorded_keeps(&st.name)
+                .iter()
+                .chain(lost.kept())
+                .cloned()
+                .collect();
+            let _ = worktree::reap_keeps(&self.deps.repo, &unit_branch(&st.name), &keeps);
             return Ok(true);
         }
 
         // NO candidate won: every candidate was gate-red, review-rejected, crashed, refused by
         // git, or its winning merge broke post-merge (its evidence held in `lost` above). The K candidates
         // were the unit's parallel attempts, so it ESCALATES rather than re-fanning out forever
-        // on the fresh re-entry. Clean up the losing candidates' worktrees.
-        for c in &candidates {
-            let _ = c.wt.remove();
-            let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+        // on the fresh re-entry. A refused lane whose keep failed holds the run instead, uncharged,
+        // before any tree goes: the release re-enters the group in the same trees, where the
+        // lane meets its refusal again and its keep is tried again.
+        if let Some(fault) = lost.keep_fault.take() {
+            return Err(fault);
+        }
+        // Clean up the losing lanes' worktrees, the candidates' and those Phase A lost to a
+        // refusal: each lane git refused was kept when it was refused, and its record below
+        // names where.
+        for wt in candidates.iter().map(|c| &c.wt).chain(&lost.left) {
+            self.remove_lane(wt);
         }
         // Record why the group lost as the unit's failure, one past its
         // last lane, so an operator's grant re-drives every lane told it, as a single lane
@@ -8867,6 +9007,7 @@ impl RunCtx<'_> {
         // A lane whose merge broke post-merge is part of this one record, which names that
         // lane's worktree sha.
         let break_sha = lost.break_sha();
+        let reason = lost.escalation_reason(width);
         if let Some((cause, failure)) = lost.failure() {
             let mut meta = vec![(META_SPEC_GROUP, group.as_str())];
             if let Some(sha) = &break_sha {
@@ -8887,9 +9028,8 @@ impl RunCtx<'_> {
                 None,
                 &st.name,
                 &format!(
-                    "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work; {}",
+                    "unit {:?} escalated: all {width} speculation candidates failed their gates, review, or post-merge integration, or git refused their work; {reason}",
                     st.name,
-                    failure.escalation_reason()
                 ),
                 None,
                 None,
@@ -8898,7 +9038,7 @@ impl RunCtx<'_> {
         self.emit_meta(
             ledger::TYPE_UNIT_ESCALATED,
             json!({"id": st.name}),
-            &[(META_SPEC_GROUP, &group)],
+            &[(META_SPEC_GROUP, &group), (META_ESCALATION_REASON, &reason)],
         )?;
         Ok(false)
     }
@@ -9091,14 +9231,19 @@ impl RunCtx<'_> {
     /// at the `winner` attempt is SKIPPED here (its worktree/branch is the caller's to clean up: removed once it merged, or
     /// kept as the verified-but-unmerged checkpoint on an `on_pass: none` unit).
     /// `STATUS_SPECULATION_CANCELLED` is not a real lifecycle status, so folding it leaves the
-    /// unit's terminal state as the winner's `Integrated`.
+    /// unit's terminal state as the winner's `Integrated`. The trees and branches of the lanes
+    /// Phase A lost to a refusal (`lost`'s [`LostLanes::left`]) go with the group too.
     fn cancel_speculation_candidates(
         &self,
         st: &Stage,
         group: &str,
         winner: u32,
         candidates: &[SpecCandidate],
+        lost: &LostLanes,
     ) -> Result<(), Error> {
+        for wt in &lost.left {
+            self.remove_lane(wt);
+        }
         for c in candidates {
             // The winner is NOT cancelled and its worktree/branch is the caller's to clean up
             // (deleted once it MERGED, or kept as the verified-but-unmerged checkpoint on an
@@ -9121,8 +9266,7 @@ impl RunCtx<'_> {
                 }),
                 &[(META_SPEC_GROUP, group)],
             )?;
-            let _ = c.wt.remove();
-            let _ = Worktree::delete_branch(&self.deps.repo, &c.wt.branch);
+            self.remove_lane(&c.wt);
         }
         Ok(())
     }
@@ -9175,7 +9319,7 @@ impl RunCtx<'_> {
             // exactly as before. A PARKED (or budget-refused) unwind keeps both - the
             // out-of-process reviewer runs BETWEEN conductor processes in this exact tree.
             if !parked_unwind {
-                let _ = w.remove();
+                self.remove_or_say(w);
                 let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
             }
         }
@@ -10318,7 +10462,7 @@ impl RunCtx<'_> {
         let parked_unwind = matches!(&result, Err(e) if is_parked_or_refused(e, BUDGET_MARKER));
         if let Some(w) = &review_wt {
             if !parked_unwind {
-                let _ = w.remove();
+                self.remove_or_say(w);
                 let _ = Worktree::delete_branch(&self.deps.repo, &w.branch);
             }
         }
@@ -11095,7 +11239,7 @@ impl RunCtx<'_> {
                                 ));
                             }
                             let _ = Worktree::delete_branch(&self.deps.repo, &branch);
-                            let _ = worktree::delete_kept(&self.deps.repo, &branch);
+                            let _ = worktree::reap_keeps(&self.deps.repo, &branch, &u.keeps);
                             None
                         }
                         Err(e) => Some(e.0),
@@ -12036,7 +12180,7 @@ impl RunCtx<'_> {
             // exactly as this function's own doc comment and spec 103 criterion 7's
             // Design text both already (unconditionally) promise.
             let gate_result = self.run_gates(st, &pm_wt.dir, attempt, GateSelection::PostMerge);
-            let _ = pm_wt.remove();
+            self.remove_or_say(&pm_wt);
             let _ = Worktree::delete_branch(&self.deps.repo, &pm_branch);
             let merged = gate_result?;
             if !merged.pass {
@@ -28291,6 +28435,7 @@ stage "implement" adjudicator "adj" failed
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
+            prior_keeps: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
@@ -30738,6 +30883,342 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
+    /// Lane `lane`'s implementer leaves its tree's HEAD off the lane's branch, so git refuses the
+    /// lane's checkpoint.
+    fn refuse_checkpoint(driver: &mut Stub, lane: u32) {
+        driver
+            .git_by_spawn_id
+            .insert(spawn_id("s", ROLE_IMPLEMENTER, lane), detach_head());
+    }
+
+    /// Lane `lane`'s adjudicator leaves the candidate's tree HEAD off the lane's branch, so git
+    /// refuses the approved lane's merge.
+    fn refuse_merge(driver: &mut Stub, lane: u32) {
+        driver.git_by_spawn_id.insert(
+            spawn_retry_id("s", ROLE_ADJUDICATOR, lane, 0),
+            detach_head(),
+        );
+    }
+
+    /// A SPECULATION GROUP WITH NO WINNER KEEPS EACH TREE GIT REFUSED: every lane git refused, at
+    /// its checkpoint or at its merge, has its work kept on its own kept ref (`rigger/kept/<unit>`
+    /// for lane 0, `rigger/kept/<unit>-spec<n>` for lane n) before its tree and branch go, the
+    /// group's one `UnitFailed` records each keep, and its escalation lesson names each commit
+    /// and ref.
+    #[test]
+    fn a_speculation_group_with_no_winner_keeps_each_tree_git_refused() {
+        type Row = (&'static str, fn(&mut Stub, u32));
+        let cases: [Row; 2] = [
+            ("every lane's checkpoint refused", refuse_checkpoint),
+            ("every lane's merge refused", refuse_merge),
+        ];
+        for (row, refuse) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let mut driver = approving_speculation_stub();
+            for lane in 0..2 {
+                refuse(&mut driver, lane);
+            }
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+            assert_eq!(rs.units["s"].status, ledger::Status::Escalated, "{row}");
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let failed: Vec<Value> = events
+                .iter()
+                .filter(|e| e.type_ == ledger::TYPE_UNIT_FAILED)
+                .map(|e| serde_json::from_slice(&e.data).unwrap())
+                .collect();
+            assert_eq!(failed.len(), 1, "{row}: the group records one failure");
+            assert_eq!(failed[0]["cause"], CAUSE_GIT_REFUSED, "{row}");
+            let kept: Vec<ledger::Kept> =
+                serde_json::from_value(failed[0]["kept"].clone()).unwrap();
+            let lanes = [
+                worktree::kept_ref(&unit_branch("s")),
+                worktree::kept_ref(&format!("{}-spec1", unit_branch("s"))),
+            ];
+            assert_eq!(
+                kept.iter().map(|k| k.reference.clone()).collect::<Vec<_>>(),
+                lanes,
+                "{row}: each lane's keep is recorded under its own kept ref"
+            );
+            assert_eq!(
+                worktree::held_refs(&repo_path).unwrap(),
+                kept.iter()
+                    .map(|k| (k.reference.clone(), k.commit.clone()))
+                    .collect::<Vec<_>>(),
+                "{row}: each kept ref holds its recorded keep"
+            );
+            let lesson = events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+                .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                .find(|lesson| lesson.contains("escalated"))
+                .unwrap_or_default();
+            for k in &kept {
+                assert!(
+                    git_out(&repo_path, &["ls-tree", "--name-only", &k.commit])
+                        .lines()
+                        .any(|path| path == "feature.rs"),
+                    "{row}: {} holds the lane's work",
+                    k.reference
+                );
+                assert!(
+                    lesson.contains(&format!("commit {} on {}", k.commit, k.reference)),
+                    "{row}: the lesson names {}: {lesson}",
+                    k.reference
+                );
+                let reason = escalation_reason_of(&events, "s");
+                assert!(
+                    reason.contains(&format!("commit {} on {}", k.commit, k.reference)),
+                    "{row}: the escalation's reason line names {}: {reason:?}",
+                    k.reference
+                );
+            }
+        }
+    }
+
+    /// A SPECULATION GROUP A LANE SETTLED LEAVES NO KEEP: a lane git refused, at its checkpoint or
+    /// at its merge, is kept while the group races, and its keep goes once another lane wins,
+    /// whether the winner lands or settles the unit without landing (`on_pass: none`).
+    #[test]
+    fn a_speculation_group_a_lane_settled_leaves_no_keep() {
+        type Row = (&'static str, &'static str, fn(&mut Stub, u32));
+        let cases: [Row; 3] = [
+            (
+                "lane 0's checkpoint refused, lane 1 lands",
+                "merge",
+                refuse_checkpoint,
+            ),
+            (
+                "lane 0's merge refused, lane 1 lands",
+                "merge",
+                refuse_merge,
+            ),
+            (
+                "lane 0's checkpoint refused, lane 1 settles without landing",
+                "none",
+                refuse_checkpoint,
+            ),
+        ];
+        for (row, on_pass, refuse) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let mut driver = approving_speculation_stub();
+            refuse(&mut driver, 0);
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let mut cfg = spec_cfg(2);
+            cfg.workflow.stages.get_mut("s").unwrap().on_pass = on_pass.into();
+            let rs = run_isolated(&cfg, &deps).unwrap();
+            assert_ne!(
+                rs.units["s"].status,
+                ledger::Status::Escalated,
+                "{row}: premise, lane 1 settled the group"
+            );
+            assert_eq!(
+                worktree::held_refs(&repo_path).unwrap(),
+                Vec::<(String, String)>::new(),
+                "{row}: no keep is left"
+            );
+        }
+    }
+
+    /// A LANE GIT REFUSED STAYS REFUSED ACROSS A PARK: a speculation lane whose checkpoint git
+    /// refused keeps its tree and branch while its group races, so a later step that re-enters
+    /// the group (another lane's review parked) answers the lane's implementer from the log, meets
+    /// the same refusal in the same tree, and never reviews the lane as a candidate. Torn down at
+    /// the refusal, the lane would re-enter on a fresh branch at the run's HEAD, its checkpoint
+    /// committing nothing, and be judged, and could win, with none of its work.
+    #[test]
+    fn a_lane_git_refused_stays_refused_across_a_park() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let cfg = spec_cfg(2);
+        let store = Store::open(":memory:").unwrap();
+        let replay_step = |store: &Store| {
+            let driver = crate::driver::replay::ReplayDriver::new(store);
+            let deps = Deps {
+                store,
+                driver: &driver,
+                gates: &ExecRunner,
+                repo: repo_path.clone(),
+                grounder: None,
+                graph: None,
+                criteria: Vec::new(),
+                log: &|_| {},
+                check_emit: &crate::contextgraph::check_emit,
+                spawn_host: test_spawn_host(),
+                code_store: None,
+                context: None,
+            };
+            run_isolated(&cfg, &deps).expect("a parked frontier is not a run failure")
+        };
+        let impl0 = spawn_id("s", ROLE_IMPLEMENTER, 0);
+        let impl1 = spawn_id("s", ROLE_IMPLEMENTER, 1);
+        let lens0 = spawn_id("s", &lens_role("lens"), 0);
+        let lens1 = spawn_id("s", &lens_role("lens"), 1);
+        let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+        let lane0 = unit_worktree_dir(&scratch, "s");
+        let lane1 = worktree::lane_name(&lane0, 1);
+
+        // Step 1: both implementers park. Their workers write each lane's work, and lane 0's
+        // leaves its tree's HEAD off the lane's branch.
+        replay_step(&store);
+        for dir in [&lane0, &lane1] {
+            std::fs::write(Path::new(dir).join("feature.rs"), "work\n").unwrap();
+        }
+        git_out(&lane0, &["checkout", "-q", "--detach"]);
+        for id in [&impl0, &impl1] {
+            crate::spawn_store::record_result(&store, &crate::spawn::SpawnResult::ok(id, "done"))
+                .unwrap();
+        }
+
+        // Step 2: git refuses lane 0's checkpoint, and lane 1's review lens parks.
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            crate::spawn::is_recorded(&events, &lens1),
+            "premise: lane 1 is a candidate whose review parked"
+        );
+        assert!(
+            !crate::spawn::is_recorded(&events, &lens0),
+            "premise: lane 0 lost at its checkpoint"
+        );
+
+        // Step 3: the group re-enters with lane 1's review still in flight.
+        replay_step(&store);
+        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+        assert!(
+            !crate::spawn::is_recorded(&events, &lens0),
+            "the lane git refused is never reviewed as a candidate"
+        );
+        assert!(
+            Path::new(&lane0).join("feature.rs").exists(),
+            "the refused lane's tree keeps its work while its group races"
+        );
+    }
+
+    /// A SPECULATION LANE WHOSE KEEP FAILS HOLDS THE RUN ONLY WHEN NO LANE WINS: a lane git
+    /// refused, at its checkpoint or at its merge, whose keep git cannot write is said through the
+    /// run's log, naming the lane's tree, its branch and the keep's fault, and its tree and branch
+    /// stay while the group races. Another lane winning settles the unit, the win removing the
+    /// unkept lane's tree and branch with the group's other losers. With no winner, every lane
+    /// asked, the run is held for the orchestrator on the keep's fault, uncharged, the unkept
+    /// lane's tree and branch in place for the release.
+    #[test]
+    fn a_lane_whose_keep_fails_holds_the_run_only_when_no_lane_wins() {
+        // Each row: what git refuses, the lanes it refuses, the lane whose keep fails, the agent
+        // each refused lane's refusal follows, and whether another lane wins.
+        type Row = (
+            &'static str,
+            fn(&mut Stub, u32),
+            &'static [u32],
+            u32,
+            &'static str,
+            bool,
+        );
+        let cases: [Row; 4] = [
+            (
+                "lane 1's checkpoint refused, lane 0 wins",
+                refuse_checkpoint,
+                &[1],
+                1,
+                "worker",
+                true,
+            ),
+            (
+                "lane 0's merge refused, lane 1 wins",
+                refuse_merge,
+                &[0],
+                0,
+                "adj",
+                true,
+            ),
+            (
+                "every lane's checkpoint refused",
+                refuse_checkpoint,
+                &[0, 1],
+                0,
+                "worker",
+                false,
+            ),
+            (
+                "every lane's merge refused",
+                refuse_merge,
+                &[0, 1],
+                0,
+                "adj",
+                false,
+            ),
+        ];
+        for (row, refuse, refused, unkept, agent, wins) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let mut driver = approving_speculation_stub();
+            for lane in refused {
+                refuse(&mut driver, *lane);
+            }
+            // A ref under the lane's kept ref's name stops git writing that ref. Its tip is outside
+            // HEAD's history, so the run's branch collection, which drops a held ref HEAD holds,
+            // leaves it in place.
+            let lane_branch = worktree::lane_name(&unit_branch("s"), unkept);
+            let blocker = format!("{}/blocker", worktree::kept_ref(&lane_branch));
+            let outside = git_out(&repo_path, &["commit-tree", "HEAD^{tree}", "-m", "blocker"]);
+            git_out(&repo_path, &["branch", &blocker, &outside]);
+            let lines = Mutex::new(Vec::<String>::new());
+            let log = |line: &str| lines.lock().unwrap().push(line.to_string());
+            let deps = Deps {
+                repo: repo_path.clone(),
+                log: &log,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let outcome = run_isolated(&spec_cfg(2), &deps);
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let lane_dir = worktree::lane_name(&unit_worktree_dir(&scratch, "s"), unkept);
+            if wins {
+                let rs = outcome.unwrap_or_else(|e| panic!("{row}: another lane settles: {e:?}"));
+                assert_eq!(rs.units["s"].status, ledger::Status::Integrated, "{row}");
+                assert_eq!(holds_in(&events), Vec::new(), "{row}: the run is not held");
+                assert!(
+                    !Path::new(&lane_dir).exists() && !branch_present(&repo_path, &lane_branch),
+                    "{row}: the win removes the unkept lane's tree and branch"
+                );
+            } else {
+                let fault = assert_held_with_no_lesson(row, outcome, &events);
+                assert!(
+                    fault.contains(&format!("keeping the tree of {lane_branch}")),
+                    "{row}: the hold names the keep's fault: {fault}"
+                );
+                assert_eq!(
+                    occurrences(&driver.call_order, agent),
+                    2,
+                    "{row}: every lane is asked before the hold"
+                );
+                assert!(
+                    Path::new(&lane_dir).join("feature.rs").exists()
+                        && branch_present(&repo_path, &lane_branch),
+                    "{row}: the unkept lane's tree, with its work, and its branch stay"
+                );
+            }
+            let said = lines.lock().unwrap().clone();
+            assert!(
+                said.iter().any(|line| line.contains(&lane_dir)
+                    && line.contains(&lane_branch)
+                    && line.contains("keeping the tree of")),
+                "{row}: the failed keep is said, naming the lane's tree, branch and fault: {said:?}"
+            );
+        }
+    }
+
     /// A store that fails the run's spawn read a missed handover takes
     /// ([`RunCtx::handover_miss`]), counting each failure, and forwards every other call.
     struct HandoverReadFails<'a> {
@@ -32027,43 +32508,90 @@ stage "implement" adjudicator "adj" failed
 
     /// A lane lost to an outage is no feedback for the author, exactly as the single lane
     /// charges an infra cause no `UnitFailed`: a group whose every lane's review blamed
-    /// infrastructure escalates with no group-loss failure recorded.
+    /// infrastructure, or whose every lane crashed, escalates with no group-loss failure recorded
+    /// and no lesson taught. Its escalation still says why, in one reason line naming the outage
+    /// and neither gates nor review, which judged nothing.
     #[test]
     fn a_group_whose_lanes_lost_to_infrastructure_records_no_failure_for_the_author() {
-        let repo = temp_git_project_with_commit();
-        let repo_path = repo.path().to_str().unwrap().to_string();
-        let store = Store::open(":memory:").unwrap();
-        let driver = Stub {
-            output: format!(
+        /// Every lane's review blames infrastructure.
+        fn review_blames_infrastructure(driver: &mut Stub) {
+            driver.output = format!(
                 r#"{{"verdict":"reject","cause":"{}","issues":["the build host was down"]}}"#,
                 spawn::CAUSE_INFRA_FAULT
+            );
+        }
+        /// Every lane's implementer crashes.
+        fn every_implementer_crashes(driver: &mut Stub) {
+            driver.fail_spawn_ids = (0..2)
+                .map(|lane| spawn_id("s", ROLE_IMPLEMENTER, lane))
+                .collect();
+        }
+        type Row = (&'static str, fn(&mut Stub));
+        let cases: [Row; 2] = [
+            (
+                "every lane's review blamed infrastructure",
+                review_blames_infrastructure,
             ),
-            ..approving_speculation_stub()
-        };
-        let deps = Deps {
-            repo: repo_path,
-            ..stub_deps(&store, &driver, Vec::new())
-        };
-        let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
-        assert_eq!(
-            rs.units["s"].status,
-            ledger::Status::Escalated,
-            "premise: a group whose lanes all lose escalates"
-        );
-        let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
-        assert!(
-            !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
-            "an outage records no failure for the author; events: {events:?}"
-        );
-        assert_eq!(
-            events
-                .iter()
-                .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
-                .map(|e| String::from_utf8_lossy(&e.data).to_string())
-                .collect::<Vec<_>>(),
-            Vec::<String>::new(),
-            "an outage teaches the unit no lesson"
-        );
+            (
+                "every lane's implementer crashed",
+                every_implementer_crashes,
+            ),
+        ];
+        for (row, outage) in cases {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let mut driver = approving_speculation_stub();
+            outage(&mut driver);
+            let deps = Deps {
+                repo: repo_path,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let rs = run_isolated(&spec_cfg(2), &deps).unwrap();
+            assert_eq!(
+                rs.units["s"].status,
+                ledger::Status::Escalated,
+                "{row}: premise: a group whose lanes all lose escalates"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            assert!(
+                !events.iter().any(|e| e.type_ == ledger::TYPE_UNIT_FAILED),
+                "{row}: an outage records no failure for the author; events: {events:?}"
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.type_ == contextgraph::TYPE_LESSON_LEARNED)
+                    .map(|e| String::from_utf8_lossy(&e.data).to_string())
+                    .collect::<Vec<_>>(),
+                Vec::<String>::new(),
+                "{row}: an outage teaches the unit no lesson"
+            );
+            let reason = escalation_reason_of(&events, "s");
+            assert!(
+                reason.contains("crashed or lost to infrastructure")
+                    && !reason.contains("gates")
+                    && !reason.contains("review"),
+                "{row}: the escalation names the outage alone: {reason:?}"
+            );
+        }
+    }
+
+    /// The reason line unit `unit`'s one `UnitEscalated` in `events` carries in its meta.
+    fn escalation_reason_of(events: &[Event], unit: &str) -> String {
+        let escalated: Vec<&Event> = events
+            .iter()
+            .filter(|e| {
+                e.type_ == ledger::TYPE_UNIT_ESCALATED
+                    && serde_json::from_slice::<Value>(&e.data).unwrap()["id"] == unit
+            })
+            .collect();
+        assert_eq!(escalated.len(), 1, "{unit} escalates once: {events:?}");
+        escalated[0]
+            .meta
+            .get(META_ESCALATION_REASON)
+            .cloned()
+            .unwrap_or_default()
     }
 
     #[test]
@@ -36867,6 +37395,7 @@ stage "implement" adjudicator "adj" failed
             prior_attempts: HashMap::new(),
             prior_resume_bound: HashMap::new(),
             prior_failure: HashMap::new(),
+            prior_keeps: HashMap::new(),
             replayed_keys: crate::replay_keys::ReplayKeys::seeded(&[]),
             gate_verdicts: Mutex::new(HashMap::new()),
             green_digests: GreenDigests::after(&[]),
@@ -40645,131 +41174,9 @@ stage "implement" adjudicator "adj" failed
         // width refuses stays ready, and a PARKED unit keeps its slot for the whole process, so
         // with `max_parallel_units: 1`, "a" parked and "b" refused, no later wave in this
         // process can admit anything: the step must end and leave "b" to a later step. The
-        // store double counts the whole-stream reads and fails past a cap, so a loop that
-        // re-reads the stream once per futile wave ends in an error instead of spinning.
-        struct CappedReads<'a> {
-            inner: &'a dyn EventStore,
-            reads: AtomicU32,
-        }
-        impl CappedReads<'_> {
-            /// Count one read of the stream, failing once the cap is spent.
-            fn charge(&self) -> Result<(), crate::eventstore::Error> {
-                if self.reads.fetch_add(1, Ordering::SeqCst) >= READ_CAP {
-                    return Err(crate::eventstore::Error::Backend(
-                        "read cap reached: the step re-reads the stream without progress".into(),
-                    ));
-                }
-                Ok(())
-            }
-        }
-        impl EventStore for CappedReads<'_> {
-            fn append(
-                &self,
-                stream: &str,
-                expected: ExpectedRevision,
-                events: &[Event],
-            ) -> Result<crate::eventstore::Appended, crate::eventstore::Error> {
-                self.inner.append(stream, expected, events)
-            }
-            fn read_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                dir: Direction,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.charge()?;
-                self.inner.read_stream(stream, from, dir)
-            }
-            fn read_all(
-                &self,
-                from: crate::eventstore::Position,
-                dir: Direction,
-                filter: &crate::eventstore::Filter,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_all(from, dir, filter)
-            }
-            fn read_all_page(
-                &self,
-                from: crate::eventstore::Position,
-                filter: &crate::eventstore::Filter,
-                max: usize,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.inner.read_all_page(from, filter, max)
-            }
-            fn log_head(
-                &self,
-            ) -> Result<Option<crate::eventstore::Position>, crate::eventstore::Error> {
-                self.inner.log_head()
-            }
-            fn subscribe_all(
-                &self,
-                from: crate::eventstore::Position,
-                filter: &crate::eventstore::Filter,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_all(from, filter)
-            }
-            fn subscribe_stream(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-            ) -> Result<crate::eventstore::Subscription, crate::eventstore::Error> {
-                self.inner.subscribe_stream(stream, from)
-            }
-            fn last_position(
-                &self,
-                stream: &str,
-                event_type: &str,
-            ) -> Result<Option<crate::eventstore::Revision>, crate::eventstore::Error> {
-                self.inner.last_position(stream, event_type)
-            }
-            fn read_stream_typed(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                selection: crate::eventstore::TypeSelection,
-            ) -> Result<Vec<Event>, crate::eventstore::Error> {
-                self.charge()?;
-                self.inner.read_stream_typed(stream, from, selection)
-            }
-            fn read_stream_positions(
-                &self,
-                stream: &str,
-                batch: usize,
-                sink: &mut dyn FnMut(
-                    &[crate::eventstore::Position],
-                ) -> Result<(), crate::eventstore::Error>,
-            ) -> Result<(), crate::eventstore::Error> {
-                self.charge()?;
-                self.inner.read_stream_positions(stream, batch, sink)
-            }
-            fn read_stream_batched(
-                &self,
-                stream: &str,
-                from: crate::eventstore::Revision,
-                batch: usize,
-                sink: &mut crate::eventstore::EventBatchSink,
-            ) -> Result<(), crate::eventstore::Error> {
-                self.charge()?;
-                self.inner.read_stream_batched(stream, from, batch, sink)
-            }
-            fn latest_in_group(
-                &self,
-                stream: &str,
-                group: &str,
-            ) -> Result<Option<crate::eventstore::GroupHead>, crate::eventstore::Error>
-            {
-                self.inner.latest_in_group(stream, group)
-            }
-            fn read_by_record_id(
-                &self,
-                stream: &str,
-                types: &[&str],
-                id: &str,
-            ) -> Result<Vec<crate::eventstore::Event>, crate::eventstore::Error> {
-                self.inner.read_by_record_id(stream, types, id)
-            }
-        }
-        const READ_CAP: u32 = 200;
+        // counting store double fails every call past a cap, so a loop that re-reads the stream
+        // once per futile wave ends in an error instead of spinning.
+        const READ_CAP: usize = 200;
 
         let mut cfg = Config::default();
         cfg.workflow.defaults.max_parallel_units = 1;
@@ -40787,19 +41194,16 @@ stage "implement" adjudicator "adj" failed
             );
         }
         let inner = Store::open(":memory:").unwrap();
-        let store = CappedReads {
-            inner: &inner,
-            reads: AtomicU32::new(0),
-        };
+        let store = crate::test_support::ReadCountingStore::new(&inner).capped(READ_CAP);
         let driver = Stub {
             park_spawn_ids: [spawn_id("a", ROLE_IMPLEMENTER, 0)].into_iter().collect(),
             ..Stub::new()
         };
         let deps = stub_deps(&store, &driver, Vec::new());
         let rs = run_isolated(&cfg, &deps);
-        let reads = store.reads.load(Ordering::SeqCst);
+        let reads = store.reads().len();
         let rs = rs.unwrap_or_else(|e| {
-            panic!("the step must end once no wave can admit a stage; it failed after {reads} whole-stream reads: {e}")
+            panic!("the step must end once no wave can admit a stage; it failed after {reads} store calls: {e}")
         });
         assert!(
             !rs.units.contains_key("b"),
@@ -49429,6 +49833,213 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
+    /// The reason a person gives git for the lock [`LocksItsTree`] sets.
+    const A_PERSONS_LOCK: &str = "a person's lock";
+
+    /// Lock the worktree at `dir` as a person would, with [`A_PERSONS_LOCK`].
+    fn lock_tree(dir: &str) {
+        let locked = std::process::Command::new("git")
+            .args([
+                "-C",
+                dir,
+                "worktree",
+                "lock",
+                "--reason",
+                A_PERSONS_LOCK,
+                ".",
+            ])
+            .output()
+            .unwrap();
+        assert!(locked.status.success(), "locking {dir}: {locked:?}");
+    }
+
+    /// A driver that locks the worktree spawn `id` runs in, as a person would mid-stage, and
+    /// otherwise answers as `inner` does. `locked` records that it did.
+    struct LocksItsTree<'a> {
+        inner: &'a dyn AgentDriver,
+        id: String,
+        locked: std::sync::atomic::AtomicBool,
+    }
+    impl<'a> LocksItsTree<'a> {
+        fn new(inner: &'a dyn AgentDriver, id: String) -> Self {
+            LocksItsTree {
+                inner,
+                id,
+                locked: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+    impl AgentDriver for LocksItsTree<'_> {
+        fn spawn(
+            &self,
+            a: &AgentDef,
+            prompt: &str,
+            opts: &SpawnOpts,
+            emit: &dyn Fn(&str, Value) -> Result<(), Error>,
+        ) -> Result<AgentResult, Error> {
+            if opts.id == self.id && !opts.dir.is_empty() {
+                lock_tree(&opts.dir);
+                self.locked.store(true, Ordering::SeqCst);
+            }
+            self.inner.spawn(a, prompt, opts, emit)
+        }
+    }
+
+    /// A TRANSIENT TREE A PERSON LOCKED IS KEPT WITH A WORD: a standalone review stage's tree,
+    /// the plan-critique gate's and a post-merge re-gate's are removed when their stage ends, and
+    /// git refuses to remove one a person locked meanwhile. The tree stays, and the run says so
+    /// in a progress line naming the tree and git's refusal, since no later create of that tree
+    /// reads the lock and nothing else would.
+    #[test]
+    fn a_transient_tree_a_person_locked_is_kept_with_a_line_naming_it() {
+        type Log<'l> = &'l (dyn Fn(&str) + Sync);
+        /// A standalone review stage whose lens locks its tree.
+        fn review_stage(log: Log<'_>) -> (tempfile::TempDir, Vec<String>) {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let mut cfg = Config::default();
+            cfg.agents.insert("lens".into(), agent("lens"));
+            cfg.workflow.stages.insert(
+                "review".into(),
+                Stage {
+                    name: "review".into(),
+                    agents: vec!["lens".into()],
+                    ..Default::default()
+                },
+            );
+            let inner = Stub::answering(r#"{"verdict":"approve"}"#);
+            let driver = LocksItsTree::new(&inner, review_lens_ids::<Vec<_>>(&["lens"]).remove(0));
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                log,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let _ = run_isolated(&cfg, &deps);
+            assert!(
+                driver.locked.load(Ordering::SeqCst),
+                "premise: the lens locked its tree"
+            );
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let (dir, _) = Throwaway::REVIEW.dir_and_branch(&scratch, "review", 0);
+            (repo, vec![dir])
+        }
+        /// The plan-critique gate, whose adversary locks its tree.
+        fn plan_critique(log: Log<'_>) -> (tempfile::TempDir, Vec<String>) {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let source = tempfile::tempdir().unwrap();
+            std::fs::write(
+                source.path().join("feature.rs"),
+                format!("// {WIDGET_CRITERION}\nfn render() {{}}\n"),
+            )
+            .unwrap();
+            let grep = crate::grounder::Grep {
+                root: source.path().to_string_lossy().into_owned(),
+            };
+            let inner = CritiqueDriver::new(widget_split());
+            let driver = LocksItsTree::new(&inner, spawn_id("plan-critique", ROLE_ADVERSARY, 0));
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                grounder: Some(&grep),
+                log,
+                ..stub_deps(&store, &driver, vec![WIDGET_CRITERION.to_string()])
+            };
+            let _ = run_isolated(&critique_cfg(), &deps);
+            assert!(
+                driver.locked.load(Ordering::SeqCst),
+                "premise: the adversary locked its tree"
+            );
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let (dir, _) = Throwaway::REVIEW.dir_and_branch(&scratch, "plan-critique", 0);
+            (repo, vec![dir])
+        }
+        /// Two units writing apart, so the second lands on a tree its own gate never saw and its
+        /// post-merge re-gate runs, its gate locking the re-gate's tree.
+        fn post_merge(log: Log<'_>) -> (tempfile::TempDir, Vec<String>) {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let mut cfg = Config::default();
+            cfg.workflow.gates.insert(
+                "g".into(),
+                gate_def(&format!(
+                    "case \"$(pwd -P)\" in */rigger-postmerge-*) git worktree lock --reason \
+                     \"{A_PERSONS_LOCK}\" . ;; esac"
+                )),
+            );
+            for (unit, worker) in [("unit-a", "wa"), ("unit-b", "wb")] {
+                cfg.agents.insert(worker.into(), agent(worker));
+                cfg.workflow.stages.insert(
+                    unit.into(),
+                    Stage {
+                        name: unit.into(),
+                        agent: worker.into(),
+                        gates: vec!["g".into()],
+                        on_pass: "merge".into(),
+                        ..Default::default()
+                    },
+                );
+            }
+            let driver = Stub {
+                write_file_by_agent: HashMap::from([
+                    ("wa".to_string(), "a.txt".to_string()),
+                    ("wb".to_string(), "b.txt".to_string()),
+                ]),
+                ..Stub::new()
+            };
+            let store = Store::open(":memory:").unwrap();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                log,
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let _ = run_isolated(&cfg, &deps);
+            let scratch = crate::worktree::scratch_root_from_env(&repo_path, "");
+            let left: Vec<String> = std::fs::read_dir(&scratch)
+                .unwrap()
+                .filter_map(|e| e.ok()?.file_name().into_string().ok())
+                .filter(|name| name.starts_with("rigger-postmerge-"))
+                .map(|name| format!("{scratch}/{name}"))
+                .collect();
+            assert!(
+                !left.is_empty(),
+                "premise: a post-merge re-gate ran and locked its tree"
+            );
+            (repo, left)
+        }
+        // (the transient tree, the run that locks it)
+        type Row = (
+            &'static str,
+            fn(Log<'_>) -> (tempfile::TempDir, Vec<String>),
+        );
+        let rows: [Row; 3] = [
+            ("the standalone review stage", review_stage),
+            ("the plan-critique gate", plan_critique),
+            ("the post-merge re-gate", post_merge),
+        ];
+        for (row, run) in rows {
+            let said = Mutex::new(Vec::<String>::new());
+            let log = |line: &str| said.lock().unwrap().push(line.to_string());
+            let (repo, kept) = run(&log);
+            let said = said.into_inner().unwrap();
+            for dir in &kept {
+                assert!(
+                    Path::new(dir).is_dir(),
+                    "{row}: the locked tree {dir} is kept"
+                );
+                assert!(
+                    said.iter()
+                        .any(|l| l.contains(dir.as_str()) && l.contains("locked")),
+                    "{row}: a progress line names the kept tree {dir} and why: {said:?}"
+                );
+                let repo_path = repo.path().to_str().unwrap();
+                run_git(repo_path, &["worktree", "unlock", dir]);
+                run_git(repo_path, &["worktree", "remove", "--force", dir]);
+            }
+        }
+    }
+
     // Unix only: the symlink is made by std's unix call.
     #[cfg(unix)]
     #[test]
@@ -51147,6 +51758,18 @@ stage "implement" adjudicator "adj" failed
                 panic!("the lesson names the commit and the ref the tree is kept on: {lesson}")
             })
             .to_string();
+        assert_eq!(
+            of_type(ledger::TYPE_UNIT_FAILED)
+                .iter()
+                .map(|f| f["kept"].clone())
+                .collect::<Vec<_>>(),
+            [
+                json!([]),
+                json!([]),
+                json!([{"reference": "rigger/kept/unit-a", "commit": kept}])
+            ],
+            "the charge of the attempt that kept its tree records the keep, by ref and commit"
+        );
         assert!(
             !Path::new(&unit_dir).exists(),
             "the escalated unit's tree is removed, as an escalated unit's tree is"
@@ -51287,8 +51910,87 @@ stage "implement" adjudicator "adj" failed
         );
     }
 
+    /// A UNIT THAT KEPT TWICE LEAVES NO KEEP ONCE IT LANDS: a unit git refuses escalates with its
+    /// tree kept, is resumed and escalates again with another, the first set aside by the second;
+    /// resumed once more with git no longer refusing, it lands, and its integration removes both
+    /// keeps its record names, the one set aside included, while another lineage's ref sharing
+    /// the unit's prefix stays.
+    #[test]
+    #[cfg(unix)]
+    fn a_unit_that_kept_twice_leaves_no_keep_once_it_lands() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let store = Store::open(":memory:").unwrap();
+        let (hook, cfg, driver) = refusing_every_attempt(repo.path());
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        for attempt in 1..=2 {
+            assert!(
+                run_isolated(&cfg, &deps).is_err(),
+                "attempt {attempt}: the refusal ends the drive"
+            );
+            assert!(release_the_hold(&deps), "attempt {attempt}: released");
+        }
+        let escalates = |what: &str| match run_isolated(&cfg, &deps) {
+            Ok(state) => assert_eq!(
+                state.units["unit-a"].status,
+                ledger::Status::Escalated,
+                "{what}"
+            ),
+            Err(e) => panic!("{what}: {}", e.0),
+        };
+        escalates("the attempt that spends the bound escalates the unit");
+        let first = git_out(&repo_path, &["rev-parse", "rigger/kept/unit-a"]);
+        grant_resume(&store, "unit-a", 1);
+        escalates("the granted attempt, refused, escalates the unit again");
+        let second = git_out(&repo_path, &["rev-parse", "rigger/kept/unit-a"]);
+        let first_aside = format!("rigger/orphaned/unit-a-{}", &first[..12]);
+        assert_ne!(
+            first, second,
+            "precondition: the second keep is another tree"
+        );
+        assert_eq!(
+            git_out(&repo_path, &["rev-parse", &first_aside]),
+            first,
+            "precondition: the first keep stands aside"
+        );
+        let other = git_out(
+            &repo_path,
+            &[
+                "commit-tree",
+                "HEAD^{tree}",
+                "-p",
+                "HEAD",
+                "-m",
+                "another lineage",
+            ],
+        );
+        let theirs = format!("rigger/orphaned/unit-a-{}", &other[..12]);
+        git_out(
+            &repo_path,
+            &["update-ref", &format!("refs/heads/{theirs}"), &other],
+        );
+        std::fs::remove_file(&hook).unwrap();
+        grant_resume(&store, "unit-a", 1);
+
+        let state = match run_isolated(&cfg, &deps) {
+            Ok(state) => state,
+            Err(e) => panic!("the unit lands once git no longer refuses: {}", e.0),
+        };
+
+        assert_eq!(state.units["unit-a"].status, ledger::Status::Integrated);
+        assert_eq!(
+            crate::worktree::held_refs(&repo_path).unwrap(),
+            [(theirs, other)],
+            "both keeps go with the unit's landing, and only another lineage's ref stays"
+        );
+    }
+
     /// BRANCH COLLECTION REAPS THE REFS RIGGER HOLDS ASIDE ONCE THEY HOLD NOTHING HEAD LACKS:
-    /// an integrated unit's kept ref goes with its branch, whatever it holds; a kept or
+    /// an integrated unit's kept ref goes with its branch while it holds the keep the unit's
+    /// record names, whatever that holds; a kept or
     /// orphaned ref whose tip HEAD's history holds is removed and the removal logged; an
     /// orphaned ref holding a commit HEAD lacks stays for a person, unlogged.
     #[test]
@@ -51315,7 +52017,19 @@ stage "implement" adjudicator "adj" failed
             );
         }
 
-        let lines = gc_logged(&repo_path, &[started_on_branch("done"), integrated("done")]);
+        let kept = Event::new(
+            ledger::TYPE_UNIT_FAILED,
+            serde_json::to_vec(&json!({
+                "id": "done",
+                "attempts": 1,
+                "kept": [{"reference": "rigger/kept/done", "commit": ahead}],
+            }))
+            .unwrap(),
+        );
+        let lines = gc_logged(
+            &repo_path,
+            &[started_on_branch("done"), kept, integrated("done")],
+        );
 
         for gone in [
             "rigger/u/done",
@@ -58829,7 +59543,10 @@ stage "implement" adjudicator "adj" failed
                     required: vec![required("{shape}")],
                     contradiction: "{contradiction}".to_string(),
                     halted_commit: "{commit}".to_string(),
-                    kept: "{kept}".to_string(),
+                    kept: vec![ledger::Kept {
+                        reference: "{reference}".to_string(),
+                        commit: "{kept}".to_string(),
+                    }],
                 }),
                 format!(
                     "{}{item_line}{pattern}{}\n",

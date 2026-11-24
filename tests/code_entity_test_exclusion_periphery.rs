@@ -771,7 +771,8 @@ rigger::test_cases! {
     /// `op-u86c1-r7-out-of-line-module-resolution-follows-rust`: `module_dir` reads the file's
     /// name alone and gives a `mod.rs` FLAT sibling children, which is where rustc puts a
     /// `mod.rs`'s children too, while a declaring file named anything but `mod.rs`/`lib.rs`/
-    /// `main.rs` has its children resolved under a subdirectory named after its stem, see
+    /// `main.rs` that a declaration reaches has its children resolved under a subdirectory named
+    /// after its stem, see
     /// `an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly`) so
     /// the guarantee criterion 1 makes about this very tree is proven by a fixture, not merely
     /// inferred from the flat-root case generalizing.
@@ -872,9 +873,14 @@ rigger::test_cases! {
     /// Module-kind definition - inline or out-of-line alike, since `n.kind()` is `"mod_item"` for
     /// both - would wrongly compute `is_out_of_line_module: true`, which this fixture's
     /// coincidental `host_b/contract.rs` placement is what makes observable.
+    ///
+    /// `lib.rs` declares both hosts, so each is a child placing its modules under its own stem
+    /// (spec 117, MODULE ROOTS AT READ): a host no declaration reached would place them as a crate
+    /// root does, beside itself, where no file sits, and both mutants would go unnoticed.
     #[cfg(feature = "symbols")]
     a_non_test_out_of_line_mod_and_an_inline_test_mod_never_exclude_a_coincidentally_named_sibling_file: assert_ingested_graph(
         &[
+            ("lib.rs", "mod host_a;\nmod host_b;\n"),
             ("host_a.rs", "fn product_a() {}\n\npub mod sibling;\n"),
             ("host_a/sibling.rs", "pub fn sibling_fn() {}\n"),
             (
@@ -886,6 +892,7 @@ rigger::test_cases! {
             ("host_b/contract.rs", "pub fn contract_fn() {}\n"),
         ],
         &[
+            "lib.rs",
             "host_a.rs",
             "host_a/sibling.rs",
             "host_b.rs",
@@ -1143,9 +1150,10 @@ rigger::test_cases! {
     an_out_of_line_test_mod_declared_inside_a_non_directory_style_file_resolves_correctly: assert_ingested_graph(
         &[
             // `parent.rs` is an ordinary (non-`mod.rs`) file, itself a leaf submodule of the
-            // crate. Its own `#[cfg(test)] mod helper;` declaration, per Rust's real
-            // file-per-module convention, names `parent/helper.rs` - a NEW subdirectory named
-            // after `parent`, not a sibling of `parent.rs`.
+            // crate, declared by `lib.rs`'s `mod parent;`. Its own `#[cfg(test)] mod helper;`
+            // declaration, per Rust's real file-per-module convention, names `parent/helper.rs` -
+            // a NEW subdirectory named after `parent`, not a sibling of `parent.rs`.
+            ("lib.rs", "mod parent;\n"),
             (
                 "parent.rs",
                 "pub fn parent_product() {}\n\n#[cfg(test)]\nmod helper;\n",
@@ -1156,7 +1164,7 @@ rigger::test_cases! {
             // file" heuristic would actually look.
             ("helper.rs", "pub fn totally_unrelated_helper() {}\n"),
         ],
-        &["parent.rs", "parent/helper.rs", "helper.rs"],
+        &["lib.rs", "parent.rs", "parent/helper.rs", "helper.rs"],
         3,
         &[
             CodeEntity(
@@ -1184,12 +1192,14 @@ rigger::test_cases! {
     /// names TWO candidate targets in order - `<module_dir>/<name>.rs` first, then
     /// `<module_dir>/<name>/mod.rs` - and every out-of-line fixture in this file so far only ever
     /// creates the FLAT sibling, so the nested `mod.rs` fallback branch has never been exercised by
-    /// any test. This fixture declares `#[cfg(test)] mod helper;` from a non-`mod.rs` leaf file
-    /// with NO flat `parent/helper.rs` on disk at all - only the nested directory-module form
-    /// `parent/helper/mod.rs` - so resolution can only succeed by trying the second candidate.
+    /// any test. This fixture declares `#[cfg(test)] mod helper;` from a non-`mod.rs` leaf file,
+    /// declared by `lib.rs`'s `mod parent;`, with NO flat `parent/helper.rs` on disk at all - only
+    /// the nested directory-module form `parent/helper/mod.rs` - so resolution can only succeed by
+    /// trying the second candidate.
     #[cfg(feature = "symbols")]
     an_out_of_line_test_mod_declaration_falls_back_to_a_nested_mod_rs_when_no_flat_sibling_exists: assert_ingested_graph(
         &[
+            ("lib.rs", "mod parent;\n"),
             (
                 "parent.rs",
                 "pub fn parent_product() {}\n\n#[cfg(test)]\nmod helper;\n",
@@ -1198,7 +1208,7 @@ rigger::test_cases! {
             // An unrelated top-level file that must stay untouched by this resolution entirely.
             ("helper.rs", "pub fn totally_unrelated_helper() {}\n"),
         ],
-        &["parent.rs", "parent/helper/mod.rs", "helper.rs"],
+        &["lib.rs", "parent.rs", "parent/helper/mod.rs", "helper.rs"],
         3,
         &[
             Graphed(
@@ -1276,18 +1286,19 @@ rigger::test_cases! {
     /// declaration is itself entirely test code, so ITS OWN out-of-line children inherit that
     /// status even when the nested `mod` statement carries no `#[cfg(test)]` of its own (there is
     /// nothing left for it to gate - the whole file it lives in is already test-only). `a.rs`
-    /// (leaf) declares `#[cfg(test)] mod b;`, resolving to `a/b.rs`; `a/b.rs` (itself a leaf, not
-    /// mod.rs) declares a PLAIN `mod c;` with no attribute of its own, resolving to `a/b/c.rs` -
-    /// which must be excluded too, transitively.
+    /// (leaf, declared by `lib.rs`'s `mod a;`) declares `#[cfg(test)] mod b;`, resolving to
+    /// `a/b.rs`; `a/b.rs` (itself a leaf, not mod.rs) declares a PLAIN `mod c;` with no attribute
+    /// of its own, resolving to `a/b/c.rs` - which must be excluded too, transitively.
     #[cfg(feature = "symbols")]
     an_out_of_line_test_module_files_own_out_of_line_declarations_are_excluded_recursively_through_the_public_api: assert_ingested_graph(
         &[
+            ("lib.rs", "mod a;\n"),
             ("a.rs", "pub fn a_product() {}\n\n#[cfg(test)]\nmod b;\n"),
             ("a/b.rs", "pub fn b_helper() {}\n\nmod c;\n"),
             ("a/b/c.rs", "pub fn c_helper() {}\n"),
             ("unrelated.rs", "pub fn unrelated_fn() {}\n"),
         ],
-        &["a.rs", "a/b.rs", "a/b/c.rs", "unrelated.rs"],
+        &["lib.rs", "a.rs", "a/b.rs", "a/b/c.rs", "unrelated.rs"],
         3,
         &[
             Graphed(
@@ -1691,13 +1702,16 @@ fn a_file_at_each_dev_only_path_graphs_no_node_and_proves_the_production_code_it
 /// `#![cfg(test)]` whose `mod opened;` declares `src/opened.rs`; a file holding a test-attributed
 /// `const _` and extern block beside their unattributed twins and a `#[cfg(unix)]` fn; and two
 /// files opening an OUTER `#[cfg(test)]`, one on a `use` declaring `src/gated/kept.rs`, one on a
-/// bodiless `mod tests;` declaring `src/declared/tests.rs`.
+/// bodiless `mod tests;` declaring `src/declared/tests.rs`; and a second crate root, declaring
+/// those two, so each is a child placing its module under its own stem (spec 117, MODULE ROOTS
+/// AT READ).
 #[cfg(feature = "symbols")]
 const TEST_REGION_FILES: &[(&str, &str)] = &[
     (
         "src/lib.rs",
         "#![cfg(test)]\nfn opener() {}\nfn opened_second() {\n    opener();\n}\nmod opened;\n",
     ),
+    ("src/main.rs", "mod declared;\nmod gated;\n"),
     ("src/opened.rs", "fn in_opened() {}\n"),
     (
         "src/regions.rs",
@@ -1754,8 +1768,8 @@ fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
     let seeds: Vec<&str> = TEST_REGION_FILES.iter().map(|&(path, _)| path).collect();
     let g = ingested_subgraph(TEST_REGION_FILES, &seeds, 3);
 
-    // Every production definition, and only those, is contained by its file, and the production
-    // module `kept` contains the file it declares.
+    // Every production definition, and only those, is contained by its file, and each production
+    // module, `kept`, `declared` and `gated`, contains the file it declares.
     assert_eq!(
         edges_where(&g, |e| e.rel == REL_CONTAINS),
         [
@@ -1766,6 +1780,10 @@ fn a_test_region_is_every_test_attributed_range_through_the_public_api() {
             ("src/gated.rs", "src/gated.rs::kept"),
             ("src/gated.rs::kept", "src/gated/kept.rs"),
             ("src/gated/kept.rs", "src/gated/kept.rs::in_kept"),
+            ("src/main.rs", "src/main.rs::declared"),
+            ("src/main.rs", "src/main.rs::gated"),
+            ("src/main.rs::declared", "src/declared.rs"),
+            ("src/main.rs::gated", "src/gated.rs"),
             ("src/regions.rs", "src/regions.rs::called_from_production"),
             ("src/regions.rs", "src/regions.rs::called_from_test"),
             ("src/regions.rs", "src/regions.rs::ffi_production"),
@@ -2154,8 +2172,9 @@ rigger::test_cases! {
     /// top-level override on the same file would use.
     ///
     /// This fixture pins the leaf-file shape (the more surprising of the two, since the file's own
-    /// bare directory `src/` and its module directory `src/parent/` visibly differ) and, per the
-    /// ruling's own requirement, proves BOTH halves: the real target
+    /// bare directory `src/` and its module directory `src/parent/` visibly differ), the leaf
+    /// declared by `src/lib.rs`'s `mod parent;` so it is a child (spec 117, MODULE ROOTS AT READ),
+    /// and, per the ruling's own requirement, proves BOTH halves: the real target
     /// (`src/parent/outer/actual.rs::overridden_test_helper`) resolves and excludes, AND a decoy
     /// planted at exactly the WRONG location a directory-of-file-only resolver (the pre-round-9
     /// shape, ignorant of inline nesting) would have computed instead
@@ -2164,6 +2183,7 @@ rigger::test_cases! {
     #[cfg(feature = "symbols")]
     a_path_attribute_override_nested_inside_an_inline_module_resolves_under_the_declaring_files_own_module_directory_plus_the_inline_chain: assert_ingested_graph(
         &[
+            ("src/lib.rs", "mod parent;\n"),
             (
                 "src/parent.rs",
                 "pub fn parent_product() {}\n\
@@ -2186,6 +2206,7 @@ rigger::test_cases! {
             ),
         ],
         &[
+            "src/lib.rs",
             "src/parent.rs",
             "src/parent/outer/actual.rs",
             "src/actual.rs",
@@ -2227,14 +2248,16 @@ rigger::test_cases! {
     /// writing this fixture (throwaway probe crate, not committed): `mod outer { mod middle {
     /// #[path = "foo.rs"] mod inner; } }` in a leaf file `src/parent.rs` resolves `foo.rs` against
     /// `src/parent/outer/middle/foo.rs` - `outer` THEN `middle`, matching the nesting order in
-    /// source, never `middle` then `outer`. This fixture proves both halves at once, mirroring the
-    /// single-level fixture's own technique: the real target sits at the CORRECT outermost-first
-    /// path (`src/parent/outer/middle/actual.rs`) and must resolve and exclude, while a decoy at
-    /// the REVERSED (innermost-first) path (`src/parent/middle/outer/actual.rs`) a backwards
-    /// `reverse()` would compute instead must stay graphed as ordinary product code.
+    /// source, never `middle` then `outer`; here `src/lib.rs`'s `mod parent;` declares that leaf,
+    /// so it is a child (spec 117, MODULE ROOTS AT READ). This fixture proves both halves at once,
+    /// mirroring the single-level fixture's own technique: the real target sits at the CORRECT
+    /// outermost-first path (`src/parent/outer/middle/actual.rs`) and must resolve and exclude,
+    /// while a decoy at the REVERSED (innermost-first) path (`src/parent/middle/outer/actual.rs`)
+    /// a backwards `reverse()` would compute instead must stay graphed as ordinary product code.
     #[cfg(feature = "symbols")]
     a_path_attribute_override_nested_inside_chained_inline_modules_resolves_under_every_enclosing_modules_directory_in_outermost_first_order: assert_ingested_graph(
 &[
+("src/lib.rs", "mod parent;\n"),
 ("src/parent.rs", "pub fn parent_product() {}\n\
                    \nmod outer {\n    mod middle {\n        #[cfg(test)]\n        #[path = \"actual.rs\"]\n        mod helper;\n    }\n\
                    }\n"),
@@ -2246,6 +2269,7 @@ rigger::test_cases! {
 ("src/parent/middle/outer/actual.rs", "pub fn reversed_order_decoy_product() {}\n"),
 ],
 &[
+                "src/lib.rs",
                 "src/parent.rs",
                 "src/parent/outer/middle/actual.rs",
                 "src/parent/middle/outer/actual.rs",
@@ -2265,8 +2289,8 @@ CodeEntity("src/parent/middle/outer/actual.rs::reversed_order_decoy_product", "t
 }
 
 rigger::test_cases! {
-    /// Spec 117 criterion 8, A DEV-ONLY INLINE MOD'S TARGET IS DEV-ONLY, through the public
-    /// ingest path: a `#[cfg(test)] mod x;` with no `#[path]` override inside the inline
+    /// Spec 117, MODULE ROOTS AT READ, a dev-only inline mod's target is dev-only, through the
+    /// public ingest path: a `#[cfg(test)] mod x;` with no `#[path]` override inside the inline
     /// `mod outer` of `src/lib.rs` names `src/outer/x.rs`, the convention's file under the
     /// declaring file's module directory plus the inline chain, so that file and its definition
     /// never reach the graph, while `src/x.rs` - the file a resolver ignoring the inline chain

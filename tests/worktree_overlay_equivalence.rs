@@ -30,6 +30,9 @@ const EDITS: &[(&str, &str, &str)] = &[
         "mod util;\n#[cfg(test)]\nmod lib_tests;\n",
         "#[cfg(test)]\nmod util;\nmod lib_tests;\n",
     ),
+    // A module root moves: `mod twins;` reaches `src/twins.rs`, so its declarations place their
+    // modules as a child's do, under `src/twins/`, where they placed them as a crate root's.
+    ("src/lib.rs", "mod shapes;\n", "mod shapes;\nmod twins;\n"),
     // A duplicate id loses a twin, and a second product `helper` makes the nested module's call a
     // frontier where it had one product candidate.
     (
@@ -61,8 +64,8 @@ const EDITS: &[(&str, &str, &str)] = &[
 /// gains a candidate.
 const ADDED: (&str, &str) = ("src/added.rs", "pub fn vanish() {}\n");
 
-/// The file the worktree deletes: a module declaration's only target, so `right`'s `mod leaf;`
-/// reaches no file.
+/// The file the worktree deletes: the only target of `right`'s `mod leaf;` once the worktree's
+/// `mod twins;` reaches `src/twins.rs`, so that declaration reaches no file.
 const DELETED: &str = "src/twins/right/leaf.rs";
 
 /// How many files the worktree takes over the commit: the five it edits, the one it adds and

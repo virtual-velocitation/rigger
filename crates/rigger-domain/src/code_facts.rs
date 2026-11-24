@@ -135,15 +135,19 @@ impl Recorded<'_> {
     }
 }
 
-/// One name-reference in a file: the name as written, never a target.
+/// A name-reference in a file: the name as written, never a target. Each call is one mention, at
+/// its line; the tagged references sharing an enclosing definition, name, leaf, tag and test flag
+/// are one mention, at the first of their lines (spec 117, ONE TAGGED MENTION PER SITE KIND).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Mention {
     /// The index in the file's `defs` of the enclosing definition; none at file level.
     pub enclosing: Option<u32>,
     /// The name as written ("bar", "Foo::bar", "crate::x::bar").
     pub name: String,
-    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by. Every
-    /// extractor names a reference by its identifier alone, so it equals `name` today.
+    /// The final identifier of `name` ("bar"), the key the resolver finds candidates by: the
+    /// reference's name as its extractor gives it, without its qualifier, so it equals `name` for
+    /// a mention written with no qualifier. A bundled grammar's never holds `::`, `.`, `<` or `>`
+    /// (spec 117, CAPTURES).
     pub leaf: String,
     pub kind: MentionKind,
     pub line: u32,

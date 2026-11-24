@@ -6,6 +6,7 @@
 //! already holds that node as a reference) also adds a read-off here, selected by the language
 //! `extract` is given.
 
+use crate::contextgraph::query::{MEMBER_SEPARATOR, PATH_SEPARATOR};
 use crate::contextgraph::{
     CODE_KIND_CONSTANT, CODE_KIND_CONSTRUCTOR, CODE_KIND_DECLARATION, CODE_KIND_FIELD,
     CODE_KIND_FUNCTION, CODE_KIND_IMPL, CODE_KIND_MACRO, CODE_KIND_METHOD, CODE_KIND_MODULE,
@@ -13,7 +14,7 @@ use crate::contextgraph::{
     CODE_KIND_VARIABLE, CODE_KIND_VARIANT, REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_IMPL,
     REF_KIND_TYPE, REF_KIND_USE,
 };
-use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, SymRef};
+use crate::grounder::symbols::model::{Def, FileSymbols, Kind, Lang, Qualifier, SymRef};
 use rigger_domain::code_facts::{Bound, Recorded};
 use rigger_domain::wave::normalize_ws;
 use tree_sitter::StreamingIterator;
@@ -290,6 +291,9 @@ pub struct CompiledTags {
     /// The node kinds that construct an object in the grammar, on which a `@reference.class`
     /// capture stays a call ([`Capture::Class`]).
     constructors: &'static [&'static str],
+    /// The node kinds that hold a generic's type arguments in the grammar, which the leaf split
+    /// leaves out with all they hold ([`CompiledTags::split_leaf`]).
+    type_arguments: &'static [&'static str],
 }
 
 /// What one capture of a tags query is to the tags reading ([`CompiledTags::tags_in`]).
@@ -306,6 +310,10 @@ enum Capture {
     Class(Option<&'static str>),
     /// `@doc`: a doc comment of the match's definition, which gives it its doc span.
     Doc,
+    /// `@qualifier.path` (true) or `@qualifier.member` (false): the node the match's reference is
+    /// qualified by, a path or a member access, in place of the qualifier its name's text writes
+    /// (spec 117, CAPTURES).
+    Qualifier(bool),
 }
 
 /// What a tagged node is, by the suffix of the capture tagging it: a definition of the kind a
@@ -319,14 +327,18 @@ enum TagRole {
 }
 
 /// One tag a tags query yields: the tagged node's byte range widened to cover its name, the
-/// name's byte range and start row, what its capture makes it ([`TagRole`]), and the byte range
-/// covering every `@doc` capture of its match ([`covering`]), when it holds any.
+/// name's byte range and start row, the byte range of the leaf it is named by (a reference's
+/// split off its name, [`CompiledTags::split_leaf`]; a definition's its whole name), what its
+/// capture makes it ([`TagRole`]), the byte range covering every `@doc` capture of its match
+/// ([`covering`]), when it holds any, and a reference's qualifier, when it is written with one.
 struct Tag {
     range: std::ops::Range<usize>,
     name_range: std::ops::Range<usize>,
     row: usize,
+    leaf: std::ops::Range<usize>,
     role: TagRole,
     doc: Option<std::ops::Range<usize>>,
+    qualifier: Option<Qualifier>,
 }
 
 /// The byte range from the earlier start of `a` and `b` to the later end: the one widening of a
@@ -335,17 +347,50 @@ fn covering(a: std::ops::Range<usize>, b: std::ops::Range<usize>) -> std::ops::R
     a.start.min(b.start)..a.end.max(b.end)
 }
 
+/// The text `source` holds over `gap` outside each `left_out` range inside it (in source order),
+/// trimmed, and the byte that trimmed text starts at: what separates two leaves of a name's chain
+/// ([`CompiledTags::split_leaf`]). `None` when nothing but whitespace is left, or a piece cannot
+/// be sliced out of `source`.
+fn kept_text(
+    source: &str,
+    gap: std::ops::Range<usize>,
+    left_out: &[std::ops::Range<usize>],
+) -> Option<(String, usize)> {
+    let mut kept = String::new();
+    let mut start = None;
+    let mut at = gap.start;
+    let inside = left_out
+        .iter()
+        .filter(|out| gap.start <= out.start && out.end <= gap.end)
+        .map(|out| (out.start, out.end));
+    for (until, resume) in inside.chain([(gap.end, gap.end)]) {
+        let piece = source.get(at..until)?;
+        if start.is_none() {
+            start = piece
+                .find(|c: char| !c.is_whitespace())
+                .map(|at_char| at + at_char);
+        }
+        kept.push_str(piece);
+        at = resume;
+    }
+    Some((kept.trim().to_string(), start?))
+}
+
 impl CompiledTags {
     /// `tags_query` compiled against `language`, each `@definition.<kind>` and
     /// `@reference.<kind>` capture keeping what its suffix names ([`TagRole`]), a
-    /// `@reference.class` one on a node of a `constructors` kind a call ([`Capture::Class`]), or
-    /// an `Err` naming the tags-config step when the query is malformed, does not fit the
-    /// grammar, or captures what the tags reading does not read (anything but `@name`, `@doc`,
-    /// `@definition.*` and `@reference.*`).
+    /// `@reference.class` one on a node of a `constructors` kind a call ([`Capture::Class`]), a
+    /// `@qualifier.path` or `@qualifier.member` one its reference's qualifier
+    /// ([`Capture::Qualifier`]), and a reference's name split around the nodes of the
+    /// `type_arguments` kinds ([`CompiledTags::split_leaf`]); or an `Err` naming the tags-config
+    /// step when the query is malformed, does not fit the grammar, or captures what the tags
+    /// reading does not read (anything but `@name`, `@doc`, `@definition.*`, `@reference.*`,
+    /// `@qualifier.path` and `@qualifier.member`).
     pub fn compile(
         language: &tree_sitter::Language,
         tags_query: &str,
         constructors: &'static [&'static str],
+        type_arguments: &'static [&'static str],
     ) -> Result<Self, String> {
         let query = tree_sitter::Query::new(language, tags_query)
             .map_err(|e| format!("symbols: tags config: {e}"))?;
@@ -355,6 +400,8 @@ impl CompiledTags {
             .map(|name| match *name {
                 "name" => Ok(Capture::Name),
                 "doc" => Ok(Capture::Doc),
+                "qualifier.path" => Ok(Capture::Qualifier(true)),
+                "qualifier.member" => Ok(Capture::Qualifier(false)),
                 _ => match (
                     name.strip_prefix("definition."),
                     name.strip_prefix("reference."),
@@ -364,7 +411,8 @@ impl CompiledTags {
                     (_, Some(kind)) => Ok(Capture::Tagged(TagRole::Reference(ref_kind_of(kind)))),
                     _ => Err(format!(
                         "symbols: tags config: the capture @{name} is not one a tags query \
-                         makes: @name, @doc, @definition.* or @reference.*"
+                         makes: @name, @doc, @definition.*, @reference.*, @qualifier.path or \
+                         @qualifier.member"
                     )),
                 },
             })
@@ -374,7 +422,74 @@ impl CompiledTags {
             query,
             captures,
             constructors,
+            type_arguments,
         })
+    }
+
+    /// THE LEAF SPLIT (spec 117, CAPTURES): the byte range of the leaf a reference's `@name` node
+    /// names, and the qualifier its text writes before that leaf. A name with no named children is
+    /// its own leaf, unqualified. One with named children is split only when it is an identifier
+    /// chain: its named leaves, each node of a [`CompiledTags::type_arguments`] kind left out with
+    /// all it holds, run from the name's start, and the text between each pair, type-argument
+    /// text left out, is `::` or `.` once trimmed. The last is the leaf, and the name's text
+    /// before that leaf's separator, trimmed, its qualifier: a path for `::`, a member access for
+    /// `.` (`Ns.IShape` gives `IShape` qualified by the member `Ns`, `List<IShape>` gives `List`
+    /// unqualified). Any other shape is `None`, so it names no reference (`new arr[0]()`,
+    /// `new a[0].b()`, `new (Box)()`).
+    fn split_leaf(
+        &self,
+        name: tree_sitter::Node,
+        source: &str,
+    ) -> Option<(std::ops::Range<usize>, Option<Qualifier>)> {
+        if name.named_child_count() == 0 {
+            return Some((name.byte_range(), None));
+        }
+        let mut leaves = Vec::new();
+        let mut type_arguments = Vec::new();
+        self.chain_leaves(name, &mut leaves, &mut type_arguments);
+        if leaves.first()?.start != name.start_byte() {
+            return None;
+        }
+        let mut written = None;
+        for pair in leaves.windows(2) {
+            let (separator, at) = kept_text(source, pair[0].end..pair[1].start, &type_arguments)?;
+            let path = match separator.as_str() {
+                PATH_SEPARATOR => true,
+                MEMBER_SEPARATOR => false,
+                _ => return None,
+            };
+            written = Some((at, path));
+        }
+        let qualifier = match written {
+            Some((at, path)) => Some(Qualifier {
+                name: source.get(name.start_byte()..at)?.trim_end().to_string(),
+                path,
+            }),
+            None => None,
+        };
+        Some((leaves.pop()?, qualifier))
+    }
+
+    /// The byte ranges of `node`'s named leaf descendants, in source order, into `leaves`, and of
+    /// each descendant of a [`CompiledTags::type_arguments`] kind, whose own descendants are left
+    /// out, into `type_arguments`: the pieces [`CompiledTags::split_leaf`] reads a name's chain
+    /// from.
+    fn chain_leaves(
+        &self,
+        node: tree_sitter::Node,
+        leaves: &mut Vec<std::ops::Range<usize>>,
+        type_arguments: &mut Vec<std::ops::Range<usize>>,
+    ) {
+        let mut cursor = node.walk();
+        for child in node.named_children(&mut cursor) {
+            if self.type_arguments.contains(&child.kind()) {
+                type_arguments.push(child.byte_range());
+            } else if child.named_child_count() == 0 {
+                leaves.push(child.byte_range());
+            } else {
+                self.chain_leaves(child, leaves, type_arguments);
+            }
+        }
     }
 
     /// The tags the query yields over the tree rooted at `root`, parsed from `source`, in the
@@ -385,7 +500,10 @@ impl CompiledTags {
     /// when the matches run out. Within a match the last name capture names it, the last
     /// definition or reference capture is the tagged node, a `@reference.class` one a call when
     /// that node's kind is one of the [`CompiledTags::constructors`], and its `@doc` captures,
-    /// read as the matcher yields them, cover its doc ([`Tag::doc`]), for every language.
+    /// read as the matcher yields them, cover its doc ([`Tag::doc`]), for every language. A
+    /// reference is named by the leaf its name splits to ([`CompiledTags::split_leaf`]), a name
+    /// that is no chain making no tag, and qualified by the match's last `@qualifier.path` or
+    /// `@qualifier.member` capture, else by the qualifier the split reads off its name's text.
     fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, source.as_bytes());
@@ -407,9 +525,11 @@ impl CompiledTags {
             let mut name = None;
             let mut tagged = None;
             let mut doc = None;
+            let mut captured = None;
             for capture in found.captures {
                 match self.captures[capture.index as usize] {
                     Capture::Name => name = Some(capture.node),
+                    Capture::Qualifier(path) => captured = Some((capture.node, path)),
                     Capture::Tagged(role) => tagged = Some((capture.node, role)),
                     Capture::Class(ref_kind) => {
                         let constructs = self.constructors.contains(&capture.node.kind());
@@ -431,14 +551,34 @@ impl CompiledTags {
             if name.has_error() {
                 continue;
             }
+            // A definition is named by its whole name; a reference by the leaf its name splits
+            // to, qualified by a qualifier capture else by the text before that leaf, and a name
+            // that is no chain names none.
+            let (leaf, qualifier) = match role {
+                TagRole::Definition(_) => (name.byte_range(), None),
+                TagRole::Reference(_) => {
+                    let Some((leaf, written)) = self.split_leaf(name, source) else {
+                        continue;
+                    };
+                    let captured = captured.and_then(|(node, path)| {
+                        Some(Qualifier {
+                            name: source.get(node.byte_range())?.to_string(),
+                            path,
+                        })
+                    });
+                    (leaf, captured.or(written))
+                }
+            };
             let name_range = name.byte_range();
             let node_range = node.byte_range();
             let tag = Tag {
                 range: covering(node_range, name_range.clone()),
                 row: name.start_position().row,
                 name_range,
+                leaf,
                 role,
                 doc,
+                qualifier,
             };
             let key = |tag: &Tag| (tag.name_range.end, tag.name_range.start);
             match queue.binary_search_by_key(&key(&tag), |(queued, _)| key(queued)) {
@@ -481,7 +621,8 @@ impl CompiledTags {
 ///
 /// A reference tag is a reference of the kind its capture's suffix names ([`ref_kind_of`], spec
 /// 117), its `ref_kind` none for a call, a `@reference.class` tag on a constructor node kind
-/// staying a call ([`Capture::Class`]).
+/// staying a call ([`Capture::Class`]), named by the bare leaf its name splits to and carrying
+/// the qualifier it is written with ([`CompiledTags::split_leaf`]).
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
@@ -526,7 +667,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
     let mut dropped: Vec<std::ops::Range<usize>> = Vec::new();
     let mut ref_positions: Vec<usize> = Vec::new();
     for tag in tags {
-        let Some(name) = source.get(tag.name_range.start..tag.name_range.end) else {
+        let Some(name) = source.get(tag.leaf.start..tag.leaf.end) else {
             continue;
         };
         // 1-based line from the tag name's start row.
@@ -561,6 +702,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                     enclosing: None,
                     is_test: false,
                     ref_kind: ref_kind.map(str::to_string),
+                    qualifier: tag.qualifier,
                 });
             }
         }
@@ -585,9 +727,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             refs.push(SymRef {
                 name,
                 line,
-                enclosing: None,
-                is_test: false,
-                ref_kind: None,
+                ..SymRef::default()
             });
         }
     }
@@ -2584,14 +2724,15 @@ pub(crate) fn lang_str(l: Lang) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::grounder::symbols::model::{Kind, Lang};
+    use crate::symbol_index::qualifier;
 
-    /// `query` compiled against `language` with no constructor kinds, for a test that injects a
-    /// query of its own.
-    fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
-        CompiledTags::compile(language, query, &[]).expect("the query compiles")
+    /// `query` compiled against `language` with no constructor or type-argument kinds, for a test
+    /// that injects a query of its own.
+    pub(crate) fn compiled(language: &tree_sitter::Language, query: &str) -> CompiledTags {
+        CompiledTags::compile(language, query, &[], &[]).expect("the query compiles")
     }
 
     /// Each kind lowers to its own kind string: the eight a graph folded before the kind constants
@@ -3917,13 +4058,65 @@ fn product() {}
     #[test]
     fn a_capture_the_tags_reading_does_not_read_fails_to_compile() {
         let language: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
-        let msg = CompiledTags::compile(&language, tree_sitter_c_sharp::TAGS_QUERY, &[])
+        let msg = CompiledTags::compile(&language, tree_sitter_c_sharp::TAGS_QUERY, &[], &[])
             .err()
             .expect("a bare @module capture fails to compile");
-        assert!(
-            msg.starts_with("symbols: tags config:") && msg.contains("@module"),
-            "the error names the tags-config step and the capture, got: {msg}"
+        assert_eq!(
+            msg,
+            "symbols: tags config: the capture @module is not one a tags query makes: @name, \
+             @doc, @definition.*, @reference.*, @qualifier.path or @qualifier.member"
         );
+    }
+
+    /// THE LEAF SPLIT (spec 117, CAPTURES): a C# base type the fixture query names whole is a
+    /// reference to its last leaf, qualified by the text before that leaf's separator. The text
+    /// of a type-argument kind is left out of a separator and kept in a qualifier
+    /// (`Outer<T>.Inner`), a separator and a qualifier are read trimmed (`Ns . IShape`), and the
+    /// last separator decides a path or a member access (`global::Ns.IShape`). A name whose
+    /// leaves meet with no separator between them (`int[]`) is no chain and names no reference,
+    /// and neither is one whose every named child is of a type-argument kind.
+    #[test]
+    fn a_reference_name_splits_to_its_last_leaf_and_the_qualifier_before_it() {
+        let language: tree_sitter::Language = tree_sitter_c_sharp::LANGUAGE.into();
+        let query = "(class_declaration (base_list (_) @name)) @reference.type";
+        let member = |name: &str| Some(qualifier(name, false));
+        // (the type-argument kinds the query is compiled with, the source, the references'
+        // names and qualifiers)
+        type Row = (
+            &'static [&'static str],
+            &'static str,
+            Vec<(&'static str, Option<Qualifier>)>,
+        );
+        let table: [Row; 5] = [
+            (
+                &["type_argument_list"],
+                "class A : Outer<T>.Inner { }\n",
+                vec![("Inner", member("Outer<T>"))],
+            ),
+            (
+                &["type_argument_list"],
+                "class A : Ns . IShape { }\n",
+                vec![("IShape", member("Ns"))],
+            ),
+            (
+                &["type_argument_list"],
+                "class A : global::Ns.IShape { }\n",
+                vec![("IShape", member("global::Ns"))],
+            ),
+            (&["type_argument_list"], "class A : int[] { }\n", vec![]),
+            (&["identifier"], "class A : Ns.IShape { }\n", vec![]),
+        ];
+        for (type_arguments, source, expected) in table {
+            let tags = CompiledTags::compile(&language, query, &[], type_arguments)
+                .expect("the fixture query compiles");
+            let symbols = extract(source, Lang::CSharp, &tags).expect("the source extracts");
+            let found: Vec<(&str, Option<Qualifier>)> = symbols
+                .refs
+                .iter()
+                .map(|r| (r.name.as_str(), r.qualifier.clone()))
+                .collect();
+            assert_eq!(found, expected, "{source:?} under {type_arguments:?}");
+        }
     }
 
     #[test]
@@ -3931,7 +4124,7 @@ fn product() {}
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         // A malformed tags query must return Err from the config step, never panic, so a bad
         // registry entry degrades loudly instead of crashing the indexer.
-        let msg = CompiledTags::compile(&language, "(this is not valid scm", &[])
+        let msg = CompiledTags::compile(&language, "(this is not valid scm", &[], &[])
             .err()
             .expect("malformed query should be Err");
         assert!(

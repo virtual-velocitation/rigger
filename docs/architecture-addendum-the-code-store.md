@@ -273,8 +273,10 @@ Def
 
 Mention
   enclosing   index of the enclosing Def, or the file
-  name        the name as written: the reference's identifier ("bar")
-  leaf        the final identifier of name; equal to name for every extractor today
+  name        the name as written: "Q::bar" under a path qualifier, "Q.bar" under a member
+              access, "bar" with none
+  leaf        the final identifier of name ("bar"), its qualifier left out; equal to name with
+              no qualifier, and never holding ::, ., < or > from a bundled grammar
   kind        Call | Tagged(<ref kind>)    (Call is the untagged reference)
   line
   test        true when inside a test-only def
@@ -292,15 +294,25 @@ ModuleDecl
 ```
 
 A doc span is the 1-based, inclusive first and last line of a doc comment; the comment's text is
-never stored. A module's two lists depend only on the declaring file, so they are computed at
-extraction, an explicit path attribute placed by the same two rules. Which list applies, and the
-first path in it that is a file in the tree, are cross-file questions, so they are answered at
-read (section 6).
+never stored. A tags query's reference is named by its bare leaf, qualified by a path (`::`) or a
+member access (`.`) when one is written: by the qualifier a `@qualifier.path` or
+`@qualifier.member` capture gives, else by the one its `@name` writes before the leaf. A `@name`
+written as a chain of identifiers splits at its last separator, its type arguments left out of
+the split (`Ns.IShape` is the leaf `IShape` qualified by the member `Ns`, `List<IShape>` the leaf
+`List`), and one that is no such chain names no mention. A module's two lists depend only on the
+declaring file, so they are computed at extraction, an enclosing inline module's components and
+an explicit path attribute placed by the same two rules; for a file named `mod.rs`, `lib.rs` or
+`main.rs` the two are equal. Which list applies, and the first path in it that is a file in the
+tree, are cross-file questions, so they are answered at read (section 6).
 
 ### 4.2 How a name-reference is stored
 
 A mention stores the name as written, its kind, its line and the def that encloses it. It
 stores no target, no tier and no placeholder. The resolver works those out at read time.
+
+Each call is its own mention, since a proof's evidence lists the line of every call. Tagged
+references that share an enclosing def, name, leaf, tag and test mark are one mention, at the
+first of their lines: a function that reads one constant three times holds one `const` mention.
 
 When a file is added or removed, no other file's facts change, even if that file holds the only
 definition a thousand mentions resolve to.

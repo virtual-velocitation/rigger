@@ -3790,6 +3790,93 @@ fn run_hosts_its_agents_granting_each_launch_its_bound_tools() {
     );
 }
 
+/// Given a project, when the operator runs `rigger run` with a stand-in `claude` first on PATH
+/// answering `--version` with each line, then below the minimum the exec-form hooks need the run
+/// refuses with the one too-old line `rigger validate` warns with, before any start effect: no
+/// launch, no run, no ref and no store or scratch file; at the minimum it runs, and on a line
+/// that names no version it runs and says nothing of the version.
+#[cfg(unix)]
+#[test]
+fn run_refuses_a_session_host_below_the_hooks_minimum_before_any_start_effect() {
+    use rigger::claude_auth::SessionHost;
+    use rigger::claude_version::{parse, too_old};
+
+    // (name, the stand-in's `--version` line, the line the run refuses with, none for a run)
+    let rows = [
+        (
+            "one below the minimum",
+            "2.1.138 (Claude Code)",
+            Some(format!(
+                "rigger: {}",
+                too_old(&SessionHost::default(), parse("2.1.138").unwrap()).unwrap()
+            )),
+        ),
+        ("the minimum", "2.1.139 (Claude Code)", None),
+        ("text with no version", "false (GNU coreutils) 9.4", None),
+    ];
+    for (name, answer, refusal) in rows {
+        let dir = temp_git_project_with_commit();
+        let root = dir.path();
+        write_workflow_fixture(root, &LIVENESS_WORKFLOW);
+        let scratch = tempfile::tempdir().unwrap();
+        let (fake, path_env) = install_fake_claude(RECORDING_WORKER_ARM);
+        let [path, tmpdir] = fake_claude_env(&path_env, scratch.path());
+        let entries = |dir: &Path| {
+            let mut names: Vec<String> = std::fs::read_dir(dir)
+                .map(|read| {
+                    read.map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        };
+        let state = || {
+            (
+                common::git::git_out(root, &["for-each-ref", "--format=%(refname) %(objectname)"]),
+                entries(&root.join(".rigger")),
+                entries(scratch.path()),
+            )
+        };
+        let before = state();
+        let (out, err, ok) = run_rigger_envs(
+            root,
+            &["run"],
+            &[path, tmpdir, ("RIGGER_TEST_HOST_VERSION", answer)],
+        );
+        let launched = fake.path().join("bin/argv").exists();
+        match refusal {
+            Some(refusal) => {
+                assert!(!ok, "{name}: the run refuses; stdout: {out}\nstderr: {err}");
+                assert_eq!(
+                    err.lines().last(),
+                    Some(refusal.as_str()),
+                    "{name}: the too-old line ends what the run prints; stderr: {err}"
+                );
+                assert!(!launched, "{name}: no agent launched");
+                assert_eq!(
+                    state(),
+                    before,
+                    "{name}: no ref, store or scratch file changed"
+                );
+                assert_eq!(
+                    common::cli::current_run_id_of(root),
+                    None,
+                    "{name}: no run started"
+                );
+            }
+            None => {
+                assert!(ok, "{name}: the run succeeds; stdout: {out}\nstderr: {err}");
+                assert!(launched, "{name}: the run launched its agent");
+                assert!(
+                    !err.contains("session host"),
+                    "{name}: the run says nothing of the version; stderr: {err}"
+                );
+            }
+        }
+    }
+}
+
 /// Spec 105's hook injection, end to end: given a project, when the operator runs `rigger run`,
 /// then the launch's `--settings` carries the write guard rooted at the session's working
 /// directory and the spawn's scratch container, an empty `dir` resolving to the session's cwd and
@@ -3926,10 +4013,15 @@ fn run_carries_each_launchs_write_guard_and_stop_failure_hooks() {
             let command: Vec<&str> = words[1..].iter().map(String::as_str).collect();
             let (out, err, ok) = run_rigger(&root, &command);
             assert!(ok, "{name}: {class} records; stderr: {err}");
+            assert!(
+                out.trim().is_empty() || serde_json::from_str::<serde_json::Value>(&out).is_ok(),
+                "{name}: {class}: the hook's stdout is empty or JSON, the one form the host reads \
+                 a hook's stdout in: {out:?}"
+            );
             assert_eq!(
-                out.split(", position").next(),
+                err.split(", position").next(),
                 Some(format!("stop-failure recorded for {} (class {class}", row.spawn).as_str()),
-                "{name}: the hook records its class for the spawn"
+                "{name}: the hook says on stderr it records its class for the spawn"
             );
         }
     }
@@ -4104,20 +4196,35 @@ fn a_session_fires_its_injected_stop_failure_hook_and_the_launch_closes_under_th
             "{name}: the session's working directory"
         );
         assert_eq!(
-            (read("hook-status").as_str(), read("hook-err").as_str()),
-            ("0\n", ""),
+            read("hook-status"),
+            "0\n",
             "{name}: the hook the session ran succeeds"
         );
+        let hook_out = read("hook-out");
+        assert!(
+            hook_out.trim().is_empty()
+                || serde_json::from_str::<serde_json::Value>(&hook_out).is_ok(),
+            "{name}: the hook's stdout is empty or JSON, the one form the host reads a hook's \
+             stdout in: {hook_out:?}"
+        );
+        let hook_err = read("hook-err");
         assert_eq!(
-            read("hook-out").split(", position").next(),
-            Some(
-                format!(
-                    "stop-failure recorded for {} (class max_output_tokens",
-                    row.spawn
-                )
-                .as_str()
+            (
+                hook_err.lines().count(),
+                hook_err.split(", position").next()
             ),
-            "{name}: the hook the session ran records its class for the spawn"
+            (
+                1,
+                Some(
+                    format!(
+                        "stop-failure recorded for {} (class max_output_tokens",
+                        row.spawn
+                    )
+                    .as_str()
+                )
+            ),
+            "{name}: the hook the session ran says on stderr, and nothing else, that it records \
+             its class for the spawn"
         );
         assert_eq!(
             common::cli::recorded_progress::<rigger::progress::StopFailure>(&root),
@@ -14794,6 +14901,69 @@ fn validate_reports_scratch_residue_with_sizes_as_a_non_failing_warning() {
     );
 }
 
+/// `rigger validate` lists every ref rigger holds aside, so a read of them that fails is said on
+/// one advisory line naming git's error, never an empty list read as none held. A corrupt
+/// `packed-refs` makes git die on every ref read.
+#[test]
+fn validate_says_when_the_refs_held_aside_cannot_be_read() {
+    let dir = committed_scaffold_project();
+    let root = dir.path();
+    seed_store(root);
+    let scratch = root.join("scratchroot");
+    std::fs::create_dir_all(&scratch).unwrap();
+    git_ok(root, &["branch", "rigger/kept/unit-99-ghost"]);
+    git_ok(root, &["pack-refs", "--all"]);
+    let packed = root.join(".git").join("packed-refs");
+    let mut refs = std::fs::read_to_string(&packed).unwrap();
+    refs.push_str("garbage line\n");
+    std::fs::write(&packed, refs).unwrap();
+
+    let (_out, err, _ok) = run_rigger_envs(
+        root,
+        &["validate"],
+        &[("RIGGER_TMPDIR", scratch.to_str().unwrap())],
+    );
+    let said: Vec<&str> = err
+        .lines()
+        .filter(|line| line.contains("the refs rigger holds aside could not be read"))
+        .collect();
+    assert_eq!(
+        said.len(),
+        1,
+        "validate says once that the held refs could not be read; stderr:\n{err}"
+    );
+    assert!(
+        said[0].contains("unexpected line in .git/packed-refs"),
+        "the line names git's error; stderr:\n{err}"
+    );
+}
+
+/// Outside any git repository no ref can be held aside, so `rigger validate` reads none there and
+/// says nothing of a read that could not be made.
+#[test]
+fn validate_outside_any_repository_reads_no_held_refs() {
+    let proj = tempfile::tempdir().expect("a directory outside any git repository");
+    let root = proj.path();
+    let scratch = root.join("scratchroot");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let envs = [
+        (
+            "GIT_CEILING_DIRECTORIES",
+            root.parent().unwrap().to_str().unwrap(),
+        ),
+        ("RIGGER_TMPDIR", scratch.to_str().unwrap()),
+    ];
+    let (_out, err, ok) = run_rigger_envs(root, &["init"], &envs);
+    assert!(ok, "rigger init must succeed; stderr:\n{err}");
+
+    let (_out, err, ok) = run_rigger_envs(root, &["validate"], &envs);
+    assert!(ok, "validate succeeds outside a repository; stderr:\n{err}");
+    assert!(
+        !err.contains("the refs rigger holds aside could not be read"),
+        "no held-ref read is made outside a repository; stderr:\n{err}"
+    );
+}
+
 /// Spec 89, criterion 2 (SCRATCH IS OUTSIDE THE STORE TREE) done-when: "the reaper and
 /// `validate` account for the new root." Every scratch-residue `validate` test in this file
 /// (the one just above included) deliberately overrides `RIGGER_TMPDIR` or a configured
@@ -16547,6 +16717,29 @@ fn relaunch_line(record: &str) -> String {
     )
 }
 
+/// `text` with each elapsed age `rigger status` prints, the seconds before `s ago` and the value
+/// of a `_age_s":` key, spelled `N`: two invocations a clock tick apart then read alike, and
+/// every other number stays as it was printed.
+fn without_ages(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(|c: char| c.is_ascii_digit()) {
+        let end = rest[at..]
+            .find(|c: char| !c.is_ascii_digit())
+            .map_or(rest.len(), |len| at + len);
+        let (before, digits, after) = (&rest[..at], &rest[at..end], &rest[end..]);
+        out.push_str(before);
+        if after.starts_with("s ago") || before.ends_with("_age_s\":") {
+            out.push('N');
+        } else {
+            out.push_str(digits);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
+}
+
 /// The `register` and `unregister` lines this test's rigger invocations recorded
 /// ([`common::login_start_record`]).
 fn recorded_login_starts() -> Vec<String> {
@@ -17218,12 +17411,16 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
             "{case} relaunches nothing with no dead driver; stderr: {}",
             quiet.err
         );
-        // `validate`'s footprint lines measure the store, which each invocation's own reads grow.
+        // `validate`'s footprint lines measure the store, which each invocation's own reads grow,
+        // and `status`'s ages count to each invocation's own clock, which a loaded machine can
+        // tick past a second between the two.
         let answer = |out: &str| {
-            out.lines()
-                .filter(|line| !line.starts_with("footprint: "))
-                .collect::<Vec<_>>()
-                .join("\n")
+            without_ages(
+                &out.lines()
+                    .filter(|line| !line.starts_with("footprint: "))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )
         };
         assert_eq!(
             (answer(&died.out), died.ok),
@@ -17247,6 +17444,26 @@ fn only_the_checking_verbs_relaunch_a_run_whose_driver_died() {
         recorded_relaunches(),
         vec![relaunch_line(&record)],
         "two invocations at once relaunch the dead driver once"
+    );
+}
+
+/// The step lock a test holds is free once the test drops it, while a copy of its descriptor
+/// lives, as one does in a process another test thread forks until that process execs. A lock
+/// released only by closing the descriptor stays held by the copy, so the next invocation finds
+/// a live holder and relaunches nothing.
+#[test]
+fn a_step_lock_a_test_dropped_is_free_while_a_copy_of_its_descriptor_lives() {
+    let project = temp_project();
+    let root = project.path();
+    std::fs::create_dir_all(root.join(rigger::config::RIGGER_DIR)).unwrap();
+    let held = common::cli::hold_step_lock(root);
+    let copy = common::cli::forked_copy(&held);
+    drop(held);
+    let free = common::cli::step_lock_free(root);
+    drop(copy);
+    assert!(
+        free,
+        "the dropped step lock must be free while a copy of its descriptor lives"
     );
 }
 

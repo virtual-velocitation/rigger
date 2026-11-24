@@ -907,7 +907,17 @@ pub fn module_graph() -> Graph {
 
 /// The one live module edge from [`MOD_NODE`] onto `file`, `extracted`, as `(from, to, tier)`.
 pub fn declared(file: &str) -> Vec<(String, String, String)> {
-    vec![(MOD_NODE.into(), file.into(), TIER_EXTRACTED.into())]
+    declared_edges(&[(MOD_NODE, file)])
+}
+
+/// The live module edges `pairs` names, each `(mod node, file)` pair one `extracted` `CONTAINS`,
+/// as `(from, to, tier)`, sorted.
+pub fn declared_edges(pairs: &[(&str, &str)]) -> Vec<(String, String, String)> {
+    let mut edges: Vec<_> = (pairs.iter())
+        .map(|(from, to)| (from.to_string(), to.to_string(), TIER_EXTRACTED.to_string()))
+        .collect();
+    edges.sort();
+    edges
 }
 
 /// THE MEMBER RULE's graph (spec 119), holding no edge, so no `CONTAINS` reaches any node: the

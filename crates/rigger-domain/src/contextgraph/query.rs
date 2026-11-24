@@ -239,22 +239,46 @@ pub fn path_leaf(path: &str) -> &str {
     split_path(path).1
 }
 
-/// The separator of a path qualifier, `T::new`; a member qualifier's is `.`, `S.field`.
-const PATH_SEPARATOR: &str = "::";
+/// The separator of a path qualifier, `T::new`. Its home, with [`MEMBER_SEPARATOR`]'s: the
+/// extractor's leaf split reads both (spec 117, CAPTURES).
+pub const PATH_SEPARATOR: &str = "::";
+
+/// The separator of a member qualifier, `S.field`.
+pub const MEMBER_SEPARATOR: &str = ".";
 
 /// A path cut at its last `::` or `.` into its qualifier and its leaf: the text before that
 /// separator, none when the path holds neither, and the text after it, the whole path when it
 /// holds neither (`a::b.c` gives `a::b` and `c`, `new` gives none and `new`). The one cut of a
 /// path: [`path_leaf`] reads its leaf, and the resolver a qualified mention's qualifier (spec
-/// 117, RESOLVER AT READ).
+/// 117, RESOLVER AT READ). [`qualified_name`] is its inverse for a leaf holding neither
+/// separator and, after a path qualifier's `::`, not starting with `:`.
 pub(crate) fn split_path(path: &str) -> (Option<&str>, &str) {
     let (head, tail) = path
         .rsplit_once(PATH_SEPARATOR)
         .map_or((None, path), |(head, tail)| (Some(head), tail));
-    match tail.rsplit_once('.') {
-        Some((_, leaf)) => (Some(&path[..path.len() - leaf.len() - 1]), leaf),
+    match tail.rsplit_once(MEMBER_SEPARATOR) {
+        Some((_, leaf)) => (
+            Some(&path[..path.len() - leaf.len() - MEMBER_SEPARATOR.len()]),
+            leaf,
+        ),
         None => (head, tail),
     }
+}
+
+/// The ONE join of a qualified name: `qualifier`, then `::` for a path qualifier or `.` for a
+/// member qualifier, then `leaf` (`T`, a path, and `new` give `T::new`; `S`, a member, and `field`
+/// give `S.field`). The facts layer writes a qualified mention's name with it (spec 117,
+/// CAPTURES). It is the inverse of [`split_path`] for a `leaf` holding neither `::` nor `.` and,
+/// after a path qualifier, not starting with `:`; the cut reads any other leaf back under another
+/// qualifier (`Q`, a path, and `:b` give `Q:::b`, cut into `Q:` and `b`), so the extractor
+/// protocol refuses a declared extractor's qualified ref whose name the cut does not give back.
+pub fn qualified_name(qualifier: &str, path: bool, leaf: &str) -> String {
+    let separator = if path {
+        PATH_SEPARATOR
+    } else {
+        MEMBER_SEPARATOR
+    };
+    format!("{qualifier}{separator}{leaf}")
 }
 
 /// Whether [`split_path`] cuts `path` at a `::`, a path qualifier (`T::new`, `a.b::c`), rather
@@ -2910,7 +2934,8 @@ mod leaf_tests {
 
     #[test]
     fn a_path_query_is_looked_up_by_the_text_after_its_last_separator() {
-        // (the path, its qualifier, its leaf, whether it is cut at a `::`)
+        // (the path, its qualifier, its leaf, whether it is cut at a `::`); a path with a
+        // qualifier is also joined back from its three parts, the cut's inverse.
         let cases = [
             ("T::new", Some("T"), "new", true),
             ("S.field", Some("S"), "field", false),
@@ -2929,6 +2954,9 @@ mod leaf_tests {
                 ((qualifier, leaf), leaf, path_qualified),
                 "{path}"
             );
+            if let Some(qualifier) = qualifier {
+                assert_eq!(qualified_name(qualifier, path_qualified, leaf), path);
+            }
         }
     }
 

@@ -636,7 +636,9 @@ fn hook_run_id(run_store: &dyn EventStore) -> Result<String, Box<dyn std::error:
 /// than silently recording a category [`conductor::AgentFailure::from_category`] would
 /// degrade to `unknown` at classification time anyway. Routed through [`require_store_dir`]
 /// like every other courier ([`cmd_progress`]'s own doc), so a worker running it from a
-/// nested worktree records into the project's real store, never a misfiled one.
+/// nested worktree records into the project's real store, never a misfiled one. It says what it
+/// recorded on stderr, never stdout: the host reads a hook's stdout as JSON, so stdout carries
+/// nothing.
 fn cmd_hook_stop_failure(args: &[String]) -> Res {
     let mut spawn_id: Option<String> = None;
     let mut class: Option<String> = None;
@@ -699,7 +701,7 @@ fn cmd_hook_stop_failure(args: &[String]) -> Res {
             class: class.clone(),
         },
     )?;
-    println!("stop-failure recorded for {spawn_id} (class {class}, position {pos})");
+    eprintln!("stop-failure recorded for {spawn_id} (class {class}, position {pos})");
     Ok(())
 }
 

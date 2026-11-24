@@ -164,11 +164,13 @@ jobs:
   # a session's tree is held in, and the macOS watcher's wake. They run whatever else fails to
   # compile there. It then checks that the workspace compiles, every target included, so each test
   # that names a macOS or Windows adapter compiles there too; `--keep-going` goes on past a target
-  # that fails, so one run names every target that does not compile. Each step runs under bash on
-  # every runner and exports an empty RUSTC_WRAPPER in its own shell, so cargo and any cargo it
-  # starts run no wrapper: .cargo/config.toml names a Unix shell script as its wrapper, and an
-  # empty environment value overrides it. The build script's version derivation degrades to
-  # `+unversioned` without go-gitsemver, so the job installs nothing else.
+  # that fails, so one run names every target that does not compile. Last it runs the one suite of
+  # the product's own that proves an OS's behaviour, bare_rigger_hooks_resolve_periphery: an
+  # exec-form hook's bare `rigger` runs the binary PATH holds, `rigger.exe` on Windows. Each step
+  # runs under bash on every runner and exports an empty RUSTC_WRAPPER in its own shell, so cargo
+  # and any cargo it starts run no wrapper: .cargo/config.toml names a Unix shell script as its
+  # wrapper, and an empty environment value overrides it. The build script's version derivation
+  # degrades to `+unversioned` without go-gitsemver, so the job installs nothing else.
   cross-os-check:
     strategy:
       # A red leg never cancels the other, so each OS reports its own errors in the one run.
@@ -177,7 +179,7 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
-      # The test step compiles the dev profile; line tables keep the file:line of its panics.
+      # The test steps compile the dev profile; line tables keep the file:line of their panics.
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
@@ -190,17 +192,83 @@ jobs:
           # Spec 93 criterion 3: `cargo check` runs crates/rigger-dash's build script, which
           # cross-compiles crates/console-core for this target.
           targets: wasm32-unknown-unknown
-      - name: test the process crate
+      # The process crate's tests are built once, then run in steps that together run each test
+      # once: the reap module's in seven, by the path a process is ended through, then the other
+      # modules whose tests start and signal processes, then every other test. Each step runs its
+      # tests one at a time, so libtest prints each test's name as it starts, and `--nocapture`
+      # prints what each writes as it writes it. Each step's bound is many times its usual seconds:
+      # a test that hangs holds its step past it, and the step ends with a log whose last name is
+      # that test. A stall that takes the runner out keeps no log at all, and then the step the
+      # job's timeline shows unfinished is the only name left, so no step holds many tests.
+      - name: build the process crate's tests
         shell: bash
-        # About seven times the step's usual time, compile included: a test that hangs ends the
-        # step with its log kept, where libtest names each test still running after 60 s and
-        # `--nocapture` has printed what each wrote. The tests stay parallel, as everywhere else.
         timeout-minutes: 5
         run: |
           export RUSTC_WRAPPER=
-          cargo test -p rigger-process --lib -- --nocapture
-      - name: check the workspace
+          cargo test -p rigger-process --lib --no-run
+      - name: test the watched end's freeze and walk
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::ends::the_watched_end_ends reap::tests::ends::the_watched_end_freezes reap::tests::ends::the_watched_end_stops reap::tests::ends::the_watched_end_walks
+      - name: test the watched end's strangers and gone mains
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::ends::the_watched_end_never reap::tests::ends::the_watched_end_of_a_main
+      - name: test the watched end's reports
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::ends::the_watched_end_reports reap::tests::ends::the_watched_end_resumes reap::tests::ends::the_watched_end_signals
+      - name: test the descendant end
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::ends::the_ --skip reap::tests::ends::the_watched_end
+      - name: test the end's chain, freeze undo and signals
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::ends:: --skip reap::tests::ends::the_
+      - name: test the reap by directory
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap::tests::reap_ reap::tests::processes_rooted_under reap::tests::signal_if_unchanged
+      - name: test the rest of the reap module
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 reap:: --skip reap::tests::ends:: --skip reap::tests::reap_ --skip reap::tests::processes_rooted_under --skip reap::tests::signal_if_unchanged
+      - name: test the process crate's child_tree module
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 child_tree::
+      - name: test the process crate's os_process module
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 os_process::
+      - name: test the rest of the process crate
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --test-threads=1 --skip reap:: --skip child_tree:: --skip os_process::
+      - name: check the workspace and run the cross-OS suite
         shell: bash
         run: |
           export RUSTC_WRAPPER=
           cargo check --workspace --all-targets --keep-going
+          cargo test -p rigger --test bare_rigger_hooks_resolve_periphery

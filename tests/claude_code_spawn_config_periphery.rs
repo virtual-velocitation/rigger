@@ -64,10 +64,11 @@ fn launch_handing(
     let progress = Store::open(":memory:").expect("in-memory progress store");
     let run = Store::open(":memory:").expect("in-memory run store");
     let driver = Driver {
-        bin: repo_root()
+        host: repo_root()
             .join("tests/fixtures/claude-code-argv-capture-agent.sh")
             .to_string_lossy()
-            .into_owned(),
+            .into_owned()
+            .into(),
         rigger_bin: RIGGER_BIN.to_string(),
         progress_store: &progress,
         run_store: &run,
