@@ -7,8 +7,9 @@
 //! `extends Base` and member read `x.depth`, and a `Square.make()` whose qualifier picks one of
 //! two `make`s.
 //!
-//! NOT OWNED here: a `/** */` block's doc span (`doc_spans_reach_the_code_store_periphery`) and a
-//! `new Ns.Box()` whose qualifier names nothing (`references_are_extracted_and_isolated_periphery`).
+//! NOT OWNED here: a `/** */` block's doc span (`doc_spans_reach_the_code_store_periphery`) and
+//! a `new Ns.Box()` whose qualifier names nothing
+//! (`references_are_extracted_and_isolated_periphery`).
 //!
 //! Every test extracts real source, so the file runs on the `symbols` lane alone.
 
