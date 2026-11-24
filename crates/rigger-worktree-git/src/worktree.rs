@@ -426,28 +426,22 @@ impl Worktree {
     /// Whether the unit's branch has at least one commit beyond the base the run is
     /// integrating into - i.e. the branch carries committed work to REUSE on resume.
     /// A branch that exists but never advanced past the base (`git worktree add -b`
-    /// then nothing committed) carries nothing and is treated as no prior work.
-    pub fn branch_has_work(repo: &str, branch: &str) -> bool {
-        if !branch_exists(repo, branch) {
-            return false;
+    /// then nothing committed), or no such branch, carries nothing and is treated as no prior
+    /// work. Read fail-closed: a read git cannot answer is an error, never a no, since a no
+    /// sends the unit back to implement over the work it holds.
+    pub fn branch_has_work(repo: &str, branch: &str) -> Result<bool, Error> {
+        if !branch_present(repo, branch)? {
+            return Ok(false);
         }
-        let base = match run_git(repo, &["rev-parse", "HEAD"]) {
-            Ok(b) => b.trim().to_string(),
-            Err(_) => return false,
-        };
-        let tip = match run_git(repo, &["rev-parse", &format!("refs/heads/{branch}")]) {
-            Ok(t) => t.trim().to_string(),
-            Err(_) => return false,
-        };
-        if tip == base {
-            return false;
+        let base = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        if branch_tip(repo, branch)? == base {
+            return Ok(false);
         }
         // The branch carries work iff it has commits the base does not: a non-empty
         // `base..branch` range.
-        match run_git(repo, &["rev-list", "--count", &format!("{base}..{branch}")]) {
-            Ok(n) => n.trim() != "0" && !n.trim().is_empty(),
-            Err(_) => false,
-        }
+        let range = format!("{base}..refs/heads/{branch}");
+        let count = git(repo, &["rev-list", "--count", &range])?;
+        Ok(!matches!(count.trim(), "0" | ""))
     }
 
     /// Delete the unit's branch ref. Called ONLY after a successful integrate has
@@ -8090,7 +8084,7 @@ mod tests {
         let committed = wt1.commit("rigger: window 1").unwrap();
         assert!(!committed.is_empty(), "window 1 must commit work");
         assert!(
-            Worktree::branch_has_work(&repo_path, branch),
+            Worktree::branch_has_work(&repo_path, branch).unwrap(),
             "the branch must carry committed work for resume to reuse"
         );
         wt1.remove().unwrap(); // tear down the transient dir; branch survives.
@@ -8122,9 +8116,45 @@ mod tests {
         // After integrate the branch is cleaned up; an interrupted branch is not.
         Worktree::delete_branch(&repo_path, branch).unwrap();
         assert!(
-            !Worktree::branch_has_work(&repo_path, branch),
+            !Worktree::branch_has_work(&repo_path, branch).unwrap(),
             "delete_branch removes the checkpoint after it has served its purpose"
         );
+    }
+
+    /// A BRANCH'S WORK IS READ FAIL-CLOSED: GIVEN a repository, WHEN a unit branch's work is
+    /// read, THEN no such branch and a branch at the base are no work, AND a read git cannot
+    /// answer (HEAD unborn beside the branch) is an error, never a no.
+    #[test]
+    fn branch_has_work_is_no_for_no_new_commits_and_an_error_when_git_cannot_answer() {
+        type GitSetup<'a> = &'a [&'a [&'a str]];
+        let rows: [(&str, GitSetup, Option<bool>); 3] = [
+            ("no such branch", &[], Some(false)),
+            (
+                "a branch at the base",
+                &[&["branch", "rigger/u/s"]],
+                Some(false),
+            ),
+            (
+                "an unborn HEAD beside the branch",
+                &[
+                    &["branch", "rigger/u/s"],
+                    &["checkout", "-q", "--orphan", "fresh"],
+                ],
+                None,
+            ),
+        ];
+        for (what, setup, want) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            for args in setup {
+                run_git(&repo_path, args).unwrap();
+            }
+            assert_eq!(
+                Worktree::branch_has_work(&repo_path, "rigger/u/s").ok(),
+                want,
+                "{what}"
+            );
+        }
     }
 
     #[test]
@@ -10394,7 +10424,7 @@ mod tests {
             "precondition: the deterministic dir is gone after remove"
         );
         assert!(
-            Worktree::branch_has_work(&repo_path, branch),
+            Worktree::branch_has_work(&repo_path, branch).unwrap(),
             "precondition: the durable branch still carries the checkpoint work"
         );
 

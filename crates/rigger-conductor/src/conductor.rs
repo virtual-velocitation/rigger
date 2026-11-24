@@ -3059,8 +3059,8 @@ const GIT_STEP_MARKER: &str = "\u{1}rigger:git-step\u{1}";
 /// A LIFECYCLE step answers a plain [`worktree::Error`], and every failure of one is a conductor
 /// fault, marked with [`GIT_STEP_MARKER`]: making, re-asserting and discarding a worktree
 /// ([`Worktree::create`], [`Worktree::ensure_present`], [`Worktree::discard`]); reading a
-/// branch, its tip or its ancestry ([`worktree::branch_present`], [`worktree::branch_tip`],
-/// [`worktree::in_history`]); seeding, rolling back and deleting a branch
+/// branch, its tip, its ancestry or its work ([`worktree::branch_present`],
+/// [`worktree::branch_tip`], [`worktree::in_history`], [`Worktree::branch_has_work`]); seeding, rolling back and deleting a branch
 /// ([`Worktree::create_branch_at`], [`Worktree::reset_branch_to`],
 /// [`Worktree::restore_reviewed_sha`], [`Worktree::delete_branch`]); reading what a unit changed
 /// ([`Worktree::changed_files`], [`Worktree::changed_since_base`],
@@ -6062,14 +6062,14 @@ impl RunCtx<'_> {
         // first gate-green adjudicator-approved one. `run_speculation` owns the K isolated
         // worktrees' whole lifecycle. Default width 1 falls through to the single-lane path
         // below, byte-for-byte unchanged (speculation defaults off).
-        if self.speculates(st) {
+        if self.speculates(st)? {
             return self.run_speculation(st);
         }
         // Resume-continuity: decide whether this unit CONTINUES from a prior window's
         // recorded phase (its deterministic branch carries committed work) or runs the
         // full lifecycle fresh. Computed before the worktree is created so a resumed
         // unit reuses its branch's work instead of re-implementing from scratch.
-        let phase = self.resume_phase(st);
+        let phase = self.resume_phase(st)?;
         let wt = self.stage_worktree(st)?;
         let dir = wt.as_ref().map(|w| w.dir.clone()).unwrap_or_default();
         // Out-of-band any-parked signal (spec 64 c1 round 4,
@@ -8542,13 +8542,15 @@ impl RunCtx<'_> {
     /// unit cannot speculate); and it is not a producer (a planner emits a DAG, not a diff to
     /// gate/review). Any false condition falls through to the single-lane `run_single_stage`,
     /// so the default (width 1) changes no current behavior.
-    fn speculates(&self, st: &Stage) -> bool {
-        self.effective_speculation_width(st) > 1
+    /// The resume read comes last, so only a unit that would speculate reads its branch, and a
+    /// read git cannot answer is the error.
+    fn speculates(&self, st: &Stage) -> Result<bool, Error> {
+        Ok(self.effective_speculation_width(st) > 1
             && !st.agent.is_empty()
             && !is_producer(st)
             && !self.deps.repo.is_empty()
             && self.agent_isolated(&st.agent)
-            && self.resume_phase(st) == ResumePhase::Fresh
+            && self.resume_phase(st)? == ResumePhase::Fresh)
     }
 
     /// What the error `e` of `unit`'s speculation lane at `attempt` means ([`LaneError::of`]),
@@ -14200,15 +14202,17 @@ impl RunCtx<'_> {
     /// [`RunCtx::integrate_attempted`]'s own doc): `branch_has_work`'s `tip == base` check
     /// alone cannot tell "never had work" apart from "already fast-forward-landed", and a
     /// unit routed to `Reviewed` with a durably-recorded integrate attempt is never the former.
-    fn resume_phase(&self, st: &Stage) -> ResumePhase {
+    /// A branch read git cannot answer is the error ([`git_step`]), never a fresh run over the
+    /// work the branch may hold.
+    fn resume_phase(&self, st: &Stage) -> Result<ResumePhase, Error> {
         // A repo-less or non-isolated unit has no branch to checkpoint on, so there is
         // never reusable prior work - it always runs fresh.
         if self.deps.repo.is_empty() || st.agent.is_empty() || !self.agent_isolated(&st.agent) {
-            return ResumePhase::Fresh;
+            return Ok(ResumePhase::Fresh);
         }
         let prior = match self.prior_status.get(&st.name) {
             Some(s) => *s,
-            None => return ResumePhase::Fresh,
+            None => return Ok(ResumePhase::Fresh),
         };
         let attempts = self.prior_attempts.get(&st.name).copied().unwrap_or(0);
         // Whether the log durably records an integrate attempt at THIS attempt: the merge
@@ -14233,7 +14237,7 @@ impl RunCtx<'_> {
             ledger::Status::Green | ledger::Status::Verified => ResumePhase::Implemented,
             // Below green (pending/grounding/red), or a terminal status that should not
             // have reached the lifecycle: run fresh.
-            _ => return ResumePhase::Fresh,
+            _ => return Ok(ResumePhase::Fresh),
         };
         // Round 4 fix: a unit routed to `Reviewed` whose log already durably proves an
         // integrate attempt was made for THIS attempt is never the "prior worktree's commits were
@@ -14247,12 +14251,15 @@ impl RunCtx<'_> {
         // The unit's branch must actually carry committed work to build on; a recorded
         // status with an empty/missing branch (the prior worktree's commits were lost)
         // falls back to a fresh run rather than skipping a non-existent implementation.
-        if !Worktree::branch_has_work(&self.deps.repo, &unit_branch(&st.name))
-            && !already_integrating
+        if !already_integrating
+            && !git_step(Worktree::branch_has_work(
+                &self.deps.repo,
+                &unit_branch(&st.name),
+            ))?
         {
-            return ResumePhase::Fresh;
+            return Ok(ResumePhase::Fresh);
         }
-        phase
+        Ok(phase)
     }
 
     fn stage_worktree(&self, st: &Stage) -> Result<Option<Worktree>, Error> {
@@ -26869,7 +26876,7 @@ mod tests {
             .remove()
             .unwrap();
         assert!(
-            crate::worktree::Worktree::branch_has_work(repo, branch),
+            crate::worktree::Worktree::branch_has_work(repo, branch).unwrap(),
             "the seeded branch must carry committed work"
         );
     }
@@ -28895,7 +28902,7 @@ stage "implement" adjudicator "adj" failed
             "a Failed-but-not-escalated unit must resume and re-run, not be skipped as terminal"
         );
         assert!(
-            crate::worktree::Worktree::branch_has_work(&deps.repo, &unit_branch("s"))
+            crate::worktree::Worktree::branch_has_work(&deps.repo, &unit_branch("s")).unwrap()
                 || repo.path().join("feature.rs").exists(),
             "the resumed unit reuses its deterministic branch - the prior rejected code persists"
         );
@@ -38244,6 +38251,34 @@ stage "implement" adjudicator "adj" failed
             );
         }
         assert_eq!(store.reads().len(), built, "no build reads the stream");
+    }
+
+    /// A RESUME NEVER READS AN UNANSWERED BRANCH AS NO WORK: GIVEN a unit recorded green last
+    /// window whose branch git cannot read past (HEAD unborn beside it), WHEN its resume phase is
+    /// decided, THEN the read is a git step's halt, never a fresh run over the branch's work.
+    #[test]
+    fn a_resume_whose_branch_read_git_cannot_answer_halts_rather_than_running_fresh() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        run_git(&repo_path, &["branch", &unit_branch("s")]);
+        run_git(&repo_path, &["checkout", "-q", "--orphan", "fresh"]);
+        let mut cfg = Config::default();
+        cfg.agents.insert("worker".into(), agent("worker"));
+        let st = Stage {
+            name: "s".into(),
+            agent: "worker".into(),
+            ..Default::default()
+        };
+        let store = Store::open(":memory:").unwrap();
+        let driver = Stub::new();
+        let deps = Deps {
+            repo: repo_path,
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let mut ctx = RunCtx::for_test(&cfg, &deps);
+        ctx.prior_status.insert("s".into(), ledger::Status::Green);
+        let err = ctx.resume_phase(&st).unwrap_err();
+        assert!(err.0.contains(GIT_STEP_MARKER), "{}", err.0);
     }
 
     #[test]
@@ -56675,7 +56710,7 @@ stage "implement" adjudicator "adj" failed
 
         // The unit's durable checkpoint branch survives with its work, for the human.
         assert!(
-            crate::worktree::Worktree::branch_has_work(&repo_path, &unit_branch("s")),
+            crate::worktree::Worktree::branch_has_work(&repo_path, &unit_branch("s")).unwrap(),
             "the escalated unit's work must remain on its own branch for a human to inspect"
         );
     }
