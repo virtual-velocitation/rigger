@@ -639,14 +639,16 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
 /// overrides `.cargo/config.toml`'s Unix wrapper script for cargo and every nested cargo it
 /// starts. The first steps run the tests of `rigger-process`, the crate whose own tests hold the
 /// rows for the macOS and Windows adapters, so they run on their own OS whatever else fails to
-/// compile there. One step builds them (`--no-run`, bounded by `timeout-minutes: 5`); then one
-/// step runs each module whose tests start and signal processes (`reap::`, `child_tree::`,
-/// `os_process::`) and a last one runs every other test (`--skip` of each of those), so the
-/// steps together run each test once. A step that never ends names its module even when its
-/// runner is lost and no log is kept. Each test step is bounded by `timeout-minutes: 2`, many
-/// times its usual seconds, so a test that hangs ends the step with its log kept: the tests run in
-/// parallel, as everywhere else, libtest names each one still running after 60 s, and
-/// `--nocapture` prints what each writes as it writes it. The last step runs `cargo check
+/// compile there. One step builds them (`--no-run`, bounded by `timeout-minutes: 5`); then seven
+/// steps run the `reap::` module's tests by the path a process is ended through, one step runs
+/// each other module whose tests start and signal processes (`child_tree::`, `os_process::`), and
+/// a last one runs every other test (`--skip` of each of those), so the steps together run each
+/// test once. Each test step runs its tests one at a time (`--test-threads=1`), so libtest prints
+/// each test's name as it starts, and `--nocapture` prints what each writes as it writes it. Each
+/// is bounded by `timeout-minutes: 2`, many times its usual seconds, so a test that hangs ends its
+/// step with a log whose last name is that test. A stall that takes the runner out keeps no log,
+/// and the step left unfinished in the job's timeline is then the only name left, so no step
+/// holds many tests. The last step runs `cargo check
 /// --workspace --all-targets --keep-going`, so every test that names one of those adapters
 /// compiles there, and one run names every target that does not, and then the one suite of the
 /// product's own that proves an OS's behaviour, `bare_rigger_hooks_resolve_periphery`. The job's
@@ -712,27 +714,41 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
         })
         .collect();
     let unwrapped = |minutes, cargo| (Some("bash"), minutes, vec!["export RUSTC_WRAPPER=", cargo]);
+    let one_at_a_time = |filters: &str| {
+        unwrapped(
+            Some(2),
+            format!("cargo test -p rigger-process --lib -- --nocapture --test-threads=1 {filters}")
+                .leak(),
+        )
+    };
     assert_eq!(
         run_steps,
         [
             unwrapped(Some(5), "cargo test -p rigger-process --lib --no-run"),
-            unwrapped(
-                Some(2),
-                "cargo test -p rigger-process --lib -- --nocapture reap::"
+            one_at_a_time(
+                "reap::tests::ends::the_watched_end_ends reap::tests::ends::the_watched_end_freezes \
+                 reap::tests::ends::the_watched_end_stops reap::tests::ends::the_watched_end_walks"
             ),
-            unwrapped(
-                Some(2),
-                "cargo test -p rigger-process --lib -- --nocapture child_tree::"
+            one_at_a_time(
+                "reap::tests::ends::the_watched_end_never reap::tests::ends::the_watched_end_of_a_main"
             ),
-            unwrapped(
-                Some(2),
-                "cargo test -p rigger-process --lib -- --nocapture os_process::"
+            one_at_a_time(
+                "reap::tests::ends::the_watched_end_reports \
+                 reap::tests::ends::the_watched_end_resumes reap::tests::ends::the_watched_end_signals"
             ),
-            unwrapped(
-                Some(2),
-                "cargo test -p rigger-process --lib -- --nocapture --skip reap:: \
-                 --skip child_tree:: --skip os_process::"
+            one_at_a_time("reap::tests::ends::the_ --skip reap::tests::ends::the_watched_end"),
+            one_at_a_time("reap::tests::ends:: --skip reap::tests::ends::the_"),
+            one_at_a_time(
+                "reap::tests::reap_ reap::tests::processes_rooted_under \
+                 reap::tests::signal_if_unchanged"
             ),
+            one_at_a_time(
+                "reap:: --skip reap::tests::ends:: --skip reap::tests::reap_ \
+                 --skip reap::tests::processes_rooted_under --skip reap::tests::signal_if_unchanged"
+            ),
+            one_at_a_time("child_tree::"),
+            one_at_a_time("os_process::"),
+            one_at_a_time("--skip reap:: --skip child_tree:: --skip os_process::"),
             (
                 Some("bash"),
                 None,
@@ -744,9 +760,9 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
             ),
         ],
         "job `{JOB}` must have these `run:` steps, each under `shell: bash` exporting an empty \
-         `RUSTC_WRAPPER`: the process crate's tests built, then run one module per step and the \
-         rest in one, each bounded, so the crate's rows run whatever else fails to compile and a \
-         hung one is named by its step, then `cargo check --workspace --all-targets \
+         `RUSTC_WRAPPER`: the process crate's tests built, then run one at a time in bounded \
+         steps of few tests each, so the crate's rows run whatever else fails to compile and a \
+         hung one is named by its log or its step, then `cargo check --workspace --all-targets \
          --keep-going`, so one run names every target that does not compile, and the bare-rigger \
          hook suite (shell, timeout-minutes, lines)"
     );
