@@ -5506,11 +5506,12 @@ pub fn f() -> u8 {
     /// Spec 117, MACRO TOKEN TREES: a macro invocation's token tree is re-parsed and read like
     /// the code around it - a call inside `vec![..]`, a constant inside `assert_eq!(..)`, a call
     /// inside `json!({"k": f(x)})` and a `static` inside `thread_local!` yield a call, a const, a
-    /// call and a definition at their lines - and a `macro_rules!` body yields nothing. A
+    /// call and a definition at their lines, the `static` in braces or parentheses and with or
+    /// without the `;` after its last declaration - and a `macro_rules!` body yields nothing. A
     /// re-parsed definition takes its doc, path, parent, test flag and inline module path as the
     /// same item written outside a macro does, and a re-parsed reference stages with the
-    /// invocation's generic parameters, `Self`, `self` and test region; each macro line below
-    /// reads as its plain twin beside it does.
+    /// invocation's generic parameters, `Self`, `self` and test region; where a row writes a
+    /// plain twin beside a macro line, the two read alike.
     #[test]
     fn macro_token_trees_are_read() {
         let cases = [
@@ -5565,6 +5566,50 @@ static PLAIN: RefCell<u32> = RefCell::new(0);
 4 ref call new SLOT q RefCell::
 7 def Static PLAIN to 7 doc 6-6
 7 ref call new PLAIN q RefCell::",
+            ),
+            (
+                "a static inside thread_local!(..) is a definition at its line, as its plain twin \
+                 is, and no read of a constant of its name",
+                "\
+use std::cell::Cell;
+const X: u8 = 1;
+fn f() {
+    thread_local!(static X: u8 = 0);
+    static Y: u8 = 0;
+}
+thread_local!(static FOO: Cell<u32> = const { Cell::new(1) });
+static PLAIN: Cell<u32> = const { Cell::new(1) };
+",
+                "\
+2 def Constant X to 2
+3 def Function f to 6
+4 def Static f::X to 4 in f
+4 ref call thread_local f
+5 def Static f::Y to 5 in f
+7 def Static FOO to 7
+7 ref call new FOO q Cell::
+7 ref call thread_local -
+8 def Static PLAIN to 8
+8 ref call new PLAIN q Cell::",
+            ),
+            (
+                "a last static thread_local! holds without its `;` is a definition at its line, as \
+                 its plain twin is",
+                "\
+thread_local! {
+    static A: u8 = g();
+    pub static B: u8 = h()
+}
+pub static C: u8 = h();
+",
+                "\
+1 ref call thread_local -
+2 def Static A to 2
+2 ref call g A
+3 def Static B to 3
+3 ref call h B
+5 def Static C to 5
+5 ref call h C",
             ),
             (
                 "a macro_rules! body is a template and yields nothing",
@@ -5722,7 +5767,8 @@ mod plat {
 
     /// Spec 117, MACRO TOKEN TREES: a token run re-parses in place only where its wrapper's opening
     /// bytes fit before it, the argument list's two at the file's first byte and none for items,
-    /// and is refused one byte short of that.
+    /// and is refused one byte short of that; the `;` the items wrapper serves after a run that
+    /// ends its last item already is an empty statement.
     #[test]
     fn a_token_run_re_parses_only_where_its_wrapper_opening_fits() {
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
@@ -5731,7 +5777,7 @@ mod plat {
         let call = "(source_file (expression_statement (call_expression function: (identifier) \
                     arguments: (arguments (identifier)))))";
         let item = "(source_file (function_item name: (identifier) parameters: (parameters) \
-                    body: (block)))";
+                    body: (block)) (empty_statement))";
         let cases = [
             ("  x", 2..3, ARGUMENT_LIST, Some(call)),
             ("  x", 1..3, ARGUMENT_LIST, None),
