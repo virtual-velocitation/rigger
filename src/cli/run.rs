@@ -2416,7 +2416,8 @@ mod tests {
             .truncate(false)
             .open(&guard_path)
             .expect("open guard");
-        fs2::FileExt::lock_shared(&held).expect("simulate a build's own shared hold");
+        held.lock_shared()
+            .expect("simulate a build's own shared hold");
 
         reclaim_run_scratch(base.to_str().unwrap());
 

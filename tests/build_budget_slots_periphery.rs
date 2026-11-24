@@ -97,7 +97,7 @@ fn exec_runner_blocks_the_real_subprocess_on_an_externally_held_slot() {
     let marker = dir.path().join("marker");
     let budget = BuildBudget::new(1, slot_dir);
 
-    let held = budget.acquire();
+    let held = budget.acquire().unwrap();
 
     let gate = direct_gate(&format!("touch {}", marker.display()));
     let (tx, rx) = mpsc::channel();
@@ -139,7 +139,7 @@ fn exec_runner_blocks_the_real_subprocess_on_an_externally_held_slot() {
     // The guard ExecRunner::run itself acquired must have been released again by
     // the time run() returned - not merely that SOME slot eventually freed (the one
     // we dropped), but that ExecRunner's own hold on it ended with the call.
-    let reacquired = budget.acquire();
+    let reacquired = budget.acquire().unwrap();
     drop(reacquired);
 }
 
@@ -154,7 +154,7 @@ fn an_exhausted_budget_gates_a_real_build_but_never_a_real_agent_spawn() {
     let dir = tempfile::tempdir().expect("create temp dir");
     let slot_dir = dir.path().join("slots");
     let budget = BuildBudget::new(1, slot_dir);
-    let _held = budget.acquire(); // the one slot, held for the whole test, never released
+    let _held = budget.acquire().unwrap(); // the one slot, held for the whole test, never released
 
     let agent_bin = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-agent.sh");
     assert!(agent_bin.exists(), "fixture agent {agent_bin:?} must exist");

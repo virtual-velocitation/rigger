@@ -426,28 +426,22 @@ impl Worktree {
     /// Whether the unit's branch has at least one commit beyond the base the run is
     /// integrating into - i.e. the branch carries committed work to REUSE on resume.
     /// A branch that exists but never advanced past the base (`git worktree add -b`
-    /// then nothing committed) carries nothing and is treated as no prior work.
-    pub fn branch_has_work(repo: &str, branch: &str) -> bool {
-        if !branch_exists(repo, branch) {
-            return false;
+    /// then nothing committed), or no such branch, carries nothing and is treated as no prior
+    /// work. Read fail-closed: a read git cannot answer is an error, never a no, since a no
+    /// sends the unit back to implement over the work it holds.
+    pub fn branch_has_work(repo: &str, branch: &str) -> Result<bool, Error> {
+        if !branch_present(repo, branch)? {
+            return Ok(false);
         }
-        let base = match run_git(repo, &["rev-parse", "HEAD"]) {
-            Ok(b) => b.trim().to_string(),
-            Err(_) => return false,
-        };
-        let tip = match run_git(repo, &["rev-parse", &format!("refs/heads/{branch}")]) {
-            Ok(t) => t.trim().to_string(),
-            Err(_) => return false,
-        };
-        if tip == base {
-            return false;
+        let base = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
+        if branch_tip(repo, branch)? == base {
+            return Ok(false);
         }
         // The branch carries work iff it has commits the base does not: a non-empty
         // `base..branch` range.
-        match run_git(repo, &["rev-list", "--count", &format!("{base}..{branch}")]) {
-            Ok(n) => n.trim() != "0" && !n.trim().is_empty(),
-            Err(_) => false,
-        }
+        let range = format!("{base}..refs/heads/{branch}");
+        let count = git(repo, &["rev-list", "--count", &range])?;
+        Ok(!matches!(count.trim(), "0" | ""))
     }
 
     /// Delete the unit's branch ref. Called ONLY after a successful integrate has
@@ -1532,24 +1526,23 @@ impl Worktree {
                     .spawn()
             })
             .map_err(|e| step_failed(format!("git show {sha}"), e))?;
-        let show_stdout = show
-            .stdout
-            .take()
-            .ok_or_else(|| step_failed(format!("git show {sha}"), "no stdout pipe"))?;
-        let patch_id = crate::subprocess::git_in(dir)
-            .and_then(|mut git| {
-                git.args(["patch-id", "--stable"])
-                    .stdin(Stdio::from(show_stdout))
-                    .output()
-            })
-            .map_err(|e| step_failed(format!("git patch-id {sha}"), e))?;
+        let show_stdout = show.stdout.take();
+        let patch_id = crate::subprocess::git_in(dir).and_then(|mut git| {
+            let piped = show_stdout.ok_or_else(|| std::io::Error::other("no stdout pipe"))?;
+            git.args(["patch-id", "--stable"])
+                .stdin(Stdio::from(piped))
+                .output()
+        });
         // The Child handle that spawned `show` is waited on directly, never signalled -
         // this crate's handle-bound process lifecycle discipline (spec 78): a process
         // this crate starts is ended only through its own spawning handle, never a
-        // shell-out or a computed-pid signal.
-        let show_status = show
-            .wait()
-            .map_err(|e| step_failed(format!("waiting on git show {sha}"), e))?;
+        // shell-out or a computed-pid signal. It is waited on before any error returns, so a
+        // failed `patch-id` leaves no unreaped `show`; its pipe's reader is gone by then, so
+        // the wait ends.
+        let show_status = show.wait();
+        let patch_id = patch_id.map_err(|e| step_failed(format!("git patch-id {sha}"), e))?;
+        let show_status =
+            show_status.map_err(|e| step_failed(format!("waiting on git show {sha}"), e))?;
         if !show_status.success() {
             return Err(step_failed(
                 format!("git show {sha}"),
@@ -4224,6 +4217,23 @@ fn staged_tree(dir: &str, index: &std::path::Path) -> Result<String, Error> {
 pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
     let read = status_read(dir, &[], &[])?;
     Ok(!read.records.is_empty() || !read.warning.is_empty())
+}
+
+/// The changes `dir`'s tracked files hold that no commit records, untracked files aside, as each
+/// one's two-character status and path ([`status_records`]), in git's order. A warning git gives
+/// beside its records is an error, since git could not vouch for the whole tree; every error
+/// names the tree first, then what git said.
+pub fn tracked_changes(dir: &str) -> Result<Vec<(String, String)>, Error> {
+    let unreadable =
+        |answer: String| step_failed(format!("reading the tracked changes of {dir}"), answer);
+    let read = status_read(dir, &["--untracked-files=no"], &[]).map_err(|e| unreadable(e.0))?;
+    if !read.warning.is_empty() {
+        return Err(unreadable(read.warning));
+    }
+    Ok(status_records(&read.records)
+        .into_iter()
+        .map(|(status, path)| (status.to_string(), path.to_string()))
+        .collect())
 }
 
 /// The paths [`status_read`] reports changed in `dir`'s tree, untracked files included, in git's
@@ -8084,7 +8094,7 @@ mod tests {
         let committed = wt1.commit("rigger: window 1").unwrap();
         assert!(!committed.is_empty(), "window 1 must commit work");
         assert!(
-            Worktree::branch_has_work(&repo_path, branch),
+            Worktree::branch_has_work(&repo_path, branch).unwrap(),
             "the branch must carry committed work for resume to reuse"
         );
         wt1.remove().unwrap(); // tear down the transient dir; branch survives.
@@ -8116,9 +8126,45 @@ mod tests {
         // After integrate the branch is cleaned up; an interrupted branch is not.
         Worktree::delete_branch(&repo_path, branch).unwrap();
         assert!(
-            !Worktree::branch_has_work(&repo_path, branch),
+            !Worktree::branch_has_work(&repo_path, branch).unwrap(),
             "delete_branch removes the checkpoint after it has served its purpose"
         );
+    }
+
+    /// A BRANCH'S WORK IS READ FAIL-CLOSED: GIVEN a repository, WHEN a unit branch's work is
+    /// read, THEN no such branch and a branch at the base are no work, AND a read git cannot
+    /// answer (HEAD unborn beside the branch) is an error, never a no.
+    #[test]
+    fn branch_has_work_is_no_for_no_new_commits_and_an_error_when_git_cannot_answer() {
+        type GitSetup<'a> = &'a [&'a [&'a str]];
+        let rows: [(&str, GitSetup, Option<bool>); 3] = [
+            ("no such branch", &[], Some(false)),
+            (
+                "a branch at the base",
+                &[&["branch", "rigger/u/s"]],
+                Some(false),
+            ),
+            (
+                "an unborn HEAD beside the branch",
+                &[
+                    &["branch", "rigger/u/s"],
+                    &["checkout", "-q", "--orphan", "fresh"],
+                ],
+                None,
+            ),
+        ];
+        for (what, setup, want) in rows {
+            let repo = init_repo();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            for args in setup {
+                run_git(&repo_path, args).unwrap();
+            }
+            assert_eq!(
+                Worktree::branch_has_work(&repo_path, "rigger/u/s").ok(),
+                want,
+                "{what}"
+            );
+        }
     }
 
     #[test]
@@ -10388,7 +10434,7 @@ mod tests {
             "precondition: the deterministic dir is gone after remove"
         );
         assert!(
-            Worktree::branch_has_work(&repo_path, branch),
+            Worktree::branch_has_work(&repo_path, branch).unwrap(),
             "precondition: the durable branch still carries the checkpoint work"
         );
 

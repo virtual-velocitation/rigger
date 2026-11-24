@@ -3388,6 +3388,7 @@ impl Runner for ReplayRunner {
                  with no recorded verdict); rigger replay never executes a gate command",
                 g.id
             ),
+            ..Default::default()
         })
     }
 }
@@ -4420,26 +4421,24 @@ fn reclaim_shared_build_cache(
     let guard_path =
         rigger::worktree::shared_build_cache_guard_path(&scratch_root.to_string_lossy());
     let guard = rigger::gate::open_build_cache_guard(Path::new(&guard_path))?;
-    // Fully-qualified, matching `gate::hold_shared_lock`'s own reasoning: std's
-    // more recently stabilized `File::try_lock`/`lock`/`unlock` share these exact names with
-    // `fs2::FileExt`, and a plain method call would silently prefer the std inherent method
-    // (leaving this crate's deliberate `fs2` choice unused) rather than genuinely exercising it.
-    if fs2::FileExt::try_lock_exclusive(&guard).is_err() {
-        return Ok(BuildCacheReclaim::Busy);
+    match guard.try_lock() {
+        Ok(()) => {}
+        Err(std::fs::TryLockError::WouldBlock) => return Ok(BuildCacheReclaim::Busy),
+        Err(std::fs::TryLockError::Error(e)) => return Err(e),
     }
     if !cache.exists() {
-        let _ = fs2::FileExt::unlock(&guard);
+        let _ = guard.unlock();
         return Ok(BuildCacheReclaim::Reclaimed(0));
     }
     let tombstone = build_cache_tombstone_path(cache);
     if let Err(e) = std::fs::rename(cache, &tombstone) {
-        let _ = fs2::FileExt::unlock(&guard);
+        let _ = guard.unlock();
         return Err(e);
     }
     // Release the instant the rename lands - the delete below never runs with the guard
     // held, so it can never block (or be blocked by) a build starting fresh at the now-absent
     // original path.
-    let _ = fs2::FileExt::unlock(&guard);
+    let _ = guard.unlock();
     let bytes = dir_size_bytes(&tombstone);
     reap_then_remove_dir(&tombstone, scratch_root);
     Ok(BuildCacheReclaim::Reclaimed(bytes))
@@ -8056,7 +8055,7 @@ mod tests {
             .truncate(false)
             .open(&guard_path)
             .expect("open guard");
-        fs2::FileExt::lock_shared(&held).expect("a build's own shared lock");
+        held.lock_shared().expect("a build's own shared lock");
 
         let outcome = reclaim_shared_build_cache(&cache, dir.path()).expect("no io error");
         assert!(
@@ -8091,7 +8090,7 @@ mod tests {
             .open(&guard_path)
             .expect("open guard for probe");
         assert!(
-            fs2::FileExt::try_lock_exclusive(&probe).is_ok(),
+            probe.try_lock().is_ok(),
             "the guard must be free the instant a successful reclaim returns"
         );
     }
