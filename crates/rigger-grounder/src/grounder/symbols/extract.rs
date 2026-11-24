@@ -4810,11 +4810,13 @@ fn product() {}
     /// AN EXCLUDED QUALIFIER STAGES NOTHING (spec 117, RUST REFERENCES): a call whose path's
     /// written qualifier is a prelude name, a standard-library import or alias, or whose path is
     /// rooted at the standard library, at such an import or at a primitive type, stages no
-    /// mention, a macro's token tree alike, while the macro's own call stages. An alias qualifier
-    /// is written as the name it imports, exclusion read on the alias as written first; a `Self`
-    /// or `self` whose self type is excluded and an enclosing generic parameter stage the call
-    /// unqualified; a qualifier no exclusion holds, an unaliased import, a path with no written
-    /// segment and a call with no path stage as before.
+    /// mention, a macro's token tree and a qualified-self path's trait alike, while the macro's
+    /// own call stages. An alias qualifier is written as the name it imports, exclusion read on
+    /// the alias as written first; a `Self` or `self` whose self type is excluded and an enclosing
+    /// generic parameter stage the call unqualified; a qualifier no exclusion holds (a
+    /// qualified-self path's trait over a primitive or standard-library self type among them), an
+    /// unaliased import, a module's `self` import, a path with no written segment and a call with
+    /// no path stage as before.
     #[test]
     fn an_excluded_qualifier_stages_nothing() {
         let cases = [
@@ -4920,6 +4922,47 @@ fn r(p: &str) {
                 "a path rooted at a primitive type stages no call",
                 "fn p(x: u8) {\n    u32::from(x);\n    char::from(x);\n}\n",
                 "1 def Function p to 4",
+            ),
+            (
+                "a qualified-self path is qualified by its trait, a primitive or standard-library \
+                 self type excluding nothing",
+                "\
+use std::io::Cursor;
+fn t(x: u8) {
+    <u32 as Local>::f(x);
+    <Cursor as Local>::f(x);
+}
+",
+                "\
+2 def Function t to 5
+3 ref call f t q Local::
+3 ref type Local t
+4 ref call f t q Local::
+4 ref type Local t",
+            ),
+            (
+                "a qualified-self path whose trait is excluded stages no call",
+                "fn d<T: Default>() {\n    <T as Default>::default();\n}\n",
+                "1 def Function d to 3",
+            ),
+            (
+                "a module's self import is written as the module, renamed or not",
+                "\
+use a::B::{self};
+use c::D::{self as M};
+fn g() {
+    B::f();
+    M::f();
+}
+",
+                "\
+1 ref use B -
+2 ref use D -
+3 def Function g to 6
+4 ref call f g q B::
+4 ref type B g
+5 ref call f g q D::
+5 ref type M g",
             ),
             (
                 "a Self and a self whose self type is excluded stage the call unqualified",
