@@ -84,6 +84,8 @@ mod criteria_delivery_periphery;
 mod criteria_extraction_periphery;
 mod critique_method_persona_periphery;
 mod csharp_definitions_are_nodes_periphery;
+#[cfg(feature = "symbols")]
+mod csharp_staged_mentions_land_periphery;
 mod dash_calls_render_viz;
 mod dash_calls_route_periphery;
 mod dash_cluster_detail_drill;
