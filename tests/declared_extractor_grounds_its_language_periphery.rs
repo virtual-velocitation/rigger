@@ -7,7 +7,9 @@
 //! stderr as `rigger: extractor <name>: <path>: <why>`, leaves the file its identity facts and
 //! closes the session, the next file starting a new one, and the file is asked again only when its
 //! content or the declaration changes; a graph read in a linked worktree asks the root's
-//! extractor for the worktree's text of a declared file it changed; and `rigger graph --show`
+//! extractor for the worktree's text of a declared file it changed, and a one-shot read - a
+//! lookup, a show, a neighbourhood - has closed and waited for every session it started by the
+//! time it exits; and `rigger graph --show`
 //! bounds a declared definition's body by the `end_line` the root's extractor answers for the
 //! shown tree's text, in a session of its own, a failed answer leaving a note and never the
 //! bundled grammar's bound; and a reference the answer qualifies by a path or a member is held as
@@ -23,7 +25,10 @@
 use std::path::Path;
 
 use crate::common;
-use common::cli::{past_label, run_rigger, source_repository, write_scaffold, BuiltGraph, SOURCE};
+use common::cli::{
+    past_label, run_rigger, run_rigger_to_files, source_repository, write_scaffold, BuiltGraph,
+    SOURCE,
+};
 use common::fixtures::{
     answer_defining, answer_defining_at, answer_with_refs, declared_identity, git_ok, git_out,
     request_for, root_dir_of, workflow_declaring_extractors, write_files, StubExtractor,
@@ -474,6 +479,65 @@ fn a_read_in_a_linked_worktree_asks_the_roots_extractor_for_the_text_it_changed(
         &[declared_facts(&root, "src/a.zig", "zig", &["kept"])],
         "the root's store after the read",
     );
+}
+
+/// Given a repository built under a declaration and a linked worktree of it, whose stub waits a
+/// second once its input ends, when a declared file is changed in the worktree and the operator
+/// looks a name up, shows a definition or reads a file's neighbourhood there, each read starts
+/// one session of the root's extractor, in the root, asks it the worktree's text alone, and has
+/// closed and waited for that session by the time it exits, saying nothing on stderr. Each read's
+/// stdout and stderr are files the stub does not hold open, so the read's end is rigger's own;
+/// each changes the file's text, so no read is answered from an earlier one's.
+#[test]
+fn a_one_shot_read_closes_and_waits_for_its_session_before_it_exits() {
+    let (_dir, root) = source_repository();
+    let kept = tempfile::tempdir().expect("tempdir");
+    let stub = StubExtractor::new(kept.path());
+    declare(&root, &stub, "zig", "[zig]");
+    commit(&root, &[("src/a.zig", "a\n")]);
+    stub.answers("src/a.zig", &answer_defining("src/a.zig", "kept"));
+    let (out, err, ok) = run_rigger(&root, &["graph", "build"]);
+    assert_eq!(
+        (ok, err.as_str()),
+        (true, ""),
+        "graph build succeeds saying nothing on stderr; stdout: {out}"
+    );
+    let trees = tempfile::tempdir().expect("tempdir");
+    let worktree = linked_worktree(
+        &root,
+        trees.path().canonicalize().expect("canonical").join("wt"),
+    );
+    stub.lingers(1);
+    for (leaf, read) in [
+        ("looked", ["graph", "--lookup", "looked"]),
+        ("shown", ["graph", "--show", "src/a.zig::shown"]),
+        ("near", ["graph", "--around", "src/a.zig"]),
+    ] {
+        let text = format!("{leaf}\n");
+        std::fs::write(worktree.join("src/a.zig"), &text).expect("change a declared file");
+        stub.answers("src/a.zig", &answer_defining("src/a.zig", leaf));
+        let (starts, requests, ends) = (stub.starts(), stub.requests(), stub.ends());
+        let (out, err, ok) = run_rigger_to_files(&worktree, &read);
+        assert_eq!(
+            (ok, err.as_str()),
+            (true, ""),
+            "{read:?} succeeds saying nothing on stderr; stdout: {out}"
+        );
+        assert_eq!(
+            (
+                stub.starts()[starts.len()..].to_vec(),
+                stub.requests()[requests.len()..].to_vec(),
+                stub.ends()[ends.len()..].to_vec()
+            ),
+            (
+                vec![root_dir_of(&root)],
+                vec![request_for("src/a.zig", &text)],
+                ended(1)
+            ),
+            "{read:?}: the read's one session started in the root, was asked the worktree's text \
+             and had ended when the read exited"
+        );
+    }
 }
 
 /// A Zig file holding `main` over its lines 2 to 4, between two other lines.
