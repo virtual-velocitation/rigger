@@ -112,6 +112,7 @@ const ALLOW_LIST: &[Allowed] = &[
             "{}: the session ended without handing over (no {AUTHOR_HANDO",
             "rigger: the run landed a definition change; re-pinned run {}",
             "rigger run: the run stopped, and its hold could not be recor",
+            "refusing to move the run branch: the checkout at {} holds {}",
         ],
     ),
     (

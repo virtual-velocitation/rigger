@@ -3062,6 +3062,15 @@ fn git_step<T, E: Into<worktree::StepError>>(step: Result<T, E>) -> Result<T, Er
     })
 }
 
+/// The branch the checkout at `repo` holds, `None` for a repo-less run or a detached HEAD; a
+/// HEAD git cannot read is a git step's halt ([`git_step`]).
+fn checkout_branch(repo: &str) -> Result<Option<String>, Error> {
+    if repo.is_empty() {
+        return Ok(None);
+    }
+    git_step(worktree::current_branch(repo))
+}
+
 /// The sentinel a CONTENT STEP'S REFUSAL embeds in its error ([`git_step`]): git refused a step
 /// the unit's own work stands in (a checkpoint commit, the merge of the run branch into its
 /// worktree), or rigger's own guard refused it before git ran. A unit's stage that ends on it,
@@ -3716,6 +3725,7 @@ fn drive(
         run_id,
         gate_tracker: Mutex::new(HashMap::new()),
         integrate_mu: Mutex::new(()),
+        run_branch: checkout_branch(&deps.repo)?,
         spawns: AtomicU32::new(base_spawns),
         base_spawns,
         recorded_spawn_ids,
@@ -4214,6 +4224,11 @@ struct RunCtx<'a> {
     run_id: String,
     gate_tracker: Mutex<HashMap<String, Gate>>,
     integrate_mu: Mutex<()>,
+    /// The branch the checkout held when this context was built ([`checkout_branch`]), which
+    /// every move of the run branch first checks it still holds
+    /// ([`RunCtx::moving_the_run_branch`]), so a landing never moves a branch the operator
+    /// switched to mid-run.
+    run_branch: Option<String>,
     /// The CUMULATIVE spawn count for the budget circuit-breaker (§4.4, §8), across
     /// every conductor process the run spans: `base_spawns` (the distinct spawn requests
     /// already recorded in the log when this process started) plus the NEW spawns this
@@ -4475,6 +4490,7 @@ impl<'a> RunCtx<'a> {
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
+            run_branch: checkout_branch(&deps.repo).unwrap_or_default(),
             spawns: AtomicU32::new(base_spawns),
             base_spawns,
             recorded_spawn_ids,
@@ -4574,11 +4590,27 @@ impl RunCtx<'_> {
     /// drift to a relaunch, while an edit from outside the run still is. Called with
     /// `integrate_mu` held, so no other move lands between the two hashes. A crash between the
     /// move and the re-pin leaves the move unpinned, and that relaunch halts on drift as before.
-    /// The move is a git step ([`git_step`]), classed as that step is.
+    /// The move is a git step ([`git_step`]), classed as that step is. A checkout that no longer
+    /// holds [`RunCtx::run_branch`] refuses the move before it runs, as a git step's halt.
     fn moving_the_run_branch<T, E: Into<worktree::StepError>>(
         &self,
         move_branch: impl FnOnce() -> Result<T, E>,
     ) -> Result<T, Error> {
+        let on = checkout_branch(&self.deps.repo)?;
+        if on != self.run_branch {
+            let named = |branch: &Option<String>| {
+                branch
+                    .as_ref()
+                    .map_or("a detached HEAD".to_string(), |b| format!("branch {b}"))
+            };
+            return git_step(Err::<T, _>(worktree::Error(format!(
+                "refusing to move the run branch: the checkout at {} holds {}, and this run began \
+                 on {}",
+                self.deps.repo,
+                named(&on),
+                named(&self.run_branch)
+            ))));
+        }
         let before = self.checkout_definition();
         let moved = git_step(move_branch())?;
         if let (Some(before), Some(after)) = (before, self.checkout_definition()) {
@@ -28424,6 +28456,7 @@ stage "implement" adjudicator "adj" failed
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
+            run_branch: None,
             spawns: AtomicU32::new(0),
             base_spawns: 0,
             recorded_spawn_ids: HashSet::new(),
@@ -37384,6 +37417,7 @@ stage "implement" adjudicator "adj" failed
             run_id: String::new(),
             gate_tracker: Mutex::new(HashMap::new()),
             integrate_mu: Mutex::new(()),
+            run_branch: None,
             spawns: AtomicU32::new(0),
             base_spawns: 0,
             recorded_spawn_ids: HashSet::new(),
@@ -49306,6 +49340,44 @@ stage "implement" adjudicator "adj" failed
         let merged = std::fs::read_to_string(file("m.rs")).unwrap();
         assert_eq!(merged.matches("MARK").count(), 1, "{merged}");
         assert_eq!(std::fs::read_to_string(file("notes.txt")).unwrap(), edit);
+    }
+
+    /// A move of the run branch runs only while the checkout holds the branch it held when the
+    /// run began: one the operator switched off it, to another branch or a detached HEAD, halts
+    /// the move as a git step before git runs it.
+    #[test]
+    fn a_move_refuses_when_the_checkout_left_the_run_branch() {
+        for (left, switch) in [
+            ("stays", &[][..]),
+            ("another branch", &["checkout", "-q", "-b", "elsewhere"][..]),
+            ("a detached HEAD", &["checkout", "-q", "--detach"][..]),
+        ] {
+            let repo = temp_git_project_with_commit();
+            let repo_path = repo.path().to_str().unwrap().to_string();
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let deps = Deps {
+                repo: repo_path.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let cfg = Config::default();
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            if !switch.is_empty() {
+                run_git(&repo_path, switch);
+            }
+            let ran = std::cell::Cell::new(false);
+            let moved = ctx.moving_the_run_branch(|| {
+                ran.set(true);
+                Ok::<_, worktree::Error>(())
+            });
+            assert_eq!(ran.get(), switch.is_empty(), "{left}");
+            if let Err(e) = moved {
+                assert!(
+                    !switch.is_empty() && e.0.contains(GIT_STEP_MARKER),
+                    "{left}: {e}"
+                );
+            }
+        }
     }
 
     #[test]
