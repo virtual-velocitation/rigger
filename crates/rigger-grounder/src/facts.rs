@@ -1042,8 +1042,8 @@ pub(crate) mod tests {
     /// or `::`, give the last as the leaf and the text before its separator as the qualifier, so
     /// a C# base type `Ns.IShape` yields the leaf `IShape`, `global::IShape` the leaf `IShape`
     /// under a path, `List<IShape>` the leaf `List`, and a JavaScript `new Ns.Kit.Box()` a call
-    /// of `Box`; a `@name` that is no such chain (`new arr[0]()`, `new a[0].b()`, `new (Box)()`)
-    /// stages no mention.
+    /// of `Box`, its inner `Ns.Kit` a field use of `Kit`; a `@name` that is no such chain
+    /// (`new arr[0]()`, `new a[0].b()`, `new (Box)()`) stages no mention.
     #[test]
     fn a_qualifier_capture_names_the_mention() {
         let mention = |name: &str, leaf: &str, kind: MentionKind, enclosing: Option<u32>| Mention {
@@ -1107,7 +1107,10 @@ pub(crate) mod tests {
                 "web/make.js",
                 "new Ns.Kit.Box();\n",
                 None,
-                vec![mention("Ns.Kit.Box", "Box", MentionKind::Call, None)],
+                vec![
+                    mention("Ns.Kit", "Kit", tagged("field"), None),
+                    mention("Ns.Kit.Box", "Box", MentionKind::Call, None),
+                ],
             ),
             ("web/make.js", "new arr[0]();\n", None, vec![]),
             ("web/make.js", "new a[0].b();\n", None, vec![]),
@@ -2025,11 +2028,11 @@ pub(crate) mod tests {
             // C#
             ("cs", "csharp-tags-v4", "a6e816e8572b143e"),
             // TypeScript
-            ("ts", "typescript-tags-v5", "ea4e6938dc08f1b3"),
+            ("ts", "typescript-tags-v6", "59a7286ef00e8791"),
             // TSX
-            ("tsx", "tsx-tags-v5", "11cb8ac6fae0ab22"),
+            ("tsx", "tsx-tags-v6", "f99cfdbc67a9dbe4"),
             // JavaScript
-            ("js", "javascript-tags-v5", "04c009a62eb98170"),
+            ("js", "javascript-tags-v6", "b0392ae368f5f278"),
             // Go
             ("go", "go-tags-v3", "4d23a95104b19556"),
             // Python

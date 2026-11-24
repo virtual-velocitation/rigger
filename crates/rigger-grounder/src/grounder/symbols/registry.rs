@@ -763,6 +763,11 @@ pub(crate) mod tests {
         (12, "run", Some("handler")),
     ];
 
+    /// The tagged references in the JS lines of every JS and TS definitions fixture, the field
+    /// use of the member `o.p` a `for .. of` assigns, as [`crate::symbol_index::tagged_refs`]
+    /// renders them.
+    const JS_LINES_TAGGED: &str = "1 field p host";
+
     /// The definitions the TS and TSX definitions fixtures hold in their TS lines, 16-23, as
     /// `(line, leaf, kind)`, sorted.
     const TS_LINES_DEFINITIONS: [(u32, &str, Kind); 27] = [
@@ -803,8 +808,8 @@ pub(crate) mod tests {
         (22, "setup", Some("A.B")),
     ];
 
-    /// The tagged references of the TS and TSX definitions fixtures, all in their TS lines, each
-    /// a type reference with its caller, as [`crate::symbol_index::tagged_refs`] renders them.
+    /// The tagged references in the TS lines of the TS and TSX definitions fixtures, each a type
+    /// reference with its caller, as [`crate::symbol_index::tagged_refs`] renders them.
     const TS_LINES_TAGGED: &str = "16 type Arg -\n\
                                    16 type Ret -\n\
                                    17 type PQ Shape2.p-q\n\
@@ -812,7 +817,8 @@ pub(crate) mod tests {
                                    17 type Ret Shape2\n\
                                    17 type Two Shape2.2\n\
                                    17 type V Shape2\n\
-                                   18 type FT Abs.fld";
+                                   18 type FT Abs.fld\n\
+                                   20 type Base Alias";
 
     /// Rust's declared non-definitions (spec 116): the named node types of the Rust grammar
     /// that THE RULE classifies no definition. An extern block, `foreign_mod_item`, carries no
@@ -1277,6 +1283,10 @@ function zero(): number { return 0; }
 function same(b: Box): Box { return b; }
 const made = new Box();
 const kit = new Ns.Box();
+class Lid extends Box implements Shape {
+    sides: Side[] = [];
+    size() { return Box.make(this.depth, Box.CAP); }
+}
 ",
         ),
         (
@@ -1290,6 +1300,10 @@ function blank() { return \"\"; }
 function keep(s: Label): Label { return s; }
 const made = new Label();
 const kit = new Ns.Label();
+class Tag extends Label implements Shape {
+    sides: Side[] = [];
+    size() { return Label.make(this.depth, Label.CAP); }
+}
 ",
         ),
         (
@@ -1304,6 +1318,9 @@ function calc(n) { return n; }
 function zero() { return 0; }
 const made = new Box();
 const kit = new Ns.Box();
+class Lid extends Box {
+    size() { return Box.make(this.depth, Box.CAP); }
+}
 ",
         ),
         (
@@ -1474,13 +1491,14 @@ def calc(n):
     /// so a change to what one language's extraction records fails that language's row alone
     /// until its generation is bumped and the row re-pinned, and a snapshot of the code store
     /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
-    /// generation table's generations joined in its order. The fixtures set every part a snapshot
+    /// generation table's generations joined in its order. The fixtures set an implementation
+    /// reference, the tagged reference kind a Python base class records, and every part a snapshot
     /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
-    /// kind a registered language records (a const read, a type reference and a use) and a
-    /// reference's qualifier included, so a change to any of them moves a digest.
+    /// kind a registered language records (a const read, a type reference, a use and a field use)
+    /// and a reference's qualifier included, so a change to any of them moves a digest.
     #[test]
     fn an_extraction_change_ships_with_a_grammar_tags_version_bump() {
-        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_TYPE, REF_KIND_USE};
+        use crate::contextgraph::{REF_KIND_CONST, REF_KIND_FIELD, REF_KIND_TYPE, REF_KIND_USE};
         use crate::grounder::symbols::model::{FileSymbols, GRAMMAR_TAGS_VERSION};
         // One row per line with a comment line between rows, so units re-pinning different
         // languages' rows merge clean.
@@ -1490,11 +1508,11 @@ def calc(n):
             // C#
             ("cs", "csharp-tags-v4", "e396669571843f87"),
             // TypeScript
-            ("ts", "typescript-tags-v5", "44b3d1b0bddd54ba"),
+            ("ts", "typescript-tags-v6", "46fdbe808db7ebdc"),
             // TSX
-            ("tsx", "tsx-tags-v5", "4b777e0b89844c8c"),
+            ("tsx", "tsx-tags-v6", "59d077a2bb782c98"),
             // JavaScript
-            ("js", "javascript-tags-v5", "57bcf3aad620d53b"),
+            ("js", "javascript-tags-v6", "080c51224e924c72"),
             // Go
             ("go", "go-tags-v3", "40f80b41e4a13f29"),
             // Python
@@ -1557,7 +1575,12 @@ def calc(n):
             ),
             ("a const read", tagged(REF_KIND_CONST)),
             ("a type reference", tagged(REF_KIND_TYPE)),
+            (
+                "an implementation",
+                tagged(crate::contextgraph::REF_KIND_IMPL),
+            ),
             ("a use", tagged(REF_KIND_USE)),
+            ("a field use", tagged(REF_KIND_FIELD)),
             ("a partial file", extracted.iter().any(|(_, fs)| fs.partial)),
             (
                 "a definition's doc span",
@@ -1820,7 +1843,8 @@ def calc(n):
         /// those in the constructor's body and in its local const the constructor's, a
         /// generator value's the declarator's and a static field initializer's the field's; the
         /// initializer of a pattern declarator is the file's, each binding spanning its own
-        /// identifier alone; and `require` is no reference.
+        /// identifier alone; and `require` is no reference. The member `o.p` a `for .. of`
+        /// assigns is a field use, its function's (spec 117, OTHER LANGUAGES).
         every_js_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "js",
@@ -1828,7 +1852,7 @@ def calc(n):
                 &JS_DEFINITION_TYPES,
                 &JS_LINES_DEFINITIONS,
                 &JS_LINES_REFERENCES,
-                "",
+                JS_LINES_TAGGED,
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered TS
         /// query: the JS lines yield what they yield under the JS query, a type assertion value
@@ -1847,7 +1871,9 @@ def calc(n):
         /// signature's types are its interface's, a declaration being no caller, so an ambient
         /// function's are the file's; an index signature's is its interface's; an enum member
         /// value's call is the member's; and a module's and a namespace's body calls are
-        /// theirs. Each type in an annotation is a type reference, no call (spec 117, CAPTURES).
+        /// theirs. Each type in an annotation is a type reference, no call (spec 117, CAPTURES),
+        /// as are the type a type assertion names and a type alias's value, and the JS lines'
+        /// `o.p` is a field use as under the JS query (spec 117, OTHER LANGUAGES).
         every_ts_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "ts",
@@ -1855,12 +1881,13 @@ def calc(n):
                 &TS_DEFINITION_TYPES,
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
-                TS_LINES_TAGGED,
+                &format!("{JS_LINES_TAGGED}\n15 type T el\n{TS_LINES_TAGGED}"),
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the TSX query `.tsx`
         /// registers: the TSX fixture, the TS one with a JSX element in place of the type
         /// assertion, yields the definitions and references the TS fixture yields under the TS
-        /// query, each row of TS's DEFINITION TYPES naming exactly one definition.
+        /// query but the type reference its type assertion makes, each row of TS's DEFINITION
+        /// TYPES naming exactly one definition.
         every_tsx_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "tsx",
@@ -1868,7 +1895,7 @@ def calc(n):
                 &TS_DEFINITION_TYPES,
                 &[&JS_LINES_DEFINITIONS[..], &TS_LINES_DEFINITIONS[..]].concat(),
                 &[&JS_LINES_REFERENCES[..], &TS_LINES_REFERENCES[..]].concat(),
-                TS_LINES_TAGGED,
+                &format!("{JS_LINES_TAGGED}\n{TS_LINES_TAGGED}"),
             );
         /// PYTHON DEFINITIONS ARE NODES (spec 116 criterion 10), under the registered Python
         /// query: the fixture yields every definition it holds at its own kind and leaf. A def
