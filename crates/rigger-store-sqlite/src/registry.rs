@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rigger_domain::hash::fnv1a_64;
 use serde::{Deserialize, Serialize};
 
 /// The registry's default staleness window (spec 50): an entry whose heartbeat has not been
@@ -162,21 +163,6 @@ impl Instance {
         self.driver_heartbeat_ms()
             .is_some_and(|hb| !is_stale(hb, now_ms, ttl_ms))
     }
-}
-
-/// FNV-1a offset basis / prime - the same 64-bit constants the rest of the crate hashes with.
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-/// FNV-1a over `bytes`: a fast, dependency-free hash for the registry file stem (a stable id, not
-/// a security digest).
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    let mut h = FNV_OFFSET;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    h
 }
 
 /// The machine-global state directory that roots the instance registry, honoring the platform
@@ -403,6 +389,14 @@ mod tests {
             heartbeat_ms: hb,
             writer: Writer::Driver,
         }
+    }
+
+    /// An instance's id is the FNV-1a/64 of its root and store identity, a value fixed across
+    /// toolchains, so a re-registration from any build lands on the same registry file.
+    #[test]
+    fn an_instance_id_is_a_fixed_digest_of_its_root_and_store() {
+        let inst = local("/work/proj", "/work/proj/.rigger/events.db", 0);
+        assert_eq!(inst.id(), "c448dccd60f2537d");
     }
 
     /// A store's log identity names its kind and its locator: the embedded log's path verbatim,
