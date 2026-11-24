@@ -27,11 +27,11 @@
 //!    as written reaches - the member qualifier's fallback to the one same-file `Box`, the
 //!    `namespace Ns` member over its same-file namesake, and `List`, the leaf before the type
 //!    arguments;
-//!  - and Rust writes the qualifier: `Store::open()`, `Self::new()` inside `impl<T> Store<T>` and
-//!    `self.file()` inside `trait CodeView` are stored as the calls `Store::open`, `Store::new` and
-//!    `CodeView.file`, while `self.inner.open()` and `paths::module_dir()` are stored bare, and
-//!    each lands where its name reaches - nowhere for a qualifier naming no type of the tree, and
-//!    the trait's own `file` over its same-file namesake.
+//!  - and Rust writes the qualifier: `Store::open()`, `a::Memo::<u8>::new()`, `Self::new()` inside
+//!    `impl<T> Store<T>` and `self.file()` inside `trait CodeView` are stored as the calls
+//!    `Store::open`, `Memo::new`, `Store::new` and `CodeView.file`, while `self.inner.open()` and
+//!    `paths::module_dir()` are stored bare, and each lands where its name reaches - nowhere for a
+//!    qualifier naming no type of the tree, and the trait's own `file` over its same-file namesake.
 
 #[cfg(feature = "symbols")]
 use crate::common;
@@ -600,7 +600,8 @@ fn stored_mentions(graph: &common::cli::BuiltGraph, file: &str) -> Option<Vec<(S
 }
 
 /// One Rust file `f.rs` per call shape RUST WRITES THE QUALIFIER names (spec 117, RUST
-/// REFERENCES), each `(what it shows, source, its stored mentions as (name as written, leaf),
+/// REFERENCES), and one module-prefixed turbofish, whose type the rule reads by its final segment,
+/// each `(what it shows, source, its stored mentions as (name as written, leaf),
 /// the calls it lands as (caller, callee), each by id path and `extracted`)`. An impl header
 /// stages a call to its self type, so `impl Store` calling `Store` is a row's landing too.
 #[cfg(feature = "symbols")]
@@ -613,11 +614,17 @@ type RustQualifiedCall = (
 
 /// The rows of [`graph_build_names_a_rust_call_by_the_qualifier_rust_writes`].
 #[cfg(feature = "symbols")]
-const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 5] = [
+const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 6] = [
     (
         "`Store::open()`, its uppercase segment naming no type of the tree, makes no link",
         "fn open() {}\nfn main() { Store::open(); }\n",
         &[("Store", "Store"), ("Store::open", "open")],
+        &[],
+    ),
+    (
+        "`a::Memo::<u8>::new()`, its turbofish type's final segment naming no type, makes no link",
+        "fn new() {}\nfn main() { a::Memo::<u8>::new(); }\n",
+        &[("Memo", "Memo"), ("Memo::new", "new")],
         &[],
     ),
     (
@@ -651,16 +658,17 @@ const RUST_QUALIFIED_CALLS: [RustQualifiedCall; 5] = [
 ];
 
 /// GIVEN a project whose one Rust file `f.rs` makes a call in a shape RUST WRITES THE QUALIFIER
-/// names ([`RUST_QUALIFIED_CALLS`]),
+/// names, or through a module-prefixed turbofish ([`RUST_QUALIFIED_CALLS`]),
 /// WHEN the operator runs `rigger graph build`,
 /// THEN the store holds the call's mention named as the Rust qualifier rule writes it -
-/// `Store::open` and `Store::new` as paths, `CodeView.file` as a member access, `open` and
-/// `module_dir` bare - beside the mention an uppercase path segment or an impl header's self type
-/// stages, and the graph's `REFERENCES` and `CALLS` edges are exactly where those names reach:
-/// nowhere for `Store::open`, its qualifier naming no type of the tree, where a bare `open` lands
-/// on the same-file `fn open`; the trait's own `file` for `CodeView.file`, where a bare `file`
-/// lands on a placeholder beside the same-file free `file`; and the one same-file candidate for
-/// each other name, which `paths::module_dir`, its qualifier naming no type, would not reach.
+/// `Store::open`, `Memo::new` and `Store::new` as paths, `CodeView.file` as a member access,
+/// `open` and `module_dir` bare - beside the mention an uppercase path segment or an impl header's
+/// self type stages, and the graph's `REFERENCES` and `CALLS` edges are exactly where those names
+/// reach: nowhere for `Store::open` and `Memo::new`, their qualifiers naming no type of the tree,
+/// where a bare `open` or `new` lands on its same-file fn; the trait's own `file` for
+/// `CodeView.file`, where a bare `file` lands on a placeholder beside the same-file free `file`;
+/// and the one same-file candidate for each other name, which `paths::module_dir`, its qualifier
+/// naming no type, would not reach.
 #[cfg(feature = "symbols")]
 #[test]
 fn graph_build_names_a_rust_call_by_the_qualifier_rust_writes() {
