@@ -29,11 +29,11 @@ type Case = (
 /// C# STAGES ITS ROW: each entry of a class's, struct's, record's or interface's base list is an
 /// `impl` mention, a record's primary-constructor base included, a comment inside the list and
 /// an enum's base none; an identifier or generic name in a property, return, parameter, local,
-/// array element, nullable, cast, `is`, `as`, `typeof`, generic argument or field type is a
-/// `type` mention, a generic name's type arguments each a mention too, a qualified type none, and
-/// so is one in a constant pattern under a `not`, an `and`, an `or` or parentheses, a switch case
-/// or arm and a property subpattern, while a qualified one there, a member access to the grammar,
-/// is a `field` mention; `new T()` stays a call; `x.f` not called, read or assigned,
+/// array element, nullable, cast, `is`, `as`, `typeof`, generic argument or field type, or in a
+/// constant pattern under a `not`, an `and`, an `or` or parentheses, a switch case or arm and a
+/// property subpattern, is a `type` mention, a generic name's type arguments each a mention too,
+/// while a qualified type is none and a qualified name in a constant pattern, a member access to
+/// the grammar, is a `field` mention; `new T()` stays a call; `x.f` not called, read or assigned,
 /// is a `field` mention, named `Square.SIDES` when a capitalised name qualifies it, while a
 /// called `x.g()` is a call; and the `///` block directly above a definition, a blank line and a
 /// bare `///` line inside it included, under at most two other comments, a plain line and a
