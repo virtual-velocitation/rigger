@@ -104,9 +104,9 @@ fn output_file(path: &Path) -> io::Result<File> {
     options.open(path)
 }
 
-/// Start `program` with `args` in `dir`, detached from this process ([`detach`]), with this
-/// process's environment but for `env`, each variable of which is set to its value or, given
-/// none, removed, null stdin and its stdout and stderr both written to the file at `output`,
+/// Start `program` with `args` in `dir`, detached from this process ([`detach`]), with the
+/// environment the process-spawn interface passes on ([`crate::subprocess::command`]) but for
+/// `env`, each variable of which is set to its value or, given none, removed, null stdin and its stdout and stderr both written to the file at `output`,
 /// emptied first: the child's pid. The child's handle is waited on by a thread of this process,
 /// so a long-lived starter never keeps an ended child as a zombie.
 pub fn start<S, K, V>(

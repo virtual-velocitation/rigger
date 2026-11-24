@@ -20,13 +20,13 @@ pub use rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR;
 /// The ONE credential rule every launch of the agent binary applies (unit spawns of both hosts,
 /// the hold probe's canary and the login reads `claude auth status` that the probe and `rigger
 /// validate` make): a non-empty [`RIGGER_AGENT_TOKEN_VAR`] becomes [`AGENT_TOKEN_VAR`] on `cmd`
-/// alone, and is not passed on itself. Unset or empty, the inherited environment rides through
+/// alone, which, built by the process-spawn interface ([`crate::subprocess::command`]), inherits
+/// no [`RIGGER_AGENT_TOKEN_VAR`] itself. Unset or empty, the inherited environment rides through
 /// untouched, an ambient [`AGENT_TOKEN_VAR`] included. The value is set on the command and held
 /// nowhere else: no field, no record, no message.
 fn apply_agent_credential(cmd: &mut std::process::Command) {
     if let Some(token) = agent_token() {
         cmd.env(AGENT_TOKEN_VAR, token);
-        cmd.env_remove(RIGGER_AGENT_TOKEN_VAR);
     }
 }
 

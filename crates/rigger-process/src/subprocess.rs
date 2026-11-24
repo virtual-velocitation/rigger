@@ -5,18 +5,21 @@
 //! seam means one place owning how a child is launched: the program a name resolves to on
 //! Windows ([`command`], through [`find_executable`]), the working-directory rule every caller
 //! shares ([`command_in`]), the host's shell given a project's command line whole
-//! ([`shell_command`]), the one open file a child inherits across its exec ([`inherit_on_exec`])
-//! and the `git -C <dir>` shape nearly every git call takes, its repository found from `dir`
-//! alone ([`git_in`]). Beyond those rules it adds no policy of its own: the caller still picks
-//! the arguments, the environment, the stdio and how the child is waited on, and a child is only
-//! ever ended through its own spawning handle.
+//! ([`shell_command`]), the one open file a child inherits across its exec ([`inherit_on_exec`]),
+//! the `git -C <dir>` shape nearly every git call takes, its repository found from `dir` alone
+//! ([`git_in`]), and the agents' login token no child inherits ([`command`]). Beyond those rules
+//! it adds no policy of its own: the caller still picks the arguments, the rest of the
+//! environment, the stdio and how the child is waited on, and a child is only ever ended through
+//! its own spawning handle.
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// A fresh command for `program`, inheriting this process's environment, working directory
-/// and stdio exactly as [`Command::new`] does. On Windows a program name holding no path
+/// and stdio exactly as [`Command::new`] does, but for the agents' login token
+/// ([`RIGGER_AGENT_TOKEN_VAR`](rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR)): no child inherits
+/// it, so the one spawn that needs it sets it itself. On Windows a program name holding no path
 /// separator is spawned at the path [`find_executable`] resolves it to over
 /// [`SearchPath::ambient`], and as given when that resolves nothing; elsewhere `program` goes
 /// to [`Command::new`] unchanged.
@@ -29,10 +32,12 @@ pub fn command(program: impl AsRef<OsStr>) -> Command {
     } else {
         None
     };
-    match resolved {
+    let mut cmd = match resolved {
         Some(path) => Command::new(path),
         None => Command::new(program),
-    }
+    };
+    cmd.env_remove(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR);
+    cmd
 }
 
 /// The variable the directories a program name is looked up in are read from.
@@ -167,14 +172,10 @@ std::cfg_select! {
 
 /// The host's shell given the command line `run` whole, as a project writes one (a declared
 /// extractor's `run`, say), running in `dir`: `cmd` and [`cmd_argument`] on Windows, `sh -c
-/// <run>` elsewhere. The agents' login token
-/// ([`RIGGER_AGENT_TOKEN_VAR`](rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR)) is not passed on:
-/// a project's command is code rigger did not write. The caller adds the stdio and the rest of
-/// the environment.
+/// <run>` elsewhere. The caller adds the stdio and the rest of the environment.
 pub fn shell_command(run: &str, dir: &Path) -> Command {
     let mut cmd = host_shell(run);
     cmd.current_dir(dir);
-    cmd.env_remove(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR);
     cmd
 }
 
@@ -223,10 +224,7 @@ const GIT_REPOSITORY_VARIABLES: [&str; 6] = [
 /// with none of [`GIT_REPOSITORY_VARIABLES`] passed on, so the repository git finds from `dir` is
 /// the one it operates on whatever repository this process's environment names (the convention
 /// git documents for a hook that operates on another repository). A caller may still set one of
-/// them on the command it is handed. The agents' login token
-/// ([`RIGGER_AGENT_TOKEN_VAR`](rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR)) is not passed on
-/// either: git and every hook the repository runs need no login, and a hook is code rigger did
-/// not write. Git speaks in the C locale (`LC_ALL=C`), so the English refusals a caller matches
+/// them on the command it is handed. Git speaks in the C locale (`LC_ALL=C`), so the English refusals a caller matches
 /// (a merge refused over local changes, a revert with nothing to commit) read the same on every
 /// host whatever language its user chose; a hook git runs inherits that locale.
 ///
@@ -247,7 +245,6 @@ pub fn git_in(dir: impl AsRef<OsStr>) -> std::io::Result<Command> {
     for variable in GIT_REPOSITORY_VARIABLES {
         cmd.env_remove(variable);
     }
-    cmd.env_remove(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR);
     cmd.env("LC_ALL", "C");
     Ok(cmd)
 }
@@ -293,6 +290,26 @@ mod tests {
             .collect();
         expected.sort();
         assert_eq!(envs, expected);
+    }
+
+    /// No child this interface builds is handed the agents' login token: every constructor, the
+    /// base one included, removes it from the child's environment, so a spawn passes it on only
+    /// by setting it again itself.
+    #[test]
+    fn no_constructor_passes_the_agents_login_token_on() {
+        let removed = (
+            OsStr::new(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR),
+            None,
+        );
+        let rows = [
+            ("command", command("x")),
+            ("command_in", command_in("x", "/d")),
+            ("shell_command", shell_command("true", Path::new("/d"))),
+            ("git_in", git_in("/repo").unwrap()),
+        ];
+        for (name, cmd) in rows {
+            assert!(cmd.get_envs().any(|env| env == removed), "{name}");
+        }
     }
 
     /// An empty repository path builds no git command: git would read it as this process's own
