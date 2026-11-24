@@ -155,21 +155,28 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 ///
 /// None is a type in:
 ///
-/// - a pattern keyword, `nameof`, `not`, `and` or `or`, wherever the grammar reads one as a name:
-///   `nameof` in any of those positions, `case nameof(Foo):`, `case not nameof(Foo):`, a switch
-///   arm's `nameof(Foo)`, `x is { Name: nameof(Foo) }`, a list's `[nameof(Foo)]`, a declaring
-///   `nameof(var a)`, a declaration pattern's `nameof x` and a left operand's `nameof(Foo) && ok`
-///   included, while a member access in its argument is the field it names, as in any
-///   expression; a positional pattern's argument `not null`, `and x` or `or x`, which the grammar
-///   reads as a declaration typed `not`, `and` or `or`; and `not` opening a statement the grammar
-///   recovers as a local's declaration, `case C: not null:`;
-/// - a predefined type; an identifier in an arithmetic, a shift or a relational expression, as
-///   `case Cf + 1:`, `x is Foo << 1` and `x is Foo < ok` are, as the right operand of a looser
-///   operator, `Bar` of `x is Foo == Bar`, or in a prefix expression; a relational pattern's
-///   operand, a qualified one the field it names; a `var` pattern and a discard; a property
-///   subpattern's name, an extended one the field it names; a tuple pattern's elements; and a
-///   list after `is` whose slice holds a pattern or precedes one, which the grammar fails to
-///   parse;
+/// - a pattern keyword, `nameof`, `not`, `and` or `or`, as the whole name of a `type` field, a
+///   local's or a field's declared type, a constant pattern, a left operand, a switch section or
+///   the right of an `is` above, the names a pattern can reach: `nameof` in any of those
+///   positions, `case nameof(Foo):`, `case not nameof(Foo):`, a switch arm's `nameof(Foo)`,
+///   `x is { Name: nameof(Foo) }`, a list's `[nameof(Foo)]`, a declaring `nameof(var a)`, a
+///   declaration pattern's `nameof x` and a left operand's `nameof(Foo) && ok` included, while a
+///   member access in its argument is the field it names, as in any expression; a positional
+///   pattern's argument `not null`, `and x` or `or x`, which the grammar reads as a declaration
+///   typed `not`, `and` or `or`; and `not` opening a statement the grammar recovers as a local's
+///   declaration, `case C: not null:`; while a generic's own name, `nameof` of `x is nameof<A>`,
+///   and a type argument, `not` of `x is Gen<not> && ok` and `nameof` of the split
+///   `x is Gen<nameof> & ok ? 1 : 0`, stay the types they name whatever their spelling, since no
+///   pattern keyword stands there;
+/// - a predefined type; an identifier that is itself an operand of an arithmetic, a shift or a
+///   relational expression, as `case Cf + 1:`, `x is Foo << 1` and `x is Foo < ok` are, the right
+///   operand of a looser operator, `Bar` of `x is Foo == Bar`, or a prefix expression's operand,
+///   `case -Ch:`, while the leftmost operand of a looser chain that, in parentheses, is the first
+///   operand of such an expression is the left operand above, `A` of `case (A | B) + 1:` and of
+///   `case !(A && ok):`; a relational pattern's operand, a qualified one the field it names; a
+///   `var` pattern and a discard; a property subpattern's name, an extended one the field it
+///   names; a tuple pattern's elements; and a list after `is` whose slice holds a pattern or
+///   precedes one, which the grammar fails to parse;
 /// - a left operand past the bound above; and a generic name of two or more type arguments the
 ///   grammar splits at its commas into elements of a list, an argument list, an index, an
 ///   initializer, a collection, a `for` update, an interpolation or parentheses it then reads as
@@ -224,7 +231,7 @@ fn csharp_reference_tags() -> String {
 {chains}
 ((switch_section [{CSHARP_CALLED} {list}]) @reference.type {guard})
 ((is_expression right: [(identifier) (generic_name)] @name) @reference.type {guard})
-((binary_expression
+(binary_expression
   left: (binary_expression
     left: [(is_expression) (is_pattern_expression)]
     operator: "<"
@@ -232,7 +239,6 @@ fn csharp_reference_tags() -> String {
   operator: ">"
   right: {closing})
   @reference.type
-  {guard})
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
 ((invocation_expression
   function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
