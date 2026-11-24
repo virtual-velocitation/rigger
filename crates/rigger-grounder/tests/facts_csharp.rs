@@ -85,7 +85,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 253] = [
+    let cases: [Case; 254] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -406,6 +406,12 @@ fn csharp_stages_its_row() {
             "an identifier in an arithmetic expression in a switch case, a value",
             in_m!("switch (p) { case Cf + 1: break; }"),
             vec![],
+            k_m(),
+        ),
+        (
+            "an identifier in parentheses before `+ 1` in a switch case, a cast's type to the grammar",
+            in_m!("switch (p) { case (Cf) + 1: break; }"),
+            vec![ty("Cf")],
             k_m(),
         ),
         (
