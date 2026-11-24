@@ -4226,6 +4226,13 @@ pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
     Ok(!read.records.is_empty() || !read.warning.is_empty())
 }
 
+/// Whether `dir`'s tracked files hold changes no commit records, untracked files aside; a
+/// warning git gives beside its records reads as dirty, as [`path_is_dirty`]'s does.
+pub fn tracked_is_dirty(dir: &str) -> Result<bool, Error> {
+    let read = status_read(dir, &["--untracked-files=no"], &[])?;
+    Ok(!read.records.is_empty() || !read.warning.is_empty())
+}
+
 /// The paths [`status_read`] reports changed in `dir`'s tree, untracked files included, in git's
 /// order ([`parse_status_z`]): git's records alone, never a warning it gave beside them.
 pub fn uncommitted_paths(dir: &str) -> Result<Vec<String>, Error> {

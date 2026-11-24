@@ -1158,8 +1158,45 @@ pub struct GateVerbRun {
     pub digest: String,
 }
 
-/// The reason a gate run that changed the tree it gated is not a pass ([`gate_once`]).
+/// The reason a gate run that changed the tree it gated is not a pass ([`worktree_changed`]).
 const WORKTREE_CHANGED: &str = "the worktree changed while the gate ran";
+
+/// Which tree changes a post-run check ([`worktree_changed`]) refuses.
+#[derive(Clone, Copy)]
+enum TreeWatch {
+    /// Any change, a moved HEAD or any uncommitted path: `rigger gate <id>`'s verdict addresses
+    /// exactly the commit it ran on ([`gate_once`]).
+    Whole,
+    /// Edits left in tracked files at the commit the run began on. The drive's own paths own the
+    /// other changes: a gate's commit (a regeneration), untracked residue (the review's residue
+    /// check) and a deleted worktree (its restore) ([`RunCtx::run_gates_at`]).
+    TrackedAtCommit,
+}
+
+/// Why the run of gate `gate_id` that began on `dir`'s clean `commit` addresses no commit, when
+/// it changed the tree in a way `watch` refuses: [`WORKTREE_CHANGED`], the changed paths
+/// ([`named_paths`]) and how to gate it again; `None` otherwise. The one post-run check the
+/// driver's gates ([`RunCtx::run_gates_at`]) and `rigger gate <id>` ([`gate_once`]) take.
+fn worktree_changed(dir: &str, commit: &str, gate_id: &str, watch: TreeWatch) -> Option<String> {
+    let at_commit = crate::worktree::head_sha_of(dir) == commit;
+    let changed = match watch {
+        TreeWatch::Whole => !at_commit || tree_is_dirty(dir),
+        TreeWatch::TrackedAtCommit => {
+            at_commit && crate::worktree::tracked_is_dirty(dir).unwrap_or(true)
+        }
+    };
+    if !changed {
+        return None;
+    }
+    let changed = crate::worktree::paths_changed_since(dir, commit)
+        .map(|paths| named_paths(&paths))
+        .unwrap_or_else(|e| format!("the changed paths are unreadable ({e})"));
+    Some(format!(
+        "{WORKTREE_CHANGED}, so its result addresses no commit; changed: {changed}. To \
+         gate it: commit changes you made; add files the gate writes to .gitignore; then \
+         run `rigger gate {gate_id}` again"
+    ))
+}
 
 /// How many changed paths a [`WORKTREE_CHANGED`] refusal names before it counts the rest.
 const NAMED_PATHS: usize = 10;
@@ -1229,20 +1266,13 @@ fn gate_once(
             .map_err(|fault| without_halt_markers(probe_fault_halt(fault)))?;
     // A result addresses the commit only if the gate left it as it found it: otherwise no one can
     // say which tree it describes, so it fails closed.
-    if crate::worktree::head_sha_of(dir) != commit || tree_is_dirty(dir) {
-        let changed = crate::worktree::paths_changed_since(dir, &commit)
-            .map(|paths| named_paths(&paths))
-            .unwrap_or_else(|e| format!("the changed paths are unreadable ({e})"));
+    if let Some(refusal) = worktree_changed(dir, &commit, gate_id, TreeWatch::Whole) {
         return Ok(GateVerbRun {
             gate: gate_id.to_string(),
             command: gc.run.clone(),
             pass: false,
             flaky: false,
-            evidence: format!(
-                "{WORKTREE_CHANGED}, so its result addresses no commit; changed: {changed}. To \
-                 gate it: commit changes you made; add files the gate writes to .gitignore; then \
-                 run `rigger gate {gate_id}` again\n{evidence}"
-            ),
+            evidence: format!("{refusal}\n{evidence}"),
             commit,
             digest: String::new(),
         });
@@ -10966,6 +10996,12 @@ impl RunCtx<'_> {
             postmerge_unit_dir.as_deref(),
             &self.run_base_env(),
         )?;
+        // The commit the battery's results address, read once before any gate runs: the
+        // resolved HEAD of a tree whose tracked files are clean, else none. A gate run that
+        // edits those files records no pass ([`worktree_changed`]).
+        let clean_commit = (!inputs.commit_sha.is_empty()
+            && !crate::worktree::tracked_is_dirty(dir).unwrap_or(true))
+        .then_some(inputs.commit_sha.as_str());
         for gid in &st.gates {
             let gc = self
                 .cfg
@@ -11109,6 +11145,21 @@ impl RunCtx<'_> {
             let (pass, flaky, ratchet, evidence) =
                 run_gate_with_taxonomy(self.deps.gates, &self.taxonomy, &g, dir, &inputs)
                     .map_err(probe_fault_halt)?;
+            // A run that edited the tracked tree addresses no commit: a non-pass with no digest,
+            // so it answers no later gate, and no ratchet move, since it neither proves nor
+            // disproves the gate.
+            let (pass, flaky, ratchet, evidence, digest) = match clean_commit
+                .and_then(|commit| worktree_changed(dir, commit, gid, TreeWatch::TrackedAtCommit))
+            {
+                Some(refusal) => (
+                    false,
+                    false,
+                    GateRatchet::FailNoDemote,
+                    format!("{refusal}\n{evidence}"),
+                    String::new(),
+                ),
+                None => (pass, flaky, ratchet, evidence, digest),
+            };
             // The compact gate evidence is threaded into the GateVerdict event payload
             // (item 3): a real run otherwise discarded it, so neither the ledger nor the
             // driver ever saw WHY a gate passed or failed. `flaky` rides as the
@@ -45121,11 +45172,15 @@ stage "implement" adjudicator "adj" failed
         Writes(usize),
         /// Writes one file, `out-0.rs`, and commits it.
         Commits,
+        /// Overwrites the tracked file `tracked.rs` and leaves the edit uncommitted.
+        EditsTracked,
     }
 
-    /// A gate runner that passes, doing `change` to the tree it gates while it runs.
+    /// A gate runner that passes, doing `change` to the tree it gates while it runs, and counts
+    /// its runs.
     struct TreeChangingRunner {
         change: TreeChange,
+        runs: AtomicU32,
     }
     impl gate::Runner for TreeChangingRunner {
         fn run(
@@ -45140,10 +45195,16 @@ stage "implement" adjudicator "adj" failed
             _build_env: &gate::BuildEnv,
             _budget: &BuildBudget,
         ) -> Result<gate::GateResult, gate::ProbeFault> {
+            self.runs.fetch_add(1, Ordering::SeqCst);
             let written = match self.change {
                 TreeChange::Nothing => 0,
                 TreeChange::Writes(n) => n,
                 TreeChange::Commits => 1,
+                TreeChange::EditsTracked => {
+                    std::fs::write(Path::new(dir).join("tracked.rs"), "edited by the gate\n")
+                        .unwrap();
+                    0
+                }
             };
             for n in 0..written {
                 std::fs::write(Path::new(dir).join(format!("out-{n}.rs")), "x\n").unwrap();
@@ -45187,7 +45248,10 @@ stage "implement" adjudicator "adj" failed
             cfg.workflow.gates.insert("g".into(), gate_def("true"));
             let store = Store::open(":memory:").unwrap();
             let driver = Stub::new();
-            let runner = TreeChangingRunner { change };
+            let runner = TreeChangingRunner {
+                change,
+                runs: AtomicU32::new(0),
+            };
             let deps = Deps {
                 gates: &runner,
                 run_branch: branch_of(&dir),
@@ -45243,6 +45307,94 @@ stage "implement" adjudicator "adj" failed
                 verdict.meta.contains_key(META_INPUT_DIGEST),
                 passes,
                 "{change:?}: only an unchanged tree is addressed"
+            );
+        }
+    }
+
+    /// THE DRIVER'S PASS ADDRESSES ONLY THE COMMIT IT GATED: GIVEN a clean committed worktree and
+    /// a gate that exits 0, WHEN the driver's inline battery runs it at two attempts, the tree
+    /// restored between them, THEN a gate that left the tracked tree as it found it records a pass
+    /// with a digest that answers the second attempt unrun, AND a gate that edited a tracked file
+    /// records a non-pass with no digest naming the file, demotes nothing, and runs again at the
+    /// second attempt rather than answering it from a cached green, AND an untracked residue or a
+    /// gate's own commit, which the drive's own paths own, keeps its pass.
+    #[test]
+    fn a_gate_that_changes_the_tree_while_the_driver_runs_it_records_a_non_pass_and_no_green() {
+        let rows: [(TreeChange, bool, u32); 4] = [
+            (TreeChange::Nothing, true, 1),
+            (TreeChange::Writes(1), true, 1),
+            (TreeChange::Commits, true, 2),
+            (TreeChange::EditsTracked, false, 2),
+        ];
+        for (change, passes, runs) in rows {
+            let repo = temp_git_project_with_commit();
+            let dir = repo.path().to_str().unwrap().to_string();
+            std::fs::write(repo.path().join("tracked.rs"), "committed\n").unwrap();
+            run_git(&dir, &["add", "tracked.rs"]);
+            run_git(&dir, &["commit", "-q", "-m", "a tracked file"]);
+            let mut cfg = Config::default();
+            cfg.workflow.gates.insert("g".into(), gate_def("true"));
+            let st = Stage {
+                name: "u".into(),
+                gates: vec!["g".into()],
+                // A graduated gate, so a demotion would be visible.
+                autonomy: "silent".into(),
+                ..Default::default()
+            };
+            let store = Store::open(":memory:").unwrap();
+            let driver = Stub::new();
+            let runner = TreeChangingRunner {
+                change,
+                runs: AtomicU32::new(0),
+            };
+            let deps = Deps {
+                gates: &runner,
+                repo: dir.clone(),
+                ..stub_deps(&store, &driver, Vec::new())
+            };
+            let ctx = RunCtx::for_test(&cfg, &deps);
+            let mut outcomes = Vec::new();
+            for attempt in [1, 2] {
+                let outcome = ctx
+                    .run_gates(&st, &dir, attempt, GateSelection::Exhaustive)
+                    .unwrap();
+                outcomes.push(outcome.pass);
+                run_git(&dir, &["checkout", "--", "tracked.rs"]);
+            }
+            assert_eq!(
+                outcomes,
+                [passes, passes],
+                "{change:?}: each battery's outcome"
+            );
+            assert_eq!(
+                runner.runs.load(Ordering::SeqCst),
+                runs,
+                "{change:?}: the gate's runs across the two batteries"
+            );
+            let events = store.read_stream(STREAM, 0, Direction::Forward).unwrap();
+            let verdicts: Vec<&Event> = events
+                .iter()
+                .filter(|e| e.type_ == contextgraph::TYPE_GATE_VERDICT && !is_settle_record(e))
+                .collect();
+            assert_eq!(verdicts.len(), 2, "{change:?}: one verdict per battery");
+            for verdict in &verdicts {
+                let data: serde_json::Value = serde_json::from_slice(&verdict.data).unwrap();
+                let evidence = data["evidence"].as_str().unwrap_or_default();
+                assert_eq!(
+                    (data["pass"].as_bool(), evidence.contains(WORKTREE_CHANGED)),
+                    (Some(passes), !passes),
+                    "{change:?}: the recorded verdict: {evidence}"
+                );
+                assert!(passes || evidence.contains("tracked.rs"), "{evidence}");
+            }
+            assert_eq!(
+                verdicts[0].meta.contains_key(META_INPUT_DIGEST),
+                passes,
+                "{change:?}: only an unchanged tree is addressed"
+            );
+            assert!(
+                !events.iter().any(|e| e.type_ == TYPE_GATE_DEMOTED),
+                "{change:?}: a result addressing no commit moves no ratchet"
             );
         }
     }
