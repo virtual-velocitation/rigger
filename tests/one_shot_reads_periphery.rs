@@ -552,7 +552,7 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
             .unwrap();
     });
 
-    let hooked = rigger_ok(
+    let (_, hooked, ok) = run_rigger(
         root,
         &[
             "hook",
@@ -564,7 +564,7 @@ fn the_worker_couriers_answer_from_the_run_without_materializing_a_derived_or_su
         ],
     );
     assert!(
-        hooked.starts_with("stop-failure recorded for u/implementer#0"),
+        ok && hooked.starts_with("stop-failure recorded for u/implementer#0"),
         "{hooked}"
     );
     let recorded = rigger_ok(root, &["result", spawn, "done"]);

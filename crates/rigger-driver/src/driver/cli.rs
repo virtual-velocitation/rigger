@@ -13,6 +13,7 @@ use std::process::{Output, Stdio};
 use serde_json::Value;
 
 use crate::agent::{AgentDriver, AgentResult, Error, SpawnOpts, TYPE_UNIT_PROPOSED};
+use crate::claude_auth::SessionHost;
 use crate::config::AgentDef;
 use crate::contextgraph::{TYPE_DECISION_MADE, TYPE_REVIEW_FINDING};
 use crate::driver::replay::{blocking_spawn_scratch_dir, reclaim_finished_spawn_scratch};
@@ -25,8 +26,8 @@ use rigger_domain::prompt_surface::fill;
 
 /// Driver spawns agents via the `claude` CLI.
 pub struct Driver {
-    /// The `claude` binary to run. Empty resolves to `"claude"` on `$PATH`.
-    pub bin: String,
+    /// The session host this driver starts every session from ([`SessionHost`]).
+    pub host: SessionHost,
     /// The `rigger` binary each spawn runs as its MCP server (`<rigger_bin> mcp`). Empty
     /// resolves to `"rigger"` on `$PATH`, the same rule the headless host's own
     /// `rigger_bin` follows.
@@ -36,7 +37,7 @@ pub struct Driver {
 impl Default for Driver {
     fn default() -> Self {
         Driver {
-            bin: crate::claude_auth::DEFAULT_BIN.to_string(),
+            host: SessionHost::default(),
             rigger_bin: "rigger".to_string(),
         }
     }
@@ -67,9 +68,7 @@ impl Driver {
         session: &LaunchSession,
     ) -> Result<Output, Error> {
         let persona = system_prompt_file(&opts.system_prompt, blocking_spawn_scratch_dir(opts))?;
-        let bin = bin_or_path_default(&self.bin, crate::claude_auth::DEFAULT_BIN);
-        let mut cmd = crate::subprocess::command_in(bin, &opts.dir);
-        crate::claude_auth::apply_agent_credential(&mut cmd);
+        let mut cmd = self.host.command_in(&opts.dir);
         cmd.args(build_args(
             agent,
             &persona,
@@ -448,7 +447,7 @@ thinking out loud, not json\n\
             .into_owned();
 
         let driver = Driver {
-            bin,
+            host: bin.into(),
             ..Driver::default()
         };
         let calls = Mutex::new(Vec::new());
@@ -506,7 +505,7 @@ thinking out loud, not json\n\
             .to_string_lossy()
             .into_owned();
         let driver = Driver {
-            bin,
+            host: bin.into(),
             ..Driver::default()
         };
         let emit = |_: &str, _: Value| Ok(());
@@ -586,7 +585,7 @@ thinking out loud, not json\n\
             .to_string_lossy()
             .into_owned();
         let driver = Driver {
-            bin,
+            host: bin.into(),
             ..Driver::default()
         };
         let emit = |_: &str, _: Value| Ok(());
@@ -618,7 +617,7 @@ thinking out loud, not json\n\
         const MARKER: &str = "marker-secret-7f3a";
         let _env = crate::claude_auth::TokenEnv::set(None, Some(MARKER));
         let driver = Driver {
-            bin: crate::test_support::fixture_script("claude-code-token-presence-agent.sh"),
+            host: crate::test_support::fixture_script("claude-code-token-presence-agent.sh").into(),
             ..Driver::default()
         };
         let emitted = std::cell::RefCell::new(String::new());
@@ -656,7 +655,7 @@ thinking out loud, not json\n\
             .to_string_lossy()
             .into_owned();
         let driver = Driver {
-            bin,
+            host: bin.into(),
             ..Driver::default()
         };
         let emit = |_: &str, _: Value| Ok(());
@@ -709,7 +708,7 @@ thinking out loud, not json\n\
             .to_string_lossy()
             .into_owned();
         let driver = Driver {
-            bin,
+            host: bin.into(),
             ..Driver::default()
         };
         let emit = |_: &str, _: Value| Ok(());
@@ -755,10 +754,11 @@ thinking out loud, not json\n\
             std::fs::write(d.join("target/build.log"), "built").unwrap();
         }
         let driver = Driver {
-            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            host: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../tests/fixtures/fake-agent.sh")
                 .to_string_lossy()
-                .into_owned(),
+                .into_owned()
+                .into(),
             ..Driver::default()
         };
 
@@ -811,10 +811,11 @@ thinking out loud, not json\n\
             ..SpawnOpts::new(test_spawn_host())
         };
         let driver = Driver {
-            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            host: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(PROMPT_CAPTURE_AGENT)
                 .to_string_lossy()
-                .into_owned(),
+                .into_owned()
+                .into(),
             ..Driver::default()
         };
 
@@ -864,10 +865,11 @@ thinking out loud, not json\n\
             ..SpawnOpts::new(test_spawn_host())
         };
         let driver = Driver {
-            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            host: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(PROMPT_CAPTURE_AGENT)
                 .to_string_lossy()
-                .into_owned(),
+                .into_owned()
+                .into(),
             ..Driver::default()
         };
 
@@ -1306,10 +1308,11 @@ thinking out loud, not json\n\
     #[cfg(unix)]
     fn spawn_session_agent(prompt: &str, opts: SpawnOpts, known: &str) -> AgentResult {
         let driver = Driver {
-            bin: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            host: std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join(SESSION_AGENT)
                 .to_string_lossy()
-                .into_owned(),
+                .into_owned()
+                .into(),
             ..Driver::default()
         };
         let opts = SpawnOpts {

@@ -48,6 +48,12 @@ path = "src/main.rs"
 name = "all"
 path = "tests/all.rs"
 
+# A suite that proves an OS's own behaviour: its own executable, so a run on that OS builds and
+# runs it alone, never the whole of `all`.
+[[test]]
+name = "bare_rigger_hooks_resolve_periphery"
+path = "tests/bare_rigger_hooks_resolve_periphery.rs"
+
 [[test]]
 name = "boundary_audit"
 path = "tests/boundary_audit.rs"

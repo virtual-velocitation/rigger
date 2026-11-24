@@ -242,9 +242,10 @@ pub enum TreeDuty {
 
 /// Whether `path`, relative to the tree's root, lies in the producer's `output`
 /// ([`SpawnHost::producer_output`]), a directory relative to the same root named with or without
-/// its closing `/`: the scope decision the conductor refuses a producer's commits on, and the one
-/// a producer's `Stop` hook holds its session on: only uncommitted work in the output, the only
-/// work that lands, holds it.
+/// its closing `/`: the scope decision the conductor refuses a producer's commits on. A
+/// producer's `Stop` hook holds its session on the same scope, read as git's pathspec for that
+/// directory, since git's status names a directory it tracks nothing in by that directory alone:
+/// only uncommitted work in the output, the only work that lands, holds it.
 pub fn in_producer_output(path: &str, output: &str) -> bool {
     let dir = output.trim_end_matches('/');
     path.strip_prefix(dir)
