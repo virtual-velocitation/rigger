@@ -29,6 +29,7 @@
 #   clean-exit       after init a holder starts, then the session prints its result and exits
 self=$(readlink "$0") || self=$0
 . "$(dirname "$self")/launch-args.sh"
+answer_version "$@"
 sid=$(launched_session 99999999-9999-4999-8999-999999999999 "$@")
 . "$(dirname "$self")/witness.sh"
 up
