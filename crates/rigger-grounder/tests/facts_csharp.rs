@@ -42,8 +42,9 @@ type Case = (
 /// `nameof` in any pattern position, a switch case, with `when`, `or` or `and not` and under
 /// `not`, a switch arm, a property subpattern, a list, parentheses and a declaring
 /// `nameof(var x)` included, is none, while a member access in its argument is the `field`
-/// mention it names, as in an expression, and a generic named `nameof` and a type argument
-/// spelled as a pattern keyword are the `type` mentions they name;
+/// mention it names, as in an expression, a generic named for a pattern keyword is none too, its
+/// type arguments each a mention, and a type argument spelled as a pattern keyword and a name
+/// only starting with one are the `type` mentions they name;
 /// `new T()` stays a call; `x.f` not called, read or assigned, is a `field` mention, named
 /// `Square.SIDES` when a capitalised name qualifies it, while a called `x.g()` is a call; and the
 /// `///` block directly above a definition, a blank line and a bare `///` line inside it
@@ -84,7 +85,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 248] = [
+    let cases: [Case; 253] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1686,9 +1687,39 @@ fn csharp_stages_its_row() {
             k_m(),
         ),
         (
-            "a generic name named `nameof` after `is`, a generic's own name whatever its spelling",
+            "a generic name named `nameof` after `is`, none, its type argument a type",
             in_m!("var r = p is nameof<Ke>;"),
-            vec![ty("Ke"), ty("nameof")],
+            vec![ty("Ke")],
+            k_m(),
+        ),
+        (
+            "a generic name named `nameof` as the left operand of `&` in a conditional's condition, comparisons to the grammar, none",
+            in_m!("var r = p is nameof<Kf> & ok ? 1 : 0;"),
+            vec![ty("Kf")],
+            k_m(),
+        ),
+        (
+            "a generic name named `or` as the left operand of `&&`, none",
+            in_m!("var r = p is or<Kg> && ok;"),
+            vec![ty("Kg")],
+            k_m(),
+        ),
+        (
+            "a generic name named `nameof` with a space before its type argument list, none",
+            in_m!("var r = p is nameof <Kh>;"),
+            vec![ty("Kh")],
+            k_m(),
+        ),
+        (
+            "a generic name only starting with `not` as the left operand of `&&`, a type",
+            in_m!("var r = p is notable<Ki> && ok;"),
+            vec![ty("Ki"), ty("notable")],
+            k_m(),
+        ),
+        (
+            "a generic name only starting with `not`, a non-ASCII letter next, as the left operand of `&&`, a type",
+            in_m!("var r = p is notÄ<Kj> && ok;"),
+            vec![ty("Kj"), ty("notÄ")],
             k_m(),
         ),
         (
