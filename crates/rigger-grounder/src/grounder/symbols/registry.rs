@@ -109,16 +109,22 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 /// stays a call ([`CSHARP_CONSTRUCTORS`]); a constraint's and a local's or field's declared type
 /// is a type. An identifier or a generic name in any other `type` field, a method's return, the
 /// right of an `as`, a generic's type argument and a constant pattern is a type, a qualified name
-/// none. The grammar parses `x is T` as a constant pattern, so `T` is a type under a `not`, an
-/// `and`, an `or` or parentheses too, and so is the identifier of a switch case, a switch arm or a
-/// property subpattern, a constant's name included, since the grammar tells no type from a
-/// constant there; `x is T?` and `x is T[]` reach `T` through their `type` field, and `x is Ns.T`,
-/// which the grammar parses as a member access, is the field `Ns.T`. The grammar parses a
-/// positional pattern with no designation, `x is Pt(0, 0)`, as an invocation in a constant
-/// pattern, so an identifier called there, directly or in one pair of parentheses, is a type
-/// wherever a constant pattern's `T` is, `nameof(T)` excepted, the one invocation a constant
-/// admits; in a second pair, which the grammar nests as a further expression, it is none, and
-/// `x is Ns.Pt(0, 0)` stays the call `Ns.Pt`. A member access named by an identifier and called
+/// none, and the identifier `nameof` none in those `type` fields and a constant pattern. The
+/// grammar parses `x is T` as a constant pattern, so `T` is a type under a `not`, an `and`, an
+/// `or` or parentheses too, and so is the identifier of a switch case, a switch arm or a property
+/// subpattern, a constant's name included, since the grammar tells no type from a constant there;
+/// `x is T?` and `x is T[]` reach `T` through their `type` field, and `x is Ns.T`, which the
+/// grammar parses as a member access, is the field `Ns.T`. A positional pattern's name, `Pt` of
+/// `Pt(0, 0)`, is a type under each parse the grammar gives it: a recursive pattern's `type`, as
+/// with a designation, `Pt(0, 0) d`; an invocation in a constant pattern, directly or in one pair
+/// of parentheses, as `x is Pt(0, 0)` is; the constant `Pt`, when the grammar reads
+/// `x is Pt(var a, 0)` as a call of `x is Pt`; and an invocation directly in a switch section, as
+/// the grammar reads a case label whose first argument declares or discards, `case Pt(var a, 0):`,
+/// which a call in the section's body or `when` clause is not. In a second pair of parentheses,
+/// which the grammar nests as a further expression, it is none, and `x is Ns.Pt(0, 0)` stays the
+/// call `Ns.Pt`. `nameof` in any pattern position, under each of those parses and as a declaration
+/// pattern's `type`, `case nameof(Foo):`, is none, while a member access in its argument is the
+/// field it names, as in any expression. A member access named by an identifier and called
 /// stays a call (`@reference.send`) and one not called, read or assigned, is a field; either is
 /// qualified by its object when that object is exactly a capitalised identifier, so
 /// `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and `s.Side` the field `Side`.
@@ -140,14 +146,16 @@ const CSHARP_REFERENCE_TAGS: &str = r#"
 (type_parameter_constraints_clause (identifier) @name) @reference.class
 (type_parameter_constraint (type type: (identifier) @name)) @reference.class
 (variable_declaration type: (identifier) @name) @reference.class
-(_ type: [(identifier) (generic_name)] @name) @reference.type
+((_ type: [(identifier) (generic_name)] @name) @reference.type (#not-eq? @name "nameof"))
 (_ returns: [(identifier) (generic_name)] @name) @reference.type
 (as_expression right: [(identifier) (generic_name)] @name) @reference.type
-(constant_pattern [(identifier) (generic_name)] @name) @reference.type
+((constant_pattern [(identifier) (generic_name)] @name) @reference.type (#not-eq? @name "nameof"))
 ((constant_pattern
   [(invocation_expression function: (identifier) @name)
    (parenthesized_expression (invocation_expression function: (identifier) @name))])
   @reference.type
+  (#not-eq? @name "nameof"))
+((switch_section (invocation_expression function: (identifier) @name) @reference.type)
   (#not-eq? @name "nameof"))
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
 ((invocation_expression
