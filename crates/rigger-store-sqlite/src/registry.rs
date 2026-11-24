@@ -205,8 +205,12 @@ pub fn default_dir() -> Option<PathBuf> {
 /// Unix-epoch milliseconds now, for stamping a heartbeat. Saturates at 0 before the epoch so it
 /// never panics on a mis-set clock.
 pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    epoch_ms(SystemTime::now())
+}
+
+/// `t` in unix-epoch milliseconds, saturating at 0 before the epoch.
+fn epoch_ms(t: SystemTime) -> u64 {
+    t.duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
@@ -230,7 +234,7 @@ static TMP_NONCE: AtomicU64 = AtomicU64::new(0);
 /// (`ENOENT`) and fail the write. A unique temp per writer removes the shared name they could race
 /// on; both renames target the same final path, which is itself an atomic last-writer-wins swap. A
 /// reader only ever reads `*.json`, so the `.tmp` files are invisible to it, and [`read_live`]'s
-/// prune removes a crashed writer's leftover temp.
+/// prune removes a crashed writer's leftover temp once it is older than the idle window.
 ///
 /// A COURIER's write carries forward the driver heartbeat the entry on disk already holds
 /// ([`carry_driver_heartbeat`]), so couriers re-stamping discovery never erase the record of a
@@ -325,7 +329,7 @@ fn parse_entries(dir: &Path) -> Vec<ParsedEntry> {
 /// Unreadable or unparseable entries are skipped, never fatal - the registry's loss is harmless.
 /// Live entries are returned; their order is unspecified.
 pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
-    reap_gone_writers_temps(dir);
+    reap_gone_writers_temps(dir, now_ms, ttl_ms);
     let mut live = Vec::new();
     for entry in parse_entries(dir) {
         if is_stale(entry.inst.heartbeat_ms, now_ms, ttl_ms) {
@@ -337,10 +341,19 @@ pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
     live
 }
 
-/// Remove each temp [`write`] left under `dir` whose writer process is gone: a writer that died
-/// between its write and its rename. Skipped whole when this process cannot read its own start
-/// time, on an OS whose process table is unreadable, where every writer would look gone.
-fn reap_gone_writers_temps(dir: &Path) {
+/// Remove each temp [`write`] left under `dir` by a writer that died between its write and its
+/// rename: one whose writer process this one cannot see AND whose modified time is stale past
+/// the idle window `ttl_ms` at `now_ms`, judged by [`is_stale`] as an entry's heartbeat is.
+///
+/// An unseen writer alone is no proof of a dead one: a writer in another pid namespace or on
+/// another host sharing this directory, or one the OS will not let this process inspect, looks
+/// the same, and removing its temp before its rename would fail that registry write. The idle
+/// window is the registry's one bound on how old a live writer's state can be: a live writer
+/// renames its temp moments after writing it and re-stamps its entry within the window, so a
+/// temp older than the window belongs to a writer the registry already reads as dead, as it
+/// reads an entry whose heartbeat is that old. Skipped whole when this process cannot read its
+/// own start time, on an OS whose process table is unreadable, where every writer would look gone.
+fn reap_gone_writers_temps(dir: &Path, now_ms: u64, ttl_ms: u64) {
     use rigger_process::os_process::start_time;
     if start_time(std::process::id()).is_none() {
         return;
@@ -353,7 +366,9 @@ fn reap_gone_writers_temps(dir: &Path) {
         let Some(pid) = name.to_str().and_then(temp_writer_pid) else {
             continue;
         };
-        if start_time(pid).is_none() {
+        let written_ms = entry.metadata().and_then(|m| m.modified()).map(epoch_ms);
+        let stale = written_ms.is_ok_and(|ms| is_stale(ms, now_ms, ttl_ms));
+        if stale && start_time(pid).is_none() {
             let _ = std::fs::remove_file(entry.path()); // best-effort, like the entry prune
         }
     }
@@ -537,20 +552,31 @@ mod tests {
             );
     }
 
-    /// A registry dir holding a temp left by a writer that is gone and one this live process
-    /// writes, read through `read`: the gone writer's temp survives exactly when `dead_kept`
-    /// (`why`), and a live writer's temp always survives.
-    fn assert_temps_after_read(read: impl Fn(&Path), dead_kept: bool, why: &str) {
+    /// How old a temp is read at to be past the idle window: a second past it, beyond any file
+    /// time granularity.
+    const PAST_THE_WINDOW_MS: u64 = DEFAULT_IDLE_MS + 1_000;
+
+    /// A registry dir holding a temp whose writer this process cannot see and one this live
+    /// process writes, read through `read` at `age_ms` after both were written: the unseen
+    /// writer's temp survives exactly when `unseen_kept` (`why`), and a live writer's temp always
+    /// survives.
+    fn assert_temps_after_read(
+        read: impl Fn(&Path, u64),
+        age_ms: u64,
+        unseen_kept: bool,
+        why: &str,
+    ) {
         let tmp = tempfile::tempdir().unwrap();
         let dir = instances_dir(tmp.path());
         std::fs::create_dir_all(&dir).unwrap();
-        // No supported OS hands out pid u32::MAX, so that writer is gone.
-        let dead = dir.join(format!(".abc.{}.0.tmp", u32::MAX));
+        // No supported OS hands out pid u32::MAX, so no start time is readable for that writer,
+        // as for one that is gone or one alive where this process cannot see it.
+        let unseen = dir.join(format!(".abc.{}.0.tmp", u32::MAX));
         let own = dir.join(format!(".abc.{}.0.tmp", std::process::id()));
-        std::fs::write(&dead, b"{").unwrap();
+        std::fs::write(&unseen, b"{").unwrap();
         std::fs::write(&own, b"{").unwrap();
-        read(&dir);
-        assert_eq!(dead.exists(), dead_kept, "{why}");
+        read(&dir, now_ms() + age_ms);
+        assert_eq!(unseen.exists(), unseen_kept, "{why}");
         assert!(own.exists(), "{why}: a live writer's temp is never removed");
     }
 
@@ -572,18 +598,27 @@ mod tests {
     }
 
     crate::test_cases! {
+        the_pruning_reader_keeps_a_fresh_temp_whose_writer_it_cannot_see: assert_temps_after_read(
+            |dir, now| drop(read_live(dir, now, DEFAULT_IDLE_MS)),
+            0,
+            true,
+            "read_live keeps a temp inside the idle window, whose writer may be alive unseen",
+        );
         the_pruning_reader_reaps_a_gone_writers_temp: assert_temps_after_read(
-            |dir| drop(read_live(dir, 0, DEFAULT_IDLE_MS)),
+            |dir, now| drop(read_live(dir, now, DEFAULT_IDLE_MS)),
+            PAST_THE_WINDOW_MS,
             false,
-            "read_live removes the temp of a writer that is gone",
+            "read_live removes a temp past the idle window whose writer is gone",
         );
         a_non_pruning_reader_keeps_a_gone_writers_temp: assert_temps_after_read(
-            |dir| drop(read_live_no_prune(dir, 0, DEFAULT_IDLE_MS)),
+            |dir, now| drop(read_live_no_prune(dir, now, DEFAULT_IDLE_MS)),
+            PAST_THE_WINDOW_MS,
             true,
             "read_live_no_prune deletes nothing",
         );
         read_all_keeps_a_gone_writers_temp: assert_temps_after_read(
-            |dir| drop(read_all(dir)),
+            |dir, _| drop(read_all(dir)),
+            PAST_THE_WINDOW_MS,
             true,
             "read_all deletes nothing",
         );
