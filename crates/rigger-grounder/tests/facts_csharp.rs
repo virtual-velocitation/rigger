@@ -32,7 +32,8 @@ type Case = (
 /// array element, nullable, cast, `is`, `as`, `typeof`, generic argument or field type is a
 /// `type` mention, a generic name's type arguments each a mention too, a qualified type none, and
 /// so is one in a constant pattern under a `not`, an `and`, an `or` or parentheses, a switch case
-/// or arm and a property subpattern; `new T()` stays a call; `x.f` not called, read or assigned,
+/// or arm and a property subpattern, while a qualified one there, a member access to the grammar,
+/// is a `field` mention; `new T()` stays a call; `x.f` not called, read or assigned,
 /// is a `field` mention, named `Square.SIDES` when a capitalised name qualifies it, while a
 /// called `x.g()` is a call; and the `///` block directly above a definition, a blank line and a
 /// bare `///` line inside it included, under at most two other comments, a plain line and a
@@ -49,7 +50,7 @@ fn csharp_stages_its_row() {
     let leaf_in = |at: u32, leaf: &str, kind: Option<&str>, line: u32| {
         mention_in(Some(at), leaf, leaf, kind, line, false)
     };
-    let cases: [Case; 10] = [
+    let cases: [Case; 11] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -208,6 +209,15 @@ fn csharp_stages_its_row() {
                 leaf_in(1, "SwT", Some(REF_KIND_TYPE), 7),
                 leaf_in(1, "ArmT", Some(REF_KIND_TYPE), 8),
                 leaf_in(1, "SubT", Some(REF_KIND_TYPE), 9),
+            ],
+            vec![("K", None, ""), ("M", None, "")],
+        ),
+        (
+            "a qualified name after `is` and in a switch case, which the grammar parses as a member access",
+            "class K {\n    void M(object p) {\n        var f = p is Ns.QualT;\n        switch (p) { case Color.Red: break; }\n    }\n}\n",
+            vec![
+                in_def(1, "Ns.QualT", "QualT", Some(REF_KIND_FIELD), 3),
+                in_def(1, "Color.Red", "Red", Some(REF_KIND_FIELD), 4),
             ],
             vec![("K", None, ""), ("M", None, "")],
         ),
