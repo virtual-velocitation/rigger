@@ -3130,7 +3130,8 @@ mod tests {
     /// doc, WHEN the near read is asked each node's doc, THEN a read describing the worktree gives
     /// the extractor's text of the span's lines - the file's, or the widest production definition's
     /// at the node's name, kind and line - and none for a site no definition sits at, a nameless
-    /// node, a definition or file with no doc, a span the worktree does not hold or a record node,
+    /// node, a definition or file with no doc, a span the worktree does not hold, a record node or
+    /// a file the view holds no facts of though the worktree holds its lines at (1, 2),
     /// while a read withholding its code facts, or opened with no doc reader, gives none.
     #[test]
     fn a_node_s_doc_is_its_facts_span_read_from_the_worktree() {
@@ -3164,6 +3165,7 @@ mod tests {
             ("src/a.rs", (5, 5), "/// Tests."),
             ("src/a.rs", (6, 7), "/// Helps\n/// widely."),
             ("src/a.rs", (7, 7), "/// Helps."),
+            ("src/c.rs", (1, 2), "//! C."),
         ]);
         let reader = DocReader {
             lines: &lines,
@@ -3271,6 +3273,13 @@ mod tests {
                 Compared::Overlaid(0),
                 true,
                 node("dec-1", KIND_DECISION, &[("title", "keep it")]),
+                None,
+            ),
+            (
+                "a file the view holds no facts of",
+                Compared::Overlaid(0),
+                true,
+                node("src/c.rs", KIND_FILE, &[]),
                 None,
             ),
             (
