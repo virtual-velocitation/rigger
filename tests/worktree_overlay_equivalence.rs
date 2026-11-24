@@ -5,14 +5,16 @@
 
 use crate::common;
 use common::cli::repository_code_store;
-use common::fixtures::{git_commit_all, init_repo, write_files, write_text, RESOLVER_TREE};
+use common::fixtures::{
+    git_commit_all, head_honesty, init_repo, write_files, write_text, RESOLVER_TREE,
+};
 use rigger::code_facts::{FileFacts, ModuleDecl, Stamp};
 use rigger::code_store::CodeStore;
 use rigger::code_view::{
     CodeView, Compared, DefRef, FileRef, Groupings, MentionRef, OpenCodeView, Settled, Tests,
     ViewFilter,
 };
-use rigger::composed::{Composed, Honesty, Indexed};
+use rigger::composed::{Composed, Indexed};
 use rigger::contextgraph::{ContextGraph, Graph};
 use rigger_store::code::Mode;
 use std::borrow::Cow;
@@ -133,11 +135,7 @@ fn answers(store: &CodeStore, worktree: &Path, compared: Compared) -> Vec<(Strin
     assert_eq!(head.compared, compared);
     let view = Ungrouped(&*head.view);
     let records = Indexed::default();
-    let honesty = || Honesty {
-        worktree: worktree.display().to_string(),
-        compared: head.compared,
-        behind: head.behind.clone(),
-    };
+    let honesty = || head_honesty(&head);
     let mut answers = Vec::new();
     for (name, tests) in [
         ("exclude", Tests::Exclude),
