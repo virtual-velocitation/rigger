@@ -37,13 +37,14 @@ type Case = (
 /// `extends Base` names is an `impl` mention, a dotted one qualified by its object; `x.f` not
 /// called is a `field` mention, read, written, an inner chain, a subscript's object, an argument
 /// or a private member alike, while a called `x.f()`, `new Ns.Box` and `new Ns.MAX()` are calls;
-/// a member spelled as a constant is a `const` mention; and `Square.make()` is a call named
-/// `Square.make` of the leaf `make`, each qualified by a capitalised object alone, a member chain
-/// by its last name, so `Ns.Kit.make()` is the call `Kit.make`. In TypeScript `x.f<T>()` and
-/// `Square.make<T>()` are calls of their leaf, unqualified, as `Square.make<T>()` is in TSX, and
-/// the uncalled instantiation `x.g<T>` is a field. The `/** */` block directly above the
-/// TypeScript function `area`, the TSX class `View` and the JavaScript class `Square` is each
-/// one's doc span, over the production extractor.
+/// a member spelled as a constant and read, as `Config.MAX`, `cfg.TIMEOUT` and `this.LIMIT` are,
+/// is a `const` mention; and `Square.make()` is a call named `Square.make` of the leaf `make`,
+/// each qualified by a capitalised object alone, a member chain by its last name, so
+/// `Ns.Kit.make()` is the call `Kit.make`. In TypeScript `x.f<T>()` and `Square.make<T>()` are
+/// calls of their leaf, unqualified, as `Square.make<T>()` is in TSX, and the uncalled
+/// instantiation `x.g<T>` is a field. The `/** */` block directly above the TypeScript function
+/// `area`, the TSX class `View` and the JavaScript class `Square` is each one's doc span, over the
+/// production extractor.
 #[test]
 fn typescript_and_javascript_stage_their_rows() {
     let at =
