@@ -77,7 +77,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 166] = [
+    let cases: [Case; 188] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -866,6 +866,138 @@ fn csharp_stages_its_row() {
             "a declaring positional pattern in parentheses under `not` after `is`",
             in_m!("var r = p is not (Pn(var x, 0));"),
             vec![ty("Pn")],
+            k_m(),
+        ),
+        (
+            "a declaring positional pattern after `is`, a call of the `is` expression to the grammar",
+            in_m!("var r = p is Pt(var x, 0);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose later argument declares after `is`",
+            in_m!("var r = p is Pt(0, var y);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument is typed after `is`",
+            in_m!("var r = p is Pt(int u, 0);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument discards after `is`",
+            in_m!("var r = p is Pt(_, 0);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument is `var (a, b)` after `is`, a recursive pattern",
+            in_m!("var r = p is Pt(var (a, b), 0);"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a declaring positional pattern under `not` after `is`",
+            in_m!("var r = p is not Pb(var x, 0);"),
+            vec![ty("Pb")],
+            k_m(),
+        ),
+        (
+            "two positional patterns of constants under `and` after `is`",
+            in_m!("var r = p is Pt(0, 0) and Qt(0, 0);"),
+            vec![ty("Pt"), ty("Qt")],
+            k_m(),
+        ),
+        (
+            "two positional patterns of constants under `or` after `is`",
+            in_m!("var r = p is Pt(0, 0) or Qt(0, 0);"),
+            vec![ty("Pt"), ty("Qt")],
+            k_m(),
+        ),
+        (
+            "two declaring positional patterns under `or` after `is`",
+            in_m!("var r = p is Pt(var x, 0) or Qt(var y, 0);"),
+            vec![ty("Pt"), ty("Qt")],
+            k_m(),
+        ),
+        (
+            "a declaring positional pattern in a property subpattern after `is`",
+            in_m!("var r = p is { P: Pq(var x, 0) };"),
+            vec![ty("Pq")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose later argument declares in a list after `is`",
+            in_m!("var r = p is [Mc(0, var y)];"),
+            vec![ty("Mc")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose later argument declares in a switch case",
+            in_m!("switch (p) { case Pt(0, var y): break; }"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern of constants in a switch case with `when`",
+            in_m!("switch (p) { case Pt(0, 0) when ok: break; }"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a declaring positional pattern in a switch case with `when`, a recursive pattern",
+            in_m!("switch (p) { case Pt(var x, 0) when ok: break; }"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose first argument is `var (a, b)` in a switch case, a recursive pattern",
+            in_m!("switch (p) { case Pt(var (a, b), 0): break; }"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "stacked case labels each holding a declaring positional pattern, the second with `when`",
+            in_m!("switch (p) { case Pt(var x, 0): case Qt(var y, 0) when ok: break; }"),
+            vec![ty("Pt"), ty("Qt")],
+            k_m(),
+        ),
+        (
+            "a `var` tuple pattern in a switch case",
+            in_m!("switch (p) { case var (a, b): break; }"),
+            vec![],
+            k_m(),
+        ),
+        (
+            "a declaring positional pattern in a switch arm",
+            in_m!("var r = p switch { Pt(var x, 0) => 1, _ => 0 };"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a positional pattern whose later argument declares in a switch arm",
+            in_m!("var r = p switch { Pt(0, var y) => 1, _ => 0 };"),
+            vec![ty("Pt")],
+            k_m(),
+        ),
+        (
+            "a list case label holding a positional pattern whose later argument declares",
+            in_m!("switch (p) { case [Lo(0, var y)]: break; }"),
+            vec![ty("Lo")],
+            k_m(),
+        ),
+        (
+            "stacked list case labels each holding a declaring positional pattern, the second with `when`",
+            in_m!("switch (p) { case [Lo(var x, 0)]: case [Lq(var y, 0)] when ok: break; }"),
+            vec![ty("Lo"), ty("Lq")],
+            k_m(),
+        ),
+        (
+            "`nameof` as a declaration pattern's type in a switch case",
+            in_m!("switch (s) { case nameof x: break; }"),
+            vec![],
             k_m(),
         ),
         (
