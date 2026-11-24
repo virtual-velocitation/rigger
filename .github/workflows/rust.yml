@@ -190,15 +190,42 @@ jobs:
           # Spec 93 criterion 3: `cargo check` runs crates/rigger-dash's build script, which
           # cross-compiles crates/console-core for this target.
           targets: wasm32-unknown-unknown
-      - name: test the process crate
+      # The process crate's tests are built once, then run one module per step: the modules whose
+      # tests start and signal processes, then every other test, so the steps run each test once.
+      # A step that never ends names its module even when its runner is lost and keeps no log.
+      # Each test step's bound is many times its usual seconds: a test that hangs ends the step
+      # with its log kept, where libtest names each test still running after 60 s and
+      # `--nocapture` has printed what each wrote. The tests stay parallel, as everywhere else.
+      - name: build the process crate's tests
         shell: bash
-        # About seven times the step's usual time, compile included: a test that hangs ends the
-        # step with its log kept, where libtest names each test still running after 60 s and
-        # `--nocapture` has printed what each wrote. The tests stay parallel, as everywhere else.
         timeout-minutes: 5
         run: |
           export RUSTC_WRAPPER=
-          cargo test -p rigger-process --lib -- --nocapture
+          cargo test -p rigger-process --lib --no-run
+      - name: test the process crate's reap module
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture reap::
+      - name: test the process crate's child_tree module
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture child_tree::
+      - name: test the process crate's os_process module
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture os_process::
+      - name: test the rest of the process crate
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          export RUSTC_WRAPPER=
+          cargo test -p rigger-process --lib -- --nocapture --skip reap:: --skip child_tree:: --skip os_process::
       - name: check the workspace
         shell: bash
         run: |
