@@ -4134,8 +4134,14 @@ fn unmerged_paths(dir: &str) -> Result<Vec<String>, Error> {
     Ok(paths)
 }
 
+/// `git <args>` in `dir` for its answer: standard output on success, which every caller parses
+/// (a sha, a porcelain or NUL-separated listing), so a warning git gives on standard error is
+/// never read as part of it; a failure names what git said on both streams ([`git_failed`]).
 pub fn git(dir: &str, args: &[&str]) -> Result<String, Error> {
-    run_git(dir, args).map_err(|out| git_failed(args, out))
+    let text = |bytes: Vec<u8>| String::from_utf8_lossy(&bytes).into_owned();
+    git_output(dir, args, GitOutput::StdoutOrBoth)
+        .map(text)
+        .map_err(|out| git_failed(args, text(out)))
 }
 
 /// The error of a `git <args>` run that failed: `git <args> failed`, then what git said
@@ -4287,6 +4293,8 @@ pub fn in_history(dir: &str, ancestor: &str, descendant: &str) -> Result<bool, E
 pub enum GitOutput {
     /// Standard output on success; standard error on failure.
     Stdout,
+    /// Standard output on success; standard output followed by standard error on failure.
+    StdoutOrBoth,
     /// Standard output followed by standard error, on success and on failure.
     StdoutAndStderr,
 }
@@ -4338,8 +4346,9 @@ fn finish_git_with_status(
 ) -> Result<Vec<u8>, (Option<i32>, Vec<u8>)> {
     let out = waited(started).map_err(|start| (None, start))?;
     let answer = match (output, out.status.success()) {
-        (GitOutput::Stdout, true) => out.stdout,
+        (GitOutput::Stdout | GitOutput::StdoutOrBoth, true) => out.stdout,
         (GitOutput::Stdout, false) => out.stderr,
+        (GitOutput::StdoutOrBoth, false) => [out.stdout, out.stderr].concat(),
         (GitOutput::StdoutAndStderr, _) => [out.stdout, out.stderr].concat(),
     };
     if out.status.success() {
@@ -4947,7 +4956,7 @@ mod tests {
     #[test]
     fn git_output_answers_the_streams_its_mode_names() {
         // `--version` prints to stdout; an unknown `git var` fails with usage on stderr.
-        let rows: [(&str, &[&str], GitOutput, bool, &str); 4] = [
+        let rows: [(&str, &[&str], GitOutput, bool, &str); 6] = [
             (
                 "stdout on success",
                 &["--version"],
@@ -4959,6 +4968,20 @@ mod tests {
                 "stderr on failure",
                 &["var", "NOPE"],
                 GitOutput::Stdout,
+                false,
+                "usage",
+            ),
+            (
+                "stdout on success, of stdout or both",
+                &["--version"],
+                GitOutput::StdoutOrBoth,
+                true,
+                "git version",
+            ),
+            (
+                "both on failure, of stdout or both",
+                &["var", "NOPE"],
+                GitOutput::StdoutOrBoth,
                 false,
                 "usage",
             ),
@@ -5243,6 +5266,40 @@ mod tests {
                 "files_touched_by_commit",
                 wt.files_touched_by_commit(head.trim()),
             ),
+        ] {
+            assert_eq!(got.unwrap(), want, "{reader}");
+        }
+    }
+
+    /// A warning git gives on standard error beside an answer it parses never reads back as part
+    /// of that answer: a revision named by an ambiguous refname (a branch and a tag of one name)
+    /// makes git warn on standard error, and every name-only reader still lists only the paths.
+    #[test]
+    fn a_warning_git_gives_on_stderr_never_reads_back_as_a_path() {
+        let (_repo, repo_path, root) = scratch_repo(false);
+        let (dir, wt) = unit_wt(&repo_path, &root, "warned");
+        let ambiguous = |name: &str, rev: &str| {
+            run_git(&repo_path, &["branch", name, rev]).unwrap();
+            run_git(&repo_path, &["tag", name, rev]).unwrap();
+        };
+        ambiguous("before", "HEAD");
+        std::fs::write(std::path::Path::new(&dir).join("a.txt"), "x\n").unwrap();
+        run_git(&dir, &["add", "."]).unwrap();
+        run_git(&dir, &["commit", "-q", "-m", "a"]).unwrap();
+        ambiguous("after", "rigger/u/warned");
+        let warned = run_git(&dir, &["rev-parse", "before"]).unwrap();
+        assert!(
+            warned.contains("ambiguous"),
+            "git gave no warning: {warned}"
+        );
+        let want = vec!["a.txt".to_string()];
+        for (reader, got) in [
+            ("diff_names", wt.diff_names("before", DiffMode::Direct)),
+            (
+                "files_touched_by_commit",
+                wt.files_touched_by_commit("after"),
+            ),
+            ("paths_changed_since", paths_changed_since(&dir, "before")),
         ] {
             assert_eq!(got.unwrap(), want, "{reader}");
         }
