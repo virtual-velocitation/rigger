@@ -185,9 +185,9 @@ fn expected(rows: &[Row]) -> Vec<Held> {
 
 /// GIVEN a project holding `FIRST`'s files, WHEN the operator runs `rigger graph build`, THEN
 /// the code store holds each file's and each definition's doc span exactly; and WHEN the operator
-/// rewrites the Rust and TypeScript files to `NEXT`'s and builds again, THEN each rewritten file
-/// holds its new spans, a span its source dropped gone, and the unchanged Go and JavaScript files
-/// keep their own.
+/// rewrites the first two Rust files and the TypeScript file to `NEXT`'s and builds again, THEN
+/// each rewritten file holds its new spans, a span its source dropped gone, and the unchanged Go,
+/// JavaScript and test files keep their own.
 #[test]
 fn a_build_stores_each_doc_span_and_a_rebuild_replaces_a_rewritten_files() {
     let project = temp_project();
