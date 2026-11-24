@@ -1041,7 +1041,8 @@ pub(crate) mod tests {
     /// with named children is split: its named leaves outside the type arguments, joined by `.`
     /// or `::`, give the last as the leaf and the text before its separator as the qualifier, so
     /// a C# base type `Ns.IShape` yields the leaf `IShape`, `global::IShape` the leaf `IShape`
-    /// under a path, `List<IShape>` the leaf `List`, and a JavaScript `new Ns.Kit.Box()` a call
+    /// under a path, `List<IShape>` the leaf `List`, its type argument `IShape` a mention of its
+    /// own, and a JavaScript `new Ns.Kit.Box()` a call
     /// of `Box`; a `@name` that is no such chain (`new arr[0]()`, `new a[0].b()`, `new (Box)()`)
     /// stages no mention.
     #[test]
@@ -1089,19 +1090,22 @@ pub(crate) mod tests {
                 "App/Shape.cs",
                 "class A : Ns.IShape { }\n",
                 None,
-                vec![mention("Ns.IShape", "IShape", tagged("type"), Some(0))],
+                vec![mention("Ns.IShape", "IShape", tagged("impl"), Some(0))],
             ),
             (
                 "App/Shape.cs",
                 "class A : global::IShape { }\n",
                 None,
-                vec![mention("global::IShape", "IShape", tagged("type"), Some(0))],
+                vec![mention("global::IShape", "IShape", tagged("impl"), Some(0))],
             ),
             (
                 "App/Shape.cs",
                 "class A : List<IShape> { }\n",
                 None,
-                vec![mention("List", "List", tagged("type"), Some(0))],
+                vec![
+                    mention("IShape", "IShape", tagged("type"), Some(0)),
+                    mention("List", "List", tagged("impl"), Some(0)),
+                ],
             ),
             (
                 "web/make.js",
@@ -2776,7 +2780,8 @@ pub(crate) mod tests {
 
     /// The doc text of a span, each row (the language, the span's raw lines, the doc text): Rust
     /// spans, `\r\n` endings, `#[doc(hidden)]` lines, nested block comments and literals holding
-    /// a comment marker or a quote among them, and the lines of a language with no doc rule.
+    /// a comment marker or a quote among them, C# `///` spans holding XML tags and a `<` that
+    /// opens none, and the lines of a language with no doc rule.
     const DOC_TEXT_ROWS: &[(&str, &str, &str)] = &[
         (
             "rust",
@@ -2883,6 +2888,27 @@ Unclosed"#,
         ("rust", "#[doc = \"a\n  b\"]\n/// c", "a\nb\nc"),
         ("rust", "/** Unclosed\n", "Unclosed"),
         ("rust", "/** Open\n *", "Open\n"),
+        (
+            "csharp",
+            "/// <summary>\r\n/// Reads the <c>file</c>.\r\n/// </summary>\r\n",
+            "Reads the file.",
+        ),
+        (
+            "csharp",
+            "    /// Uses <see cref=\"Shape\"/> here.\n\t/// <param name=\"s\">The shape.</param>",
+            "Uses  here.\nThe shape.",
+        ),
+        (
+            "csharp",
+            "/// a < b, 1 <2> 3, a<b\n/// <!-- kept -->",
+            "a < b, 1 <2> 3, a<b\n<!-- kept -->",
+        ),
+        (
+            "csharp",
+            "//// four\n// plain\n/* block */\n///tight\n///\n/// After.",
+            "tight\nAfter.",
+        ),
+        ("csharp", "", ""),
     ];
 
     /// `extractor`'s doc text of each [`DOC_TEXT_ROWS`] span is the row's, `name` naming the
@@ -2900,9 +2926,10 @@ Unclosed"#,
     /// THE DOC TEXT IS STRIPPED: `doc_text` turns a Rust span's raw lines, `\r\n` endings and a
     /// `#[doc(hidden)]` line included, into the comment text alone - the text of each doc comment
     /// and each doc attribute's literal, every comment and literal bounded as Rust lexes it,
-    /// everything else dropped, a doc block's opener, closer and one leading `*` stripped - and
-    /// gives a language with no rule its lines trimmed. The project's extractor with no
-    /// declaration answers as the bundled one.
+    /// everything else dropped, a doc block's opener, closer and one leading `*` stripped; turns
+    /// a C# span's raw lines into the text of each `///` line with its XML tags removed, a line
+    /// left empty and every other line dropped; and gives a language with no rule its lines
+    /// trimmed. The project's extractor with no declaration answers as the bundled one.
     #[test]
     fn the_doc_text_is_the_comment_text_alone() {
         let project = project_declaring(None);

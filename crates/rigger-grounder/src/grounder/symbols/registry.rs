@@ -1491,7 +1491,8 @@ def calc(n):
     /// so a change to what one language's extraction records fails that language's row alone
     /// until its generation is bumped and the row re-pinned, and a snapshot of the code store
     /// written before the change is not trusted. `GRAMMAR_TAGS_VERSION` is held equal to the
-    /// generation table's generations joined in its order. The fixtures set every part a snapshot
+    /// generation table's generations joined in its order. The fixtures set an implementation
+    /// reference, the tagged reference kind a Python base class records, and every part a snapshot
     /// stores, the stored inputs of the derived out-of-line module row and each tagged reference
     /// kind a registered language records (a const read, a type reference, a use and a field use)
     /// and a reference's qualifier included, so a change to any of them moves a digest.
@@ -1574,6 +1575,10 @@ def calc(n):
             ),
             ("a const read", tagged(REF_KIND_CONST)),
             ("a type reference", tagged(REF_KIND_TYPE)),
+            (
+                "an implementation",
+                tagged(crate::contextgraph::REF_KIND_IMPL),
+            ),
             ("a use", tagged(REF_KIND_USE)),
             ("a field use", tagged(REF_KIND_FIELD)),
             ("a partial file", extracted.iter().any(|(_, fs)| fs.partial)),
@@ -1759,7 +1764,10 @@ def calc(n):
         /// the leaf its class shares; those in a destructor, an operator, a conversion operator and
         /// an indexer are each named by that member's leaf; and that in a local function is the
         /// local function's, the method keeping its own. Each `new Probe()` is a call, as is `Go`,
-        /// and each field's declared type `Probe` a type reference (spec 117, CAPTURES).
+        /// and each field's declared type `Probe` a type reference (spec 117, CAPTURES). Each type
+        /// a method, a property, an operator or a conversion operator returns or takes is a type
+        /// reference too, those of a bodiless member its class's, since a declaration is no caller,
+        /// and the qualified `System.Action` none (spec 117, OTHER LANGUAGES).
         every_csharp_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "cs",
@@ -1817,8 +1825,17 @@ def calc(n):
                     (17, "Probe", Some("S.T::Foo::Run")),
                     (17, "Probe", Some("S.T::Foo::Run::Inner")),
                 ],
-                "7 type Probe S.T::Cell\n\
-                 7 type Probe S.T::Cell",
+                "2 type Probe S.T::A.B.C::Probe::Go\n\
+                 7 type Probe S.T::Cell\n\
+                 7 type Probe S.T::Cell\n\
+                 11 type Probe S.T::Foo.Size\n\
+                 14 type Foo S.T::Foo::+\n\
+                 14 type Foo S.T::Foo::+\n\
+                 14 type Foo S.T::Foo::+\n\
+                 15 type Foo S.T::Foo::implicit operator int\n\
+                 19 type Ext S.T::Ext\n\
+                 19 type Ext S.T::Ext\n\
+                 19 type Ext S.T::Ext",
             );
         /// JS AND TS DEFINITIONS ARE NODES (spec 116 criterion 9), under the registered JS
         /// query: the fixture yields every definition it holds at its own kind and leaf. A
