@@ -82,20 +82,25 @@ pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Op
 /// the worktree differs in ([`open_head`]), composed as [`open_store`] composes it, its
 /// differing files' facts memoised for the life of the process and on disk under the store
 /// ([`Memo::process`]). The head keeps the project's extractor, which a doc read takes a span's
-/// text from, and with it each declared extractor's session until the head is dropped.
+/// text from with no session; every declared extractor's session the read started is closed and
+/// waited for before the head is given ([`ProjectExtractor::close_sessions`]), so none outlives a
+/// read that ends by exiting.
 pub fn read_head(
     root: &Path,
     source: &(dyn TreeSource + Sync),
     worktree: &Path,
 ) -> Result<Head, String> {
-    open_head(
+    let extract = Arc::new(ProjectExtractor::of(root));
+    let head = open_head(
         root,
         source,
-        Arc::new(ProjectExtractor::of(root)),
+        extract.clone(),
         &ProductionGroupings,
         worktree,
         Memo::process(),
-    )
+    );
+    extract.close_sessions();
+    head
 }
 
 /// The extractors the workflow of the project at `root` declares (spec 125, THE EXTRACTORS KEY):
@@ -221,18 +226,22 @@ impl ProjectExtractor {
             }
         }
     }
+
+    /// Closes, and waits for, every session the extractor holds, so none outlives the read that
+    /// started it; a later file of a declared extractor's extensions starts a new one.
+    fn close_sessions(&self) {
+        let sessions =
+            std::mem::take(&mut *self.sessions.lock().unwrap_or_else(PoisonError::into_inner));
+        for session in sessions.into_values() {
+            session.close();
+        }
+    }
 }
 
 impl Drop for ProjectExtractor {
-    /// Closes every session the extractor still holds.
+    /// Closes every session the extractor still holds ([`ProjectExtractor::close_sessions`]).
     fn drop(&mut self) {
-        let sessions = self
-            .sessions
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
-        for session in std::mem::take(sessions).into_values() {
-            session.close();
-        }
+        self.close_sessions();
     }
 }
 
