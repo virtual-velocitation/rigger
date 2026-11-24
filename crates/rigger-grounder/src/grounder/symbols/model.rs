@@ -267,19 +267,19 @@ macro_rules! csharp_tags_generation {
 
 macro_rules! ts_tags_generation {
     () => {
-        "typescript-tags-v5"
+        "typescript-tags-v6"
     };
 }
 
 macro_rules! tsx_tags_generation {
     () => {
-        "tsx-tags-v5"
+        "tsx-tags-v6"
     };
 }
 
 macro_rules! js_tags_generation {
     () => {
-        "javascript-tags-v5"
+        "javascript-tags-v6"
     };
 }
 

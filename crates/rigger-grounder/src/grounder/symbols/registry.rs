@@ -206,6 +206,106 @@ const TS_CONSTANT_VALUES: &str = "(as_expression) (satisfies_expression) (non_nu
 /// The close of the pattern [`CONSTANT_TAGS_OPEN`] opens.
 const CONSTANT_TAGS_CLOSE: &str = "]) @definition.constant";
 
+/// The opening of the qualified member call pattern (spec 117, OTHER LANGUAGES: a call's
+/// qualifier is a member, the capitalised name before `.f`), the first part of each JS-family
+/// query: a call of `Obj.f(..)` whose object is a capitalised identifier, or a member chain whose
+/// last property is capitalised, is a call of the leaf `f` written `Obj.f`, so `Square.make()` is
+/// the call `Square.make` and `Ns.Kit.make()` the call `Kit.make`. The upstream query's member
+/// call pattern names the same `f`, and both matches finish at the call's arguments, so the
+/// earlier pattern, this one, makes the tag. The TS and TSX queries guard it with
+/// [`TS_UNINSTANTIATED`], and [`MEMBER_CALL_TAGS_CLOSE`] ends it.
+const MEMBER_CALL_TAGS_OPEN: &str = "((call_expression";
+
+/// The TS and TSX queries' guard on the qualified member call: a call with type arguments,
+/// `Square.make<T>()`, is the upstream query's call of `make` alone, unqualified. A type
+/// argument is named after the callee and its match arrives first, so the callee's tag is
+/// yielded as soon as it is queued and a second match naming the callee would make a second tag;
+/// the upstream match is the one that names a generic callee. The JS grammar has no type
+/// arguments.
+const TS_UNINSTANTIATED: &str = "!type_arguments";
+
+/// The close of the pattern [`MEMBER_CALL_TAGS_OPEN`] opens.
+const MEMBER_CALL_TAGS_CLOSE: &str = r#"
+  function: (member_expression
+    object: [(identifier) @qualifier.member
+      (member_expression property: (property_identifier) @qualifier.member)]
+    property: (property_identifier) @name)
+  arguments: (_)) @reference.call
+  (#match? @qualifier.member "^[A-Z]"))
+"#;
+
+/// The JS query's implementation patterns (spec 117, OTHER LANGUAGES: `extends`): the class a
+/// class extends, named by an identifier or a member, is an implementation reference, a member
+/// qualified by its whole object as a constructor's chain is, so `extends Ns.Base` names
+/// `Ns.Base`. Any other heritage expression (`extends mixin(Base)`) has no pattern.
+const JS_HERITAGE_TAGS: &str = r#"
+(class_heritage (identifier) @name) @reference.implementation
+(class_heritage
+  (member_expression object: (_) @qualifier.member property: (property_identifier) @name))
+  @reference.implementation
+"#;
+
+/// The TS and TSX queries' implementation patterns (spec 117, OTHER LANGUAGES: `implements`,
+/// `extends`): each type a class implements and each one an interface extends is an
+/// implementation reference, a generic one named without its type arguments; and the class a
+/// class extends is one as in [`JS_HERITAGE_TAGS`]. They stand before [`TS_TYPE_TAGS`], whose
+/// type pattern names the same type nodes.
+const TS_HERITAGE_TAGS: &str = r#"
+(implements_clause [(type_identifier) (nested_type_identifier) (generic_type)] @name)
+  @reference.implementation
+(extends_type_clause type: [(type_identifier) (nested_type_identifier) (generic_type)] @name)
+  @reference.implementation
+(extends_clause value: (identifier) @name) @reference.implementation
+(extends_clause
+  value: (member_expression object: (_) @qualifier.member property: (property_identifier) @name))
+  @reference.implementation
+"#;
+
+/// The JS-family queries' const and field patterns (spec 117, OTHER LANGUAGES: a const read, an
+/// `^[A-Z][A-Z0-9_]*$` identifier read; a field, `x.f` not called), composed after every other
+/// pattern but [`TS_TYPE_TAGS`]. A member expression whose parent holds no `arguments` and no
+/// `constructor` is not called, the callee of a call and of a `new` being the only member
+/// expressions such a parent holds: it is a const when its property is spelled as a constant and
+/// a field otherwise, read or written (`a.b = 1`), an inner chain (`y` of `x.y.z`), a
+/// subscript's object, an argument or a TS instantiation (`x.f<T>`) alike. Each is qualified as
+/// [`MEMBER_CALL_TAGS_CLOSE`] qualifies a call, by a capitalised object, so `Config.MAX` is the
+/// const `Config.MAX` and `cfg.TIMEOUT` the const `TIMEOUT`. The const patterns stand before the
+/// field patterns and a qualified pattern before its plain one, because each pair names the
+/// same property node and the earlier pattern makes the tag; an identifier spelled as a constant
+/// in an expression's place is a const too. Its parent's fields are tested under a wildcard
+/// grandparent, the query language reading no negated field on a pattern's root.
+const JS_REFERENCE_TAGS: &str = r#"
+((_ (_ !arguments !constructor
+    (member_expression
+      object: [(identifier) @qualifier.member
+        (member_expression property: (property_identifier) @qualifier.member)]
+      property: (property_identifier) @name) @reference.constant))
+  (#match? @qualifier.member "^[A-Z]")
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+((_ (_ !arguments !constructor
+    [(primary_expression/identifier) @name
+      (member_expression property: (property_identifier) @name)] @reference.constant))
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+((_ (_ !arguments !constructor
+    (member_expression
+      object: [(identifier) @qualifier.member
+        (member_expression property: (property_identifier) @qualifier.member)]
+      property: [(property_identifier) (private_property_identifier)] @name) @reference.field))
+  (#match? @qualifier.member "^[A-Z]"))
+(_ (_ !arguments !constructor
+    (member_expression
+      property: [(property_identifier) (private_property_identifier)] @name) @reference.field))
+"#;
+
+/// The TS and TSX queries' type pattern (spec 117, OTHER LANGUAGES: every `type_identifier` in
+/// type position), their last part: a type named by an identifier, a dotted name or a generic,
+/// in any type's place, is a type reference, so `IShape[]` names `IShape`, `Ns.T` names `Ns.T`
+/// and `Map<K, V>` names `Map`, `K` and `V`.
+const TS_TYPE_TAGS: &str = r#"
+[(primary_type/type_identifier) (primary_type/nested_type_identifier) (primary_type/generic_type)]
+  @name @reference.type
+"#;
+
 /// `parts` joined one per line into `cell` on first use - a tags query composed ONCE for the
 /// process lifetime, so a [`LanguageEntry`] can borrow it as `&'static str`.
 fn composed_once(cell: &'static OnceLock<String>, parts: &[&str]) -> &'static str {
@@ -341,8 +441,11 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     // concrete-declaration rules compile and match against them: the TS and TSX queries compose
     // the upstream JS query (concrete declarations and call/reference rules) with the upstream
     // TS one, `JS_DEFINITION_TAGS` and `TS_DEFINITION_TAGS`, the JS query the upstream JS query
-    // with `JS_DEFINITION_TAGS`; each closes with the constant pattern over its own grammar's
-    // value types, so none of the three compiles against another's grammar.
+    // with `JS_DEFINITION_TAGS`. Each opens with the qualified member call pattern, which the TS
+    // and TSX queries guard with `TS_UNINSTANTIATED`, ahead of the upstream call pattern naming
+    // the same callee; follows them with the constant pattern over its own grammar's value types;
+    // and closes with its heritage patterns and `JS_REFERENCE_TAGS`, the TS and TSX queries with
+    // `TS_TYPE_TAGS` last, so none of the three compiles against another's grammar.
     static JS_TAGS: OnceLock<String> = OnceLock::new();
     static TS_TAGS: OnceLock<String> = OnceLock::new();
     static TSX_TAGS: OnceLock<String> = OnceLock::new();
@@ -385,6 +488,9 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             composed_once(
                 &TS_TAGS,
                 &[
+                    MEMBER_CALL_TAGS_OPEN,
+                    TS_UNINSTANTIATED,
+                    MEMBER_CALL_TAGS_CLOSE,
                     tree_sitter_javascript::TAGS_QUERY,
                     tree_sitter_typescript::TAGS_QUERY,
                     JS_DEFINITION_TAGS,
@@ -394,6 +500,9 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     TS_CONSTANT_VALUES,
                     "(type_assertion)",
                     CONSTANT_TAGS_CLOSE,
+                    TS_HERITAGE_TAGS,
+                    JS_REFERENCE_TAGS,
+                    TS_TYPE_TAGS,
                 ],
             ),
             JS_CONSTRUCTORS,
@@ -406,6 +515,9 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             composed_once(
                 &TSX_TAGS,
                 &[
+                    MEMBER_CALL_TAGS_OPEN,
+                    TS_UNINSTANTIATED,
+                    MEMBER_CALL_TAGS_CLOSE,
                     tree_sitter_javascript::TAGS_QUERY,
                     tree_sitter_typescript::TAGS_QUERY,
                     JS_DEFINITION_TAGS,
@@ -415,6 +527,9 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
                     TS_CONSTANT_VALUES,
                     JSX_CONSTANT_VALUES,
                     CONSTANT_TAGS_CLOSE,
+                    TS_HERITAGE_TAGS,
+                    JS_REFERENCE_TAGS,
+                    TS_TYPE_TAGS,
                 ],
             ),
             JS_CONSTRUCTORS,
@@ -427,12 +542,16 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
             composed_once(
                 &JS_TAGS,
                 &[
+                    MEMBER_CALL_TAGS_OPEN,
+                    MEMBER_CALL_TAGS_CLOSE,
                     tree_sitter_javascript::TAGS_QUERY,
                     JS_DEFINITION_TAGS,
                     CONSTANT_TAGS_OPEN,
                     JS_CONSTANT_VALUES,
                     JSX_CONSTANT_VALUES,
                     CONSTANT_TAGS_CLOSE,
+                    JS_HERITAGE_TAGS,
+                    JS_REFERENCE_TAGS,
                 ],
             ),
             JS_CONSTRUCTORS,
