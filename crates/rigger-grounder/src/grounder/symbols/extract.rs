@@ -1383,10 +1383,11 @@ fn inner_tokens(token_tree: tree_sitter::Node) -> Vec<tree_sitter::Node> {
 /// tree's tokens, into `out`, each with the byte ranges of it that are read. None for an empty
 /// run. Else the run's span re-parsed as a call's argument list ([`ARGUMENT_LIST`]) when that
 /// parse holds no error, read over the span; else as items ([`ITEMS`]) when that one holds
-/// none; else, when the run holds a top-level `,` or `:`, the reads of each run between them;
-/// else the argument-list parse read over each subtree within the span holding no error
-/// ([`error_free_within`]), but those overlapping a token tree of the run none of them holds, and
-/// the reads of each such token tree's own tokens (`json!({"k": f(x)})` gives the call `f`).
+/// none; else, when the run holds a `,` or `:` that no subtree of the argument-list parse within
+/// the span holding no error ([`error_free_within`]) holds beyond itself, the reads of each run
+/// between those (the `,` of `pair::<A, B>(x)` cuts nothing); else that parse read over each
+/// such subtree, but those overlapping a token tree of the run none of them holds, and the
+/// reads of each such token tree's own tokens (`json!({"k": f(x)})` gives the call `f`).
 fn read_tokens(
     parser: &mut tree_sitter::Parser,
     tokens: &[tree_sitter::Node],
@@ -1410,20 +1411,25 @@ fn read_tokens(
         out.push((items, vec![span]));
         return;
     }
-    let runs: Vec<_> = tokens
-        .split(|token| matches!(token.kind(), "," | ":"))
-        .collect();
+    let Some(args) = args else {
+        return;
+    };
+    let mut keep = Vec::new();
+    error_free_within(args.root_node(), &span, &mut keep);
+    let cut = |token: &tree_sitter::Node| {
+        let range = token.byte_range();
+        matches!(token.kind(), "," | ":")
+            && !keep
+                .iter()
+                .any(|read| *read != range && within(&range, read))
+    };
+    let runs: Vec<_> = tokens.split(cut).collect();
     if runs.len() > 1 {
         for run in runs {
             read_tokens(parser, run, source, out);
         }
         return;
     }
-    let Some(args) = args else {
-        return;
-    };
-    let mut keep = Vec::new();
-    error_free_within(args.root_node(), &span, &mut keep);
     let broken: Vec<_> = tokens
         .iter()
         .filter(|token| token.kind() == "token_tree" && !kept(&keep, &token.byte_range()))
