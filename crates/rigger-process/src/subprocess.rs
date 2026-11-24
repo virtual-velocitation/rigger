@@ -167,10 +167,14 @@ std::cfg_select! {
 
 /// The host's shell given the command line `run` whole, as a project writes one (a declared
 /// extractor's `run`, say), running in `dir`: `cmd` and [`cmd_argument`] on Windows, `sh -c
-/// <run>` elsewhere. The caller adds the stdio and the environment.
+/// <run>` elsewhere. The agents' login token
+/// ([`RIGGER_AGENT_TOKEN_VAR`](rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR)) is not passed on:
+/// a project's command is code rigger did not write. The caller adds the stdio and the rest of
+/// the environment.
 pub fn shell_command(run: &str, dir: &Path) -> Command {
     let mut cmd = host_shell(run);
     cmd.current_dir(dir);
+    cmd.env_remove(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR);
     cmd
 }
 
@@ -310,7 +314,8 @@ mod tests {
     }
 
     /// `shell_command` is the host's shell given the run whole - `cmd` and its one raw argument
-    /// on Windows, `sh -c <run>` elsewhere - in the directory, and nothing else.
+    /// on Windows, `sh -c <run>` elsewhere - in the directory, with the agents' login token
+    /// removed from its environment, and nothing else.
     #[test]
     fn shell_command_is_the_hosts_shell_given_the_run_in_the_directory() {
         let run = r#"cargo test "a b""#;
@@ -326,13 +331,16 @@ mod tests {
                 cmd.get_program(),
                 cmd.get_args().collect::<Vec<_>>(),
                 cwd_of(&cmd),
-                cmd.get_envs().count()
+                cmd.get_envs().collect::<Vec<_>>()
             ),
             (
                 OsStr::new(program),
                 args.iter().map(OsStr::new).collect::<Vec<_>>(),
                 Some(dir),
-                0
+                vec![(
+                    OsStr::new(rigger_domain::spawn::RIGGER_AGENT_TOKEN_VAR),
+                    None
+                )]
             )
         );
     }
