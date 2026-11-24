@@ -47,7 +47,7 @@ fn typescript_and_javascript_stage_their_rows() {
         |enclosing, name, leaf, kind, line| mention_in(enclosing, name, leaf, kind, line, false);
     // A mention inside the file's first definition, named by its leaf.
     let in_first = |name, kind, line| at(Some(0), name, name, kind, line);
-    let cases: [Case; 27] = [
+    let cases: [Case; 28] = [
         (
             "a TypeScript array of an interface",
             "shapes.ts",
@@ -132,6 +132,16 @@ fn typescript_and_javascript_stage_their_rows() {
                 in_first("f", None, 2),
                 in_first("T", Some(REF_KIND_TYPE), 2),
                 in_first("make", None, 3),
+            ],
+            vec![("f", None)],
+        ),
+        (
+            "a TSX generic member call",
+            "view.tsx",
+            "function f() {\n    Square.make<T>();\n}\n",
+            vec![
+                in_first("make", None, 2),
+                in_first("T", Some(REF_KIND_TYPE), 2),
             ],
             vec![("f", None)],
         ),
