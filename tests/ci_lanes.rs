@@ -642,18 +642,18 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
 /// compile there. One step builds them (`--no-run`, bounded by `timeout-minutes: 5`); then seven
 /// steps run the `reap::` module's tests by the path a process is ended through, one step runs
 /// each other module whose tests start and signal processes (`child_tree::`, `os_process::`), and
-/// a last one runs every other test (`--skip` of each of those), so the steps together run each
-/// test once. Each test step runs its tests one at a time (`--test-threads=1`), so libtest prints
-/// each test's name as it starts, and `--nocapture` prints what each writes as it writes it. Each
-/// is bounded by `timeout-minutes: 2`, many times its usual seconds, so a test that hangs ends its
-/// step with a log whose last name is that test. A stall that takes the runner out keeps no log,
-/// and the step left unfinished in the job's timeline is then the only name left, so no step
-/// holds many tests. The last step runs `cargo check
-/// --workspace --all-targets --keep-going`, so every test that names one of those adapters
-/// compiles there, and one run names every target that does not, and then the one suite of the
-/// product's own that proves an OS's behaviour, `bare_rigger_hooks_resolve_periphery`. The job's
-/// wasm target is pinned once, by
-/// `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
+/// a last one runs every other test (`--skip` of each of those). Each group of steps ends in one
+/// that runs what the group's others leave (`--skip` of their filters), so a test added to a group
+/// runs in it and the steps together run each test once. Each test step runs its tests one at a
+/// time (`--test-threads=1`), so libtest prints each test's name as it starts, and `--nocapture`
+/// prints what each writes as it writes it. Each is bounded by `timeout-minutes: 2`, many times its
+/// usual seconds, so a test that hangs ends its step with a log whose last name is that test. A
+/// stall that takes the runner out keeps no log, and the step left unfinished in the job's timeline
+/// is then the only name left, so no step holds many tests. The last step runs `cargo check
+/// --workspace --all-targets --keep-going`, so every test that names one of those adapters compiles
+/// there, and one run names every target that does not, and then the one suite of the product's own
+/// that proves an OS's behaviour, `bare_rigger_hooks_resolve_periphery`. The job's wasm target is
+/// pinned once, by `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
 #[test]
 fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
     const JOB: &str = "cross-os-check";
@@ -733,8 +733,12 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
                 "reap::tests::ends::the_watched_end_never reap::tests::ends::the_watched_end_of_a_main"
             ),
             one_at_a_time(
-                "reap::tests::ends::the_watched_end_reports \
-                 reap::tests::ends::the_watched_end_resumes reap::tests::ends::the_watched_end_signals"
+                "reap::tests::ends::the_watched_end --skip reap::tests::ends::the_watched_end_ends \
+                 --skip reap::tests::ends::the_watched_end_freezes \
+                 --skip reap::tests::ends::the_watched_end_stops \
+                 --skip reap::tests::ends::the_watched_end_walks \
+                 --skip reap::tests::ends::the_watched_end_never \
+                 --skip reap::tests::ends::the_watched_end_of_a_main"
             ),
             one_at_a_time("reap::tests::ends::the_ --skip reap::tests::ends::the_watched_end"),
             one_at_a_time("reap::tests::ends:: --skip reap::tests::ends::the_"),
