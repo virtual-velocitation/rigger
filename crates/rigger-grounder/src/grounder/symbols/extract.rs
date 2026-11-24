@@ -1315,7 +1315,8 @@ impl Scope {
 }
 
 /// One parse of a macro invocation's token tree ([`reparse_invocations`]): its tree, the byte
-/// ranges of the tree that are read ([`kept`]; the rest is the wrapper the parse put around the
+/// ranges of the tree that are read ([`kept`]: its tokens, and in an items parse the `;` served
+/// after them, which a last item it ends holds; the rest is the wrapper the parse put around the
 /// tokens), and the scope of its invocation.
 struct Reparse {
     tree: tree_sitter::Tree,
