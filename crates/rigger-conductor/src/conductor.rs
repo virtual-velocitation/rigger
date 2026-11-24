@@ -49243,6 +49243,71 @@ stage "implement" adjudicator "adj" failed
         }
     }
 
+    /// The rollback of a merge whose post-merge re-gate went red moves only the run branch: an
+    /// uncommitted edit the operator holds in the checkout, to a file no unit touches, is still
+    /// there once the merge is undone.
+    #[test]
+    fn a_red_post_merge_regate_keeps_the_operators_uncommitted_edit() {
+        let repo = temp_git_project_with_commit();
+        let repo_path = repo.path().to_str().unwrap().to_string();
+        let file = |name: &str| Path::new(&repo_path).join(name);
+        std::fs::write(file("m.rs"), MERGE_BREAK_BASE).unwrap();
+        std::fs::write(file("notes.txt"), "committed\n").unwrap();
+        for args in [
+            &["add", "m.rs", "notes.txt"][..],
+            &["commit", "-q", "-m", "base"][..],
+        ] {
+            run_git(&repo_path, args);
+        }
+        let edit = "the operator's uncommitted edit\n";
+        std::fs::write(file("notes.txt"), edit).unwrap();
+
+        let mut cfg = Config::default();
+        cfg.workflow.defaults.max_retries = 1;
+        for id in ["worker", "lens", "judge"] {
+            cfg.agents.insert(id.into(), agent(id));
+        }
+        cfg.workflow.gates.insert(
+            "g".into(),
+            gate_def("c=$(grep -c MARK m.rs 2>/dev/null); [ \"${c:-0}\" -le 1 ]"),
+        );
+        let panel = crate::config::ReviewPanel {
+            lenses: vec!["lens".into()],
+            adjudicator: "judge".into(),
+            ..Default::default()
+        };
+        for name in ["unit-a", "unit-b"] {
+            let stage = Stage {
+                name: name.into(),
+                agent: "worker".into(),
+                gates: vec!["g".into()],
+                on_pass: "merge".into(),
+                review: panel.clone(),
+                ..Default::default()
+            };
+            cfg.workflow.stages.insert(name.into(), stage);
+        }
+
+        let store = Store::open(":memory:").unwrap();
+        let driver = MergeBreakDriver {
+            repo: repo_path.clone(),
+        };
+        let deps = Deps {
+            repo: repo_path.clone(),
+            ..stub_deps(&store, &driver, Vec::new())
+        };
+        let rs = run_isolated(&cfg, &deps).unwrap();
+
+        let escalated = ["unit-a", "unit-b"]
+            .iter()
+            .filter(|u| rs.units[**u].status == ledger::Status::Escalated)
+            .count();
+        assert_eq!(escalated, 1, "one merge went red and was rolled back");
+        let merged = std::fs::read_to_string(file("m.rs")).unwrap();
+        assert_eq!(merged.matches("MARK").count(), 1, "{merged}");
+        assert_eq!(std::fs::read_to_string(file("notes.txt")).unwrap(), edit);
+    }
+
     #[test]
     fn the_post_merge_re_gate_runs_in_its_own_scratch_worktree_never_the_repo() {
         // Spec 103, criterion 7 (POST-MERGE GATES RUN ON THE LANDED TREE): the second of two

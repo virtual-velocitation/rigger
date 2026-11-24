@@ -526,7 +526,7 @@ impl Worktree {
         Ok(git(repo, &["rev-parse", "HEAD"])?.trim().to_string())
     }
 
-    /// Reset the run branch checked out in `repo` HARD back to `sha` (spec 12, unit 5): used
+    /// Reset the run branch checked out in `repo` back to `sha` (spec 12, unit 5): used
     /// to UNDO a merge whose POST-MERGE re-gate went RED, so the broken merged tree never
     /// lands. Unlike [`Self::revert_on_base`] (which reverses an ALREADY-integrated commit as
     /// a new, evented commit - unit 4), this removes a merge that was NEVER recorded with an
@@ -534,12 +534,14 @@ impl Worktree {
     /// history rewrite of recorded work, it is aborting a failed integration attempt. The
     /// caller holds the integrate lock, so no concurrent integration observes the reset, and a
     /// following remediation re-attempt re-merges against this same restored tip. An empty
-    /// `sha` (no resolvable pre-merge tip) is a no-op rather than an error.
+    /// `sha` (no resolvable pre-merge tip) is a no-op rather than an error. `repo` is the
+    /// operator's checkout, so the reset keeps its uncommitted edits: one to a file the merge
+    /// changed refuses the reset, an error that leaves the branch and the edit as they were.
     pub fn reset_to(repo: &str, sha: &str) -> Result<(), Error> {
         if sha.is_empty() {
             return Ok(());
         }
-        git(repo, &["reset", "--hard", sha])?;
+        git(repo, &["reset", "--keep", sha])?;
         Ok(())
     }
 
@@ -5243,6 +5245,34 @@ mod tests {
             ),
         ] {
             assert_eq!(got.unwrap(), want, "{reader}");
+        }
+    }
+
+    /// Rolling the run branch back over a merge keeps the checkout's uncommitted edit: an edit
+    /// to a file the merge left alone survives the move, and one to a file the merge changed
+    /// refuses it, leaving the branch and the edit as they were.
+    #[test]
+    fn a_run_branch_rollback_keeps_an_uncommitted_edit_or_refuses() {
+        for (edited, rolls_back) in [("notes.txt", true), ("m.txt", false)] {
+            let (_repo, repo_path, _root) = scratch_repo(false);
+            let file = |name: &str| std::path::Path::new(&repo_path).join(name);
+            for name in ["notes.txt", "m.txt"] {
+                std::fs::write(file(name), "base\n").unwrap();
+            }
+            run_git(&repo_path, &["add", "."]).unwrap();
+            run_git(&repo_path, &["commit", "-q", "-m", "base"]).unwrap();
+            let pre_merge = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+            std::fs::write(file("m.txt"), "merged\n").unwrap();
+            run_git(&repo_path, &["commit", "-qam", "merge"]).unwrap();
+            let merged = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+            std::fs::write(file(edited), "operator\n").unwrap();
+            let reset = Worktree::reset_to(&repo_path, pre_merge.trim());
+            assert_eq!(reset.is_ok(), rolls_back, "{edited}");
+            let head = git(&repo_path, &["rev-parse", "HEAD"]).unwrap();
+            let want = if rolls_back { &pre_merge } else { &merged };
+            assert_eq!(&head, want, "{edited}");
+            let kept = std::fs::read_to_string(file(edited)).unwrap();
+            assert_eq!(kept, "operator\n", "{edited}");
         }
     }
 
