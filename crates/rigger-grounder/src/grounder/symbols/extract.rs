@@ -1421,10 +1421,7 @@ fn read_tokens(
     error_free_within(args.root_node(), &span, &mut keep);
     let cut = |token: &tree_sitter::Node| {
         let range = token.byte_range();
-        matches!(token.kind(), "," | ":")
-            && !keep
-                .iter()
-                .any(|read| *read != range && within(&range, read))
+        matches!(token.kind(), "," | ":") && !keep.iter().any(|read| strictly_within(&range, read))
     };
     let runs: Vec<_> = tokens.split(cut).collect();
     if runs.len() > 1 {
@@ -1506,6 +1503,11 @@ fn error_free_within(
 /// Whether the byte range `inner` lies within `outer`, ends included.
 fn within(inner: &std::ops::Range<usize>, outer: &std::ops::Range<usize>) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
+}
+
+/// Whether the byte range `inner` lies within `outer` and is not `outer` itself.
+fn strictly_within(inner: &std::ops::Range<usize>, outer: &std::ops::Range<usize>) -> bool {
+    inner != outer && within(inner, outer)
 }
 
 /// Whether the byte range `range` lies within one of `keep`'s: whether a read keeps what spans it.
@@ -2568,10 +2570,7 @@ fn container_of(spans: &[std::ops::Range<usize>], i: usize) -> Option<usize> {
     spans
         .iter()
         .enumerate()
-        .filter(|(_, span)| {
-            let holds = |at: &usize| (span.start..=span.end).contains(at);
-            *span != inner && holds(&inner.start) && holds(&inner.end)
-        })
+        .filter(|(_, span)| strictly_within(inner, span))
         .filter(|(_, span)| spans.iter().filter(|other| other == span).count() == 1)
         .min_by_key(|(_, span)| span.len())
         .map(|(j, _)| j)
