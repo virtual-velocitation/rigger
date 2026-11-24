@@ -39,8 +39,9 @@ type Held = (
 /// The first build: a Rust file opening with two inner doc lines and holding a definition whose
 /// outer doc lines have a `#[doc(hidden)]` between them beside an undocumented one, a Rust file
 /// with no doc line, a Go file whose bundled query captures a three-line comment block over
-/// one function and none over the next, and a Python file opening with a module docstring and
-/// holding a class whose body opens with a four-line docstring beside an undocumented function.
+/// one function and none over the next, and a Python file opening with a module docstring of two
+/// parts in parentheses over two lines and holding a class, past its base class, whose body opens
+/// with a four-line docstring beside an undocumented function.
 const FIRST: [Row; 4] = [
     (
         "src/lib.rs",
@@ -59,17 +60,18 @@ const FIRST: [Row; 4] = [
     ),
     (
         "p.py",
-        "\"\"\"The shapes.\"\"\"\n\n\nclass Shape:\n    \"\"\"A shape.\n\n    Of any size.\n    \"\"\"\n\n\
-         \ndef bare():\n    pass\n",
-        Some((1, 1)),
-        &[("Shape", Some((5, 8))), ("bare", None)],
+        "(\"The \"\n \"shapes.\")\n\n\nclass Shape(Base):\n    \"\"\"A shape.\n\n    Of any size.\n    \
+         \"\"\"\n\n\ndef bare():\n    pass\n",
+        Some((1, 2)),
+        &[("Shape", Some((6, 9))), ("bare", None)],
     ),
 ];
 
 /// The rebuild: the first Rust file rewritten so its file span and `documented`'s are gone and
 /// `plain` gains one, the second given a file span and a definition span, the Go file unchanged,
 /// and the Python file rewritten so its string follows an import and is no module docstring,
-/// `Shape`'s body opens with no string and `bare`'s opens with a docstring.
+/// `Shape`'s body opens with a bytes literal, which is no docstring, and `bare`'s, past its
+/// parameter's annotation, opens with a docstring joined from two parts.
 const NEXT: [Row; 4] = [
     (
         "src/lib.rs",
@@ -86,8 +88,8 @@ const NEXT: [Row; 4] = [
     FIRST[2],
     (
         "p.py",
-        "import os\n\"\"\"Not the file's.\"\"\"\n\n\nclass Shape:\n    pass\n\n\ndef bare():\n    \
-         \"\"\"Now documented.\"\"\"\n",
+        "import os\n\"\"\"Not the file's.\"\"\"\n\n\nclass Shape:\n    b\"Not a docstring.\"\n\n\n\
+         def bare(s: Shape):\n    \"Now \" 'documented.'\n",
         None,
         &[("Shape", None), ("bare", Some((10, 10)))],
     ),
