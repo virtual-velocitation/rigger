@@ -845,9 +845,11 @@ flowchart LR
 
 **Live awareness, concretely.** Each `rigger peers` call, and each MCP `rigger_peers` call,
 is one read of the run's peer records (`sidecar::Sidecar::read`): the current run's events
-from its boundary and every run's carried-over decisions, lessons and findings. The call
-keeps only the records whose files (a decision's `governs`, a finding's or lesson's `about`)
-intersect the files the call names. A concurrent agent's decision about
+from its boundary and every run's carried-over decisions, lessons and findings. A call that
+names files is scoped to the records whose files (a decision's `governs`, a finding's or
+lesson's `about`) intersect them; a call that names no files is scoped to every record. The
+reply keeps the best-ranked of those records under one size budget (`mcpserver::peers_json`)
+and counts the ones it leaves out. A concurrent agent's decision about
 a shared file reaches the agent **at its next peers call**, without touching the agent's
 files: isolation guards the *files* (worktree), the event log is the *separate shared
 decision channel*. The two are orthogonal - the insight that makes live awareness safe.
