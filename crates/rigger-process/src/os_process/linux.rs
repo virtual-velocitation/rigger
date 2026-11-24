@@ -119,9 +119,24 @@ pub(super) fn command(pid: u32) -> String {
             return joined;
         }
     }
-    std::fs::read_to_string(dir.join("comm"))
+    short_name(pid)
+}
+
+/// `/proc/<pid>/comm`, the process's short name; empty when it cannot be read.
+fn short_name(pid: u32) -> String {
+    std::fs::read_to_string(proc_of(pid).join("comm"))
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// The file name of the image `/proc/<pid>/exe` links to, without the `" (deleted)"` marker
+/// the kernel adds once that file is replaced ([`super::strip_deleted_suffix`]); the short name
+/// ([`short_name`]) when the link cannot be read, as a zombie's or another user's cannot.
+pub(super) fn executable_name(pid: u32) -> String {
+    std::fs::read_link(proc_of(pid).join("exe"))
+        .ok()
+        .and_then(|image| super::file_name_text(&super::strip_deleted_suffix(&image)))
+        .unwrap_or_else(|| short_name(pid))
 }
 
 /// The first letter of `/proc/<pid>/stat`'s state field: `R` running, `S` sleeping, `D`

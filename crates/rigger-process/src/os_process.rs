@@ -1,10 +1,10 @@
 //! The process interface (spec 125, criterion 9): the one place rigger reads a fact about a
 //! running process - which processes exist, a process's parent, start time, working directory,
-//! command line, run state and open files, which process listens on a TCP port, which
-//! processes hold a directory, and the path that execs this process's own image. Each fact is a
-//! function here, answered by the native adapter of the OS the binary is built for; the reaper
-//! ([`crate::reap`]), the holder check ([`crate::holders`]) and the dash read processes through
-//! these functions alone. Read-only: nothing here signals a process.
+//! command line, executable name, run state and open files, which process listens
+//! on a TCP port, which processes hold a directory, and the path that execs this process's own
+//! image. Each fact is a function here, answered by the native adapter of the OS the binary is
+//! built for; the reaper ([`crate::reap`]), the holder check ([`crate::holders`]) and the dash
+//! read processes through these functions alone. Read-only: nothing here signals a process.
 //!
 //! Every reader is best-effort: a process that is gone, or one this process may not read,
 //! answers absent (`None`, an empty list, an empty command), never an error, and on an OS with
@@ -42,6 +42,7 @@ std::cfg_select! {
         mod unsupported {
             use std::path::PathBuf;
 
+            pub(super) use super::command_file_name as executable_name;
             pub(super) use super::reported_image as running_image;
             pub(super) use super::scan_holders as holders;
 
@@ -104,6 +105,7 @@ std::cfg_select! {
                             start_time(me),
                             cwd(me),
                             command(me),
+                            executable_name(me),
                             state(me),
                             open_files(me),
                             is_unexeced_fork_of(me, me),
@@ -116,6 +118,7 @@ std::cfg_select! {
                             None,
                             None,
                             None,
+                            String::new(),
                             String::new(),
                             None,
                             Vec::new(),
@@ -192,6 +195,29 @@ pub(crate) fn cwd_lies_in(pid: u32, dir: &Path) -> bool {
 /// gone.
 pub fn command(pid: u32) -> String {
     native::command(pid)
+}
+
+/// Process `pid`'s executable name: the file name of the executable it runs, never one of its
+/// arguments, so a message can name the process without repeating what it was given. On
+/// Linux the file name of the image its `/proc` link names, or its short name when that link
+/// cannot be read; on macOS and Windows the file name of its [`command`]. Empty when `pid` is
+/// gone.
+pub fn executable_name(pid: u32) -> String {
+    native::executable_name(pid)
+}
+
+/// The last component of `path` as text: the name [`executable_name`] answers for the
+/// executable at `path`.
+fn file_name_text(path: &Path) -> Option<String> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+}
+
+/// [`executable_name`] on every OS whose [`command`] is the full path of the process's
+/// executable: that path's file name.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn command_file_name(pid: u32) -> String {
+    file_name_text(Path::new(&command(pid))).unwrap_or_default()
 }
 
 /// Process `pid`'s run state as one letter: `R` running, `S` sleeping, `T` stopped, `Z` a zombie
@@ -599,6 +625,42 @@ mod tests {
         );
     }
 
+    /// A process's executable name is the file name of the executable it runs, never one of its
+    /// arguments: this process's is its test executable's on every OS, and a sleeping child's is
+    /// `sleep`.
+    #[test]
+    fn a_processes_executable_name_is_its_executables_file_name_alone() {
+        #[cfg(unix)]
+        let mut sleeper = sleeper_in(Path::new("/"));
+        // `spawn` returns while the child's exec may still be under way, when the OS reports this
+        // test's own executable for it, so the child is read once its exec has finished.
+        #[cfg(unix)]
+        wait_until(|| executable_name(sleeper.id()) == "sleep");
+        let rows = [
+            ("this process", std::process::id()),
+            #[cfg(unix)]
+            ("a sleeping child", sleeper.id()),
+        ];
+        let read: Vec<(&str, String)> = rows
+            .iter()
+            .map(|&(what, pid)| (what, executable_name(pid)))
+            .collect();
+        #[cfg(unix)]
+        cleanup(&mut sleeper);
+        let me = std::env::current_exe().unwrap();
+        assert_eq!(
+            read,
+            [
+                (
+                    "this process",
+                    me.file_name().unwrap().to_string_lossy().into_owned()
+                ),
+                #[cfg(unix)]
+                ("a sleeping child", "sleep".to_string()),
+            ]
+        );
+    }
+
     /// This process, which is running a test, is running or sleeping, and a child that exited
     /// but is not yet reaped is a zombie. On Linux a process's state is its main thread's, here the
     /// test harness's, which this test does not drive: under load the kernel reports it in
@@ -678,6 +740,7 @@ mod tests {
                 start_time(gone),
                 cwd(gone),
                 command(gone),
+                executable_name(gone),
                 state(gone),
                 open_files(gone),
                 is_unexeced_fork_of(gone, std::process::id()),
@@ -687,6 +750,7 @@ mod tests {
                 None,
                 None,
                 None,
+                String::new(),
                 String::new(),
                 None,
                 Vec::new(),

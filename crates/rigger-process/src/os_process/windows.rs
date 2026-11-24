@@ -230,6 +230,7 @@ fn listener_table() -> Vec<u32> {
 }
 
 /// The path the OS reports for the image this process runs.
+pub(super) use super::command_file_name as executable_name;
 pub(super) use super::reported_image as running_image;
 
 /// The processes the Restart Manager reports holding a regular file in `dir` or inside it, this

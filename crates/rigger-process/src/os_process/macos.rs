@@ -387,4 +387,5 @@ fn listens_on(pid: u32, port: u16) -> bool {
 pub(super) use super::scan_holders as holders;
 
 /// The path the OS reports for the image this process runs.
+pub(super) use super::command_file_name as executable_name;
 pub(super) use super::reported_image as running_image;
