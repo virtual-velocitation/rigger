@@ -400,7 +400,7 @@ fn csharp_stages_its_row() {
             k_m(),
         ),
         (
-            "an identifier in a binary expression in a switch case, a value",
+            "an identifier in an arithmetic expression in a switch case, a value",
             in_m!("switch (p) { case Cf + 1: break; }"),
             vec![],
             k_m(),
