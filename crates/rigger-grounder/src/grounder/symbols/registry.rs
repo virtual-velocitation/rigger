@@ -113,11 +113,14 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 /// `and`, an `or` or parentheses too, and so is the identifier of a switch case, a switch arm or a
 /// property subpattern, a constant's name included, since the grammar tells no type from a
 /// constant there; `x is T?` and `x is T[]` reach `T` through their `type` field, and `x is Ns.T`,
-/// which the grammar parses as a member access, is the field `Ns.T`. A member access named by an
-/// identifier and called stays a call (`@reference.send`) and one not called, read or assigned,
-/// is a field; either is qualified by its object when that object is exactly a capitalised
-/// identifier, so `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and `s.Side` the
-/// field `Side`.
+/// which the grammar parses as a member access, is the field `Ns.T`. The grammar parses a
+/// positional pattern with no designation, `x is Pt(0, 0)`, as an invocation in a constant
+/// pattern, so an identifier called there, directly or in parentheses, is a type wherever a
+/// constant pattern's `T` is, `nameof(T)` excepted, the one invocation a constant admits, and
+/// `x is Ns.Pt(0, 0)` stays the call `Ns.Pt`. A member access named by an identifier and called
+/// stays a call (`@reference.send`) and one not called, read or assigned, is a field; either is
+/// qualified by its object when that object is exactly a capitalised identifier, so
+/// `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and `s.Side` the field `Side`.
 const CSHARP_REFERENCE_TAGS: &str = r#"
 (class_declaration
   (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
@@ -140,6 +143,11 @@ const CSHARP_REFERENCE_TAGS: &str = r#"
 (_ returns: [(identifier) (generic_name)] @name) @reference.type
 (as_expression right: [(identifier) (generic_name)] @name) @reference.type
 (constant_pattern [(identifier) (generic_name)] @name) @reference.type
+((constant_pattern
+  [(invocation_expression function: (identifier) @name)
+   (parenthesized_expression (invocation_expression function: (identifier) @name))])
+  @reference.type
+  (#not-eq? @name "nameof"))
 (type_argument_list [(identifier) (generic_name)] @name) @reference.type
 ((invocation_expression
   function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
