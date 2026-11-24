@@ -8,6 +8,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::code_facts::MentionKind;
 use crate::code_view::{Head, ViewFilter};
 use crate::eventstore::{Event, Position};
 
@@ -1534,6 +1535,33 @@ pub fn reference_candidate_kinds(ref_kind: &str) -> Vec<&'static str> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// The label a referrer is listed under, by its mention's tag (spec 117, READERS): one row per
+/// tag, in the spec's order, a call carrying no tag (`None`, as an [`EdgeInferred::ref_kind`] is
+/// absent for one).
+pub const REFERRER_LABELS: [(Option<&str>, &str); 8] = [
+    (None, "called by"),
+    (Some(REF_KIND_CONST), "reads"),
+    (Some(REF_KIND_TYPE), "type use"),
+    (Some(REF_KIND_IMPL), "implemented by"),
+    (Some(REF_KIND_FIELD), "field use"),
+    (Some(REF_KIND_VARIANT), "variant use"),
+    (Some(REF_KIND_USE), "imported by"),
+    (Some(REF_KIND_MODULE), "declared by"),
+];
+
+/// The label a referrer whose mention is of `kind` is listed under ([`REFERRER_LABELS`]); `None`
+/// for a tag the table holds no row for.
+pub fn referrer_label(kind: &MentionKind) -> Option<&'static str> {
+    let tag = match kind {
+        MentionKind::Call => None,
+        MentionKind::Tagged(tag) => Some(tag.as_str()),
+    };
+    REFERRER_LABELS
+        .iter()
+        .find(|(row, _)| *row == tag)
+        .map(|(_, label)| *label)
 }
 
 /// Whether a `rel` edge onto a node of kind `target_kind` declares a module (spec 117, MODULE
