@@ -27,15 +27,18 @@ type Case = (
 );
 
 /// C# STAGES ITS ROW: each entry of a class's, struct's, record's or interface's base list is an
-/// `impl` mention, a record's primary-constructor base included and an enum's base none; an
-/// identifier or generic name in a property, return, parameter, local, array element, nullable,
-/// cast, `is`, `as`, `typeof`, generic argument or field type is a `type` mention, a generic
-/// name's type arguments each a mention too, a qualified type none; `new T()` stays a call; `x.f`
-/// not called, read or assigned, is a `field` mention, named `Square.SIDES` when a capitalised
-/// name qualifies it, while a called `x.g()` is a call; and the `///` block directly above a
-/// definition, a blank line and a bare `///` line inside it included, is its doc span, which
-/// `doc_text` reads back without its XML tags, while a `////` line, a block comment and a run a
-/// plain `//` line joins give none, over the production extractor.
+/// `impl` mention, a record's primary-constructor base included, a comment inside the list and
+/// an enum's base none; an identifier or generic name in a property, return, parameter, local,
+/// array element, nullable, cast, `is`, `as`, `typeof`, generic argument or field type is a
+/// `type` mention, a generic name's type arguments each a mention too, a qualified type none, and
+/// so is one in a constant pattern under a `not`, an `and`, an `or` or parentheses, a switch case
+/// or arm and a property subpattern; `new T()` stays a call; `x.f` not called, read or assigned,
+/// is a `field` mention, named `Square.SIDES` when a capitalised name qualifies it, while a
+/// called `x.g()` is a call; and the `///` block directly above a definition, a blank line and a
+/// bare `///` line inside it included, under at most two other comments, a plain line and a
+/// trailing comment included, is its doc span, which `doc_text` reads back without its XML tags,
+/// while a `////` line, a block comment, a block under three other comments and a `///` line a
+/// plain one follows give none, over the production extractor.
 #[test]
 fn csharp_stages_its_row() {
     // A mention inside the definition at index `at`, written `name` of `leaf`.
@@ -46,7 +49,7 @@ fn csharp_stages_its_row() {
     let leaf_in = |at: u32, leaf: &str, kind: Option<&str>, line: u32| {
         mention_in(Some(at), leaf, leaf, kind, line, false)
     };
-    let cases: [Case; 7] = [
+    let cases: [Case; 10] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -129,15 +132,15 @@ fn csharp_stages_its_row() {
             vec![("K", None, ""), ("M", None, "")],
         ),
         (
-            "a doc block across a blank line, a four-slash line, a run a plain line joins, a block comment and a marker with no space",
+            "a doc block across a blank line, a four-slash line, a block under a plain line and under a trailing comment, a block comment and a marker with no space",
             "class K {\n    /// a doc\n\n    /// still a.\n    int A;\n    //// not doc\n    int B;\n    // plain\n    /// doc c\n    int C; // trailing\n    /// doc d\n    int D;\n    /* block */\n    int E;\n    ///no space\n    const int F = 1;\n}\n",
             vec![],
             vec![
                 ("K", None, ""),
                 ("A", Some((2, 4)), "a doc\nstill a."),
                 ("B", None, ""),
-                ("C", None, ""),
-                ("D", None, ""),
+                ("C", Some((9, 9)), "doc c"),
+                ("D", Some((11, 11)), "doc d"),
                 ("E", None, ""),
                 ("F", Some((15, 15)), "no space"),
             ],
@@ -161,6 +164,52 @@ fn csharp_stages_its_row() {
                 ("M", None, ""),
                 ("F", Some((8, 9)), "bare above"),
             ],
+        ),
+        (
+            "a doc block under two other comments and under three, a block a plain line splits and a `///` line a plain one follows",
+            "class K {\n    // p1\n    // p2\n    /// d1\n    /// d2\n    int A;\n    // q1\n    // q2\n    // q3\n    /// e1\n    int B;\n    /// old\n    // plain\n    /// new\n    int C;\n    /// f1\n    // f2\n    int D;\n}\n",
+            vec![],
+            vec![
+                ("K", None, ""),
+                ("A", Some((4, 5)), "d1\nd2"),
+                ("B", None, ""),
+                ("C", Some((14, 14)), "new"),
+                ("D", None, ""),
+            ],
+        ),
+        (
+            "a line comment and a block comment inside a class's, struct's, interface's and record's base list",
+            "class A : IOne, // see Shape.IDraw\n    ITwo { }\nstruct S : /* Ns::Q */ IS { }\ninterface I : /* c */ IBase { }\nrecord R : // r\n    RBase;\n",
+            vec![
+                leaf_in(0, "IOne", Some(REF_KIND_IMPL), 1),
+                leaf_in(0, "ITwo", Some(REF_KIND_IMPL), 2),
+                leaf_in(1, "IS", Some(REF_KIND_IMPL), 3),
+                leaf_in(2, "IBase", Some(REF_KIND_IMPL), 4),
+                leaf_in(3, "RBase", Some(REF_KIND_IMPL), 6),
+            ],
+            vec![
+                ("A", None, ""),
+                ("S", None, ""),
+                ("I", None, ""),
+                ("R", None, ""),
+            ],
+        ),
+        (
+            "a constant pattern under `not`, `or`, parentheses and `and`, in a switch case and arm and in a property subpattern",
+            "class K {\n    bool M(object p) {\n        var a = p is not NotT;\n        var b = p is OrA or OrB;\n        var c = p is (ParT);\n        var d = p is not (AndA and GAnd<GArg>);\n        switch (p) { case SwT: break; }\n        var e = p switch { ArmT => 1, _ => 0 };\n        return p is { Prop: SubT };\n    }\n}\n",
+            vec![
+                leaf_in(1, "NotT", Some(REF_KIND_TYPE), 3),
+                leaf_in(1, "OrA", Some(REF_KIND_TYPE), 4),
+                leaf_in(1, "OrB", Some(REF_KIND_TYPE), 4),
+                leaf_in(1, "ParT", Some(REF_KIND_TYPE), 5),
+                leaf_in(1, "AndA", Some(REF_KIND_TYPE), 6),
+                leaf_in(1, "GArg", Some(REF_KIND_TYPE), 6),
+                leaf_in(1, "GAnd", Some(REF_KIND_TYPE), 6),
+                leaf_in(1, "SwT", Some(REF_KIND_TYPE), 7),
+                leaf_in(1, "ArmT", Some(REF_KIND_TYPE), 8),
+                leaf_in(1, "SubT", Some(REF_KIND_TYPE), 9),
+            ],
+            vec![("K", None, ""), ("M", None, "")],
         ),
     ];
     for (case, source, mentions, docs) in cases {
