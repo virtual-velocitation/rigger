@@ -38,10 +38,12 @@ type Case = (
 /// `is`, under a `not`, in a switch case or arm and in one pair of parentheses, and so is one in a
 /// switch case label with no `when` whose first argument declares one variable or discards,
 /// `case Pt(var x, 0):`, stacked included, an invocation in the switch section to the grammar,
-/// while a call in a case's body or `when` is none and one in two pairs is none; `nameof` in any
-/// pattern position, a switch case, with `when`, `or` or `and not` and under `not`, a switch arm,
-/// a property subpattern, a list, parentheses and a declaring `nameof(var x)` included, is none,
-/// while a member access in its argument is the `field` mention it names, as in an expression;
+/// while a call in a case's body or `when` is none and one in two pairs is none; the identifier
+/// `nameof` in any pattern position, a switch case, with `when`, `or` or `and not` and under
+/// `not`, a switch arm, a property subpattern, a list, parentheses and a declaring
+/// `nameof(var x)` included, is none, while a member access in its argument is the `field`
+/// mention it names, as in an expression, and a generic named `nameof` and a type argument
+/// spelled as a pattern keyword are the `type` mentions they name;
 /// `new T()` stays a call; `x.f` not called, read or assigned, is a `field` mention, named
 /// `Square.SIDES` when a capitalised name qualifies it, while a called `x.g()` is a call; and the
 /// `///` block directly above a definition, a blank line and a bare `///` line inside it
@@ -82,7 +84,7 @@ fn csharp_stages_its_row() {
     let field = |name: &str, leaf: &str| in_def(1, name, leaf, Some(REF_KIND_FIELD), 3);
     // A call in `K.M` on line 3, written `name` of `leaf`.
     let call = |name: &str, leaf: &str| in_def(1, name, leaf, None, 3);
-    let cases: [Case; 244] = [
+    let cases: [Case; 248] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -1668,13 +1670,37 @@ fn csharp_stages_its_row() {
         (
             "a generic name whose type argument is `nameof` as the left operand of `&` in a conditional's condition, comparisons to the grammar",
             in_m!("var r = p is Ha<nameof> & ok ? 1 : 0;"),
-            vec![ty("Ha")],
+            vec![ty("Ha"), ty("nameof")],
             k_m(),
         ),
         (
             "a generic name whose type argument is generic as the left operand of `&` in a conditional's condition, comparisons to the grammar",
             in_m!("var r = p is Hb<Hc<B> > & ok ? 1 : 0;"),
             vec![ty("Hb"), ty("B"), ty("Hc")],
+            k_m(),
+        ),
+        (
+            "a generic name whose type argument is `not` as the left operand of `&&`, a type argument whatever its spelling",
+            in_m!("var r = p is Kb<not> && ok;"),
+            vec![ty("not"), ty("Kb")],
+            k_m(),
+        ),
+        (
+            "a generic name named `nameof` after `is`, a generic's own name whatever its spelling",
+            in_m!("var r = p is nameof<Ke>;"),
+            vec![ty("Ke"), ty("nameof")],
+            k_m(),
+        ),
+        (
+            "a `|` chain in parentheses as the left operand of `+` in a switch case, its leftmost operand",
+            in_m!("switch (p) { case (Wa | Wb) + 1: break; }"),
+            vec![ty("Wa")],
+            k_m(),
+        ),
+        (
+            "an `&&` chain in parentheses under `!` in a switch case, its leftmost operand",
+            in_m!("switch (p) { case !(Wc && ok): break; }"),
+            vec![ty("Wc")],
             k_m(),
         ),
     ];
