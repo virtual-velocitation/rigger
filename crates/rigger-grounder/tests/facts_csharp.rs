@@ -35,19 +35,20 @@ type Case = (
 /// each a mention too, while a qualified type is none and a qualified name in a constant pattern,
 /// a member access to the grammar, is a `field` mention; a positional pattern's type,
 /// `p is Pt(0, 0)`, an invocation in a constant pattern to the grammar, is a `type` mention after
-/// `is`, under a `not`, in a switch case or arm and in one pair of parentheses, and so is one with a
-/// declaration first in a switch case label, `case Pt(var x, 0):`, stacked included, an invocation
-/// in the switch section to the grammar, while a call in a case's body or `when` is none and one
-/// in two pairs is none; `nameof` in any pattern position, a switch case, with `when`, `or` or
-/// `and not` and under `not`, a switch arm, a property subpattern, a list, parentheses and a
-/// declaring `nameof(var x)` included, is none, while a member access in its argument is the
-/// `field` mention it names, as in an expression; `new T()` stays a call; `x.f` not called, read or
-/// assigned, is a `field` mention, named `Square.SIDES` when a capitalised name qualifies it,
-/// while a called `x.g()` is a call; and the `///` block directly above a definition, a blank
-/// line and a bare `///` line inside it included, under at most two other comments, a plain line
-/// and a trailing comment included, is its doc span, which `doc_text` reads back without its XML
-/// tags, while a `////` line, a block comment, a block under three other comments and a `///`
-/// line a plain one follows give none, over the production extractor.
+/// `is`, under a `not`, in a switch case or arm and in one pair of parentheses, and so is one in a
+/// switch case label with no `when` whose first argument declares one variable or discards,
+/// `case Pt(var x, 0):`, stacked included, an invocation in the switch section to the grammar,
+/// while a call in a case's body or `when` is none and one in two pairs is none; `nameof` in any
+/// pattern position, a switch case, with `when`, `or` or `and not` and under `not`, a switch arm,
+/// a property subpattern, a list, parentheses and a declaring `nameof(var x)` included, is none,
+/// while a member access in its argument is the `field` mention it names, as in an expression;
+/// `new T()` stays a call; `x.f` not called, read or assigned, is a `field` mention, named
+/// `Square.SIDES` when a capitalised name qualifies it, while a called `x.g()` is a call; and the
+/// `///` block directly above a definition, a blank line and a bare `///` line inside it
+/// included, under at most two other comments, a plain line and a trailing comment included, is
+/// its doc span, which `doc_text` reads back without its XML tags, while a `////` line, a block
+/// comment, a block under three other comments and a `///` line a plain one follows give none,
+/// over the production extractor.
 #[test]
 fn csharp_stages_its_row() {
     // A mention inside the definition at index `at`, written `name` of `leaf`.

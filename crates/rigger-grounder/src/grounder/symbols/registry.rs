@@ -119,15 +119,17 @@ const CSHARP_DEFINITION_TAGS: [&str; 18] = [
 /// with a designation, `Pt(0, 0) d`; an invocation in a constant pattern, directly or in one pair
 /// of parentheses, as `x is Pt(0, 0)` is; the constant `Pt`, when the grammar reads
 /// `x is Pt(var a, 0)` as a call of `x is Pt`; and an invocation directly in a switch section, as
-/// the grammar reads a case label whose first argument declares or discards, `case Pt(var a, 0):`,
-/// which a call in the section's body or `when` clause is not. In a second pair of parentheses,
-/// which the grammar nests as a further expression, it is none, and `x is Ns.Pt(0, 0)` stays the
-/// call `Ns.Pt`. `nameof` in any pattern position, under each of those parses and as a declaration
-/// pattern's `type`, `case nameof(Foo):`, is none, while a member access in its argument is the
-/// field it names, as in any expression. A member access named by an identifier and called
-/// stays a call (`@reference.send`) and one not called, read or assigned, is a field; either is
-/// qualified by its object when that object is exactly a capitalised identifier, so
-/// `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and `s.Side` the field `Side`.
+/// the grammar reads a case label with no `when` whose first argument declares one variable or
+/// discards, `case Pt(var a, 0):`, which a call in the section's body or `when` clause is not; a
+/// `when` or a first `var (a, b)` makes the label a recursive pattern. In a second pair of
+/// parentheses, which the grammar nests as a further expression, it is none, and
+/// `x is Ns.Pt(0, 0)` stays the call `Ns.Pt`. `nameof` in any pattern position, under each of
+/// those parses and as a declaration pattern's `type`, `case nameof(Foo):`, is none, while a
+/// member access in its argument is the field it names, as in any expression. A member access
+/// named by an identifier and called stays a call (`@reference.send`) and one not called, read or
+/// assigned, is a field; either is qualified by its object when that object is exactly a
+/// capitalised identifier, so `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and
+/// `s.Side` the field `Side`.
 const CSHARP_REFERENCE_TAGS: &str = r#"
 (class_declaration
   (base_list [(identifier) (generic_name) (qualified_name) (alias_qualified_name)] @name))
