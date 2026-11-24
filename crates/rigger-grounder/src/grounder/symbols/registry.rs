@@ -1388,6 +1388,10 @@ class Lid(Box):
     \"\"\"A lid.\"\"\"
     def seal(self, b: Box):
         return b.w + Box.MAX
+class Cap(typing.Generic[T]):
+    pass
+def fit(k: typing.Optional[Box]) -> A | B | C:
+    return k
 ",
         ),
     ];
@@ -1558,7 +1562,7 @@ class Lid(Box):
             // Go
             ("go", "go-tags-v3", "40f80b41e4a13f29"),
             // Python
-            ("py", "python-tags-v2", "12c34691ae660b83"),
+            ("py", "python-tags-v2", "a7c2bc0cb11e3298"),
         ];
         assert_eq!(
             GRAMMAR_TAGS_VERSION,

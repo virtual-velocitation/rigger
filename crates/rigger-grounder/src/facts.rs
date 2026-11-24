@@ -2084,7 +2084,7 @@ pub(crate) mod tests {
             // Go
             ("go", "go-tags-v3", "4d23a95104b19556"),
             // Python
-            ("py", "python-tags-v2", "41289b16631dbb93"),
+            ("py", "python-tags-v2", "e15e2d886dfa5e1f"),
         ];
         const PINNED_FACTS: (&str, &str) = ("facts-v6", "006133eb2aae6c76");
         fn digest(facts: &impl std::fmt::Debug) -> String {
