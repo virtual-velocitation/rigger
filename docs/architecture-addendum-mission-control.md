@@ -263,9 +263,10 @@ never perceptibly late. A frame of the map at full extent stays under 8 ms of co
                                                definition (stages, gates, liveness bound),
                                                head position, action token }
    GET /api/console/stream?since=N&follow=<spawn>
-                                        --->  text/event-stream: `event` per new console
-                                               event (subscribe_all on the store), `progress`
-                                               per new progress line, `turn` per new
+                                        --->  text/event-stream, from a 200 ms re-read of
+                                               the run's inputs: `event` per new console
+                                               event, `progress` per new progress line,
+                                               `turn` per new
                                                transcript turn of the followed spawn plus a
                                                `usage` frame per spawn as its totals grow,
                                                `liveness` every 5 s, `attention` when an
