@@ -1565,7 +1565,9 @@ fn begins_upper(node: tree_sitter::Node, source: &[u8]) -> bool {
 }
 
 /// The final segment of a Rust path node: an `identifier` itself, a `scoped_identifier`'s
-/// `name`, a `generic_type`'s type's; `None` for a `crate`, `self` or `super` path.
+/// `name`, a `generic_type`'s type's; `None` for a `crate`, `self` or `super` path and for any
+/// other node, a bare type name (`type_identifier`, which [`base_type_identifier`] reads) among
+/// them.
 fn final_identifier(path: tree_sitter::Node) -> Option<tree_sitter::Node> {
     match path.kind() {
         "identifier" => Some(path),
