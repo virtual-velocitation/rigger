@@ -3,8 +3,9 @@
 //! position, an `impl` mention for each type an `implements` or `extends` clause names, a `const`
 //! mention for a constant read, a `field` mention for a member that is not called while a called
 //! one stays a call, a call named `Square.make` for `Square.make()`, and a doc span for a `/** */`
-//! block directly above a function, class or method declaration that no `export` wraps (a
-//! constructor aside), or above a `const`, `let` or `var` that holds a function.
+//! block directly above a method other than a constructor, or above a function declaration, a
+//! class declaration or a `const`, `let` or `var` holding a function, each when no `export`
+//! precedes it.
 
 #![cfg(all(feature = "symbols", any(feature = "store", not(feature = "core"))))]
 
@@ -41,9 +42,9 @@ type Case = (
 /// `make`, each qualified by a capitalised object alone, a member chain by its last name, so
 /// `Ns.Kit.make()` is the call `Kit.make`. A generic member call is a call of its leaf,
 /// unqualified, in TypeScript and TSX alike, and an uncalled instantiation a field. A `/** */`
-/// block directly above a function, class or method declaration that no `export` wraps (a
-/// constructor aside), or above a `const`, `let` or `var` that holds a function, is its doc span
-/// in both, over the production extractor.
+/// block directly above a method other than a constructor, or above a function declaration, a
+/// class declaration or a `const`, `let` or `var` holding a function, each when no `export`
+/// precedes it, is its doc span in both, over the production extractor.
 #[test]
 fn typescript_and_javascript_stage_their_rows() {
     let at =
