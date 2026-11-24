@@ -634,18 +634,22 @@ fn every_job_that_builds_dash_installs_the_console_core_wasm_target() {
 /// each leg runs on its own OS. Its strategy sets `fail-fast: false`, so a red leg never cancels
 /// the other before that one reports its own errors, and neither the job nor any of its steps
 /// carries an `if` or a `continue-on-error`, so each leg checks and a red one fails the job. Its
-/// checkout fetches full history. It has two `run:` steps, each under `bash` on every runner and
-/// each exporting an empty `RUSTC_WRAPPER` in its own shell before its cargo command: the empty
-/// value overrides `.cargo/config.toml`'s Unix wrapper script for cargo and every nested cargo it
-/// starts. The first runs `cargo test -p rigger-process --lib -- --nocapture`, the crate whose own
-/// tests hold the rows for the macOS and Windows adapters, so they run on their own OS whatever
-/// else fails to compile there. It is bounded by `timeout-minutes: 5`, about seven times its usual
-/// time, so a test that hangs ends the step with its log kept: the tests run in parallel, as
-/// everywhere else, libtest names each one still running after 60 s, and `--nocapture` prints what
-/// each writes as it writes it. The second runs `cargo check --workspace --all-targets
-/// --keep-going`, so every test that names one of those adapters compiles there, and one run names
-/// every target that does not. The job's wasm target is pinned once, by
-/// `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
+/// checkout fetches full history. Each of its `run:` steps runs under `bash` on every runner and
+/// exports an empty `RUSTC_WRAPPER` in its own shell before its cargo command: the empty value
+/// overrides `.cargo/config.toml`'s Unix wrapper script for cargo and every nested cargo it
+/// starts. The first steps run the tests of `rigger-process`, the crate whose own tests hold the
+/// rows for the macOS and Windows adapters, so they run on their own OS whatever else fails to
+/// compile there. One step builds them (`--no-run`, bounded by `timeout-minutes: 5`); then one
+/// step runs each module whose tests start and signal processes (`reap::`, `child_tree::`,
+/// `os_process::`) and a last one runs every other test (`--skip` of each of those), so the
+/// steps together run each test once. A step that never ends names its module even when its
+/// runner is lost and no log is kept. Each test step is bounded by `timeout-minutes: 2`, many
+/// times its usual seconds, so a test that hangs ends the step with its log kept: the tests run in
+/// parallel, as everywhere else, libtest names each one still running after 60 s, and
+/// `--nocapture` prints what each writes as it writes it. The last step runs `cargo check
+/// --workspace --all-targets --keep-going`, so every test that names one of those adapters
+/// compiles there, and one run names every target that does not. The job's wasm target is pinned
+/// once, by `every_job_that_builds_dash_installs_the_console_core_wasm_target`.
 #[test]
 fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
     const JOB: &str = "cross-os-check";
@@ -709,14 +713,31 @@ fn the_cross_os_check_job_checks_the_workspace_on_windows_and_macos() {
     assert_eq!(
         run_steps,
         [
-            unwrapped(Some(5), "cargo test -p rigger-process --lib -- --nocapture"),
+            unwrapped(Some(5), "cargo test -p rigger-process --lib --no-run"),
+            unwrapped(
+                Some(2),
+                "cargo test -p rigger-process --lib -- --nocapture reap::"
+            ),
+            unwrapped(
+                Some(2),
+                "cargo test -p rigger-process --lib -- --nocapture child_tree::"
+            ),
+            unwrapped(
+                Some(2),
+                "cargo test -p rigger-process --lib -- --nocapture os_process::"
+            ),
+            unwrapped(
+                Some(2),
+                "cargo test -p rigger-process --lib -- --nocapture --skip reap:: \
+                 --skip child_tree:: --skip os_process::"
+            ),
             unwrapped(None, "cargo check --workspace --all-targets --keep-going"),
         ],
-        "job `{JOB}` must have two `run:` steps, each under `shell: bash` exporting an empty \
-         `RUSTC_WRAPPER`: first `cargo test -p rigger-process --lib -- --nocapture` bounded by \
-         `timeout-minutes: 5`, so the process crate's rows run whatever else fails to compile and \
-         a hung one is named in a log the bound keeps, then `cargo check --workspace \
-         --all-targets --keep-going`, so one run names every target that does not compile \
+        "job `{JOB}` must have these `run:` steps, each under `shell: bash` exporting an empty \
+         `RUSTC_WRAPPER`: the process crate's tests built, then run one module per step and the \
+         rest in one, each bounded, so the crate's rows run whatever else fails to compile and a \
+         hung one is named by its step, then `cargo check --workspace --all-targets \
+         --keep-going`, so one run names every target that does not compile \
          (shell, timeout-minutes, lines)"
     );
 }
