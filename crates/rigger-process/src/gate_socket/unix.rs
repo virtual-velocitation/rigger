@@ -186,11 +186,11 @@ impl Drop for GateSocket {
 
 /// Ask the driver serving the socket at `path` to answer `request`: its reply, or `None` when no
 /// driver serves there (no socket file, one nothing listens on, or a connection closed before any
-/// driver read the request, [`exchange`]). Off Linux a driver that took the connection and closed
-/// it with the request unread is the end-of-file error, since the OS ends that reply as it ends
-/// one a driver read and left unanswered. A socket in a directory that is not this user's alone is
-/// refused with `PermissionDenied` ([`check_private`]), and a path longer than the OS allows a
-/// socket is `InvalidInput`.
+/// driver read the request, [`exchange`]). Off Linux a connection closed once the request was
+/// written but before any driver read it, taken by a driver or still queued, is the end-of-file
+/// error, since the OS ends that reply as it ends one a driver read and left unanswered. A socket
+/// in a directory that is not this user's alone is refused with `PermissionDenied`
+/// ([`check_private`]), and a path longer than the OS allows a socket is `InvalidInput`.
 pub fn ask(path: &Path, request: &GateRequest) -> io::Result<Option<GateReply>> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         check_private(dir)?;
@@ -219,6 +219,21 @@ mod tests {
         GateRequest {
             dir: "/work/unit".into(),
             gate: "g".into(),
+        }
+    }
+
+    /// Drop `listener` and wait until nothing listens at `path`: a child another test forks holds
+    /// a copy of every descriptor until its exec, so the socket closes when that copy does.
+    fn closed(listener: std::os::unix::net::UnixListener, path: &Path) {
+        drop(listener);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::os::unix::net::UnixStream::connect(path).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a copy of the listener at {} outlived its drop by 10 s",
+                path.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
 
@@ -262,7 +277,10 @@ mod tests {
         let path = socket_path_under(runtime.path(), repo.path()).unwrap();
         assert_eq!(ask(&path, &request()).unwrap(), None, "no socket file");
         private_dir(path.parent().unwrap()).unwrap();
-        drop(std::os::unix::net::UnixListener::bind(&path).unwrap());
+        closed(
+            std::os::unix::net::UnixListener::bind(&path).unwrap(),
+            &path,
+        );
         assert!(
             path.exists(),
             "a listener dropped without unlinking leaves its file"
@@ -279,17 +297,35 @@ mod tests {
     /// A REQUEST NO DRIVER READ IS NO ANSWER: GIVEN a connection closed before any driver read the
     /// request on it - the listener closed with the connection still queued (a driver shutting
     /// down, or a listener a process forked at that moment held a little longer), so the request
-    /// meets a broken pipe, or, on Linux, a driver that took the connection and closed it with the
-    /// request unread, so the reply meets a reset - THEN asking answers `None`, as when nothing
-    /// listens; GIVEN a driver that read the whole request and closed without replying, THEN
-    /// asking is the end-of-file error, since a driver took that request. Off Linux a driver that
-    /// took the connection and closed it with the request unread is that error too: macOS meets
-    /// the close with an end of file, not a reset, so the two closes read the same there.
+    /// meets a broken pipe, or, on Linux, the listener closed with the connection queued once the
+    /// request was written, or a driver that took the connection and closed it with the request
+    /// unread, so the reply meets a reset - THEN asking answers `None`, as when nothing listens;
+    /// GIVEN a driver that read the whole request and closed without replying, THEN asking is the
+    /// end-of-file error, since a driver took that request. Off Linux the two closes after the
+    /// request was written are that error too: macOS meets them with an end of file, not a reset,
+    /// so they read the same there as a driver that read the request.
     #[test]
     fn a_request_no_driver_read_answers_none_and_one_read_but_unanswered_is_an_error() {
         use std::io::{BufRead, Read};
         use std::os::unix::net::{UnixListener, UnixStream};
         type Close = fn(&Path, UnixListener) -> io::Result<Option<GateReply>>;
+        /// A connection that drops the listener copy it holds before its first read, so the
+        /// listener closes between the request's write and the reply's read.
+        struct CloseOnRead(UnixStream, Option<UnixListener>);
+        impl Read for CloseOnRead {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.1.take();
+                self.0.read(buf)
+            }
+        }
+        impl io::Write for CloseOnRead {
+            fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+                self.0.write(buf)
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                self.0.flush()
+            }
+        }
         /// Ask over `listener` while `driver` handles the one connection it takes.
         fn asked_while(
             path: &Path,
@@ -302,15 +338,30 @@ mod tests {
                 asking.join().unwrap()
             })
         }
-        let rows: [(&str, Close, Result<(), io::ErrorKind>); 3] = [
+        let rows: [(&str, Close, Result<(), io::ErrorKind>); 4] = [
             (
                 "closed with the connection queued",
                 |path, listener| {
                     let queued = UnixStream::connect(path).unwrap();
-                    drop(listener);
+                    closed(listener, path);
                     exchange(queued, &request())
                 },
                 Ok(()),
+            ),
+            (
+                "closed with the connection queued once the request was written",
+                |path, listener| {
+                    // The copy stands for one a forked child holds past the listener's drop.
+                    let copy = listener.try_clone().unwrap();
+                    let queued = UnixStream::connect(path).unwrap();
+                    drop(listener);
+                    exchange(CloseOnRead(queued, Some(copy)), &request())
+                },
+                if cfg!(target_os = "linux") {
+                    Ok(())
+                } else {
+                    Err(io::ErrorKind::UnexpectedEof)
+                },
             ),
             (
                 "taken and closed with the request unread",

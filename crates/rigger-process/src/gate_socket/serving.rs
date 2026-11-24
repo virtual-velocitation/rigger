@@ -51,13 +51,13 @@ pub(super) fn answer_one(
 /// driver's reply: `None` when the connection closes before any driver read the request. On a
 /// unix socket, a listener that closes with the connection still queued - a driver shutting down,
 /// or a socket a process forking at that moment holds a little longer - breaks the pipe the
-/// request is written to, or resets the connection once it was written. On Linux a driver that
-/// closes a connection with the request unread resets it too. No driver took the request then,
-/// exactly as when nothing listens. A named pipe whose server is gone before the request is
-/// written breaks the pipe the same way, which the named-pipe `ask` answers as an error. A driver
-/// that read the request and closed without replying is the end of file this answers as an
-/// error, and so is a close with the request unread wherever the OS ends the reply as it ends one
-/// closed after reading: a named pipe and a macOS socket do.
+/// request is written to, or, on Linux, resets the connection once it was written. On Linux a
+/// driver that closes a connection with the request unread resets it too. No driver took the
+/// request then, exactly as when nothing listens. A named pipe whose server is gone before the
+/// request is written breaks the pipe the same way, which the named-pipe `ask` answers as an
+/// error. A driver that read the request and closed without replying is the end of file this
+/// answers as an error, and so is a close with the request unread wherever the OS ends the reply
+/// as it ends one closed after reading: a named pipe and a macOS socket do.
 pub(super) fn exchange(
     mut stream: impl io::Read + io::Write,
     request: &GateRequest,
