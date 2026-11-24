@@ -33,13 +33,16 @@ type Case = (
 /// constant pattern under a `not`, an `and`, an `or` or parentheses, a switch case or arm and a
 /// property subpattern, is a `type` mention, a generic name's type arguments each a mention too,
 /// while a qualified type is none and a qualified name in a constant pattern, a member access to
-/// the grammar, is a `field` mention; `new T()` stays a call; `x.f` not called, read or assigned,
-/// is a `field` mention, named `Square.SIDES` when a capitalised name qualifies it, while a
-/// called `x.g()` is a call; and the `///` block directly above a definition, a blank line and a
-/// bare `///` line inside it included, under at most two other comments, a plain line and a
-/// trailing comment included, is its doc span, which `doc_text` reads back without its XML tags,
-/// while a `////` line, a block comment, a block under three other comments and a `///` line a
-/// plain one follows give none, over the production extractor.
+/// the grammar, is a `field` mention; a positional pattern's type, `p is Pt(0, 0)`, an invocation
+/// in a constant pattern to the grammar, is a `type` mention after `is`, under a `not` or
+/// parentheses and in a switch case or arm, while `nameof(Foo)` there is none; `new T()` stays a
+/// call; `x.f` not called, read or assigned, is a `field` mention, named `Square.SIDES` when a
+/// capitalised name qualifies it, while a called `x.g()` is a call; and the `///` block directly
+/// above a definition, a blank line and a bare `///` line inside it included, under at most two
+/// other comments, a plain line and a trailing comment included, is its doc span, which
+/// `doc_text` reads back without its XML tags, while a `////` line, a block comment, a block
+/// under three other comments and a `///` line a plain one follows give none, over the
+/// production extractor.
 #[test]
 fn csharp_stages_its_row() {
     // A mention inside the definition at index `at`, written `name` of `leaf`.
@@ -50,7 +53,7 @@ fn csharp_stages_its_row() {
     let leaf_in = |at: u32, leaf: &str, kind: Option<&str>, line: u32| {
         mention_in(Some(at), leaf, leaf, kind, line, false)
     };
-    let cases: [Case; 11] = [
+    let cases: [Case; 12] = [
         (
             "a base list, a parameter's types, a member constant, an assigned member and a doc block",
             "/// <summary>A square.</summary>\n/// <remarks>Its <c>Side</c> is fixed.</remarks>\nclass Square : IShape {\n    const int SIDES = 4;\n    int Side;\n    void Draw(List<IShape> s) { var n = Square.SIDES; s.Side = 2; }\n}\n",
@@ -218,6 +221,18 @@ fn csharp_stages_its_row() {
             vec![
                 in_def(1, "Ns.QualT", "QualT", Some(REF_KIND_FIELD), 3),
                 in_def(1, "Color.Red", "Red", Some(REF_KIND_FIELD), 4),
+            ],
+            vec![("K", None, ""), ("M", None, "")],
+        ),
+        (
+            "a positional pattern after `is`, under `not`, in a switch case and arm and in parentheses, and `nameof` after `is`",
+            "class K {\n    int M(object p, string s) {\n        var a = p is Pt(0, 0);\n        var b = p is not PtN(0, 0);\n        switch (p) { case PtD(0, 0): break; }\n        var c = p switch { PtA(0, 0) => 1, _ => 0 };\n        var d = p is (PtP(0, 0));\n        return s is nameof(Foo) ? 1 : 0;\n    }\n}\n",
+            vec![
+                leaf_in(1, "Pt", Some(REF_KIND_TYPE), 3),
+                leaf_in(1, "PtN", Some(REF_KIND_TYPE), 4),
+                leaf_in(1, "PtD", Some(REF_KIND_TYPE), 5),
+                leaf_in(1, "PtA", Some(REF_KIND_TYPE), 6),
+                leaf_in(1, "PtP", Some(REF_KIND_TYPE), 7),
             ],
             vec![("K", None, ""), ("M", None, "")],
         ),
