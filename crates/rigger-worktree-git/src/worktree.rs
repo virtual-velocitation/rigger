@@ -4219,11 +4219,21 @@ pub fn path_is_dirty(dir: &str) -> Result<bool, Error> {
     Ok(!read.records.is_empty() || !read.warning.is_empty())
 }
 
-/// Whether `dir`'s tracked files hold changes no commit records, untracked files aside; a
-/// warning git gives beside its records reads as dirty, as [`path_is_dirty`]'s does.
-pub fn tracked_is_dirty(dir: &str) -> Result<bool, Error> {
+/// The changes `dir`'s tracked files hold that no commit records, untracked files aside, as each
+/// one's two-character status and path ([`status_records`]), in git's order. A warning git gives
+/// beside its records is an error, since git could not vouch for the whole tree.
+pub fn tracked_changes(dir: &str) -> Result<Vec<(String, String)>, Error> {
     let read = status_read(dir, &["--untracked-files=no"], &[])?;
-    Ok(!read.records.is_empty() || !read.warning.is_empty())
+    if !read.warning.is_empty() {
+        return Err(step_failed(
+            format!("reading the tracked changes of {dir}"),
+            read.warning,
+        ));
+    }
+    Ok(status_records(&read.records)
+        .into_iter()
+        .map(|(status, path)| (status.to_string(), path.to_string()))
+        .collect())
 }
 
 /// The paths [`status_read`] reports changed in `dir`'s tree, untracked files included, in git's
