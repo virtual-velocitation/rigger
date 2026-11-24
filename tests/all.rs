@@ -157,6 +157,8 @@ mod init_setup_unknown_key_agent_fleet_periphery;
 mod init_template_sets_periphery;
 mod integrate_conflict_merge_periphery;
 mod js_ts_definitions_are_nodes_periphery;
+#[cfg(feature = "symbols")]
+mod js_ts_staged_mentions_land_periphery;
 mod keep_awake_adapters_cargo_boundary;
 mod kurrentdb_always_available;
 mod kurrentdb_contract_test_surface;
