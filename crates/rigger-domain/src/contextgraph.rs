@@ -1082,7 +1082,8 @@ pub trait ContextGraph: Send + Sync {
         Ok(None)
     }
 
-    /// The doc comment of `node`, a code entity or a file, when the file facts this graph was read
+    /// The doc comment of `node`, a code file or the production definition a code entity records
+    /// (a test definition reads none), when the file facts this graph was read
     /// from hold its doc span and describe the caller's tree: the span's lines read from the
     /// caller's worktree ([`crate::code_view::SourceLines`]) as the extractor the store was opened
     /// with gives their text ([`crate::code_view::Extract::doc_text`]). `None` when the graph
