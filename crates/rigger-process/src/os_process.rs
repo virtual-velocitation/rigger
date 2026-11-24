@@ -1156,40 +1156,68 @@ mod tests {
         assert_eq!(child_cwd, Some(removed));
     }
 
+    /// A fork of this process held before its exec, so it holds copies of every descriptor this
+    /// process had open when it forked, until [`PausedFork::release`] lets it exec `true`.
+    #[cfg(unix)]
+    struct PausedFork {
+        pid: u32,
+        go: std::io::PipeWriter,
+        spawner: std::thread::JoinHandle<std::process::ExitStatus>,
+    }
+
+    #[cfg(unix)]
+    impl PausedFork {
+        fn start() -> Self {
+            use std::io::{Read, Write};
+            use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+            use std::os::unix::process::CommandExt;
+
+            let (mut pid_rx, pid_tx) = std::io::pipe().unwrap();
+            let (go_rx, go) = std::io::pipe().unwrap();
+            let go_fd = go.as_raw_fd();
+            let mut cmd = crate::subprocess::command("true");
+            // SAFETY: the closure runs in the forked child before exec and only makes raw
+            // read/write/close calls on descriptors it inherited.
+            unsafe {
+                cmd.pre_exec(move || {
+                    // Close the child's copy of the go pipe's write end, so this process dropping
+                    // its own copy (on release or on a panic) always releases the child.
+                    drop(OwnedFd::from_raw_fd(go_fd));
+                    (&pid_tx).write_all(&std::process::id().to_ne_bytes())?;
+                    let _ = (&go_rx).read(&mut [0]);
+                    Ok(())
+                });
+            }
+            // `spawn` returns only once the child has exec'd, so it runs off this thread.
+            let spawner = std::thread::spawn(move || cmd.spawn().unwrap().wait().unwrap());
+            let mut pid = [0; 4];
+            pid_rx.read_exact(&mut pid).unwrap();
+            Self {
+                pid: u32::from_ne_bytes(pid),
+                go,
+                spawner,
+            }
+        }
+
+        /// Lets the fork exec, and whether the `true` it runs exits cleanly.
+        fn release(mut self) -> bool {
+            use std::io::Write;
+            self.go.write_all(b"g").unwrap();
+            self.spawner.join().unwrap().success()
+        }
+    }
+
     /// A fork of this process that has not exec'd holds the descriptors it copied from this
     /// process, and is never counted a holder for them.
     #[cfg(unix)]
     #[test]
     fn a_fork_of_this_process_that_has_not_execd_never_counts() {
-        use std::io::{Read, Write};
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-        use std::os::unix::process::CommandExt;
-
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("f");
         std::fs::write(&file, b"x").unwrap();
         let _own = std::fs::File::open(&file).unwrap();
-        let (mut pid_rx, pid_tx) = std::io::pipe().unwrap();
-        let (go_rx, mut go_tx) = std::io::pipe().unwrap();
-        let go_tx_fd = go_tx.as_raw_fd();
-        let mut cmd = crate::subprocess::command("true");
-        // SAFETY: the closure runs in the forked child before exec and only makes raw
-        // read/write/close calls on descriptors it inherited.
-        unsafe {
-            cmd.pre_exec(move || {
-                // Close the child's copy of the go pipe's write end, so this test dropping
-                // its own copy (on success or on a panic) always releases the child.
-                drop(OwnedFd::from_raw_fd(go_tx_fd));
-                (&pid_tx).write_all(&std::process::id().to_ne_bytes())?;
-                let _ = (&go_rx).read(&mut [0]);
-                Ok(())
-            });
-        }
-        // `spawn` returns only once the child has exec'd, so it runs off this thread.
-        let spawner = std::thread::spawn(move || cmd.spawn().unwrap().wait().unwrap());
-        let mut pid = [0; 4];
-        pid_rx.read_exact(&mut pid).unwrap();
-        let pid = u32::from_ne_bytes(pid);
+        let fork = PausedFork::start();
+        let pid = fork.pid;
         let base = dir.path().canonicalize().unwrap();
         assert!(
             holds(pid, &base),
@@ -1202,8 +1230,28 @@ mod tests {
             0,
             "the host fixture counts no open by a fork whose descriptors are this process's own"
         );
-        go_tx.write_all(b"g").unwrap();
-        assert!(spawner.join().unwrap().success());
+        assert!(fork.release());
+    }
+
+    /// On macOS the process named as listening on a port is the newest process holding the
+    /// listener, so a fork of this process paused before its exec, which holds a copy of it, is
+    /// named while no newer process holds one: the answer the listener test above waits out.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_paused_fork_holding_a_listener_is_named_while_it_is_the_newest_holder() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let fork = PausedFork::start();
+        let pid = fork.pid;
+        let named = wait_until(|| listening_pid(port) == Some(pid));
+        let answer = listening_pid(port);
+        assert!(fork.release(), "the released fork runs `true`");
+        drop(listener);
+        assert!(
+            named,
+            "the paused fork {pid} is named; this process is {}, the last answer {answer:?}",
+            std::process::id()
+        );
     }
 
     /// A parent a Windows snapshot names is trusted while it still opens and is a parent by the
