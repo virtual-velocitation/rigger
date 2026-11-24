@@ -3,8 +3,9 @@
 //! extractor and the workflow-definition extractor already find, and what an extractor the
 //! project's workflow declares answers over THE EXTRACTOR PROTOCOL (spec 125), whose client is
 //! [`extractor_protocol`]; this module is no extractor of its own, and its one language knowledge
-//! is the doc rule [`FactsExtractor`]'s [`Extract::doc_text`] strips a Rust doc span's lines to
-//! their comment text by. Every name is kept as written and
+//! is the doc rules [`FactsExtractor`]'s [`Extract::doc_text`] reads a doc span's text by: Rust's,
+//! which strips its lines to their comment text, and Python's, which reads its docstring's body,
+//! dedented. Every name is kept as written and
 //! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
@@ -303,11 +304,13 @@ impl Extract for FactsExtractor {
         file_facts(entry, bytes, bundled_code)
     }
 
-    /// The doc rule of the language `lang` names: Rust's ([`rust_doc_text`]), and the lines
-    /// trimmed ([`trimmed_lines`]) for a language with no rule.
+    /// The doc rule of the language `lang` names: Rust's ([`rust_doc_text`]), Python's
+    /// ([`python_doc_text`]), and the lines trimmed ([`trimmed_lines`]) for a language with no rule.
     fn doc_text(&self, lang: &str, raw: &str) -> String {
         if lang == lang_str(Lang::Rust) {
             rust_doc_text(raw)
+        } else if lang == lang_str(Lang::Python) {
+            python_doc_text(raw)
         } else {
             trimmed_lines(raw)
         }
@@ -415,7 +418,7 @@ fn after_token(text: &str) -> &str {
     let word_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut chars = text.chars();
     match chars.next() {
-        Some('"') => plain_literal(chars.as_str()).1,
+        Some('"') => plain_literal(chars.as_str(), "\"").1,
         Some('\'') => {
             let quoted = chars.as_str();
             match (chars.next(), chars.next()) {
@@ -438,21 +441,69 @@ fn after_token(text: &str) -> &str {
     }
 }
 
-/// The body of the plain Rust string literal whose opening `"` ends just before `text`, as
-/// written, up to its own closer - the first `"` that no `\` escapes - and the text after that
-/// closer. The body runs to `text`'s end, with nothing after it, when the literal is unclosed.
-fn plain_literal(text: &str) -> (&str, &str) {
+/// The body of the string literal whose opener ends just before `text`, as written, up to its own
+/// `closer` - the first that no `\` escapes, a Rust plain literal's `"` or a Python string's quote
+/// or three - and the text after that closer. The body runs to `text`'s end, with nothing after
+/// it, when the literal is unclosed.
+fn plain_literal<'t>(text: &'t str, closer: &str) -> (&'t str, &'t str) {
     let mut chars = text.char_indices();
     while let Some((at, c)) = chars.next() {
-        match c {
-            '\\' => {
-                chars.next();
-            }
-            '"' => return (&text[..at], &text[at + 1..]),
-            _ => {}
+        if c == '\\' {
+            chars.next();
+        } else if text[at..].starts_with(closer) {
+            return (&text[..at], &text[at + closer.len()..]);
         }
     }
     (text, "")
+}
+
+/// The text of a Python docstring span's `raw` lines: the body of the string literal the span's
+/// first quote opens - three of that quote when it opens three, else the one - up to its own
+/// closer ([`plain_literal`]), its prefix (`r`, `u`) and whatever follows the closer dropped and
+/// its escapes not decoded; empty when the span holds no quote. The body is dedented as PEP 257
+/// trims a docstring: its first line trimmed; every later line stripped of the least indent of the
+/// later lines that are not blank, a tab counting as one column, and its end trimmed; the blank
+/// lines before the first line of text and after the last dropped; the lines joined by `\n`. The
+/// span's first quote is read as the docstring's opener, so a docstring on its header's line after
+/// a quote of the header's own (`def f(x="a"): """Doc."""`) is read from that quote.
+fn python_doc_text(raw: &str) -> String {
+    let Some(open) = raw.find(['"', '\'']) else {
+        return String::new();
+    };
+    let quoted = &raw[open..];
+    let triple = quoted[..1].repeat(3);
+    let closer = if quoted.starts_with(&triple) {
+        triple.as_str()
+    } else {
+        &quoted[..1]
+    };
+    let body = plain_literal(&quoted[closer.len()..], closer).0;
+    let indent = |line: &str| line.chars().take_while(|c| c.is_whitespace()).count();
+    let margin = body
+        .split('\n')
+        .skip(1)
+        .filter(|line| !line.trim().is_empty())
+        .map(indent)
+        .min()
+        .unwrap_or(0);
+    let lines: Vec<&str> = body
+        .split('\n')
+        .enumerate()
+        .map(|(at, line)| {
+            if at == 0 {
+                return line.trim();
+            }
+            let line = line.trim_end();
+            line.char_indices()
+                .nth(margin)
+                .map_or("", |(cut, _)| &line[cut..])
+        })
+        .collect();
+    let text = |line: &&str| !line.is_empty();
+    match (lines.iter().position(text), lines.iter().rposition(text)) {
+        (Some(first), Some(last)) => lines[first..=last].join("\n"),
+        _ => String::new(),
+    }
 }
 
 /// The body of the raw Rust string literal whose `r` ends just before `text` (`r".."`,
@@ -490,7 +541,7 @@ fn doc_attribute_text(text: &str) -> Option<(&str, &str)> {
         .strip_prefix('=')?
         .trim_start();
     match value.strip_prefix('"') {
-        Some(plain) => Some(plain_literal(plain)),
+        Some(plain) => Some(plain_literal(plain, "\"")),
         None => raw_literal(value.strip_prefix('r')?),
     }
 }
@@ -2033,7 +2084,7 @@ pub(crate) mod tests {
             // Go
             ("go", "go-tags-v3", "4d23a95104b19556"),
             // Python
-            ("py", "python-tags-v1", "4c940d044409c6d8"),
+            ("py", "python-tags-v2", "41289b16631dbb93"),
         ];
         const PINNED_FACTS: (&str, &str) = ("facts-v6", "006133eb2aae6c76");
         fn digest(facts: &impl std::fmt::Debug) -> String {

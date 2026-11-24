@@ -308,7 +308,8 @@ enum Capture {
     /// ([`CompiledTags::constructors`]), where it stays a call, so `new T()` is a call of `T`
     /// (spec 117, CAPTURES).
     Class(Option<&'static str>),
-    /// `@doc`: a doc comment of the match's definition, which gives it its doc span.
+    /// `@doc`: a doc comment of the match's definition, which gives it its doc span, or of the
+    /// file when the match tags nothing ([`CompiledTags::tags_in`]).
     Doc,
     /// `@qualifier.path` (true) or `@qualifier.member` (false): the node the match's reference is
     /// qualified by, a path or a member access, in place of the qualifier its name's text writes
@@ -504,13 +505,21 @@ impl CompiledTags {
     /// reference is named by the leaf its name splits to ([`CompiledTags::split_leaf`]), a name
     /// that is no chain making no tag, and qualified by the match's last `@qualifier.path` or
     /// `@qualifier.member` capture, else by the qualifier the split reads off its name's text.
-    fn tags_in(&self, root: tree_sitter::Node, source: &str) -> Vec<Tag> {
+    /// A match that tags nothing, no definition and no reference captured, makes no tag: its
+    /// `@doc` captures cover the file's doc, the first such match holding one giving it, which
+    /// the reading returns beside the tags (spec 117, DOC FACTS).
+    fn tags_in(
+        &self,
+        root: tree_sitter::Node,
+        source: &str,
+    ) -> (Vec<Tag>, Option<std::ops::Range<usize>>) {
         let mut cursor = tree_sitter::QueryCursor::new();
         let mut matches = cursor.matches(&self.query, root, source.as_bytes());
         // The tags not yet yielded, in (name end, name start) order, each with the pattern that
         // made it.
         let mut queue: std::collections::VecDeque<(Tag, usize)> = Default::default();
         let mut tags = Vec::new();
+        let mut file_doc = None;
         loop {
             while queue.len() > 1
                 && queue
@@ -545,7 +554,11 @@ impl CompiledTags {
                     }
                 }
             }
-            let (Some(name), Some((node, role))) = (name, tagged) else {
+            let Some((node, role)) = tagged else {
+                file_doc = file_doc.or(doc);
+                continue;
+            };
+            let Some(name) = name else {
                 continue;
             };
             if name.has_error() {
@@ -590,7 +603,7 @@ impl CompiledTags {
             }
         }
         tags.extend(queue.into_iter().map(|(tag, _)| tag));
-        tags
+        (tags, file_doc)
     }
 }
 
@@ -630,9 +643,11 @@ impl CompiledTags {
 /// impl header's trait row taking the self type's path when exactly one non-test definition of
 /// the file has the self type's leaf, else the impl block's.
 ///
-/// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, in every
-/// language; in Rust, a definition with no capture takes its outer doc lines' ([`outer_doc`]) and
-/// the file takes its opening inner doc lines' ([`inner_doc`]). Every other file has none.
+/// Doc spans (spec 117, DOC FACTS): a definition's `@doc` capture gives it its span, and the
+/// first match that tags nothing and holds a capture gives the file its span, in every language;
+/// in Rust, a definition with no capture takes its outer doc lines' ([`outer_doc`]) and a file
+/// with no such match its opening inner doc lines' ([`inner_doc`]). Every other definition and
+/// file has none.
 ///
 /// A tag whose byte range cannot be sliced out of `source` (a defensive guard; the ranges the
 /// tags reading yields are valid UTF-8 boundaries in practice) is skipped rather than
@@ -653,7 +668,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         .parse(source, None)
         .ok_or_else(|| "symbols: parse: tree-sitter produced no syntax tree".to_string())?;
     let root = tree.root_node();
-    let tags = tags.tags_in(root, source);
+    let (tags, file_doc) = tags.tags_in(root, source);
     let text = Source::new(source);
     let mut defs = Vec::new();
     let mut refs = Vec::new();
@@ -799,18 +814,21 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             ));
         }
     }
-    // Spec 117 (DOC FACTS): in Rust, a definition no `@doc` capture gave a span, an impl block's
-    // and a read-off's included, takes the one its outer doc lines give it ([`outer_doc`]), and
-    // the file takes the one its opening inner doc lines give it ([`inner_doc`]).
+    // Spec 117 (DOC FACTS): the file takes the span of the first match that tags nothing and holds
+    // a `@doc` capture ([`CompiledTags::tags_in`]). In Rust, a definition no `@doc` capture gave a
+    // span, an impl block's and a read-off's included, takes the one its outer doc lines give it
+    // ([`outer_doc`]), and a file no such match gave one takes the one its opening inner doc lines
+    // give it ([`inner_doc`]).
+    let file_doc = file_doc.map(|doc| text.span(&doc));
     let doc = if lang == Lang::Rust {
         for (d, (range, _, _)) in defs.iter_mut().zip(&def_ranges) {
             d.doc = d
                 .doc
                 .or_else(|| outer_doc(root, range, source.as_bytes()).map(|doc| text.span(&doc)));
         }
-        inner_doc(root, source.as_bytes()).map(|doc| text.span(&doc))
+        file_doc.or_else(|| inner_doc(root, source.as_bytes()).map(|doc| text.span(&doc)))
     } else {
-        None
+        file_doc
     };
     // Spec 119 (IDS FOLLOW THE LANGUAGE'S PATH; CONTAINS IS STRUCTURE): each definition's id path
     // and parent, decided over every definition's range at once, so a container recorded after

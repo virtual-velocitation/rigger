@@ -231,10 +231,11 @@ pub struct FileSymbols {
     /// before this field existed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
-    /// Spec 117 (DOC FACTS): the file's doc span, the 1-based inclusive lines from the first to
-    /// the last of the inner doc lines a Rust file opens with
-    /// ([`crate::grounder::symbols::extract::extract`] sets it); `None` for a file opening with
-    /// none and for every other language. Serde-defaulted and omitted when `None`.
+    /// Spec 117 (DOC FACTS): the file's doc span, the 1-based inclusive lines from its first doc
+    /// line to its last - the lines the `@doc` capture of the first query match that tags nothing
+    /// covers (a Python module docstring), else, in Rust, the inner doc lines the file opens with
+    /// ([`crate::grounder::symbols::extract::extract`] sets it); `None` when it has none.
+    /// Serde-defaulted and omitted when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<(u32, u32)>,
 }
@@ -291,7 +292,7 @@ macro_rules! go_tags_generation {
 
 macro_rules! python_tags_generation {
     () => {
-        "python-tags-v1"
+        "python-tags-v2"
     };
 }
 

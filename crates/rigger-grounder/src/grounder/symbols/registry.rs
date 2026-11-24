@@ -242,6 +242,19 @@ const GO_DEFINITION_TAGS: &str = r#"
 /// chain, the names a pattern binds, a class body's targets and a `type X = ..` alias are read
 /// off the parsed tree by `extract`. Every def is tagged a function, which `extract` lowers to a
 /// method when its nearest enclosing definition is a class.
+///
+/// Spec 117 (OTHER LANGUAGES): a class's or a function's docstring, the first statement of its
+/// body when that statement is a string alone, a prefixed one included, is its `@doc`, a comment
+/// before it aside; the module's, after any comments, is a match that tags nothing, which gives
+/// the file its doc span ([`CompiledTags::tags_in`]). Of the patterns naming one node the
+/// earliest makes its tag, so their order decides: a call on an object that is exactly a
+/// capitalised identifier is qualified by it, `Shape.area()` the call `Shape.area`, ahead of the
+/// upstream call; a base class, a name, an attribute's leaf or a subscript's value, is an
+/// `implementation`, a keyword argument none; a capitalised identifier a `type` node holds within
+/// three levels is a `type`, unqualified, an all-caps one included; an all-caps name read, an
+/// attribute's leaf included, is a `constant`; and any other attribute leaf, read or assigned and
+/// not called, is a `field`. The last two are qualified by their object when it is exactly a
+/// capitalised identifier, `Config.MAX` and `Shape.side`.
 const PYTHON_TAGS: &str = r#"
 (module (expression_statement (assignment left: (identifier) @name !right) @definition.constant))
 (module
@@ -252,10 +265,20 @@ const PYTHON_TAGS: &str = r#"
     @definition.constant))
 
 (class_definition
-  name: (identifier) @name) @definition.class
+  name: (identifier) @name
+  body: (block . (expression_statement . (string) @doc .)?)) @definition.class
 
 (function_definition
-  name: (identifier) @name) @definition.function
+  name: (identifier) @name
+  body: (block . (expression_statement . (string) @doc .)?)) @definition.function
+
+(module . (comment)* . (expression_statement . (string) @doc .))
+
+(call
+  function: (attribute
+    object: (identifier) @qualifier.member
+    attribute: (identifier) @name)
+  (#match? @qualifier.member "^[A-Z]")) @reference.call
 
 (call
   function: [
@@ -263,6 +286,38 @@ const PYTHON_TAGS: &str = r#"
       (attribute
         attribute: (identifier) @name)
   ]) @reference.call
+
+(class_definition
+  superclasses: (argument_list
+    [
+      (identifier) @name
+      (attribute attribute: (identifier) @name)
+      (subscript
+        value: [
+          (identifier) @name
+          (attribute attribute: (identifier) @name)
+        ])
+    ] @reference.implementation))
+
+((type (identifier) @name @reference.type) (#match? @name "^[A-Z]"))
+((type (_ (identifier) @name @reference.type)) (#match? @name "^[A-Z]"))
+((type (_ (_ (identifier) @name @reference.type))) (#match? @name "^[A-Z]"))
+
+((attribute
+  object: (identifier) @qualifier.member
+  attribute: (identifier) @name @reference.constant)
+  (#match? @qualifier.member "^[A-Z]")
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+((attribute attribute: (identifier) @name @reference.constant)
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+((primary_expression/identifier) @name @reference.constant
+  (#match? @name "^[A-Z][A-Z0-9_]*$"))
+
+((attribute
+  object: (identifier) @qualifier.member
+  attribute: (identifier) @name @reference.field)
+  (#match? @qualifier.member "^[A-Z]"))
+(attribute attribute: (identifier) @name @reference.field)
 "#;
 
 /// A registered language: the rigger `Lang`, its tree-sitter grammar, the `tags` query the
@@ -1329,6 +1384,10 @@ class Box:
         return calc(LIMIT)
 def calc(n):
     return n
+class Lid(Box):
+    \"\"\"A lid.\"\"\"
+    def seal(self, b: Box):
+        return b.w + Box.MAX
 ",
         ),
     ];
@@ -1499,7 +1558,7 @@ def calc(n):
             // Go
             ("go", "go-tags-v3", "40f80b41e4a13f29"),
             // Python
-            ("py", "python-tags-v1", "2ae6674264c03453"),
+            ("py", "python-tags-v2", "12c34691ae660b83"),
         ];
         assert_eq!(
             GRAMMAR_TAGS_VERSION,
@@ -1622,8 +1681,8 @@ def calc(n):
 
     /// The name filter keeps `_` where it is an ordinary name: a JS `const _ = require(..)` and a
     /// Python `_ = gettext.gettext` each keep their definition under the composed JS query and
-    /// the registered Python one; neither source holds a reference, the upstream JS query tagging
-    /// no `require` call and a Python attribute read being no call.
+    /// the registered Python one; neither source holds a call, the upstream JS query tagging no
+    /// `require` call and the Python attribute read being a field use.
     #[test]
     fn a_js_and_a_python_definition_named_underscore_keeps_its_def() {
         let js =
@@ -1896,6 +1955,11 @@ def calc(n):
         /// target that assignment's (`make()` is `k`'s), its field spanning the whole assignment
         /// as a module-level constant of one target does; the value of a pattern or a chained
         /// assignment is the file's, each bound name spanning its own identifier alone.
+        ///
+        /// The tagged references (spec 117, PYTHON STAGES ITS ROW): the attribute target `self.x`
+        /// is a field use, `area`'s; the read of `TYPE_CHECKING` a const read, the file's; and
+        /// each capitalised name in a type alias, its own name and its type parameter included
+        /// (`X` and `T` of `type X[T] = int`, `Y`), a type reference, the alias's.
         every_python_definition_type_yields_its_definition_at_its_kind:
             crate::symbol_index::assert_definitions_fixture(
                 "py",
@@ -1936,7 +2000,11 @@ def calc(n):
                     (18, "f", None),
                     (19, "f", None),
                 ],
-                "",
+                "11 field x Shape::area\n\
+                 22 const TYPE_CHECKING -\n\
+                 24 type T X\n\
+                 24 type X X\n\
+                 29 type Y Y",
             );
         /// Every Python definition carries its extent (spec 119, ONE EXTENT): a single-target
         /// module-level assignment (`z = 1`, `w: int`, and one of each other value type the
