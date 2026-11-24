@@ -622,7 +622,9 @@ impl CompiledTags {
 /// A reference tag is a reference of the kind its capture's suffix names ([`ref_kind_of`], spec
 /// 117), its `ref_kind` none for a call, a `@reference.class` tag on a constructor node kind
 /// staying a call ([`Capture::Class`]), named by the bare leaf its name splits to and carrying
-/// the qualifier it is written with ([`CompiledTags::split_leaf`]).
+/// the qualifier it is written with ([`CompiledTags::split_leaf`]). A Rust tag's name is that leaf
+/// already, so a Rust reference carries the qualifier the Rust rule reads off the tree around its
+/// name ([`rust_qualifier`], spec 117, RUST REFERENCES) instead.
 ///
 /// Rust's const reads, type references and the leaves a `use` imports are read off the tree too
 /// ([`rust_references`], spec 117): each is a reference tagged with its `ref_kind`, pushed after
@@ -695,6 +697,14 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                 }
             }
             TagRole::Reference(ref_kind) => {
+                // A Rust reference is qualified by the Rust rule, off its name node: the Rust
+                // query's names are leaves, so its tags carry no qualifier.
+                let qualifier = match lang {
+                    Lang::Rust => root
+                        .descendant_for_byte_range(tag.leaf.start, tag.leaf.end)
+                        .and_then(|leaf| rust_qualifier(leaf, source.as_bytes())),
+                    _ => tag.qualifier,
+                };
                 ref_positions.push(tag.range.start);
                 refs.push(SymRef {
                     name: name.to_string(),
@@ -702,7 +712,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
                     enclosing: None,
                     is_test: false,
                     ref_kind: ref_kind.map(str::to_string),
-                    qualifier: tag.qualifier,
+                    qualifier,
                 });
             }
         }
@@ -731,10 +741,10 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             });
         }
     }
-    // Spec 117 (REFERENCES): Rust's tagged references, read off the parsed tree after every call
-    // reference, so each follows the untagged one of its name and site and the attribution and
-    // test-region passes below cover it; an impl header's trait row is noted to take its `from`
-    // once every definition's test status is known.
+    // Spec 117 (RUST REFERENCES): Rust's tagged references, read off the parsed tree after every
+    // call reference, so each follows the untagged one of its name and site and the attribution
+    // and test-region passes below cover it; an impl header's trait row is noted to take its
+    // `from` once every definition's test status is known.
     let mut impl_rows: Vec<(usize, std::ops::Range<usize>, String)> = Vec::new();
     if lang == Lang::Rust {
         for tagged in rust_references(&structure, source.as_bytes()) {
@@ -860,7 +870,7 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
             r.is_test = regions.iter().any(|region| region.contains(&pos));
         }
     }
-    // Spec 117 (REFERENCES): an impl header's trait row comes from the self type's path when
+    // Spec 117 (RUST REFERENCES): an impl header's trait row comes from the self type's path when
     // exactly one surviving (non-test) definition of the file has the self type's leaf, else from
     // the impl's own path.
     for (at, impl_range, self_leaf) in impl_rows {
@@ -1267,7 +1277,7 @@ impl UseLeaf<'_> {
     }
 }
 
-/// RUST'S TAGGED REFERENCES (spec 117, REFERENCES), every one in the file the walk `structure`
+/// RUST'S TAGGED REFERENCES (spec 117, RUST REFERENCES), every one in the file the walk `structure`
 /// gathered ([`StructuralNodes`]), in source order. A
 /// CONST READ is an `identifier` in expression position, or the final identifier of a whole
 /// expression path (never a prefix, a pattern or a call's head), spelled `^[A-Z][A-Z0-9_]*$`. A
@@ -1435,6 +1445,66 @@ fn names_enclosing_generic(name: &str, node: tree_sitter::Node, source: &[u8]) -
                 .any(|n| n.utf8_text(source).is_ok_and(|t| t == name));
             found
         })
+}
+
+/// RUST'S QUALIFIER (spec 117, RUST REFERENCES): the qualifier a Rust reference is written
+/// with, read off the parent of `leaf`, its name node. A scoped path's name is qualified, as a
+/// path, by the segment before it ([`path_qualifier`]); a member's name whose receiver node is
+/// exactly `self` is qualified, as a member access, by the type or trait `self` names there
+/// ([`self_qualifier`]). A qualifier naming a generic parameter of an item enclosing `leaf` is
+/// none, and every other name is unqualified: a lowercase segment, a `crate`, `self` or `super`
+/// path, and any other receiver (`self.inner.open()`).
+fn rust_qualifier(leaf: tree_sitter::Node, source: &[u8]) -> Option<Qualifier> {
+    let parent = leaf.parent()?;
+    let (name, path) = match parent.kind() {
+        "scoped_identifier" => (
+            path_qualifier(parent.child_by_field_name("path")?, source)?,
+            true,
+        ),
+        "field_expression"
+            if parent
+                .child_by_field_name("value")
+                .is_some_and(|receiver| receiver.kind() == "self") =>
+        {
+            (self_qualifier(leaf, source)?, false)
+        }
+        _ => return None,
+    };
+    (!names_enclosing_generic(&name, leaf, source)).then_some(Qualifier { name, path })
+}
+
+/// The qualifier the `path` of a scoped path writes before its name ([`rust_qualifier`]): its
+/// final segment ([`final_identifier`]) when that begins uppercase, a turbofish's generic type
+/// by its type's identifier (`Memo::<K>::new` gives `Memo`), a qualified-self path by its trait
+/// (`<T as Tr>::f` gives `Tr`), and `Self` by the type or trait it names there
+/// ([`self_qualifier`]); `None` for a lowercase segment, a `crate`, `self` or `super` path and a
+/// bracketed type naming no trait (`<T>::f`).
+fn path_qualifier(path: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let segment = match path.kind() {
+        "generic_type" => base_type_identifier(path)?,
+        "bracketed_type" => {
+            base_type_identifier(path.named_child(0)?.child_by_field_name("alias")?)?
+        }
+        _ => final_identifier(path)?,
+    };
+    match segment.utf8_text(source).ok()? {
+        "Self" => self_qualifier(path, source),
+        text => begins_upper(segment, source).then(|| text.to_string()),
+    }
+}
+
+/// The type or trait `Self` and a `self` receiver name at `node`: the self type's identifier of
+/// the innermost impl or trait enclosing `node` when that is an impl ([`base_type_identifier`],
+/// its generics, path and reference stripped), else that trait's name; `None` outside every impl
+/// and trait, and for a self type naming no single type (`impl Tr for [u8]`).
+fn self_qualifier(node: tree_sitter::Node, source: &[u8]) -> Option<String> {
+    let owner = std::iter::successors(node.parent(), |n| n.parent())
+        .find(|n| matches!(n.kind(), "impl_item" | "trait_item"))?;
+    let named = match owner.kind() {
+        "impl_item" => base_type_identifier(owner.child_by_field_name("type")?)?,
+        _ => owner.child_by_field_name("name")?,
+    };
+    Some(named.utf8_text(source).ok()?.to_string())
 }
 
 /// Whether `node`, an `identifier` or a whole `scoped_identifier`, is an expression READ (spec
@@ -4577,7 +4647,7 @@ class K
         assert_eq!(paths, ["a", "b"], "adjacent definitions sit side by side");
     }
 
-    /// Spec 117 criterion 6, REFERENCES: `extract` tags a Rust const read, a type reference and
+    /// Spec 117, RUST REFERENCES: `extract` tags a Rust const read, a type reference and
     /// each imported leaf of a `use` with its `ref_kind`, after the call references it already
     /// records, and every name the spec excludes stages nothing. Each case is a source and the
     /// tagged references it extracts, whole ([`crate::symbol_index::assert_tagged_refs`]).
@@ -4865,7 +4935,7 @@ use beta::{{self}};
         }
     }
 
-    /// Spec 117 criterion 6: a tagged reference under its own `#[cfg(test)]` attribute - a
+    /// Spec 117, RUST REFERENCES: a tagged reference under its own `#[cfg(test)]` attribute - a
     /// top-level `use`, a `use` in a function body, a `let` and an expression statement - is test
     /// code, so no `ref_kind` event leaves the file for it.
     #[test]
@@ -4905,7 +4975,7 @@ pub fn f() -> u8 {
         );
     }
 
-    /// Spec 117 criterion 6: the tagged references follow the call references in `refs`, in
+    /// Spec 117, RUST REFERENCES: the tagged references follow the call references in `refs`, in
     /// source order, and one inside a test region, an impl header's trait row included, is
     /// marked test code like any reference there.
     #[test]
@@ -4939,7 +5009,7 @@ pub fn f() -> u8 {
         );
     }
 
-    /// Spec 117 criterion 6: the tagged reference pass reads Rust alone, so a TypeScript type
+    /// Spec 117, RUST REFERENCES: the tagged reference pass reads Rust alone, so a TypeScript type
     /// name, a `type_identifier` in its grammar too, stages no row of its own: its one row is the
     /// type reference the TypeScript query's `@reference.type` capture tags (spec 117, CAPTURES).
     #[test]
@@ -4952,7 +5022,7 @@ pub fn f() -> u8 {
         );
     }
 
-    /// Spec 117 criterion 6: no name of [`RUST_PRELUDE`] stages a row, imported by a `use` or
+    /// Spec 117, RUST REFERENCES: no name of [`RUST_PRELUDE`] stages a row, imported by a `use` or
     /// named as a type, and the constant holds exactly the pinned names.
     #[test]
     fn every_rust_prelude_name_is_never_tagged() {

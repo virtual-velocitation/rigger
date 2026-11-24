@@ -183,7 +183,7 @@ pub struct SymRef {
     /// byte-identical-wire-form reason as `Def::is_test`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_test: bool,
-    /// Spec 117 (REFERENCES, CAPTURES): what kind of non-call reference this is, in the
+    /// Spec 117 (RUST REFERENCES, CAPTURES): what kind of non-call reference this is, in the
     /// `EdgeInferred` payload's own spelling (`contextgraph::REF_KIND_*`): in every language, the
     /// kind a tags query's `@reference.<kind>` suffix names (a type, an impl, a const read, a field
     /// or a use), and in Rust also a const read, a type reference or an imported leaf of a `use`
@@ -193,11 +193,14 @@ pub struct SymRef {
     /// Serde-defaulted and omitted when `None`, so a call serializes byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_kind: Option<String>,
-    /// Spec 117 (CAPTURES): the qualifier the reference was written with: a tags query's
-    /// `@qualifier.path` or `@qualifier.member` capture, else the text before the leaf of a
-    /// chained `@name` (`Ns` of `Ns.IShape`). `name` above stays the bare leaf. `None` for a
-    /// reference written bare. Serde-defaulted and omitted when `None`, so an unqualified
-    /// reference serializes byte-identically to before.
+    /// Spec 117 (CAPTURES, RUST REFERENCES): the qualifier the reference was written with: a tags
+    /// query's `@qualifier.path` or `@qualifier.member` capture, else the text before the leaf of
+    /// a chained `@name` (`Ns` of `Ns.IShape`), and for a Rust call the one the Rust rule reads
+    /// off the tree around its name (`Store` of `Store::open()`, the enclosing impl's type or the
+    /// trait of `self.file()`). `name` above stays the bare leaf. `None` for a reference written
+    /// bare and for a Rust call the rule qualifies by nothing (`self.inner.open()`).
+    /// Serde-defaulted and omitted when `None`, so an unqualified reference serializes
+    /// byte-identically to before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub qualifier: Option<Qualifier>,
 }
@@ -255,7 +258,7 @@ impl FileSymbols {
 
 macro_rules! rust_tags_generation {
     () => {
-        "rust-tags-v2"
+        "rust-tags-v3"
     };
 }
 
