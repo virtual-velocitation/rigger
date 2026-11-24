@@ -3,8 +3,9 @@
 //! extractor and the workflow-definition extractor already find, and what an extractor the
 //! project's workflow declares answers over THE EXTRACTOR PROTOCOL (spec 125), whose client is
 //! [`extractor_protocol`]; this module is no extractor of its own, and its one language knowledge
-//! is the doc rule [`FactsExtractor`]'s [`Extract::doc_text`] strips a Rust doc span's lines to
-//! their comment text by. Every name is kept as written and
+//! is the doc rules [`FactsExtractor`]'s [`Extract::doc_text`] reads a doc span's text by: Rust's,
+//! which strips its lines to their comment text, and C#'s, which reads its `///` lines with their
+//! XML tags removed. Every name is kept as written and
 //! nothing is resolved across files, so a file's facts are a function of its path and bytes alone
 //! under the extractor's fingerprint, a declared extractor being trusted, as a grammar is, to
 //! answer the same request the same way. The store's openers compose [`ProjectExtractor`], the
@@ -303,10 +304,12 @@ impl Extract for FactsExtractor {
         file_facts(entry, bytes, bundled_code)
     }
 
-    /// The doc rule of the language `lang` names: Rust's ([`rust_doc_text`]), and the lines
-    /// trimmed ([`trimmed_lines`]) for a language with no rule.
+    /// The doc rule of the language `lang` names: C#'s ([`csharp_doc_text`]), Rust's
+    /// ([`rust_doc_text`]), and the lines trimmed ([`trimmed_lines`]) for a language with no rule.
     fn doc_text(&self, lang: &str, raw: &str) -> String {
-        if lang == lang_str(Lang::Rust) {
+        if lang == lang_str(Lang::CSharp) {
+            csharp_doc_text(raw)
+        } else if lang == lang_str(Lang::Rust) {
             rust_doc_text(raw)
         } else {
             trimmed_lines(raw)
@@ -330,11 +333,7 @@ fn rust_doc_text(raw: &str) -> String {
     while !rest.is_empty() {
         rest = if let Some(comment) = rest.strip_prefix("//") {
             let (comment, after) = comment.split_once('\n').unwrap_or((comment, ""));
-            if let Some(doc) = comment
-                .strip_prefix('/')
-                .filter(|doc| !doc.starts_with('/'))
-                .or_else(|| comment.strip_prefix('!'))
-            {
+            if let Some(doc) = after_doc_slash(comment).or_else(|| comment.strip_prefix('!')) {
                 text.push(doc.trim());
             }
             after
@@ -353,6 +352,53 @@ fn rust_doc_text(raw: &str) -> String {
         };
     }
     text.join("\n")
+}
+
+/// The text after the third `/` of a `///` line comment, not `////`, `comment` being the text
+/// after its first two: the doc marker a Rust and a C# line comment share.
+fn after_doc_slash(comment: &str) -> Option<&str> {
+    comment
+        .strip_prefix('/')
+        .filter(|doc| !doc.starts_with('/'))
+}
+
+/// The text of a C# doc span's `raw` lines, split on `\n` with a trailing `\r` dropped: a `///`
+/// line (not `////`), leading whitespace aside, gives the text after its marker
+/// ([`after_doc_slash`]) with its XML tags removed ([`without_xml_tags`]), trimmed. A line with no
+/// such marker, and one left empty, is dropped, and the kept lines join by `\n`.
+fn csharp_doc_text(raw: &str) -> String {
+    raw.lines()
+        .filter_map(|line| after_doc_slash(line.trim_start().strip_prefix("//")?))
+        .map(|doc| without_xml_tags(doc).trim().to_string())
+        .filter(|doc| !doc.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// `line` with every XML tag removed: a `<` that an ASCII letter or a `/` follows, up to the first
+/// `>` after it. A `<` that opens no tag, or that no `>` on the line closes, stays as written.
+fn without_xml_tags(line: &str) -> String {
+    let mut kept = String::new();
+    let mut rest = line;
+    while let Some(open) = rest.find('<') {
+        let tag = &rest[open + 1..];
+        let close = tag
+            .starts_with(|c: char| c.is_ascii_alphabetic() || c == '/')
+            .then(|| tag.find('>'))
+            .flatten();
+        match close {
+            Some(close) => {
+                kept.push_str(&rest[..open]);
+                rest = &tag[close + 1..];
+            }
+            None => {
+                kept.push_str(&rest[..=open]);
+                rest = tag;
+            }
+        }
+    }
+    kept.push_str(rest);
+    kept
 }
 
 /// Whether the Rust block comment whose opening `/*` ends just before `comment` is a doc block:
@@ -2027,7 +2073,7 @@ pub(crate) mod tests {
             // Rust
             ("rs", "rust-tags-v2", "927b635405339750"),
             // C#
-            ("cs", "csharp-tags-v4", "a6e816e8572b143e"),
+            ("cs", "csharp-tags-v5", "1686734362d08137"),
             // TypeScript
             ("ts", "typescript-tags-v5", "ea4e6938dc08f1b3"),
             // TSX

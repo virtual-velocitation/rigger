@@ -55,15 +55,15 @@ const RUST_TAGS: &str = r#"
 (macro_invocation macro: (identifier) @name) @reference.call
 "#;
 
-/// The C# `tags` query. The upstream `tree-sitter-c-sharp` crate ships a `tags.scm` whose last
-/// pattern captures a bare `@module`, which the extractor's tags reading refuses (it reads only
-/// `@definition.*` / `@reference.*` / `@name` / `@doc`), so the shipped query fails to compile.
-/// That pattern is also redundant: the line above it already tags the same
-/// `namespace_declaration` as `@definition.module`. This is the shipped query without that one
-/// invalid, redundant line - authored here per the spec's "author or verify each grammar's tag
-/// query" mandate - its namespace pattern taking any name node where the shipped one takes an
-/// identifier, plus a definition pattern for every other C# definition type the grammar names
-/// (spec 116). A struct, a record, an enum and a delegate are tagged as a class
+/// The C# definition patterns. The upstream `tree-sitter-c-sharp` crate ships a `tags.scm` whose
+/// last pattern captures a bare `@module`, which the extractor's tags reading refuses (it reads
+/// only `@definition.*` / `@reference.*` / `@name` / `@doc` / `@qualifier.*`), so the shipped
+/// query fails to compile. That pattern is also redundant: the line above it already tags the same
+/// `namespace_declaration` as `@definition.module`. These are the shipped query's definitions
+/// without that one invalid, redundant line - authored here per the spec's "author or verify each
+/// grammar's tag query" mandate - its namespace pattern taking any name node where the shipped one
+/// takes an identifier, plus a definition pattern for every other C# definition type the grammar
+/// names (spec 116). A struct, a record, an enum and a delegate are tagged as a class
 /// is; an enum member a variant; a destructor a method, which `extract` names `~` and its
 /// identifier; a local function a function; a constructor a constructor; a property and an event
 /// with accessors a property. A method, destructor, local function or constructor with no body
@@ -71,66 +71,90 @@ const RUST_TAGS: &str = r#"
 /// its whole name node, so `namespace A.B.C` is `A.B.C`. A `variable_declarator` is a field
 /// under a `field_declaration` or an `event_field_declaration` only, so a method-local variable
 /// is none, and one declaration naming several is one definition per name; its type sits
-/// outside the declarator, so the upstream reference to it stays its container's. Under a
+/// outside the declarator, so the reference to it stays its container's. Under a
 /// `field_declaration` holding the `const` modifier the declarator is a constant: that pattern
 /// stands BEFORE the field pattern because both match a `const` field's name node, and one name
 /// node carries one tag, the earlier pattern's. An operator, a conversion operator and an
-/// indexer have no name node, so `extract` reads them off the parsed tree.
-const CSHARP_TAGS: &str = r#"
-(class_declaration name: (identifier) @name) @definition.class
-
-(struct_declaration name: (identifier) @name) @definition.class
-
-(record_declaration name: (identifier) @name) @definition.class
-
-(enum_declaration name: (identifier) @name) @definition.class
-
-(delegate_declaration name: (identifier) @name) @definition.class
-
-(enum_member_declaration name: (identifier) @name) @definition.variant
-
-(destructor_declaration name: (identifier) @name) @definition.method
-
-(local_function_statement name: (identifier) @name) @definition.function
-
-(constructor_declaration name: (identifier) @name) @definition.constructor
-
-(property_declaration name: (identifier) @name) @definition.property
-
-(event_declaration name: (identifier) @name) @definition.property
-
-(field_declaration
+/// indexer have no name node, so `extract` reads them off the parsed tree, with no doc span.
+const CSHARP_DEFINITION_TAGS: [&str; 18] = [
+    "(class_declaration name: (identifier) @name) @definition.class",
+    "(struct_declaration name: (identifier) @name) @definition.class",
+    "(record_declaration name: (identifier) @name) @definition.class",
+    "(enum_declaration name: (identifier) @name) @definition.class",
+    "(delegate_declaration name: (identifier) @name) @definition.class",
+    "(enum_member_declaration name: (identifier) @name) @definition.variant",
+    "(destructor_declaration name: (identifier) @name) @definition.method",
+    "(local_function_statement name: (identifier) @name) @definition.function",
+    "(constructor_declaration name: (identifier) @name) @definition.constructor",
+    "(property_declaration name: (identifier) @name) @definition.property",
+    "(event_declaration name: (identifier) @name) @definition.property",
+    r#"(field_declaration
   (modifier "const")
-  (variable_declaration (variable_declarator name: (identifier) @name) @definition.constant))
+  (variable_declaration (variable_declarator name: (identifier) @name) @definition.constant))"#,
+    "(field_declaration
+  (variable_declaration (variable_declarator name: (identifier) @name) @definition.field))",
+    "(event_field_declaration
+  (variable_declaration (variable_declarator name: (identifier) @name) @definition.field))",
+    "(interface_declaration name: (identifier) @name) @definition.interface",
+    "(method_declaration name: (identifier) @name) @definition.method",
+    "(namespace_declaration name: (_) @name) @definition.module",
+    "(file_scoped_namespace_declaration name: (_) @name) @definition.module",
+];
 
-(field_declaration
-  (variable_declaration (variable_declarator name: (identifier) @name) @definition.field))
-
-(event_field_declaration
-  (variable_declaration (variable_declarator name: (identifier) @name) @definition.field))
-
-(class_declaration (base_list (_) @name)) @reference.class
-
-(interface_declaration name: (identifier) @name) @definition.interface
-
-(interface_declaration (base_list (_) @name)) @reference.interface
-
-(method_declaration name: (identifier) @name) @definition.method
-
-(object_creation_expression type: (identifier) @name) @reference.class
-
+/// The C# reference patterns (spec 117, OTHER LANGUAGES), after the definitions; of the patterns
+/// naming one node the earliest makes its tag. A class's, struct's, record's or interface's base
+/// list entry is an implementation, a record's primary-constructor base included, and no type; an
+/// enum's base is none. A constructed type, `new T()` or `new List<T>()`, stays a call
+/// ([`CSHARP_CONSTRUCTORS`]); a constraint's and a local's or field's declared type is a type. An
+/// identifier or a generic name in any other `type` field, a method's return, the right of an
+/// `is` or an `as`, a bare `x is T` and a generic's type argument is a type, a qualified name
+/// none. A member access called stays a call (`@reference.send`) and one not called, read or
+/// assigned, is a field; either is qualified by its object when that object is exactly a
+/// capitalised identifier, so `Square.SIDES` is the field `Square.SIDES` with leaf `SIDES` and
+/// `s.Side` the field `Side`.
+const CSHARP_REFERENCE_TAGS: &str = r#"
+(class_declaration (base_list (_) @name)) @reference.implementation
+(struct_declaration (base_list (_) @name)) @reference.implementation
+(record_declaration (base_list (_) @name)) @reference.implementation
+(interface_declaration (base_list (_) @name)) @reference.implementation
+(base_list (primary_constructor_base_type type: (_) @name)) @reference.implementation
+(object_creation_expression type: [(identifier) (generic_name)] @name) @reference.class
 (type_parameter_constraints_clause (identifier) @name) @reference.class
-
 (type_parameter_constraint (type type: (identifier) @name)) @reference.class
-
 (variable_declaration type: (identifier) @name) @reference.class
-
+(_ type: [(identifier) (generic_name)] @name) @reference.type
+(_ returns: [(identifier) (generic_name)] @name) @reference.type
+(is_expression right: [(identifier) (generic_name)] @name) @reference.type
+(as_expression right: [(identifier) (generic_name)] @name) @reference.type
+(is_pattern_expression pattern: (constant_pattern [(identifier) (generic_name)] @name)) @reference.type
+(type_argument_list [(identifier) (generic_name)] @name) @reference.type
+((invocation_expression
+  function: (member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name))
+  @reference.send
+  (#match? @qualifier.member "^[A-Z]"))
 (invocation_expression function: (member_access_expression name: (identifier) @name)) @reference.send
-
-(namespace_declaration name: (_) @name) @definition.module
-
-(file_scoped_namespace_declaration name: (_) @name) @definition.module
+((member_access_expression expression: (identifier) @qualifier.member name: (identifier) @name)
+  @reference.field
+  (#match? @qualifier.member "^[A-Z]"))
+(member_access_expression name: (identifier) @name) @reference.field
 "#;
+
+/// The C# `tags` query (spec 117, DOC FACTS): each of [`CSHARP_DEFINITION_TAGS`] first after the
+/// run of comments directly above it, which gives the definition its doc span when every comment
+/// of the run is a `///` line, then alone, so a definition under any other run is tagged with no
+/// span; then [`CSHARP_REFERENCE_TAGS`]. The matcher yields the longest run alone, blank lines
+/// inside it included, so a `///` block under another comment with no code between, a trailing
+/// comment on the line above included, gets no span.
+fn csharp_tags() -> String {
+    let documented = CSHARP_DEFINITION_TAGS
+        .map(|def| format!("((comment)* @doc . {def} (#match? @doc \"^///([^/]|$)\"))"));
+    [
+        documented.join("\n"),
+        CSHARP_DEFINITION_TAGS.join("\n"),
+        CSHARP_REFERENCE_TAGS.to_string(),
+    ]
+    .join("\n")
+}
 
 /// Additional JS tags-query patterns (spec 116), appended to the upstream query in all three of
 /// the JS, TS and TSX queries, every grammar of the family holding each node type they name.
@@ -342,6 +366,8 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
     // The Go `tags` query, composed ONCE: the upstream query plus `GO_DEFINITION_TAGS` and
     // `GO_FIELD_TAGS`.
     static GO_TAGS: OnceLock<String> = OnceLock::new();
+    // The C# `tags` query, composed ONCE ([`csharp_tags`]).
+    static CSHARP_TAGS: OnceLock<String> = OnceLock::new();
     // The JS, TS and TSX `tags` queries, each composed ONCE. The upstream
     // `tree-sitter-typescript` crate ships a `tags.scm` that tags only TypeScript-specific
     // SIGNATURES (interfaces, ambient function/method signatures, abstract classes, modules),
@@ -383,7 +409,7 @@ pub fn for_extension(ext: &str) -> Option<LanguageEntry> {
         "cs" => (
             Lang::CSharp,
             tree_sitter_c_sharp::LANGUAGE.into(),
-            CSHARP_TAGS,
+            CSHARP_TAGS.get_or_init(csharp_tags).as_str(),
             CSHARP_CONSTRUCTORS,
             CSHARP_TYPE_ARGUMENTS,
             &CSHARP,
@@ -1278,6 +1304,8 @@ class Box {
 class Lid : Box { }
 class Tray { object made = new Box(); }
 class Bin : Ns.Shelf<Box> { }
+/// A cover.
+class Cover { void Fit(Box b) { b.Size = Box.Calc(Box.Cap); } }
 ",
         ),
         (
@@ -1506,7 +1534,7 @@ def calc(n):
             // Rust
             ("rs", "rust-tags-v2", "cf79ba29624d68ed"),
             // C#
-            ("cs", "csharp-tags-v4", "e396669571843f87"),
+            ("cs", "csharp-tags-v5", "ff1a724ddef62a08"),
             // TypeScript
             ("ts", "typescript-tags-v5", "44b3d1b0bddd54ba"),
             // TSX

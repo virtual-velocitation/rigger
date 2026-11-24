@@ -261,7 +261,7 @@ macro_rules! rust_tags_generation {
 
 macro_rules! csharp_tags_generation {
     () => {
-        "csharp-tags-v4"
+        "csharp-tags-v5"
     };
 }
 
