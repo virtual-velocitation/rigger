@@ -1082,6 +1082,16 @@ pub trait ContextGraph: Send + Sync {
         Ok(None)
     }
 
+    /// The doc comment of `node`, a code entity or a file, when the file facts this graph was read
+    /// from hold its doc span and describe the caller's tree: the span's lines read from the
+    /// caller's worktree ([`crate::code_view::SourceLines`]) as the extractor the store was opened
+    /// with gives their text ([`crate::code_view::Extract::doc_text`]). `None` when the graph
+    /// read no such span, withholds its code facts or reads no doc, and when the span reaches past
+    /// the file's end or the file cannot be opened. The default answers `None`.
+    fn doc(&self, _node: &Node) -> Option<String> {
+        None
+    }
+
     /// Every node of `kind` this graph holds, ordered by id: the names the combined lookup
     /// resolves a term against (`code-entity`) and the records it ranks as prose (`decision`,
     /// `lesson`, `finding`). A projection that holds no node of `kind` answers an empty set.

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::code_facts::{Recorded, Tip};
 use crate::code_graph::{CodeGraph, DOC_ATTR};
-use crate::code_view::{CodeView, Compared, Groupings, Tests, ViewFilter};
+use crate::code_view::{CodeView, Compared, Extract, Groupings, SourceLines, Tests, ViewFilter};
 use crate::community::DEFAULT_RESOLUTION;
 use crate::contextgraph::query::{
     entity_id, kept_of, leaf_of, member_file, node_file, node_leaf, node_name, path_leaf, split_id,
@@ -25,9 +25,9 @@ use crate::contextgraph::query::{
 use crate::contextgraph::{
     entity_site, holds_attachment, is_call_target, CallEdge, CallGraph, CallNode, Candidate,
     ContextGraph, Direction, Edge, EntitySite, Error, Graph, Located, Neighbors, Node, Rows,
-    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, PLACEHOLDER_SIGIL, REL_CALLS,
-    REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS, TIER_EXTRACTED,
-    TIER_INFERRED,
+    KIND_ARTIFACT, KIND_CODE_ENTITY, KIND_COMMUNITY, KIND_CONCEPT, KIND_FILE, PLACEHOLDER_SIGIL,
+    REL_CALLS, REL_GOVERNS, REL_IN_COMMUNITY, REL_REALIZES, REL_REFERENCES, TIER_AMBIGUOUS,
+    TIER_EXTRACTED, TIER_INFERRED,
 };
 use crate::groupings::computed_at;
 use crate::resolve::{ProofCall, INTENT_KINDS};
@@ -437,6 +437,13 @@ pub trait CodeHalf: Neighbors {
     fn definition_end(&self, _file: &str, _recorded: Recorded) -> Option<u32> {
         None
     }
+    /// The language the facts of the code file `file` read it as, with the doc span they hold for
+    /// the `recorded` definition ([`Recorded::widest`]), or for the file itself when none is given;
+    /// `None` when no such definition is there, it or the file has no doc, or the half keeps no
+    /// facts of `file`, as a half resolved whole keeps none.
+    fn doc_span(&self, _file: &str, _recorded: Option<Recorded>) -> Option<(String, (u32, u32))> {
+        None
+    }
     /// The groupings of the view the half resolves.
     fn groupings(&self) -> &Groupings;
     /// The half's whole graph ([`Neighbors::whole`]), moved out of the half where it is held
@@ -445,6 +452,21 @@ pub trait CodeHalf: Neighbors {
     fn take_whole(&mut self) -> Result<Graph, Error> {
         self.whole()
     }
+}
+
+/// The file `site` names and the definition its node records there, when the node carries a
+/// name: where [`ContextGraph::definition_end`] and [`ContextGraph::doc`] read a code file's facts.
+fn recorded_at(site: &EntitySite) -> Option<(&str, Recorded<'_>)> {
+    let name = site.attrs.get("name").filter(|name| !name.is_empty())?;
+    let (file, path) = split_id(&site.id);
+    let kind = &site.kind;
+    let recorded = Recorded {
+        name,
+        path,
+        kind,
+        line: site.line,
+    };
+    Some((file, recorded))
 }
 
 /// The distinct provers of the `(proved, prover)` pairs `proofs` that prove an id of `ids`, in
@@ -914,10 +936,20 @@ enum Way {
     In,
 }
 
+/// What a read takes a node's doc from ([`ContextGraph::doc`]): the lines of the caller's
+/// worktree, and the extractor the store was opened with, which gives a span's text.
+#[derive(Clone, Copy)]
+pub struct DocReader<'r> {
+    pub lines: &'r dyn SourceLines,
+    pub extract: &'r dyn Extract,
+}
+
 /// The record half and a view's code half `C` read as one context graph.
 pub struct Composed<'r, C = Whole> {
     records: &'r dyn Neighbors,
     code: C,
+    /// What the read takes a node's doc from; none for a read that gives no doc.
+    docs: Option<DocReader<'r>>,
     /// Each recorded alias's canonical id.
     canonical: BTreeMap<String, String>,
     /// Each canonical id's recorded aliases.
@@ -962,15 +994,18 @@ impl<'r> Composed<'r> {
 
     /// The record half `records` composed with `view` under `filter`, labelled by `honesty`, its
     /// code half resolved only near the ids it is asked about (section 6.3): the graph a reader
-    /// of a neighbourhood reads. Its answers are [`Self::new`]'s.
+    /// of a neighbourhood reads. Its answers are [`Self::new`]'s, and it alone gives a node's doc,
+    /// read through `docs` when given ([`ContextGraph::doc`]).
     pub fn near(
         records: &'r dyn Neighbors,
         view: &'r dyn CodeView,
         filter: ViewFilter,
         honesty: Honesty,
+        docs: Option<DocReader<'r>>,
     ) -> Result<impl ContextGraph + 'r, Error> {
         let code = crate::near::Near::new(view, filter);
-        Composed::over(records, code, &view.stamp().tip, honesty)
+        let composed = Composed::over(records, code, &view.stamp().tip, honesty)?;
+        Ok(Composed { docs, ..composed })
     }
 }
 
@@ -1035,6 +1070,7 @@ impl<'r, C: CodeHalf> Composed<'r, C> {
         Ok(Composed {
             records,
             code,
+            docs: None,
             canonical,
             aliased,
             stale,
@@ -1434,18 +1470,20 @@ impl<C: CodeHalf> ContextGraph for Composed<'_, C> {
         locate(self, entity)
     }
     fn definition_end(&self, site: &EntitySite) -> Result<Option<u32>, Error> {
-        let name = site.attrs.get("name").filter(|name| !name.is_empty());
-        let (Some(name), false) = (name, self.label.compared.withholds_code()) else {
-            return Ok(None);
+        let at = recorded_at(site).filter(|_| !self.label.compared.withholds_code());
+        Ok(at.and_then(|(file, recorded)| self.code.definition_end(file, recorded)))
+    }
+    fn doc(&self, node: &Node) -> Option<String> {
+        let docs = self
+            .docs
+            .filter(|_| !self.label.compared.withholds_code())?;
+        let site = entity_site(node, 0);
+        let (file, recorded) = match node.kind == KIND_FILE {
+            true => (site.file.as_deref()?, None),
+            false => recorded_at(&site).map(|(file, recorded)| (file, Some(recorded)))?,
         };
-        let (file, path) = split_id(&site.id);
-        let recorded = Recorded {
-            name,
-            path,
-            kind: &site.kind,
-            line: site.line,
-        };
-        Ok(self.code.definition_end(file, recorded))
+        let (lang, span) = self.code.doc_span(file, recorded)?;
+        Some(docs.extract.doc_text(&lang, &docs.lines.lines(file, span)?))
     }
     fn nodes_of_kind(&self, kind: &str) -> Result<Vec<Node>, Error> {
         self.of_kind(kind)
@@ -2235,7 +2273,8 @@ mod tests {
             let records = Indexed::new(rows, aliases);
             let counted = Counted::new(&view);
             let seed = ["src/b.rs::compute".to_string()];
-            let near = Composed::near(&records, &counted, ViewFilter::default(), exact()).unwrap();
+            let near =
+                Composed::near(&records, &counted, ViewFilter::default(), exact(), None).unwrap();
             let got = near.subgraph(&seed, 1).unwrap();
             let asked = counted.asked.lock().unwrap();
             let past: Vec<&String> = asked.iter().filter(|r| r.contains("src/z.rs")).collect();
@@ -2780,7 +2819,9 @@ mod tests {
                 };
                 let filter = ViewFilter::default();
                 let g: Box<dyn ContextGraph + '_> = match near {
-                    true => Box::new(Composed::near(&records, &view, filter, exact()).unwrap()),
+                    true => {
+                        Box::new(Composed::near(&records, &view, filter, exact(), None).unwrap())
+                    }
                     false => Box::new(Composed::new(&records, &view, filter, exact()).unwrap()),
                 };
                 g.subgraph(&[seed.to_string()], 2).unwrap();
@@ -2963,9 +3004,9 @@ mod tests {
                 let open = || -> Box<dyn ContextGraph + '_> {
                     let filter = ViewFilter::default();
                     match near {
-                        true => {
-                            Box::new(Composed::near(&records, &view, filter, honesty()).unwrap())
-                        }
+                        true => Box::new(
+                            Composed::near(&records, &view, filter, honesty(), None).unwrap(),
+                        ),
                         false => Box::new(composed(&records, &view, honesty())),
                     }
                 };
@@ -3031,7 +3072,13 @@ mod tests {
         ];
         let (records, view) = (records(), view(Some("c1")));
         for (case, compared, id, kind, line, want) in cases {
-            let near = Composed::near(&records, &view, ViewFilter::default(), honest(compared));
+            let near = Composed::near(
+                &records,
+                &view,
+                ViewFilter::default(),
+                honest(compared),
+                None,
+            );
             let site = EntitySite {
                 id: id.into(),
                 kind: kind.into(),
@@ -3291,7 +3338,9 @@ mod tests {
                 let filter = ViewFilter::default();
                 let honesty = || honest(compared);
                 let g: Box<dyn ContextGraph + '_> = match near {
-                    true => Box::new(Composed::near(&records, &view, filter, honesty()).unwrap()),
+                    true => {
+                        Box::new(Composed::near(&records, &view, filter, honesty(), None).unwrap())
+                    }
                     false => Box::new(composed(&records, &view, honesty())),
                 };
                 let whole = ContextGraph::whole(&composed(&records, &view, honesty())).unwrap();
@@ -3362,7 +3411,8 @@ mod tests {
                 let honesty = honest(compared);
                 let g: Box<dyn ContextGraph + '_> = if near {
                     Box::new(
-                        Composed::near(&records, &view, ViewFilter::default(), honesty).unwrap(),
+                        Composed::near(&records, &view, ViewFilter::default(), honesty, None)
+                            .unwrap(),
                     )
                 } else {
                     Box::new(composed(&records, &view, honesty))

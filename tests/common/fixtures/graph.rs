@@ -258,7 +258,7 @@ pub fn halves<'r>(
     use rigger::composed::Composed;
     let filter = rigger::code_view::ViewFilter { tests };
     let whole = Composed::new(records, view, filter, matching_honesty()).unwrap();
-    let near = Composed::near(records, view, filter, matching_honesty()).unwrap();
+    let near = Composed::near(records, view, filter, matching_honesty(), None).unwrap();
     [("whole", Box::new(whole)), ("near", Box::new(near))]
 }
 
@@ -570,6 +570,7 @@ pub fn matching_head(view: rigger::code_view::FactsView) -> rigger::code_view::H
         compared: rigger::code_view::Compared::Overlaid(0),
         behind: None,
         worktree: std::path::PathBuf::new(),
+        extract: None,
     }
 }
 

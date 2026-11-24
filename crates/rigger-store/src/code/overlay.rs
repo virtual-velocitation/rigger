@@ -24,29 +24,30 @@ use rigger_domain::resolve::{resettle, ProofCall};
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
-use std::sync::{LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 use std::time::SystemTime;
 
 /// The head of the code store at `root` read for a reader in `worktree`: the view of the head
 /// ([`open_compared`]), overlaid with the worktree's differing files when it differs. One
 /// comparison and one read of the differing files serve the whole answer. A worktree that cannot
 /// be compared, or a differing file that cannot be read, leaves the head's view alone and
-/// [`Compared::Uncomparable`], so every code fact is withheld (fail closed).
+/// [`Compared::Uncomparable`], so every code fact is withheld (fail closed). The head keeps
+/// `extract`, the extractor the store was opened with.
 pub fn open_head(
     root: &Path,
     source: &(dyn TreeSource + Sync),
-    extract: &dyn Extract,
+    extract: Arc<dyn Extract>,
     group: &dyn Group,
     worktree: &Path,
     memo: &Memo,
 ) -> Result<Head, String> {
-    let (opened, diff) = open_compared(root, source, extract, group, worktree)?;
+    let (opened, diff) = open_compared(root, source, &*extract, group, worktree)?;
     let behind = opened.behind.as_ref().map(ToString::to_string);
     let base: Box<dyn CodeView> = Box::new(opened.view);
     let compared = Compared::of(diff.as_ref().map_err(String::as_str));
     let (view, compared) = match diff {
         Ok(diff) if diff.files_in_scope().is_empty() => (base, compared),
-        Ok(diff) => match read_changed(root, source, (extract, group), worktree, &diff, memo) {
+        Ok(diff) => match read_changed(root, source, (&*extract, group), worktree, &diff, memo) {
             Ok(changed) => {
                 let overlay = Overlay::new(base, &diff, changed);
                 (Box::new(overlay) as Box<dyn CodeView>, compared)
@@ -60,6 +61,7 @@ pub fn open_head(
         compared,
         behind,
         worktree: worktree.to_path_buf(),
+        extract: Some(extract),
     })
 }
 
@@ -498,7 +500,7 @@ mod tests {
 
         fn open_as(&self, extract: &Arc<ToyExtract>, memo: &Memo) -> Result<Head, String> {
             let (root, wt) = (self.root.path(), Path::new("W"));
-            open_head(root, &self.source, &**extract, &self.group, wt, memo)
+            open_head(root, &self.source, extract.clone(), &self.group, wt, memo)
         }
 
         /// How many files reading the head extracts once the worktree holds `changes`.
@@ -560,6 +562,7 @@ mod tests {
             compared: Compared::Overlaid(0),
             behind: None,
             worktree: "W".into(),
+            extract: None,
         }
     }
 
@@ -1223,7 +1226,7 @@ mod tests {
                 assert_eq!(ungrouped(&whole), ungrouped(&answer(&fresh).0), "{case}");
                 let (filter, honesty) = shown(&head);
                 let records = Indexed::default();
-                let near = Composed::near(&records, &*head.view, filter, honesty).unwrap();
+                let near = Composed::near(&records, &*head.view, filter, honesty, None).unwrap();
                 for id in [cursor_new, store_new, ext_new] {
                     let held =
                         (worktree.iter()).any(|(path, _)| id.starts_with(&format!("{path}::")));
@@ -1473,7 +1476,7 @@ mod tests {
         let whole = answer(&head).0;
         let (filter, honesty) = shown(&head);
         let records = Indexed::default();
-        let near = Composed::near(&records, &*head.view, filter, honesty).unwrap();
+        let near = Composed::near(&records, &*head.view, filter, honesty, None).unwrap();
         // The definitions whose CONTAINS edges in `graph` reach `file`, sorted.
         let into = |graph: &Graph, file: &str| {
             let mut from: Vec<String> = (graph.edges.iter())

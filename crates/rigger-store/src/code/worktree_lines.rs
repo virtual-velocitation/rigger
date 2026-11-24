@@ -1,3 +1,35 @@
+//! The lines of a reader's worktree a doc span is read from ([`SourceLines`]): each file opened at
+//! its path under the worktree, through std alone.
+
+use rigger_domain::code_view::SourceLines;
+use std::path::{Path, PathBuf};
+
+/// The files of the worktree at its path, read whole when a span of one is asked for.
+pub struct WorktreeLines {
+    worktree: PathBuf,
+}
+
+impl WorktreeLines {
+    pub fn new(worktree: &Path) -> Self {
+        Self {
+            worktree: worktree.to_path_buf(),
+        }
+    }
+}
+
+/// A file's bytes are read as UTF-8 with each invalid sequence read as U+FFFD, so only a file
+/// that cannot be opened, or a span outside it, gives none.
+impl SourceLines for WorktreeLines {
+    fn lines(&self, path: &str, (first, last): (u32, u32)) -> Option<String> {
+        let bytes = std::fs::read(self.worktree.join(path)).ok()?;
+        let text = String::from_utf8_lossy(&bytes);
+        let lines: Vec<&str> = text.lines().collect();
+        let from = usize::try_from(first).ok()?.checked_sub(1)?;
+        let span = lines.get(from..usize::try_from(last).ok()?)?;
+        (!span.is_empty()).then(|| span.join("\n"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

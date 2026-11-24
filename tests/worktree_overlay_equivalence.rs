@@ -148,7 +148,7 @@ fn answers(store: &CodeStore, worktree: &Path, compared: Compared) -> Vec<(Strin
         let whole = Composed::new(&records, &view, filter, honesty()).unwrap();
         let graph = whole.whole().unwrap();
         answers.push((format!("whole, tests {name}"), rendered(&graph)));
-        let near = Composed::near(&records, &view, filter, honesty()).unwrap();
+        let near = Composed::near(&records, &view, filter, honesty(), None).unwrap();
         let mut ids: Vec<String> = graph.nodes.iter().map(|n| n.id.clone()).collect();
         ids.sort();
         for id in ids {

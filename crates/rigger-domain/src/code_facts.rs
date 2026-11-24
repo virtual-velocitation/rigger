@@ -122,16 +122,26 @@ impl Recorded<'_> {
     /// field beside a same-named fn, or a variant inside its same-named enum, never widens the
     /// bound. `None` when no such definition sits at the line.
     pub fn widest_end<'d>(&self, defs: impl IntoIterator<Item = Bound<'d>>) -> Option<u32> {
+        self.widest(defs).map(|d| d.end_line)
+    }
+
+    /// The definition among `defs` whose end [`Self::widest_end`] gives, the last of a tie: the
+    /// one whose doc span is the recorded definition's.
+    pub fn widest<'d, D: Copy + Into<Bound<'d>>>(
+        &self,
+        defs: impl IntoIterator<Item = D>,
+    ) -> Option<D> {
+        let bound = |d: D| -> Bound<'d> { d.into() };
         (defs.into_iter())
-            .filter(|d| {
+            .filter(|&d| {
+                let d = bound(d);
                 !d.test
                     && d.name == self.name
                     && self.path.is_none_or(|path| d.path == path)
                     && d.kind == self.kind
                     && d.line == self.line
             })
-            .map(|d| d.end_line)
-            .max()
+            .max_by_key(|&d| bound(d).end_line)
     }
 }
 

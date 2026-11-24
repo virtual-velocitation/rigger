@@ -16,7 +16,7 @@ mod extractor_protocol;
 
 use std::collections::{btree_map, hash_map, BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rigger_domain::code_facts::{
     Def, DocConcept, DocLink, FileFacts, Half, Mention, MentionKind, ModuleDecl, Scope, WfNode,
@@ -81,7 +81,8 @@ pub fn open_store(root: &Path, source: &dyn TreeSource, mode: Mode) -> Result<Op
 /// The head of the code store at `root` read for a reader in `worktree`, overlaid with the files
 /// the worktree differs in ([`open_head`]), composed as [`open_store`] composes it, its
 /// differing files' facts memoised for the life of the process and on disk under the store
-/// ([`Memo::process`]).
+/// ([`Memo::process`]). The head keeps the project's extractor, which a doc read takes a span's
+/// text from, and with it each declared extractor's session until the head is dropped.
 pub fn read_head(
     root: &Path,
     source: &(dyn TreeSource + Sync),
@@ -90,7 +91,7 @@ pub fn read_head(
     open_head(
         root,
         source,
-        &ProjectExtractor::of(root),
+        Arc::new(ProjectExtractor::of(root)),
         &ProductionGroupings,
         worktree,
         Memo::process(),
