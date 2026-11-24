@@ -2031,7 +2031,7 @@ pub(crate) mod tests {
             // JavaScript
             ("js", "javascript-tags-v5", "04c009a62eb98170"),
             // Go
-            ("go", "go-tags-v3", "4d23a95104b19556"),
+            ("go", "go-tags-v4", "dc89c1ebc294684f"),
             // Python
             ("py", "python-tags-v1", "4c940d044409c6d8"),
         ];
