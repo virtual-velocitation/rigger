@@ -5755,7 +5755,7 @@ mod plat {
     /// neither parse accepts holds inside a token tree its argument-list parse breaks is read
     /// once, by that token tree's own read ([`read_tokens`]), never by the outer parse as well,
     /// while one that parse holds whole is read inside it, as is a `,` or `:` it holds inside a
-    /// subtree with no error, a generic's or a closure's, which cuts nothing.
+    /// subtree with no error, a generic argument list's, which cuts nothing.
     #[test]
     fn a_token_tree_corner_reads_as_its_plain_twin() {
         let cases = [
