@@ -229,8 +229,8 @@ static TMP_NONCE: AtomicU64 = AtomicU64::new(0);
 /// `write` was mid-flight, so the second `rename` would hit a temp its peer already moved away
 /// (`ENOENT`) and fail the write. A unique temp per writer removes the shared name they could race
 /// on; both renames target the same final path, which is itself an atomic last-writer-wins swap. A
-/// reader only ever reads `*.json`, so the `.tmp` files are invisible to it (and a crashed writer's
-/// leftover temp likewise).
+/// reader only ever reads `*.json`, so the `.tmp` files are invisible to it, and [`read_live`]'s
+/// prune removes a crashed writer's leftover temp.
 ///
 /// A COURIER's write carries forward the driver heartbeat the entry on disk already holds
 /// ([`carry_driver_heartbeat`]), so couriers re-stamping discovery never erase the record of a
@@ -325,6 +325,7 @@ fn parse_entries(dir: &Path) -> Vec<ParsedEntry> {
 /// Unreadable or unparseable entries are skipped, never fatal - the registry's loss is harmless.
 /// Live entries are returned; their order is unspecified.
 pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
+    reap_gone_writers_temps(dir);
     let mut live = Vec::new();
     for entry in parse_entries(dir) {
         if is_stale(entry.inst.heartbeat_ms, now_ms, ttl_ms) {
@@ -334,6 +335,39 @@ pub fn read_live(dir: &Path, now_ms: u64, ttl_ms: u64) -> Vec<Instance> {
         live.push(entry.inst);
     }
     live
+}
+
+/// Remove each temp [`write`] left under `dir` whose writer process is gone: a writer that died
+/// between its write and its rename. Skipped whole when this process cannot read its own start
+/// time, on an OS whose process table is unreadable, where every writer would look gone.
+fn reap_gone_writers_temps(dir: &Path) {
+    use rigger_process::os_process::start_time;
+    if start_time(std::process::id()).is_none() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(temp_writer_pid) else {
+            continue;
+        };
+        if start_time(pid).is_none() {
+            let _ = std::fs::remove_file(entry.path()); // best-effort, like the entry prune
+        }
+    }
+}
+
+/// The writer pid a [`write`] temp name (`.{id}.{pid}.{nonce}.tmp`) carries; `None` for any
+/// other name.
+fn temp_writer_pid(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix('.')?.strip_suffix(".tmp")?;
+    let mut fields = rest.rsplitn(3, '.');
+    fields.next()?.parse::<u64>().ok()?;
+    let pid = fields.next()?.parse().ok()?;
+    fields.next().filter(|id| !id.is_empty())?;
+    Some(pid)
 }
 
 /// Read every LIVE instance from `dir`, filtering by heartbeat freshness exactly like
@@ -501,6 +535,58 @@ mod tests {
                 true,
                 "a stale-heartbeat entry is still returned verbatim by read_all",
             );
+    }
+
+    /// A registry dir holding a temp left by a writer that is gone and one this live process
+    /// writes, read through `read`: the gone writer's temp survives exactly when `dead_kept`
+    /// (`why`), and a live writer's temp always survives.
+    fn assert_temps_after_read(read: impl Fn(&Path), dead_kept: bool, why: &str) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = instances_dir(tmp.path());
+        std::fs::create_dir_all(&dir).unwrap();
+        // No supported OS hands out pid u32::MAX, so that writer is gone.
+        let dead = dir.join(format!(".abc.{}.0.tmp", u32::MAX));
+        let own = dir.join(format!(".abc.{}.0.tmp", std::process::id()));
+        std::fs::write(&dead, b"{").unwrap();
+        std::fs::write(&own, b"{").unwrap();
+        read(&dir);
+        assert_eq!(dead.exists(), dead_kept, "{why}");
+        assert!(own.exists(), "{why}: a live writer's temp is never removed");
+    }
+
+    /// Only a name in [`write`]'s temp shape yields a writer pid.
+    #[test]
+    fn a_temp_name_yields_its_writer_pid_only_in_the_write_shape() {
+        let rows = [
+            (".c448dccd60f2537d.4242.7.tmp", Some(4242)),
+            ("c448dccd60f2537d.json", None),
+            ("c448dccd60f2537d.4242.7.tmp", None),
+            (".c448dccd60f2537d.pid.7.tmp", None),
+            (".c448dccd60f2537d.4242.nonce.tmp", None),
+            ("..4242.7.tmp", None),
+            (".4242.7.tmp", None),
+        ];
+        for (name, pid) in rows {
+            assert_eq!(temp_writer_pid(name), pid, "{name}");
+        }
+    }
+
+    crate::test_cases! {
+        the_pruning_reader_reaps_a_gone_writers_temp: assert_temps_after_read(
+            |dir| drop(read_live(dir, 0, DEFAULT_IDLE_MS)),
+            false,
+            "read_live removes the temp of a writer that is gone",
+        );
+        a_non_pruning_reader_keeps_a_gone_writers_temp: assert_temps_after_read(
+            |dir| drop(read_live_no_prune(dir, 0, DEFAULT_IDLE_MS)),
+            true,
+            "read_live_no_prune deletes nothing",
+        );
+        read_all_keeps_a_gone_writers_temp: assert_temps_after_read(
+            |dir| drop(read_all(dir)),
+            true,
+            "read_all deletes nothing",
+        );
     }
 
     /// Projects `/a` and `/b` registered with heartbeats `a_hb` and `b_hb` are both returned by
