@@ -713,18 +713,17 @@ pub fn extract(source: &str, lang: Lang, tags: &CompiledTags) -> Result<FileSymb
         std_imports: std_imports(&structure.uses, bytes),
         ..Scope::default()
     };
-    // Spec 117 (MACRO TOKEN TREES): every macro invocation's token tree, re-parsed; the file's
-    // tree is the first read and each re-parse a read after it.
+    // Spec 117 (MACRO TOKEN TREES): every macro invocation's token tree, re-parsed, of a Rust
+    // file alone, the one language whose `structure.references` are gathered; the file's tree is
+    // the first read and each re-parse a read after it.
     let mut reparses = Vec::new();
-    if lang == Lang::Rust {
-        reparse_invocations(
-            &mut parser,
-            &structure.references,
-            &file_scope,
-            &text,
-            &mut reparses,
-        );
-    }
+    reparse_invocations(
+        &mut parser,
+        &structure.references,
+        &file_scope,
+        &text,
+        &mut reparses,
+    );
     let file_read = Read {
         root,
         keep: whole,
